@@ -69,7 +69,8 @@ def test_inherited_identical_outputs_refused_before_any_job(tmp_path: Path, doub
         _run(tmp_path, {"output": str(output)},
              [{"sources": ["a.mkv"]}, {"sources": ["b.mkv"]}], force=force)
     assert excinfo.value.exit_code == EXIT_ARGS
-    assert "jobs 1 (a.mkv) et 2 (b.mkv)" in str(excinfo.value)
+    # Sources relatives du fichier batch : résolues depuis son dossier.
+    assert f"jobs 1 ({tmp_path / 'a.mkv'}) et 2 ({tmp_path / 'b.mkv'})" in str(excinfo.value)
     assert doubles == []
     assert not (tmp_path / "out").exists()
 

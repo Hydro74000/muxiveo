@@ -6,6 +6,7 @@ from pathlib import Path, PureWindowsPath
 
 # Réexport historique : l'écriture atomique est partagée avec les profils.
 from core.atomic_io import atomic_write_text
+from core.json_documents import read_json_document, resolve_document_paths
 
 
 def save_workflow(path: Path, job: dict):
@@ -17,7 +18,7 @@ def save_workflow(path: Path, job: dict):
 def load_workflow(path: Path, relocate=None) -> dict:
     from cli.contract import validate_job_contract
     path = Path(path).expanduser().resolve()
-    job = json.loads(path.read_text(encoding="utf-8-sig"))
+    job = read_json_document(path)
     validate_job_contract(job, require_version=True)
     def resolve(raw):
         value = Path(raw).expanduser()
@@ -38,6 +39,9 @@ def load_workflow(path: Path, relocate=None) -> dict:
     job["sources"] = [dict(s, path=resolve(s["path"])) if isinstance(s, dict)
                       else {"path": resolve(s)} for s in sources]
     job["extra_attachments"] = [resolve(p) for p in job.get("extra_attachments", [])]
-    if job.get("output") and not Path(job["output"]).is_absolute():
-        job["output"] = str(path.parent / job["output"])
+    # Import de chapitres et sortie : même règle que la CLI (dossier du document).
+    rest = resolve_document_paths(
+        {key: job[key] for key in ("chapters", "output") if key in job}, path.parent,
+    )
+    job.update(rest)
     return job

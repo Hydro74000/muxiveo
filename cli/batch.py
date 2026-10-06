@@ -12,6 +12,7 @@ from typing import Any
 from core.config import AppConfig
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
+from core.json_documents import resolve_document_paths
 from core.output_commit import destination_key
 
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW
@@ -19,7 +20,7 @@ from cli.contract import validate_batch_contract, validate_job_contract
 from cli.errors import CliError
 from cli.inspection import source_path_items
 from cli.jobs import apply_metadata_overrides
-from cli.json_io import deep_merge, load_json, write_json
+from cli.json_io import deep_merge, load_job_document, load_json, write_json
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.remux_config import build_remux_config
@@ -314,12 +315,16 @@ def run_batch(
             EXIT_ARGS,
         )
 
-    template = load_json(Path(template_path).expanduser())
+    # Chemins relatifs du template et des items du fichier batch : résolus
+    # depuis le dossier de leur propre document.
+    template = load_job_document(Path(template_path))
     validate_job_contract(template, require_version=True)
 
     discovery: BatchDiscovery | None = None
+    batch_base: Path | None = None
     if batch_path:
         batch = load_json(Path(batch_path).expanduser())
+        batch_base = Path(batch_path).expanduser().absolute().parent
     else:
         discovery = discover_direct_batch_jobs(
             cli_inputs=cli_inputs,
@@ -351,6 +356,8 @@ def run_batch(
     # ensuite, avant le premier traitement, même avec --force.
     planned: list[PlannedBatchJob] = []
     for job_index, item in enumerate(batch_jobs(batch)):
+        if batch_base is not None:
+            item = resolve_document_paths(item, batch_base)
         job = deep_merge(template, item)
         if mux_backend:
             job["mux_backend"] = mux_backend

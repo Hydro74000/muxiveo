@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from cli.constants import FLAG_NAMES, TRACK_TYPES
+from cli.constants import (
+    FLAG_NAMES,
+    MUX_BACKEND_CHOICES,
+    SYNC_MODES,
+    SYNC_REWRITE_MODES,
+    SYNC_SUBTITLE_MODES,
+    TMDB_KINDS,
+    TRACK_TYPES,
+)
 from core.version import APP_NAME, APP_SCHEMA_BASE_URL
 
 
@@ -74,7 +82,7 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "title": {"type": "string"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
             "time_shift_ms": {"type": "integer"},
-            "sync_rewrite_mode": {"type": "string", "enum": ["", "offset"]},
+            "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
         },
     }
 
@@ -127,8 +135,8 @@ def build_cli_json_schema() -> dict[str, Any]:
             "output_template": {"type": "string"},
             "output_all": {"type": "boolean"},
             "work_dir": {"type": "string"},
-            "sync_mode": {"enum": ["physical", "container"], "default": "container"},
-            "sync_subtitles": {"enum": ["mirror", "none"], "default": "mirror"},
+            "sync_mode": {"enum": list(SYNC_MODES), "default": "container"},
+            "sync_subtitles": {"enum": list(SYNC_SUBTITLE_MODES), "default": "mirror"},
             "crossfade_ms": {"type": "integer", "minimum": 0, "maximum": 1000},
             "clean_nfo": {"type": "boolean", "default": True},
             "sync_calibrations": {"type": "object", "additionalProperties": {"type": "object"}},
@@ -137,7 +145,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "detect_cuts": {"type": "boolean"},
             "drift_threshold_ms": {"type": "integer", "minimum": 1},
             "tmdb_cover": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
-            "mux_backend": {"enum": ["auto", "native", "ffmpeg"]},
+            "mux_backend": {"enum": list(MUX_BACKEND_CHOICES)},
             "file_title": {"type": "string"},
             "variables": _variables_schema(),
             "tracks": {"type": "array", "items": {"$ref": "#/$defs/track_edit"}},
@@ -238,7 +246,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                 "additionalProperties": True,
                 "properties": {
                     "enabled": {"type": "boolean"},
-                    "kind": {"enum": ["all", "movie", "tv"]},
+                    "kind": {"enum": list(TMDB_KINDS)},
                     "query": {"type": "string"},
                     "title": {"type": "string"},
                     "year": {"type": "string"},

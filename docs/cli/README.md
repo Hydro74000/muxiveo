@@ -91,6 +91,21 @@ Job minimal :
 }
 ```
 
+Règles de lecture communes à la CLI et à la GUI :
+
+- les fichiers JSON sont lus en UTF-8, avec ou sans BOM ; les constantes non
+  standard `NaN`, `Infinity` et `-Infinity` sont refusées ;
+- un chemin relatif écrit dans un document JSON (`sources`, `input`,
+  `extra_attachments`, `chapters.import`, `output`) est résolu depuis le
+  **dossier de ce document**, pas depuis le répertoire courant. Le template,
+  le job (`--config`) et le fichier `--batch` sont résolus chacun depuis leur
+  propre dossier, avant fusion ;
+- un chemin passé en ligne de commande (`-i`, `-o`, `--output-dir`…) reste
+  relatif au répertoire courant ; `output_template` n'est pas un chemin.
+
+Un JSON qui comptait sur le répertoire courant pour ses chemins relatifs doit
+être lancé avec des chemins absolus, ou recevoir ses chemins en ligne de commande.
+
 La sortie remux est exclusivement `.mkv`. Le champ additif `mux_backend` est
 facultatif et son absence conserve tous les jobs v1 existants :
 
@@ -445,6 +460,13 @@ Le batch fusionne chaque job avec le template :
 
 Le fichier batch est validé avant le premier job. Les entrées de `jobs` ou
 `inputs` doivent être des objets job ou des chemins texte.
+
+Tous les jobs sont préparés avant le premier traitement. Si deux jobs
+aboutissent à la même sortie (même chemin, alias par lien, casse sous
+Windows/macOS), le batch est refusé (code `2`) sans rien lancer, même avec
+`--force` : cette option autorise le remplacement d'une sortie existante,
+pas deux écritures concurrentes de la même sortie. La même règle s'applique à
+`profile batch` et `hybrid`.
 
 Le batch peut aussi créer les jobs depuis un dossier :
 

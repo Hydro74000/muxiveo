@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -13,19 +14,28 @@ from cli.errors import CliError
 from cli.json_io import load_json
 
 
+def _finite_timecode(seconds: float, raw: Any) -> float:
+    """Timecode fini et positif (NaN/infini deviendraient des timestamps invalides)."""
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"timecode invalide: {raw}")
+    return seconds
+
+
 def parse_timecode(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"timecode invalide: {value}")
     if isinstance(value, (int, float)):
-        return float(value)
+        return _finite_timecode(float(value), value)
     text = str(value).strip().replace(",", ".")
     if not text:
         raise ValueError("timecode vide")
     parts = text.split(":")
     if len(parts) == 1:
-        return float(parts[0])
+        return _finite_timecode(float(parts[0]), value)
     if len(parts) == 2:
-        return int(parts[0]) * 60 + float(parts[1])
+        return _finite_timecode(int(parts[0]) * 60 + float(parts[1]), value)
     if len(parts) == 3:
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        return _finite_timecode(int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2]), value)
     raise ValueError(f"timecode invalide: {value}")
 
 
@@ -69,7 +79,7 @@ def _chapter_from_ffmetadata(data: dict[str, str]) -> ChapterEntry:
             seconds = start * float(num) / float(den)
         except Exception:
             seconds = start / 1000
-    return ChapterEntry(timecode_s=seconds, name=data.get("TITLE", ""))
+    return ChapterEntry(timecode_s=_finite_timecode(seconds, data.get("START")), name=data.get("TITLE", ""))
 
 
 def _parse_chapters_ogm(path: Path) -> list[ChapterEntry]:
@@ -101,6 +111,13 @@ def _chapter_from_mapping(item: dict[str, Any]) -> ChapterEntry:
 
 
 def chapter_entries(job: dict[str, Any], infos: list[FileInfo]) -> tuple[bool, list[ChapterEntry] | None, int | None]:
+    try:
+        return _chapter_entries(job, infos)
+    except ValueError as exc:
+        raise CliError(f"Chapitres invalides : {exc}", EXIT_ARGS) from exc
+
+
+def _chapter_entries(job: dict[str, Any], infos: list[FileInfo]) -> tuple[bool, list[ChapterEntry] | None, int | None]:
     chapters = job.get("chapters", {})
     if chapters is False:
         return False, None, None

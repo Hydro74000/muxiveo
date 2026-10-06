@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from cli.contract import validate_job_contract
-from cli.json_io import deep_merge, load_json
+from cli.json_io import deep_merge, load_job_document
 from cli.options import JobOverrides
 from cli.tmdb import mark_auto_tmdb
 
@@ -74,13 +74,15 @@ def apply_metadata_overrides(
 def load_job(overrides: JobOverrides) -> dict[str, Any]:
     job: dict[str, Any] = {}
     require_version = False
+    # Chemins relatifs de chaque document résolus depuis son propre dossier,
+    # avant fusion (template et job peuvent vivre dans des dossiers différents).
     if overrides.config:
-        loaded = load_json(Path(overrides.config).expanduser())
+        loaded = load_job_document(Path(overrides.config))
         validate_job_contract(loaded, require_version=True)
         job = deep_merge(job, loaded)
         require_version = True
     if overrides.template:
-        template = load_json(Path(overrides.template).expanduser())
+        template = load_job_document(Path(overrides.template))
         validate_job_contract(template, require_version=True)
         job = deep_merge(template, job)
         require_version = True

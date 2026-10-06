@@ -22,3 +22,11 @@ FLAG_NAMES = (
     "original",
     "commentary",
 )
+
+# Énumérations du contrat de job : source unique du schéma public (schema.py)
+# et du validateur structurel (contract.py).
+SYNC_MODES = ("physical", "container")
+SYNC_SUBTITLE_MODES = ("mirror", "none")
+SYNC_REWRITE_MODES = ("", "offset")
+MUX_BACKEND_CHOICES = ("auto", "native", "ffmpeg")
+TMDB_KINDS = ("all", "movie", "tv")
