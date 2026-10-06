@@ -966,6 +966,12 @@ class RemuxPanel(QWidget):
     def _apply_decision_profile_dialog(self) -> None:
         manager = self._decision_profile_manager()
         names = manager.names()
+        # Profils illisibles : conservés sur disque, signalés sans bloquer les autres.
+        for error in manager.load_errors:
+            self.log_message.emit(
+                "WARN",
+                translate_text("Profil illisible ignoré : {path} ({reason})", path=str(error.path), reason=error.reason),
+            )
         if not names:
             QMessageBox.information(
                 self,

@@ -5362,5 +5362,9 @@
   "Traitements en cours conservés ({count}) : {names}": {
     "fra": "Traitements en cours conservés ({count}) : {names}",
     "eng": "Jobs in progress kept ({count}): {names}"
+  },
+  "Profil illisible ignoré : {path} ({reason})": {
+    "fra": "Profil illisible ignoré : {path} ({reason})",
+    "eng": "Unreadable profile skipped: {path} ({reason})"
   }
 }

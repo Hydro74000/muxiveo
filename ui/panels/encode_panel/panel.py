@@ -3640,6 +3640,15 @@ class EncodePanel(QWidget):
         self._profile_combo.blockSignals(True)
         self._profile_combo.clear()
         names = self._profiles.names()
+        # Profils illisibles : conservés sur disque, signalés une seule fois.
+        reported = self.__dict__.setdefault("_reported_profile_errors", set())
+        for error in self._profiles.load_errors:
+            if error.path not in reported:
+                reported.add(error.path)
+                self.log_message.emit(
+                    "WARN",
+                    translate_text("Profil illisible ignoré : {path} ({reason})", path=str(error.path), reason=error.reason),
+                )
         if not names:
             self._profile_combo.addItem(translate_text("(aucun profil enregistré)"), None)
             self._profile_combo.setEnabled(False)

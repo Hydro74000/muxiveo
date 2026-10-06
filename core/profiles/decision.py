@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from core.profile_store import ProfileLoadError, ProfileStore
 from core.profiles import keywords as keyword_registry
 from core.profiles.expressions import (
     CriteriaExpressionError,
@@ -114,19 +115,35 @@ def _safe_profile_filename(name: str) -> str:
     return safe.strip("_") or "profile"
 
 
+def _profile_name(data: Mapping[str, Any]) -> str | None:
+    name = str(data.get("name") or "").strip()
+    return name or None
+
+
 class DecisionProfileManager:
-    """JSON persistence for decision profile v1 files."""
+    """JSON persistence for decision profile v1 files.
+
+    Identité = nom exact (champ ``name``) ; deux noms que la normalisation de
+    fichier rend identiques ont chacun leur fichier. Écriture atomique ;
+    profils illisibles conservés et listés dans :attr:`load_errors`.
+    """
 
     def __init__(self, profiles_dir: Path) -> None:
         self._dir = Path(profiles_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._store = ProfileStore(self._dir, _safe_profile_filename, _profile_name)
 
     @property
     def directory(self) -> Path:
         return self._dir
 
+    @property
+    def load_errors(self) -> list[ProfileLoadError]:
+        return list(self._store.load_errors)
+
     def path_for_name(self, name: str) -> Path:
-        return self._dir / f"{_safe_profile_filename(name)}.json"
+        """Fichier du profil de nom exact ``name`` (existant, sinon à créer)."""
+        return self._store.path_for_name(str(name or "").strip())
 
     def save(self, profile: Mapping[str, Any]) -> Path:
         data = dict(profile)
@@ -138,33 +155,20 @@ class DecisionProfileManager:
         if not name:
             raise ValueError("Decision profile requires a non-empty name.")
         validate_decision_profile(data)
-        path = self.path_for_name(name)
-        path.write_text(
+        return self._store.write(
+            name,
             json.dumps(data, ensure_ascii=False, indent=2, default=_json_default) + "\n",
-            encoding="utf-8",
         )
-        return path
 
     def load(self, name: str) -> dict[str, Any] | None:
-        path = self.path_for_name(name)
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return data if isinstance(data, dict) else None
+        wanted = str(name or "").strip()
+        for _path, data in self._store.scan():
+            if _profile_name(data) == wanted:
+                return data
+        return None
 
     def load_all(self) -> list[dict[str, Any]]:
-        profiles: list[dict[str, Any]] = []
-        for path in sorted(self._dir.glob("*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(data, dict):
-                profiles.append(data)
-        return profiles
+        return [data for _path, data in self._store.scan()]
 
     def names(self) -> list[str]:
         names: list[str] = []
@@ -175,7 +179,7 @@ class DecisionProfileManager:
         return names
 
     def delete(self, name: str) -> None:
-        self.path_for_name(name).unlink(missing_ok=True)
+        self._store.delete(str(name or "").strip())
 
 
 def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:

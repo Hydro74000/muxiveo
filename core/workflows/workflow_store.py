@@ -2,22 +2,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path, PureWindowsPath
-import tempfile
 
-
-def atomic_write_text(path: Path, content: str):
-    path = Path(path)
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
+# Réexport historique : l'écriture atomique est partagée avec les profils.
+from core.atomic_io import atomic_write_text
 
 
 def save_workflow(path: Path, job: dict):
