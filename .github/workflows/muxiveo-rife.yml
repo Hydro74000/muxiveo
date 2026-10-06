@@ -195,7 +195,9 @@ jobs:
               || curl -fsSL https://raw.githubusercontent.com/KhronosGroup/MoltenVK/main/LICENSE -o "$PKG/LICENSES/Apache-2.0-MoltenVK.txt"
           fi
           echo "dir=$PKG" >> "$GITHUB_OUTPUT"
-          echo "bin=$PKG/${{ matrix.exe }}" >> "$GITHUB_OUTPUT"
+          # Chemin absolu natif de la plateforme, utilisable depuis tout cwd.
+          python -c 'import pathlib,sys; print("bin=" + str(pathlib.Path(sys.argv[1]).resolve()))' \
+            "$PKG/${{ matrix.exe }}" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test
         shell: bash
