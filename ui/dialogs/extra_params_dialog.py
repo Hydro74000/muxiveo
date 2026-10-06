@@ -1327,6 +1327,7 @@ def _nvencc_group_rate_control() -> ParamGroup:
                           "Typique remux UHD : 18:20:22 (très haute qualité)."),
         ParamSpec("vbr", "VBR (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
                   tooltip="Mode VBR — bitrate moyen cible (kbps).\n"
+                          "0 = illimité (aucune cible de débit moyen).\n"
                           "Combinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."),
         ParamSpec("vbrhq", "VBR-HQ (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
                   tooltip="VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis."),

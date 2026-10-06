@@ -428,6 +428,8 @@ class RateControlSpec:
     quality_range: tuple[int, int] = (0, 51)
     quality_default: int = 0
     bitrate: bool = False
+    #: 0 admis uniquement pour les modes dont l'encodeur accepte un débit illimité.
+    bitrate_minimum: int = 1
 
     @property
     def uses_quality(self) -> bool:
@@ -490,8 +492,8 @@ def _nvencc_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
         _RC("qvbr", "Qualité constante (QVBR)", "cq", "Qualité", (0, 63) if av1 else (0, 51), 32 if av1 else 26),
         _RC("cqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 51), 96 if av1 else 24),
         _RC("vbr_quality", "VBR + qualité cible", "cq", "Qualité", (0, 63) if av1 else (0, 51),
-            32 if av1 else 26, bitrate=True),
-        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+            32 if av1 else 26, bitrate=True, bitrate_minimum=0),
+        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True, bitrate_minimum=0),
         _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
         _SIZE,
     )

@@ -99,7 +99,8 @@ from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
 
-# Champs Débit / Taille cible : entiers > 0, sans borne haute (limite technique de QIntValidator).
+# Taille > 0 ; débit selon le mode (NVEncC VBR : 0 = illimité).
+# Pas de borne haute applicative (limite technique de QIntValidator).
 _INT_INPUT_MAX = 2**31 - 1
 
 
@@ -3088,6 +3089,11 @@ class EncodePanel(QWidget):
         """Affiche la valeur de qualité et / ou le débit du mode, avec sa plage."""
         spec = self._current_rate_control()
         self._current_rc_spec = spec
+        validator = self._bitrate_edit.validator()
+        minimum = spec.bitrate_minimum if spec is not None else 1
+        if isinstance(validator, QIntValidator):
+            validator.setBottom(minimum)
+        self._bitrate_edit.setToolTip(translate_text("0 = illimité (NVEncC VBR).") if minimum == 0 else "")
         uses_quality = spec is not None and spec.uses_quality
         self._quality_value_label.setVisible(uses_quality)
         self._bitrate_widget.setVisible(spec is not None and spec.bitrate)
@@ -4616,7 +4622,8 @@ class EncodePanel(QWidget):
         if spec.uses_quality:
             values.append(str(quality) if spec.family == QualityMode.CRF.value else f"{spec.quality_label} {quality}")
         if spec.bitrate:
-            values.append(f"{state.get('bitrate_kbps') or '?'} kbps")
+            bitrate = state.get("bitrate_kbps")
+            values.append(f"{bitrate if bitrate is not None and bitrate != '' else '?'} kbps")
         if spec.family == QualityMode.SIZE.value:
             values.append(f"{state.get('target_size_mb') or '?'} Mo")
         return f"{translate_text(spec.label)} ({', '.join(values)})" if values else translate_text(spec.label)
@@ -4831,7 +4838,7 @@ class EncodePanel(QWidget):
                 if spec is not None and spec.uses_quality:
                     target = self._crf_spin if spec.family == QualityMode.CRF.value else self._cq_spin
                     target.setValue(quality)
-            self._bitrate_edit.setText(str(state.get("bitrate_kbps") or "5000"))
+            self._bitrate_edit.setText(str(state.get("bitrate_kbps", "5000")))
             self._size_edit.setText(str(state.get("target_size_mb") or "4000"))
             self._extra_params.setText(str(state.get("extra_params") or ""))
             by_codec = state.get("extra_params_by_codec")
@@ -5140,11 +5147,11 @@ class EncodePanel(QWidget):
         preset_data = self._preset_combo.currentData()
         # "" = preset « Aucun » (VAAPI) : valeur valide, distincte d'une liste vide.
         preset = default_preset_for_codec(str(codec)) if preset_data is None else str(preset_data)
-        # Saisie invalide → 0, refusé par la validation (pas de valeur de repli muette).
+        # Débit invalide → -1 : ne pas le confondre avec le 0 illimité NVEncC.
         try:
             bitrate = int(self._bitrate_edit.text())
         except ValueError:
-            bitrate = 0
+            bitrate = -1
         try:
             size = int(self._size_edit.text())
         except ValueError:

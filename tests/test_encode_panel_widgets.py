@@ -2140,7 +2140,7 @@ class TestEncodePanelAuditLot2:
             # Arbitrage : entiers > 0, sans borne haute applicative.
             assert validator is not None and validator.bottom() == 1 and validator.top() == 2**31 - 1
         panel._bitrate_edit.setText("")
-        assert panel._current_video_settings().bitrate_kbps == 0
+        assert panel._current_video_settings().bitrate_kbps == -1
         panel.close()
 
     def test_vaapi_offers_no_preset_entry(self, qt_app):
@@ -2266,6 +2266,33 @@ class TestEncodePanelAuditLot4:
     @staticmethod
     def _modes(panel: EncodePanel) -> list[str]:
         return [panel._mode_combo.itemData(i) for i in range(panel._mode_combo.count())]
+
+    @pytest.mark.parametrize("codec", ["nvencc_hevc", "nvencc_h264", "nvencc_av1"])
+    @pytest.mark.parametrize("mode", ["vbr", "vbr_quality"])
+    def test_nvencc_vbr_accepts_and_preserves_zero(self, qt_app, codec, mode):
+        from core.workflows.encode.planning.validation import video_settings_errors
+
+        panel = self._panel({codec})
+        try:
+            _select_codec(panel, codec)
+            panel._set_combo_data(panel._mode_combo, mode)
+            panel._bitrate_edit.setText("0")
+            assert panel._bitrate_edit.hasAcceptableInput()
+            assert video_settings_errors([panel._current_video_settings()]) == []
+            state = panel._current_video_state()
+            state["bitrate_kbps"] = 0  # anciens profils / état numérique
+            panel._apply_video_state(state)
+            assert panel._bitrate_edit.text() == "0"
+            assert panel._current_video_settings().bitrate_kbps == 0
+            assert "0 kbps" in panel._rate_control_summary(state)
+            panel._bitrate_edit.clear()
+            assert video_settings_errors([panel._current_video_settings()])
+            panel._set_combo_data(panel._mode_combo, "cbr")
+            panel._bitrate_edit.setText("0")
+            assert not panel._bitrate_edit.hasAcceptableInput()
+            assert video_settings_errors([panel._current_video_settings()])
+        finally:
+            panel.close()
 
     def test_v19_mode_list_follows_codec_and_driver(self, qt_app):
         panel = self._panel({"hevc_vaapi"}, {"hevc_vaapi": frozenset({"cqp", "qvbr", "vbr", "size"})})

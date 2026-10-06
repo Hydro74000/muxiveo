@@ -197,8 +197,10 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
             errors.append(f"Piste vidéo #{index} — {preset_error}")
         spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
         needs_bitrate = spec.bitrate if spec is not None else video.quality_mode == QualityMode.BITRATE
-        if needs_bitrate and int(video.bitrate_kbps) <= 0:
-            errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps > 0 attendu).")
+        minimum = spec.bitrate_minimum if spec is not None else 1
+        if needs_bitrate and int(video.bitrate_kbps) < minimum:
+            requirement = ">= 0 attendu, 0 = illimité" if minimum == 0 else "> 0 attendu"
+            errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps {requirement}).")
         if video.quality_mode == QualityMode.SIZE and int(video.target_size_mb) <= 0:
             errors.append(f"Piste vidéo #{index} — taille cible invalide (Mio > 0 attendue).")
         problem = extra_params_syntax_error(video.codec, video.extra_params)

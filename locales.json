@@ -1,4 +1,8 @@
 {
+  "0 = illimité (NVEncC VBR).": {
+    "fra": "0 = illimité (NVEncC VBR).",
+    "eng": "0 = unlimited (NVEncC VBR)."
+  },
   "Analyse synchro :": {
     "fra": "Analyse synchro :",
     "eng": "Sync analysis:"

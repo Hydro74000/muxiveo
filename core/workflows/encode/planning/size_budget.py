@@ -192,7 +192,7 @@ def compute_size_budget(config: EncodeConfig, probes: SizeBudgetProbes) -> SizeB
             continue
         share = track_duration / duration
         spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
-        if video.codec != "copy" and spec is not None and spec.bitrate:
+        if video.codec != "copy" and spec is not None and spec.bitrate and video.bitrate_kbps > 0:
             measured_bps += video.bitrate_kbps * 1000 * share
             continue
         bitrate = stream_bitrate_bps(stream)
