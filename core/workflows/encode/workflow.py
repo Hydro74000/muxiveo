@@ -266,6 +266,11 @@ from core.workflows.encode.dovi_policy import (
     sub_profile_from_value as _sub_profile_from_value,
 )
 from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
+from core.workflows.encode.domain.codecs import preset_problem as _preset_problem
+from core.workflows.encode.domain.codecs import vulkan_filters_compatible as _vulkan_filters_compatible
+from core.workflows.encode.vulkan import VulkanCapability as _VulkanCapability
+from core.workflows.encode.vulkan import detect_vulkan as _detect_vulkan
+from core.workflows.encode.vulkan import vulkan_parallelism as _vulkan_parallelism
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard as _FrameCountGuard
 from core.workflows.encode.runtime.dovi_static_hdr import (
     estimate_static_hdr_from_rpu as _estimate_static_hdr_from_rpu,
@@ -1695,6 +1700,17 @@ class EncodeWorkflow(QObject):
             depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
         )
 
+    def set_vulkan_capability(self, ffmpeg_bin: str, capability: _VulkanCapability) -> None:
+        """Capacité Vulkan détectée au lancement de l'application (tableau de bord) pour ce FFmpeg."""
+        self.__dict__.setdefault("_vulkan_cache", {})[str(ffmpeg_bin)] = capability
+
+    def vulkan_capability(self) -> _VulkanCapability:
+        """Capacité Vulkan du FFmpeg utilisé : injectée par l'interface, sinon sondée une fois (CLI)."""
+        cache: dict[str, _VulkanCapability] = self.__dict__.setdefault("_vulkan_cache", {})
+        if self._ffmpeg not in cache:
+            cache[self._ffmpeg] = _detect_vulkan(self._ffmpeg)
+        return cache[self._ffmpeg]
+
     def _depth_conversion_filters(self) -> frozenset[str]:
         """Filtres GPU compilés ; un binaire sans ces filtres utilise le chemin logiciel."""
         cached = self.__dict__.setdefault("_depth_filters_cache", {})
@@ -1706,7 +1722,7 @@ class EncodeWorkflow(QObject):
                 )
                 output = proc.stdout or ""
                 cached[self._ffmpeg] = frozenset(
-                    name for name in ("scale_cuda", "vpp_qsv", "scale_vaapi")
+                    name for name in ("scale_cuda", "scale_vaapi")
                     if re.search(rf"\b{name}\b", output)
                 )
             except (OSError, subprocess.TimeoutExpired):
@@ -3198,8 +3214,12 @@ class EncodeWorkflow(QObject):
         messages = self.extra_params_warnings(config)
         for index, video in enumerate(self._video_tracks(config), start=1):
             messages.extend(f"Piste vidéo #{index} — {warning}" for warning in _hdr_warnings(video))
+            _preset_error, preset_warning = _preset_problem(video)
+            if preset_warning:
+                messages.append(f"Piste vidéo #{index} — {preset_warning}")
             if (
                 video.codec != "copy" and video.filters.nlmeans_enabled and video.source_bit_depth > 8
+                and not video.nlmeans_vulkan
                 and (not _is_nvencc_codec_runtime(video.codec) or _nvencc_requires_ffmpeg_filter_pipe(video))
             ):
                 # nlmeans FFmpeg n'accepte que des formats 8 bits (conversion implicite).
@@ -3239,15 +3259,36 @@ class EncodeWorkflow(QObject):
                         updates["source_pix_fmt"] = str(stream["pix_fmt"]).strip().lower()
                 if video.codec == "nvencc_h264" and video.encoder_supports_10bit is None:
                     updates["encoder_supports_10bit"] = video.codec in detect_nvencc_10bit_codecs(self._nvencc_bin)
+                # NLMeans 10 bits sur le GPU dédié (Vulkan) quand le matériel et l'encodeur le permettent.
+                capability = (
+                    self.vulkan_capability()
+                    if video.filters.nlmeans_enabled and _vulkan_filters_compatible(video, self._codec_domain_callbacks())
+                    else None
+                )
+                if capability is not None and capability.nlmeans and capability.index is not None:
+                    width, height = self._source_video_dimensions(
+                        self._video_source_from_settings(config, video),
+                        stream_index=self._video_stream_from_settings(video),
+                    )
+                    vulkan_updates = {
+                        "nlmeans_vulkan": True,
+                        "vulkan_device": str(capability.index),
+                        "vulkan_parallelism": _vulkan_parallelism(width, height),
+                    }
+                else:
+                    vulkan_updates = {"nlmeans_vulkan": False, "vulkan_device": "", "vulkan_parallelism": 1}
+                updates.update({
+                    key: value for key, value in vulkan_updates.items() if getattr(video, key) != value
+                })
                 if updates:
                     video = dataclasses.replace(video, **updates)
                     changed = True
             resolved.append(video)
-        from core.workflows.encode.catalog import NVENC_VIDEO_CODECS, QSV_VIDEO_CODECS, VAAPI_VIDEO_CODECS
+        from core.workflows.encode.catalog import NVENC_VIDEO_CODECS, VAAPI_VIDEO_CODECS
         from core.workflows.encode.domain.codecs import has_cpu_video_filter, resolve_output_bit_depth
 
         if any(
-            v.codec in (NVENC_VIDEO_CODECS | QSV_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
+            v.codec in (NVENC_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
             and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
             and not has_cpu_video_filter(v) and not v.interpolates()
             for v in resolved

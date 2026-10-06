@@ -912,3 +912,22 @@ def test_v18b_ffmpeg_nlmeans_on_high_bit_depth_warns(qt_app, tmp_path):
     assert warnings_for("libx265", 10) and not warnings_for("libx265", 8)
     # NVEncC débruite lui-même en 10 bits.
     assert not warnings_for("nvencc_hevc", 10)
+
+
+
+# ---------------------------------------------------------------------------
+# Presets : seuls ceux que le codec accepte (revue lot 7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("codec,preset,kind", [
+    ("av1_nvenc", "hq", "error"), ("hevc_nvenc", "hq", ""), ("hevc_nvenc", "safe", ""),
+    ("libx265", "p4", "error"), ("libsvtav1", "slow", "error"), ("libsvtav1", "-1", ""),
+    ("hevc_amf", "slow", "warning"), ("av1_amf", "high_quality", ""), ("hevc_vaapi", "slow", "warning"),
+    ("nvencc_hevc", "p4", ""), ("hevc_qsv", "slow", ""),
+])
+def test_review_preset_supported_by_codec(codec, preset, kind):
+    from core.workflows.encode.domain.codecs import preset_problem
+
+    error, warning = preset_problem(VideoEncodeSettings(codec=codec, preset=preset))
+    assert (("error" if error else "warning" if warning else "")) == kind

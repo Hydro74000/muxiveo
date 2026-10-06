@@ -69,6 +69,9 @@ class HardwareEncoderDetector:
         #: Modes de débit acceptés par le pilote, par codec sondé (VAAPI) :
         #: identifiants de catalog.VIDEO_RATE_CONTROLS. Codec absent = non sondé.
         self.rate_controls: dict[str, frozenset[str]] = {}
+        #: Presets énumérés par ``ffmpeg -h encoder=`` (NVENC, AMF, QSV) pour le
+        #: FFmpeg réellement utilisé : un preset absent n'est pas proposé.
+        self.presets: dict[str, frozenset[str]] = {}
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -302,6 +305,48 @@ class HardwareEncoderDetector:
             return available
 
         return self._probe_codecs(ffmpeg_bin, compiled)
+
+    def detect_presets(self, ffmpeg_bin: str, codecs: set[str]) -> dict[str, frozenset[str]]:
+        """Presets énumérés par ``ffmpeg -h encoder=`` pour les encodeurs FFmpeg détectés.
+
+        VAAPI (``-compression_level``) et NVEncC (``-u``) ne sont pas concernés.
+        Résultat mémorisé dans :attr:`presets` (codec absent = liste du catalogue).
+        """
+        resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        for codec_id in sorted(codecs - _VAAPI_CODECS - _NVENCC_CODECS):
+            values = self._probe_preset_values(resolved, codec_id)
+            if values:
+                self.presets[codec_id] = values
+        return dict(self.presets)
+
+    @staticmethod
+    def parse_preset_values(help_output: str) -> frozenset[str]:
+        """Valeurs énumérées de ``-preset`` dans ``ffmpeg -h encoder=`` (vide si non énuméré)."""
+        values: set[str] = set()
+        in_preset = False
+        for line in (help_output or "").splitlines():
+            if re.match(r"\s+-preset\s", line):
+                in_preset = True
+                continue
+            if in_preset:
+                match = re.match(r"\s{5,}(\S+)\s+(?:-?\d+\s+)?E", line)
+                if match is None:
+                    break
+                values.add(match.group(1))
+        return frozenset(values)
+
+    def _probe_preset_values(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
+        try:
+            result = subprocess.run(
+                [ffmpeg_bin, "-hide_banner", "-h", f"encoder={codec_id}"],
+                capture_output=True,
+                check=False,
+                timeout=10,
+                **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return frozenset()
+        return self.parse_preset_values(result.stdout or "")
 
     def _probe_vaapi_rate_controls(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
         """Modes ``-rc_mode`` acceptés par le pilote VAAPI pour ce codec.

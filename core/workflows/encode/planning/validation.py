@@ -15,7 +15,7 @@ from core.workflows.encode.catalog import (
     supports_hdr10plus,
     supports_hdr_output,
 )
-from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error
+from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error, preset_problem
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
@@ -192,6 +192,9 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
         depth_problem = bit_depth_error(video)
         if depth_problem:
             errors.append(f"Piste vidéo #{index} — {depth_problem}")
+        preset_error, _preset_warning = preset_problem(video)
+        if preset_error:
+            errors.append(f"Piste vidéo #{index} — {preset_error}")
         spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
         needs_bitrate = spec.bitrate if spec is not None else video.quality_mode == QualityMode.BITRATE
         if needs_bitrate and int(video.bitrate_kbps) <= 0:

@@ -53,6 +53,7 @@ from core.workflows.encode.runtime.nvencc import (
     nvencc_requires_ffmpeg_filter_pipe as _nvencc_requires_ffmpeg_filter_pipe_runtime,
 )
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
+from core.workflows.encode.domain.codecs import vulkan_filter_device_args as _vulkan_filter_device_args
 from core.workflows.encode.runtime.frame_count_guard import FrameCountAuditError
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
 from core.matroska.editors.dovi import sanitize_dovi_mkv
@@ -622,6 +623,7 @@ class NvenccDirectOutputRunner:
                         cb.ffmpeg_bin,
                         routing.input_path,
                         stream_index=routing.stream_index,
+                        extra_input_args=_vulkan_filter_device_args(runtime_video),
                         vf=_nvencc_ffmpeg_filter_vf_runtime(runtime_video),
                         frame_exact=bool(
                             (runtime_video.copy_dv and dovi_rpu_path is not None) or hdr10plus_json_path is not None
@@ -788,6 +790,7 @@ def build_nvencc_pipeline_commands(
             ffmpeg_bin,
             routing.input_path,
             stream_index=routing.stream_index,
+            extra_input_args=_vulkan_filter_device_args(routing.video),
             vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
             frame_exact=dovi_rpu_preview is not None,
         )

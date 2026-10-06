@@ -5346,5 +5346,17 @@
   "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow.": {
     "eng": "Legacy setting with no effect: the Dolby Vision record compatibility follows each workflow's output profile.",
     "fra": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."
+  },
+  "Filtres GPU": {
+    "eng": "GPU filters",
+    "fra": "Filtres GPU"
+  },
+  "NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}": {
+    "eng": "10-bit NLMeans on the GPU (nlmeans_vulkan): {device}",
+    "fra": "NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}"
+  },
+  "Vulkan indisponible pour FFmpeg : {reason}": {
+    "eng": "Vulkan unavailable for FFmpeg: {reason}",
+    "fra": "Vulkan indisponible pour FFmpeg : {reason}"
   }
 }

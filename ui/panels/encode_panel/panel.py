@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
@@ -51,6 +52,8 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_TTA_LEVELS,
 )
 from core.workflows.encode.catalog import (
+    AMF_VIDEO_CODECS,
+    VAAPI_VIDEO_CODECS,
     VIDEO_ENCODER_BADGES,
     VIDEO_HDR_BADGE_ORDER,
     RateControlSpec,
@@ -121,8 +124,9 @@ class EncodePanel(QWidget):
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
-    # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit et capacités 10 bits NVEncC.
-    _hw_detected             = Signal(object, object, object, object, object)
+    # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
+    # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV).
+    _hw_detected             = Signal(object, object, object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -192,6 +196,10 @@ class EncodePanel(QWidget):
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
         self._hw_rate_controls: dict[str, frozenset[str]] = {}
         self._nvencc_10bit_codecs: frozenset[str] = frozenset()
+        # Presets énumérés par le FFmpeg utilisé (codec absent = liste du catalogue).
+        self._hw_presets: dict[str, frozenset[str]] = {}
+        # NLMeans 10 bits sur le GPU (Vulkan détecté au lancement).
+        self._vulkan_nlmeans = False
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -2336,7 +2344,10 @@ class EncodePanel(QWidget):
         # hw_ffmpeg peut être le ffmpeg système si le ffmpeg embarqué manque de HW codecs.
         # On l'envoie avec le signal pour que le workflow l'utilise lors de l'encodage HW.
         # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
-        self._hw_detected.emit(hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc))
+        self._hw_detected.emit(
+            hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc),
+            detector.detect_presets(hw_ffmpeg, set(hw)),
+        )
 
     def _on_hw_detected(
         self,
@@ -2345,8 +2356,10 @@ class EncodePanel(QWidget):
         hw_ffmpeg: str,
         rate_controls: dict[str, frozenset[str]] | None = None,
         ten_bit_codecs: frozenset[str] | None = None,
+        presets: dict[str, frozenset[str]] | None = None,
     ) -> None:
         self._hw_encoders = hw
+        self._hw_presets = dict(presets or {})
         self._hw_rate_controls = dict(rate_controls or {})
         self._nvencc_10bit_codecs = frozenset(ten_bit_codecs or ())
         # Ne met à jour les codecs SW que si la détection a retourné au moins un résultat.
@@ -2424,7 +2437,7 @@ class EncodePanel(QWidget):
         if hasattr(self, "_video_encode_controls"):
             self._video_encode_controls.setVisible(codec != "copy")
         self._refresh_mode_combo(codec)
-        presets = presets_for_codec(codec)
+        presets = self._available_presets(str(codec))
         self._preset_combo.blockSignals(True)
         self._preset_combo.clear()
         for p in presets:
@@ -2441,6 +2454,21 @@ class EncodePanel(QWidget):
         self._update_passthrough_controls()
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
+
+    def set_vulkan_capability(self, ffmpeg_bin: str, capability: object) -> None:
+        """Capacité Vulkan détectée au lancement (tableau de bord) : workflow et badges NLMeans."""
+        self._vulkan_nlmeans = bool(getattr(capability, "nlmeans", False))
+        self._workflow.set_vulkan_capability(str(ffmpeg_bin), capability)  # type: ignore[arg-type]
+        self._refresh_video_source_rows()
+        self._rebuild_preview()
+
+    def _available_presets(self, codec: str) -> list[str]:
+        """Presets du catalogue que le FFmpeg utilisé accepte pour ce codec (« Aucun » conservé)."""
+        presets = presets_for_codec(codec)
+        accepted = self._hw_presets.get(codec)
+        if not accepted:
+            return presets
+        return [preset for preset in presets if not preset or preset in accepted]
 
     def _swap_extra_params_for_codec(self, codec: str) -> None:
         """Mémorise les paramètres avancés du codec quitté et restaure ceux du nouveau."""
@@ -3707,7 +3735,7 @@ class EncodePanel(QWidget):
                 mode=rc_spec.label if rc_spec is not None else vs.quality_mode.label(),
                 codec=vs.codec,
             )
-        codec_presets = presets_for_codec(vs.codec)
+        codec_presets = self._available_presets(vs.codec)
         if codec_presets and vs.preset not in codec_presets:
             return translate_text(
                 "preset {preset} inconnu pour {codec}",
@@ -4652,7 +4680,11 @@ class EncodePanel(QWidget):
         if filters.deblock_enabled:
             badges.append("Deblock")
         if filters.nlmeans_enabled:
-            badges.append("NLMeans")
+            codec_id = self._video_state_target_codec(state)
+            gpu = self._vulkan_nlmeans and codec_id not in VAAPI_VIDEO_CODECS and not (
+                codec_id in AMF_VIDEO_CODECS and sys.platform == "win32"
+            )
+            badges.append("NLMeans·Vulkan" if gpu else "NLMeans")
         if filters.chroma_smooth_enabled:
             badges.append("Chroma")
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))

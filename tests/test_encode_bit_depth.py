@@ -60,7 +60,7 @@ def test_lot6_presets_round_trip(tmp_path, depth):
     assert manager.load_all()[0].to_video_settings().bit_depth == depth
 
 
-@pytest.mark.parametrize("codec,filter_name", [("hevc_nvenc", "scale_cuda"), ("hevc_qsv", "vpp_qsv"), ("hevc_vaapi", "scale_vaapi")])
+@pytest.mark.parametrize("codec,filter_name", [("hevc_nvenc", "scale_cuda"), ("hevc_vaapi", "scale_vaapi")])
 def test_lot6_gpu_decode_preserved_and_conversion_fallback(codec, filter_name):
     cb = EncodeCodecDomainCallbacks(platform="linux", vaapi_device="/dev/dri/renderD128")
     same = VideoEncodeSettings(codec=codec, bit_depth="10", source_bit_depth=10)
@@ -74,6 +74,15 @@ def test_lot6_gpu_decode_preserved_and_conversion_fallback(codec, filter_name):
     assert f"{filter_name}=format=p010le" in build_encoder_vf(conversion, callbacks=gpu_cb)
     assert "-pix_fmt" not in video_codec_args(conversion, 5000, callbacks=gpu_cb)
     assert "-hwaccel" not in hardware_input_args(conversion, callbacks=gpu_cb, piped_frames=True)
+
+
+def test_lot6_qsv_depth_conversion_stays_in_software():
+    """vpp_qsv format= échoue (UHD 630, Windows) : conversion logicielle, même si le filtre existe."""
+    cb = EncodeCodecDomainCallbacks(platform="win32", qsv_device="1", depth_conversion_filters=frozenset({"vpp_qsv"}))
+    conversion = VideoEncodeSettings(codec="hevc_qsv", bit_depth="8", source_bit_depth=10, source_pix_fmt="yuv420p10le")
+    assert "-hwaccel" not in hardware_input_args(conversion, callbacks=cb)
+    assert "vpp_qsv" not in build_encoder_vf(conversion, callbacks=cb)
+    assert "-pix_fmt" in video_codec_args(conversion, 5000, callbacks=cb)
 
 
 @pytest.mark.parametrize("codec", ["hevc_vaapi", "hevc_amf"])

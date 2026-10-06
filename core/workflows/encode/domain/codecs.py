@@ -283,6 +283,38 @@ def _is_hevc_nvenc_safe_preset(video: VideoEncodeSettings) -> bool:
     return video.codec == "hevc_nvenc" and str(video.preset or "").strip().lower() == "safe"
 
 
+# Preset transmis tel quel à l'encodeur (refus à l'ouverture s'il est inconnu).
+_VERBATIM_PRESET_CODECS = frozenset({*NVENC_VIDEO_CODECS, "libx264", "libx265"})
+
+
+def preset_problem(video: VideoEncodeSettings) -> tuple[str, str]:
+    """(erreur, avertissement) d'un preset non pris en charge par le codec ("" si valide).
+
+    Erreur : NVENC, x264, x265, SVT-AV1 (preset transmis tel quel, FFmpeg échouerait).
+    Avertissement : AMF / QSV / VAAPI / NVEncC (preset inconnu ignoré, défaut de l'encodeur).
+    """
+    preset = str(video.preset or "").strip()
+    codec = video.codec
+    presets = presets_for_codec(codec)
+    if codec == "copy" or not preset or not presets:
+        return "", ""
+    if codec == "libsvtav1":
+        try:
+            valid = -2 <= int(preset) <= 13
+        except ValueError:
+            valid = False
+        message = f"preset « {preset} » non pris en charge par {codec} (-2 à 13)."
+        return ("" if valid else message), ""
+    effective = nvenc_effective_preset(video) if codec in NVENC_VIDEO_CODECS else preset
+    accepted = {value.lower() for value in presets}
+    if effective.lower() in accepted:
+        return "", ""
+    choices = ", ".join(value for value in presets if value)
+    if codec in _VERBATIM_PRESET_CODECS:
+        return f"preset « {preset} » non pris en charge par {codec} (au choix : {choices}).", ""
+    return "", f"preset « {preset} » non pris en charge par {codec} : ignoré, défaut de l'encodeur."
+
+
 def nvenc_effective_preset(video: VideoEncodeSettings) -> str:
     if _is_hevc_nvenc_safe_preset(video):
         # Backward-compat only: old saved profiles may still contain preset=safe.
@@ -928,6 +960,45 @@ _NLMEANS_PRESETS: dict[str, tuple[float, int, int]] = {
     "strong": (5.0, 7, 15),
 }
 
+# Périphérique Vulkan des filtres GPU (nlmeans_vulkan) ; aussi utilisé par libplacebo.
+VULKAN_FILTER_DEVICE = "mre_vk"
+
+
+def _vulkan_nlmeans_filter(video: VideoEncodeSettings, strength: float, patch: int, radius: int) -> str:
+    """NLMeans sur le GPU, mêmes réglages que le CPU (sorties à ≈ 46-50 dB).
+
+    10 bits envoyés en p010le (alignés en haut) : en yuv420p10le, nlmeans_vulkan
+    lit des valeurs 64 fois plus petites et n'applique plus la force.
+    ``t`` (parallélisme) choisi par le workflow selon la résolution
+    (``vulkan_parallelism``) : la valeur par défaut de FFmpeg (8) épuise
+    l'allocation dès la 4K ; la sortie ne dépend pas de ``t``.
+    """
+    ten_bit = bool(video.p5_to_hdr10) or not 0 < int(video.source_bit_depth or 0) <= 8
+    upload, planar = ("p010le", "yuv420p10le") if ten_bit else ("yuv420p", "yuv420p")
+    tail = f",format={planar}" if planar != upload else ""
+    return (
+        f"format={upload},hwupload,nlmeans_vulkan=s={strength}:p={patch}:r={radius}:"
+        f"t={max(1, int(video.vulkan_parallelism or 1))},"
+        f"hwdownload,format={upload}{tail}"
+    )
+
+
+def vulkan_filter_device_args(video: VideoEncodeSettings) -> list[str]:
+    """Périphérique Vulkan de l'étage qui filtre (avant ``-i``) ; vide sans filtre Vulkan."""
+    if video.codec == "copy" or not (video.nlmeans_vulkan and video.filters.nlmeans_enabled):
+        return []
+    index = str(video.vulkan_device or "").strip()
+    device = f"vulkan={VULKAN_FILTER_DEVICE}" + (f":{index}" if index else "")
+    return ["-init_hw_device", device, "-filter_hw_device", VULKAN_FILTER_DEVICE]
+
+
+def vulkan_filters_compatible(video: VideoEncodeSettings, callbacks: EncodeCodecDomainCallbacks) -> bool:
+    """Un seul ``-filter_hw_device`` par commande : VAAPI et AMF Windows (upload D3D11) gardent le leur."""
+    if video.codec in VAAPI_VIDEO_CODECS:
+        return False
+    return not (video.codec in AMF_VIDEO_CODECS and callbacks.platform == "win32" and callbacks.amf_device is not None)
+
+
 def nlmeans_settings(filters: VideoFilterSettings) -> tuple[str, float, int, int]:
     """Préréglage NLMeans, facteur de force du profil, patch et recherche (FFmpeg et NVEncC)."""
     preset = str(filters.nlmeans_strength or "light").strip().lower()
@@ -1073,7 +1144,10 @@ def _build_filters(video: VideoEncodeSettings) -> list[str]:
         preset, scale, patch, radius = nlmeans_settings(filters)
         # ffmpeg nlmeans 's' a un minimum dur de 1.0 (ultralight*0.75=0.75 → erreur).
         strength = max(1.0, _NLMEANS_PRESETS[preset][0] * scale)
-        chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")
+        if video.nlmeans_vulkan:
+            chain.append(_vulkan_nlmeans_filter(video, strength, patch, radius))
+        else:
+            chain.append(f"nlmeans=s={strength}:p={patch}:r={radius}")
     if filters.chroma_smooth_enabled:
         thres, size = _CHROMA_PRESETS.get(
             str(filters.chroma_smooth_strength or "medium").strip().lower(),
@@ -1176,9 +1250,11 @@ def _hardware_depth_filter(video: VideoEncodeSettings, callbacks: EncodeCodecDom
     """Convertit la profondeur sur GPU seulement si le filtre a été détecté."""
     if video.source_bit_depth == resolve_output_bit_depth(video):
         return ""
+    # QSV : vpp_qsv / scale_qsv ``format=`` échouent (« Error creating frames_ctx
+    # for output pad », UHD 630, FFmpeg 2026-10, enfants D3D11 et DXVA2) :
+    # conversion logicielle (décodage CPU + -pix_fmt), seule voie vérifiée.
     name = (
         "scale_cuda" if video.codec in NVENC_VIDEO_CODECS else
-        "vpp_qsv" if video.codec in QSV_VIDEO_CODECS else
         "scale_vaapi" if video.codec in VAAPI_VIDEO_CODECS else ""
     )
     if name not in callbacks.depth_conversion_filters or not video.source_bit_depth:
@@ -1197,7 +1273,8 @@ def hardware_input_args(
     ``piped_frames`` : entrée y4m logicielle — périphérique encodeur seul, sans
     ``-hwaccel`` ni filtre P5 (portés par l'étage de décodage).
     """
-    args: list[str] = []
+    # Étage qui filtre : périphérique Vulkan des filtres GPU (jamais l'étage encodeur d'un pipe).
+    args: list[str] = [] if piped_frames else vulkan_filter_device_args(video)
     tonemap = bool(video.tonemap_to_sdr)
     software_filtering = has_cpu_video_filter(video) or piped_frames or video.interpolates()
     # H.264 High10 est décodé en logiciel : FFmpeg peut se replier seul,

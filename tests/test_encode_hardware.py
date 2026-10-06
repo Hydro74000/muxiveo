@@ -41,6 +41,8 @@ class TestHardwareEncoderDetector:
                 return _completed(stderr=encoders)
             if "hevc_nvenc" in cmd or "h264_amf" in cmd:
                 return _completed(returncode=0)
+            if cmd[1:3] == ["-hide_banner", "-h"]:
+                return _completed(stdout="")  # presets acceptés : liste du catalogue
             raise AssertionError(f"Commande inattendue: {cmd}")
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
@@ -342,3 +344,17 @@ class TestHardwareEncoderDetector:
         assert detected == {"hevc_nvenc"}
         assert software == {"libx265"}
         assert calls.count(["ffmpeg", "-hide_banner", "-encoders"]) == 1
+
+
+
+def test_preset_values_parsed_from_encoder_help():
+    help_text = """
+  -preset            <int>        E..V....... Set the encoding preset (from 0 to 18) (default p4)
+     default         0            E..V.......
+     slow            1            E..V....... hq 2 passes
+     p1              12           E..V....... fastest (lowest quality)
+  -tune              <int>        E..V....... Set the encoding tuning info
+     hq              1            E..V.......
+"""
+    assert HardwareEncoderDetector.parse_preset_values(help_text) == frozenset({"default", "slow", "p1"})
+    assert HardwareEncoderDetector.parse_preset_values("  -preset <string> E..V....... x265 preset") == frozenset()

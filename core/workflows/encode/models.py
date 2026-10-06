@@ -357,6 +357,12 @@ class VideoEncodeSettings:
     # Transformation interne P5 IPT -> base layer HDR10 BT.2020/PQ via
     # libplacebo. Activée par le workflow, jamais directement par le panel.
     p5_to_hdr10:      bool         = False
+    # NLMeans par nlmeans_vulkan (10 bits) : posé par le workflow si Vulkan est
+    # disponible et compatible avec le périphérique de l'encodeur, jamais par le panel.
+    nlmeans_vulkan:   bool         = False
+    # GPU dédié Vulkan (index) et parallélisme ``t`` de nlmeans_vulkan (selon la résolution).
+    vulkan_device:    str          = ""
+    vulkan_parallelism: int        = 1
     # Sous-profil Dolby Vision de la source ("p5", "p7_fel", "p8_1"… ; "" inconnu),
     # inspecté par le panel pour la profondeur, confirmé par le workflow (``dovi_policy``).
     dovi_source_profile: str       = ""

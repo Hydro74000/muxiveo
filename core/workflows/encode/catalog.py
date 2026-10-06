@@ -42,15 +42,19 @@ X265_PRESETS = [
     "medium", "slow", "slower", "veryslow", "placebo",
 ]
 X264_PRESETS = X265_PRESETS
-SVTAV1_PRESETS = [str(i) for i in range(13)]
+SVTAV1_PRESETS = [str(i) for i in range(14)]
 NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fast", "hp", "hq"]
 # Ancien preset logique "safe" : non proposé ; les profils et configurations qui le
 # contiennent sont migrés vers p5 (EncodePreset, nvenc_effective_preset).
 HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
+# av1_nvenc (FFmpeg 8.1) : pas de hp / hq (refusés à l'ouverture de l'encodeur).
+AV1_NVENC_PRESETS = [p for p in NVENC_PRESETS if p not in {"hp", "hq"}]
 # "" = aucun preset : -compression_level non transmis, qualité par défaut du pilote.
 VAAPI_PRESETS = ["", *(str(i) for i in range(8))]
 QSV_PRESETS = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
 AMF_PRESETS = ["quality", "balanced", "speed"]
+# av1_amf propose en plus high_quality (FFmpeg 8.1).
+AV1_AMF_PRESETS = ["high_quality", *AMF_PRESETS]
 NVENCC_PRESETS = ["default", "performance", "quality",
                   "P1", "P2", "P3", "P4", "P5", "P6", "P7"]
 
@@ -272,7 +276,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         codec_id="av1_nvenc",
         label="NVENC — AV1 (NVIDIA RTX 40+)",
         family=VideoCodecFamily.NVENC,
-        presets=tuple(NVENC_PRESETS),
+        presets=tuple(AV1_NVENC_PRESETS),
         encoder_badge="NVENC",
         supports_10bit=True,
     ),
@@ -280,7 +284,7 @@ VIDEO_CODEC_SPECS: dict[str, VideoCodecSpec] = {
         codec_id="av1_amf",
         label="AMF — AV1 (AMD RX 7000+)",
         family=VideoCodecFamily.AMF,
-        presets=tuple(AMF_PRESETS),
+        presets=tuple(AV1_AMF_PRESETS),
         encoder_badge="AMF",
         supports_10bit=True,
     ),
