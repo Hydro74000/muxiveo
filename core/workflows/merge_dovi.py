@@ -108,6 +108,7 @@ from core.matroska.ids import (
 from core.matroska.mux_plan import deterministic_source_identity
 from core.matroska.native_muxer import MatroskaNativeMuxer
 from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
+from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import MatroskaWriter
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
@@ -2227,6 +2228,9 @@ class MergeDoviWorkflow(QObject):
             mux_plan,
             cancel_cb=lambda: self._cancelled,
             external_validator=validate,
+            progress_cb=native_mux_progress_callback(
+                lambda line: self.step_progress.emit(WorkflowStep.REMUX, line),
+            ),
             validation_error_handler=lambda path, message: accept_validation_override(
                 self._validation_override, path, message, lambda: self._cancelled,
                 lambda msg: self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {msg}"),

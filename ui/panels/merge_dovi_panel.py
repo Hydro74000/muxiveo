@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.matroska.progress import native_mux_progress_label
 from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.frame_count import reliable_frame_count
@@ -916,6 +917,7 @@ class MergeDoviPanel(QWidget):
     op_state_changed = Signal(str, str)
     # Pourcentage 0..100 pour la barre globale (revient à 0 à chaque step).
     op_progress_pct = Signal(int)
+    op_progress = Signal(str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1148,6 +1150,11 @@ class MergeDoviPanel(QWidget):
         self.op_progress_pct.emit(pct)
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
+        native_label = native_mux_progress_label(message)
+        if native_label is not None:
+            self._step_progress.set_progress(step, native_label)
+            self.op_progress.emit(message)
+            return
         step_label = translate_text(_STEP_LABELS[step])
         local_message = translate_text(message)
         self._step_progress.set_progress(step, local_message)

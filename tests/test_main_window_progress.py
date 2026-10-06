@@ -347,7 +347,7 @@ def test_standard_file_logging_skips_verbose_tool_lines(tmp_path) -> None:
     assert not log_files
 
 
-def test_matroska_assembly_progress_updates_bar_and_emits_debug() -> None:
+def test_matroska_assembly_progress_updates_bar_without_panel_logs() -> None:
     dummy = SimpleNamespace()
     dummy._capture_verbose_progress_line = MagicMock()
     dummy._stop_prep_progress = MagicMock()
@@ -357,30 +357,49 @@ def test_matroska_assembly_progress_updates_bar_and_emits_debug() -> None:
     dummy.log_requested = SimpleNamespace(emit=MagicMock())
 
     dummy._on_op_progress = MethodType(MainWindow._on_op_progress, dummy)
-    dummy._on_op_progress_pct = MethodType(MainWindow._on_op_progress_pct, dummy)
-
-    # 1. Test progress line with percentage
+    # Le détail des paquets reste hors du panneau de journal.
     line = "Assemblage Matroska : 42% (1158425 paquets, 2333.0 Mio)"
     dummy._on_op_progress(line)
 
     dummy._stop_prep_progress.assert_called_once()
     assert dummy._prog_bar.value == 42
-    assert dummy._prog_lbl.text == line
-    dummy.log_requested.emit.assert_called_once_with("DEBUG", line)
+    assert dummy._prog_lbl.text == "42% - 2333.0 Mio"
+    dummy.log_requested.emit.assert_not_called()
 
-    # 2. Test direct progress_pct call
-    dummy._stop_prep_progress.reset_mock()
-    dummy._on_op_progress_pct(88)
-    dummy._stop_prep_progress.assert_called_once()
-    assert dummy._prog_bar.value == 88
+    dummy._on_op_progress("Écriture Matroska (commit) : 100% (500000 paquets, 1200.1 Mio)")
+    assert dummy._prog_bar.value == 100
+    assert dummy._prog_lbl.text == "100% - 1200.1 Mio"
+    dummy.log_requested.emit.assert_not_called()
 
-    # 3. Test Écriture Matroska line
+    dummy._on_op_progress("Écriture Matroska : (1000 paquets, 4.4 Mio)")
+    dummy._prog_bar.setRange.assert_called_with(0, 0)
+    assert dummy._prog_lbl.text == "… - 4.4 Mio"
+    dummy.log_requested.emit.assert_not_called()
+    # Même légende compacte dans le workflow remux.
     dummy.log_requested.emit.reset_mock()
     remux_line = "Écriture Matroska : 75% (500000 paquets, 1200.0 Mio)"
     dummy._on_op_progress(remux_line)
     assert dummy._prog_bar.value == 75
-    assert dummy._prog_lbl.text == remux_line
-    dummy.log_requested.emit.assert_called_once_with("DEBUG", remux_line)
+    assert dummy._prog_lbl.text == "75% - 1200.0 Mio"
+    dummy.log_requested.emit.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["encode", "remux", "merge_dovi"])
+def test_native_mux_progress_keeps_details_in_verbose_only(mode):
+    dummy = SimpleNamespace(
+        _config=SimpleNamespace(enable_file_logging=True, file_logging_level="verbose"),
+        _op_mode=mode,
+        _append_verbose_tool_output=MagicMock(),
+    )
+    line = "Assemblage Matroska : 42% (10000 paquets, 12.3 Mio)"
+    MainWindow._capture_verbose_progress_line(dummy, line)
+    dummy._append_verbose_tool_output.assert_called_once_with(line, label="matroska-native")
+
+    dummy._append_verbose_tool_output.reset_mock()
+    dummy._config.file_logging_level = "standard"
+    MainWindow._capture_verbose_progress_line(dummy, line)
+    dummy._append_verbose_tool_output.assert_not_called()
+
 
 
 def test_pct_sentinel_progress_updates_bar_and_label() -> None:

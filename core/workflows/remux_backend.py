@@ -37,8 +37,9 @@ from core.matroska.mux_plan import (
 from core.matroska.assembly import canonical_attachment_output_name
 from core.matroska.contract import without_expected_attachment
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
+from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import (
-    MatroskaWriteCancelled, MatroskaWriteProgress, MatroskaWriter,
+    MatroskaWriteCancelled, MatroskaWriter,
 )
 from core.workflows.remux_mapping import resolve_mapped_tracks, track_order_parts
 from core.workflows.remux_mapping import normalized_language_value, resolved_global_tags
@@ -479,32 +480,6 @@ def run_native_remux(
                     warn=lambda message: log("WARN", message),
                 )
 
-            progress_state = {"packets": 0, "bytes": 0}
-
-            def on_write_progress(progress: MatroskaWriteProgress) -> None:
-                if progress.percent is not None and hasattr(signals, "progress_pct"):
-                    signals.progress_pct.emit(progress.percent)
-                if progress.stage != "clusters":
-                    pct_str = f"{progress.percent}% " if progress.percent is not None else ""
-                    signals.progress.emit(
-                        f"Écriture Matroska ({progress.stage}) : {pct_str}"
-                        f"{progress.packets_written} paquets, "
-                        f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
-                    )
-                    return
-                if (
-                    progress.packets_written - progress_state["packets"] >= 2000
-                    or progress.bytes_written - progress_state["bytes"] >= 64 * 1024 * 1024
-                ):
-                    progress_state["packets"] = progress.packets_written
-                    progress_state["bytes"] = progress.bytes_written
-                    pct_str = f"{progress.percent}% " if progress.percent is not None else ""
-                    signals.progress.emit(
-                        f"Écriture Matroska : {pct_str}"
-                        f"({progress.packets_written} paquets, "
-                        f"{progress.bytes_written / (1024 * 1024):.1f} Mio)"
-                    )
-
             MatroskaWriter().write(
                 plan_matroska,
                 external_validator=validate_partial,
@@ -513,7 +488,7 @@ def run_native_remux(
                     lambda msg: log("WARN", msg),
                 ),
                 cancel_cb=signals._cancel_event.is_set,
-                progress_cb=on_write_progress,
+                progress_cb=native_mux_progress_callback(signals.progress.emit, label="Écriture Matroska"),
             )
             log_step(5, "Validation structure native terminée")
             # Un échec NFO après commit ne transforme plus un média valide en

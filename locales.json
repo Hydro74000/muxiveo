@@ -2123,9 +2123,9 @@
     "fra": "Mode CQP — qualité constante. Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).\nRéférence absolue de qualité, pas de cible bitrate.\nTypique remux UHD : 18:20:22 (très haute qualité).",
     "eng": "CQP mode - constant quality. Format ``I:P:B`` or ``X`` (auto-expanded to ``X:X:X``).\nAbsolute quality reference, with no bitrate target.\nTypical UHD remux value: 18:20:22 (very high quality)."
   },
-  "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.": {
-    "fra": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.",
-    "eng": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."
+  "Mode VBR — bitrate moyen cible (kbps).\n0 = illimité (aucune cible de débit moyen).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.": {
+    "fra": "Mode VBR — bitrate moyen cible (kbps).\n0 = illimité (aucune cible de débit moyen).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.",
+    "eng": "VBR mode — average target bitrate (kbps).\n0 = unlimited (no average bitrate target).\nTypical combination: --vbr <bitrate> + --max-bitrate (1.5–2×) + --vbv-bufsize."
   },
   "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.": {
     "fra": "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.",

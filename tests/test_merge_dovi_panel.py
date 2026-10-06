@@ -2,11 +2,32 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, cast
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 
 class _DummySignal:
     def connect(self, *args, **kwargs) -> None:
         _ = args, kwargs
+
+
+def test_merge_native_mux_progress_bypasses_log_panel():
+    from core.workflows.merge_dovi import WorkflowStep
+    from ui.panels.merge_dovi_panel import MergeDoviPanel
+
+    panel = SimpleNamespace(
+        _step_progress=SimpleNamespace(set_progress=MagicMock()),
+        op_progress=SimpleNamespace(emit=MagicMock()),
+        log_message=SimpleNamespace(emit=MagicMock()),
+    )
+    line = "Assemblage Matroska : 42% (10000 paquets, 12.3 Mio)"
+    MergeDoviPanel._on_step_progress(panel, WorkflowStep.REMUX, line)
+    panel._step_progress.set_progress.assert_called_once_with(WorkflowStep.REMUX, "42% - 12.3 Mio")
+    panel.op_progress.emit.assert_called_once_with(line)
+    panel.log_message.emit.assert_not_called()
+
+    MergeDoviPanel._on_step_progress(panel, WorkflowStep.REMUX, "Assemblage Matroska natif terminé.")
+    panel.log_message.emit.assert_called_once()
 
 
 class _FakeWorkflow:

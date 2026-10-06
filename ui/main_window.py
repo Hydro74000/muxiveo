@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.matroska.progress import native_mux_progress_label
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
 from core.i18n import apply_translations, set_current_language, translate_text
@@ -2009,6 +2010,9 @@ class MainWindow(QMainWindow):
         self._dovi_panel.op_progress_pct.connect(
             self._on_dovi_op_progress_pct, Qt.ConnectionType.QueuedConnection
         )
+        self._dovi_panel.op_progress.connect(
+            self._on_op_progress, Qt.ConnectionType.QueuedConnection
+        )
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
@@ -2470,15 +2474,17 @@ class MainWindow(QMainWindow):
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         self._capture_verbose_progress_line(line)
-        if line.startswith(("Assemblage Matroska", "Écriture Matroska")):
+        native_label = native_mux_progress_label(line)
+        if native_label is not None:
             self._stop_prep_progress()
             m = re.search(r"(\d+)%", line)
             if m:
                 pct = int(m.group(1))
                 self._prog_bar.setRange(0, 100)
                 self._prog_bar.setValue(max(0, min(100, pct)))
-            self._prog_lbl.setText(line.strip())
-            self.log_requested.emit("DEBUG", line)
+            else:
+                self._prog_bar.setRange(0, 0)
+            self._prog_lbl.setText(native_label)
             return
         # Banner/listing ffmpeg : ne pas pourrir l'UI mais loguer la version
         # la 1re fois pour traçabilité standard. Le verbose file a déjà la
@@ -3013,6 +3019,10 @@ class MainWindow(QMainWindow):
 
     def _capture_verbose_progress_line(self, line: str) -> None:
         if not _config_file_logging_is_verbose(self._config):
+            return
+
+        if native_mux_progress_label(line) is not None:
+            self._append_verbose_tool_output(line, label="matroska-native")
             return
 
         payload = _parse_encode_internal_progress(line)
