@@ -29,6 +29,7 @@ from core.workflows.encode.interpolation import (
     stream_start_offset,
 )
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
+from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
@@ -188,6 +189,8 @@ class MultiVideoPipelineRunner:
                 record_for_rewriter = cb.build_dovi_record_from_rpu(
                     rpu_bin=rpu_bin,
                     dovi_tool_bin=cb.bins["dovi_tool"],
+                    # P8.4 / P8.2 conservés : compatibilité issue de la matrice V30.
+                    forced_compat_id=dovi_output_compat_id_for(video),
                     min_level=(
                         required_dovi_level(
                             ffprobe_beside(cb.ffmpeg_bin), source, int(video.stream_index), frame_ratio,

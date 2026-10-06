@@ -378,10 +378,12 @@ class TestPipedEncoderArgs:
         assert "-hwaccel" not in hardware_input_args(video, callbacks=_domain(), piped_frames=True)
         assert build_encoder_vf(video, callbacks=_domain(), piped_frames=True) == ""
 
-    def test_p5_filter_device_stays_on_decode(self):
+    def test_p5_conversion_needs_no_global_vulkan_device(self):
+        """L5-01 : libplacebo en images logicielles crée son Vulkan ; aucun périphérique global."""
         video = _video(p5_to_hdr10=True)
-        assert "-init_hw_device" in hardware_input_args(video, callbacks=_domain())
-        assert "-init_hw_device" not in hardware_input_args(video, callbacks=_domain(), piped_frames=True)
+        for piped in (False, True):
+            args = hardware_input_args(video, callbacks=_domain(), piped_frames=piped)
+            assert "-init_hw_device" not in args and "-filter_hw_device" not in args
 
 
 # ---------------------------------------------------------------------------

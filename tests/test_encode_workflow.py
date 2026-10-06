@@ -2668,10 +2668,11 @@ class TestMetadataInjectCopyCodec:
         assert "Libérez de l’espace" in message
 
     def test_p5_to_p8_reencodes_bl_with_libplacebo_and_analyzes_final_bl(self, tmp_path):
+        """Lot 5 : RPU converti à l'extraction (-m 3, pas de convert), libplacebo sans Vulkan global."""
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 200_000)
         video = _make_video_settings(
-            codec="copy",
+            codec="libx265",
             copy_dv=True,
             dovi_profile="2",
             inject_hdr_meta=True,
@@ -2746,13 +2747,13 @@ class TestMetadataInjectCopyCodec:
                         _collect_signals(signals)
 
         convert_commands = [cmd for cmd in commands if "convert" in cmd]
+        extract_commands = [cmd for cmd in commands if "extract-rpu" in cmd]
         encode_commands = [cmd for cmd in commands if "libplacebo=" in " ".join(cmd)]
-        assert len(convert_commands) == 1
+        assert convert_commands == []
+        assert len(extract_commands) == 1 and extract_commands[0][1:3] == ["-m", "3"]
         assert len(encode_commands) == 1
         encode_cmd = encode_commands[0]
-        assert ["-init_hw_device", "vulkan=mre_dovi"] == encode_cmd[
-            encode_cmd.index("-init_hw_device"):encode_cmd.index("-init_hw_device") + 2
-        ]
+        assert "-init_hw_device" not in encode_cmd and "-filter_hw_device" not in encode_cmd
         assert "libx265" in encode_cmd
         assert "apply_dolbyvision=true" in encode_cmd[encode_cmd.index("-vf") + 1]
         assert Path(estimate_mock.call_args.args[0]).name == "enc.hevc"

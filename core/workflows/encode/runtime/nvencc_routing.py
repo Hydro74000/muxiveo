@@ -8,7 +8,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from core.bluray import is_bluray_playlist
+from core.workflows.encode.dovi_policy import resolve_dovi_plan, sub_profile_from_value
 from core.workflows.encode.models import EncodeConfig, EncodeError, VideoEncodeSettings
+from core.workflows.encode.runtime.nvencc import nvencc_requires_ffmpeg_prefilter
 
 
 FALLBACK_HEVC_FRAME_RATE = "24000/1001"
@@ -34,6 +37,8 @@ class NvenccInputRouting:
     crop_offsets: tuple[int, int, int, int] | None = None
     #: Image source (L×H) pour un redimensionnement natif au ratio conservé.
     source_dimensions: tuple[int, int] | None = None
+    #: Source P5 convertie par NVEncC lui-même (sinon pipe FFmpeg libplacebo).
+    p5_native: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,8 @@ class NvenccRoutingCallbacks:
     nvencc_dovi_rpu_prm: Callable[[VideoEncodeSettings], str | None]
     source_video_dimensions: Callable[[Path], tuple[int, int]] | None = None
     probe_dovi_l5_offsets: Callable[[Path], tuple[int, int, int, int] | None] | None = None
+    #: NVEncC sait convertir une source P5 (libdovi + libplacebo, sonde réussie ou à venir).
+    p5_native_ready: Callable[[], bool] | None = None
 
 
 def normalize_frame_rate_expr(value: object) -> str | None:
@@ -310,7 +317,30 @@ class NvenccInputRouter:
 
         routed_video = video
         if video.copy_dv and str(video.dovi_profile or "").strip().lower() in {"", "0", "copy"}:
-            routed_video = replace(video, dovi_profile="8.1")
+            # Profil de sortie de la matrice V30 : P8.4 / P8.2 conservés, 8.1 sinon.
+            plan = resolve_dovi_plan(
+                codec=video.codec,
+                copy_dv=True,
+                dovi_profile="0",
+                sub_profile=sub_profile_from_value(video.dovi_source_profile),
+            )
+            routed_video = replace(video, dovi_profile=plan.output_profile or "8.1")
+
+        # Source P5 : conversion dans NVEncC si possible (lecture directe d'un
+        # conteneur : le RPU d'un HEVC brut n'est pas exploité ; playlist Blu-ray
+        # toujours lue par FFmpeg), sinon pipe FFmpeg.
+        p5_native = bool(
+            video.p5_to_hdr10
+            and self._cb.p5_native_ready is not None
+            and self._cb.p5_native_ready()
+            and not nvencc_raw_input_needs_fps_hint(input_path)
+            and not is_bluray_playlist(input_path)
+            and not video.tonemap_to_sdr
+            and not video.interpolates()
+            and not nvencc_requires_ffmpeg_prefilter(video)
+        )
+        if p5_native and input_reader is None:
+            input_reader = "avhw"
 
         vpp_pad = None
         needs_rpu_alignment = False
@@ -382,4 +412,5 @@ class NvenccInputRouter:
             pad_offsets=pad_offsets,
             crop_offsets=crop_offsets,
             source_dimensions=dims if dims != (0, 0) else None,
+            p5_native=p5_native,
         )

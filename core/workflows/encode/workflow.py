@@ -25,7 +25,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from core.bluray import append_ffmpeg_input_args
-from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
     subprocess_text_kwargs,
 )
@@ -153,6 +153,7 @@ from core.workflows.encode.runtime.multisource_sync import (
     append_sync_inputs as _append_sync_inputs_runtime,
 )
 from core.workflows.encode.runtime.nvencc import (
+    build_nvencc_command as _build_nvencc_command_runtime,
     is_nvencc_codec as _is_nvencc_codec_runtime,
     nvencc_supports_dynamic_hdr as _nvencc_supports_dynamic_hdr_runtime,
 )
@@ -255,6 +256,25 @@ from core.workflows.encode.planning.subtitles import (
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
 from core.workflows.encode.hdr_policy import hdr_warnings as _hdr_warnings
+from core.dovi_profile_detector import DoviProfileDetector as _DoviProfileDetector
+from core.dovi_profile_detector import DoviSubProfile as _DoviSubProfile
+from core.workflows.encode.dovi_policy import (
+    NORMALIZE_P81 as _NORMALIZE_P81,
+    DoviPlan as _DoviPlan,
+    dovi_transfer_error as _dovi_transfer_error,
+    resolve_dovi_plan as _resolve_dovi_plan,
+    sub_profile_from_value as _sub_profile_from_value,
+)
+from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
+from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard as _FrameCountGuard
+from core.workflows.encode.runtime.dovi_static_hdr import (
+    estimate_static_hdr_from_rpu as _estimate_static_hdr_from_rpu,
+)
+from core.workflows.encode.runtime.nvencc_p5 import (
+    binary_signature as _binary_signature,
+    nvencc_p5_features as _nvencc_p5_features,
+    run_nvencc_p5_probe as _run_nvencc_p5_probe,
+)
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
     validate_encode_config as _validate_encode_config_plan,
@@ -1061,6 +1081,9 @@ class EncodeWorkflow(QObject):
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
                 bins=dict(self._bins),
                 wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
+                check_external_rpu=self._check_external_rpu,
+                validation_override=self._validation_override_for(config),
+                count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
             )
         ).run(
             config,
@@ -1822,6 +1845,7 @@ class EncodeWorkflow(QObject):
             stream,
             format_start_time=fmt.get("start_time") if isinstance(fmt, dict) else None,
             tonemap_to_sdr=bool(video.tonemap_to_sdr),
+            p5_to_hdr10=bool(video.p5_to_hdr10),
         )
         if not info.is_vfr and self._mediainfo_frame_rate_mode(source) == "vfr":
             # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
@@ -2167,6 +2191,7 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def preview_command(self, config: EncodeConfig) -> str:
+        config = self.resolve_dovi_sources(config)
         mux_decision = self.select_mux_backend(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -2738,6 +2763,7 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def validate(self, config: EncodeConfig) -> list[str]:
+        config = self.resolve_dovi_sources(config)
         plan = _build_encode_plan_data(
             config,
             resolve_subtitle_tracks=lambda _config, _all_sources: ([], False),
@@ -2761,6 +2787,7 @@ class EncodeWorkflow(QObject):
                 if error not in errors:
                     errors.append(error)
         errors.extend(self._dovi_multi_track_errors(config))
+        errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
         errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
@@ -2782,6 +2809,337 @@ class EncodeWorkflow(QObject):
                 backends.append(backend)
         return backends
 
+    # ------------------------------------------------------------------
+    # Dolby Vision : décision par piste (matrice V30, dovi_policy)
+    # ------------------------------------------------------------------
+
+    def _dovi_sub_profile(
+        self, source: Path, stream_index: int, *, allow_tool_fallback: bool = False,
+    ) -> _DoviSubProfile:
+        """Sous-profil DV d'un flux : mediainfo par flux (mis en cache), repli dovi_tool borné sur demande."""
+        cache: dict[tuple, _DoviSubProfile] = self.__dict__.setdefault("_dovi_sub_profile_cache", {})
+        try:
+            stat = Path(source).stat()
+            key: tuple = (str(Path(source).resolve()), int(stream_index), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            key = (str(source), int(stream_index), -1, -1)
+        tried: set[tuple] = self.__dict__.setdefault("_dovi_tool_fallback_done", set())
+        cached = cache.get(key)
+        if cached is not None and (cached is not _DoviSubProfile.UNKNOWN or not allow_tool_fallback or key in tried):
+            return cached
+        detector = _DoviProfileDetector(
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+        )
+        sub_profile = cached
+        if sub_profile is None:
+            sub_profile = detector.detect_from_mediainfo(
+                self._load_mediainfo_video_track(Path(source), int(stream_index))
+            ).sub_profile
+        if sub_profile is _DoviSubProfile.UNKNOWN:
+            # Record DOVI ffprobe du flux (payload en cache) : sans mediainfo, piste secondaire.
+            sub_profile = detector.detect_from_ffprobe_stream(
+                self._stream_info(Path(source), int(stream_index))
+            ).sub_profile
+        if sub_profile is _DoviSubProfile.UNKNOWN and allow_tool_fallback and key not in tried:
+            tried.add(key)
+            presence = self._detect_source_dynamic_hdr_presence(Path(source), int(stream_index))
+            if presence is None or presence[0]:
+                # Extraction ciblée du flux choisi (première piste lue directement).
+                first = int(stream_index) == self._first_video_stream_index(Path(source))
+                sub_profile = detector.detect_from_dovi_tool(
+                    Path(source), stream_index=None if first else int(stream_index),
+                ).sub_profile
+        cache[key] = sub_profile
+        return sub_profile
+
+    def _first_video_stream_index(self, source: Path) -> int:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("codec_type") == "video" and isinstance(stream.get("index"), int):
+                return int(stream["index"])
+        return 0
+
+    def resolve_dovi_sources(self, config: EncodeConfig, *, allow_tool_fallback: bool = False) -> EncodeConfig:
+        """Sous-profil DV et conversion P5 des pistes vidéo (avant validation, aperçu et exécution).
+
+        Une piste en Copy sans « Normaliser » n'est ni analysée ni transformée.
+        """
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for video in tracks:
+            normalize = video.copy_dv and str(video.dovi_profile or "0").strip() == _NORMALIZE_P81
+            if video.codec == "copy" and not normalize:
+                resolved.append(video)
+                continue
+            sub_profile = self._dovi_sub_profile(
+                self._video_source_from_settings(config, video),
+                self._video_stream_from_settings(video),
+                allow_tool_fallback=allow_tool_fallback,
+            )
+            value = sub_profile.value if sub_profile is not _DoviSubProfile.UNKNOWN else video.dovi_source_profile
+            p5 = video.codec != "copy" and (
+                video.p5_to_hdr10 or _sub_profile_from_value(value) is _DoviSubProfile.P5
+            )
+            if value != video.dovi_source_profile or p5 != video.p5_to_hdr10:
+                video = dataclasses.replace(video, dovi_source_profile=value, p5_to_hdr10=p5)
+                changed = True
+            resolved.append(video)
+        if not changed:
+            return config
+        return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+
+    @staticmethod
+    def _dovi_plan(video: VideoEncodeSettings) -> _DoviPlan:
+        return _resolve_dovi_plan(
+            codec=video.codec,
+            copy_dv=video.copy_dv,
+            dovi_profile=video.dovi_profile,
+            sub_profile=_sub_profile_from_value(video.dovi_source_profile),
+        )
+
+    def _dovi_policy_errors(self, config: EncodeConfig) -> list[str]:
+        """Matrice V30 (combinaisons impossibles), cohérence profil / transfert, conversion P5 possible."""
+        errors: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            plan = self._dovi_plan(video)
+            if plan.passthrough:
+                continue
+            if plan.error:
+                errors.append(f"Piste vidéo #{index} — {plan.error}")
+            if video.copy_dv and video.codec != "copy" and plan.output_profile:
+                transfer_error = _dovi_transfer_error(plan.output_profile, _output_hdr_transfer(video))
+                if transfer_error:
+                    errors.append(f"Piste vidéo #{index} — {transfer_error}")
+            if video.p5_to_hdr10 and not self._p5_conversion_available(config, video):
+                errors.append(
+                    f"Piste vidéo #{index} — source Dolby Vision P5 : conversion des couleurs impossible, "
+                    "FFmpeg sans libplacebo/Vulkan fonctionnel"
+                    + (
+                        " (conversion native NVEncC non applicable : tone-mapping, interpolation, "
+                        "préfiltres, entrée HEVC brute ou NVEncC sans libdovi/libplacebo)."
+                        if _is_nvencc_codec_runtime(video.codec)
+                        else "."
+                    )
+                )
+        return errors
+
+    def _p5_conversion_available(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
+        """Capacité du parcours réellement retenu : NVEncC natif (routage) ou FFmpeg libplacebo."""
+        if _is_nvencc_codec_runtime(video.codec):
+            try:
+                if self._resolve_nvencc_input_routing(config).p5_native:
+                    return True
+            except EncodeError:
+                pass
+        return self._ffmpeg_libplacebo_ready()
+
+    def _ffmpeg_libplacebo_ready(self) -> bool:
+        """Filtre libplacebo présent et fonctionnel (une image, Vulkan créé par le filtre)."""
+        cache: dict[str, bool] = self.__dict__.setdefault("_ffmpeg_libplacebo_ready_cache", {})
+        if self._ffmpeg in cache:
+            return cache[self._ffmpeg]
+        ready = self._has_libplacebo()
+        if ready:
+            try:
+                result = subprocess.run(
+                    [self._ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                     "-f", "lavfi", "-i", "color=c=black:s=64x64,format=yuv420p10le",
+                     "-frames:v", "1", "-vf", "libplacebo=format=yuv420p10le", "-f", "null", "-"],
+                    capture_output=True,
+                    check=False,
+                    timeout=60,
+                    **subprocess_text_kwargs(),
+                )
+                ready = result.returncode == 0
+            except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                ready = False
+        cache[self._ffmpeg] = ready
+        return ready
+
+    def _nvencc_p5_features_ok(self) -> bool:
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None:
+            return False
+        cache: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_feature_cache", {})
+        if signature not in cache:
+            cache[signature] = _nvencc_p5_features(signature[0])
+        return cache[signature]
+
+    def _nvencc_p5_native_ready(self) -> bool:
+        """Conversion P5 native : prérequis compilés et sonde réussie (ou pas encore exécutée)."""
+        if not self._nvencc_p5_features_ok():
+            return False
+        signature = _binary_signature(self._nvencc_bin)
+        probes: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_probe_cache", {})
+        return probes.get(signature, True) if signature is not None else False
+
+    def _ensure_nvencc_p5_probe(self, work_dir: Path) -> None:
+        """Sonde réelle de la conversion P5 native (une fois par binaire NVEncC)."""
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None or not self._nvencc_p5_features_ok():
+            return
+        probes: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_probe_cache", {})
+        if signature in probes:
+            return
+        self.log_message.emit("INFO", "Vérification de la conversion Dolby Vision P5 par NVEncC…")
+        result = _run_nvencc_p5_probe(
+            nvencc_bin=signature[0],
+            ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            work_dir=work_dir,
+            build_command=lambda nvencc, video, output, source: _build_nvencc_command_runtime(
+                nvencc, video, output, input_path=source, input_reader="avhw",
+            ),
+            has_ffmpeg_libplacebo=self._ffmpeg_libplacebo_ready(),
+        )
+        probes[signature] = result.ok
+        if result.ok:
+            self.log_message.emit("INFO", "Conversion P5 native NVEncC validée.")
+        else:
+            self.log_message.emit(
+                "WARN",
+                f"Conversion P5 native NVEncC écartée ({result.reason}) : conversion par FFmpeg (libplacebo).",
+            )
+
+    def prepare_dovi_sources(
+        self,
+        config: EncodeConfig,
+        *,
+        work_dir: Path,
+        signals: TaskSignals | None = None,
+    ) -> EncodeConfig:
+        """Préparation Dolby Vision au lancement (thread de travail).
+
+        Repli dovi_tool du sous-profil et sonde de la conversion P5 native NVEncC,
+        puis revalidation complète de la configuration et du routage effectifs
+        (une découverte tardive ou un repli pipe peut rendre le job invalide :
+        multipiste P5, cadence variable…) avant toute écriture lourde ; enfin RPU
+        P5 converti en P8.1 extrait une fois (copie DV, HDR10 statique estimé).
+        """
+        config = self.resolve_dovi_sources(config, allow_tool_fallback=True)
+        primary = self._primary_video_settings(config)
+        if primary.p5_to_hdr10 and _is_nvencc_codec_runtime(primary.codec):
+            self._ensure_nvencc_p5_probe(work_dir)
+        errors = self.validate(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
+        dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
+
+        def run(cmd: list[str]) -> object:
+            self._check_cancelled(signals)
+            return self._runner._run_cmd(
+                cmd,
+                cwd=work_dir,
+                label="dovi-p5",
+                progress_cb=(signals.progress.emit if signals is not None else None),
+                signals=signals,
+            )
+
+        def run_capture(cmd: list[str]) -> str:
+            """Lecture dovi_tool (résumé, trame, export L9) : processus annulable, sortie non journalisée."""
+            self._check_cancelled(signals)
+            try:
+                return self._runner._run_cmd(cmd, cwd=work_dir, label="dovi-rpu-info", signals=signals)
+            except CommandError as exc:
+                # Lecture impossible : estimation par défaut, avertie (comportement tolérant inchangé).
+                return exc.stderr or ""
+
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for index, video in enumerate(tracks, start=1):
+            needs_static = bool(
+                video.inject_hdr_meta
+                and not video.tonemap_to_sdr
+                and supports_hdr_output(video.codec)
+                and not str(video.static_hdr_metadata_analysis_request or "").strip()
+                and (not video.master_display.strip() or not video.max_cll.strip())
+            )
+            if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
+                resolved.append(video)
+                continue
+            from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+            rpu = work_dir / f"p5_rpu_{index}.bin"
+            self.log_message.emit("INFO", f"Piste vidéo #{index} — extraction du RPU P5 (converti en P8.1)…")
+            extract_dovi_rpu(
+                source=self._video_source_from_settings(config, video),
+                stream_index=self._video_stream_from_settings(video),
+                ffmpeg_bin=self._ffmpeg,
+                dovi_tool_bin=dovi_bin,
+                output_rpu=rpu,
+                work_dir=work_dir,
+                run_cmd=run,
+                cleanup_paths=[],
+                mode="3",
+            )
+            updates: dict[str, object] = {"p5_rpu_path": rpu if video.copy_dv else None}
+            if needs_static:
+                # Seuls les champs vides sont complétés ; une saisie n'est jamais écrasée.
+                estimate = _estimate_static_hdr_from_rpu(
+                    dovi_bin, rpu, run_capture, check_cancelled=lambda: self._check_cancelled(signals),
+                )
+                estimated: list[str] = []
+                if not video.master_display.strip():
+                    updates.update(
+                        master_display=estimate.master_display,
+                        static_hdr_metadata_source="rpu_estimate",
+                        static_hdr_metadata_confidence=estimate.describe_master_display(),
+                    )
+                    estimated.append(f"Master Display {estimate.master_display} ({estimate.describe_master_display()})")
+                if not video.max_cll.strip() and estimate.max_cll:
+                    updates.update(max_cll=estimate.max_cll, static_hdr_light_level_source="rpu_estimate")
+                    estimated.append(f"MaxCLL/MaxFALL {estimate.max_cll} ({estimate.describe_light_levels()})")
+                if estimated:
+                    self.log_message.emit(
+                        "WARN",
+                        f"Piste vidéo #{index} — HDR10 statique estimé depuis les métadonnées du RPU : "
+                        + " ; ".join(estimated) + ".",
+                    )
+                for warning in estimate.warnings:
+                    self.log_message.emit("WARN", f"Piste vidéo #{index} — {warning}")
+            resolved.append(dataclasses.replace(video, **updates))
+            changed = True
+        if changed:
+            config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+        return config
+
+    def _stream_is_vfr(self, source: Path, stream_index: int) -> bool:
+        """Cadence variable du flux ``stream_index`` : ffprobe (r ≠ avg) ou mediainfo (FrameRate_Mode)."""
+        stream = self._stream_info(Path(source), int(stream_index))
+        rates = []
+        for key in ("r_frame_rate", "avg_frame_rate"):
+            try:
+                value = float(Fraction(str(stream.get(key) or "0")))
+            except (ValueError, ZeroDivisionError):
+                value = 0.0
+            rates.append(value)
+        if all(rate > 0 for rate in rates) and abs(rates[0] - rates[1]) / max(rates) > 0.001:
+            return True
+        track = self._load_mediainfo_video_track(Path(source), int(stream_index)) or {}
+        mode = str(track.get("FrameRate_Mode") or track.get("FrameRate_Mode_Original") or "").strip().lower()
+        return mode in {"vfr", "variable"}
+
+    def _frame_count_guard(self) -> _FrameCountGuard:
+        return _FrameCountGuard(
+            mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
+            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+        )
+
+    def _check_external_rpu(self, source: Path, stream_index: int, rpu_bin: Path) -> int:
+        """Garde stricte d'un RPU externe avant encodage NVEncC (trames retenues)."""
+        return self._frame_count_guard().check_external_rpu(
+            source=Path(source),
+            stream_index=int(stream_index),
+            rpu_bin=Path(rpu_bin),
+            on_warn=lambda message: self.log_message.emit("WARN", message),
+            on_info=lambda message: self.log_message.emit("INFO", message),
+        )
+
     def _dovi_multi_track_errors(self, config: EncodeConfig) -> list[str]:
         """Plusieurs pistes vidéo : routages DoVi réservés au chemin mono-piste refusés.
 
@@ -2791,9 +3149,6 @@ class EncodeWorkflow(QObject):
         videos = self._video_tracks(config)
         if len(videos) < 2:
             return []
-        from core.dovi_profile_detector import DoviProfileDetector
-
-        detector = DoviProfileDetector()
         errors: list[str] = []
         for index, video in enumerate(videos, start=1):
             if not video.copy_dv:
@@ -2805,9 +3160,10 @@ class EncodeWorkflow(QObject):
                         "quand le job contient plusieurs pistes vidéo. Traitez cette piste seule."
                     )
                 continue
-            source = self._video_source_from_settings(config, video)
-            mi_video = self._load_mediainfo_video_track(source, self._video_stream_from_settings(video))
-            sub_profile = detector.detect_from_mediainfo(mi_video).sub_profile
+            sub_profile = self._dovi_sub_profile(
+                self._video_source_from_settings(config, video),
+                self._video_stream_from_settings(video),
+            )
             if sub_profile.needs_p8_conversion:
                 errors.append(
                     f"Piste vidéo #{index} — Dolby Vision {sub_profile.label} : la conversion P8.1 "
@@ -3205,6 +3561,8 @@ class EncodeWorkflow(QObject):
                 needs_split_video_encode=self._needs_split_video_encode,
                 config_warnings=self.config_warnings,
                 resolve_source_color_transfer=self.resolve_source_color_transfer,
+                resolve_dovi_sources=self.resolve_dovi_sources,
+                prepare_dovi_sources=self.prepare_dovi_sources,
             )
         )
 
@@ -3963,6 +4321,7 @@ class EncodeWorkflow(QObject):
                 lambda source: self._source_video_dimensions(source, stream_index=stream_index)),
             probe_dovi_l5_offsets=(self._probe_dovi_l5_offsets if stream_index == 0 else
                 lambda source: self._probe_dovi_l5_offsets(source, stream_index=stream_index)),
+            p5_native_ready=self._nvencc_p5_native_ready,
         )
 
     def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:

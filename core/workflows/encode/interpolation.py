@@ -158,8 +158,14 @@ def interpolation_source_from_probe(
     *,
     format_start_time: object = None,
     tonemap_to_sdr: bool = False,
+    p5_to_hdr10: bool = False,
 ) -> InterpolationSource:
-    """Construit les propriétés d'interpolation depuis un flux ``ffprobe -show_streams``."""
+    """Construit les propriétés d'interpolation depuis un flux ``ffprobe -show_streams``.
+
+    Les images reçues par RIFE sont décrites telles que produites par les filtres :
+    tone-mapping → BT.709 limité (prioritaire) ; source P5 convertie → BT.2020nc /
+    PQ limité (la VUI P5 d'origine, IPT plage pleine, ne les décrit plus).
+    """
     def declared(key: str) -> str:
         value = str(stream.get(key) or "").strip().lower()
         return "" if value in {"", "unknown", "unspecified", "reserved"} else value
@@ -169,6 +175,10 @@ def interpolation_source_from_probe(
         matrix = "bt709"
         color_range = "limited"
         primaries = transfer = colorspace = "bt709"
+    elif p5_to_hdr10:
+        matrix = colorspace = "bt2020nc"
+        color_range = "limited"
+        primaries, transfer = "bt2020", "smpte2084"
     else:
         primaries, transfer, colorspace = declared("color_primaries"), declared("color_transfer"), declared("color_space")
         matrix = str(stream.get("color_space") or "").strip().lower()
@@ -234,13 +244,18 @@ def stream_start_time(ffprobe_bin: str, source: Path, stream_index: int) -> floa
 
 
 def probe_interpolation_source(
-    ffprobe_bin: str, source: Path, stream_index: int, *, tonemap_to_sdr: bool = False
+    ffprobe_bin: str,
+    source: Path,
+    stream_index: int,
+    *,
+    tonemap_to_sdr: bool = False,
+    p5_to_hdr10: bool = False,
 ) -> InterpolationSource | None:
     """``InterpolationSource`` d'un flux sondé directement (None si la sonde échoue)."""
     stream = _probe_stream(ffprobe_bin, source, stream_index)
     if stream is None:
         return None
-    return interpolation_source_from_probe(stream, tonemap_to_sdr=tonemap_to_sdr)
+    return interpolation_source_from_probe(stream, tonemap_to_sdr=tonemap_to_sdr, p5_to_hdr10=p5_to_hdr10)
 
 
 def nominal_cfr_rate(r_rate: str, avg_rate: str) -> str:

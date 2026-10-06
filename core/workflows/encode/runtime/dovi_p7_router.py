@@ -106,14 +106,21 @@ class DoviP7Router:
                 convert_mode=None,
                 reason=f"Source déjà compatible ({sp.label}) — pas de conversion.",
             )
+        if sp == DoviSubProfile.P5:
+            reason = (
+                "Source P5 détectée → RPU converti en P8.1 à l'extraction (`dovi_tool -m 3`), "
+                "couleurs IPT converties en HDR10 au réencodage."
+            )
+        else:
+            reason = (
+                f"Source {sp.label} détectée → conversion vers P8.1 via "
+                f"`dovi_tool -m {sp.convert_mode} convert`."
+            )
         return P7RoutingDecision(
             conversion_needed=True,
             sub_profile=sp,
             convert_mode=sp.convert_mode,
-            reason=(
-                f"Source {sp.label} détectée → conversion vers P8.1 via "
-                f"`dovi_tool -m {sp.convert_mode} convert`."
-            ),
+            reason=reason,
         )
 
     # ------------------------------------------------------------------

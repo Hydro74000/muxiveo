@@ -332,10 +332,12 @@ class FrameCountGuard:
         hdr10p_json: Path | None = None,
         on_warn: Callable[[str], None] | None = None,
         on_info: Callable[[str], None] | None = None,
+        strict: bool = False,
     ) -> FrameCountAudit:
         """
         Applique la politique ``adjustment`` (obligatoire : chaque appelant la choisit) :
-          - audit vidéo incomplet (mediainfo et ffprobe en échec) → WARN, pas de blocage ;
+          - audit vidéo incomplet (mediainfo et ffprobe en échec) → WARN, pas de
+            blocage ; refus si ``strict`` ;
           - HEVC encodé ≠ source → abort (frame-preserving requis) ;
           - métadonnées fournies mais comptage illisible → abort ;
           - métadonnées refusées par :func:`metadata_count_verdict` → abort ;
@@ -344,6 +346,11 @@ class FrameCountGuard:
         Renvoie l'audit mis à jour après éventuel trim.
         """
         if audit.source is None or audit.encoded is None:
+            if strict:
+                raise FrameCountAuditError(
+                    "Comptage des trames vidéo illisible : alignement des métadonnées "
+                    "dynamiques impossible à vérifier."
+                )
             # Aucun lecteur n'a réussi (mediainfo + ffprobe tous indisponibles
             # ou source illisible). Mode dégradé "best effort" avec WARN
             # plutôt que d'échouer : un drop NVENC silencieux ne sera pas
@@ -426,6 +433,52 @@ class FrameCountGuard:
             hdr10p=counts["hdr10p"],
             source_basis=audit.source_basis,
         )
+
+    def source_frame_count(self, source: Path, stream_index: int | None = None, *, exact: bool = False) -> int | None:
+        """Trames de la piste vidéo ``stream_index`` (``exact`` : comptage des paquets)."""
+        if stream_index not in (None, 0):
+            return ffprobe_packet_count(self._ffprobe, source, run_command=self._run_command, stream_index=stream_index)
+        if exact or _is_raw_hevc(source):
+            return self._recount_video_frames(source)
+        return self._read_video_frame_count(source)
+
+    def check_external_rpu(
+        self,
+        *,
+        source: Path,
+        stream_index: int | None,
+        rpu_bin: Path,
+        on_warn: Callable[[str], None] | None = None,
+        on_info: Callable[[str], None] | None = None,
+    ) -> int:
+        """RPU extrait de ``source`` et transmis tel quel à l'encodeur : contrôle strict avant encodage.
+
+        Compte rapide de la source recompté exactement en cas d'écart ; surplus
+        final ≤ tolérance retiré (début aligné : même source) ; manque, excès ou
+        compte illisible refusés. Renvoie le nombre de trames retenu.
+        """
+        rpu_count = self._dovi_rpu_frame_count(rpu_bin)
+        source_count = self.source_frame_count(source, stream_index)
+        if rpu_count is not None and source_count is not None and rpu_count != source_count:
+            source_count = self.source_frame_count(source, stream_index, exact=True) or source_count
+        if rpu_count is None:
+            raise FrameCountAuditError(f"Comptage du RPU illisible ({rpu_bin.name}) : encodage refusé.")
+        audit = FrameCountAudit(
+            source=source_count,
+            encoded=source_count,
+            rpu=rpu_count,
+            hdr10p=None,
+            source_basis="video",
+        )
+        checked = self.enforce(
+            audit,
+            adjustment=MetadataAdjustment.TRIM_TAIL,
+            rpu_bin=rpu_bin,
+            on_warn=on_warn,
+            on_info=on_info,
+            strict=True,
+        )
+        return int(checked.rpu or 0)
 
     def rpu_frame_count(self, rpu_bin: Path) -> int | None:
         """Nombre de trames d'un RPU binaire (``dovi_tool info --summary``)."""

@@ -18,7 +18,7 @@ from core.runner import TaskCancelledError, TaskSignals
 from core.workdir import remove_path
 from core.workflows.encode.domain import should_reinject_static_hdr_metadata
 from core.workflows.encode.domain.codecs import uses_two_pass_video
-from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode
+from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.offsets import track_offset_ms
@@ -39,6 +39,8 @@ from core.workflows.encode.runtime.frame_count_guard import (
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
+from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
     strip_pic_timing_from_annexb_file,
 )
@@ -220,7 +222,59 @@ class MetadataInjectRunner:
                     cb.log_info(
                         f"Routage DV : {p7_router_decision.reason}"
                     )
-                    if p7_router_decision.conversion_needed:
+                    if p7_router_decision.conversion_needed and p7_router_decision.sub_profile == DoviSubProfile.P5:
+                        # P5 : le RPU est converti en P8.1 à l'extraction (``-m 3``,
+                        # identique à ``convert``), sans réécrire le flux ; l'image de
+                        # base est convertie par libplacebo au réencodage. Une copie ne
+                        # réencode jamais : Copy + Normaliser est refusé en validation.
+                        if str(video.codec or "copy").strip().lower() == "copy":
+                            raise EncodeError(P5_COPY_NORMALIZE_ERROR)
+                        cb.log_step(4, "Extraction du RPU P5 converti en P8.1")
+                        prepared_rpu = getattr(video, "p5_rpu_path", None)
+                        if prepared_rpu is not None and Path(prepared_rpu).is_file():
+                            rpu_bin = Path(prepared_rpu)
+                        else:
+                            signals.progress.emit("Extraction du RPU P8.1 converti…")
+                            extract_dovi_rpu(
+                                source=selected_video_source,
+                                stream_index=int(selected_video_stream),
+                                ffmpeg_bin=cb.ffmpeg_bin,
+                                dovi_tool_bin=cb.bins["dovi_tool"],
+                                output_rpu=rpu_bin,
+                                work_dir=tmp,
+                                run_cmd=lambda c: _run(c),
+                                cleanup_paths=[],
+                                mode="3",
+                            )
+                        _check()
+                        rpu_preextracted = True
+                        video = dataclasses.replace(
+                            video,
+                            force_8bit=False,
+                            force_10bit=True,
+                            p5_to_hdr10=True,
+                        )
+                        runtime_tracks = []
+                        for track_index, track in enumerate(config.video_tracks):
+                            same_track = bool(
+                                video.track_entry_id
+                                and track.track_entry_id == video.track_entry_id
+                            )
+                            runtime_tracks.append(
+                                video
+                                if same_track or (not video.track_entry_id and track_index == 0)
+                                else track
+                            )
+                        effective_config = dataclasses.replace(
+                            config,
+                            video=video,
+                            video_tracks=runtime_tracks or [video],
+                        )
+                        cb.log_info(
+                            "Conversion colorimétrique P5 IPT→HDR10 BT.2020/PQ "
+                            "activée via libplacebo."
+                        )
+                    elif p7_router_decision.conversion_needed:
                         cb.log_step(
                             4,
                             f"Conversion {p7_router_decision.sub_profile.label} "
@@ -270,68 +324,7 @@ class MetadataInjectRunner:
                         except OSError:
                             pass
                         ext_files.append(converted)
-                        if p7_router_decision.sub_profile == DoviSubProfile.P5:
-                            signals.progress.emit("Extraction du RPU P8.1 converti…")
-                            _run([
-                                cb.bins["dovi_tool"], "extract-rpu",
-                                "-i", str(converted), "-o", str(rpu_bin),
-                            ])
-                            _check()
-                            rpu_preextracted = True
-                            _free(converted)
-
-                            runtime_codec = str(video.codec or "copy").strip().lower()
-                            if runtime_codec == "copy":
-                                runtime_codec = "libx265"
-                                cb.log_warn(
-                                    "P5→P8.1 exige un réencodage du base layer : "
-                                    "remux remplacé par libx265 10-bit CRF 16."
-                                )
-                            video = dataclasses.replace(
-                                video,
-                                codec=runtime_codec,
-                                quality_mode=(
-                                    QualityMode.CRF
-                                    if str(video.codec or "").strip().lower() == "copy"
-                                    else video.quality_mode
-                                ),
-                                crf=(
-                                    16
-                                    if str(video.codec or "").strip().lower() == "copy"
-                                    else video.crf
-                                ),
-                                preset=(
-                                    "slow"
-                                    if str(video.codec or "").strip().lower() == "copy"
-                                    else video.preset
-                                ),
-                                force_8bit=False,
-                                force_10bit=True,
-                                p5_to_hdr10=True,
-                            )
-                            runtime_tracks = []
-                            for track_index, track in enumerate(config.video_tracks):
-                                same_track = bool(
-                                    video.track_entry_id
-                                    and track.track_entry_id == video.track_entry_id
-                                )
-                                runtime_tracks.append(
-                                    video
-                                    if same_track or (not video.track_entry_id and track_index == 0)
-                                    else track
-                                )
-                            effective_config = dataclasses.replace(
-                                config,
-                                video=video,
-                                video_tracks=runtime_tracks or [video],
-                            )
-                            cb.log_info(
-                                "Conversion colorimétrique P5 IPT→HDR10 BT.2020/PQ "
-                                "activée via libplacebo."
-                            )
-                            continue_rebound = False
-                        else:
-                            continue_rebound = True
+                        continue_rebound = True
                         # On clone EncodeConfig en redirigeant `source` ET
                         # `video_tracks[*].source_path` vers le HEVC P8.1.
                         # `_video_source_path` lit `video.source_path` en
@@ -460,6 +453,7 @@ class MetadataInjectRunner:
                         forced_compat_id=_resolve_dovi_compat_id(
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
+                            video=video,
                         ),
                         min_level=dovi_min_level,
                     )
@@ -781,6 +775,7 @@ class MetadataInjectRunner:
                         forced_compat_id=_resolve_dovi_compat_id(
                             p7_router_decision=p7_router_decision,
                             user_dovi_profile=str(video.dovi_profile or "0"),
+                            video=video,
                         ),
                         min_level=dovi_min_level,
                     )
@@ -955,6 +950,7 @@ class MetadataInjectRunner:
                     forced_compat_id = _resolve_dovi_compat_id(
                         p7_router_decision=p7_router_decision,
                         user_dovi_profile=str(video.dovi_profile or "0"),
+                        video=video,
                     )
                     def _patch_dovi(candidate: Path) -> object:
                         record = _build_dovi_record_from_rpu(
@@ -1151,24 +1147,28 @@ def _resolve_dovi_compat_id(
     *,
     p7_router_decision: object | None,
     user_dovi_profile: str,
+    video: object,
 ) -> int | None:
     """
     Détermine le ``bl_signal_compat_id`` cible pour le BlockAddition Matroska.
 
     Priorité :
-    1. Si le routeur P7 a converti via -m 2/-m 5 (P7→P8.1) → 1
+    1. Si le routeur P7 a converti via -m 2/-m 3/-m 5 (→ P8.1) → 1 ; -m 4 (P8.4) → 4
     2. Si l'utilisateur a forcé "Normaliser en P8.1" (dovi_profile=2) → 1
-    3. Sinon None → laisse ``_build_dovi_record_from_rpu`` deviner depuis
-       le summary dovi_tool (avec fallback P8.1 si profile=8).
+    3. Profil de sortie de la matrice V30 : P8.4 → 4, P8.2 → 2, P8.1 → 1
+       (le résumé dovi_tool n'affiche que « Profile: 8 »)
+    4. Sous-profil source inconnu : None → ``_build_dovi_record_from_rpu``
+       devine depuis le summary dovi_tool (avec fallback P8.1 si profile=8).
+
+    ``video`` est obligatoire : chaque construction de record (muxer natif,
+    réécriture, patch après muxage FFmpeg) suit la même matrice.
     """
     if p7_router_decision is not None and getattr(p7_router_decision, "conversion_needed", False):
         mode = str(getattr(p7_router_decision, "convert_mode", "") or "")
-        # Modes 2, 3, 5 produisent du P8.1 (HDR10-compatible).
-        # Mode 4 produit du P8.4 (HLG-compatible) → compat_id=2.
         if mode in {"2", "3", "5"}:
             return 1
         if mode == "4":
-            return 2
+            return 4
     if _should_normalize_dovi_profile(user_dovi_profile):
         return 1
-    return None
+    return dovi_output_compat_id_for(video)

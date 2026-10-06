@@ -64,7 +64,12 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain.codecs import rate_control_values, transfer_kind
-from core.workflows.encode.hdr_policy import default_static_hdr_checked
+from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
+from core.workflows.encode.dovi_policy import (
+    NORMALIZE_P81,
+    resolve_dovi_plan,
+    sub_profile_from_track,
+)
 from core.workflows.encode.backends import (
     backend_capabilities_for_codec,
     backend_for_codec,
@@ -169,6 +174,11 @@ class EncodePanel(QWidget):
         self._hdr_disabled_by_codec = False
         # Idem pour DV / HDR10+ (copie DoVi, copie HDR10+).
         self._dynamic_hdr_disabled_by_codec: tuple[bool, bool] = (False, False)
+        # Tone-mapping coché d'office pour un codec sans HDR (source HDR) ; décoché au retour.
+        self._tonemap_enabled_by_codec = False
+        # (codec, piste) pour lesquels ce défaut a été appliqué : les synchronisations
+        # suivantes respectent le choix manuel.
+        self._tonemap_policy_key: tuple[str, str | None] | None = None
         self._syncing_hdr_controls = False
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
@@ -1230,14 +1240,27 @@ class EncodePanel(QWidget):
         dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         self._dovi_profile_combo = QComboBox()
         self._dovi_profile_combo.setStyleSheet(_combo_style())
-        self._dovi_profile_combo.addItem("Conserver le profil source (par défaut)", "0")
-        self._dovi_profile_combo.addItem("Normaliser en P8.1 (supprimer FEL·MEL)", "2")
+        self._dovi_profile_combo.addItem(
+            translate_text("Conserver le profil source (P8.1 seulement si réencodage)"), "0",
+        )
+        self._dovi_profile_combo.addItem(
+            translate_text("Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)"), NORMALIZE_P81,
+        )
         self._dovi_profile_combo.currentIndexChanged.connect(self._on_dovi_profile_changed)
         dp_l.addWidget(dp_lbl)
         dp_l.addWidget(self._dovi_profile_combo)
         dp_l.addStretch()
         self._dovi_profile_widget.setVisible(False)
         cl.addWidget(self._dovi_profile_widget)
+
+        # Traitement Dolby Vision réellement prévu (matrice V30, dovi_policy).
+        self._dovi_plan_label = QLabel()
+        self._dovi_plan_label.setWordWrap(True)
+        self._dovi_plan_label.setStyleSheet(
+            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;padding-left:20px;"
+        )
+        self._dovi_plan_label.setVisible(False)
+        cl.addWidget(self._dovi_plan_label)
 
         # 3. Passthrough HDR10+ SEI
         self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
@@ -2594,6 +2617,7 @@ class EncodePanel(QWidget):
     def _on_dv_toggle(self, _state: int) -> None:
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "copy")
+        self._sync_dovi_profile_options()
         if not self._loading_video_settings:
             self._save_current_video_state()
             self._maybe_offer_static_hdr_estimate_for_current()
@@ -2601,6 +2625,7 @@ class EncodePanel(QWidget):
 
     def _on_dovi_profile_changed(self, _idx: int = 0) -> None:
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "copy")
+        self._sync_dovi_profile_options()
         if not self._loading_video_settings:
             self._save_current_video_state()
             self._maybe_offer_static_hdr_estimate_for_current()
@@ -2947,6 +2972,7 @@ class EncodePanel(QWidget):
         if not hdr10plus_ok and not self._video_apply_all:
             self._copy_hdr10plus_cb.setChecked(False)
         self._sync_hdr_controls_for_codec()
+        self._sync_dovi_profile_options()
 
     def _sync_hdr_controls_for_codec(self) -> None:
         """Grise les options HDR quand le codec cible ne peut pas porter de HDR (H.264…).
@@ -2988,11 +3014,23 @@ class EncodePanel(QWidget):
             self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
             self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
             return
-        tonemap = self._tonemap_cb.isChecked()
         self._tonemap_cb.setEnabled(True)
         self._tonemap_cb.setToolTip(self._tonemap_tooltip())
         self._copy_hdr10plus_cb.setToolTip("")
         hdr_ok = self._backend_capabilities(codec).supports_hdr
+        policy_key = (str(codec), self._current_video_entry_id)
+        if not self._loading_video_settings and policy_key != self._tonemap_policy_key:
+            # Défaut appliqué au changement de codec ou de piste seulement.
+            self._tonemap_policy_key = policy_key
+            if hdr_ok and self._tonemap_enabled_by_codec:
+                # Retour sur un codec HDR : le tone-mapping coché d'office est retiré.
+                self._tonemap_enabled_by_codec = False
+                self._tonemap_cb.setChecked(False)
+            elif not hdr_ok and not self._tonemap_cb.isChecked() and self._selected_source_is_hdr():
+                # Source HDR vers un codec sans HDR : sortie SDR cohérente pré-remplie.
+                self._tonemap_cb.setChecked(True)
+                self._tonemap_enabled_by_codec = True
+        tonemap = self._tonemap_cb.isChecked()
         self._inject_hdr_cb.setEnabled(hdr_ok and not tonemap)
         if hdr_ok:
             self._inject_hdr_cb.setToolTip(
@@ -3061,6 +3099,9 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         if self._loading_video_settings:
             return
+        if not self._tonemap_cb.isChecked() and not self._syncing_hdr_controls:
+            # Décoché à la main : choix de l'utilisateur, plus de retrait automatique.
+            self._tonemap_enabled_by_codec = False
         # Sortie SDR : HDR10 / DV / HDR10+ grisés, leur état est conservé.
         self._update_passthrough_controls()
         self._rebuild_preview()
@@ -3112,12 +3153,21 @@ class EncodePanel(QWidget):
                 else translate_text("Aucune valeur connue : métadonnées de la source conservées si présentes.")
             )
         elif not md and not cll:
-            text = translate_text(
-                "Vide : métadonnées de la source conservées au lancement "
-                "(reconstruites si absentes et HDR dynamique copié)."
+            text = (
+                translate_text("Vide : Master Display et MaxCLL estimés au lancement depuis le RPU Dolby Vision (P5).")
+                if self._selected_source_is_p5()
+                else translate_text(
+                    "Vide : métadonnées de la source conservées au lancement "
+                    "(reconstruites si absentes et HDR dynamique copié)."
+                )
             )
         elif md == default_md and cll == default_cll:
             text = translate_text("Valeurs de la source.")
+        elif self._selected_source_is_p5() and not (md and cll):
+            text = translate_text(
+                "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
+                field="MaxCLL/MaxFALL" if md else "Master Display",
+            )
         else:
             text = translate_text("Saisie manuelle.")
         self._hdr_meta_provenance.setText(text)
@@ -4033,6 +4083,7 @@ class EncodePanel(QWidget):
         "static_hdr_metadata_analysis_request",
         "hdr_disabled_by_codec",
         "dynamic_hdr_disabled_by_codec",
+        "tonemap_enabled_by_codec",
     )
 
     def _state_propagated_to_track(
@@ -4258,6 +4309,63 @@ class EncodePanel(QWidget):
             return self._transfer_for_entry(self._file_info, None)
         return ""
 
+    def _selected_video_track(self) -> VideoTrack | None:
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            return self._video_track_for_entry(file_info, track)
+        if self._file_info is not None:
+            return self._video_track_for_entry(self._file_info, None)
+        return None
+
+    def _selected_source_is_p5(self) -> bool:
+        source = self._selected_video_track()
+        return int(getattr(source, "dovi_profile", 0) or 0) == 5
+
+    def _selected_source_is_hdr(self) -> bool:
+        """Source PQ / HLG ou Dolby Vision (P5 compris, transfert non déclaré) ; P8.2 (base SDR) exclue."""
+        return source_is_hdr(self._selected_video_hdr_type(), self._selected_video_transfer())
+
+    def _sync_dovi_profile_options(self) -> None:
+        """Option « Normaliser » grisée selon la matrice V30 ; bandeau du traitement prévu."""
+        if not hasattr(self, "_dovi_plan_label"):
+            return
+        source = self._selected_video_track()
+        sub_profile = sub_profile_from_track(
+            getattr(source, "dovi_profile", None), getattr(source, "dovi_compat_id", None),
+        )
+        codec = str(self._codec_combo.currentData() or "libx265")
+        normalize_plan = resolve_dovi_plan(
+            codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
+        )
+        model = self._dovi_profile_combo.model()
+        index = self._dovi_profile_combo.findData(NORMALIZE_P81)
+        item = model.item(index) if hasattr(model, "item") and index >= 0 else None
+        if item is not None:
+            item.setEnabled(not normalize_plan.error)
+            self._dovi_profile_combo.setItemData(
+                index,
+                translate_text(normalize_plan.error) if normalize_plan.error else None,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        if normalize_plan.error and self._dovi_profile_combo.currentData() == NORMALIZE_P81:
+            self._dovi_profile_combo.blockSignals(True)
+            self._set_combo_data(self._dovi_profile_combo, "0")
+            self._dovi_profile_combo.blockSignals(False)
+            if not self._loading_video_settings:
+                self._save_current_video_state()
+        plan = resolve_dovi_plan(
+            codec=codec,
+            copy_dv=self._copy_dv_cb.isChecked(),
+            dovi_profile=str(self._dovi_profile_combo.currentData() or "0"),
+            sub_profile=sub_profile,
+        )
+        notes = [translate_text(note) for note in plan.notes]
+        if self._tonemap_cb.isChecked() and plan.color_convert:
+            notes.append(translate_text("Puis tone-mapping HDR → SDR."))
+        self._dovi_plan_label.setText("\n".join(notes))
+        self._dovi_plan_label.setVisible(bool(notes))
+
     def _selected_video_hdr_type(self) -> HDRType:
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
         if 0 <= row < len(self._video_tracks):
@@ -4409,6 +4517,7 @@ class EncodePanel(QWidget):
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
             "hdr_disabled_by_codec": self._hdr_disabled_by_codec,
             "dynamic_hdr_disabled_by_codec": self._dynamic_hdr_disabled_by_codec,
+            "tonemap_enabled_by_codec": self._tonemap_enabled_by_codec,
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
             "default_master_display": str(prev.get("default_master_display") or ""),
@@ -4681,6 +4790,7 @@ class EncodePanel(QWidget):
     def _apply_video_state(self, state: dict[str, object]) -> None:
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
+        self._tonemap_enabled_by_codec = False
         self._loading_video_settings = True
         try:
             self._set_combo_data(self._codec_combo, state.get("codec"))
@@ -4728,6 +4838,9 @@ class EncodePanel(QWidget):
         if not isinstance(restore_flags, tuple) or len(restore_flags) != 2:
             restore_flags = (False, False)
         self._dynamic_hdr_disabled_by_codec = (bool(restore_flags[0]), bool(restore_flags[1]))
+        self._tonemap_enabled_by_codec = bool(state.get("tonemap_enabled_by_codec"))
+        # État restauré tel quel : pas de nouveau défaut pour ce couple codec / piste.
+        self._tonemap_policy_key = (str(self._codec_combo.currentData() or "libx265"), self._current_video_entry_id)
         self._video_encode_controls.setVisible((self._codec_combo.currentData() or "libx265") != "copy")
         self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())

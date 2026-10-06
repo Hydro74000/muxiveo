@@ -270,11 +270,14 @@ def build_decode_pipe_cmd(
     stream_index: int = 0,
     extra_input_args: list[str] | None = None,
     vf: str | None = None,
+    frame_exact: bool = False,
 ) -> list[str]:
     """Phase 1 : décode ffmpeg → yuv4mpegpipe sur stdout.
 
     Le ``-vf`` optionnel sert uniquement aux préfiltrages portables que
     NVEncC ne couvre pas nativement dans l'application.
+    ``frame_exact`` : métadonnées indexées par trame (RPU) fournies à NVEncC,
+    aucune trame dupliquée ni supprimée (``-fps_mode passthrough``).
     """
     cmd: list[str] = [str(ffmpeg_bin), "-hide_banner", "-loglevel", "error", "-y"]
     if extra_input_args:
@@ -285,6 +288,8 @@ def build_decode_pipe_cmd(
     ])
     if vf:
         cmd.extend(["-vf", str(vf)])
+    if frame_exact:
+        cmd.extend(["-fps_mode", "passthrough"])
     cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
     return cmd
 
@@ -426,6 +431,27 @@ def _dovi_profile_for_codec(codec: str, profile: str | None) -> str | None:
     return profile
 
 
+# Source P5 convertie par NVEncC (libplacebo, RPU de la source) : HDR10 sans
+# compression des hautes lumières (``src_max``/``dst_max`` à 10000, sinon
+# écrêtage à 1000 nits). NVEncC 9.36 sort alors en plage pleine dès que le RPU
+# est P5, quelle que soit la plage déclarée : ``--vpp-tweak`` (exécuté après
+# libplacebo) ramène exactement en plage limitée (Y 876/1023, chroma 896/1023).
+NVENCC_P5_TONEMAP = (
+    "src_csp=dovi,dst_csp=hdr10,tonemapping_function=clip,dynamic_peak_detection=false,"
+    "gamut_mapping=clip,src_max=10000,dst_max=10000"
+)
+NVENCC_P5_RANGE_TWEAK = "contrast=0.856305,brightness=-0.009286,saturation=0.875855"
+
+
+def nvencc_p5_native_args() -> list[str]:
+    """Conversion P5 → HDR10 dans NVEncC (entrée lue directement, conteneur requis)."""
+    return [
+        "--vpp-libplacebo-tonemapping", NVENCC_P5_TONEMAP,
+        "--vpp-tweak", NVENCC_P5_RANGE_TWEAK,
+        "--colorrange", "limited",
+    ]
+
+
 def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> list[str]:
     """Signalisation couleur HDR (VUI) et recopie des métadonnées statiques source.
 
@@ -440,6 +466,14 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
     if not transfer:
         return []
     static = bool(getattr(video, "inject_hdr_meta", False))
+    if direct_input and getattr(video, "p5_to_hdr10", False):
+        # VUI d'origine IPT-PQ-c2 plage pleine : décrire l'image convertie.
+        return [
+            "--colormatrix", "bt2020nc",
+            "--colorprim", "bt2020",
+            "--transfer", "smpte2084",
+            "--chromaloc", "auto",
+        ]
     if not direct_input:
         args = [
             "--colormatrix", "bt2020nc",
@@ -899,8 +933,11 @@ def build_nvencc_command(
                    or (preset.upper() in {"P1", "P2", "P3", "P4", "P5", "P6", "P7"})):
         cmd.extend(["-u", preset])
 
+    p5_native = input_path is not None and bool(getattr(video, "p5_to_hdr10", False))
     cmd.extend(_auto_source_hdr_args(video, direct_input=input_path is not None))
     cmd.extend(_hdr_static_args(video))
+    if p5_native:
+        cmd.extend(nvencc_p5_native_args())
     cmd.extend(
         _hdr_dynamic_args(
             video,
@@ -927,7 +964,7 @@ def build_nvencc_command(
         extra_args,
         cmd,
         option_name=nvencc_option_name,
-        removed_if_set=_NVENCC_PIPELINE_OPTIONS | _nvencc_locked_options(video),
+        removed_if_set=_NVENCC_PIPELINE_OPTIONS | _nvencc_locked_options(video, p5_native=p5_native),
         override_names=NVENCC_RATE_CONTROL_OPTIONS | _NVENCC_UI_OPTIONS,
         exclusive_groups=(NVENCC_RATE_CONTROL_OPTIONS,),
     )
@@ -951,9 +988,12 @@ def _tokens_not_kept(before: list[str], after: list[str]) -> list[str]:
     return removed
 
 
-def _nvencc_locked_options(video: VideoEncodeSettings) -> frozenset[str]:
+def _nvencc_locked_options(video: VideoEncodeSettings, *, p5_native: bool = False) -> frozenset[str]:
     """Options du workflow qu'une saisie rendrait incompatibles avec le HDR conservé."""
     locked: set[str] = set()
+    if p5_native:
+        # Conversion P5 : plage limitée obtenue par --vpp-tweak, signalée par --colorrange.
+        locked |= {"vpp-tweak", "colorrange"}
     if getattr(video, "copy_dv", False) and video.codec == "nvencc_hevc":
         # Conformité Dolby Vision P8.1 : Main10, tier High.
         locked |= {"profile", "tier"}

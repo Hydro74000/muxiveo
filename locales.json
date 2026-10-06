@@ -5250,5 +5250,49 @@
   "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).": {
     "fra": "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).",
     "eng": "Size of the whole file: audio, subtitles, attachments and copied video are deducted, the rest is shared between the encoded video tracks.\nSoftware: 2 passes. Hardware: 1 capped VBR pass (approximate size)."
+  },
+  "Conserver le profil source (P8.1 seulement si réencodage)": {
+    "fra": "Conserver le profil source (P8.1 seulement si réencodage)",
+    "eng": "Keep source profile (P8.1 only when re-encoding)"
+  },
+  "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)": {
+    "fra": "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)",
+    "eng": "Normalise to P8.1 (drop FEL·MEL, no re-encode in copy)"
+  },
+  "Puis tone-mapping HDR → SDR.": {
+    "fra": "Puis tone-mapping HDR → SDR.",
+    "eng": "Then HDR → SDR tone mapping."
+  },
+  "Une source P5 doit être réencodée pour devenir P8.1 : choisissez un encodeur HEVC (x265 ou NVEncC).": {
+    "fra": "Une source P5 doit être réencodée pour devenir P8.1 : choisissez un encodeur HEVC (x265 ou NVEncC).",
+    "eng": "A P5 source must be re-encoded to become P8.1: choose an HEVC encoder (x265 or NVEncC)."
+  },
+  "Image de base HLG/SDR : conversion en P8.1 impossible.": {
+    "fra": "Image de base HLG/SDR : conversion en P8.1 impossible.",
+    "eng": "HLG/SDR base layer: conversion to P8.1 is not possible."
+  },
+  "P7 → P8.1 sans réencodage : couche d'amélioration retirée, image de base recopiée.": {
+    "fra": "P7 → P8.1 sans réencodage : couche d'amélioration retirée, image de base recopiée.",
+    "eng": "P7 → P8.1 without re-encoding: enhancement layer removed, base layer copied."
+  },
+  "P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).": {
+    "fra": "P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).",
+    "eng": "P5: IPT colours converted to HDR10 BT.2020/PQ (libplacebo)."
+  },
+  "P7 → P8.1 : couche d'amélioration perdue au réencodage.": {
+    "fra": "P7 → P8.1 : couche d'amélioration perdue au réencodage.",
+    "eng": "P7 → P8.1: enhancement layer lost when re-encoding."
+  },
+  "P5 → P8.1 (RPU converti, repli HDR10 compatible).": {
+    "fra": "P5 → P8.1 (RPU converti, repli HDR10 compatible).",
+    "eng": "P5 → P8.1 (RPU converted, HDR10-compatible fallback)."
+  },
+  "Vide : Master Display et MaxCLL estimés au lancement depuis le RPU Dolby Vision (P5).": {
+    "fra": "Vide : Master Display et MaxCLL estimés au lancement depuis le RPU Dolby Vision (P5).",
+    "eng": "Empty: Master Display and MaxCLL estimated at launch from the Dolby Vision RPU (P5)."
+  },
+  "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).": {
+    "fra": "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
+    "eng": "Manual entry; {field} estimated at launch from the Dolby Vision RPU (P5)."
   }
 }

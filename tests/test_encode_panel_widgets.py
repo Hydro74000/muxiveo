@@ -949,6 +949,8 @@ class TestEncodePanelDynamicHdrDefaults:
         )
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        # V30 : une copie ne convertit jamais un P5 ; la normalisation suppose un réencodage.
+        _select_codec(panel, "libx265")
         panel._dovi_profile_combo.setCurrentIndex(
             next(i for i in range(panel._dovi_profile_combo.count()) if panel._dovi_profile_combo.itemData(i) == "2")
         )
@@ -977,6 +979,7 @@ class TestEncodePanelDynamicHdrDefaults:
         )
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
         panel._set_combo_data(panel._dovi_profile_combo, "2")
 
         assert scheduled == [StaticHdrEstimateService.FAST_MODE]
@@ -2262,4 +2265,105 @@ class TestEncodePanelAuditLot4:
         panel._refresh_profiles(select="icq")
         panel._load_profile()
         assert panel._codec_combo.currentData() == "libx265" and len(warnings) == 1
+        panel.close()
+
+
+class TestEncodePanelAuditLot5:
+    """Lot 5 : matrice Dolby Vision V30 et tone-mapping vers un codec sans HDR (RV5-02)."""
+
+    def _panel(self, hdr_type: HDRType, *, dovi_profile: int | None = None, compat: int | None = None,
+               transfer: str | None = "smpte2084"):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"h264_nvenc"}
+        panel._populate_codec_combo()
+        video = dataclasses.replace(_video_track(0, hdr_type), color_transfer=transfer)
+        video.dovi_profile = dovi_profile
+        video.dovi_compat_id = compat
+        entry = _video_entry(0)
+        entry.entry_id = "video-lot5"
+        panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        return panel
+
+    @staticmethod
+    def _normalize_item(panel: EncodePanel):
+        index = panel._dovi_profile_combo.findData("2")
+        return panel._dovi_profile_combo.model().item(index), index
+
+    def test_p5_copy_cannot_normalize_but_reencode_can(self, qt_app, monkeypatch):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=5, transfer=None)
+        # Fenêtre « Analyse HDR10 estimée » (modale) proposée à la normalisation P5.
+        monkeypatch.setattr(panel, "_ask_static_hdr_estimate_mode", lambda: "")
+        _select_codec(panel, "copy")
+        item, index = self._normalize_item(panel)
+        assert not item.isEnabled()
+        assert "réencodée" in str(panel._dovi_profile_combo.itemData(index, Qt.ItemDataRole.ToolTipRole))
+        _select_codec(panel, "libx265")
+        item, _index = self._normalize_item(panel)
+        assert item.isEnabled()
+        assert "P5" in panel._dovi_plan_label.text() and not panel._dovi_plan_label.isHidden()
+        panel._set_combo_data(panel._dovi_profile_combo, "2")
+        _select_codec(panel, "copy")
+        # Normaliser devenu impossible en copie : retour à « Conserver ».
+        assert panel._dovi_profile_combo.currentData() == "0"
+        panel.close()
+
+    def test_p8_4_never_offers_normalize(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=8, compat=4, transfer="arib-std-b67")
+        for codec in ("copy", "libx265"):
+            _select_codec(panel, codec)
+            item, _index = self._normalize_item(panel)
+            assert not item.isEnabled()
+        panel.close()
+
+    def test_rv5_02_tonemap_prefilled_for_sdr_only_codec(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()
+        assert panel._current_video_settings().tonemap_to_sdr
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()
+        # Décoché à la main sur H.264 : le choix de l'utilisateur est conservé.
+        _select_codec(panel, "h264_nvenc")
+        assert panel._tonemap_cb.isChecked()
+        panel._tonemap_cb.setChecked(False)
+        # L5-A05 : le décochage manuel n'est pas annulé par la synchronisation qui suit.
+        assert not panel._tonemap_cb.isChecked()
+        assert not panel._current_video_settings().tonemap_to_sdr
+        _select_codec(panel, "libx265")
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_rv5_02_sdr_source_is_not_tonemapped(self, qt_app):
+        panel = self._panel(HDRType.NONE, transfer="bt709")
+        _select_codec(panel, "libx264")
+        assert not panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_l5_a11_p8_2_sdr_base_keeps_sdr_defaults(self, qt_app):
+        """P8.2 (base BT.709) : ni HDR10 statique par défaut, ni tone-mapping d'office ; DV copié."""
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=8, compat=2, transfer="bt709")
+        _select_codec(panel, "libx265")
+        assert not panel._inject_hdr_cb.isChecked()
+        assert panel._copy_dv_cb.isChecked()
+        settings = panel._current_video_settings()
+        assert not settings.inject_hdr_meta and settings.copy_dv
+        _select_codec(panel, "libx264")
+        assert not panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_p7_copy_keep_stays_pure_copy(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=7, transfer="smpte2084")
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        _select_codec(panel, "copy")
+        assert panel._dovi_profile_combo.currentData() == "0"
+        config = panel.collect_config()
+        assert config is not None and config.video is not None
+        assert config.video.codec == "copy" and config.video.dovi_profile == "0" and config.video.copy_dv
+        assert not config.video.p5_to_hdr10 and not config.video.dovi_source_profile
+        # Remux pur si aucune autre transformation n'est demandée (HDR10 statique source non réécrit).
+        pure = dataclasses.replace(config.video, inject_hdr_meta=False)
+        assert panel.is_pure_copy(dataclasses.replace(config, video=pure, video_tracks=[pure], audio_tracks=[]))
         panel.close()

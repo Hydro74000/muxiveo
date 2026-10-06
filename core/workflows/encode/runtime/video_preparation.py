@@ -20,7 +20,6 @@ from core.workflows.encode.domain import (
     hdr_meta_args,
     needs_hdr_vui,
     output_hdr_transfer,
-    p5_filter_device_args,
     uses_two_pass_video,
     video_codec_args,
     video_codec_args_bitrate,
@@ -117,7 +116,7 @@ class VideoOnlyCommandBuilder:
         info = cb.interpolation_source(video, source)
         settings = video.interpolation
 
-        decode_pre = list(p5_filter_device_args(video))
+        decode_pre: list[str] = []
         decode_pre.extend(raw_input_rate_args(video, source))
         if offset_ms < 0:
             decode_pre.extend(cb.offset_input_args(offset_ms))

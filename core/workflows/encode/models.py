@@ -331,6 +331,9 @@ class VideoEncodeSettings:
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
     max_cll:          str          = ""   # ex. "1000,400"
     static_hdr_metadata_source: str = ""
+    # Provenance de MaxCLL/MaxFALL quand elle diffère de celle du Master Display
+    # ("rpu_estimate" : complété au lancement depuis le RPU d'une source P5).
+    static_hdr_light_level_source: str = ""
     static_hdr_metadata_confidence: str = ""
     static_hdr_metadata_analysis_mode: str = ""
     static_hdr_metadata_analysis_request: str = ""
@@ -344,6 +347,12 @@ class VideoEncodeSettings:
     # Transformation interne P5 IPT -> base layer HDR10 BT.2020/PQ via
     # libplacebo. Activée par le workflow, jamais directement par le panel.
     p5_to_hdr10:      bool         = False
+    # Sous-profil Dolby Vision de la source ("p5", "p7_fel", "p8_1"… ; "" inconnu),
+    # renseigné par le workflow (``dovi_policy``), jamais par le panel.
+    dovi_source_profile: str       = ""
+    # RPU d'une source P5 converti en P8.1 (``dovi_tool -m 3 extract-rpu``), extrait
+    # une fois à la préparation et réutilisé par les runtimes (copie DV active).
+    p5_rpu_path:      Path | None  = None
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.

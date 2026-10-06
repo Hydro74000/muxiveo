@@ -189,12 +189,14 @@ def _probe_rpu_frame_count(
 def extract_dovi_rpu(
     *, source: Path, stream_index: int, ffmpeg_bin: str, dovi_tool_bin: str,
     output_rpu: Path, work_dir: Path, run_cmd: Callable[[list[str]], object],
-    cleanup_paths: list[Path],
+    cleanup_paths: list[Path], mode: str | None = None,
 ) -> Path:
     """Follow the standard metadata workflow: container -> Annex B -> RPU.
 
     dovi_tool accepts MKV for extraction only (first video on older versions).
     Other containers and explicitly selected streams go through FFmpeg first.
+    ``mode`` : mode RPU de dovi_tool (``"3"`` : P5 converti en P8.1 à l'extraction,
+    identique octet pour octet à ``-m 3 convert`` puis extraction).
     """
     meta_input = source
     if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
@@ -206,7 +208,8 @@ def extract_dovi_rpu(
                     "-f", "hevc", str(meta_input)])
         run_cmd(cmd)
     output_rpu.unlink(missing_ok=True)
-    run_cmd([dovi_tool_bin, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
+    mode_args = ["-m", str(mode)] if mode else []
+    run_cmd([dovi_tool_bin, *mode_args, "extract-rpu", "-i", str(meta_input), "-o", str(output_rpu)])
     if meta_input != source:
         meta_input.unlink(missing_ok=True)
     if output_rpu.is_file() and output_rpu.stat().st_size == 0:

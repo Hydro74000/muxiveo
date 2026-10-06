@@ -51,6 +51,10 @@ class EncodePreparationRunnerCallbacks:
     config_warnings: Callable[[EncodeConfig], list[str]] | None = None
     #: Renseigne le transfert couleur source des pistes vidéo (sortie HDR, VUI).
     resolve_source_color_transfer: Callable[[EncodeConfig], EncodeConfig] | None = None
+    #: Sous-profil Dolby Vision et conversion P5 (avant validation, matrice V30).
+    resolve_dovi_sources: Callable[[EncodeConfig], EncodeConfig] | None = None
+    #: Préparation Dolby Vision au lancement (repli dovi_tool, RPU P5, sonde NVEncC).
+    prepare_dovi_sources: Callable[..., EncodeConfig] | None = None
 
 
 class EncodePreparationRunner:
@@ -119,6 +123,8 @@ class EncodePreparationRunner:
     ) -> TaskSignals:
         cb = self._cb
         cb.check_cancelled(prep_signals)
+        if cb.resolve_dovi_sources is not None:
+            config = cb.resolve_dovi_sources(config)
         if validate:
             errors = cb.validate_config(config)
             if errors:
@@ -203,6 +209,14 @@ class EncodePreparationRunner:
         if relocated_attachment_dir.exists():
             cleanup_paths.append(relocated_attachment_dir)
         cleanup_paths.append(process_work_dir)
+
+        if cb.prepare_dovi_sources is not None:
+            prepared_config = cb.prepare_dovi_sources(
+                prepared_config,
+                work_dir=process_work_dir,
+                signals=prep_signals,
+            )
+            cb.check_cancelled(prep_signals)
 
         cb.log_step(3, "Normalisation des options HDR dynamiques")
         cb.check_cancelled(prep_signals)

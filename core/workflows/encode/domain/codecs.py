@@ -265,7 +265,8 @@ def output_hdr_transfer(video: VideoEncodeSettings) -> str:
     La sortie est HDR quand la source l'est (ou après conversion P5 → HDR10),
     sans tone-mapping, vers un codec capable de HDR. Une demande HDR explicite
     (statique ou dynamique) sur une source au transfert inconnu ou SDR (source
-    PQ mal étiquetée) vaut PQ, comme avant.
+    PQ mal étiquetée) vaut PQ, comme avant. Exception : la copie Dolby Vision
+    d'une source P8.2 (image de base SDR) ne rend pas la sortie HDR.
     """
     if video.codec == "copy" or video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return ""
@@ -274,7 +275,8 @@ def output_hdr_transfer(video: VideoEncodeSettings) -> str:
     kind = transfer_kind(getattr(video, "source_color_transfer", ""))
     if kind in {"pq", "hlg"}:
         return kind
-    if video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus:
+    sdr_base_dovi = str(getattr(video, "dovi_source_profile", "") or "") == "p8_2"
+    if video.inject_hdr_meta or video.copy_hdr10plus or (video.copy_dv and not sdr_base_dovi):
         return "pq"
     return ""
 
@@ -1043,23 +1045,25 @@ def build_encoder_vf(
     return vf
 
 
+# Source Dolby Vision P5 : couleurs IPT converties en HDR10 BT.2020/PQ plage
+# limitée, sans compression des hautes lumières. Images logicielles : libplacebo
+# crée son propre périphérique Vulkan, sans ``-filter_hw_device`` global qui
+# entrerait en conflit avec celui d'un encodeur AMF / VAAPI / QSV.
+P5_TO_HDR10_FILTER = (
+    "libplacebo=apply_dolbyvision=true:"
+    "color_primaries=bt2020:color_trc=smpte2084:"
+    "colorspace=bt2020nc:range=tv:"
+    "tonemapping=clip:peak_detect=false:gamut_mode=clip:"
+    "format=yuv420p10le"
+)
+
+
 def build_vf(video: VideoEncodeSettings) -> str:
     if video.codec == "copy":
         return ""
     chain: list[str] = []
     if bool(getattr(video, "p5_to_hdr10", False)):
-        chain.extend([
-            "format=yuv420p10le",
-            "hwupload",
-            (
-                "libplacebo=apply_dolbyvision=true:"
-                "color_primaries=bt2020:color_trc=smpte2084:"
-                "colorspace=bt2020nc:range=tv:"
-                "tonemapping=clip:peak_detect=false:gamut_mode=clip"
-            ),
-            "hwdownload",
-            "format=yuv420p10le",
-        ])
+        chain.append(P5_TO_HDR10_FILTER)
     chain.extend(_build_filters(video))
     if not video.tonemap_to_sdr:
         return ",".join(chain)
@@ -1080,16 +1084,6 @@ def build_vf(video: VideoEncodeSettings) -> str:
     return ",".join(chain)
 
 
-def p5_filter_device_args(video: VideoEncodeSettings) -> list[str]:
-    """Périphérique Vulkan du filtre libplacebo P5 -> HDR10 (étage de décodage)."""
-    if not bool(getattr(video, "p5_to_hdr10", False)):
-        return []
-    return [
-        "-init_hw_device", "vulkan=mre_dovi",
-        "-filter_hw_device", "mre_dovi",
-    ]
-
-
 def hardware_input_args(
     video: VideoEncodeSettings,
     *,
@@ -1101,7 +1095,7 @@ def hardware_input_args(
     ``piped_frames`` : entrée y4m logicielle — périphérique encodeur seul, sans
     ``-hwaccel`` ni filtre P5 (portés par l'étage de décodage).
     """
-    args: list[str] = [] if piped_frames else p5_filter_device_args(video)
+    args: list[str] = []
     tonemap = bool(video.tonemap_to_sdr)
     software_filtering = has_cpu_video_filter(video) or piped_frames
     force_8bit = force_h264_8bit(video)

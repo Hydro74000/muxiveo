@@ -85,13 +85,27 @@ class NvenccEncodeBackend(EncodeBackend):
             return errors
 
         video = videos[0]
-        if video.copy_dv:
+        routing = None
+        if video.copy_dv or video.p5_to_hdr10:
             try:
                 # Resolve percent crops and the 1:1 DV policy before checking
                 # whether FFmpeg prefilters / dynamic metadata are compatible.
-                video = ctx.workflow._resolve_nvencc_input_routing(config).video
+                routing = ctx.workflow._resolve_nvencc_input_routing(config)
+                video = routing.video
             except Exception as exc:
                 errors.append(str(exc))
+        if (
+            routing is not None
+            and video.copy_dv
+            and video.p5_to_hdr10
+            and not routing.p5_native
+            and ctx.workflow._stream_is_vfr(routing.input_path, routing.stream_index)
+        ):
+            errors.append(
+                "Source Dolby Vision P5 à cadence variable : la conversion par FFmpeg (pipe y4m) ne "
+                "conserve pas les horodatages et désalignerait le RPU. Utilisez une source à cadence "
+                "constante ou x265."
+            )
         if not ctx.workflow._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.inject_hdr_meta and not supports_hdr_output(video.codec):
