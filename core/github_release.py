@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -52,17 +53,54 @@ def release_api_url(repo: str, tag: str | None = None) -> str:
     return f"https://api.github.com/repos/{repo}/releases/{endpoint}"
 
 
-def fetch_release(tool: str, *, user_agent: str = "Muxiveo-builder", timeout: float = 30) -> dict:
-    """Métadonnées de la release de ``tool`` (tag demandé ou dernière)."""
+def fetch_release_by_repo(
+    repo: str, tag: str | None = None, *, user_agent: str = "Muxiveo-builder", timeout: float = 30,
+) -> dict:
+    """Métadonnées de la release ``tag`` (ou de la dernière) du dépôt ``repo``."""
     headers = {"Accept": "application/vnd.github+json", "User-Agent": user_agent}
     # Jeton facultatif (limite anonyme de l'API vite atteinte en CI), envoyé à api.github.com seulement.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    url = release_api_url(THIRD_PARTY_TOOLS[tool], requested_tag(tool))
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(release_api_url(repo, tag), headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # HTTPS api.github.com constant
         return json.loads(resp.read().decode("utf-8"))
+
+
+def fetch_release(tool: str, *, user_agent: str = "Muxiveo-builder", timeout: float = 30) -> dict:
+    """Métadonnées de la release de ``tool`` (tag demandé ou dernière)."""
+    return fetch_release_by_repo(
+        THIRD_PARTY_TOOLS[tool], requested_tag(tool), user_agent=user_agent, timeout=timeout,
+    )
+
+
+def github_release_asset(repo: str, tag: str | None, *patterns: str) -> ReleaseAsset:
+    """Asset ``patterns`` d'une release GitHub quelconque, SHA-256 publié obligatoire.
+
+    Sert aux binaires hors ``THIRD_PARTY_TOOLS`` : muxiveo-rife (release
+    épinglée du dépôt) et FFmpeg BtbN (release roulante ``latest``).
+    """
+    return select_asset(fetch_release_by_repo(repo, tag), repo, *patterns)
+
+
+def published_checksum(url: str, *, timeout: float = 30) -> str:
+    """SHA-256 lu dans un fichier de somme publié (``<archive>.sha256``) ; lève RuntimeError sinon."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Muxiveo-builder"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # URL HTTPS fournie par le packaging
+        text = resp.read(4096).decode("ascii", errors="replace")
+    match = re.search(r"\b[0-9a-fA-F]{64}\b", text)
+    if match is None:
+        raise RuntimeError(f"Somme SHA-256 introuvable dans {url}")
+    return match.group().lower()
+
+
+def verify_sha256(path: Path, expected: str, label: str) -> None:
+    """Lève ``RuntimeError`` si ``path`` ne correspond pas à ``expected``."""
+    actual = file_sha256(path)
+    if actual != expected.lower():
+        raise RuntimeError(
+            f"SHA-256 invalide pour {label} : attendu {expected.lower()}, obtenu {actual}. Téléchargement refusé."
+        )
 
 
 def asset_sha256(asset: dict) -> str | None:
@@ -131,10 +169,14 @@ __all__ = [
     "ReleaseAsset",
     "asset_sha256",
     "fetch_release",
+    "fetch_release_by_repo",
     "file_sha256",
+    "github_release_asset",
+    "published_checksum",
     "release_api_url",
     "release_asset",
     "requested_tag",
     "select_asset",
     "verify_download",
+    "verify_sha256",
 ]

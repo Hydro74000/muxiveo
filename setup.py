@@ -47,6 +47,7 @@ from typing import Any, Optional
 from core.ui_language import system_ui_language
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
 from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
+from core.python_requirements import installed_version, read_requirements, unsatisfied_requirements
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -222,11 +223,10 @@ def detect_linux_distro() -> str:
 # Python requirements
 # ---------------------------------------------------------------------------
 
-PYTHON_PACKAGES = [
-    "PySide6",
-    "pymediainfo>=6.1.0",
-    "numpy>=1.24",
-]
+# Source unique : requirements.txt (nom de distribution, borne minimale,
+# module importable). La liste sert aussi d'argument pip (forme « Nom>=x.y »).
+PYTHON_REQUIREMENTS = read_requirements()
+PYTHON_PACKAGES = [requirement.spec for requirement in PYTHON_REQUIREMENTS]
 
 # ---------------------------------------------------------------------------
 # External tools definition
@@ -1063,6 +1063,11 @@ def autofill_windows_config_ini(prefix: Path, dry_run: bool, force: bool = False
 def install_python_packages(dry_run: bool, force: bool = False) -> None:
     title("Step 1 — Python packages")
 
+    if getattr(sys, "frozen", False):
+        # Application figée : dépendances embarquées, pas d'interpréteur pip.
+        ok("Python packages bundled with the application")
+        return
+
     if force:
         step(f"Installing: {', '.join(PYTHON_PACKAGES)}")
         run(
@@ -1072,25 +1077,25 @@ def install_python_packages(dry_run: bool, force: bool = False) -> None:
         ok("Python packages installed")
         return
 
-    missing = []
-    for pkg in PYTHON_PACKAGES:
-        module = re.split(r"[<>=!~]", pkg, maxsplit=1)[0]
-        module = module.split("[", 1)[0].lower().replace("-", "_")
-        try:
-            __import__(module)
-            ok(f"{pkg} already installed")
-        except ImportError:
-            missing.append(pkg)
+    # Version de la distribution installée (importlib.metadata) comparée à la
+    # borne de requirements.txt : un import réussi ne prouve pas la version.
+    unsatisfied = unsatisfied_requirements(PYTHON_REQUIREMENTS)
+    pending = {requirement.distribution for requirement, _version in unsatisfied}
+    for requirement in PYTHON_REQUIREMENTS:
+        if requirement.distribution not in pending:
+            ok(f"{requirement.distribution} {installed_version(requirement.distribution)} already installed")
+    for requirement, version in unsatisfied:
+        state = "missing" if version is None else f"{version} too old"
+        warn(f"{requirement.spec}: {state}")
 
-    if not missing:
+    if not unsatisfied:
         ok("All Python packages already satisfied")
         return
 
-    step(f"Installing: {', '.join(missing)}")
-    run(
-        [sys.executable, "-m", "pip", "install", "--upgrade"] + missing,
-        dry_run=dry_run,
-    )
+    specs = [requirement.spec for requirement, _version in unsatisfied]
+    step(f"Installing: {', '.join(specs)}")
+    # pip ne met à niveau que ce qui ne satisfait pas la contrainte.
+    run([sys.executable, "-m", "pip", "install"] + specs, dry_run=dry_run)
     ok("Python packages installed")
 
 # ---------------------------------------------------------------------------
