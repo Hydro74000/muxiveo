@@ -71,6 +71,16 @@ def _no_vulkan_probe_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_nvof_probe_by_default(monkeypatch):
+    """Tableau de bord : aucun ``muxiveo-rife --list-gpus`` réel (sonde CUDA) pendant les tests."""
+    from core.workflows.encode import interpolation
+
+    monkeypatch.setattr(
+        interpolation, "detect_nvof", lambda _rife_bin, **_kw: interpolation.NvofCapability(reason="tests")
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolated_output_locks(monkeypatch, tmp_path_factory):
     """Verrous de destination des workflows dans un dossier de test, jamais dans le cache utilisateur."""
     from core import output_commit

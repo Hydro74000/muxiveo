@@ -267,11 +267,16 @@ class FrameInterpolationSettings:
     enabled: bool = False
     factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | light (modèle RIFE ; « max » : ancien preset)
+    quality: str = "balanced"         # fast | balanced | quality | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
+
+    def __post_init__(self) -> None:
+        # Ancien préréglage « max » (presets enregistrés) → « quality ».
+        if self.quality == "max":
+            self.quality = "quality"
 
     def is_active(self) -> bool:
         return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)

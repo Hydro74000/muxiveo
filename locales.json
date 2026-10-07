@@ -4951,9 +4951,9 @@
     "fra": "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.",
     "eng": "Fast mode: optical flow computed at half resolution (RIFE UHD). In 4K: 16 to 36% faster and 44% less GPU memory, for a slight quality loss; at 1080p the loss is larger."
   },
-  "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).": {
-    "fra": "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).",
-    "eng": "RIFE model: Fast and Balanced (v4.6), Light (v4.15 lite + Fast mode, small graphics cards)."
+  "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité (hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est disponible, sinon le GPU Vulkan seul.": {
+    "fra": "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité (hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est disponible, sinon le GPU Vulkan seul.",
+    "eng": "Preset: Fast (RIFE v4.6); Balanced (hybrid: RIFE v4.6 + motion compensation, keeps bars and repeating patterns straight, about 1.35 times the Fast time); Quality (hybrid with RIFE v4.15, about 2 times the Fast time); Light (v4.15 lite + Fast mode, small graphics cards). Hybrid presets use NVIDIA optical flow when available, otherwise the Vulkan GPU alone."
   },
   "Light": {
     "fra": "Light",
@@ -5486,5 +5486,13 @@
   "vitesse max": {
     "fra": "vitesse max",
     "eng": "maximum speed"
+  },
+  "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}": {
+    "fra": "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}",
+    "eng": "NVIDIA optical flow used by hybrid interpolation (Balanced and Quality presets): {device}"
+  },
+  "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.": {
+    "fra": "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.",
+    "eng": "NVIDIA optical flow unavailable: {reason}. Hybrid interpolation remains available on the Vulkan GPU alone."
   }
 }

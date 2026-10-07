@@ -120,6 +120,21 @@ def test_dashboard_vulkan_badge_and_propagation(qt_app):
     assert badge.text == "Vulkan:unavailable" and "aucun GPU dédié" in badge.tip
 
 
+def test_dashboard_nvof_badge(qt_app):
+    from core.workflows.encode.interpolation import NvofCapability
+
+    badge = SimpleNamespace(text="", tip="")
+    page = SimpleNamespace(
+        _nvof_badge=badge,
+        _apply_encoder_badge_state=lambda b, label, state: setattr(b, "text", f"{label}:{state}"),
+    )
+    badge.setToolTip = lambda tip: setattr(badge, "tip", tip)  # type: ignore[attr-defined]
+    DashboardPage._on_nvof_detected(cast(Any, page), NvofCapability(available=True, device="RTX 4070"))
+    assert badge.text == "NVOF·CUDA:available" and "RTX 4070" in badge.tip
+    DashboardPage._on_nvof_detected(cast(Any, page), NvofCapability(device="GTX 1070", reason="GPU sans NVOFA"))
+    assert badge.text == "NVOF·CUDA:unavailable" and "GPU sans NVOFA" in badge.tip and "Vulkan" in badge.tip
+
+
 def test_encode_panel_forwards_capability_to_workflow(qt_app):
     from core.config import AppConfig
     from ui.panels.encode_panel.panel import EncodePanel

@@ -7,7 +7,7 @@ la vidéo passe par un pipeline de trois processus reliés par des pipes ::
     ffmpeg (décodage + filtres logiciels) | muxiveo-rife | encodeur
 
 Public:
-    INTERPOLATION_MODELS, INTERPOLATION_FACTORS, INTERPOLATION_MODES
+    INTERPOLATION_PRESETS, INTERPOLATION_MODELS, INTERPOLATION_FACTORS, INTERPOLATION_MODES
     PipelineCommand          — commande finale précédée d'étages amont
     InterpolationSource      — couleur / décalage de départ de la source
     probe_interpolation_source(...)
@@ -38,17 +38,32 @@ from core.pipeline_command import PipelineCommand, command_stages
 if TYPE_CHECKING:
     from core.workflows.encode.models import VideoEncodeSettings
 
-# Préréglage qualité → modèle RIFE embarqué (voir native/muxiveo-rife/models.json).
-# v4.6 : meilleur VMAF moyen, débit le plus élevé et VRAM la plus basse sur le banc
-# (docs/benchmarks) ; Light = v4.15-lite toujours en mode Fast (petites cartes).
-INTERPOLATION_MODELS: dict[str, str] = {
-    "fast": "rife-v4.6",
-    "balanced": "rife-v4.6",
-    "light": "rife-v4.15-lite",
-    "max": "rife-v4.6",  # ancien préréglage Max (v4.25-heavy), conservé pour les presets enregistrés
+@dataclass(frozen=True)
+class InterpolationPreset:
+    """Préréglage qualité : moteur muxiveo-rife et modèle RIFE embarqué (native/muxiveo-rife/models.json)."""
+
+    engine: str           # rife | hybrid (RIFE + compensation de mouvement par blocs)
+    model: str
+    force_fast: bool = False  # mode Fast (--uhd) imposé
+
+
+# Moteur hybride : barreaux et motifs fins répétitifs gardés droits là où RIFE les fait onduler
+# (docs/benchmarks/2026-10-07-interpolation-hybride.md). v4.6 : meilleur VMAF moyen, débit le
+# plus élevé et VRAM la plus basse ; v4.15 : meilleur résultat hybride (coût ≈ 2 × RIFE) ;
+# Light = v4.15-lite toujours en mode Fast (petites cartes).
+INTERPOLATION_PRESETS: dict[str, InterpolationPreset] = {
+    "fast": InterpolationPreset("rife", "rife-v4.6"),
+    "balanced": InterpolationPreset("hybrid", "rife-v4.6"),
+    "quality": InterpolationPreset("hybrid", "rife-v4.15"),
+    "light": InterpolationPreset("rife", "rife-v4.15-lite", force_fast=True),
 }
+# Ancien préréglage « max » (presets enregistrés) : remplacé par « quality ».
+INTERPOLATION_LEGACY_QUALITIES: dict[str, str] = {"max": "quality"}
+INTERPOLATION_MODELS: dict[str, str] = {name: preset.model for name, preset in INTERPOLATION_PRESETS.items()}
 # Préréglages qui imposent le mode Fast (--uhd).
-INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset({"light"})
+INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset(
+    name for name, preset in INTERPOLATION_PRESETS.items() if preset.force_fast
+)
 INTERPOLATION_DEFAULT_QUALITY = "balanced"
 INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
 # Cadences cibles proposées (rapport non entier possible, ex. 23,976 -> 59,94 = x2,5).
@@ -60,6 +75,14 @@ RIFE_MIN_VERSION: tuple[int, int, int] = (1, 1, 0)
 # Moyennage TTA (--tta) : nombre de passes moyennées par image interpolée (1 = désactivé).
 INTERPOLATION_TTA_LEVELS: tuple[int, ...] = (1, 2, 4, 8)
 RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
+# Moteur hybride (--engine hybrid, flux optique NVIDIA facultatif) : release 1.3.0.
+RIFE_HYBRID_MIN_VERSION: tuple[int, int, int] = (1, 3, 0)
+
+
+def interpolation_preset(quality: str | None) -> InterpolationPreset:
+    """Préréglage d'un nom de qualité (ancien nom migré, inconnu → défaut)."""
+    name = INTERPOLATION_LEGACY_QUALITIES.get(str(quality or ""), str(quality or ""))
+    return INTERPOLATION_PRESETS.get(name, INTERPOLATION_PRESETS[INTERPOLATION_DEFAULT_QUALITY])
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -328,20 +351,23 @@ def build_rife_stage(
 
     ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
     ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
+    Préréglage hybride : ``--engine hybrid`` (flux optique NVIDIA utilisé s'il est disponible).
     """
-    model = INTERPOLATION_MODELS.get(str(quality or ""), INTERPOLATION_MODELS[INTERPOLATION_DEFAULT_QUALITY])
+    preset = interpolation_preset(quality)
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
     cmd = [
         str(rife_bin),
         *rate_args,
-        "--model", model,
+        "--model", preset.model,
         "--matrix", source.matrix,
         "--range", source.color_range,
         "--chroma-loc", source.chroma_location,
         "--scene-threshold", f"{max(0.0, float(scene_threshold)):g}",
         "--progress-interval", str(_RIFE_PROGRESS_INTERVAL_S),
     ]
-    if mode == "fast" or quality in INTERPOLATION_FAST_QUALITIES:
+    if preset.engine != "rife":
+        cmd.extend(["--engine", preset.engine])
+    if mode == "fast" or preset.force_fast:
         cmd.append("--uhd")
     if int(gpu) >= 0:
         cmd.extend(["--gpu", str(int(gpu))])
@@ -391,6 +417,53 @@ def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple
 def clear_rife_version_cache() -> None:
     """Vide le cache des versions ``muxiveo-rife`` (tests)."""
     _rife_version_cached.cache_clear()
+
+
+@dataclass(frozen=True)
+class NvofCapability:
+    """Flux optique matériel NVIDIA (CUDA) du moteur hybride, sur le GPU utilisé par muxiveo-rife.
+
+    Information seulement : muxiveo-rife active ou écarte le flux lui-même à chaque encodage.
+    """
+
+    available: bool = False
+    device: str = ""
+    reason: str = ""
+
+
+def detect_nvof(rife_bin: str | None, *, gpu: int = -1, timeout: float = 60.0) -> NvofCapability:
+    """Disponibilité du flux optique NVIDIA, sondée par ``muxiveo-rife --list-gpus`` (≥ 1.3.0).
+
+    ``gpu`` : index Vulkan (-1 = GPU par défaut de muxiveo-rife, celui des encodages).
+    """
+    resolved = shutil.which(str(rife_bin)) if rife_bin else None
+    if not resolved and rife_bin and Path(rife_bin).is_file():
+        resolved = str(rife_bin)
+    if not resolved:
+        return NvofCapability(reason="muxiveo-rife introuvable")
+    version = rife_version(resolved)
+    if version is None or version < RIFE_HYBRID_MIN_VERSION:
+        installed = ".".join(map(str, version)) if version else "?"
+        required = ".".join(map(str, RIFE_HYBRID_MIN_VERSION))
+        return NvofCapability(reason=f"muxiveo-rife {required} ou plus récent requis (installé : {installed})")
+    try:
+        # Binaire RIFE configuré ; seul argument constant --list-gpus, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
+            [resolved, "--list-gpus"], capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
+        )
+        payload = json.loads(result.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return NvofCapability(reason=f"liste des GPU illisible ({type(exc).__name__})")
+    gpus = [g for g in payload.get("gpus") or [] if isinstance(g, dict)] if isinstance(payload, dict) else []
+    index = int(gpu) if int(gpu) >= 0 else int(payload.get("default", -1) if isinstance(payload, dict) else -1)
+    chosen = next((g for g in gpus if g.get("index") == index), None)
+    if chosen is None:
+        return NvofCapability(reason="aucun GPU Vulkan")
+    device = str(chosen.get("name") or "")
+    if chosen.get("nvof") is True:
+        return NvofCapability(available=True, device=device)
+    return NvofCapability(device=device, reason=str(chosen.get("nvof_status") or "indisponible"))
 
 
 @dataclass(frozen=True)
@@ -691,8 +764,15 @@ __all__ = [
     "INTERPOLATION_MODELS",
     "INTERPOLATION_MODES",
     "INTERPOLATION_FAST_QUALITIES",
+    "INTERPOLATION_LEGACY_QUALITIES",
+    "INTERPOLATION_PRESETS",
+    "InterpolationPreset",
+    "NvofCapability",
+    "detect_nvof",
+    "RIFE_HYBRID_MIN_VERSION",
     "RIFE_MIN_VERSION",
     "RIFE_TTA_MIN_VERSION",
+    "interpolation_preset",
     "INTERPOLATION_TTA_LEVELS",
     "rife_model_available",
     "InterpolationSource",

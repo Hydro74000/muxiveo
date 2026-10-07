@@ -47,7 +47,9 @@ from core.workflows.encode import (
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
 from core.workflows.encode.interpolation import (
+    INTERPOLATION_DEFAULT_QUALITY,
     INTERPOLATION_FACTORS,
+    INTERPOLATION_PRESETS,
     INTERPOLATION_TARGET_FPS,
     INTERPOLATION_TTA_LEVELS,
 )
@@ -1770,9 +1772,13 @@ class EncodePanel(QWidget):
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
         self._interp_quality_combo.setToolTip(
-            "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques)."
+            "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, "
+            "barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité "
+            "(hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, "
+            "petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est "
+            "disponible, sinon le GPU Vulkan seul."
         )
-        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Light", "light")):
+        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Qualité", "quality"), ("Light", "light")):
             self._interp_quality_combo.addItem(label, value)
         self._set_combo_data(self._interp_quality_combo, "balanced")
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
@@ -1899,7 +1905,7 @@ class EncodePanel(QWidget):
             return
         self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
-        quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
+        quality = settings.quality if settings.quality in INTERPOLATION_PRESETS else INTERPOLATION_DEFAULT_QUALITY
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
         self._set_combo_data(self._interp_tta_combo, int(settings.tta) if int(settings.tta) in INTERPOLATION_TTA_LEVELS else 1)
@@ -4736,6 +4742,10 @@ class EncodePanel(QWidget):
             )
             if interpolation.quality == "light":
                 badge += " Light"
+            elif interpolation.quality == "quality":
+                badge += " " + translate_text("Qualité")
+            elif interpolation.quality == "fast":
+                badge += " " + translate_text("Rapide")
             if interpolation.fast_mode():
                 badge += " Fast"
             if int(interpolation.tta) > 1:

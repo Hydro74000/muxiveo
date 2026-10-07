@@ -48,6 +48,8 @@ from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encod
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS,
+    NvofCapability,
+    detect_nvof as real_detect_nvof,  # capturée avant la neutralisation de tests/conftest.py
     frame_repeats,
     ratio_label,
     InterpolationSource,
@@ -102,6 +104,7 @@ class TestSettings:
         video = VideoEncodeSettings(interpolation=cast(FrameInterpolationSettings, {"enabled": True, "factor": 3, "quality": "max"}))
         assert isinstance(video.interpolation, FrameInterpolationSettings)
         assert video.interpolation.factor == 3
+        assert video.interpolation.quality == "quality"  # ancien préréglage Max migré
         assert video.has_video_transform()
 
     def test_preset_roundtrip(self):
@@ -202,7 +205,9 @@ def test_rife_stage_arguments():
     )
     assert cmd[0] == "/opt/muxiveo-rife"
     assert cmd[cmd.index("--factor") + 1] == "3"
-    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["max"]
+    # ancien préréglage Max : préréglage Qualité (hybride + v4.15)
+    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["quality"] == "rife-v4.15"
+    assert cmd[cmd.index("--engine") + 1] == "hybrid"
     assert cmd[cmd.index("--matrix") + 1] == "bt2020nc"
     assert cmd[cmd.index("--chroma-loc") + 1] == "topleft"
     assert cmd[cmd.index("--scene-threshold") + 1] == "12.5"
@@ -219,12 +224,56 @@ def test_rife_stage_arguments():
 
 def test_presets_map_to_benchmarked_models():
     assert INTERPOLATION_MODELS["fast"] == INTERPOLATION_MODELS["balanced"] == "rife-v4.6"
-    assert INTERPOLATION_MODELS["max"] == "rife-v4.6"  # ancien preset Max enregistré
+    assert INTERPOLATION_MODELS["quality"] == "rife-v4.15"
+    assert "max" not in INTERPOLATION_MODELS
+    fast = build_rife_stage("r", quality="fast", source=InterpolationSource())
+    assert "--engine" not in fast  # RIFE seul : commande inchangée, compatible avec les anciens binaires
+    for quality in ("balanced", "quality", "?"):
+        stage = build_rife_stage("r", quality=quality, source=InterpolationSource())
+        assert stage[stage.index("--engine") + 1] == "hybrid"
+        assert "--nvof" not in stage  # flux NVIDIA : auto (défaut du binaire)
     light = build_rife_stage("r", quality="light", source=InterpolationSource(), mode="normal")
     assert light[light.index("--model") + 1] == "rife-v4.15-lite"
     assert "--uhd" in light  # Light impose le mode Fast
     assert _interp(quality="light").fast_mode()
     assert not _interp(quality="balanced").fast_mode()
+
+
+_GPU_LISTING = json.dumps({"version": "1.3.0", "default": 0, "gpus": [
+    {"index": 0, "name": "NVIDIA GeForce RTX 4070", "type": "discrete", "fp16": True, "nvof": True, "nvof_status": "disponible"},
+    {"index": 1, "name": "NVIDIA GeForce GTX 1070", "type": "discrete", "fp16": True, "nvof": False,
+     "nvof_status": "session Optical Flow refusée (GPU sans NVOFA ou dimensions non prises en charge)"},
+]})
+
+
+def test_detect_nvof_reads_gpu_listing(tmp_path):
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_text("")
+    listing = subprocess.CompletedProcess([], 0, stdout=_GPU_LISTING, stderr="")
+    with patch("core.workflows.encode.interpolation.rife_version", return_value=(1, 3, 0)), \
+            patch("core.workflows.encode.interpolation.subprocess.run", return_value=listing) as run:
+        default = real_detect_nvof(str(binary))
+        pascal = real_detect_nvof(str(binary), gpu=1)
+        absent = real_detect_nvof(str(binary), gpu=5)
+    assert run.call_args.args[0][1:] == ["--list-gpus"]
+    assert default == NvofCapability(available=True, device="NVIDIA GeForce RTX 4070")
+    assert not pascal.available and "NVOFA" in pascal.reason and pascal.device.endswith("1070")
+    assert not absent.available and absent.reason == "aucun GPU Vulkan"
+
+
+def test_detect_nvof_requires_hybrid_capable_rife(tmp_path):
+    assert real_detect_nvof(None).reason == "muxiveo-rife introuvable"
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_text("")
+    with patch("core.workflows.encode.interpolation.rife_version", return_value=(1, 2, 3)), \
+            patch("core.workflows.encode.interpolation.subprocess.run") as run:
+        old = real_detect_nvof(str(binary))
+    run.assert_not_called()
+    assert not old.available and "1.3.0" in old.reason and "1.2.3" in old.reason
+    with patch("core.workflows.encode.interpolation.rife_version", return_value=(1, 3, 0)), \
+            patch("core.workflows.encode.interpolation.subprocess.run",
+                  return_value=subprocess.CompletedProcess([], 0, stdout="pas du json", stderr="")):
+        assert "illisible" in real_detect_nvof(str(binary)).reason
 
 
 def test_rife_version_parsed_from_binary():
@@ -624,7 +673,7 @@ class TestWorkflowInterpolation:
             assert not interp_workflow._interpolation_source(_video(), tmp_path / "s.mkv").is_vfr
 
     def test_fast_mode_requires_recent_rife(self, interp_workflow, tmp_path):
-        cfg = _cfg(tmp_path, _video(interpolation=_interp(mode="fast")))
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(mode="fast", quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
                 errors = interp_workflow._interpolation_validation_errors(cfg)
@@ -646,15 +695,34 @@ class TestWorkflowInterpolation:
         model = tmp_path / "rife-models" / "rife-v4.6"
         model.mkdir(parents=True)
         (model / "flownet.param").write_text("")
-        cfg = _cfg(tmp_path, _video(interpolation=_interp(tta=4)))
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(tta=4, quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 1)):
                 old = interp_workflow._interpolation_validation_errors(cfg)
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 2, 0)):
                 assert interp_workflow._interpolation_validation_errors(cfg) == []
-                bad = _cfg(tmp_path, _video(interpolation=_interp(tta=3)))
+                bad = _cfg(tmp_path, _video(interpolation=_interp(tta=3, quality="fast")))
                 assert any("TTA x3" in e for e in interp_workflow._interpolation_validation_errors(bad))
         assert len(old) == 1 and "TTA" in old[0] and "1.2.0" in old[0] and "1.1.1" in old[0]
+
+    def test_hybrid_presets_require_rife_1_3_and_their_model(self, interp_workflow, tmp_path):
+        for name in ("rife-v4.6", "rife-v4.15"):
+            (tmp_path / "rife-models" / name).mkdir(parents=True)
+        (tmp_path / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
+        balanced = _cfg(tmp_path, _video(interpolation=_interp()))
+        quality = _cfg(tmp_path, _video(interpolation=_interp(quality="quality")))
+        fast = _cfg(tmp_path, _video(interpolation=_interp(quality="fast")))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 2, 3)):
+                old = interp_workflow._interpolation_validation_errors(balanced)
+                assert interp_workflow._interpolation_validation_errors(fast) == []
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 3, 0)):
+                assert interp_workflow._interpolation_validation_errors(balanced) == []
+                missing = interp_workflow._interpolation_validation_errors(quality)
+                assert len(missing) == 1 and "rife-v4.15" in missing[0]
+                (tmp_path / "rife-models" / "rife-v4.15" / "flownet.param").write_text("")
+                assert interp_workflow._interpolation_validation_errors(quality) == []
+        assert len(old) == 1 and "hybride" in old[0] and "1.3.0" in old[0] and "1.2.3" in old[0]
 
     def test_vfr_with_dynamic_hdr_copy_rejected(self, interp_workflow, tmp_path):
         payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")

@@ -26,6 +26,7 @@ from core.workflows.encode import (
     VideoEncodeSettings,
 )
 
+from core.workflows.encode.interpolation import RIFE_HYBRID_MIN_VERSION, rife_version
 from tests.integration._synth import ffprobe_json, make_av_container, streams_of_type, wait_task
 
 
@@ -109,6 +110,37 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
     assert any("muxiveo-rife" in str(line) for line in state["progress"])
 
 
+@pytest.mark.skipif(
+    not RIFE_BIN or (rife_version(RIFE_BIN) or (0, 0, 0)) < RIFE_HYBRID_MIN_VERSION,
+    reason="moteur hybride : muxiveo-rife ≥ 1.3.0 requis",
+)
+def test_encode_interpolation_hybrid_preset(tmp_path: Path) -> None:
+    """Préréglage Équilibré (défaut) : moteur hybride, cadence et nombre d'images exacts."""
+    src = tmp_path / "src.mkv"
+    make_av_container(src, duration=1.0)
+    src_frames = _frame_count(src)
+    out = tmp_path / "hybrid.mkv"
+    cfg = EncodeConfig(
+        source=src,
+        output=out,
+        video=VideoEncodeSettings(
+            codec="libx264", quality_mode=QualityMode.CRF, crf=30, preset="ultrafast",
+            interpolation=FrameInterpolationSettings(enabled=True, factor=2),
+        ),
+        audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+        copy_subtitles=False,
+        keep_chapters=False,
+        duration_s=1.0,
+    )
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+                        rife_bin=RIFE_BIN)
+    assert wf.validate(cfg) == []
+    state = wait_task(wf.run(cfg), timeout=180.0)
+    assert state["failed"] is None, f"Encode failed: {state['failed']}"
+    assert _frame_count(out) == 2 * src_frames
+    assert any("moteur hybrid" in str(line) for line in state["progress"])
+
+
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
 def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str) -> None:
     """Un retard vidéo (+400 ms) survit à l'encode interpolé et à l'assemblage final."""
@@ -120,7 +152,7 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         output=out,
         video=VideoEncodeSettings(
             codec="libx264", quality_mode=QualityMode.CRF, crf=30, preset="ultrafast",
-            interpolation=FrameInterpolationSettings(enabled=True, factor=2),
+            interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast"),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
         copy_subtitles=False,

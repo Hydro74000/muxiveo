@@ -711,6 +711,8 @@ class DashboardPage(QWidget):
     _vulkan_detected = Signal(str, object)
     # Réémis depuis le thread principal (après le câblage de la fenêtre) vers les panneaux.
     vulkan_ready = Signal(str, object)
+    # NvofCapability : flux optique NVIDIA du moteur d'interpolation hybride (badge informatif).
+    _nvof_detected = Signal(object)
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
@@ -743,7 +745,9 @@ class DashboardPage(QWidget):
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
+        self._nvof_detected.connect(self._on_nvof_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_badge: QLabel | None = None
+        self._nvof_badge: QLabel | None = None
         self._build_ui()
         self._start_hw_detection()
 
@@ -971,6 +975,9 @@ class DashboardPage(QWidget):
         row, rl = _row("Filtres GPU")
         self._vulkan_badge = self._make_encoder_badge("Vulkan", "pending")
         rl.addWidget(self._vulkan_badge)
+        # Flux optique NVIDIA (CUDA) de l'interpolation hybride, sondé par muxiveo-rife.
+        self._nvof_badge = self._make_encoder_badge("NVOF·CUDA", "pending")
+        rl.addWidget(self._nvof_badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -1037,9 +1044,12 @@ class DashboardPage(QWidget):
             self._apply_encoder_badge_state(badge, label, "pending")
         if self._vulkan_badge is not None:
             self._apply_encoder_badge_state(self._vulkan_badge, "Vulkan", "pending")
+        if self._nvof_badge is not None:
+            self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "pending")
         self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
         self._executor.submit(self._run_vulkan_detection)
+        self._executor.submit(self._run_nvof_detection)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
@@ -1086,6 +1096,33 @@ class DashboardPage(QWidget):
             translate_text("NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}", device=device or "?")
             if ok
             else translate_text("Vulkan indisponible pour FFmpeg : {reason}", reason=reason or "?")
+        )
+
+    def _run_nvof_detection(self) -> None:
+        """Thread worker : flux optique NVIDIA sur le GPU de muxiveo-rife (``--list-gpus``)."""
+        from core.workflows.encode import interpolation
+
+        rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
+        self._nvof_detected.emit(interpolation.detect_nvof(str(rife)))
+
+    def _on_nvof_detected(self, capability: object) -> None:
+        """Slot Qt (thread principal) : badge NVOF et info-bulle (information seulement)."""
+        if self._nvof_badge is None:
+            return
+        ok = bool(getattr(capability, "available", False))
+        self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "available" if ok else "unavailable")
+        device = str(getattr(capability, "device", "") or "")
+        reason = str(getattr(capability, "reason", "") or "")
+        self._nvof_badge.setToolTip(
+            translate_text(
+                "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}",
+                device=device or "?",
+            )
+            if ok
+            else translate_text(
+                "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.",
+                reason=reason or "?",
+            )
         )
 
     def _on_hw_detected(self, available: set[str]) -> None:

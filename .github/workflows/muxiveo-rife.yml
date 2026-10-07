@@ -187,7 +187,8 @@ jobs:
           cp "$BIN" "$PKG/"
           python native/muxiveo-rife/scripts/fetch_models.py "$PKG/rife-models"
           cp native/muxiveo-rife/README.md native/muxiveo-rife/UPSTREAM.md native/muxiveo-rife/models.json "$PKG/"
-          cp LICENSES/MIT-rife-ncnn-vulkan.txt LICENSES/BSD-3-Clause-ncnn.txt LICENSES/MIT-Practical-RIFE.txt "$PKG/LICENSES/"
+          cp LICENSES/MIT-rife-ncnn-vulkan.txt LICENSES/BSD-3-Clause-ncnn.txt LICENSES/MIT-Practical-RIFE.txt \
+             LICENSES/BSD-3-Clause-NVIDIA-Optical-Flow-SDK.txt "$PKG/LICENSES/"
           if [ "$RUNNER_OS" = "macOS" ]; then
             MVK="$(brew --prefix molten-vk)"
             cp "$MVK/lib/libMoltenVK.dylib" "$PKG/"

@@ -119,10 +119,12 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
+    RIFE_HYBRID_MIN_VERSION as _RIFE_HYBRID_MIN_VERSION,
     RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
     RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
     INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
     rife_model_available as _rife_model_available,
+    interpolation_preset as _interpolation_preset,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     parse_rife_progress as _parse_rife_progress,
@@ -3336,6 +3338,17 @@ class EncodeWorkflow(QObject):
                         "Interpolation d'images : le TTA requiert muxiveo-rife "
                         f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
                         f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
+                    )
+                elif (
+                    version is not None
+                    and _interpolation_preset(settings.quality).engine == "hybrid"
+                    and version < _RIFE_HYBRID_MIN_VERSION
+                ):
+                    errors.append(
+                        "Interpolation d'images : le moteur hybride (préréglages Équilibré et Qualité) requiert "
+                        f"muxiveo-rife {'.'.join(map(str, _RIFE_HYBRID_MIN_VERSION))} ou plus récent "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup, "
+                        "ou choisir le préréglage Rapide."
                     )
                 elif version is not None and model and not _rife_model_available(resolved, model):
                     errors.append(

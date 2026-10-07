@@ -285,3 +285,128 @@ def test_tta_rejects_unsupported_count() -> None:
     proc = run_rife(data, "--tta", "3", "--matrix", "bt709")
     assert proc.returncode == 1
     assert b"--tta" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Moteur hybride (RIFE + compensation de mouvement par blocs), 1.3.0+
+# ---------------------------------------------------------------------------
+
+def _rife_version() -> tuple[int, ...]:
+    if not RIFE_BIN:
+        return ()
+    out = subprocess.run([RIFE_BIN, "--version"], capture_output=True, text=True, timeout=15, check=False).stdout
+    parts = (out.split() + ["", ""])[1].split(".")
+    return tuple(int(p) for p in parts if p.isdigit())
+
+
+needs_hybrid = pytest.mark.skipif(_rife_version() < (1, 3, 0), reason="moteur hybride : muxiveo-rife ≥ 1.3.0")
+
+
+@needs_hybrid
+def test_gpu_listing_reports_nvof_availability() -> None:
+    assert all(isinstance(gpu.get("nvof"), bool) and gpu.get("nvof_status") for gpu in GPUS)
+
+
+@needs_hybrid
+@pytest.mark.parametrize("pix_fmt", ["yuv420p", "yuv420p10le"])
+def test_hybrid_factor_two_keeps_originals_bit_exact(pix_fmt: str) -> None:
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=8, pix_fmt=pix_fmt)
+    src = parse_y4m(data)
+    proc = run_rife(data, "--engine", "hybrid", "--factor", "2", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    out = parse_y4m(proc.stdout)
+    assert out.fps == "50:1"
+    assert out.frames[0::2] == src.frames
+    assert out.frames[1] not in (src.frames[0], src.frames[1])
+    assert b"done in=8 out=16" in proc.stderr
+    depth = 10 if "10" in pix_fmt else 8
+    plain = parse_y4m(run_rife(data, "--factor", "2", "--matrix", "bt709").stdout)
+    # même scène que RIFE seul, sans être la même image
+    assert _psnr(out.frames[1], plain.frames[1], depth) > 20.0
+
+
+@needs_hybrid
+def test_hybrid_target_fps_and_factor_four() -> None:
+    data = make_y4m("testsrc2=size=128x64:rate=24000/1001", frames=5)
+    proc = run_rife(data, "--engine", "hybrid", "--fps", "60000/1001", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    out = parse_y4m(proc.stdout)
+    assert out.fps == "60000:1001"
+    assert len(out.frames) == 13  # ceil(5 × 2,5)
+    proc = run_rife(data, "--engine", "hybrid", "--factor", "4", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    out = parse_y4m(proc.stdout)
+    assert len(out.frames) == 20
+    assert out.frames[0::4] == parse_y4m(data).frames
+
+
+@needs_hybrid
+def test_hybrid_pairs_do_not_share_state() -> None:
+    """Chaque paire est interpolée indépendamment, même après une paire figée sautée."""
+    base = parse_y4m(make_y4m("testsrc2=size=160x96:rate=25", frames=5))
+    header = make_y4m("testsrc2=size=160x96:rate=25", frames=1).split(b"\n", 1)[0] + b"\n"
+
+    def stream(frames: list[bytes]) -> bytes:
+        return header + b"".join(b"FRAME\n" + f for f in frames)
+
+    frames = [base.frames[0], base.frames[1], base.frames[1], base.frames[2], base.frames[3], base.frames[4]]
+    args = ("--engine", "hybrid", "--nvof", "off", "--factor", "2", "--matrix", "bt709")
+    full = run_rife(stream(frames), *args)
+    assert full.returncode == 0, full.stderr.decode()
+    out = parse_y4m(full.stdout)
+    assert b"static=1" in full.stderr
+    for k in (0, 2, 3, 4):
+        pair = run_rife(stream(frames[k:k + 2]), *args)
+        assert pair.returncode == 0, pair.stderr.decode()
+        assert out.frames[2 * k + 1] == parse_y4m(pair.stdout).frames[1], f"paire {k}"
+
+
+@needs_hybrid
+def test_hybrid_keeps_scene_cut_and_static_duplication() -> None:
+    first = make_y4m("testsrc2=size=128x64:rate=25", frames=3)
+    second = make_y4m("smptebars=size=128x64:rate=25", frames=3)
+    data = first + second[second.index(b"\n") + 1:]
+    src = parse_y4m(data)
+    proc = run_rife(data, "--engine", "hybrid", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert parse_y4m(proc.stdout).frames[5] == src.frames[2]
+    assert b"scenes=1" in proc.stderr
+
+    still = make_y4m("color=c=gray:size=96x64:rate=25", frames=4)
+    proc = run_rife(still, "--engine", "hybrid", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert b"interpolated=0" in proc.stderr
+
+
+@needs_hybrid
+@pytest.mark.parametrize("extra", [["--tta", "2"], ["--uhd"], ["--model", "rife-v4.15-lite"]])
+def test_hybrid_combines_with_rife_options(extra: list[str]) -> None:
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=4, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    proc = run_rife(data, "--engine", "hybrid", *extra, "--factor", "2", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    out = parse_y4m(proc.stdout)
+    assert out.frames[0::2] == src.frames
+
+
+@needs_hybrid
+def test_hybrid_reports_optical_flow_status() -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=3)
+    gpu = GPUS[_test_gpu()] if _test_gpu() >= 0 else next(
+        (g for g in GPUS if g["index"] == 0), GPUS[0])
+    for nvof, expected in (("off", "désactivé"), ("auto", "actif" if gpu.get("nvof") else "indisponible")):
+        proc = subprocess.run(
+            [RIFE_BIN, "-g", str(_test_gpu()), "--engine", "hybrid", "--nvof", nvof, "--matrix", "bt709"],
+            input=data, capture_output=True, timeout=120, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr.decode()
+        assert f"moteur hybrid | flux optique NVIDIA : {expected}" in proc.stderr.decode()
+
+
+@needs_hybrid
+@pytest.mark.parametrize("args", [["--engine", "magic"], ["--nvof", "on"]])
+def test_hybrid_rejects_unknown_option_values(args: list[str]) -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
+    proc = run_rife(data, *args, "--matrix", "bt709")
+    assert proc.returncode == 1
+    assert args[0].encode() in proc.stderr
