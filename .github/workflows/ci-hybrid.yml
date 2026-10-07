@@ -23,7 +23,9 @@ jobs:
       - run: python -m pip install -r requirements.txt pytest
       - name: Install media tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg mediainfo libegl1 libopengl0
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg mediainfo libegl1 libopengl0
       - name: Install media tools (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg mediainfo

@@ -136,9 +136,9 @@ jobs:
 
       - name: Toolchain (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: mesa-vulkan-drivers libvulkan1 ffmpeg
 
       - name: Toolchain (macOS)
         if: runner.os == 'macOS'

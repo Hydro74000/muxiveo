@@ -225,10 +225,13 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
 
+      - name: Install Linux packaging tools
+        uses: ./.github/actions/apt-install
+        with:
+          packages: squashfs-tools zsync
+
       - name: Install Linux packaging dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y squashfs-tools zsync
           python -m pip install --upgrade pip
           pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller
 
