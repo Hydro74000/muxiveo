@@ -51,7 +51,9 @@ def parse_check_features(output: str) -> dict[str, bool]:
 def nvencc_features(nvencc_bin: str) -> dict[str, bool]:
     """Bibliothèques compilées dans ce NVEncC (``--check-features``) ; vide si la sonde échoue."""
     try:
-        result = subprocess.run(
+        # Exécutable choisi dans la configuration, option fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [nvencc_bin, "--check-features"],
             capture_output=True,
             check=False,
@@ -131,7 +133,9 @@ def run_nvencc_p5_probe(
     tmp = Path(tempfile.mkdtemp(prefix="nvencc_p5_probe_", dir=str(work_dir)))
 
     def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(cmd, capture_output=True, check=False, timeout=120, **subprocess_text_kwargs())
+        # Commandes structurées par le constructeur de production, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(cmd, capture_output=True, check=False, timeout=120, **subprocess_text_kwargs())  # nosec B603
 
     try:
         config = tmp / "p5.json"

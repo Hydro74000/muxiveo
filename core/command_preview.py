@@ -9,9 +9,9 @@ journal ré-analysée. Partagé par l'encodage et le remux.
 
 from __future__ import annotations
 
+import base64
 import re
 import shlex
-import subprocess
 import sys
 
 
@@ -38,10 +38,10 @@ def _quote_cmd(argument: str) -> str:
         elif part in {"%", "!"}:
             out.append("^" + part)
         elif any(char in _CMD_SPECIAL for char in part) or part.endswith("\\"):
-            quoted = subprocess.list2cmdline([part])
-            if not quoted.startswith('"'):
-                trailing = len(quoted) - len(quoted.rstrip("\\"))
-                quoted = '"' + quoted + "\\" * trailing + '"'
+            # Ce fragment ne contient aucun guillemet : MSVCRT demande
+            # seulement de doubler les antislashs avant la fermeture.
+            trailing = len(part) - len(part.rstrip("\\"))
+            quoted = '"' + part + "\\" * trailing + '"'
             out.append(quoted)
         else:
             out.append(part)
@@ -93,17 +93,21 @@ def format_preview_command(cmd: list[str], *, prefix: str = "", platform: str | 
     if windows:
         rendered = " ".join(line.strip() for line in lines)
         if "!" in rendered:
-            # La première passe cmd retire ^ avant l'expansion différée : ^!
-            # seul ne protège donc pas !VAR! avec /v:on. Un cmd enfant /v:off
-            # reçoit la commande, avec une couche d'échappement pour l'invite
-            # appelante. ^^^! devient ! avec /v:on, ^! avec /v:off ; le cmd
-            # enfant restitue ! dans les deux cas.
+            # Toute chaîne contenant ! peut être altérée par le cmd appelant
+            # avant que /v:off soit appliqué au cmd enfant. EncodedCommand
+            # transporte les caractères sans interprétation. Process.Start
+            # conserve les flux binaires hérités (pas de pipeline PowerShell).
             inner = rendered.replace("^!", "!")
-            escaped = "".join(
-                "^^^!" if char == "!" else "^" + char if char in '^"&|<>()%' else char
-                for char in inner
+            arguments = '/d /v:off /s /c "' + inner + '"'
+            script = (
+                "$p=New-Object System.Diagnostics.Process;"
+                "$p.StartInfo.FileName=$env:ComSpec;"
+                "$p.StartInfo.UseShellExecute=$false;"
+                "$p.StartInfo.Arguments='" + arguments.replace("'", "''") + "';"
+                "[void]$p.Start();$p.WaitForExit();exit $p.ExitCode"
             )
-            rendered = 'cmd.exe /d /v:off /s /c ^"' + escaped + '^"'
+            encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+            rendered = "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + encoded
         return prefix + rendered
     return prefix + " \\\n".join(lines)
 

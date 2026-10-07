@@ -74,7 +74,7 @@ class ProfileStore:
         taken = {path.stem.casefold() for path in self.directory.glob("*.json")}
         if base.casefold() not in taken:
             return self.directory / f"{base}.json"
-        stem = f"{base}-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:8]}"
+        stem = f"{base}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}"
         candidate, index = stem, 2
         while candidate.casefold() in taken:
             candidate, index = f"{stem}-{index}", index + 1

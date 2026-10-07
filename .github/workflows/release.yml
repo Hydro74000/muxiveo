@@ -206,7 +206,7 @@ jobs:
     runs-on: ubuntu-latest
     # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
     needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
-    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || (needs.muxiveo-rife.result == 'skipped' && needs.muxiveo-rife-state.outputs.build != 'true')) }}
     steps:
       - name: Checkout
         shell: bash
@@ -280,7 +280,7 @@ jobs:
     runs-on: windows-latest
     # muxiveo-rife embarqué : release publiée (ou déjà existante) avant le packaging
     needs: [release-metadata, muxiveo-rife-state, muxiveo-rife]
-    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || needs.muxiveo-rife.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.release-metadata.result == 'success' && needs.muxiveo-rife-state.result == 'success' && (needs.muxiveo-rife.result == 'success' || (needs.muxiveo-rife.result == 'skipped' && needs.muxiveo-rife-state.outputs.build != 'true')) }}
     steps:
       - name: Checkout
         shell: pwsh

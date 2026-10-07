@@ -433,7 +433,8 @@ def run_batch(
             if entry.error is not None:
                 raise entry.error
             remux_config = entry.remux_config
-            assert remux_config is not None
+            if remux_config is None:
+                raise ValueError("Configuration remux absente du job planifié")
             if not dry_run and entry.generated_output:
                 Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
             if dry_run:

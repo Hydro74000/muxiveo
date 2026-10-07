@@ -83,7 +83,9 @@ def vulkan_parallelism(width: int, height: int) -> int:
 
 def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str] | None:
     try:
-        return subprocess.run(cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs())
+        # argv d'outils configurés ; aucune interprétation shell des chemins.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs())  # nosec B603
     except (OSError, subprocess.TimeoutExpired):
         return None
 

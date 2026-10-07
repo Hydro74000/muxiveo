@@ -79,8 +79,9 @@ def test_windows_preview_preserves_actual_arguments_with_delayed_expansion(tmp_p
     result = subprocess.run(
         f'cmd.exe /d /v:{delayed} /s /c "{rendered}"',
         env={**os.environ, "MRE_QUOTE_VALUE": "NE_PAS_DEVELOPPER"},
-        capture_output=True, check=True, timeout=15,
+        capture_output=True, check=False, timeout=15,
     )
+    assert result.returncode == 0, (result.stdout, result.stderr)
     assert json.loads(result.stdout) == arguments
 
 
