@@ -58,7 +58,7 @@ on:
 
 jobs:
   qt-ui:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
@@ -71,14 +71,47 @@ jobs:
           python-version: "3.11"
 
       - name: Install System Dependencies
+        timeout-minutes: 6
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            ffmpeg \
-            libegl1 libgl1 libglib2.0-0 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+          packages=(
+            ffmpeg
+            libegl1 libgl1 libglib2.0-0t64 libdbus-1-3
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
             libxkbcommon-x11-0 xvfb
+          )
+          missing=()
+          for package in "${packages[@]}"; do
+            if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != "install ok installed" ]]; then
+              missing+=("$package")
+            fi
+          done
+          if (( ${#missing[@]} == 0 )); then
+            echo "All system dependencies are already installed."
+            exit 0
+          fi
+          echo "Missing system dependencies: ${missing[*]}"
+
+          # Bypass the stalled Azure mirror without altering the runner's sources.
+          # https://github.com/actions/runner-images/issues/14594
+          sources="$RUNNER_TEMP/qt-ubuntu.sources"
+          sed \
+            -e 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu/|g' \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' \
+            /etc/apt/sources.list.d/ubuntu.sources > "$sources"
+          apt_options=(
+            -o "Dir::Etc::sourcelist=$sources"
+            -o Dir::Etc::sourceparts=-
+            -o Acquire::ForceIPv4=true
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o DPkg::Lock::Timeout=60
+          )
+          sudo timeout --kill-after=15s 120s apt-get "${apt_options[@]}" \
+            -o APT::Update::Error-Mode=any update
+          sudo timeout --kill-after=15s 180s env DEBIAN_FRONTEND=noninteractive \
+            apt-get "${apt_options[@]}" install -y --no-install-recommends "${missing[@]}"
 
       - name: Install Python Dependencies
         run: |
