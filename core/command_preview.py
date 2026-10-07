@@ -91,7 +91,20 @@ def format_preview_command(cmd: list[str], *, prefix: str = "", platform: str | 
             lines.append(f"    {q(argument)}")
             index += 1
     if windows:
-        return prefix + " ".join(line.strip() for line in lines)
+        rendered = " ".join(line.strip() for line in lines)
+        if "!" in rendered:
+            # La première passe cmd retire ^ avant l'expansion différée : ^!
+            # seul ne protège donc pas !VAR! avec /v:on. Un cmd enfant /v:off
+            # reçoit la commande, avec une couche d'échappement pour l'invite
+            # appelante. ^^^! devient ! avec /v:on, ^! avec /v:off ; le cmd
+            # enfant restitue ! dans les deux cas.
+            inner = rendered.replace("^!", "!")
+            escaped = "".join(
+                "^^^!" if char == "!" else "^" + char if char in '^"&|<>()%' else char
+                for char in inner
+            )
+            rendered = 'cmd.exe /d /v:off /s /c ^"' + escaped + '^"'
+        return prefix + rendered
     return prefix + " \\\n".join(lines)
 
 

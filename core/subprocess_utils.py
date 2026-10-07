@@ -84,6 +84,31 @@ class ProbeCancelledError(RuntimeError):
     """Sonde interrompue par une annulation (fermeture de fenêtre, nouveau fichier)."""
 
 
+@contextmanager
+def _probe_process(command: list[str], **kwargs: Any) -> Iterator[subprocess.Popen]:
+    job = None
+    if sys.platform == "win32":
+        from core.windows_process_job import WindowsProcessJob
+
+        job = WindowsProcessJob()
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+    try:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs) as proc:  # nosec B603
+            if job is not None:
+                try:
+                    job.attach_and_resume(int(proc._handle), proc.pid)  # type: ignore[attr-defined]
+                    proc._muxiveo_job = job  # type: ignore[attr-defined]
+                except BaseException:
+                    proc.kill()
+                    proc.wait()
+                    raise
+            yield proc
+    finally:
+        if job is not None:
+            job.close()
+
+
 def run_probe(
     command: list[str],
     *,
@@ -132,9 +157,7 @@ def run_cancellable_capture(
         kwargs.setdefault("start_new_session", True)
     # Commande fournie par les workflows sous forme d'argv, sans interprétation shell.
     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-    with subprocess.Popen(  # nosec B603
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
-    ) as proc:
+    with _probe_process(command, **kwargs) as proc:
         if sys.platform != "win32" and kwargs.get("start_new_session"):
             proc._muxiveo_process_group = proc.pid  # type: ignore[attr-defined]
         try:
@@ -258,6 +281,14 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
         return
 
     pid = getattr(proc, "pid", None)
+    job = getattr(proc, "_muxiveo_job", None)
+    if job is not None:
+        # Le parent peut être déjà sorti : le job conserve ses descendants et
+        # ferme leurs pipes avant Popen.__exit__ / les threads communicate.
+        job.terminate()
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=timeout)
+        return
     group = getattr(proc, "_muxiveo_process_group", None)
     if sys.platform != "win32" and isinstance(group, int):
         with suppress(OSError):

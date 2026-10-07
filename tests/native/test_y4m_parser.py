@@ -45,7 +45,8 @@ def driver(tmp_path_factory) -> Path:
     command = [CXX, "-std=c++17", "-O1", "-g", *flags, "-I", str(SRC), str(SRC / "y4m.cpp"), str(source), "-o", str(binary)]
     result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
     if result.returncode != 0:
-        if "sanitize" in result.stderr:
+        # MinGW : bibliothèques libasan/libubsan absentes (échec au lien).
+        if "sanitize" in result.stderr or "-lasan" in result.stderr or "-lubsan" in result.stderr:
             pytest.skip(f"Sanitizers indisponibles : {result.stderr[-300:]}")
         pytest.fail(result.stderr)
     return binary

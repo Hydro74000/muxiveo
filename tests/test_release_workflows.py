@@ -32,36 +32,136 @@ def test_release_scripts_do_not_interpolate_actions_expressions(filename):
         assert "${{" not in script, name
 
 
+@pytest.fixture
+def release_checkout(tmp_path):
+    """Checkout minimal et API simulée : aucune donnée ni authentification du runner."""
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "__init__.py").touch()
+    version_file = tmp_path / "core" / "version.py"
+    version_file.write_text('APP_VERSION = "4.2.2"\n', encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    shutil.copyfile(_WORKFLOWS.parents[1] / "scripts" / "check_release_tag.sh",
+                    tmp_path / "scripts" / "check_release_tag.sh")
+    for args in (["init"], ["config", "user.name", "Test"],
+                 ["config", "user.email", "test@example.com"], ["add", "."],
+                 ["commit", "-m", "release fixture"]):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True,
+                       env={**os.environ, "GIT_AUTHOR_DATE": "2026-10-06T12:00:00Z",
+                            "GIT_COMMITTER_DATE": "2026-10-06T12:00:00Z"})
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python\n"
+        "import os,sys\n"
+        "endpoint = next(arg for arg in sys.argv if arg.startswith('repos/'))\n"
+        "if endpoint.endswith('/tags/v'):\n"
+        "    print(os.environ.get('TEST_STABLE_REFS', 'refs/tags/v4.2.1'))\n"
+        "elif '/git/tags/' in endpoint:\n"
+        "    print('commit ' + os.environ['GITHUB_SHA'])\n"
+        "else:\n"
+        "    print(os.environ.get('TEST_TAG_OBJECT', ''))\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('GITHUB_', 'GH_', 'TEST_TAG_', 'TEST_STABLE_'))}
+    env.update({
+        "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+        "PYTHONPATH": str(tmp_path),
+        "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main",
+        "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REPOSITORY": "example/muxiveo", "GITHUB_SHA": sha,
+        "GITHUB_RUN_NUMBER": "42", "GITHUB_OUTPUT": str(tmp_path / "outputs"),
+    })
+    return tmp_path, env
+
+
+def _release_identity(checkout, **overrides):
+    root, env = checkout
+    result = subprocess.run(
+        ["bash", "-c", dict(_scripts("release.yml"))["Compute release identity"]],
+        cwd=root, env={**env, **overrides}, capture_output=True, text=True,
+    )
+    output = root / "outputs"
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+    return result, values
+
+
 @pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
-@pytest.mark.parametrize("version,valid", [
-    ("v4.0.0", True),
-    ("4.0.0-unstable.20260924.42.abcdef0", True),
-    ('4.0.0$(touch injected)', False),
-    ('4.0.0`touch injected`', False),
-    ('4.0.0"; touch injected; #', False),
-    ("4.0.0\nrelease_tag=evil", False),
-    ("../../outside", False),
+@pytest.mark.parametrize("branch,channel,publish", [
+    ("main", "stable", "true"), ("devel-cli", "unstable", "true"),
+    ("feature/test", "build", "false"),
 ])
-@pytest.mark.parametrize("source", ["input", "tag"])
-def test_release_identity_validates_input_and_tags(tmp_path, version, valid, source):
-    script = dict(_scripts("release.yml"))["Compute release identity"]
-    output = tmp_path / "outputs"
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(_WORKFLOWS.parents[1]),
-        "RELEASE_INPUT": version if source == "input" else "",
-        "GITHUB_REF_TYPE": "tag" if source == "tag" else "branch",
-        "GITHUB_REF_NAME": version if source == "tag" else "main",
-        "GITHUB_EVENT_NAME": "workflow_dispatch" if source == "input" else "push",
-        "GITHUB_OUTPUT": str(output),
-    }
-    result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
-    assert (result.returncode == 0) is valid, result.stderr
-    assert not (tmp_path / "injected").exists()
-    if valid:
-        assert f"package_version={version.lstrip('v')}\n" in output.read_text()
-    else:
-        assert not output.exists()
+def test_release_identity_follows_branch(release_checkout, branch, channel, publish):
+    result, values = _release_identity(release_checkout, GITHUB_REF_NAME=branch)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert values["channel"] == channel
+    assert values["publish"] == publish
+    expected = "4.2.2" if channel == "stable" else (
+        "4.2.2-unstable.20261006.42." + release_checkout[1]["GITHUB_SHA"][:7])
+    assert values["package_version"] == expected
+    assert values["release_tag"] == "v" + expected
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+@pytest.mark.parametrize("version", [
+    '4.0.0$(touch injected)', '4.0.0`touch injected`',
+    '4.0.0"; touch injected; #', "4.0.0\nrelease_tag=evil", "../../outside",
+])
+def test_release_identity_rejects_invalid_app_version(release_checkout, version):
+    root, _env = release_checkout
+    (root / "core" / "version.py").write_text(f"APP_VERSION = {version!r}\n", encoding="utf-8")
+    result, values = _release_identity(release_checkout)
+    assert result.returncode != 0
+    assert values == {}
+    assert not (root / "injected").exists()
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+def test_release_identity_ignores_removed_freeform_input(release_checkout):
+    result, values = _release_identity(release_checkout, RELEASE_INPUT='9.0.0$(touch injected)')
+    assert result.returncode == 0, result.stderr
+    assert values["package_version"] == "4.2.2"
+    assert not (release_checkout[0] / "injected").exists()
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+def test_release_identity_rejects_tag_trigger(release_checkout):
+    result, values = _release_identity(release_checkout, GITHUB_REF_TYPE="tag",
+                                      GITHUB_REF_NAME="v4.2.2", GITHUB_REF="refs/tags/v4.2.2")
+    assert result.returncode != 0
+    assert values == {}
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+@pytest.mark.parametrize("branch", ["main", "devel-cli"])
+@pytest.mark.parametrize("last", ["4.2.2", "4.3.0"])
+def test_release_identity_requires_version_above_stable(release_checkout, branch, last):
+    result, values = _release_identity(release_checkout, GITHUB_REF_NAME=branch,
+                                      TEST_STABLE_REFS="refs/tags/v" + last)
+    assert result.returncode != 0
+    assert values == {}
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+@pytest.mark.parametrize("object_type", ["commit", "tag"])
+def test_release_identity_allows_same_commit_rerun(release_checkout, object_type):
+    result, values = _release_identity(
+        release_checkout, TEST_STABLE_REFS="refs/tags/v4.2.2",
+        TEST_TAG_OBJECT=object_type + " " + release_checkout[1]["GITHUB_SHA"],
+    )
+    assert result.returncode == 0, result.stderr
+    assert values["release_tag"] == "v4.2.2"
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
+def test_release_identity_rejects_tag_on_another_commit(release_checkout):
+    result, values = _release_identity(release_checkout, TEST_TAG_OBJECT="commit " + "0" * 40)
+    assert result.returncode != 0
+    assert "existe déjà" in result.stderr
+    assert values == {}
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="Bash is required to run release scripts")
@@ -131,4 +231,3 @@ def test_generate_release_notes_includes_installer_links(tmp_path):
     downloads_pos = content.index("### 📥 Téléchargements / Direct Downloads")
     changes_pos = content.index("## Changes since previous release")
     assert downloads_pos < changes_pos
-

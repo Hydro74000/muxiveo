@@ -263,6 +263,15 @@ def test_cleanup_retries_locked_process_dir(tmp_path, monkeypatch, cleanup, nest
 
     with monkeypatch.context() as patcher:
         patcher.setattr(os, "unlink", locked_unlink)
+        # Python 3.10 : Path.unlink garde os.unlink dans son accessor.
+        real_path_unlink = Path.unlink
+
+        def locked_path_unlink(path, *args, **kwargs):
+            if path.name == locked.name:
+                raise PermissionError("fichier utilisé par un autre processus")
+            return real_path_unlink(path, *args, **kwargs)
+
+        patcher.setattr(Path, "unlink", locked_path_unlink)
         cleanup(tmp_path if cleanup is clear_work_dir else job.path)
 
     assert locked.read_bytes() == b"video"
@@ -391,8 +400,7 @@ def test_windows_junctions_are_never_followed(tmp_path: Path) -> None:
     # Dossier process remplacé par une jonction : propriété refusée.
     job2 = create_process_work_dir(tmp_path / "work", process_name="job")
     (outside / PROCESS_DIR_MARKER).write_text(f"{job2.token}\n", encoding="ascii")
-    (job2.path / PROCESS_DIR_MARKER).unlink()
-    job2.path.rmdir()
+    assert job2.remove() is True  # libère aussi le verrou actif avant rmdir
     getattr(_winapi, "CreateJunction")(str(outside), str(job2.path))
     assert job2.remove() is False
     assert (outside / "precious.mkv").read_bytes() == b"film"

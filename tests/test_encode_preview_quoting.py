@@ -58,7 +58,8 @@ def test_posix_preview_preserves_actual_arguments():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Invite cmd.exe réelle requise")
 @pytest.mark.parametrize("piped", [False, True])
-def test_windows_preview_preserves_actual_arguments_with_delayed_expansion(tmp_path, piped):
+@pytest.mark.parametrize("delayed", ["on", "off"])
+def test_windows_preview_preserves_actual_arguments_with_delayed_expansion(tmp_path, piped, delayed):
     """Contrôle cmd.exe/MSVCRT, y compris quand cmd relance les étages d'un pipe."""
     script = tmp_path / "arguments & unicode.py"
     script.write_text(
@@ -76,7 +77,7 @@ def test_windows_preview_preserves_actual_arguments_with_delayed_expansion(tmp_p
         ]
     rendered = preview.format_preview_command(command, platform="win32")
     result = subprocess.run(
-        f'cmd.exe /d /v:on /s /c "{rendered}"',
+        f'cmd.exe /d /v:{delayed} /s /c "{rendered}"',
         env={**os.environ, "MRE_QUOTE_VALUE": "NE_PAS_DEVELOPPER"},
         capture_output=True, check=True, timeout=15,
     )

@@ -71,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import current_language, set_current_language
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
 from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
@@ -87,6 +88,15 @@ from core.workflows.encode.runtime.static_hdr_estimator import (
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+@pytest.fixture(autouse=True)
+def _french_ui(monkeypatch):
+    """Les libellés vérifiés ici ne dépendent pas de la locale du runner."""
+    previous = current_language()
+    monkeypatch.setattr("core.config._normalize_language_code", lambda _code: "fra")
+    set_current_language("fra")
+    yield
+    set_current_language(previous)
 
 def _at(
     index: int = 1,

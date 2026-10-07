@@ -106,7 +106,8 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert preview_native.returncode == 0, preview_native.stderr
     native_payload = json.loads(preview_native.stdout)
     assert native_payload["valid"] is True
-    assert native_payload["command_text"].startswith("# Backend: native Matroska")
+    marker = "REM " if sys.platform == "win32" else "# "
+    assert native_payload["command_text"].startswith(marker + "Backend: native Matroska")
     assert native_payload["selected_backend"] == "native"
     assert native_payload["execution_preview"]["action"] == "internal_matroska_write"
 
@@ -446,7 +447,8 @@ def test_cli_exact_job_preview_resolves_track_selectors(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["valid"] is True
     assert [(item["source"], item["id"]) for item in payload["track_order"]] == [(0, 0), (0, 1)]
-    assert "-metadata:s:a:0 language=fr-FR" in payload["command_text"]
+    command = payload["command"]
+    assert command[command.index("-metadata:s:a:0") + 1] == "language=fr-FR"
 
 
 def test_cli_remux_headless_runs_and_refuses_existing_output(tmp_path: Path) -> None:

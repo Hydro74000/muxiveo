@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -33,10 +34,19 @@ pytestmark = pytest.mark.skipif(
 
 
 def _vulkan_loader_available() -> bool:
+    """Vrai si le binaire voit au moins un périphérique Vulkan.
+
+    `--list-gpus` réussit même sans chargeur (liste vide) : seul le contenu fait foi.
+    """
     if not RIFE_BIN:
         return False
-    probe = subprocess.run([RIFE_BIN, "--list-gpus"], capture_output=True, timeout=60, check=False)
-    return probe.returncode == 0
+    probe = subprocess.run([RIFE_BIN, "--list-gpus"], capture_output=True, text=True, timeout=60, check=False)
+    if probe.returncode != 0:
+        return False
+    try:
+        return bool(json.loads(probe.stdout or "{}").get("gpus"))
+    except ValueError:
+        return False
 
 
 # Le binaire vérifie le chargeur Vulkan avant de lire le flux : les refus
