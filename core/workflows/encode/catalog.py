@@ -49,8 +49,30 @@ NVENC_PRESETS = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "slow", "medium", "fa
 HEVC_NVENC_PRESETS = [*NVENC_PRESETS]
 # av1_nvenc (FFmpeg 8.1) : pas de hp / hq (refusés à l'ouverture de l'encodeur).
 AV1_NVENC_PRESETS = [p for p in NVENC_PRESETS if p not in {"hp", "hq"}]
+# VAAPI -compression_level : sens propre au pilote (sondé à la détection matérielle).
+# - Intel (iHD) : TargetUsage 1 (qualité) … 7 (vitesse).
+# - Mesa (AMD, frontends/va/encode.c) : masque de bits — bit 0 validité, bits 1-2 preset
+#   (0 Speed, 1 Balanced, 2 Quality, 3 High quality : VCN 4+, sinon Quality), bit 3
+#   pré-encodage, bit 4 VBAQ (sans effet en CQP) ; 0 = Speed nu, 1 = Balanced +
+#   pré-encodage + VBAQ. Sans l'option : Speed nu.
 # "" = aucun preset : -compression_level non transmis, qualité par défaut du pilote.
-VAAPI_PRESETS = ["", *(str(i) for i in range(8))]
+VAAPI_PRESETS = ["", *(str(i) for i in range(8)), "13", "15", "29", "31"]
+MESA_VAAPI_PRESETS = ("", "3", "5", "7", "13", "15", "1", "29", "31")
+# Mesa : Quality + pré-encodage, meilleur VMAF / XPSNR à débit égal sur VCN 3
+# (le VBAQ les fait baisser) ; le défaut du pilote est le preset le plus rapide.
+MESA_VAAPI_DEFAULT_PRESET = "13"
+_MESA_VAAPI_PRESET_LABELS: dict[str, str] = {
+    "": "Speed (défaut pilote)",
+    "3": "Balanced",
+    "5": "Quality",
+    "7": "High quality (VCN 4+, sinon Quality)",
+    "13": "Quality + pré-encodage",
+    "15": "High quality + pré-encodage",
+    "1": "Balanced + pré-encodage + VBAQ",
+    "29": "Quality + pré-encodage + VBAQ",
+    "31": "High quality + pré-encodage + VBAQ",
+}
+_INTEL_VAAPI_PRESET_LABELS: dict[str, str] = {"1": "qualité max", "4": "équilibré", "7": "vitesse max"}
 QSV_PRESETS = ["veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"]
 AMF_PRESETS = ["quality", "balanced", "speed"]
 # av1_amf propose en plus high_quality (FFmpeg 8.1).
@@ -576,8 +598,19 @@ def resolve_rate_control(codec: str | None, rc_id: str | None, legacy_mode: str 
     return controls[0] if controls else None
 
 
-def default_preset_for_codec(codec: str | None) -> str:
+def vaapi_preset_label(preset: str, driver: str | None) -> tuple[str, str]:
+    """(valeur affichée, libellé à traduire) d'un preset VAAPI selon le pilote ("mesa", "intel")."""
+    labels = (_MESA_VAAPI_PRESET_LABELS if driver == "mesa"
+              else _INTEL_VAAPI_PRESET_LABELS if driver == "intel" else {})
+    if not preset:
+        return "", labels.get("", "Aucun (défaut pilote)")
+    return preset, labels.get(preset, "")
+
+
+def default_preset_for_codec(codec: str | None, *, vaapi_driver: str | None = None) -> str:
     normalized = str(codec or "").strip().lower()
+    if vaapi_driver == "mesa" and normalized in VAAPI_VIDEO_CODECS:
+        return MESA_VAAPI_DEFAULT_PRESET
     if normalized in _DEFAULT_PRESETS:
         return _DEFAULT_PRESETS[normalized]
     presets = presets_for_codec(normalized)
@@ -689,6 +722,9 @@ __all__ = [
     "NVENC_PRESETS",
     "HEVC_NVENC_PRESETS",
     "VAAPI_PRESETS",
+    "MESA_VAAPI_PRESETS",
+    "MESA_VAAPI_DEFAULT_PRESET",
+    "vaapi_preset_label",
     "QSV_PRESETS",
     "AMF_PRESETS",
     "NVENCC_PRESETS",

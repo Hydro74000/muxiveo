@@ -2035,10 +2035,6 @@
     "fra": "Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\nmais exige plus de surfaces et ajoute de la latence.",
     "eng": "Internal parallelism VAAPI. Increasing it can improve encoding throughput on a single stream,\nbut requires more surfaces and adds latency."
   },
-  "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.": {
-    "fra": "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.",
-    "eng": "Speed/quality trade-off of the wrapper VAAPI.\nHigher value = faster, but slightly lower quality/compression."
-  },
   "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.": {
     "fra": "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.",
     "eng": "Standard ffmpeg bitrate (-b). Accepts ffmpeg suffixes, e.g. 18M or 18000k.\nCan intentionally override the workflow SIZE mode."
@@ -2831,10 +2827,6 @@
     "fra": "Active une analyse pré-encodage du contenu pour optimiser bitrate et placement des frames.\nAméliore notablement la qualité au prix de ~10-15% de vitesse.",
     "eng": "Enables pre-encode content analysis to optimize bitrate and frame placement.\nNoticeably improves quality at a ~10-15% speed cost."
   },
-  "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.": {
-    "fra": "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.",
-    "eng": "Variance-Based Adaptive Quantization: equivalent AMF of the Spatial AQ.\nAlloue more of bits to zones perceptuellement sensibles. Recommended."
-  },
   "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.": {
     "fra": "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.",
     "eng": "Forces HRD (Hypothetical Reference Decoder) compliance.\nEnsures the stream can be decoded in real time by any compliant decoder. Useful for Blu-ray/broadcast."
@@ -2850,10 +2842,6 @@
   "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.": {
     "fra": "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.",
     "eng": "Pre-encode analysis that optimizes bitrate and frame placement.\nCost: ~10-15% speed. Quality gain is noticeable."
-  },
-  "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.": {
-    "fra": "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.",
-    "eng": "Variance-Based Adaptive Quantization (equivalent AMF of the Spatial AQ).\nRecommended to keep enabled."
   },
   "Tokens ffmpeg additionnels.": {
     "fra": "Tokens ffmpeg additionnels.",
@@ -5414,5 +5402,89 @@
   "Annuler et utiliser un autre codec": {
     "fra": "Annuler et utiliser un autre codec",
     "eng": "Cancel and use another codec"
+  },
+  "Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ.": {
+    "fra": "Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ.",
+    "eng": "Speed/quality trade-off; meaning depends on the driver (out of range: driver limit).\n• Intel (iHD): 1 = maximum quality … 7 = maximum speed.\n• Mesa (AMD): sum of bits - 1 (valid) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pre-encode) + 16 (VBAQ, ignored in CQP).\n  E.g. 13 = Quality + pre-encode; 1 = Balanced + pre-encode + VBAQ."
+  },
+  "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.": {
+    "fra": "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.",
+    "eng": "AMF usage profile.\n• transcoding: offline quality encoding - recommended for files.\n• high_quality: quality-oriented internal settings (recent AMF runtime).\n• lowlatency / ultralowlatency / lowlatency_high_quality: streaming / cloud gaming.\n• webcam: real-time camera capture."
+  },
+  "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent.": {
+    "fra": "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent.",
+    "eng": "AMF usage profile.\n• transcoding: offline quality encoding - recommended for files.\n• high_quality: quality-oriented internal settings (recent AMF runtime).\n• lowlatency / ultralowlatency / lowlatency_high_quality: streaming / cloud gaming.\n• webcam: real-time camera capture.\n\nAV1 AMF requires RX 7000 (RDNA 3) or newer."
+  },
+  "Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\nIgnoré en CQP. Coût : quelques % de vitesse.": {
+    "fra": "Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\nIgnoré en CQP. Coût : quelques % de vitesse.",
+    "eng": "Pre-encode: reduced-resolution analysis pass that guides rate control.\nIgnored in CQP. Cost: a few % of speed."
+  },
+  "Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit des blocs lisses.\nIgnoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR des zones sombres en baisse à débit égal — à juger à l'œil.": {
+    "fra": "Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit des blocs lisses.\nIgnoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR des zones sombres en baisse à débit égal — à juger à l'œil.",
+    "eng": "Variance-Based Adaptive Quantization: takes bits from textured blocks in favour of flat blocks.\nIgnored in CQP. Measured on VCN 3 (VAAPI, same hardware block): VMAF, XPSNR and dark-area PSNR drop at equal bitrate - judge by eye."
+  },
+  "Analyse pré-encodage qui optimise bitrate et placement des frames.": {
+    "fra": "Analyse pré-encodage qui optimise bitrate et placement des frames.",
+    "eng": "Pre-encode analysis that optimizes bitrate and frame placement."
+  },
+  "Quantification adaptative AV1 AMF.\n• none : aucune.\n• caq : Content Adaptive Quantization.": {
+    "fra": "Quantification adaptative AV1 AMF.\n• none : aucune.\n• caq : Content Adaptive Quantization.",
+    "eng": "AV1 AMF adaptive quantization.\n• none: none.\n• caq: Content Adaptive Quantization."
+  },
+  "Pre-encode": {
+    "fra": "Pre-encode",
+    "eng": "Pre-encode"
+  },
+  "AQ mode": {
+    "fra": "AQ mode",
+    "eng": "AQ mode"
+  },
+  "Speed (défaut pilote)": {
+    "fra": "Speed (défaut pilote)",
+    "eng": "Speed (driver default)"
+  },
+  "Balanced": {
+    "fra": "Balanced",
+    "eng": "Balanced"
+  },
+  "Quality": {
+    "fra": "Quality",
+    "eng": "Quality"
+  },
+  "High quality (VCN 4+, sinon Quality)": {
+    "fra": "High quality (VCN 4+, sinon Quality)",
+    "eng": "High quality (VCN 4+, otherwise Quality)"
+  },
+  "Quality + pré-encodage": {
+    "fra": "Quality + pré-encodage",
+    "eng": "Quality + pre-encode"
+  },
+  "High quality + pré-encodage": {
+    "fra": "High quality + pré-encodage",
+    "eng": "High quality + pre-encode"
+  },
+  "Balanced + pré-encodage + VBAQ": {
+    "fra": "Balanced + pré-encodage + VBAQ",
+    "eng": "Balanced + pre-encode + VBAQ"
+  },
+  "Quality + pré-encodage + VBAQ": {
+    "fra": "Quality + pré-encodage + VBAQ",
+    "eng": "Quality + pre-encode + VBAQ"
+  },
+  "High quality + pré-encodage + VBAQ": {
+    "fra": "High quality + pré-encodage + VBAQ",
+    "eng": "High quality + pre-encode + VBAQ"
+  },
+  "qualité max": {
+    "fra": "qualité max",
+    "eng": "maximum quality"
+  },
+  "équilibré": {
+    "fra": "équilibré",
+    "eng": "balanced"
+  },
+  "vitesse max": {
+    "fra": "vitesse max",
+    "eng": "maximum speed"
   }
 }

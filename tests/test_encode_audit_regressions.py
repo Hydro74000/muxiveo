@@ -301,6 +301,13 @@ def test_vaapi_none_preset_omits_compression_level():
         assert args[args.index("-compression_level") + 1] == "4", mode
 
 
+@pytest.mark.parametrize("preset", ["1", "13", "15", "29", "31"])
+def test_vaapi_mesa_bitmask_presets_reach_ffmpeg(preset):
+    video = VideoEncodeSettings(codec="hevc_vaapi", rate_control="vbr", bitrate_kbps=6000, preset=preset)
+    args = video_codec_args(video, video.bitrate_kbps, callbacks=_CB)
+    assert args[args.index("-compression_level") + 1] == preset
+
+
 def test_v16_extra_params_warnings_are_reported(qt_app, tmp_path):
     _ = qt_app
     (tmp_path / "a.mkv").write_bytes(b"")

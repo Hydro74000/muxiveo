@@ -19,9 +19,11 @@ from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS as _AMF_CODECS,
     HARDWARE_VIDEO_CODECS,
+    MESA_VAAPI_PRESETS,
     NVENC_VIDEO_CODECS as _NVENC_CODECS,
     QSV_VIDEO_CODECS as _QSV_CODECS,
     SOFTWARE_VIDEO_CODECS,
+    VAAPI_PRESETS,
     VAAPI_VIDEO_CODECS as _VAAPI_CODECS,
 )
 from core.workflows.encode.hw_devices import (
@@ -39,6 +41,9 @@ _AV1_NVENC = "av1_nvenc"
 _VAAPI_SUPPORTED_MODES_RE = re.compile(r"supported modes:\s*([A-Z, ]+)")
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
+_VAAPI_DRIVER_RE = re.compile(r"VAAPI driver:\s*(.+)")
+_VAAPI_QUALITY_RANGE_RE = re.compile(r"valid range is 0-(\d+)")
+_VAAPI_QUALITY_UNSUPPORTED = "Quality attribute is not supported"
 
 
 class HardwareEncoderDetector:
@@ -71,7 +76,10 @@ class HardwareEncoderDetector:
         self.rate_controls: dict[str, frozenset[str]] = {}
         #: Presets énumérés par ``ffmpeg -h encoder=`` (NVENC, AMF, QSV) pour le
         #: FFmpeg réellement utilisé : un preset absent n'est pas proposé.
+        #: VAAPI : niveaux ``-compression_level`` admis par le pilote.
         self.presets: dict[str, frozenset[str]] = {}
+        #: Famille du pilote VAAPI par codec sondé : "mesa", "intel" ou "other".
+        self.vaapi_drivers: dict[str, str] = {}
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -309,7 +317,8 @@ class HardwareEncoderDetector:
     def detect_presets(self, ffmpeg_bin: str, codecs: set[str]) -> dict[str, frozenset[str]]:
         """Presets énumérés par ``ffmpeg -h encoder=`` pour les encodeurs FFmpeg détectés.
 
-        VAAPI (``-compression_level``) et NVEncC (``-u``) ne sont pas concernés.
+        VAAPI : niveaux ``-compression_level`` selon le pilote sondé
+        (:meth:`_probe_vaapi_quality`). NVEncC (``-u``) n'est pas concerné.
         Résultat mémorisé dans :attr:`presets` (codec absent = liste du catalogue).
         """
         resolved = self._resolve_ffmpeg(ffmpeg_bin)
@@ -317,7 +326,54 @@ class HardwareEncoderDetector:
             values = self._probe_preset_values(resolved, codec_id)
             if values:
                 self.presets[codec_id] = values
+        for codec_id in sorted(codecs & _VAAPI_CODECS):
+            probed = self._probe_vaapi_quality(resolved, codec_id)
+            if probed is not None:
+                self.vaapi_drivers[codec_id], self.presets[codec_id] = probed
         return dict(self.presets)
+
+    @staticmethod
+    def parse_vaapi_quality(stderr: str) -> tuple[str, frozenset[str]] | None:
+        """(famille du pilote, presets admis) d'après une sonde ``-compression_level`` hors plage.
+
+        Mesa : masque de bits (catalog.MESA_VAAPI_PRESETS) ; autres pilotes : 0 à la
+        borne annoncée. Attribut qualité non pris en charge : seul « Aucun » reste.
+        """
+        driver = _VAAPI_DRIVER_RE.search(stderr or "")
+        name = driver.group(1) if driver else ""
+        family = "mesa" if "Mesa Gallium" in name else "intel" if "Intel" in name else "other"
+        if _VAAPI_QUALITY_UNSUPPORTED in (stderr or ""):
+            return family, frozenset({""})
+        limit = _VAAPI_QUALITY_RANGE_RE.search(stderr or "")
+        if limit is None:
+            return None
+        maximum = int(limit.group(1))
+        candidates = MESA_VAAPI_PRESETS if family == "mesa" else VAAPI_PRESETS
+        return family, frozenset(value for value in candidates if not value or int(value) <= maximum)
+
+    def _probe_vaapi_quality(self, ffmpeg_bin: str, codec_id: str) -> tuple[str, frozenset[str]] | None:
+        """Pilote VAAPI et plage ``-compression_level`` (niveau hors plage → borne citée par FFmpeg)."""
+        device = self._cached_vaapi_device()
+        if device is None:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
+                    "-vaapi_device", device,
+                    "-f", "lavfi", "-i", _NULLSRC,
+                    "-vf", _VAAPI_FILTER, "-frames:v", "1",
+                    "-c:v", codec_id, "-compression_level", "1000",
+                    "-f", "null", "-",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=15,
+                **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return self.parse_vaapi_quality(result.stderr or "")
 
     @staticmethod
     def parse_preset_values(help_output: str) -> frozenset[str]:

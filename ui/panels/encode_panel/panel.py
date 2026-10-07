@@ -59,6 +59,7 @@ from core.workflows.encode.catalog import (
     RateControlSpec,
     default_preset_for_codec,
     encoder_badge,
+    vaapi_preset_label,
     is_h264_video_codec,
     is_nvenc_hevc,
     rate_control_spec,
@@ -128,8 +129,8 @@ class EncodePanel(QWidget):
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
-    # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV).
-    _hw_detected             = Signal(object, object, object, object, object, object)
+    # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
+    _hw_detected             = Signal(object, object, object, object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -202,6 +203,8 @@ class EncodePanel(QWidget):
         self._nvencc_10bit_codecs: frozenset[str] = frozenset()
         # Presets énumérés par le FFmpeg utilisé (codec absent = liste du catalogue).
         self._hw_presets: dict[str, frozenset[str]] = {}
+        # Famille du pilote VAAPI par codec ("mesa", "intel", "other") : sens de -compression_level.
+        self._vaapi_drivers: dict[str, str] = {}
         # NLMeans 10 bits sur le GPU (Vulkan détecté au lancement).
         self._vulkan_nlmeans = False
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
@@ -2350,7 +2353,7 @@ class EncodePanel(QWidget):
         # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
         self._hw_detected.emit(
             hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc),
-            detector.detect_presets(hw_ffmpeg, set(hw)),
+            detector.detect_presets(hw_ffmpeg, set(hw)), dict(detector.vaapi_drivers),
         )
 
     def _on_hw_detected(
@@ -2361,9 +2364,11 @@ class EncodePanel(QWidget):
         rate_controls: dict[str, frozenset[str]] | None = None,
         ten_bit_codecs: frozenset[str] | None = None,
         presets: dict[str, frozenset[str]] | None = None,
+        vaapi_drivers: dict[str, str] | None = None,
     ) -> None:
         self._hw_encoders = hw
         self._hw_presets = dict(presets or {})
+        self._vaapi_drivers = dict(vaapi_drivers or {})
         self._hw_rate_controls = dict(rate_controls or {})
         self._nvencc_10bit_codecs = frozenset(ten_bit_codecs or ())
         # Ne met à jour les codecs SW que si la détection a retourné au moins un résultat.
@@ -2387,6 +2392,7 @@ class EncodePanel(QWidget):
             self._codec_combo.setCurrentIndex(restored)
             self._codec_combo.blockSignals(False)
             self._refresh_mode_combo(str(current or "libx265"))
+            self._refresh_preset_combo(str(current or "libx265"), self._preset_combo.currentData())
         else:
             self._on_codec_changed()
         self._update_bit_depth_control(str(self._codec_combo.currentData() or "copy"))
@@ -2441,18 +2447,7 @@ class EncodePanel(QWidget):
         if hasattr(self, "_video_encode_controls"):
             self._video_encode_controls.setVisible(codec != "copy")
         self._refresh_mode_combo(codec)
-        presets = self._available_presets(str(codec))
-        self._preset_combo.blockSignals(True)
-        self._preset_combo.clear()
-        for p in presets:
-            self._preset_combo.addItem(p if p else translate_text("Aucun (défaut pilote)"), p)
-        # Preset par défaut du codec (catalogue : slow x264/x265, 6 SVT-AV1, p5 NVENC…)
-        default = default_preset_for_codec(codec)
-        idx = next((i for i in range(self._preset_combo.count())
-                    if self._preset_combo.itemData(i) == default), 0)
-        self._preset_combo.setCurrentIndex(idx)
-        self._preset_combo.setEnabled(bool(presets))
-        self._preset_combo.blockSignals(False)
+        self._refresh_preset_combo(str(codec))
         self._update_bit_depth_control(codec)
         self._sync_hdr_metadata_field_editability(str(codec))
         self._update_passthrough_controls()
@@ -2465,6 +2460,32 @@ class EncodePanel(QWidget):
         self._workflow.set_vulkan_capability(str(ffmpeg_bin), capability)  # type: ignore[arg-type]
         self._refresh_video_source_rows()
         self._rebuild_preview()
+
+    def _default_preset(self, codec: str) -> str:
+        """Preset par défaut du codec (catalogue ; VAAPI selon le pilote détecté)."""
+        return default_preset_for_codec(codec, vaapi_driver=self._vaapi_drivers.get(codec))
+
+    def _preset_label(self, codec: str, preset: str) -> str:
+        if codec in VAAPI_VIDEO_CODECS:
+            value, label = vaapi_preset_label(preset, self._vaapi_drivers.get(codec))
+            label = translate_text(label) if label else ""
+            return f"{value} — {label}" if value and label else value or label
+        return preset if preset else translate_text("Aucun (défaut pilote)")
+
+    def _refresh_preset_combo(self, codec: str, selected: object = None) -> None:
+        """Liste des presets du codec ; ``selected`` conservé s'il reste proposé, sinon défaut."""
+        presets = self._available_presets(codec)
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        for p in presets:
+            self._preset_combo.addItem(self._preset_label(codec, p), p)
+        # Preset par défaut du codec (catalogue : slow x264/x265, 6 SVT-AV1, p5 NVENC…)
+        wanted = selected if selected in presets else self._default_preset(codec)
+        idx = next((i for i in range(self._preset_combo.count())
+                    if self._preset_combo.itemData(i) == wanted), 0)
+        self._preset_combo.setCurrentIndex(idx)
+        self._preset_combo.setEnabled(bool(presets))
+        self._preset_combo.blockSignals(False)
 
     def _available_presets(self, codec: str) -> list[str]:
         """Presets du catalogue que le FFmpeg utilisé accepte pour ce codec (« Aucun » conservé)."""
@@ -5203,7 +5224,7 @@ class EncodePanel(QWidget):
         mode = QualityMode(rc_spec.family) if rc_spec is not None else QualityMode.CRF
         preset_data = self._preset_combo.currentData()
         # "" = preset « Aucun » (VAAPI) : valeur valide, distincte d'une liste vide.
-        preset = default_preset_for_codec(str(codec)) if preset_data is None else str(preset_data)
+        preset = self._default_preset(str(codec)) if preset_data is None else str(preset_data)
         # Débit invalide → -1 : ne pas le confondre avec le 0 illimité (VBR NVENC / NVEncC).
         try:
             bitrate = int(self._bitrate_edit.text())
@@ -5317,7 +5338,7 @@ class EncodePanel(QWidget):
             cq=self._state_int(state, "cq", 26),
             bitrate_kbps=bitrate,
             target_size_mb=size,
-            preset=default_preset_for_codec(codec) if state.get("preset") is None else str(state.get("preset")),
+            preset=self._default_preset(codec) if state.get("preset") is None else str(state.get("preset")),
             extra_params=str(state.get("extra_params") or "").strip(),
             bit_depth=str(state.get("bit_depth") or "auto"),
             source_bit_depth=self._video_source_bit_depth(file_info, track),

@@ -2162,6 +2162,36 @@ class TestEncodePanelAuditLot2:
         assert panel._current_video_settings().preset == ""
         panel.close()
 
+    def test_vaapi_mesa_presets_are_labelled_and_default_to_quality_preencode(self, qt_app):
+        from core.workflows.encode.catalog import MESA_VAAPI_PRESETS
+
+        panel = EncodePanel(AppConfig())
+        try:
+            panel._on_hw_detected({"hevc_vaapi"}, panel._sw_encoders, panel._config.tool_ffmpeg, {},
+                                  None, {"hevc_vaapi": frozenset(MESA_VAAPI_PRESETS)}, {"hevc_vaapi": "mesa"})
+            _select_codec(panel, "hevc_vaapi")
+            items = {panel._preset_combo.itemData(i): panel._preset_combo.itemText(i)
+                     for i in range(panel._preset_combo.count())}
+            assert set(items) == set(MESA_VAAPI_PRESETS)
+            assert items[""] == "Speed (défaut pilote)"
+            assert items["29"] == "29 — Quality + pré-encodage + VBAQ"
+            assert panel._current_video_settings().preset == "13"
+        finally:
+            panel.close()
+
+    def test_vaapi_intel_presets_keep_driver_default(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        try:
+            levels = frozenset({"", *(str(i) for i in range(8))})
+            panel._on_hw_detected({"hevc_vaapi"}, panel._sw_encoders, panel._config.tool_ffmpeg, {},
+                                  None, {"hevc_vaapi": levels}, {"hevc_vaapi": "intel"})
+            _select_codec(panel, "hevc_vaapi")
+            items = [panel._preset_combo.itemText(i) for i in range(panel._preset_combo.count())]
+            assert items[:3] == ["Aucun (défaut pilote)", "0", "1 — qualité max"] and "13" not in items
+            assert panel._current_video_settings().preset == ""
+        finally:
+            panel.close()
+
 
 class TestEncodePanelAuditLot3:
     _MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"

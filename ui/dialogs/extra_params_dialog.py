@@ -403,13 +403,21 @@ _NVENC_AV1 = CodecSchema(
 _AMF_QUALITY = (("speed", "speed"), ("balanced", "balanced"), ("quality", "quality"))
 _AMF_RC = (("cqp", "cqp"), ("cbr", "cbr"), ("vbr_peak", "vbr_peak"),
            ("vbr_latency", "vbr_latency"))
-_AMF_USAGE = (("transcoding", "transcoding"), ("ultralowlatency", "ultralowlatency"),
-              ("lowlatency", "lowlatency"), ("webcam", "webcam"))
+_AMF_USAGE = (("transcoding", "transcoding"), ("high_quality", "high_quality"),
+              ("ultralowlatency", "ultralowlatency"), ("lowlatency", "lowlatency"),
+              ("lowlatency_high_quality", "lowlatency_high_quality"), ("webcam", "webcam"))
 
 _AMF_USAGE_TIP = ("Profil d'usage AMF.\n"
                   "• transcoding : encodage offline qualité — recommandé pour fichiers.\n"
-                  "• lowlatency / ultralowlatency : streaming / cloud gaming.\n"
+                  "• high_quality : réglages internes orientés qualité (runtime AMF récent).\n"
+                  "• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n"
                   "• webcam : capture caméra temps réel.")
+_AMF_PREENCODE_TIP = ("Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\n"
+                      "Ignoré en CQP. Coût : quelques % de vitesse.")
+_AMF_VBAQ_TIP = ("Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit "
+                 "des blocs lisses.\n"
+                 "Ignoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR "
+                 "des zones sombres en baisse à débit égal — à juger à l'œil.")
 
 _AMF_HEVC = CodecSchema(
     codec="hevc_amf",
@@ -462,9 +470,8 @@ _AMF_HEVC = CodecSchema(
                       tooltip="Active une analyse pré-encodage du contenu pour optimiser bitrate et "
                               "placement des frames.\n"
                               "Améliore notablement la qualité au prix de ~10-15% de vitesse."),
-            ParamSpec("vbaq", "VBAQ", "bool",
-                      tooltip="Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\n"
-                              "Alloue plus de bits aux zones perceptuellement sensibles. Recommandé."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("vbaq", "VBAQ", "bool", tooltip=_AMF_VBAQ_TIP),
             ParamSpec("enforce_hrd", "Enforce HRD", "bool",
                       tooltip="Force le respect du modèle HRD (Hypothetical Reference Decoder).\n"
                               "Garantit que le stream est décodable en temps réel par tout décodeur "
@@ -498,9 +505,8 @@ _AMF_H264 = CodecSchema(
             ParamSpec("preanalysis", "Pre-analysis", "bool",
                       tooltip="Analyse pré-encodage qui optimise bitrate et placement des frames.\n"
                               "Coût : ~10-15% de vitesse. Gain qualité notable."),
-            ParamSpec("vbaq", "VBAQ", "bool",
-                      tooltip="Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\n"
-                              "Recommandé toujours actif."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("vbaq", "VBAQ", "bool", tooltip=_AMF_VBAQ_TIP),
             ParamSpec("__free__", "Flags libres", "text", default="",
                       tooltip="Tokens ffmpeg additionnels."),
         )),
@@ -518,6 +524,14 @@ _AMF_AV1 = CodecSchema(
                       tooltip=_AMF_USAGE_TIP + "\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent."),
         )),
         ParamGroup("Avancé / libre", (
+            ParamSpec("preanalysis", "Pre-analysis", "bool",
+                      tooltip="Analyse pré-encodage qui optimise bitrate et placement des frames."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("aq_mode", "AQ mode", "enum", default="caq",
+                      options=(("none", "none"), ("caq", "caq")),
+                      tooltip="Quantification adaptative AV1 AMF.\n"
+                              "• none : aucune.\n"
+                              "• caq : Content Adaptive Quantization."),
             ParamSpec("__free__", "Flags libres", "text", default="",
                       tooltip="Tokens ffmpeg additionnels."),
         )),
@@ -687,9 +701,12 @@ _VAAPI_COMMON_RATE_CONTROL_PARAMS = (
     ParamSpec("async_depth", "Async depth", "int", default=2, minimum=1, maximum=64,
               tooltip="Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\n"
                       "mais exige plus de surfaces et ajoute de la latence."),
-    ParamSpec("compression_level", "Compression level", "int", default=4, minimum=0, maximum=7,
-              tooltip="Compromis vitesse/qualité du wrapper VAAPI.\n"
-                      "Valeur plus haute = plus rapide, mais qualité/compression légèrement inférieures."),
+    ParamSpec("compression_level", "Compression level", "int", default=4, minimum=0, maximum=32,
+              tooltip="Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n"
+                      "• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n"
+                      "• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n"
+                      "  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n"
+                      "  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ."),
     ParamSpec("b", "Bitrate cible", "text", default="",
               tooltip="Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\n"
                       "Peut volontairement surcharger le mode SIZE du workflow."),
