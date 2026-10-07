@@ -464,7 +464,9 @@ class NvenccDirectOutputRunner:
                         "Dolby Vision P5 : couleurs converties en HDR10 par "
                         + ("NVEncC (libplacebo)." if routing.p5_native else "FFmpeg (libplacebo), pipe y4m.")
                     )
-                from core.workflows.encode.runtime.dovi_geometry import align_dovi_rpu_geometry, extract_dovi_rpu
+                from core.workflows.encode.runtime.dovi_geometry import (
+                    align_dovi_rpu_geometry, dovi_geometry_edit_json, extract_dovi_rpu,
+                )
 
                 dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
                 hdr10plus_bin = (cb.bins.get("hdr10plus_tool") if cb.bins else None) or "hdr10plus_tool"
@@ -496,10 +498,10 @@ class NvenccDirectOutputRunner:
 
                 dovi_rpu_path: Path | None = None
                 if routing.needs_rpu_alignment:
-                    padded_rpu = cwd / "rpu_aligned.bin"
-                    cleanup_paths.extend([padded_rpu, cwd / "dovi_geometry_edit.json"])
+                    aligned_rpu = cwd / "rpu_aligned.bin"
+                    cleanup_paths.extend([aligned_rpu, dovi_geometry_edit_json(aligned_rpu)])
                     cb.log_info(
-                        f"Dolby Vision : recadrage {routing.crop_offsets}, padding {routing.pad_offsets}. "
+                        f"Dolby Vision : recadrage {routing.crop_offsets} (gauche, haut, droite, bas). "
                         "Réalignement des offsets L5 par scène, sans réinitialisation globale du RPU."
                     )
                     raw_rpu = source_rpu(cwd / "source_rpu.bin")
@@ -507,13 +509,11 @@ class NvenccDirectOutputRunner:
                     align_dovi_rpu_geometry(
                         dovi_tool_bin=dovi_bin,
                         rpu_input=raw_rpu,
-                        output_rpu=padded_rpu,
-                        pad_offsets=routing.pad_offsets or (0, 0, 0, 0),
+                        output_rpu=aligned_rpu,
                         crop_offsets=routing.crop_offsets or (0, 0, 0, 0),
-                        work_dir=cwd,
                         run_cmd=run_metadata,
                     )
-                    dovi_rpu_path = padded_rpu
+                    dovi_rpu_path = aligned_rpu
 
                 # Interpolation RIFE : NVEncC lit un pipe y4m, la copie DoVi /
                 # HDR10+ depuis la source est impossible ; les métadonnées sont
@@ -593,7 +593,6 @@ class NvenccDirectOutputRunner:
                     # Réinjection uniquement si la copie DV reste active après routage.
                     dovi_rpu=dovi_rpu_path if runtime_video.copy_dv else None,
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
-                    vpp_pad=routing.vpp_pad,
                     source_dimensions=routing.source_dimensions,
                 )
                 if "--colorprim" not in encode_cmd and "-o" in encode_cmd:
@@ -782,7 +781,6 @@ def build_nvencc_pipeline_commands(
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
         dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
-        vpp_pad=routing.vpp_pad,
         source_dimensions=routing.source_dimensions,
     )
     if needs_ffmpeg_pipe:

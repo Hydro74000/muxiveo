@@ -93,14 +93,7 @@ def validate_encode_config(
                 "avec la copie Dolby Vision / HDR10+."
             )
         if video.copy_dv and not supports_dovi(video.codec):
-            if video.codec == "hevc_nvenc":
-                errors.append(
-                    f"Piste vidéo #{index} — Le codec FFmpeg 'hevc_nvenc' ne gère pas nativement "
-                    "les métadonnées dynamiques Dolby Vision (incompatibilité DPB / risque d'écran noir "
-                    "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
-                    "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
-                )
-            elif str(video.codec or "").startswith("nvencc_"):
+            if str(video.codec or "").startswith("nvencc_"):
                 errors.append(
                     f"Piste vidéo #{index} — {video.codec} ne supporte pas le profil Dolby Vision. "
                     "Suggestion : sélectionnez 'nvencc_hevc'."
@@ -108,7 +101,7 @@ def validate_encode_config(
             else:
                 errors.append(
                     f"Piste vidéo #{index} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
-                    "Suggestion : utilisez 'nvencc_hevc' (NVEncC avec libdovi), 'libx265' (logiciel) ou 'copy' (passthrough)."
+                    "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
                 )
         if video.copy_hdr10plus and not supports_hdr10plus(video.codec):
             errors.append(

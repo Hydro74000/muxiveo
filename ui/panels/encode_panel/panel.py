@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from core.bluray import ffprobe_input_args
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
-from core.i18n import apply_translations, set_current_language, translate_text
+from core.i18n import apply_translations, current_language, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
 from core.runner import TaskSignals
 from core.workflows.encode import (
@@ -60,6 +60,7 @@ from core.workflows.encode.catalog import (
     default_preset_for_codec,
     encoder_badge,
     is_h264_video_codec,
+    is_nvenc_hevc,
     rate_control_spec,
     rate_controls_for_codec,
     resolve_rate_control,
@@ -73,6 +74,7 @@ from core.workflows.encode.runtime.nvencc import (
     detect_nvencc_10bit_codecs, is_nvencc_codec, nvencc_requires_ffmpeg_filter_pipe,
 )
 from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
+from core.workflows.encode.runtime.dovi_geometry import DOVI_UHD_CANVAS, NvencDoviGeometryResult
 from core.workflows.encode.dovi_policy import (
     NORMALIZE_P81,
     resolve_dovi_plan,
@@ -99,7 +101,7 @@ from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 
 
-# Taille > 0 ; débit selon le mode (NVEncC VBR : 0 = illimité).
+# Taille > 0 ; débit selon le mode (VBR NVENC / NVEncC : 0 = illimité).
 # Pas de borne haute applicative (limite technique de QIntValidator).
 _INT_INPUT_MAX = 2**31 - 1
 
@@ -2939,12 +2941,7 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb.setEnabled(hdr10plus_ok and not tonemap)
 
         if not dv_ok and has_dv:
-            if codec == "hevc_nvenc":
-                msg = (
-                    "Dolby Vision non supporté par FFmpeg 'hevc_nvenc' (rupture de synchro RPU / DPB).\n"
-                    "Sélectionnez 'NVEncC — HEVC (NVIDIA, rigaya)' pour un encodage GPU Dolby Vision Profile 8.1 garanti."
-                )
-            elif codec == "nvencc_av1":
+            if codec == "nvencc_av1":
                 msg = (
                     "Dolby Vision non supporté sur le codec AV1 (Profile 10 incompatible décodeurs TV).\n"
                     "Sélectionnez 'NVEncC — HEVC' pour conserver le Dolby Vision Profile 8.1."
@@ -2952,7 +2949,7 @@ class EncodePanel(QWidget):
             elif codec != "copy":
                 msg = (
                     f"Le codec '{codec}' ne supporte pas le passthrough Dolby Vision.\n"
-                    "Utilisez 'NVEncC — HEVC (NVIDIA, rigaya)', 'x265 (logiciel)' ou 'Copie (sans réencodage)'."
+                    "Utilisez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'Copie (sans réencodage)'."
                 )
             else:
                 msg = ""
@@ -3093,7 +3090,7 @@ class EncodePanel(QWidget):
         minimum = spec.bitrate_minimum if spec is not None else 1
         if isinstance(validator, QIntValidator):
             validator.setBottom(minimum)
-        self._bitrate_edit.setToolTip(translate_text("0 = illimité (NVEncC VBR).") if minimum == 0 else "")
+        self._bitrate_edit.setToolTip(translate_text("0 = illimité (débit choisi par l'encodeur).") if minimum == 0 else "")
         uses_quality = spec is not None and spec.uses_quality
         self._quality_value_label.setVisible(uses_quality)
         self._bitrate_widget.setVisible(spec is not None and spec.bitrate)
@@ -3237,7 +3234,7 @@ class EncodePanel(QWidget):
         if self._closing or not hasattr(self, "_cmd_preview"):
             return   # appelé pendant l'init avant que le widget existe
         if (not self._loading_video_settings
-                and self._codec_combo.currentData() == "nvencc_hevc" and self._copy_dv_cb.isChecked()):
+                and is_nvenc_hevc(self._codec_combo.currentData()) and self._copy_dv_cb.isChecked()):
             from core.workflows.encode.runtime.dovi_geometry import nvencc_dovi_resize_changes_scale
 
             _, dimensions = self._geometry_source()
@@ -3246,7 +3243,7 @@ class EncodePanel(QWidget):
                 if not self._tonemap_cb.isChecked():
                     self._inject_hdr_cb.setChecked(True)
                 self.log_message.emit(
-                    "INFO", "Redimensionnement NVEncC : copie Dolby Vision désactivée. "
+                    "INFO", "Redimensionnement NVENC : copie Dolby Vision désactivée. "
                     "La conservation Dolby Vision requiert une image à l'échelle 1:1.",
                 )
         self._save_current_video_state()
@@ -4997,7 +4994,7 @@ class EncodePanel(QWidget):
                 self._apply_crop_settings(new_crop)
                 mult_desc = (
                     "multiple de 32 (NVENC+DV)"
-                    if (codec == "nvencc_hevc" and copy_dv)
+                    if (is_nvenc_hevc(codec) and copy_dv)
                     else "multiple de 2"
                 )
                 self.log_message.emit(
@@ -5014,13 +5011,14 @@ class EncodePanel(QWidget):
             self.unsetCursor()
 
     def confirm_dovi_geometry_alignment_if_needed(self, parent: QWidget | None = None) -> bool:
-        """Vérifie si un alignement géométrique sur un multiple de 32 est requis pour NVEncC + DV.
+        """Géométrie Dolby Vision NVENC (``hevc_nvenc``, NVEncC) avant encodage.
 
-        Si nécessaire, ouvre une boîte de dialogue proposant d'appliquer automatiquement
-        le recadrage (ou padding) et affiche l'onglet 'Géométrie / Filtres'.
+        Bandes noires : recadrage aligné sur 32, appliqué dans l'onglet
+        'Géométrie / Filtres'. Plein cadre dont l'image codée dépasserait le
+        canevas UHD : recadrage proposé, ou encodeur Dolby Vision sans cette contrainte.
         """
         vs = self._current_video_settings()
-        if vs.codec != "nvencc_hevc" or not getattr(vs, "copy_dv", False):
+        if not is_nvenc_hevc(vs.codec) or not getattr(vs, "copy_dv", False):
             return True
 
         source_path, dimensions = self._geometry_source()
@@ -5029,7 +5027,7 @@ class EncodePanel(QWidget):
         if src_w <= 0 or src_h <= 0 or source_path is None:
             return True
 
-        from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
+        from core.workflows.encode.runtime.dovi_geometry import align_nvenc_dovi_geometry
 
         l5_offsets = None
         try:
@@ -5037,7 +5035,9 @@ class EncodePanel(QWidget):
         except Exception:
             l5_offsets = None
 
-        res = align_nvencc_dovi_geometry(vs, dimensions, l5_offsets=l5_offsets)
+        res = align_nvenc_dovi_geometry(vs, dimensions, l5_offsets=l5_offsets)
+        if res.full_frame_crop:
+            return self._confirm_dovi_full_frame_crop(res, dimensions, parent)
 
         # 1. Branche 1 : Recadrage requis
         if res.crop_offsets is not None:
@@ -5095,37 +5095,94 @@ class EncodePanel(QWidget):
                 self._tabs.setCurrentIndex(2)
                 return False
 
-        # 2. Branche 2 : Padding requis (image pleine sans bandes)
-        if res.needs_rpu_alignment and res.vpp_pad is not None:
-            pad_left, pad_top, pad_right, pad_bottom = res.vpp_pad
-            target_w = src_w + pad_left + pad_right
-            target_h = src_h + pad_top + pad_bottom
-
-            dlg = QMessageBox(parent or self)
-            dlg.setIcon(QMessageBox.Icon.Information)
-            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
-            dlg.setText(
-                "<h3>Alignement matériel par padding requis pour Dolby Vision</h3>"
-                f"<p>Aucun recadrage commun n'a été retenu. Le cadre source ({src_w} × {src_h}) "
-                "doit être complété pour atteindre des dimensions multiples de 32.</p>"
-                f"<p>Un padding de <b>{pad_top} px</b> en haut et <b>{pad_bottom} px</b> en bas "
-                f"va être appliqué automatiquement ({target_w} × {target_h}) avec réalignement des métadonnées RPU Dolby Vision par scène, "
-                "préservant 100% de l'image sans recadrage.</p>"
-                "<p>Souhaitez-vous continuer avec cet alignement automatique ?</p>"
-            )
-            apply_btn = dlg.addButton("Continuer", QMessageBox.ButtonRole.AcceptRole)
-            dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
-            dlg.setDefaultButton(apply_btn)
-            dlg.exec()
-
-            if dlg.clickedButton() == apply_btn:
-                self._tabs.setCurrentIndex(2)
-                return True
-            else:
-                self._tabs.setCurrentIndex(2)
-                return False
-
         return True
+
+    #: Encodeurs Dolby Vision sans débordement du canevas UHD, par ordre de préférence.
+    _DOVI_FULL_FRAME_ENCODERS = ("libx265", "hevc_qsv", "hevc_vaapi", "hevc_amf")
+
+    def _dovi_full_frame_alternatives(self) -> list[str]:
+        """Encodeurs détectés et sélectionnables qui gardent un plein cadre UHD entier."""
+        model = self._codec_combo.model()
+        alternatives: list[str] = []
+        for codec in self._DOVI_FULL_FRAME_ENCODERS:
+            index = self._codec_combo.findData(codec)
+            if index >= 0 and model.flags(model.index(index, 0)) & Qt.ItemFlag.ItemIsEnabled:
+                alternatives.append(codec)
+        return alternatives
+
+    @staticmethod
+    def _format_percent(value: float) -> str:
+        """Pourcentage à une décimale, virgule décimale en français."""
+        text = f"{value:.1f}"
+        return text.replace(".", ",") if current_language() == "fra" else text
+
+    def _confirm_dovi_full_frame_crop(
+        self,
+        res: NvencDoviGeometryResult,
+        dimensions: tuple[int, int],
+        parent: QWidget | None,
+    ) -> bool:
+        """Plein cadre NVENC + Dolby Vision : recadrer et continuer, ou annuler pour changer d'encodeur."""
+        src_w, src_h = dimensions
+        coded_w, coded_h = res.coded_dimensions or dimensions
+        left, top, right, bottom = res.crop_offsets or (0, 0, 0, 0)
+        out_w, out_h = src_w - left - right, src_h - top - bottom
+        alternatives = self._dovi_full_frame_alternatives()
+        labels = [self._codec_combo.itemText(self._codec_combo.findData(codec)) for codec in alternatives]
+
+        text = translate_text(
+            "<h3>Réencodage Dolby Vision plein cadre : limitation de NVENC</h3>"
+            "<p>NVENC code l'image par blocs de 32 lignes : la source {src_w} × {src_h} devient "
+            "{coded_w} × {coded_h} dans le flux HEVC. Au-delà de {canvas_w} × {canvas_h} codés, "
+            "les téléviseurs et box Dolby Vision rejettent le flux (repli HDR10 ou image SDR délavée), "
+            "que les lignes ajoutées soient masquées ou visibles.</p>"
+            "<p><b>Recadrer à {out_w} × {out_h}</b> : {edges} retirés ({lost} % de l'image). "
+            "Dolby Vision est conservé.</p>",
+            src_w=src_w, src_h=src_h, coded_w=coded_w, coded_h=coded_h,
+            canvas_w=DOVI_UHD_CANVAS[0], canvas_h=DOVI_UHD_CANVAS[1], out_w=out_w, out_h=out_h,
+            edges=", ".join(
+                translate_text(template, n=value)
+                for template, value in (
+                    ("{n} px en haut", top), ("{n} px en bas", bottom),
+                    ("{n} px à gauche", left), ("{n} px à droite", right),
+                )
+                if value
+            ),
+            lost=self._format_percent(100 * (1 - (out_w * out_h) / (src_w * src_h))),
+        )
+        if alternatives:
+            text += translate_text(
+                "<p><b>Encodeur recommandé pour garder l'image entière</b> : {encoders} "
+                "codent {src_w} × {src_h} sans débordement, avec Dolby Vision.</p>",
+                encoders=", ".join(labels), src_w=src_w, src_h=src_h,
+            )
+        else:
+            text += translate_text(
+                "<p>Aucun autre encodeur Dolby Vision détecté (x265, QSV, VAAPI, AMF) : "
+                "avec NVENC, seul le recadrage conserve Dolby Vision.</p>"
+            )
+
+        dlg = QMessageBox(parent or self)
+        dlg.setIcon(QMessageBox.Icon.Warning)
+        dlg.setWindowTitle(translate_text("Dolby Vision et NVENC : plein cadre"))
+        dlg.setText(text)
+        crop_btn = dlg.addButton(translate_text("Recadrer et continuer"), QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = dlg.addButton(
+            translate_text("Annuler et utiliser un autre codec") if alternatives else translate_text("Annuler"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        # Encodeur sans recadrage mis en avant ; le recadrage reste proposé.
+        dlg.setDefaultButton(cancel_btn if alternatives else crop_btn)
+        dlg.exec()
+
+        if dlg.clickedButton() == crop_btn:
+            self._apply_crop_settings(res.video.crop)
+            self._save_current_video_state()
+            self._tabs.setCurrentIndex(2)  # Géométrie / Filtres
+            self._rebuild_preview()
+            return True
+        self._tabs.setCurrentIndex(1)  # Video : choix de l'encodeur
+        return False
 
     def _current_video_settings(self) -> VideoEncodeSettings:
         video_source = self._file_info.path if self._file_info is not None else None
@@ -5147,7 +5204,7 @@ class EncodePanel(QWidget):
         preset_data = self._preset_combo.currentData()
         # "" = preset « Aucun » (VAAPI) : valeur valide, distincte d'une liste vide.
         preset = default_preset_for_codec(str(codec)) if preset_data is None else str(preset_data)
-        # Débit invalide → -1 : ne pas le confondre avec le 0 illimité NVEncC.
+        # Débit invalide → -1 : ne pas le confondre avec le 0 illimité (VBR NVENC / NVEncC).
         try:
             bitrate = int(self._bitrate_edit.text())
         except ValueError:

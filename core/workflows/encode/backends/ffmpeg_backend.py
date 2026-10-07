@@ -68,18 +68,10 @@ class FfmpegEncodeBackend(EncodeBackend):
         videos = config.video_tracks or ([config.video] if config.video else [])
         for idx, video in enumerate(videos, start=1):
             if getattr(video, "copy_dv", False) and not supports_dovi(video.codec):
-                if video.codec == "hevc_nvenc":
-                    errors.append(
-                        f"Piste vidéo #{idx} — Le codec FFmpeg 'hevc_nvenc' ne gère pas nativement "
-                        "les métadonnées dynamiques Dolby Vision (incompatibilité DPB / risque d'écran noir "
-                        "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
-                        "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
-                    )
-                else:
-                    errors.append(
-                        f"Piste vidéo #{idx} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
-                        "Suggestion : utilisez 'nvencc_hevc' (NVEncC avec libdovi), 'libx265' (logiciel) ou 'copy' (passthrough)."
-                    )
+                errors.append(
+                    f"Piste vidéo #{idx} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
+                    "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
+                )
         return errors
 
     def build_preview(

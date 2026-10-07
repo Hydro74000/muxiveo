@@ -1,7 +1,7 @@
 {
-  "0 = illimité (NVEncC VBR).": {
-    "fra": "0 = illimité (NVEncC VBR).",
-    "eng": "0 = unlimited (NVEncC VBR)."
+  "0 = illimité (débit choisi par l'encodeur).": {
+    "fra": "0 = illimité (débit choisi par l'encodeur).",
+    "eng": "0 = unlimited (bitrate chosen by the encoder)."
   },
   "Analyse synchro :": {
     "fra": "Analyse synchro :",
@@ -5374,5 +5374,45 @@
   "Mio": {
     "fra": "Mio",
     "eng": "MiB"
+  },
+  "<p><b>Encodeur recommandé pour garder l'image entière</b> : {encoders} codent {src_w} × {src_h} sans débordement, avec Dolby Vision.</p>": {
+    "fra": "<p><b>Encodeur recommandé pour garder l'image entière</b> : {encoders} codent {src_w} × {src_h} sans débordement, avec Dolby Vision.</p>",
+    "eng": "<p><b>Recommended encoder to keep the whole picture</b>: {encoders} code {src_w} × {src_h} without overflow, with Dolby Vision.</p>"
+  },
+  "<p>Aucun autre encodeur Dolby Vision détecté (x265, QSV, VAAPI, AMF) : avec NVENC, seul le recadrage conserve Dolby Vision.</p>": {
+    "fra": "<p>Aucun autre encodeur Dolby Vision détecté (x265, QSV, VAAPI, AMF) : avec NVENC, seul le recadrage conserve Dolby Vision.</p>",
+    "eng": "<p>No other Dolby Vision encoder detected (x265, QSV, VAAPI, AMF): with NVENC, only cropping keeps Dolby Vision.</p>"
+  },
+  "Dolby Vision et NVENC : plein cadre": {
+    "fra": "Dolby Vision et NVENC : plein cadre",
+    "eng": "Dolby Vision and NVENC: full frame"
+  },
+  "Recadrer et continuer": {
+    "fra": "Recadrer et continuer",
+    "eng": "Crop and continue"
+  },
+  "<h3>Réencodage Dolby Vision plein cadre : limitation de NVENC</h3><p>NVENC code l'image par blocs de 32 lignes : la source {src_w} × {src_h} devient {coded_w} × {coded_h} dans le flux HEVC. Au-delà de {canvas_w} × {canvas_h} codés, les téléviseurs et box Dolby Vision rejettent le flux (repli HDR10 ou image SDR délavée), que les lignes ajoutées soient masquées ou visibles.</p><p><b>Recadrer à {out_w} × {out_h}</b> : {edges} retirés ({lost} % de l'image). Dolby Vision est conservé.</p>": {
+    "fra": "<h3>Réencodage Dolby Vision plein cadre : limitation de NVENC</h3><p>NVENC code l'image par blocs de 32 lignes : la source {src_w} × {src_h} devient {coded_w} × {coded_h} dans le flux HEVC. Au-delà de {canvas_w} × {canvas_h} codés, les téléviseurs et box Dolby Vision rejettent le flux (repli HDR10 ou image SDR délavée), que les lignes ajoutées soient masquées ou visibles.</p><p><b>Recadrer à {out_w} × {out_h}</b> : {edges} retirés ({lost} % de l'image). Dolby Vision est conservé.</p>",
+    "eng": "<h3>Full-frame Dolby Vision re-encode: NVENC limitation</h3><p>NVENC codes the picture in 32-line blocks: the {src_w} × {src_h} source becomes {coded_w} × {coded_h} in the HEVC stream. Beyond {canvas_w} × {canvas_h} coded, Dolby Vision TVs and boxes reject the stream (HDR10 fallback or washed-out SDR picture), whether the added lines are hidden or visible.</p><p><b>Crop to {out_w} × {out_h}</b>: {edges} removed ({lost} % of the picture). Dolby Vision is kept.</p>"
+  },
+  "{n} px en haut": {
+    "fra": "{n} px en haut",
+    "eng": "{n} px top"
+  },
+  "{n} px en bas": {
+    "fra": "{n} px en bas",
+    "eng": "{n} px bottom"
+  },
+  "{n} px à gauche": {
+    "fra": "{n} px à gauche",
+    "eng": "{n} px left"
+  },
+  "{n} px à droite": {
+    "fra": "{n} px à droite",
+    "eng": "{n} px right"
+  },
+  "Annuler et utiliser un autre codec": {
+    "fra": "Annuler et utiliser un autre codec",
+    "eng": "Cancel and use another codec"
   }
 }

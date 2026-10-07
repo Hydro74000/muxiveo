@@ -369,6 +369,9 @@ class VideoEncodeSettings:
     # RPU d'une source P5 converti en P8.1 (``dovi_tool -m 3 extract-rpu``), extrait
     # une fois à la préparation et réutilisé par les runtimes (copie DV active).
     p5_rpu_path:      Path | None  = None
+    # Recadrage absolu (gauche, haut, droite, bas) que le RPU réinjecté doit suivre
+    # (offsets L5 par scène). Posé par le workflow (``resolve_ffmpeg_dovi_geometry``).
+    dovi_rpu_crop:    tuple[int, int, int, int] | None = None
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.

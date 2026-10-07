@@ -62,6 +62,7 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
+    is_nvenc_hevc as _is_nvenc_hevc,
     supports_dovi,
     supports_hdr_output,
 )
@@ -2824,10 +2825,34 @@ class EncodeWorkflow(QObject):
             if value != video.dovi_source_profile or p5 != video.p5_to_hdr10:
                 video = dataclasses.replace(video, dovi_source_profile=value, p5_to_hdr10=p5)
                 changed = True
-            resolved.append(video)
+            geometry = self._resolve_ffmpeg_dovi_geometry(config, video)
+            changed = changed or geometry != video
+            resolved.append(geometry)
         if not changed:
             return config
         return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+
+    def _resolve_ffmpeg_dovi_geometry(self, config: EncodeConfig, video: VideoEncodeSettings) -> VideoEncodeSettings:
+        """Recadrage Dolby Vision d'un réencodage FFmpeg et recadrage que le RPU doit suivre.
+
+        NVEncC applique la même règle NVENC dans son routage (RPU passé à l'encodeur).
+        """
+        if not video.copy_dv or video.codec == "copy" or _is_nvencc_codec_runtime(video.codec):
+            return video
+        from core.workflows.encode.runtime.dovi_geometry import (
+            nvencc_dovi_resize_changes_scale, resolve_ffmpeg_dovi_geometry,
+        )
+
+        source = self._video_source_from_settings(config, video)
+        stream_index = self._video_stream_from_settings(video)
+        try:
+            dimensions = self._source_video_dimensions(source, stream_index=stream_index)
+        except Exception:
+            return video
+        l5_offsets = None
+        if _is_nvenc_hevc(video.codec) and not nvencc_dovi_resize_changes_scale(video, dimensions):
+            l5_offsets = self._probe_dovi_l5_offsets(source, stream_index=stream_index)
+        return resolve_ffmpeg_dovi_geometry(video, dimensions, l5_offsets=l5_offsets)
 
     @staticmethod
     def _dovi_plan(video: VideoEncodeSettings) -> _DoviPlan:

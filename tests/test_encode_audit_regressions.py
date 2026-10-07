@@ -693,7 +693,8 @@ def test_lot4_vaapi_rate_controls_probed_from_driver(monkeypatch):
 
 
 @pytest.mark.parametrize(("codec", "rate_control"), [
-    ("hevc_amf", "qvbr"), ("hevc_vaapi", "qvbr"), ("nvencc_hevc", "cbr"),
+    ("hevc_amf", "qvbr"), ("hevc_amf", "vbr_peak"), ("hevc_vaapi", "qvbr"), ("hevc_vaapi", "vbr"),
+    ("h264_vaapi", "vbr"), ("hevc_qsv", "vbr"), ("nvencc_hevc", "cbr"), ("hevc_nvenc", "cbr"),
 ])
 @pytest.mark.parametrize("bitrate", [0, -1])
 def test_review_quality_with_bitrate_rejects_invalid_bitrate(codec, rate_control, bitrate):
@@ -717,6 +718,18 @@ def test_nvencc_vbr_zero_is_valid_and_reaches_encoder(codec, rate_control):
     assert video_settings_errors([video]) == []
     command = build_nvencc_command("nvencc", video, Path("out.mkv"), input_path=Path("source.mkv"))
     assert _after(command, "--vbr") == "0"
+    video.bitrate_kbps = -1
+    assert video_settings_errors([video])
+
+
+@pytest.mark.parametrize("codec", ["hevc_nvenc", "h264_nvenc", "av1_nvenc"])
+def test_nvenc_vbr_zero_is_valid_and_reaches_encoder(codec):
+    from core.workflows.encode.planning.validation import video_settings_errors
+
+    video = VideoEncodeSettings(codec=codec, rate_control="vbr", bitrate_kbps=0)
+    assert video_settings_errors([video]) == []
+    args = video_codec_args(video, video.bitrate_kbps, callbacks=_CB)
+    assert _after(args, "-rc:v") == "vbr" and _after(args, "-b:v") == "0k"
     video.bitrate_kbps = -1
     assert video_settings_errors([video])
 

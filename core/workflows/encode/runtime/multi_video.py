@@ -10,6 +10,7 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import run_cancellable_capture
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
+from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, dovi_geometry_edit_json
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
@@ -168,6 +169,13 @@ class MultiVideoPipelineRunner:
                     "-i", str(meta_input), "-o", str(rpu_bin),
                 ], f"dovi-extract-{index}")
                 local_cleanup.append(rpu_bin)
+                # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
+                rpu_bin = crop_dovi_rpu(
+                    video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],
+                    run_cmd=lambda cmd: run_cmd(cmd, f"dovi-crop-{index}"),
+                    log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
+                )
+                local_cleanup.extend([rpu_bin, dovi_geometry_edit_json(rpu_bin)])
             if video.copy_hdr10plus:
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",

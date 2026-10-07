@@ -39,7 +39,7 @@ from core.workflows.encode.runtime.frame_count_guard import (
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
-from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, extract_dovi_rpu
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
@@ -406,6 +406,13 @@ class MetadataInjectRunner:
                         cb.bins["dovi_tool"], "extract-rpu",
                         "-i", str(meta_input), "-o", str(rpu_bin),
                     ])
+                    _check()
+                if video.copy_dv:
+                    # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
+                    rpu_bin = crop_dovi_rpu(
+                        video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],
+                        run_cmd=_run, log=cb.log_info,
+                    )
                     _check()
 
                 hdr10p_json = tmp / "hdr10p.json"

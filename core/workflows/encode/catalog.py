@@ -364,18 +364,18 @@ _MODE = StaticHdrMetadataMode
 # comme SDR uniquement : aucune option HDR ne lui est transmise.
 #   - copy   : conserve la source telle quelle (normalisation DoVi possible).
 #   - H.264  : SDR uniquement (pas de signalisation HDR10/DoVi/HDR10+).
-#   - DoVi   : libx265 / NVEncC HEVC (RPU synchronisé) ; FFmpeg NVENC/AMF/
-#              QSV/VAAPI cassent la synchro RPU/DPB.
+#   - DoVi   : encodeurs HEVC (RPU réinjecté par dovi_tool, NVEncC natif).
+#              NVENC code des blocs de 32 lignes : géométrie dans dovi_geometry.
 VIDEO_CODEC_HDR_CAPABILITIES: dict[str, VideoCodecHdrCapabilities] = {
     "copy": _HDR(hdr=True, dovi=True, hdr10plus=True),
     "libx265": _HDR(hdr=True, static_mode=_MODE.X265_PARAMS, manual_static=True, dovi=True, hdr10plus=True),
     "libx264": _SDR_ONLY,
     "libsvtav1": _HDR(hdr=True, static_mode=_MODE.SVTAV1_PARAMS, manual_static=True),
-    "hevc_nvenc": _HDR(hdr=True, static_mode=_MODE.BITSTREAM_PATCH, manual_static=True, hdr10plus=True),
+    "hevc_nvenc": _HDR(hdr=True, static_mode=_MODE.BITSTREAM_PATCH, manual_static=True, dovi=True, hdr10plus=True),
     # Valeurs HDR10 saisies : SEI réinjectés après encodage (comme hevc_nvenc).
-    "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, hdr10plus=True),
-    "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, manual_static=True, hdr10plus=True),
-    "hevc_qsv": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, hdr10plus=True),
+    "hevc_amf": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, dovi=True, hdr10plus=True),
+    "hevc_vaapi": _HDR(hdr=True, static_mode=_MODE.VAAPI_SEI, manual_static=True, dovi=True, hdr10plus=True),
+    "hevc_qsv": _HDR(hdr=True, static_mode=_MODE.FRAME_SIDE_DATA, manual_static=True, dovi=True, hdr10plus=True),
     "h264_nvenc": _SDR_ONLY,
     "h264_amf": _SDR_ONLY,
     "h264_vaapi": _SDR_ONLY,
@@ -388,6 +388,15 @@ VIDEO_CODEC_HDR_CAPABILITIES: dict[str, VideoCodecHdrCapabilities] = {
     "nvencc_h264": _SDR_ONLY,
     "nvencc_av1": _HDR(hdr=True, static_mode=_MODE.NATIVE, manual_static=True, hdr10plus=True),
 }
+
+
+#: Encodeurs HEVC sur le matériel NVIDIA (FFmpeg et NVEncC) : image codée par blocs de 32.
+NVENC_HEVC_CODECS = frozenset({"hevc_nvenc", "nvencc_hevc"})
+
+
+def is_nvenc_hevc(codec: str | None) -> bool:
+    """Encodeur HEVC NVENC (FFmpeg ``hevc_nvenc`` ou NVEncC)."""
+    return str(codec or "").strip().lower() in NVENC_HEVC_CODECS
 
 
 def hdr_capabilities(codec: str | None) -> VideoCodecHdrCapabilities:
@@ -445,7 +454,9 @@ def _nvenc_rate_controls(av1: bool) -> tuple[RateControlSpec, ...]:
     return (
         _RC("vbr_cq", "Qualité constante (VBR + CQ)", "cq", "CQ", (1, 63) if av1 else (1, 51), 32 if av1 else 26),
         _RC("constqp", "QP constant (CQP)", "cq", "QP", (0, 255) if av1 else (0, 51), 96 if av1 else 24),
-        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True),
+        # -b:v 0 : débit choisi par le pilote (vérifié ffmpeg 8.1). VAAPI le refuse, QSV
+        # bascule en CQP, AMF garde le débit par défaut du pilote : minimum 1 conservé.
+        _RC("vbr", "Débit variable (VBR)", "bitrate", bitrate=True, bitrate_minimum=0),
         _RC("cbr", "Débit constant (CBR)", "bitrate", bitrate=True),
         _SIZE,
     )
@@ -703,6 +714,8 @@ __all__ = [
     "is_h264_video_codec",
     "supports_hdr_output",
     "supports_dynamic_hdr",
+    "is_nvenc_hevc",
+    "NVENC_HEVC_CODECS",
     "supports_dovi",
     "supports_hdr10plus",
     "encoder_badge",

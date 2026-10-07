@@ -31,9 +31,7 @@ class NvenccInputRouting:
     rebased_to_source: bool = False
     forced_reader: str | None = None
     source_fps: str | None = None
-    vpp_pad: tuple[int, int, int, int] | None = None
     needs_rpu_alignment: bool = False
-    pad_offsets: tuple[int, int, int, int] | None = None
     crop_offsets: tuple[int, int, int, int] | None = None
     #: Image source (L×H) pour un redimensionnement natif au ratio conservé.
     source_dimensions: tuple[int, int] | None = None
@@ -346,9 +344,7 @@ class NvenccInputRouter:
         if p5_native and input_reader is None:
             input_reader = "avhw"
 
-        vpp_pad = None
         needs_rpu_alignment = False
-        pad_offsets = None
         crop_offsets = None
         dovi_rpu_prm = self._cb.nvencc_dovi_rpu_prm(routed_video)
 
@@ -364,7 +360,7 @@ class NvenccInputRouter:
 
         if video.copy_dv and video.codec == "nvencc_hevc":
             from core.workflows.encode.runtime.dovi_geometry import (
-                align_nvencc_dovi_geometry, nvencc_dovi_resize_changes_scale,
+                align_nvenc_dovi_geometry, nvencc_dovi_resize_changes_scale,
             )
 
             l5 = None
@@ -381,12 +377,10 @@ class NvenccInputRouter:
                 routed_video = replace(routed_video, copy_dv=False, inject_hdr_meta=True)
                 dovi_rpu_prm = None
             elif dims != (0, 0):
-                geom = align_nvencc_dovi_geometry(routed_video, dims, l5_offsets=l5)
+                geom = align_nvenc_dovi_geometry(routed_video, dims, l5_offsets=l5)
                 routed_video = geom.video
-                vpp_pad = geom.vpp_pad
                 dovi_rpu_prm = geom.dovi_rpu_prm
                 needs_rpu_alignment = geom.needs_rpu_alignment
-                pad_offsets = geom.pad_offsets
                 crop_offsets = geom.crop_offsets
 
         source_for_timing = Path(input_path)
@@ -411,9 +405,7 @@ class NvenccInputRouter:
             rebased_to_source=rebased_to_source,
             forced_reader=forced_reader,
             source_fps=source_fps,
-            vpp_pad=vpp_pad,
             needs_rpu_alignment=needs_rpu_alignment,
-            pad_offsets=pad_offsets,
             crop_offsets=crop_offsets,
             source_dimensions=dims if dims != (0, 0) else None,
             p5_native=p5_native,

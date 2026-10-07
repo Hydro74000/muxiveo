@@ -1696,36 +1696,44 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
-    def test_hevc_nvenc_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+    @pytest.mark.parametrize("codec", ["hevc_nvenc", "hevc_qsv", "hevc_vaapi", "hevc_amf"])
+    def test_hardware_hevc_keeps_dovi_available(self, qt_app, codec):
+        """Encodeurs HEVC matériels FFmpeg : RPU réinjecté par dovi_tool, copie DV disponible."""
         panel = EncodePanel(AppConfig())
-        panel._hw_encoders = {"hevc_nvenc", "nvencc_hevc"}
+        panel._hw_encoders = {codec}
         panel._populate_codec_combo()
         entry = _video_entry(0)
-        entry.entry_id = "video-nvenc-dv-warn"
+        entry.entry_id = f"video-{codec}-dv"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+        panel._set_combo_data(panel._codec_combo, codec)
+
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._dovi_warning_widget.isHidden() is True
+        panel.close()
+
+    def test_av1_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"av1_nvenc", "nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-av1-dv-warn"
         info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
         panel.set_video_tracks([(info, entry, _COLOR)])
 
-        idx_nvenc = next(
-            i for i in range(panel._codec_combo.count())
-            if panel._codec_combo.itemData(i) == "hevc_nvenc"
-        )
-        panel._codec_combo.setCurrentIndex(idx_nvenc)
+        panel._set_combo_data(panel._codec_combo, "av1_nvenc")
 
         # DoVi checkbox désactivée et décochée
         assert panel._copy_dv_cb.isEnabled() is False
         assert panel._copy_dv_cb.isChecked() is False
-        # Bannière d'alerte visible avec picto et recommandation NVEncC
+        # Bannière d'alerte visible avec picto et encodeurs HEVC proposés
         assert panel._dovi_warning_widget.isHidden() is False
         assert "⚠️" in panel._dovi_warning_icon.text()
-        assert "hevc_nvenc" in panel._dovi_warning_text.text()
-        assert "NVEncC" in panel._dovi_warning_text.text()
+        assert "av1_nvenc" in panel._dovi_warning_text.text()
+        assert "x265" in panel._dovi_warning_text.text()
 
         # Bascule vers nvencc_hevc : la bannière d'alerte doit disparaître
-        idx_nvencc = next(
-            i for i in range(panel._codec_combo.count())
-            if panel._codec_combo.itemData(i) == "nvencc_hevc"
-        )
-        panel._codec_combo.setCurrentIndex(idx_nvencc)
+        panel._set_combo_data(panel._codec_combo, "nvencc_hevc")
         assert panel._copy_dv_cb.isEnabled() is True
         assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
@@ -2228,10 +2236,10 @@ class TestEncodePanelAuditLot3:
         assert hlg._video_hdr_badges_from_state(state, source_video=source_video) == ("HLG",)
         hlg.close()
 
-    @pytest.mark.parametrize("unsupported", ["hevc_nvenc", "libx264"])
+    @pytest.mark.parametrize("unsupported", ["av1_nvenc", "libx264"])
     def test_review_hdr_preferences_survive_track_navigation(self, qt_app, unsupported):
         panel = self._panel(HDRType.DOLBY_VISION_HDR10PLUS)
-        panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
+        panel._on_hw_detected({"av1_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
         first = panel._video_tracks[0]
         other = _video_entry(0)
         other.entry_id = "other-video"
@@ -2267,9 +2275,11 @@ class TestEncodePanelAuditLot4:
     def _modes(panel: EncodePanel) -> list[str]:
         return [panel._mode_combo.itemData(i) for i in range(panel._mode_combo.count())]
 
-    @pytest.mark.parametrize("codec", ["nvencc_hevc", "nvencc_h264", "nvencc_av1"])
-    @pytest.mark.parametrize("mode", ["vbr", "vbr_quality"])
-    def test_nvencc_vbr_accepts_and_preserves_zero(self, qt_app, codec, mode):
+    @pytest.mark.parametrize(("codec", "mode"), [
+        *((codec, mode) for codec in ("nvencc_hevc", "nvencc_h264", "nvencc_av1") for mode in ("vbr", "vbr_quality")),
+        ("hevc_nvenc", "vbr"), ("h264_nvenc", "vbr"), ("av1_nvenc", "vbr"),
+    ])
+    def test_vbr_zero_accepts_and_preserves_zero(self, qt_app, codec, mode):
         from core.workflows.encode.planning.validation import video_settings_errors
 
         panel = self._panel({codec})
