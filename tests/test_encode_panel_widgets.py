@@ -2047,7 +2047,7 @@ class TestEncodePanelInterpolationTta:
         badges = panel._video_filter_badges_from_state(
             {"interpolation": FrameInterpolationSettings(enabled=True, factor=2, tta=4)}
         )
-        assert any(b.startswith("RIFE x2") and "TTA ×4" in b for b in badges)
+        assert any(b.startswith("MVO-RIFE x2") and "TTA ×4" in b for b in badges)
 
         panel._interp_cb.setChecked(False)
         parent = tta.parentWidget()

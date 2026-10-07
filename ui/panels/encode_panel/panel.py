@@ -1803,7 +1803,7 @@ class EncodePanel(QWidget):
         self._interp_fps_label = self._filter_tech_label("")
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
-            self._filter_tech_label("RIFE"),
+            self._filter_tech_label("MVO-RIFE"),
             self._interp_factor_combo,
             self._interp_quality_combo,
             self._interp_mode_combo,
@@ -4736,9 +4736,9 @@ class EncodePanel(QWidget):
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
             badge = (
-                f"RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
+                f"MVO-RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
                 if interpolation.target_fps
-                else f"RIFE x{int(interpolation.factor)}"
+                else f"MVO-RIFE x{int(interpolation.factor)}"
             )
             if interpolation.quality == "light":
                 badge += " Light"
