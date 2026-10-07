@@ -98,7 +98,9 @@ def _halves_yavg(ffmpeg_bin: str, path: Path, *, prefilter: str = "") -> tuple[f
         if part
     )
     try:
-        result = subprocess.run(
+        # FFmpeg configuré et arguments séparés ; les filtres ne passent pas par un shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [ffmpeg_bin, "-hide_banner", "-nostdin", "-loglevel", "error", "-i", str(path), "-frames:v", "1",
              "-vf", vf, "-f", "rawvideo", "-"],
             capture_output=True,
