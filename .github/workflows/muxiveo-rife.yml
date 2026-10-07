@@ -252,6 +252,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/check_release_tag.sh
+          sparse-checkout-cone-mode: false
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -272,6 +278,8 @@ jobs:
             echo "::notice::$TAG déjà publiée"
             exit 0
           fi
+          # Tag orphelin sur un autre commit : la release s'y rattacherait.
+          bash scripts/check_release_tag.sh "$TAG" "$GITHUB_SHA"
           (cd assets && sha256sum -- * > SHA256SUMS)
           # --target : crée le tag sur le commit construit (appel depuis release.yml)
           gh release create "$TAG" assets/* \
