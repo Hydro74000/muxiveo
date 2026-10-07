@@ -464,7 +464,9 @@ jobs:
   homebrew-formula:
     name: Generate Homebrew formula
     runs-on: ubuntu-latest
-    if: ${{ needs.release-metadata.outputs.channel == 'stable' }}
+    # !cancelled() : le job muxiveo-rife, en amont des builds, est sauté quand sa release
+    # existe déjà ; sans cette condition, GitHub sauterait aussi la formule.
+    if: ${{ !cancelled() && needs.release-metadata.outputs.channel == 'stable' && needs.build-linux.result == 'success' && needs.build-macos.result == 'success' }}
     needs:
       - release-metadata
       - build-linux
@@ -781,7 +783,8 @@ jobs:
     needs:
       - release-metadata
       - release
-    if: ${{ needs.release-metadata.outputs.channel == 'stable' }}
+    # !cancelled() : voir homebrew-formula (job muxiveo-rife sauté en amont).
+    if: ${{ !cancelled() && needs.release-metadata.outputs.channel == 'stable' && needs.release.result == 'success' }}
     steps:
       - name: Download formula artifact
         uses: actions/download-artifact@v4

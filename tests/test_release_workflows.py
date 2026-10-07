@@ -231,3 +231,37 @@ def test_generate_release_notes_includes_installer_links(tmp_path):
     downloads_pos = content.index("### 📥 Téléchargements / Direct Downloads")
     changes_pos = content.index("## Changes since previous release")
     assert downloads_pos < changes_pos
+
+
+def _jobs(filename):
+    """Jobs du workflow : (needs, condition if) lus sans dépendance YAML."""
+    text = (_WORKFLOWS / filename).read_text(encoding="utf-8")
+    body = text.split("\njobs:\n", 1)[1]
+    jobs = {}
+    for match in re.finditer(r"^  ([A-Za-z0-9_-]+):\n((?:    .*\n|\n)*)", body, re.MULTILINE):
+        block = match.group(2)
+        inline = re.search(r"^    needs: \[(.*)\]", block, re.MULTILINE)
+        if inline:
+            needs = [n.strip() for n in inline.group(1).split(",") if n.strip()]
+        else:
+            listed = re.search(r"^    needs:\n((?:      - .*\n)+)", block, re.MULTILINE)
+            single = re.search(r"^    needs: ([A-Za-z0-9_-]+)$", block, re.MULTILINE)
+            needs = re.findall(r"- ([A-Za-z0-9_-]+)", listed.group(1)) if listed else ([single.group(1)] if single else [])
+        condition = re.search(r"^    if: (.*)$", block, re.MULTILINE)
+        jobs[match.group(1)] = (needs, condition.group(1) if condition else "")
+    return jobs
+
+
+def test_jobs_downstream_of_skippable_rife_job_are_not_skipped():
+    """Le job muxiveo-rife est sauté quand sa release existe : ses dépendants doivent l'ignorer."""
+    jobs = _jobs("release.yml")
+    assert "muxiveo-rife" in jobs and "homebrew-formula" in jobs
+
+    def depends_on_rife(name, seen=()):
+        return any(n == "muxiveo-rife" or (n not in seen and depends_on_rife(n, (*seen, n))) for n in jobs[name][0])
+
+    downstream = [name for name in jobs if depends_on_rife(name)]
+    assert {"build-linux", "build-windows", "homebrew-formula", "release", "publish-homebrew-tap"} <= set(downstream)
+    for name in downstream:
+        condition = jobs[name][1]
+        assert "!cancelled()" in condition or "always()" in condition, name
