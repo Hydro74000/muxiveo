@@ -129,7 +129,19 @@ def select_asset(release: dict, repo: str, *patterns: str) -> ReleaseAsset:
     asset = matches[0]
     name = str(asset["name"])
     url = str(asset.get("browser_download_url") or "")
-    if not url.startswith(f"https://github.com/{repo}/releases/download/"):
+    parsed = urllib.parse.urlsplit(url)
+    # GitHub canonicalise la casse du propriétaire/dépôt dans l'URL renvoyée.
+    # Le tag et le nom de l'asset, eux, doivent correspondre exactement.
+    path = parsed.path.split("/", 5)
+    if not (
+        parsed.scheme == "https"
+        and parsed.netloc.lower() == "github.com"
+        and not parsed.query and not parsed.fragment
+        and len(path) == 6
+        and f"{path[1]}/{path[2]}".lower() == repo.lower()
+        and path[3:5] == ["releases", "download"]
+        and urllib.parse.unquote(path[5]) == f"{tag}/{name}"
+    ):
         raise RuntimeError(f"{repo} {tag} : URL inattendue pour {name} : {url!r}")
     sha256 = asset_sha256(asset)
     if sha256 is None:

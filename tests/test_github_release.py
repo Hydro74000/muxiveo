@@ -66,6 +66,37 @@ def test_verify_download_refuses_mismatch(tmp_path: Path) -> None:
         verify_download(asset, fake)
 
 
+def test_select_asset_accepts_canonical_repository_case() -> None:
+    entry = _asset("muxiveo-rife-linux.tar.gz", repo="Hydro74000/muxiveo")
+    asset = select_asset(_release(entry), "Hydro74000/Muxiveo", "linux")
+    assert asset.url == entry["browser_download_url"]
+    assert asset.sha256 == hashlib.sha256(b"x").hexdigest()
+
+
+@pytest.mark.parametrize("url", [
+    "http://github.com/quietvoid/dovi_tool/releases/download/9.9.9/tool.tar.gz",
+    "https://github.com.evil.invalid/quietvoid/dovi_tool/releases/download/9.9.9/tool.tar.gz",
+    "https://github.com@evil.invalid/quietvoid/dovi_tool/releases/download/9.9.9/tool.tar.gz",
+    "https://github.com/quietvoid/dovi_tool-other/releases/download/9.9.9/tool.tar.gz",
+    "https://github.com/quietvoid/dovi_tool/releases/download/9.9.8/tool.tar.gz",
+    "https://github.com/quietvoid/dovi_tool/releases/download/9.9.9/TOOL.tar.gz",
+    "https://github.com/quietvoid/dovi_tool/releases/download/9.9.9/tool.tar.gz?redirect=elsewhere",
+])
+def test_select_asset_keeps_download_url_identity_strict(url: str) -> None:
+    entry = _asset("tool.tar.gz")
+    entry["browser_download_url"] = url
+    with pytest.raises(RuntimeError, match="URL inattendue"):
+        select_asset(_release(entry), REPO, "tool.tar.gz")
+
+
+def test_select_asset_accepts_encoded_tag_and_filename() -> None:
+    entry = _asset("tool Linux.tar.gz", tag="release/v1.0")
+    entry["browser_download_url"] = (
+        f"https://github.com/{REPO}/releases/download/release%2Fv1.0/tool%20Linux.tar.gz"
+    )
+    assert select_asset(_release(entry, tag="release/v1.0"), REPO, "Linux").name == "tool Linux.tar.gz"
+
+
 # ---------------------------------------------------------------------------
 # setup.py
 # ---------------------------------------------------------------------------
