@@ -13,12 +13,17 @@ from core.workflows.encode.backends.models import (
 )
 from core.workflows.encode.backends.progress import parse_ffmpeg_progress
 from core.workflows.encode.catalog import (
-    CQ_CAPABLE_VIDEO_CODECS,
+    rate_controls_for_codec,
     supports_dovi,
     supports_dynamic_hdr,
     supports_hdr10plus,
     supports_hdr_output,
     supports_manual_static_hdr_metadata,
+)
+from core.workflows.encode.domain.codecs import (
+    ExtraParamsReport,
+    ffmpeg_extra_params_report,
+    ffmpeg_workflow_option_values,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
@@ -33,13 +38,12 @@ class FfmpegEncodeBackend(EncodeBackend):
         config_ctx: BackendContext | None = None,
     ) -> BackendCapabilities:
         _ = config_ctx
-        modes: list[QualityMode] = [QualityMode.CRF]
-        if codec in CQ_CAPABLE_VIDEO_CODECS:
-            modes.append(QualityMode.CQ)
-        modes.extend([QualityMode.BITRATE, QualityMode.SIZE])
+        controls = rate_controls_for_codec(codec)
+        modes = tuple(dict.fromkeys(QualityMode(spec.family) for spec in controls)) or (QualityMode.CRF,)
         return BackendCapabilities(
             backend_id=self.backend_id,
-            quality_modes=tuple(modes),
+            quality_modes=modes,
+            rate_controls=controls,
             supports_dynamic_hdr=supports_dynamic_hdr(codec),
             supports_dovi=supports_dovi(codec),
             supports_hdr10plus=supports_hdr10plus(codec),
@@ -64,18 +68,10 @@ class FfmpegEncodeBackend(EncodeBackend):
         videos = config.video_tracks or ([config.video] if config.video else [])
         for idx, video in enumerate(videos, start=1):
             if getattr(video, "copy_dv", False) and not supports_dovi(video.codec):
-                if video.codec == "hevc_nvenc":
-                    errors.append(
-                        f"Piste vidéo #{idx} — Le codec FFmpeg 'hevc_nvenc' ne gère pas nativement "
-                        "les métadonnées dynamiques Dolby Vision (incompatibilité DPB / risque d'écran noir "
-                        "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
-                        "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
-                    )
-                else:
-                    errors.append(
-                        f"Piste vidéo #{idx} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
-                        "Suggestion : utilisez 'nvencc_hevc' (NVEncC avec libdovi), 'libx265' (logiciel) ou 'copy' (passthrough)."
-                    )
+                errors.append(
+                    f"Piste vidéo #{idx} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
+                    "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
+                )
         return errors
 
     def build_preview(
@@ -115,6 +111,12 @@ class FfmpegEncodeBackend(EncodeBackend):
 
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
         return str(video.extra_params or "")
+
+    def extra_params_report(self, video: VideoEncodeSettings) -> ExtraParamsReport:
+        return ffmpeg_extra_params_report(video)
+
+    def workflow_option_values(self, video: VideoEncodeSettings) -> dict[str, str]:
+        return ffmpeg_workflow_option_values(video)
 
     def parse_progress(self, line: str) -> ProgressEvent | None:
         return parse_ffmpeg_progress(line)

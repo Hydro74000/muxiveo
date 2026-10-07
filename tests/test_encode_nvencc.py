@@ -327,7 +327,7 @@ class TestHardwareDetectorIntegration:
 # ---------------------------------------------------------------------------
 
 def _video(codec: str = "nvencc_hevc", **overrides: Any) -> VideoEncodeSettings:
-    return replace(VideoEncodeSettings(codec=codec), **overrides)
+    return VideoEncodeSettings(codec=codec, **overrides)
 
 
 class TestBuildDecodePipeCmd:
@@ -412,15 +412,15 @@ class TestBuildNvenccCommand:
         assert "--output-depth" in cmd
         assert cmd[cmd.index("--output-depth") + 1] == "10"
 
-    def test_force_8bit_only_for_h264(self):
+    def test_legacy_force_8bit_is_migrated_for_every_codec(self):
         # H.264 + force_8bit → --output-depth 8.
         v_h264 = _video(codec="nvencc_h264", force_8bit=True)
         cmd_h264 = build_nvencc_command("nvencc", v_h264, "/tmp/out.h264")
         assert cmd_h264[cmd_h264.index("--output-depth") + 1] == "8"
-        # HEVC + force_8bit → flag ignoré (NVEncC HEVC n'a pas de notion 8bit forcé).
+        # La nouvelle profondeur explicite s’applique aussi à HEVC.
         v_hevc = _video(codec="nvencc_hevc", force_8bit=True)
         cmd_hevc = build_nvencc_command("nvencc", v_hevc, "/tmp/out.hevc")
-        assert "--output-depth" not in cmd_hevc
+        assert cmd_hevc[cmd_hevc.index("--output-depth") + 1] == "8"
 
     def test_preset_p_levels(self):
         v = _video(preset="P5")
@@ -673,11 +673,17 @@ class TestBuildNvenccCommand:
         cmd_custom_strict = build_nvencc_command("nvencc", v_custom_strict, "/tmp/out.hevc")
         assert "--strict-gop" in cmd_custom_strict
 
-    def test_tonemap_ui_maps_to_nvencc_vpp_colorspace(self):
+    def test_tonemap_ui_maps_to_libplacebo_without_nvrtc(self):
+        """--vpp-colorspace hdr2sdr exige libnvrtc (absent sous Linux) : libplacebo pour tous les algorithmes."""
         v = _video(tonemap_to_sdr=True, tonemap_algorithm="mobius")
         cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc")
-        assert "--vpp-colorspace" in cmd
-        assert "hdr2sdr=mobius" in cmd[cmd.index("--vpp-colorspace") + 1]
+        assert "--vpp-colorspace" not in cmd
+        assert cmd[cmd.index("--vpp-libplacebo-tonemapping") + 1] == (
+            "src_csp=hdr10,dst_csp=sdr,tonemapping_function=mobius"
+        )
+        hlg = _video(tonemap_to_sdr=True, tonemap_algorithm="hable", source_color_transfer="arib-std-b67")
+        cmd = build_nvencc_command("nvencc", hlg, "/tmp/out.hevc")
+        assert "src_csp=hlg" in cmd[cmd.index("--vpp-libplacebo-tonemapping") + 1]
 
     def test_tonemap_ui_maps_linear_to_libplacebo(self):
         v = _video(tonemap_to_sdr=True, tonemap_algorithm="linear")
@@ -838,8 +844,9 @@ class TestBuildNvenccCommand:
         assert "--master-display" not in cmd
         assert "--max-cll" not in cmd
         assert "matrix=bt709:bt709,hdr2sdr=hable" not in joined
-        assert "hdr2sdr=mobius" in cmd[cmd.index("--vpp-colorspace") + 1]
-        assert "--vpp-libplacebo-tonemapping" not in cmd
+        assert "--vpp-colorspace" not in cmd
+        assert cmd.count("--vpp-libplacebo-tonemapping") == 1
+        assert "tonemapping_function=mobius" in cmd[cmd.index("--vpp-libplacebo-tonemapping") + 1]
 
     @pytest.mark.parametrize("flag", ["--cqp", "--qp-init", "--qp-min", "--qp-max"])
     def test_qp_triplets_from_extra_params_single_value_are_normalized(self, flag):
@@ -848,6 +855,28 @@ class TestBuildNvenccCommand:
         positions = [idx for idx, token in enumerate(cmd) if token == flag]
         assert positions
         assert cmd[positions[-1] + 1] == "18:18:18"
+
+    def test_rate_control_from_extra_params_overrides_ui_mode(self):
+        """La saisie remplace le mode qualité de l'UI (dernière option de débit), avec WARN."""
+        v = _video(extra_params="--cqp 18 --vbr 9000 --lookahead 32 -i other.mkv")
+        reports = []
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv",
+                                   on_extra_report=reports.append)
+        assert cmd[-8:-2] == ["--cqp", "18:18:18", "--vbr", "9000", "--lookahead", "32"]
+        assert cmd.count("-i") == 1 and "other.mkv" not in cmd
+        report = reports[0]
+        assert report.overriding == ("--cqp", "18:18:18", "--vbr", "9000")
+        assert report.removed == ("-i", "other.mkv")
+
+    def test_dolby_vision_locks_profile_tier_and_depth(self):
+        v = _video(codec="nvencc_hevc", copy_dv=True, inject_hdr_meta=True,
+                   extra_params="--profile main --tier main --output-depth 8 --aq")
+        reports = []
+        cmd = build_nvencc_command("nvencc", v, "/tmp/out.hevc", input_path="/in.mkv",
+                                   on_extra_report=reports.append)
+        assert cmd[cmd.index("--profile") + 1] == "main10" and cmd.count("--profile") == 1
+        assert cmd.count("--output-depth") == 1 and "--aq" in cmd
+        assert reports[0].removed == ("--profile", "main", "--tier", "main", "--output-depth", "8")
 
     def test_output_path(self):
         cmd = build_nvencc_command("nvencc", _video(), "/work/out.hevc")
@@ -1063,7 +1092,8 @@ class TestWorkflowNvenccShortCircuit:
         assert cmd[0] == "/usr/bin/NVEncC"
         assert "--cqp" in cmd
 
-    def test_validate_rejects_size_mode(self, tmp_path: Path):
+    def test_validate_accepts_size_mode(self, tmp_path: Path):
+        """V33 : taille cible NVEncC acceptée (une passe VBR plafonnée)."""
         wf = self._make_wf()
         config = _make_encode_config(
             tmp_path / "in.mkv", tmp_path / "out.mkv",
@@ -1071,7 +1101,7 @@ class TestWorkflowNvenccShortCircuit:
             target_size_mb=2000,
         )
         errors = wf.validate(config)
-        assert any("taille cible" in err.lower() for err in errors)
+        assert not any("taille cible" in err.lower() for err in errors)
 
     def test_validate_rejects_missing_binary(self, tmp_path: Path):
         wf = self._make_wf(nvencc=None)
@@ -1091,8 +1121,21 @@ class TestWorkflowNvenccShortCircuit:
         )
         errors = wf.validate(config)
         assert not any("tone-mapping" in err.lower() for err in errors)
+        wf._nvencc_libplacebo_ready = lambda: True  # type: ignore[method-assign]
         cmd = wf.build_command_single(config)
-        assert "--vpp-colorspace" in cmd or "--vpp-libplacebo-tonemapping" in cmd
+        assert "--vpp-libplacebo-tonemapping" in cmd and "--vpp-colorspace" not in cmd
+
+    def test_tonemap_without_nvencc_libplacebo_uses_ffmpeg_pipe(self, tmp_path: Path):
+        wf = self._make_wf()
+        config = _make_encode_config(
+            tmp_path / "in.mkv", tmp_path / "out.mkv",
+            codec="nvencc_hevc",
+            tonemap_to_sdr=True,
+        )
+        wf._nvencc_libplacebo_ready = lambda: False  # type: ignore[method-assign]
+        cmd = wf.build_command_single(config)
+        assert cmd[0].endswith("ffmpeg") and any("tonemap=" in token for token in cmd)
+        assert "--vpp-libplacebo-tonemapping" not in cmd and "--vpp-colorspace" not in cmd
 
     def test_validate_rejects_multi_video_even_with_copy_track(self, tmp_path: Path):
         from core.workflows.encode.models import EncodeConfig
@@ -1386,9 +1429,9 @@ class TestNvenccHdrOutputDepth:
     @pytest.mark.parametrize("codec,extra,expected", [
         ("nvencc_hevc", {"inject_hdr_meta": True}, "10"),
         ("nvencc_av1", {"copy_dv": True}, "10"),
-        ("nvencc_hevc", {"copy_hdr10plus": True, "tonemap_to_sdr": True}, None),
-        ("nvencc_hevc", {}, None),
-        ("nvencc_h264", {"inject_hdr_meta": True}, None),
+        ("nvencc_hevc", {"copy_hdr10plus": True, "tonemap_to_sdr": True}, "8"),
+        ("nvencc_hevc", {}, "8"),
+        ("nvencc_h264", {"inject_hdr_meta": True}, "8"),
         ("nvencc_h264", {"inject_hdr_meta": True, "force_8bit": True}, "8"),
     ])
     def test_hdr_defaults_to_10bit(self, codec, extra, expected):

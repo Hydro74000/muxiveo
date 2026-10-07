@@ -114,7 +114,7 @@ class TestConstants:
     def test_svtav1_presets_are_numeric_strings(self):
         for p in SVTAV1_PRESETS:
             assert p.isdigit()
-        assert len(SVTAV1_PRESETS) == 13   # 0..12
+        assert len(SVTAV1_PRESETS) == 14   # 0..13
 
     def test_nvenc_presets_include_p_values(self):
         assert "p1" in NVENC_PRESETS
@@ -150,8 +150,16 @@ class TestPresetsForCodec:
         assert presets_for_codec("h264_nvenc") == NVENC_PRESETS
 
     def test_amf_returns_amf_presets(self):
-        for codec in ("hevc_amf", "h264_amf", "av1_amf"):
+        for codec in ("hevc_amf", "h264_amf"):
             assert presets_for_codec(codec) == AMF_PRESETS
+        # av1_amf accepte en plus high_quality (FFmpeg 8.1).
+        assert presets_for_codec("av1_amf") == ["high_quality", *AMF_PRESETS]
+
+    def test_av1_nvenc_does_not_offer_presets_ffmpeg_refuses(self):
+        presets = presets_for_codec("av1_nvenc")
+        assert "hp" not in presets and "hq" not in presets
+        # Presets hérités acceptés par hevc/h264_nvenc : conservés.
+        assert {"slow", "medium", "fast", "hp", "hq"} <= set(presets_for_codec("hevc_nvenc"))
 
     def test_qsv_returns_qsv_presets(self):
         for codec in ("hevc_qsv", "h264_qsv", "av1_qsv"):

@@ -8,7 +8,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from core.bluray import is_bluray_playlist
+from core.workflows.encode.dovi_policy import resolve_dovi_plan, sub_profile_from_value
 from core.workflows.encode.models import EncodeConfig, EncodeError, VideoEncodeSettings
+from core.workflows.encode.runtime.nvencc import nvencc_requires_ffmpeg_prefilter
 
 
 FALLBACK_HEVC_FRAME_RATE = "24000/1001"
@@ -28,10 +31,14 @@ class NvenccInputRouting:
     rebased_to_source: bool = False
     forced_reader: str | None = None
     source_fps: str | None = None
-    vpp_pad: tuple[int, int, int, int] | None = None
     needs_rpu_alignment: bool = False
-    pad_offsets: tuple[int, int, int, int] | None = None
     crop_offsets: tuple[int, int, int, int] | None = None
+    #: Image source (L×H) pour un redimensionnement natif au ratio conservé.
+    source_dimensions: tuple[int, int] | None = None
+    #: Source P5 convertie par NVEncC lui-même (sinon pipe FFmpeg libplacebo).
+    p5_native: bool = False
+    #: Tone-mapping HDR → SDR fait par NVEncC (libplacebo), sinon pipe FFmpeg.
+    native_tonemap: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,10 @@ class NvenccRoutingCallbacks:
     nvencc_dovi_rpu_prm: Callable[[VideoEncodeSettings], str | None]
     source_video_dimensions: Callable[[Path], tuple[int, int]] | None = None
     probe_dovi_l5_offsets: Callable[[Path], tuple[int, int, int, int] | None] | None = None
+    #: NVEncC sait convertir une source P5 (libdovi + libplacebo, sonde réussie ou à venir).
+    p5_native_ready: Callable[[], bool] | None = None
+    #: libplacebo compilé dans NVEncC (tone-mapping natif sans NVRTC).
+    libplacebo_ready: Callable[[], bool] | None = None
 
 
 def normalize_frame_rate_expr(value: object) -> str | None:
@@ -308,27 +319,49 @@ class NvenccInputRouter:
 
         routed_video = video
         if video.copy_dv and str(video.dovi_profile or "").strip().lower() in {"", "0", "copy"}:
-            routed_video = replace(video, dovi_profile="8.1")
+            # Profil de sortie de la matrice V30 : P8.4 / P8.2 conservés, 8.1 sinon.
+            plan = resolve_dovi_plan(
+                codec=video.codec,
+                copy_dv=True,
+                dovi_profile="0",
+                sub_profile=sub_profile_from_value(video.dovi_source_profile),
+            )
+            routed_video = replace(video, dovi_profile=plan.output_profile or "8.1")
 
-        vpp_pad = None
+        # Source P5 : conversion dans NVEncC si possible (lecture directe d'un
+        # conteneur : le RPU d'un HEVC brut n'est pas exploité ; playlist Blu-ray
+        # toujours lue par FFmpeg), sinon pipe FFmpeg.
+        p5_native = bool(
+            video.p5_to_hdr10
+            and self._cb.p5_native_ready is not None
+            and self._cb.p5_native_ready()
+            and not nvencc_raw_input_needs_fps_hint(input_path)
+            and not is_bluray_playlist(input_path)
+            and not video.tonemap_to_sdr
+            and not video.interpolates()
+            and not nvencc_requires_ffmpeg_prefilter(video)
+        )
+        if p5_native and input_reader is None:
+            input_reader = "avhw"
+
         needs_rpu_alignment = False
-        pad_offsets = None
         crop_offsets = None
         dovi_rpu_prm = self._cb.nvencc_dovi_rpu_prm(routed_video)
 
+        dims = (0, 0)
+        needs_dims = (video.copy_dv and video.codec == "nvencc_hevc") or video.resize.is_active()
+        if needs_dims and self._cb.source_video_dimensions is not None:
+            try:
+                dims = self._cb.source_video_dimensions(Path(input_path))
+                if dims == (0, 0) and Path(input_path) != Path(config.source):
+                    dims = self._cb.source_video_dimensions(Path(config.source))
+            except Exception:
+                dims = (0, 0)
+
         if video.copy_dv and video.codec == "nvencc_hevc":
             from core.workflows.encode.runtime.dovi_geometry import (
-                align_nvencc_dovi_geometry, nvencc_dovi_resize_changes_scale,
+                align_nvenc_dovi_geometry, nvencc_dovi_resize_changes_scale,
             )
-
-            dims = (0, 0)
-            if self._cb.source_video_dimensions is not None:
-                try:
-                    dims = self._cb.source_video_dimensions(Path(input_path))
-                    if dims == (0, 0) and Path(input_path) != Path(config.source):
-                        dims = self._cb.source_video_dimensions(Path(config.source))
-                except Exception:
-                    dims = (0, 0)
 
             l5 = None
             resamples = nvencc_dovi_resize_changes_scale(routed_video, dims)
@@ -344,12 +377,10 @@ class NvenccInputRouter:
                 routed_video = replace(routed_video, copy_dv=False, inject_hdr_meta=True)
                 dovi_rpu_prm = None
             elif dims != (0, 0):
-                geom = align_nvencc_dovi_geometry(routed_video, dims, l5_offsets=l5)
+                geom = align_nvenc_dovi_geometry(routed_video, dims, l5_offsets=l5)
                 routed_video = geom.video
-                vpp_pad = geom.vpp_pad
                 dovi_rpu_prm = geom.dovi_rpu_prm
                 needs_rpu_alignment = geom.needs_rpu_alignment
-                pad_offsets = geom.pad_offsets
                 crop_offsets = geom.crop_offsets
 
         source_for_timing = Path(input_path)
@@ -374,8 +405,11 @@ class NvenccInputRouter:
             rebased_to_source=rebased_to_source,
             forced_reader=forced_reader,
             source_fps=source_fps,
-            vpp_pad=vpp_pad,
             needs_rpu_alignment=needs_rpu_alignment,
-            pad_offsets=pad_offsets,
             crop_offsets=crop_offsets,
+            source_dimensions=dims if dims != (0, 0) else None,
+            p5_native=p5_native,
+            native_tonemap=bool(
+                video.tonemap_to_sdr and self._cb.libplacebo_ready is not None and self._cb.libplacebo_ready()
+            ),
         )

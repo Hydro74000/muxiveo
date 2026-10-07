@@ -41,6 +41,8 @@ class TestHardwareEncoderDetector:
                 return _completed(stderr=encoders)
             if "hevc_nvenc" in cmd or "h264_amf" in cmd:
                 return _completed(returncode=0)
+            if cmd[1:3] == ["-hide_banner", "-h"]:
+                return _completed(stdout="")  # presets acceptés : liste du catalogue
             raise AssertionError(f"Commande inattendue: {cmd}")
 
         with patch("core.workflows.encode.hardware.subprocess.run", side_effect=fake_run), \
@@ -184,12 +186,14 @@ class TestHardwareEncoderDetector:
 
         assert detected == {"hevc_vaapi"}
         assert used_ff == "ffmpeg"
-        assert len(probe_cmds) == 1
-        cmd = probe_cmds[0]
+        cmd, *rc_probes = probe_cmds
+        assert "-rc_mode" not in cmd
         assert "-vaapi_device" in cmd
         assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1] == "format=nv12,hwupload"
+        # Lot 4 : modes -rc_mode sondés ensuite sur le même périphérique.
+        assert rc_probes and all("-rc_mode" in probe for probe in rc_probes)
 
     def test_detect_skips_vaapi_when_device_missing_but_keeps_other_codecs(self):
         """
@@ -340,3 +344,54 @@ class TestHardwareEncoderDetector:
         assert detected == {"hevc_nvenc"}
         assert software == {"libx265"}
         assert calls.count(["ffmpeg", "-hide_banner", "-encoders"]) == 1
+
+
+
+def test_preset_values_parsed_from_encoder_help():
+    help_text = """
+  -preset            <int>        E..V....... Set the encoding preset (from 0 to 18) (default p4)
+     default         0            E..V.......
+     slow            1            E..V....... hq 2 passes
+     p1              12           E..V....... fastest (lowest quality)
+  -tune              <int>        E..V....... Set the encoding tuning info
+     hq              1            E..V.......
+"""
+    assert HardwareEncoderDetector.parse_preset_values(help_text) == frozenset({"default", "slow", "p1"})
+    assert HardwareEncoderDetector.parse_preset_values("  -preset <string> E..V....... x265 preset") == frozenset()
+
+
+_MESA_DRIVER = ("[VAAPI @ 0x1] VAAPI driver: Mesa Gallium driver 26.2.2 for AMD Ryzen 7 7800X3D "
+                "(radeonsi, raphael_mendocino, ACO, DRM 3.64).\n")
+_INTEL_DRIVER = "[VAAPI @ 0x1] VAAPI driver: Intel iHD driver for Intel(R) Gen Graphics - 24.1.0 ().\n"
+
+
+def test_vaapi_quality_mesa_offers_bitmask_presets():
+    from core.workflows.encode.catalog import MESA_VAAPI_PRESETS
+
+    stderr = _MESA_DRIVER + "[hevc_vaapi @ 0x2] Invalid quality level: valid range is 0-32, using 32.\n"
+    assert HardwareEncoderDetector.parse_vaapi_quality(stderr) == ("mesa", frozenset(MESA_VAAPI_PRESETS))
+    # Plage plus étroite : seuls les niveaux annoncés restent.
+    stderr = _MESA_DRIVER + "valid range is 0-15, using 15.\n"
+    family, presets = HardwareEncoderDetector.parse_vaapi_quality(stderr) or ("", frozenset())
+    assert family == "mesa" and "15" in presets and not presets & {"29", "31"}
+
+
+def test_vaapi_quality_intel_and_unsupported_driver():
+    stderr = _INTEL_DRIVER + "Invalid quality level: valid range is 0-7, using 7.\n"
+    assert HardwareEncoderDetector.parse_vaapi_quality(stderr) == (
+        "intel", frozenset({"", *(str(i) for i in range(8))}),
+    )
+    unsupported = "VAAPI driver: Other\nQuality attribute is not supported: will use default quality level.\n"
+    assert HardwareEncoderDetector.parse_vaapi_quality(unsupported) == ("other", frozenset({""}))
+    assert HardwareEncoderDetector.parse_vaapi_quality(_MESA_DRIVER) is None
+
+
+def test_detect_presets_probes_vaapi_driver_quality():
+    detector = HardwareEncoderDetector()
+    stderr = _MESA_DRIVER + "Invalid quality level: valid range is 0-32, using 32.\n"
+    with patch.object(detector, "_cached_vaapi_device", return_value="/dev/dri/renderD128"), \
+            patch("core.workflows.encode.hardware.subprocess.run", return_value=_completed(stderr=stderr)) as run:
+        presets = detector.detect_presets("ffmpeg", {"hevc_vaapi"})
+    command = run.call_args.args[0]
+    assert command[command.index("-compression_level") + 1] == "1000"
+    assert "13" in presets["hevc_vaapi"] and detector.vaapi_drivers == {"hevc_vaapi": "mesa"}

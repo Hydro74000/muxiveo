@@ -46,9 +46,10 @@ def estimate_inject_video_bytes(
     if video.quality_mode == QualityMode.SIZE:
         video_kbps = size_to_bitrate_kbps(config)
         return int((video_kbps * 1000 / 8) * duration_s)
-    if video.quality_mode == QualityMode.BITRATE:
-        video_kbps = max(1, int(video.bitrate_kbps or 1))
+    if video.quality_mode == QualityMode.BITRATE and video.bitrate_kbps > 0:
+        video_kbps = int(video.bitrate_kbps)
         return int((video_kbps * 1000 / 8) * duration_s)
+    # VBR illimité : estimation depuis la source, jamais un débit fictif de 1 kbps.
     return max(source_size, int(source_size * 3 / 4))
 
 

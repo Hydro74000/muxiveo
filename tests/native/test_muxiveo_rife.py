@@ -128,6 +128,31 @@ def test_overlong_y4m_header_is_rejected() -> None:
     assert result.stdout == b""
 
 
+@pytest.mark.parametrize("io_mode", ["files", "stdin", "stdout", "pipe"])
+def test_distinct_files_and_pipes_preserve_direct_stream(tmp_path: Path, io_mode: str) -> None:
+    """La protection des fichiers préserve les quatre modes E/S directs."""
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=2)
+    source = tmp_path / "entrée.y4m"
+    output = tmp_path / "sortie.y4m"
+    source.write_bytes(data)
+    stdin = io_mode in {"stdin", "pipe"}
+    stdout = io_mode in {"stdout", "pipe"}
+    result = subprocess.run(
+        [RIFE_BIN, "-i", "-" if stdin else str(source),
+         "-o", "-" if stdout else str(output), "--factor", "1"],
+        input=data if stdin else None,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    actual = parse_y4m(result.stdout if stdout else output.read_bytes())
+    expected = parse_y4m(data)
+    assert actual.fps == expected.fps
+    assert actual.frames == expected.frames
+    assert source.read_bytes() == data
+
+
 @pytest.mark.parametrize("pix_fmt", ["yuv420p", "yuv420p10le"])
 def test_factor_two_keeps_originals_bit_exact(pix_fmt: str) -> None:
     data = make_y4m("testsrc2=size=160x96:rate=25", frames=8, pix_fmt=pix_fmt)

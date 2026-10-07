@@ -97,6 +97,8 @@ Exécution :
 
 from __future__ import annotations
 
+import re
+
 # Les imports du workflow suivent volontairement la fixture Qt de module.
 # ruff: noqa: E402
 
@@ -185,6 +187,15 @@ def _as_single_command(cmd: list[str] | list[list[str]]) -> list[str]:
     assert cmd and isinstance(cmd[0], str)
     return cast(list[str], cmd)
 
+
+
+def _targets_output(cmd, name: str) -> bool:
+    """Commande dont un argument est la sortie ``name`` ou un de ses candidats réservés."""
+    stem, dot, suffix = str(name).rpartition(".")
+    pattern = re.compile(
+        rf"(^|[\\/]){re.escape(stem)}(\.[0-9a-f]{{8}})?\.{re.escape(suffix)}(\.partial)?$"
+    )
+    return any(pattern.search(str(arg)) for arg in cmd)
 
 class _FakePayloadRewriteResult:
     def __init__(self, frames: int = 1) -> None:
@@ -1576,6 +1587,25 @@ class TestRuntimeCleanup:
         assert not process_dir.exists()
 
 
+    def test_run_refuses_reserved_destination_before_preparation(self, tmp_path):
+        from core.output_commit import OutputReservation
+
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 1000)
+        work_dir = tmp_path / "work"
+        cfg = _make_config(source=src, output=tmp_path / "output.mkv",
+                           video=_make_video_settings(codec="copy"), work_dir=work_dir)
+        wf = _make_workflow()
+        holder = OutputReservation.acquire(cfg.output)
+        try:
+            with pytest.raises(EncodeError, match="déjà en cours d'écriture"):
+                wf.run(cfg)
+        finally:
+            holder.release()
+        # Aucun workspace préparé pour le job refusé.
+        assert not list(work_dir.glob("output.*"))
+
+
 # ===========================================================================
 # Cleanup ext_files sur annulation / exception
 # ===========================================================================
@@ -1880,7 +1910,7 @@ class TestBuildCommand:
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmd = self.wf.build_command_single(
                 _make_config(src, tmp_path / "out.mkv",
-                             video=_make_video_settings(codec="hevc_vaapi"))
+                             video=_make_video_settings(codec="hevc_vaapi", source_bit_depth=8))
             )
 
         assert "-vaapi_device" in cmd
@@ -1897,31 +1927,34 @@ class TestBuildCommand:
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
             cmd = self.wf.build_command_single(
                 _make_config(src, tmp_path / "out.mkv",
-                             video=_make_video_settings(codec="hevc_vaapi", tonemap_to_sdr=True))
+                             video=_make_video_settings(codec="hevc_vaapi", source_bit_depth=8, tonemap_to_sdr=True))
             )
 
         assert "-vaapi_device" in cmd
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
 
-    def test_vaapi_two_pass_adds_device_on_both_passes(self, tmp_path):
+    def test_vaapi_size_mode_single_capped_pass_with_device(self, tmp_path):
+        """V33 : taille cible VAAPI en une passe VBR plafonnée (pas de -pass)."""
         src = tmp_path / "src.mkv"
         src.touch()
         with patch.object(EncodeWorkflow, "_vaapi_device", return_value="/dev/dri/renderD128"):
-            cmds = self.wf.build_command(
+            cmd = self.wf.build_command(
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_vaapi", quality_mode=QualityMode.SIZE),
+                    video=_make_video_settings(codec="h264_vaapi", quality_mode=QualityMode.SIZE, source_bit_depth=8),
                     duration_s=3600.0,
                 )
             )
 
-        for pass_cmd in cmds:
-            assert "-vaapi_device" in pass_cmd
-            assert pass_cmd[pass_cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
-            assert "-hwaccel" in pass_cmd and pass_cmd[pass_cmd.index("-hwaccel") + 1] == "vaapi"
-            assert "-vf" not in pass_cmd
+        assert isinstance(cmd[0], str)
+        assert "-pass" not in cmd
+        assert cmd[cmd.index("-vaapi_device") + 1] == "/dev/dri/renderD128"
+        assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "vaapi"
+        assert "-vf" not in cmd
+        assert cmd[cmd.index("-rc_mode") + 1] == "VBR"
+        assert "-maxrate:v" in cmd and "-bufsize:v" in cmd
 
     def test_h264_vaapi_force_8bit_disables_hw_surface_decode_and_adds_upload(self, tmp_path):
         src = tmp_path / "src.mkv"
@@ -1939,8 +1972,7 @@ class TestBuildCommand:
         assert "-hwaccel_output_format" not in cmd
         assert "-vf" in cmd
         assert cmd[cmd.index("-vf") + 1].endswith("format=nv12,hwupload")
-        assert "-pix_fmt" in cmd
-        assert cmd[cmd.index("-pix_fmt") + 1] == "nv12"
+        assert "-pix_fmt" not in cmd  # Format porté par hwupload VAAPI.
 
     def test_h264_nvenc_force_8bit_disables_hw_decode_and_sets_nv12(self, tmp_path):
         src = tmp_path / "src.mkv"
@@ -1965,7 +1997,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_qsv"),
+                    video=_make_video_settings(codec="hevc_qsv", source_bit_depth=8),
                 )
             )
 
@@ -1984,7 +2016,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_qsv"),
+                    video=_make_video_settings(codec="h264_qsv", source_bit_depth=8),
                 )
             )
 
@@ -2000,7 +2032,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_qsv"),
+                    video=_make_video_settings(codec="hevc_qsv", source_bit_depth=8),
                 )
             )
 
@@ -2017,7 +2049,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_amf"),
+                    video=_make_video_settings(codec="h264_amf", source_bit_depth=8),
                 )
             )
 
@@ -2037,7 +2069,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="hevc_amf", tonemap_to_sdr=True),
+                    video=_make_video_settings(codec="hevc_amf", source_bit_depth=8, tonemap_to_sdr=True),
                 )
             )
 
@@ -2055,7 +2087,7 @@ class TestBuildCommand:
                 _make_config(
                     src,
                     tmp_path / "out.mkv",
-                    video=_make_video_settings(codec="h264_nvenc"),
+                    video=_make_video_settings(codec="h264_nvenc", source_bit_depth=8),
                 )
             )
 
@@ -2570,11 +2602,11 @@ class TestMetadataInjectCopyCodec:
         # La reconstitution finale est une commande ffmpeg avec 2 inputs et output.mkv
         recon_cmds = [
             c for c in cmds
-            if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)
+            if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")
         ]
         assert len(recon_cmds) == 1, \
             f"Commande de reconstitution ffmpeg absente ou dupliquée. Cmds : {[c[0] for c in cmds]}"
-        assert "output.mkv" in " ".join(recon_cmds[0])
+        assert _targets_output(recon_cmds[0], "output.mkv")
 
     def test_copy_dv_injects_rpu_into_enc_hevc(self, tmp_path):
         """
@@ -2665,10 +2697,11 @@ class TestMetadataInjectCopyCodec:
         assert "Libérez de l’espace" in message
 
     def test_p5_to_p8_reencodes_bl_with_libplacebo_and_analyzes_final_bl(self, tmp_path):
+        """Lot 5 : RPU converti à l'extraction (-m 3, pas de convert), libplacebo sans Vulkan global."""
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 200_000)
         video = _make_video_settings(
-            codec="copy",
+            codec="libx265",
             copy_dv=True,
             dovi_profile="2",
             inject_hdr_meta=True,
@@ -2743,13 +2776,13 @@ class TestMetadataInjectCopyCodec:
                         _collect_signals(signals)
 
         convert_commands = [cmd for cmd in commands if "convert" in cmd]
+        extract_commands = [cmd for cmd in commands if "extract-rpu" in cmd]
         encode_commands = [cmd for cmd in commands if "libplacebo=" in " ".join(cmd)]
-        assert len(convert_commands) == 1
+        assert convert_commands == []
+        assert len(extract_commands) == 1 and extract_commands[0][1:3] == ["-m", "3"]
         assert len(encode_commands) == 1
         encode_cmd = encode_commands[0]
-        assert ["-init_hw_device", "vulkan=mre_dovi"] == encode_cmd[
-            encode_cmd.index("-init_hw_device"):encode_cmd.index("-init_hw_device") + 2
-        ]
+        assert "-init_hw_device" not in encode_cmd and "-filter_hw_device" not in encode_cmd
         assert "libx265" in encode_cmd
         assert "apply_dolbyvision=true" in encode_cmd[encode_cmd.index("-vf") + 1]
         assert Path(estimate_mock.call_args.args[0]).name == "enc.hevc"
@@ -3127,28 +3160,27 @@ class TestRunCopyBypassesInject:
         assert not inject_mock.called, "libx265 ne doit pas passer par le fallback bitstream."
         assert mock_run.called, "libx265 doit rester sur le chemin encode standard."
 
-    def test_hevc_vaapi_with_explicit_hdr10_stays_on_native_codec_path(self, tmp_path):
-        """hevc_vaapi garde sa voie native via -sei +hdr."""
+    @pytest.mark.parametrize("codec", ["hevc_vaapi", "hevc_qsv", "hevc_amf"])
+    def test_side_data_hevc_encoders_reinject_explicit_hdr10(self, tmp_path, codec):
+        """V39 : comme hevc_nvenc, valeurs saisies réinjectées en SEI après un encode
+        vidéo séparé ; les métadonnées source sont retirées des images."""
+        from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encoder_vf
+
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 1000)
-        config = _make_config(
-            source=src,
-            output=tmp_path / "output.mkv",
-            video=_make_video_settings(
-                codec="hevc_vaapi",
-                inject_hdr_meta=True,
-                master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
-                max_cll="1000,400",
-            ),
+        video = _make_video_settings(
+            codec=codec,
+            inject_hdr_meta=True,
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+            max_cll="1000,400",
         )
+        config = _make_config(source=src, output=tmp_path / "output.mkv", video=video)
         wf = _make_workflow()
 
-        with patch.object(wf, "_run_with_metadata_inject", return_value=MagicMock()) as inject_mock, \
-             patch.object(wf, "_finalize_ffmpeg_output", side_effect=_delayed_finalizer) as mock_run:
-            _collect_signals(wf.run(config))
-
-        assert not inject_mock.called, "hevc_vaapi ne doit pas passer par le fallback bitstream."
-        assert mock_run.called, "hevc_vaapi doit rester sur le chemin encode standard."
+        assert not wf._needs_metadata_inject(config)
+        assert wf._needs_split_video_encode(config)
+        vf = build_encoder_vf(video, callbacks=EncodeCodecDomainCallbacks(platform="linux"))
+        assert "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA" in vf
 
     @pytest.mark.parametrize("copy_dv,copy_hdr10plus", [
         (True, False), (False, True), (True, True)
@@ -3668,7 +3700,7 @@ class TestMetadataInjectAudio:
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
         """Extrait la commande de reconstitution finale (ffmpeg avec output.mkv)."""
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {[c[0] for c in cmds]}"
         return recon[0]
 
@@ -3897,7 +3929,7 @@ class TestEncodeFileTitleCommand:
                 sigs = wf._run_with_metadata_inject(config)
                 _collect_signals(sigs)
 
-        recon = [c for c in cmds_run if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds_run if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {cmds_run}"
         return recon[0]
 
@@ -3965,7 +3997,7 @@ class TestInjectPathIntegratedPostproc:
         return cmds_run
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Attendu une seule commande ffmpeg de sortie, obtenu {len(recon)}"
         return recon[0]
 
@@ -4330,7 +4362,7 @@ class TestEncodeExtraAttachments:
         return cmds_run
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
-        recon = [c for c in cmds if c[0] == "ffmpeg" and "output.mkv" in " ".join(c)]
+        recon = [c for c in cmds if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1
         return recon[0]
 
@@ -4619,7 +4651,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 sigs = wf._run_with_metadata_inject(cfg)
                 _collect_signals(sigs)
 
-        recon = [c for c in ran_cmds if str(out) + ".partial" in [str(x) for x in c]]
+        recon = [c for c in ran_cmds if _targets_output(c, out.name)]
         assert len(recon) == 1
         cmd = recon[0]
         assert str(sync_audio) in cmd
@@ -4684,7 +4716,7 @@ class TestEncodeRuntimeMultiSourceSync:
                 sigs = wf._run_with_metadata_inject(cfg)
                 _collect_signals(sigs)
 
-        recon = [c for c in ran_cmds if str(out) + ".partial" in [str(x) for x in c]]
+        recon = [c for c in ran_cmds if _targets_output(c, out.name)]
         assert len(recon) == 1
         cmd = recon[0]
         assert "-itsoffset" in cmd
@@ -5789,8 +5821,7 @@ class TestNvenccRuntimeRouting:
                 progress_pct_cb(42)
             return "remux-ok"
 
-        with patch.object(wf, "_prepare_nvencc_dynamic_hdr_assets", side_effect=AssertionError("plus d'extraction HDR externe attendue")), \
-             patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
@@ -5966,11 +5997,7 @@ class TestNvenccRuntimeRouting:
                 captured_encode_cmds.append(list(cmd))
             return "ok"
 
-        with patch.object(
-            wf,
-            "_prepare_nvencc_dynamic_hdr_assets",
-            side_effect=AssertionError("le chemin natif NVEncC ne doit plus préparer d'assets HDR externes"),
-        ), patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_capture_run_cmd):
             wf._run_nvencc_direct_output(
                 cfg,
                 cleanup_paths,
@@ -6123,6 +6150,8 @@ class TestNvenccRuntimeRouting:
             ),
         )
         wf = self._make_workflow()
+        # Tone-mapping natif : NVEncC avec libplacebo (sinon pipe FFmpeg).
+        wf._nvencc_libplacebo_ready = lambda: True  # type: ignore[method-assign]
         cleanup_paths: list[Path] = []
         captured_encode_cmds: list[list[str]] = []
 

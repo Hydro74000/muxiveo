@@ -303,7 +303,7 @@ class TestVideoOnlyBuilder:
         # encodeur : entrée pipe, départ source réappliqué, aucun filtre logiciel
         assert encode[encode.index("-i") + 1] == "pipe:0"
         assert encode[encode.index("-itsoffset") + 1] == "0.040000"
-        assert "-vf" not in encode
+        assert encode[encode.index("-vf") + 1] == "format=yuv420p"
         assert encode[encode.index("-map") + 1] == "0:0"
         assert "libx265" in encode and encode[-1] == str(tmp_path / "v.mkv")
         assert " | " in command_display(cmd)
@@ -376,12 +376,14 @@ class TestPipedEncoderArgs:
     def test_nvenc_keeps_software_frames(self):
         video = _video(codec="hevc_nvenc")
         assert "-hwaccel" not in hardware_input_args(video, callbacks=_domain(), piped_frames=True)
-        assert build_encoder_vf(video, callbacks=_domain(), piped_frames=True) == ""
+        assert build_encoder_vf(video, callbacks=_domain(), piped_frames=True) == "format=yuv420p"
 
-    def test_p5_filter_device_stays_on_decode(self):
+    def test_p5_conversion_needs_no_global_vulkan_device(self):
+        """L5-01 : libplacebo en images logicielles crée son Vulkan ; aucun périphérique global."""
         video = _video(p5_to_hdr10=True)
-        assert "-init_hw_device" in hardware_input_args(video, callbacks=_domain())
-        assert "-init_hw_device" not in hardware_input_args(video, callbacks=_domain(), piped_frames=True)
+        for piped in (False, True):
+            args = hardware_input_args(video, callbacks=_domain(), piped_frames=piped)
+            assert "-init_hw_device" not in args and "-filter_hw_device" not in args
 
 
 # ---------------------------------------------------------------------------

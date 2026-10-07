@@ -41,6 +41,19 @@ def _symlinks_supported(tmp_path: Path) -> bool:
     return True
 
 
+def _abandon(job) -> None:
+    """Simule la fin du processus créateur : verrou relâché, dossier abandonné."""
+    lock = workdir_mod._take_held_lock(job.token)
+    if lock is not None:
+        lock.release(unlink=True)
+
+
+def _age(path: Path, seconds: float = 3600.0) -> None:
+    """Vieillit un dossier (sorti de la fenêtre de création d'un job)."""
+    stamp = path.stat().st_mtime - seconds
+    os.utime(path, (stamp, stamp))
+
+
 # ---------------------------------------------------------------------------
 # Racine du work_dir
 # ---------------------------------------------------------------------------
@@ -72,22 +85,25 @@ def test_cleanup_of_user_folder_only_touches_muxiveo_items(tmp_path: Path) -> No
     (root / "tmdb_covers" / "abc").mkdir(parents=True)
     (root / "tmdb_covers" / "abc" / "cover.jpg").write_bytes(b"jpg")
     job = create_process_work_dir(root, output_path=Path("/out/Inception.mkv"))
+    _abandon(job)
 
     cleanable = cleanable_work_dir_entries(root)
-    assert sorted(p.name for p in cleanable) == sorted([job.path.name, "tmdb_covers"])
+    # Dossier utilisateur : un « tmdb_covers » n'est pas adopté sur son seul nom (A03).
+    assert [p.name for p in cleanable] == [job.path.name]
 
     clear_work_dir(root)
 
     assert (root / "Inception" / "Inception.mkv").read_bytes() == b"film"
     assert (root / "notes.txt").exists()
     assert not job.path.exists()
-    assert not (root / "tmdb_covers").exists()
+    assert (root / "tmdb_covers" / "abc" / "cover.jpg").read_bytes() == b"jpg"
 
 
 def test_cleanup_of_owned_root_removes_everything_but_marker(tmp_path: Path) -> None:
     root = ensure_work_dir(tmp_path / "work")
     (root / "legacy_job").mkdir()
     (root / "legacy_job" / "film1.hevc").write_bytes(b"x")
+    _age(root / "legacy_job")
 
     assert [p.name for p in cleanable_work_dir_entries(root)] == ["legacy_job"]
     clear_work_dir(root)
@@ -153,6 +169,7 @@ def test_process_dir_remove_refuses_symlink_replacement(tmp_path: Path) -> None:
     (victim / "precious.mkv").write_bytes(b"film")
     marker = (job.path / PROCESS_DIR_MARKER)
     marker.unlink()
+    _abandon(job)
     job.path.rmdir()
     job.path.symlink_to(victim, target_is_directory=True)
 
@@ -230,6 +247,9 @@ def test_remove_handles_readonly_files(tmp_path: Path) -> None:
 @pytest.mark.parametrize("nested", [False, True])
 def test_cleanup_retries_locked_process_dir(tmp_path, monkeypatch, cleanup, nested):
     job = create_process_work_dir(tmp_path, process_name="job")
+    if cleanup is clear_work_dir:
+        # Nettoyage de démarrage : reste d'une exécution terminée.
+        _abandon(job)
     payload_dir = job.path / "nested" if nested else job.path
     payload_dir.mkdir(exist_ok=True)
     locked = payload_dir / "locked.hevc"
@@ -243,6 +263,15 @@ def test_cleanup_retries_locked_process_dir(tmp_path, monkeypatch, cleanup, nest
 
     with monkeypatch.context() as patcher:
         patcher.setattr(os, "unlink", locked_unlink)
+        # Python 3.10 : Path.unlink garde os.unlink dans son accessor.
+        real_path_unlink = Path.unlink
+
+        def locked_path_unlink(path, *args, **kwargs):
+            if path.name == locked.name:
+                raise PermissionError("fichier utilisé par un autre processus")
+            return real_path_unlink(path, *args, **kwargs)
+
+        patcher.setattr(Path, "unlink", locked_path_unlink)
         cleanup(tmp_path if cleanup is clear_work_dir else job.path)
 
     assert locked.read_bytes() == b"video"
@@ -371,8 +400,97 @@ def test_windows_junctions_are_never_followed(tmp_path: Path) -> None:
     # Dossier process remplacé par une jonction : propriété refusée.
     job2 = create_process_work_dir(tmp_path / "work", process_name="job")
     (outside / PROCESS_DIR_MARKER).write_text(f"{job2.token}\n", encoding="ascii")
-    (job2.path / PROCESS_DIR_MARKER).unlink()
-    job2.path.rmdir()
+    assert job2.remove() is True  # libère aussi le verrou actif avant rmdir
     getattr(_winapi, "CreateJunction")(str(outside), str(job2.path))
     assert job2.remove() is False
     assert (outside / "precious.mkv").read_bytes() == b"film"
+
+
+# ---------------------------------------------------------------------------
+# Jobs actifs (A02) : verrou détenu par le processus créateur
+# ---------------------------------------------------------------------------
+
+def _spawn_job_holder(root: Path):
+    """Processus distinct créant un dossier process et le gardant actif."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        import sys
+        from pathlib import Path
+        from core.workdir import create_process_work_dir
+        job = create_process_work_dir(Path({str(root)!r}), process_name="cli_job")
+        (job.path / "film1.hevc").write_bytes(b"en cours")
+        print(job.path, flush=True)
+        sys.stdin.readline()
+    """)
+    child = subprocess.Popen(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    assert child.stdout is not None
+    return child, Path(child.stdout.readline().strip())
+
+
+@pytest.mark.parametrize("owned_root", [False, True])
+def test_active_job_of_another_process_is_never_cleaned(tmp_path: Path, owned_root: bool) -> None:
+    root = ensure_work_dir(tmp_path / "work") if owned_root else tmp_path
+    leftover = create_process_work_dir(root, process_name="old_job")
+    _abandon(leftover)
+    child, active = _spawn_job_holder(root)
+    try:
+        assert active.is_dir()
+        assert workdir_mod.is_active_process_dir(active)
+        assert workdir_mod.active_process_dirs(root) == [active]
+        assert active not in cleanable_work_dir_entries(root)
+        assert leftover.path in cleanable_work_dir_entries(root)
+        clear_work_dir(root)
+        # Retrait direct par un tiers (nettoyage, remove_path) également refusé.
+        workdir_mod.remove_path(active)
+        assert (active / "film1.hevc").read_bytes() == b"en cours"
+        assert not leftover.path.exists()
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    # Processus mort : verrou libéré par le système (léger délai possible sous
+    # Windows), dossier abandonné et nettoyable.
+    import time
+
+    deadline = time.monotonic() + 10
+    while workdir_mod.is_active_process_dir(active) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not workdir_mod.is_active_process_dir(active)
+    assert active in cleanable_work_dir_entries(root)
+    clear_work_dir(root)
+    assert not active.exists()
+
+
+def test_own_active_job_is_listed_separately_and_removed_by_owner(tmp_path: Path) -> None:
+    job = create_process_work_dir(tmp_path, process_name="job")
+    assert workdir_mod.active_process_dirs(tmp_path) == [job.path]
+    assert cleanable_work_dir_entries(tmp_path) == []
+    assert job.remove() is True
+    assert not job.path.exists()
+
+
+def test_process_dir_from_previous_version_without_lock_is_cleanable(tmp_path: Path) -> None:
+    legacy = tmp_path / "Film.abc123"
+    legacy.mkdir()
+    (legacy / PROCESS_DIR_MARKER).write_text("jeton-ancien\n", encoding="ascii")
+    (legacy / "film1.hevc").write_bytes(b"x")
+    assert cleanable_work_dir_entries(tmp_path) == [legacy]
+    clear_work_dir(tmp_path)
+    assert not legacy.exists()
+
+
+def test_unmarked_folder_in_creation_is_protected_in_owned_root(tmp_path: Path) -> None:
+    root = ensure_work_dir(tmp_path / "work")
+    fresh = root / "job.k3_9xq2a"  # forme mkdtemp, marqueur pas encore écrit
+    fresh.mkdir()
+    other = root / "notes"
+    other.mkdir()
+    assert cleanable_work_dir_entries(root) == [other]
+    other.rmdir()
+    _age(fresh)
+    assert cleanable_work_dir_entries(root) == [fresh]

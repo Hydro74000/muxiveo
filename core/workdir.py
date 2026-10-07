@@ -6,7 +6,11 @@ Propriété des dossiers :
     créée ou si c'est un chemin par défaut de l'application ;
   - dossier process toujours créé neuf (``mkdtemp``) et marqué
     ``.muxiveo-process`` avec un jeton aléatoire : seul le détenteur du jeton
-    peut le supprimer récursivement.
+    peut le supprimer récursivement ;
+  - pendant le job, le processus créateur détient un verrou OS sur
+    ``.muxiveo-process.lock`` : un dossier verrouillé est **actif** et n'est
+    jamais proposé au nettoyage, même par une autre instance. Le système
+    libère le verrou à la mort du processus (dossier alors abandonné).
 Un dossier existant qui n'est pas prouvé appartenir à Muxiveo n'est jamais
 vidé ni supprimé.
 """
@@ -20,18 +24,29 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.file_lock import FileLock, lock_is_free
 from core.file_types import _WINDOWS_RESERVED_STEMS
 from core.tls import urlopen_tls
 from core.version import APP_ENV_PREFIX
 
 WORK_DIR_MARKER = ".muxiveo-workdir"
 PROCESS_DIR_MARKER = ".muxiveo-process"
+PROCESS_DIR_LOCK = ".muxiveo-process.lock"
 TMDB_COVERS_DIRNAME = "tmdb_covers"
-_MARKER_NAMES = frozenset({WORK_DIR_MARKER, PROCESS_DIR_MARKER})
+_MARKER_NAMES = frozenset({WORK_DIR_MARKER, PROCESS_DIR_MARKER, PROCESS_DIR_LOCK})
+# Dossier sans marqueur plus récent que ce délai : création de job en cours
+# (fenêtre entre mkdtemp et l'écriture du marqueur), jamais nettoyé.
+_UNMARKED_GRACE_S = 120.0
+# Verrous des dossiers process créés par ce processus, par jeton : détenus
+# jusqu'à la suppression du dossier par son propriétaire.
+_HELD_LOCKS_GUARD = threading.Lock()
+_HELD_LOCKS: dict[str, FileLock] = {}
 _TMDB_INSECURE_SSL_ENV = f"{APP_ENV_PREFIX}_TMDB_INSECURE_SSL"
 # Nom de dossier process tronqué : le suffixe aléatoire de mkdtemp doit tenir
 # dans la limite de 255 octets par composant de chemin.
@@ -148,16 +163,34 @@ class ProcessWorkDir:
         """Supprime récursivement le dossier s'il est toujours celui de cette exécution.
 
         Retourne False (sans rien supprimer) si la propriété n'est plus prouvée
-        (marqueur absent ou modifié, lien symbolique, dossier déplacé).
+        (marqueur absent ou modifié, lien symbolique, dossier déplacé) ou si
+        le dossier est actif (verrou détenu par un autre processus).
+        Le verrou est pris pendant la suppression : un job ne peut pas devenir
+        actif entre la vérification et l'effacement.
         Le marqueur est supprimé en dernier : après un échec partiel (fichier
         verrouillé sous Windows, antivirus), le dossier reste identifiable et
         le nettoyage de démarrage peut le reprendre. Lève OSError dans ce cas.
         """
         if not self.is_owned():
             return False
-        for entry in list(self.path.iterdir()):
-            if entry.name != PROCESS_DIR_MARKER:
-                _remove_entry(entry)
+        lock = _take_held_lock(self.token)
+        lock_path = self.path / PROCESS_DIR_LOCK
+        if lock is None and lock_path.exists():
+            probe = FileLock(lock_path)
+            if not probe.try_acquire():
+                return False
+            lock = probe
+        try:
+            for entry in list(self.path.iterdir()):
+                if entry.name not in (PROCESS_DIR_MARKER, PROCESS_DIR_LOCK):
+                    _remove_entry(entry)
+        finally:
+            if lock is not None:
+                lock.release(unlink=True)
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         marker = self.path / PROCESS_DIR_MARKER
         marker.unlink()
         try:
@@ -172,6 +205,53 @@ class ProcessWorkDir:
                 pass
             raise
         return True
+
+
+def _register_held_lock(token: str, lock: FileLock) -> None:
+    with _HELD_LOCKS_GUARD:
+        _HELD_LOCKS[token] = lock
+
+
+def _take_held_lock(token: str) -> FileLock | None:
+    with _HELD_LOCKS_GUARD:
+        return _HELD_LOCKS.pop(token, None)
+
+
+def is_active_process_dir(path: Path) -> bool:
+    """Vrai si un processus vivant (celui-ci compris) détient le verrou du dossier."""
+    lock_path = path / PROCESS_DIR_LOCK
+    try:
+        if lock_path.is_symlink() or not lock_path.is_file():
+            return False
+    except OSError:
+        return False
+    return not lock_is_free(lock_path)
+
+
+# Suffixe aléatoire de ``tempfile.mkdtemp`` (8 caractères) : forme des dossiers process.
+_MKDTEMP_NAME_RE = re.compile(r".+\.[a-z0-9_]{8}")
+
+
+def _is_recent_unmarked_dir(path: Path) -> bool:
+    """Dossier process sans marqueur créé récemment : job en cours de création."""
+    try:
+        if (
+            not _MKDTEMP_NAME_RE.fullmatch(path.name)
+            or _is_link_or_junction(path)
+            or not path.is_dir()
+            or (path / PROCESS_DIR_MARKER).exists()
+        ):
+            return False
+        return time.time() - path.stat().st_mtime < _UNMARKED_GRACE_S
+    except OSError:
+        return False
+
+
+def active_process_dirs(path: Path) -> list[Path]:
+    """Dossiers de jobs en cours dans le work_dir (jamais nettoyés)."""
+    if not path.is_dir():
+        return []
+    return [entry for entry in work_dir_entries(path) if entry.is_dir() and is_active_process_dir(entry)]
 
 
 def capture_process_work_dir(path: Path, *, root: Path) -> ProcessWorkDir | None:
@@ -240,7 +320,18 @@ def create_process_work_dir(
     folder_name = folder_name[:_PROCESS_NAME_MAX].rstrip("._-") or fallback_name
     path = Path(tempfile.mkdtemp(prefix=f"{folder_name}.", dir=root))
     token = secrets.token_hex(16)
-    (path / PROCESS_DIR_MARKER).write_text(f"{token}\n", encoding="ascii")
+    # Verrou pris avant le marqueur : un dossier marqué de cette version est
+    # toujours verrouillé tant que son job vit.
+    lock = FileLock(path / PROCESS_DIR_LOCK)
+    try:
+        if not lock.try_acquire():
+            raise OSError(f"Verrou du dossier process indisponible : {path}")
+        (path / PROCESS_DIR_MARKER).write_text(f"{token}\n", encoding="ascii")
+    except BaseException:
+        lock.release(unlink=True)
+        shutil.rmtree(path, ignore_errors=True)
+        raise
+    _register_held_lock(token, lock)
     return ProcessWorkDir(path=path, root=root, token=token)
 
 
@@ -279,18 +370,25 @@ def work_dir_has_entries(path: Path) -> bool:
 def cleanable_work_dir_entries(path: Path) -> list[Path]:
     """Entrées que le nettoyage peut supprimer : exactement celles montrées à l'utilisateur.
 
-    Racine marquée Muxiveo : tout son contenu ; sinon seulement les dossiers
-    process marqués et ``tmdb_covers``.
+    Jamais un job actif (verrou détenu par un processus vivant) ni un dossier
+    en cours de création. Racine marquée Muxiveo : le reste de son contenu ;
+    sinon seulement les dossiers process marqués et abandonnés (un
+    ``tmdb_covers`` hors racine marquée n'est pas adopté sur son seul nom).
+    Les dossiers marqués par une version antérieure, sans verrou, sont
+    considérés abandonnés.
     """
     if not path.is_dir():
         return []
     owned_root = is_owned_work_root(path)
-    return [
-        entry for entry in work_dir_entries(path)
-        if owned_root
-        or entry.name == TMDB_COVERS_DIRNAME
-        or is_owned_process_dir(entry, root=path)
-    ]
+    entries: list[Path] = []
+    for entry in work_dir_entries(path):
+        if is_active_process_dir(entry):
+            continue
+        if is_owned_process_dir(entry, root=path):
+            entries.append(entry)
+        elif owned_root and not _is_recent_unmarked_dir(entry):
+            entries.append(entry)
+    return entries
 
 
 def clear_work_dir(path: Path) -> list[Path]:

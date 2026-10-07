@@ -24,6 +24,7 @@ Usage :
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -555,9 +556,12 @@ class FileInspectorWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self._config    = config
+        # Sondes interrompues à la fermeture (média ou stockage bloqué).
+        self._probe_cancel = threading.Event()
         self._inspector = FileInspector(
             ffprobe_bin   = config.tool_ffprobe,
             mediainfo_bin = config.tool_mediainfo,
+            cancel_event  = self._probe_cancel,
         )
         self._executor  = ThreadPoolExecutor(max_workers=1)
         self._current_info: FileInfo | None = None
@@ -750,6 +754,7 @@ class FileInspectorWidget(QWidget):
     def closeEvent(self, event) -> None:
         """Arrête proprement le ThreadPoolExecutor à la fermeture du widget."""
         if not hasattr(self, "_shutdown"):
+            self._probe_cancel.set()
             self._shutdown = Shutdown(executors=(self._executor,))
         if defer_close(self, event, ready=self._shutdown.done.is_set()):
             return

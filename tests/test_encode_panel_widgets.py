@@ -56,6 +56,7 @@ Exécution :
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,8 +71,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.i18n import current_language, set_current_language
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
+from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
+from core.workflows.encode.domain.codecs import bit_depth_error, resolve_output_bit_depth
+from core.workflows.encode.models import VideoFilterSettings
 from ui.panels.encode_panel.panel import EncodePanel
 from ui.panels.encode_panel.widgets import _AudioTable
 from core.workflows.encode.runtime.static_hdr_estimator import (
@@ -83,6 +88,15 @@ from core.workflows.encode.runtime.static_hdr_estimator import (
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+@pytest.fixture(autouse=True)
+def _french_ui(monkeypatch):
+    """Les libellés vérifiés ici ne dépendent pas de la locale du runner."""
+    previous = current_language()
+    monkeypatch.setattr("core.config._normalize_language_code", lambda _code: "fra")
+    set_current_language("fra")
+    yield
+    set_current_language(previous)
 
 def _at(
     index: int = 1,
@@ -212,6 +226,85 @@ def _video_entry(mkv_tid: int = 0) -> TrackEntry:
 def _select_codec(panel: EncodePanel, codec: str) -> None:
     idx = next(i for i in range(panel._codec_combo.count()) if panel._codec_combo.itemData(i) == codec)
     panel._codec_combo.setCurrentIndex(idx)
+
+
+def test_lot6_depth_choice_survives_track_and_codec_changes(qt_app, monkeypatch):
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    first.entry_id, second.entry_id = "first", "second"
+    info = _file_info(_PATH_A, [_video_track(0, bit_depth=10), _video_track(1, bit_depth=8)])
+    panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        # Présélection Auto : la source 10 bits donne High10 sans figer la valeur.
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 10
+        panel._set_combo_data(panel._bit_depth_combo, "8")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        # Piste 2 : son propre Auto (source 8 bits), pas le choix de la piste 1.
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 8
+        panel._video_list.setCurrentRow(0)
+        assert panel._bit_depth_combo.currentData() == "8"
+        _select_codec(panel, "libx265")
+        assert panel._bit_depth_combo.currentData() == "8"
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)
+        assert panel._bit_depth_combo.currentData() == "auto"
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._on_hw_detected({"h264_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg)
+        _select_codec(panel, "h264_nvenc")
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert not panel._bit_depth_combo.model().item(panel._bit_depth_combo.findData("10")).isEnabled()
+    finally:
+        panel.close()
+
+
+def test_lot6_profile_saves_and_restores_depth(qt_app, monkeypatch, tmp_path):
+    from core.workflows.encode.profiles import ProfileManager
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel._profiles = ProfileManager(tmp_path)
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._profile_name.setText("High10")
+        panel._save_profile()
+        assert panel._profiles.load_all()[0].bit_depth == "10"
+        panel._set_combo_data(panel._bit_depth_combo, "8")
+        panel._load_profile()
+        assert panel._bit_depth_combo.currentData() == "10"
+        _select_codec(panel, "libx265")
+        panel._profile_name.setText("Auto")
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        panel._save_profile()
+        panel._set_combo_data(panel._bit_depth_combo, "10")
+        panel._load_profile()
+        assert panel._bit_depth_combo.currentData() == "auto"
+    finally:
+        panel.close()
+
+
+def test_lot6_p82_auto_keeps_sdr_depth(qt_app, monkeypatch):
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    video = _video_track(0, HDRType.DOLBY_VISION, bit_depth=8)
+    video.dovi_profile, video.dovi_compat_id, video.color_transfer = 8, 2, "bt709"
+    panel.set_video_tracks([(_file_info(_PATH_A, [video]), _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._set_combo_data(panel._bit_depth_combo, "auto")
+        settings = panel._current_video_settings()
+        assert settings.copy_dv and settings.dovi_source_profile == "p8_2"
+        assert resolve_output_bit_depth(settings) == 8
+        assert "[8-bit]" in panel._video_list.item(0).text()
+    finally:
+        panel.close()
 
 
 # ===========================================================================
@@ -947,6 +1040,8 @@ class TestEncodePanelDynamicHdrDefaults:
         )
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        # V30 : une copie ne convertit jamais un P5 ; la normalisation suppose un réencodage.
+        _select_codec(panel, "libx265")
         panel._dovi_profile_combo.setCurrentIndex(
             next(i for i in range(panel._dovi_profile_combo.count()) if panel._dovi_profile_combo.itemData(i) == "2")
         )
@@ -975,6 +1070,7 @@ class TestEncodePanelDynamicHdrDefaults:
         )
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
         panel._set_combo_data(panel._dovi_profile_combo, "2")
 
         assert scheduled == [StaticHdrEstimateService.FAST_MODE]
@@ -1485,7 +1581,8 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
-    def test_qsv_locks_manual_hdr_metadata_fields(self, qt_app):
+    def test_qsv_manual_hdr_metadata_fields_are_editable(self, qt_app):
+        """V39 : valeurs saisies réinjectées en SEI, comme pour hevc_nvenc."""
         panel = EncodePanel(AppConfig())
         panel._hw_encoders = {"hevc_qsv"}
         panel._populate_codec_combo()
@@ -1500,8 +1597,8 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_qsv)
 
-        assert panel._master_display.isReadOnly() is True
-        assert panel._max_cll.isReadOnly() is True
+        assert panel._master_display.isReadOnly() is False
+        assert panel._max_cll.isReadOnly() is False
         panel.close()
 
     def test_x265_keeps_manual_hdr_metadata_fields_editable(self, qt_app):
@@ -1540,7 +1637,7 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._max_cll.isReadOnly() is False
         panel.close()
 
-    def test_nvencc_h264_disables_dynamic_hdr_and_hides_size_mode(self, qt_app):
+    def test_nvencc_h264_disables_dynamic_hdr_and_offers_size_mode(self, qt_app):
         panel = EncodePanel(AppConfig())
         panel._hw_encoders = {"nvencc_h264"}
         panel._populate_codec_combo()
@@ -1560,7 +1657,8 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._copy_hdr10plus_cb.isEnabled() is False
         assert panel._copy_dv_cb.isChecked() is False
         assert panel._copy_hdr10plus_cb.isChecked() is False
-        assert all(mode != "size" and getattr(mode, "value", None) != "size" for mode in mode_values)
+        # V33 : taille cible NVEncC en une passe VBR plafonnée.
+        assert mode_values == ["qvbr", "cqp", "vbr_quality", "vbr", "cbr", "size"]
         panel.close()
 
     def test_nvencc_av1_enables_dynamic_hdr_passthrough(self, qt_app):
@@ -1608,41 +1706,49 @@ class TestEncodePanelDynamicHdrDefaults:
         assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
-    def test_hevc_nvenc_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+    @pytest.mark.parametrize("codec", ["hevc_nvenc", "hevc_qsv", "hevc_vaapi", "hevc_amf"])
+    def test_hardware_hevc_keeps_dovi_available(self, qt_app, codec):
+        """Encodeurs HEVC matériels FFmpeg : RPU réinjecté par dovi_tool, copie DV disponible."""
         panel = EncodePanel(AppConfig())
-        panel._hw_encoders = {"hevc_nvenc", "nvencc_hevc"}
+        panel._hw_encoders = {codec}
         panel._populate_codec_combo()
         entry = _video_entry(0)
-        entry.entry_id = "video-nvenc-dv-warn"
+        entry.entry_id = f"video-{codec}-dv"
         info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
         panel.set_video_tracks([(info, entry, _COLOR)])
+        panel._set_combo_data(panel._codec_combo, codec)
 
-        idx_nvenc = next(
-            i for i in range(panel._codec_combo.count())
-            if panel._codec_combo.itemData(i) == "hevc_nvenc"
-        )
-        panel._codec_combo.setCurrentIndex(idx_nvenc)
-
-        # DoVi checkbox désactivée et décochée
-        assert panel._copy_dv_cb.isEnabled() is False
-        assert panel._copy_dv_cb.isChecked() is False
-        # Bannière d'alerte visible avec picto et recommandation NVEncC
-        assert panel._dovi_warning_widget.isHidden() is False
-        assert "⚠️" in panel._dovi_warning_icon.text()
-        assert "hevc_nvenc" in panel._dovi_warning_text.text()
-        assert "NVEncC" in panel._dovi_warning_text.text()
-
-        # Bascule vers nvencc_hevc : la bannière d'alerte doit disparaître
-        idx_nvencc = next(
-            i for i in range(panel._codec_combo.count())
-            if panel._codec_combo.itemData(i) == "nvencc_hevc"
-        )
-        panel._codec_combo.setCurrentIndex(idx_nvencc)
         assert panel._copy_dv_cb.isEnabled() is True
         assert panel._dovi_warning_widget.isHidden() is True
         panel.close()
 
-    def test_h264_precheck_forces_8bit_and_logs_switch(self, qt_app):
+    def test_av1_shows_dovi_warning_banner_and_disables_cb(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"av1_nvenc", "nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-av1-dv-warn"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)])
+        panel.set_video_tracks([(info, entry, _COLOR)])
+
+        panel._set_combo_data(panel._codec_combo, "av1_nvenc")
+
+        # DoVi checkbox désactivée et décochée
+        assert panel._copy_dv_cb.isEnabled() is False
+        assert panel._copy_dv_cb.isChecked() is False
+        # Bannière d'alerte visible avec picto et encodeurs HEVC proposés
+        assert panel._dovi_warning_widget.isHidden() is False
+        assert "⚠️" in panel._dovi_warning_icon.text()
+        assert "av1_nvenc" in panel._dovi_warning_text.text()
+        assert "x265" in panel._dovi_warning_text.text()
+
+        # Bascule vers nvencc_hevc : la bannière d'alerte doit disparaître
+        panel._set_combo_data(panel._codec_combo, "nvencc_hevc")
+        assert panel._copy_dv_cb.isEnabled() is True
+        assert panel._dovi_warning_widget.isHidden() is True
+        panel.close()
+
+    def test_x264_preserves_source_10bit_without_8bit_precheck(self, qt_app):
         cfg = AppConfig()
         cfg.language = "fra"
         panel = EncodePanel(cfg)
@@ -1661,10 +1767,10 @@ class TestEncodePanelDynamicHdrDefaults:
 
         row_item = panel._video_list.item(0)
         assert row_item is not None
-        assert "[8-bit]" in row_item.text()
+        assert "[10-bit]" in row_item.text()
         settings = panel._current_video_settings()
-        assert settings.force_8bit is True
-        assert any("bascule auto en 8-bit" in message for _lvl, message in logs)
+        assert settings.bit_depth == "auto" and resolve_output_bit_depth(settings) == 10
+        assert not any("bascule auto en 8-bit" in message for _lvl, message in logs)
 
         idx_x265 = next(
             i for i in range(panel._codec_combo.count())
@@ -1672,11 +1778,11 @@ class TestEncodePanelDynamicHdrDefaults:
         )
         panel._codec_combo.setCurrentIndex(idx_x265)
         settings = panel._current_video_settings()
-        assert settings.force_8bit is False
-        assert any("retour au mode source" in message for _lvl, message in logs)
+        assert settings.bit_depth == "auto" and resolve_output_bit_depth(settings) == 10
+        assert not any("retour au mode source" in message for _lvl, message in logs)
         panel.close()
 
-    def test_h264_8bit_switch_is_per_track_only(self, qt_app):
+    def test_x264_source_depth_is_preserved_per_track(self, qt_app):
         panel = EncodePanel(AppConfig())
         panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
         first_entry = _video_entry(0)
@@ -1706,8 +1812,27 @@ class TestEncodePanelDynamicHdrDefaults:
         cfg = panel.collect_config()
         assert cfg is not None
         by_entry = {str(video.track_entry_id): video for video in cfg.video_tracks}
-        assert by_entry["video-10bit"].force_8bit is True
-        assert by_entry["video-8bit"].force_8bit is False
+        assert resolve_output_bit_depth(by_entry["video-10bit"]) == 10
+        assert resolve_output_bit_depth(by_entry["video-8bit"]) == 8
+        panel.close()
+
+    def test_lot6_auto_preselection_does_not_leak_to_hdr_track(self, qt_app):
+        """« Appliquer à toutes » depuis une piste SDR 8 bits : la piste HDR10 reste en 10 bits."""
+        panel = EncodePanel(AppConfig())
+        sdr = dataclasses.replace(_video_track(0, HDRType.NONE, bit_depth=8), color_transfer="bt709")
+        hdr = dataclasses.replace(_video_track(0, HDRType.HDR10, bit_depth=10), color_transfer="smpte2084")
+        sdr_entry, hdr_entry = _video_entry(0), _video_entry(0)
+        sdr_entry.entry_id, hdr_entry.entry_id = "video-sdr", "video-hdr"
+        hdr_info = _file_info(_PATH_B, [hdr], HDRType.HDR10)
+        panel.set_video_tracks([(_file_info(_PATH_A, [sdr]), sdr_entry, _COLOR), (hdr_info, hdr_entry, _COLOR)])
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        assert panel._bit_depth_combo.currentData() == "auto"
+        assert resolve_output_bit_depth(panel._current_video_settings()) == 8
+        panel._apply_all_video_cb.setChecked(True)
+        state = panel._video_settings_by_entry_id["video-hdr"]
+        settings = panel._video_settings_from_state(file_info=hdr_info, track=hdr_entry, state=state)
+        assert resolve_output_bit_depth(settings) == 10 and not bit_depth_error(settings)
         panel.close()
 
     def test_dynamic_hdr_settings_are_independent_per_video_entry_when_apply_all_is_disabled(self, qt_app):
@@ -1932,3 +2057,546 @@ class TestEncodePanelInterpolationTta:
         panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, tta=3))
         assert panel._current_interpolation_settings().tta == 1
         panel.close()
+
+
+class TestEncodePanelAuditLot1:
+
+    def test_v28_preset_change_updates_track_state(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-preset"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        panel._preset_combo.setCurrentIndex(panel._preset_combo.findData("veryfast"))
+        assert panel._video_settings_by_entry_id["video-preset"]["preset"] == "veryfast"
+        panel.close()
+
+    def test_v08_job_duration_follows_primary_track_not_selection(self, qt_app, tmp_path):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: tmp_path / "out.mkv")
+        first = _video_entry(0)
+        first.entry_id = "video-main"
+        second = _video_entry(0)
+        second.entry_id = "video-other"
+        short = dataclasses.replace(_file_info(_PATH_B, [_video_track(0)]), duration_s=3600.0)
+        panel.set_video_tracks([
+            (_file_info(_PATH_A, [_video_track(0)]), first, _COLOR),
+            (short, second, _COLOR),
+        ])
+        panel._video_list.setCurrentRow(1)
+        assert panel.get_duration_s() == 7200.0
+        config = panel.collect_config()
+        assert config is not None and config.duration_s == 7200.0
+        panel.close()
+
+    def test_v29b_incompatible_profile_is_not_applied(self, qt_app, tmp_path):
+        panel = EncodePanel(AppConfig())
+        panel._profiles = ProfileManager(tmp_path)
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(20)
+        warnings: list[str] = []
+        panel.log_message.connect(lambda level, msg: warnings.append(msg) if level == "WARN" else None)
+        for name, preset in (
+            ("absent", EncodePreset(name="absent", codec="libfoo", crf=30)),
+            ("preset", EncodePreset(name="preset", codec="libx265", preset="p7", crf=30)),
+        ):
+            panel._profiles.save(preset)
+            panel._refresh_profiles(select=name)
+            panel._load_profile()
+            assert panel._codec_combo.currentData() == "libx265"
+            assert panel._crf_spin.value() == 20
+        assert len(warnings) == 2
+        panel.close()
+
+
+class TestEncodePanelAuditLot2:
+
+    def test_v13_single_track_codecs_disabled_with_several_video_tracks(self, qt_app):
+        from PySide6.QtGui import QStandardItemModel
+
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        row = panel._codec_combo.findData("nvencc_hevc")
+        model = panel._codec_combo.model()
+        assert isinstance(model, QStandardItemModel)
+        first = _video_entry(0)
+        first.entry_id = "v1"
+        second = _video_entry(1)
+        second.entry_id = "v2"
+        info = _file_info(_PATH_A, [_video_track(0), _video_track(1)])
+        panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+        assert model.item(row).isEnabled() is False
+        panel.set_video_tracks([(info, first, _COLOR)])
+        assert model.item(row).isEnabled() is True
+        panel.close()
+
+    def test_v02_extra_params_are_kept_per_codec(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-extras"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        panel._extra_params.setText("no-open-gop=1")
+        _select_codec(panel, "libx264")
+        assert panel._extra_params.text() == ""
+        panel._extra_params.setText("-tune film")
+        _select_codec(panel, "libx265")
+        assert panel._extra_params.text() == "no-open-gop=1"
+        _select_codec(panel, "libx264")
+        assert panel._extra_params.text() == "-tune film"
+        assert panel._current_video_settings().extra_params == "-tune film"
+        panel.close()
+
+    def test_v37_invalid_rate_is_not_replaced_silently(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = "video-rate"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0)]), entry, _COLOR)])
+        for edit in (panel._bitrate_edit, panel._size_edit):
+            validator = edit.validator()
+            # Arbitrage : entiers > 0, sans borne haute applicative.
+            assert validator is not None and validator.bottom() == 1 and validator.top() == 2**31 - 1
+        panel._bitrate_edit.setText("")
+        assert panel._current_video_settings().bitrate_kbps == -1
+        panel.close()
+
+    def test_vaapi_offers_no_preset_entry(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"hevc_vaapi"}
+        panel._populate_codec_combo()
+        _select_codec(panel, "hevc_vaapi")
+        assert panel._preset_combo.itemData(0) == ""
+        assert panel._preset_combo.itemText(0) == "Aucun (défaut pilote)"
+        panel._preset_combo.setCurrentIndex(0)
+        assert panel._current_video_settings().preset == ""
+        panel.close()
+
+    def test_vaapi_mesa_presets_are_labelled_and_default_to_quality_preencode(self, qt_app):
+        from core.workflows.encode.catalog import MESA_VAAPI_PRESETS
+
+        panel = EncodePanel(AppConfig())
+        try:
+            panel._on_hw_detected({"hevc_vaapi"}, panel._sw_encoders, panel._config.tool_ffmpeg, {},
+                                  None, {"hevc_vaapi": frozenset(MESA_VAAPI_PRESETS)}, {"hevc_vaapi": "mesa"})
+            _select_codec(panel, "hevc_vaapi")
+            items = {panel._preset_combo.itemData(i): panel._preset_combo.itemText(i)
+                     for i in range(panel._preset_combo.count())}
+            assert set(items) == set(MESA_VAAPI_PRESETS)
+            assert items[""] == "Speed (défaut pilote)"
+            assert items["29"] == "29 — Quality + pré-encodage + VBAQ"
+            assert panel._current_video_settings().preset == "13"
+        finally:
+            panel.close()
+
+    def test_vaapi_intel_presets_keep_driver_default(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        try:
+            levels = frozenset({"", *(str(i) for i in range(8))})
+            panel._on_hw_detected({"hevc_vaapi"}, panel._sw_encoders, panel._config.tool_ffmpeg, {},
+                                  None, {"hevc_vaapi": levels}, {"hevc_vaapi": "intel"})
+            _select_codec(panel, "hevc_vaapi")
+            items = [panel._preset_combo.itemText(i) for i in range(panel._preset_combo.count())]
+            assert items[:3] == ["Aucun (défaut pilote)", "0", "1 — qualité max"] and "13" not in items
+            assert panel._current_video_settings().preset == ""
+        finally:
+            panel.close()
+
+
+class TestEncodePanelAuditLot3:
+    _MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+
+    def _panel(self, hdr_type: HDRType, transfer: str | None = "smpte2084", entry_id: str = "video-lot3"):
+        panel = EncodePanel(AppConfig())
+        entry = _video_entry(0)
+        entry.entry_id = entry_id
+        track = dataclasses.replace(_video_track(0, hdr_type), color_transfer=transfer)
+        panel.set_video_tracks([(_file_info(_PATH_A, [track]), entry, _COLOR)])
+        _select_codec(panel, "libx265")
+        return panel
+
+    def test_v24_d2_unchecking_static_hdr_keeps_hdr_output_and_dolby_vision(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION)
+        assert panel._inject_hdr_cb.isChecked() and panel._copy_dv_cb.isChecked()
+        panel._inject_hdr_cb.setChecked(False)
+        assert panel._tonemap_cb.isChecked() is False
+        assert panel._copy_dv_cb.isChecked() and panel._copy_dv_cb.isEnabled()
+        video = panel._current_video_settings()
+        assert (video.inject_hdr_meta, video.copy_dv, video.source_color_transfer) == (False, True, "smpte2084")
+        panel.close()
+
+    def test_tonemap_greys_hdr_options_without_forgetting_them(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION)
+        panel._tonemap_cb.setChecked(True)
+        assert not panel._inject_hdr_cb.isEnabled() and not panel._copy_dv_cb.isEnabled()
+        assert panel._inject_hdr_cb.isChecked() and panel._copy_dv_cb.isChecked()
+        video = panel._current_video_settings()
+        assert (video.tonemap_to_sdr, video.inject_hdr_meta, video.copy_dv) == (True, False, False)
+        panel._tonemap_cb.setChecked(False)
+        assert panel._inject_hdr_cb.isEnabled() and panel._copy_dv_cb.isEnabled()
+        assert panel._current_video_settings().copy_dv is True
+        panel.close()
+
+    def test_v24_v25_manual_values_kept_and_source_values_restorable(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        state = panel._video_settings_by_entry_id["video-lot3"]
+        state["default_master_display"], state["default_max_cll"] = self._MD, "1000,400"
+        panel._master_display.setText("G(1,1)B(1,1)R(1,1)WP(1,1)L(1,1)")
+        assert panel._hdr_meta_provenance.text() == "Saisie manuelle."
+        panel._inject_hdr_cb.setChecked(False)
+        panel._inject_hdr_cb.setChecked(True)
+        assert panel._master_display.text() == "G(1,1)B(1,1)R(1,1)WP(1,1)L(1,1)"
+        panel._hdr_meta_source_btn.click()
+        assert (panel._master_display.text(), panel._max_cll.text()) == (self._MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == "Valeurs de la source."
+        panel.close()
+
+    def test_d3_hlg_dolby_vision_static_hdr_unchecked_but_available(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, transfer="arib-std-b67")
+        assert panel._inject_hdr_cb.isChecked() is False and panel._inject_hdr_cb.isEnabled()
+        assert panel._current_video_settings().source_color_transfer == "arib-std-b67"
+        panel.close()
+
+    def test_d1_tonemap_available_on_sdr_source_with_warning(self, qt_app):
+        panel = self._panel(HDRType.NONE, transfer="bt709")
+        assert panel._tonemap_cb.isEnabled()
+        assert "pas détectée HDR" in panel._tonemap_cb.toolTip()
+        panel.close()
+
+    def test_track_badge_follows_hdr_output_without_static_metadata(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        panel._inject_hdr_cb.setChecked(False)
+        state = panel._video_settings_by_entry_id["video-lot3"]
+        source_video = panel._video_track_for_entry(*panel._video_tracks[0][:2])
+        assert panel._video_hdr_badges_from_state(state, source_video=source_video) == ("HDR",)
+        panel.close()
+        hlg = self._panel(HDRType.HLG, transfer="arib-std-b67", entry_id="video-hlg")
+        state = hlg._video_settings_by_entry_id["video-hlg"]
+        source_video = hlg._video_track_for_entry(*hlg._video_tracks[0][:2])
+        assert hlg._video_hdr_badges_from_state(state, source_video=source_video) == ("HLG",)
+        hlg.close()
+
+    @pytest.mark.parametrize("unsupported", ["av1_nvenc", "libx264"])
+    def test_review_hdr_preferences_survive_track_navigation(self, qt_app, unsupported):
+        panel = self._panel(HDRType.DOLBY_VISION_HDR10PLUS)
+        panel._on_hw_detected({"av1_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
+        first = panel._video_tracks[0]
+        other = _video_entry(0)
+        other.entry_id = "other-video"
+        panel.set_video_tracks([first, (_file_info(_PATH_B, [_video_track(0, HDRType.NONE)]), other, _COLOR)])
+        assert panel._copy_dv_cb.isChecked()
+        _select_codec(panel, unsupported)
+        assert not panel._copy_dv_cb.isChecked()
+        panel._video_list.setCurrentRow(1)
+        assert not panel._copy_dv_cb.isChecked()
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        assert panel._copy_dv_cb.isChecked() and panel._copy_hdr10plus_cb.isChecked()
+        assert panel._inject_hdr_cb.isChecked()
+        panel.close()
+
+
+class TestEncodePanelAuditLot4:
+    """Lot 4 : modes de débit par codec (V19 / V20), presets par défaut (V41)."""
+
+    def _panel(self, hw: set[str], rate_controls: dict[str, frozenset[str]] | None = None, tracks: int = 1):
+        panel = EncodePanel(AppConfig())
+        panel._on_hw_detected(hw, panel._sw_encoders, panel._config.tool_ffmpeg, rate_controls or {})
+        info = _file_info(_PATH_A, [_video_track(i, HDRType.NONE) for i in range(tracks)])
+        entries = []
+        for i in range(tracks):
+            entry = _video_entry(i)
+            entry.entry_id = f"video-lot4-{i}"
+            entries.append((info, entry, _COLOR))
+        panel.set_video_tracks(entries)
+        return panel
+
+    @staticmethod
+    def _modes(panel: EncodePanel) -> list[str]:
+        return [panel._mode_combo.itemData(i) for i in range(panel._mode_combo.count())]
+
+    @pytest.mark.parametrize(("codec", "mode"), [
+        *((codec, mode) for codec in ("nvencc_hevc", "nvencc_h264", "nvencc_av1") for mode in ("vbr", "vbr_quality")),
+        ("hevc_nvenc", "vbr"), ("h264_nvenc", "vbr"), ("av1_nvenc", "vbr"),
+    ])
+    def test_vbr_zero_accepts_and_preserves_zero(self, qt_app, codec, mode):
+        from core.workflows.encode.planning.validation import video_settings_errors
+
+        panel = self._panel({codec})
+        try:
+            _select_codec(panel, codec)
+            panel._set_combo_data(panel._mode_combo, mode)
+            panel._bitrate_edit.setText("0")
+            assert panel._bitrate_edit.hasAcceptableInput()
+            assert video_settings_errors([panel._current_video_settings()]) == []
+            state = panel._current_video_state()
+            state["bitrate_kbps"] = 0  # anciens profils / état numérique
+            panel._apply_video_state(state)
+            assert panel._bitrate_edit.text() == "0"
+            assert panel._current_video_settings().bitrate_kbps == 0
+            assert "0 kbps" in panel._rate_control_summary(state)
+            panel._bitrate_edit.clear()
+            assert video_settings_errors([panel._current_video_settings()])
+            panel._set_combo_data(panel._mode_combo, "cbr")
+            panel._bitrate_edit.setText("0")
+            assert not panel._bitrate_edit.hasAcceptableInput()
+            assert video_settings_errors([panel._current_video_settings()])
+        finally:
+            panel.close()
+
+    def test_v19_mode_list_follows_codec_and_driver(self, qt_app):
+        panel = self._panel({"hevc_vaapi"}, {"hevc_vaapi": frozenset({"cqp", "qvbr", "vbr", "size"})})
+        _select_codec(panel, "hevc_vaapi")
+        assert self._modes(panel) == ["cqp", "qvbr", "vbr", "size"]
+        assert panel._preset_combo.currentData() == ""
+        panel._set_combo_data(panel._mode_combo, "qvbr")
+        assert not panel._quality_value_label.isHidden() and panel._quality_value_label.text() == "Qualité"
+        assert not panel._bitrate_widget.isHidden() and panel._size_widget.isHidden()
+        panel._cq_spin.setValue(28)
+        panel._bitrate_edit.setText("9000")
+        video = panel._current_video_settings()
+        assert (video.rate_control, video.quality_mode.value, video.cq, video.bitrate_kbps) == (
+            "qvbr", "cq", 28, 9000,
+        )
+        plan = panel._video_plan_from_state(
+            entry_id="video-lot4-0", state=panel._current_video_state(), source_video=None,
+        )
+        assert plan.codec_summary == "hevc_vaapi - Qualité VBR (QVBR) (Qualité 28, 9000 kbps)"
+        panel._set_combo_data(panel._mode_combo, "size")
+        assert panel._quality_value_label.isHidden() and panel._bitrate_widget.isHidden()
+        assert not panel._size_widget.isHidden()
+        panel.close()
+
+    def test_quality_scale_follows_mode(self, qt_app):
+        panel = self._panel({"hevc_nvenc", "av1_nvenc"})
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(20)
+        _select_codec(panel, "hevc_nvenc")
+        assert panel._mode_combo.currentData() == "vbr_cq"
+        assert (panel._cq_spin.minimum(), panel._cq_spin.maximum(), panel._cq_spin.value()) == (1, 51, 26)
+        assert panel._preset_combo.currentData() == "p5"
+        panel._cq_spin.setValue(30)
+        panel._set_combo_data(panel._mode_combo, "constqp")
+        assert panel._quality_value_label.text() == "QP" and panel._cq_spin.value() == 24
+        _select_codec(panel, "av1_nvenc")
+        assert panel._mode_combo.currentData() == "constqp"
+        assert (panel._cq_spin.maximum(), panel._cq_spin.value()) == (255, 96)
+        _select_codec(panel, "libx265")
+        assert panel._mode_combo.currentData() == "crf" and panel._crf_spin.value() == 20
+        panel.close()
+
+    def test_rate_control_restored_per_track(self, qt_app):
+        panel = self._panel({"hevc_vaapi"}, tracks=2)
+        _select_codec(panel, "hevc_vaapi")
+        panel._set_combo_data(panel._mode_combo, "icq")
+        panel._cq_spin.setValue(33)
+        panel._video_list.setCurrentRow(1)
+        assert panel._codec_combo.currentData() == "copy"
+        panel._video_list.setCurrentRow(0)
+        assert panel._mode_combo.currentData() == "icq" and panel._cq_spin.value() == 33
+        panel.close()
+
+    def test_review_profile_cannot_select_disabled_multi_video_codec(self, qt_app, tmp_path):
+        panel = self._panel({"nvencc_hevc"}, tracks=2)
+        _select_codec(panel, "libx265")
+        panel._profiles = ProfileManager(tmp_path)
+        panel._profiles.save(EncodePreset(name="nv", codec="nvencc_hevc", preset="default", rate_control="qvbr"))
+        panel._refresh_profiles(select="nv")
+        before = panel._current_video_state()
+        panel._load_profile()
+        assert panel._current_video_state() == before
+        panel.close()
+
+    def test_v41_hw_detection_keeps_codec_preset(self, qt_app):
+        panel = self._panel(set())
+        _select_codec(panel, "libx265")
+        panel._preset_combo.setCurrentIndex(panel._preset_combo.findData("veryslow"))
+        panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, panel._config.tool_ffmpeg, {})
+        assert panel._codec_combo.currentData() == "libx265"
+        assert panel._preset_combo.currentData() == "veryslow"
+        panel.close()
+
+    def test_legacy_profile_migrates_quality_value(self, qt_app, tmp_path):
+        panel = self._panel({"hevc_nvenc"})
+        panel._profiles = ProfileManager(tmp_path)
+        for name, preset, mode, spin in (
+            ("x265-cq", EncodePreset(name="x265-cq", codec="libx265", quality_mode="cq", cq=24), "crf", "_crf_spin"),
+            ("nvenc-crf", EncodePreset(name="nvenc-crf", codec="hevc_nvenc", quality_mode="crf", crf=21,
+                                       preset="p7"), "vbr_cq", "_cq_spin"),
+        ):
+            panel._profiles.save(preset)
+            panel._refresh_profiles(select=name)
+            panel._load_profile()
+            assert panel._mode_combo.currentData() == mode
+            assert getattr(panel, spin).value() == (24 if mode == "crf" else 21)
+        assert panel._preset_combo.currentData() == "p7"
+        panel.close()
+
+    def test_driver_refused_mode_profile_is_not_applied(self, qt_app, tmp_path):
+        panel = self._panel({"hevc_vaapi"}, {"hevc_vaapi": frozenset({"cqp", "vbr", "size"})})
+        panel._profiles = ProfileManager(tmp_path)
+        _select_codec(panel, "libx265")
+        warnings: list[str] = []
+        panel.log_message.connect(lambda level, msg: warnings.append(msg) if level == "WARN" else None)
+        panel._profiles.save(EncodePreset(name="icq", codec="hevc_vaapi", rate_control="icq", preset=""))
+        panel._refresh_profiles(select="icq")
+        panel._load_profile()
+        assert panel._codec_combo.currentData() == "libx265" and len(warnings) == 1
+        panel.close()
+
+
+class TestEncodePanelAuditLot5:
+    """Lot 5 : matrice Dolby Vision V30 et tone-mapping vers un codec sans HDR (RV5-02)."""
+
+    def _panel(self, hdr_type: HDRType, *, dovi_profile: int | None = None, compat: int | None = None,
+               transfer: str | None = "smpte2084"):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"h264_nvenc"}
+        panel._populate_codec_combo()
+        video = dataclasses.replace(_video_track(0, hdr_type), color_transfer=transfer)
+        video.dovi_profile = dovi_profile
+        video.dovi_compat_id = compat
+        entry = _video_entry(0)
+        entry.entry_id = "video-lot5"
+        panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+        return panel
+
+    @staticmethod
+    def _normalize_item(panel: EncodePanel):
+        index = panel._dovi_profile_combo.findData("2")
+        return panel._dovi_profile_combo.model().item(index), index
+
+    def test_p5_copy_cannot_normalize_but_reencode_can(self, qt_app, monkeypatch):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=5, transfer=None)
+        # Fenêtre « Analyse HDR10 estimée » (modale) proposée à la normalisation P5.
+        monkeypatch.setattr(panel, "_ask_static_hdr_estimate_mode", lambda: "")
+        _select_codec(panel, "copy")
+        item, index = self._normalize_item(panel)
+        assert not item.isEnabled()
+        assert "réencodée" in str(panel._dovi_profile_combo.itemData(index, Qt.ItemDataRole.ToolTipRole))
+        _select_codec(panel, "libx265")
+        item, _index = self._normalize_item(panel)
+        assert item.isEnabled()
+        assert "P5" in panel._dovi_plan_label.text() and not panel._dovi_plan_label.isHidden()
+        panel._set_combo_data(panel._dovi_profile_combo, "2")
+        _select_codec(panel, "copy")
+        # Normaliser devenu impossible en copie : retour à « Conserver ».
+        assert panel._dovi_profile_combo.currentData() == "0"
+        panel.close()
+
+    def test_p8_4_never_offers_normalize(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=8, compat=4, transfer="arib-std-b67")
+        for codec in ("copy", "libx265"):
+            _select_codec(panel, codec)
+            item, _index = self._normalize_item(panel)
+            assert not item.isEnabled()
+        panel.close()
+
+    def test_rv5_02_tonemap_prefilled_for_sdr_only_codec(self, qt_app):
+        panel = self._panel(HDRType.HDR10)
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()
+        assert panel._current_video_settings().tonemap_to_sdr
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()
+        # Décoché à la main sur H.264 : le choix de l'utilisateur est conservé.
+        _select_codec(panel, "h264_nvenc")
+        assert panel._tonemap_cb.isChecked()
+        panel._tonemap_cb.setChecked(False)
+        # L5-A05 : le décochage manuel n'est pas annulé par la synchronisation qui suit.
+        assert not panel._tonemap_cb.isChecked()
+        assert not panel._current_video_settings().tonemap_to_sdr
+        _select_codec(panel, "libx265")
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_rv5_02_sdr_source_is_not_tonemapped(self, qt_app):
+        panel = self._panel(HDRType.NONE, transfer="bt709")
+        _select_codec(panel, "libx264")
+        assert not panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_l5_a11_p8_2_sdr_base_keeps_sdr_defaults(self, qt_app):
+        """P8.2 (base BT.709) : ni HDR10 statique par défaut, ni tone-mapping d'office ; DV copié."""
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=8, compat=2, transfer="bt709")
+        _select_codec(panel, "libx265")
+        assert not panel._inject_hdr_cb.isChecked()
+        assert panel._copy_dv_cb.isChecked()
+        settings = panel._current_video_settings()
+        assert not settings.inject_hdr_meta and settings.copy_dv
+        _select_codec(panel, "libx264")
+        assert not panel._tonemap_cb.isChecked()
+        panel.close()
+
+    def test_p7_copy_keep_stays_pure_copy(self, qt_app):
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=7, transfer="smpte2084")
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        _select_codec(panel, "copy")
+        assert panel._dovi_profile_combo.currentData() == "0"
+        config = panel.collect_config()
+        assert config is not None and config.video is not None
+        assert config.video.codec == "copy" and config.video.dovi_profile == "0" and config.video.copy_dv
+        assert not config.video.p5_to_hdr10 and not config.video.dovi_source_profile
+        # Remux pur si aucune autre transformation n'est demandée (HDR10 statique source non réécrit).
+        pure = dataclasses.replace(config.video, inject_hdr_meta=False)
+        assert panel.is_pure_copy(dataclasses.replace(config, video=pure, video_tracks=[pure], audio_tracks=[]))
+        panel.close()
+
+
+class TestEncodePanelAuditLot7:
+    """Lot 7 : moteur des filtres NVEncC (V18b) et règle de propagation unique (V43)."""
+
+    def test_v18b_badge_shows_nvencc_filter_engine(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        panel._hw_encoders = {"nvencc_hevc"}
+        panel._populate_codec_combo()
+        entry = _video_entry(0)
+        entry.entry_id = "video-filters"
+        panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, HDRType.NONE, bit_depth=8)]), entry, _COLOR)])
+        _select_codec(panel, "nvencc_hevc")
+        state = dict(panel._video_settings_by_entry_id["video-filters"])
+        state["filters"] = VideoFilterSettings(nlmeans_enabled=True)
+        assert "Filtres NVEncC" in panel._video_filter_badges_from_state(state)
+        state["filters"] = VideoFilterSettings(deblock_enabled=True)
+        assert "Filtres FFmpeg" in panel._video_filter_badges_from_state(state)
+        _select_codec(panel, "libx265")
+        state = dict(panel._video_settings_by_entry_id["video-filters"])
+        state["filters"] = VideoFilterSettings(nlmeans_enabled=True)
+        assert not any(badge.startswith("Filtres") for badge in panel._video_filter_badges_from_state(state))
+        panel.close()
+
+    def test_v43_copy_is_never_propagated_by_apply_all(self, qt_app):
+        panel = EncodePanel(AppConfig())
+        first, second = _video_entry(0), _video_entry(1)
+        first.entry_id, second.entry_id = "video-1", "video-2"
+        info = _file_info(_PATH_A, [_video_track(0, HDRType.NONE), _video_track(1, HDRType.NONE)])
+        panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+        panel._video_list.setCurrentRow(0)
+        panel._apply_all_video_cb.setChecked(True)
+        _select_codec(panel, "libx265")
+        assert panel._video_settings_by_entry_id["video-2"]["codec"] == "libx265"
+        # Retour en Copy sur la piste 1 : la piste 2 garde son encodage (même règle partout).
+        _select_codec(panel, "copy")
+        assert panel._video_settings_by_entry_id["video-1"]["codec"] == "copy"
+        assert panel._video_settings_by_entry_id["video-2"]["codec"] == "libx265"
+        panel.close()
+
+
+def test_file_target_size_is_shared_by_all_video_tracks(qt_app):
+    """A09 : la taille cible porte sur le fichier, une seule valeur pour toutes les pistes."""
+    from core.workflows.encode.models import QualityMode, VideoEncodeSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._video_settings_by_entry_id = {"a": {"target_size_mb": "4000"}, "b": {"target_size_mb": "900"}}
+        panel._size_edit.setText("1234")
+        assert {state["target_size_mb"] for state in panel._video_settings_by_entry_id.values()} == {"1234"}
+        sized = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.SIZE, target_size_mb=900)
+        crf = VideoEncodeSettings(codec="libx265", quality_mode=QualityMode.CRF)
+        assert panel._file_target_size_mb([crf, sized]) == 1234
+        assert panel._file_target_size_mb([crf]) is None
+    finally:
+        panel.deleteLater()

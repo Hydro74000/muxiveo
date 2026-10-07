@@ -17,9 +17,11 @@ from core.workflows.encode.domain import (
     build_encoder_vf,
     build_vf,
     hardware_input_args,
+    vulkan_filter_device_args,
     hdr_meta_args,
     needs_hdr_vui,
-    p5_filter_device_args,
+    output_hdr_transfer,
+    uses_two_pass_video,
     video_codec_args,
     video_codec_args_bitrate,
 )
@@ -115,7 +117,7 @@ class VideoOnlyCommandBuilder:
         info = cb.interpolation_source(video, source)
         settings = video.interpolation
 
-        decode_pre = list(p5_filter_device_args(video))
+        decode_pre: list[str] = vulkan_filter_device_args(video)
         decode_pre.extend(raw_input_rate_args(video, source))
         if offset_ms < 0:
             decode_pre.extend(cb.offset_input_args(offset_ms))
@@ -151,7 +153,7 @@ class VideoOnlyCommandBuilder:
         # Le y4m ne transporte pas le marquage couleur : posé sur les images
         # (setparams) avant les éventuels format/upload matériels de l'encodeur.
         vf = ",".join(part for part in (
-            info.setparams_filter(hdr_pq=needs_hdr_vui(video) and not video.tonemap_to_sdr),
+            info.setparams_filter(hdr_transfer=output_hdr_transfer(video)),
             build_encoder_vf(video, callbacks=domain, piped_frames=True),
         ) if part)
         if vf:
@@ -192,6 +194,20 @@ class VideoOnlyCommandBuilder:
         cb = self._cb
         stream_index = cb.video_stream_from_settings(video)
 
+        if video.quality_mode == QualityMode.SIZE and not uses_two_pass_video(video):
+            # Encodeur matériel : une passe VBR plafonnée au débit calculé.
+            cmd = self.build_video_track_base_cmd(
+                video=video,
+                source=source,
+                stream_index=stream_index,
+                offset_ms=offset_ms,
+                thread_count=thread_count,
+            )
+            self.append_video_codec_and_hdr_args(
+                cmd, video, bitrate_kbps=cb.size_to_bitrate_kbps_for_video(config, video),
+            )
+            cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+            return [cmd]
         if video.quality_mode == QualityMode.SIZE:
             bitrate = cb.size_to_bitrate_kbps_for_video(config, video)
             pass1 = self.build_video_track_base_cmd(

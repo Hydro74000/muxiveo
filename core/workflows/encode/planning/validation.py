@@ -10,10 +10,12 @@ from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.common.path_safety import same_filesystem_target
 from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.catalog import (
+    resolve_rate_control,
     supports_dovi,
     supports_hdr10plus,
     supports_hdr_output,
 )
+from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error, preset_problem
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
@@ -91,14 +93,7 @@ def validate_encode_config(
                 "avec la copie Dolby Vision / HDR10+."
             )
         if video.copy_dv and not supports_dovi(video.codec):
-            if video.codec == "hevc_nvenc":
-                errors.append(
-                    f"Piste vidéo #{index} — Le codec FFmpeg 'hevc_nvenc' ne gère pas nativement "
-                    "les métadonnées dynamiques Dolby Vision (incompatibilité DPB / risque d'écran noir "
-                    "ou de rejet sur téléviseur). Suggestion : utilisez l'encodeur matériel dédié 'NVEncC (rigaya)' "
-                    "(codec 'nvencc_hevc') qui intègre libdovi nativement, ou passez la vidéo en mode 'copy' (passthrough)."
-                )
-            elif str(video.codec or "").startswith("nvencc_"):
+            if str(video.codec or "").startswith("nvencc_"):
                 errors.append(
                     f"Piste vidéo #{index} — {video.codec} ne supporte pas le profil Dolby Vision. "
                     "Suggestion : sélectionnez 'nvencc_hevc'."
@@ -106,7 +101,7 @@ def validate_encode_config(
             else:
                 errors.append(
                     f"Piste vidéo #{index} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
-                    "Suggestion : utilisez 'nvencc_hevc' (NVEncC avec libdovi), 'libx265' (logiciel) ou 'copy' (passthrough)."
+                    "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
                 )
         if video.copy_hdr10plus and not supports_hdr10plus(video.codec):
             errors.append(
@@ -178,4 +173,30 @@ def validate_encode_config(
                 f"source={Path(raw.source_path)}, stream={int(raw.stream_index)}, "
                 f"offset={int(raw.offset_ms)} ms"
             )
+    return errors
+
+
+def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
+    """Valeurs de l'onglet Video invalides (débit, taille, paramètres avancés)."""
+    errors: list[str] = []
+    for index, video in enumerate(videos, start=1):
+        if video.codec == "copy":
+            continue
+        depth_problem = bit_depth_error(video)
+        if depth_problem:
+            errors.append(f"Piste vidéo #{index} — {depth_problem}")
+        preset_error, _preset_warning = preset_problem(video)
+        if preset_error:
+            errors.append(f"Piste vidéo #{index} — {preset_error}")
+        spec = resolve_rate_control(video.codec, video.rate_control, video.quality_mode)
+        needs_bitrate = spec.bitrate if spec is not None else video.quality_mode == QualityMode.BITRATE
+        minimum = spec.bitrate_minimum if spec is not None else 1
+        if needs_bitrate and int(video.bitrate_kbps) < minimum:
+            requirement = ">= 0 attendu, 0 = illimité" if minimum == 0 else "> 0 attendu"
+            errors.append(f"Piste vidéo #{index} — débit vidéo invalide (kbps {requirement}).")
+        if video.quality_mode == QualityMode.SIZE and int(video.target_size_mb) <= 0:
+            errors.append(f"Piste vidéo #{index} — taille cible invalide (Mio > 0 attendue).")
+        problem = extra_params_syntax_error(video.codec, video.extra_params)
+        if problem:
+            errors.append(f"Piste vidéo #{index} — paramètres avancés invalides : {problem}.")
     return errors

@@ -346,7 +346,6 @@ def test_last_source_removal_resets_encode_panel(qt_app, tmp_path):
         remux._on_remove_file("source0")
         assert encode._current_video_state() == encode._initial_video_state
         assert not encode._video_settings_by_entry_id
-        assert not encode._video_force_8bit_by_entry_id
         assert not encode._apply_all_video_cb.isChecked()
         assert not encode._static_hdr_estimate_prompted
         assert encode._video_list.count() == 0

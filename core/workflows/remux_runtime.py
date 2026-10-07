@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 from core.workdir import (
@@ -359,8 +360,11 @@ class RemuxRuntimeRunner:
                 expected_output = {str(run_config.output), _cli_path(run_config.output)}
                 if not cmd or str(cmd[-1]) not in expected_output:
                     raise RemuxError("Commande remux sans chemin de sortie attendu en dernière position.")
-                candidate = plan.candidate_output
-                candidate.unlink(missing_ok=True)
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
+                # Candidat réservé (nom unique) : aucun `.partial` étranger
+                # n'est réutilisé ni supprimé.
+                candidate = reserve_candidate(run_config.output)
                 cmd = [*cmd[:-1], "-f", "matroska", str(candidate)]
                 cb.log("INFO", "$ " + " ".join(str(c) for c in cmd))
 
@@ -420,7 +424,7 @@ class RemuxRuntimeRunner:
                 )
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
-                candidate.replace(run_config.output)
+                publish_candidate(candidate, run_config.output)
                 # Un échec NFO après commit ne transforme plus un média valide
                 # en workflow échoué.
                 try:
@@ -436,6 +440,9 @@ class RemuxRuntimeRunner:
                 if candidate is not None:
                     remove_path(candidate)
                 signals.cancelled.emit()
+            except OutputCommitError as exc:
+                # Destination apparue pendant le job : elle et le résultat sont conservés.
+                signals.failed.emit(str(exc), exc)
             except Exception as exc:
                 if candidate is not None:
                     remove_path(candidate)

@@ -295,6 +295,13 @@ class FrameInterpolationSettings:
         return _dataclass_from_value(cls, value)
 
 
+def migrate_bit_depth(value: str | None, force_8bit: bool = False, force_10bit: bool = False) -> str:
+    """Migre les anciens flags ; un choix canonique, même Auto, reste prioritaire."""
+    if value is None:
+        return "8" if force_8bit else "10" if force_10bit else "auto"
+    return str(value).strip().lower()
+
+
 @dataclass
 class VideoEncodeSettings:
     """Paramètres d'encodage vidéo."""
@@ -306,17 +313,23 @@ class VideoEncodeSettings:
     input_frame_rate: str          = ""
     codec:            str          = "libx265"
     quality_mode:     QualityMode  = QualityMode.CRF
-    crf:              int          = 18
-    cq:               int          = 26   # Quality target pour mode CQ (HW only)
+    # Mode de débit du codec (catalog.VIDEO_RATE_CONTROLS : "crf", "vbr_cq",
+    # "cqp", "qvbr", "cbr"…) ; "" = équivalent de ``quality_mode`` (ancien format).
+    rate_control:     str          = ""
+    crf:              int          = 18   # valeur de qualité des codecs logiciels
+    cq:               int          = 26   # valeur de qualité des codecs matériels
     bitrate_kbps:     int          = 5000
     target_size_mb:   int          = 4000
     preset:           str          = "slow"
     extra_params:     str          = ""    # x265-params / svtav1-params passthrough
-    # Précheck UI: forcer une sortie 8-bit pour les encodeurs H.264
-    # quand la source est > 8-bit (appliqué piste par piste).
+    # None à l'entrée distingue un ancien payload d'un Auto explicite.
+    bit_depth:        str | None  = None
+    source_bit_depth: int         = 0      # 0 = inconnue, renseignée piste par piste
+    source_pix_fmt:   str          = ""     # pix_fmt ffprobe ("" inconnu) : sous-échantillonnage
+    source_codec:     str         = ""     # codec ffprobe (vérification du décodage HW)
+    encoder_supports_10bit: bool | None = None  # capacité matérielle sondée (NVEncC H.264)
+    # Alias de lecture historiques, sans effet après migration vers bit_depth.
     force_8bit:       bool         = False
-    # Sortie 10-bit explicite (profile main10/high10 + pix_fmt p010le/yuv420p10le).
-    # Mutuellement exclusif avec force_8bit (qui prend priorité).
     force_10bit:      bool         = False
     # Transformations vidéo
     resize:           VideoResizeSettings = field(default_factory=VideoResizeSettings)
@@ -328,6 +341,9 @@ class VideoEncodeSettings:
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
     max_cll:          str          = ""   # ex. "1000,400"
     static_hdr_metadata_source: str = ""
+    # Provenance de MaxCLL/MaxFALL quand elle diffère de celle du Master Display
+    # ("rpu_estimate" : complété au lancement depuis le RPU d'une source P5).
+    static_hdr_light_level_source: str = ""
     static_hdr_metadata_confidence: str = ""
     static_hdr_metadata_analysis_mode: str = ""
     static_hdr_metadata_analysis_request: str = ""
@@ -335,9 +351,27 @@ class VideoEncodeSettings:
     copy_dv:          bool         = False
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
+    # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
+    # "" si inconnu) : détermine si la sortie est HDR et sa VUI (PQ / HLG).
+    source_color_transfer: str = ""
     # Transformation interne P5 IPT -> base layer HDR10 BT.2020/PQ via
     # libplacebo. Activée par le workflow, jamais directement par le panel.
     p5_to_hdr10:      bool         = False
+    # NLMeans par nlmeans_vulkan (10 bits) : posé par le workflow si Vulkan est
+    # disponible et compatible avec le périphérique de l'encodeur, jamais par le panel.
+    nlmeans_vulkan:   bool         = False
+    # GPU dédié Vulkan (index) et parallélisme ``t`` de nlmeans_vulkan (selon la résolution).
+    vulkan_device:    str          = ""
+    vulkan_parallelism: int        = 1
+    # Sous-profil Dolby Vision de la source ("p5", "p7_fel", "p8_1"… ; "" inconnu),
+    # inspecté par le panel pour la profondeur, confirmé par le workflow (``dovi_policy``).
+    dovi_source_profile: str       = ""
+    # RPU d'une source P5 converti en P8.1 (``dovi_tool -m 3 extract-rpu``), extrait
+    # une fois à la préparation et réutilisé par les runtimes (copie DV active).
+    p5_rpu_path:      Path | None  = None
+    # Recadrage absolu (gauche, haut, droite, bas) que le RPU réinjecté doit suivre
+    # (offsets L5 par scène). Posé par le workflow (``resolve_ffmpeg_dovi_geometry``).
+    dovi_rpu_crop:    tuple[int, int, int, int] | None = None
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.
@@ -348,10 +382,20 @@ class VideoEncodeSettings:
     tonemap_algorithm: str         = "hable"
 
     def __post_init__(self) -> None:
+        self.bit_depth = migrate_bit_depth(self.bit_depth, self.force_8bit, self.force_10bit)
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        if not isinstance(self.quality_mode, QualityMode):
+            self.quality_mode = QualityMode(str(self.quality_mode))
+        if self.rate_control:
+            # La famille du mode de débit fait foi (taille cible, 2 passes…).
+            from core.workflows.encode.catalog import rate_control_spec
+
+            spec = rate_control_spec(self.codec, self.rate_control)
+            if spec is not None:
+                self.quality_mode = QualityMode(spec.family)
 
     def has_video_transform(self) -> bool:
         return bool(
@@ -493,6 +537,10 @@ class EncodeConfig:
     track_time_offsets: list[TrackTimeOffset] = field(default_factory=list)
     file_title:       str          = ""     # balise Title du segment de sortie
     duration_s:       float | None = None   # requis pour le mode taille cible
+    #: Taille du fichier complet (Mio) visée par les pistes vidéo en mode taille.
+    #: None → valeur commune des pistes (configurations antérieures) ; des
+    #: valeurs divergentes sont refusées à la validation.
+    target_size_mb:   int | None = None
     # Passthrough métadonnées dynamiques (HEVC uniquement)
     copy_dv:          bool         = False  # compat legacy : miroir de la vidéo primaire
     copy_hdr10plus:   bool         = False  # compat legacy : miroir de la vidéo primaire
@@ -547,12 +595,15 @@ class EncodePreset:
     description:                str  = ""
     codec:                      str  = "libx265"
     quality_mode:               str  = QualityMode.CRF.value
+    rate_control:               str  = ""
     crf:                        int  = 18
     cq:                         int  = 26
     bitrate_kbps:               int  = 5000
     target_size_mb:             int  = 4000
     preset:                     str  = "slow"
     extra_params:               str  = ""
+    bit_depth:                 str | None = None
+    force_8bit:                 bool = False
     force_10bit:                bool = False
     resize:                     VideoResizeSettings = field(default_factory=VideoResizeSettings)
     crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
@@ -567,22 +618,27 @@ class EncodePreset:
     default_audio_bitrate_kbps: int  = 384
 
     def __post_init__(self) -> None:
+        self.bit_depth = migrate_bit_depth(self.bit_depth, self.force_8bit, self.force_10bit)
         self.resize = VideoResizeSettings.from_value(self.resize)
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        # Ancien preset logique NVENC « safe » (retiré de l'interface) → p5, son équivalent.
+        if self.preset == "safe" and self.codec.endswith("_nvenc"):
+            self.preset = "p5"
 
     def to_video_settings(self) -> VideoEncodeSettings:
         return VideoEncodeSettings(
             codec=self.codec,
             quality_mode=QualityMode(self.quality_mode),
+            rate_control=self.rate_control,
             crf=self.crf,
             cq=self.cq,
             bitrate_kbps=self.bitrate_kbps,
             target_size_mb=self.target_size_mb,
             preset=self.preset,
             extra_params=self.extra_params,
-            force_10bit=self.force_10bit,
+            bit_depth=self.bit_depth,
             resize=self.resize,
             crop=self.crop,
             filters=self.filters,
@@ -595,7 +651,10 @@ class EncodePreset:
         )
 
     def to_json_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("force_8bit")
+        data.pop("force_10bit")
+        return data
 
 
 # =============================================================================

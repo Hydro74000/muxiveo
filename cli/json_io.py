@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+from core.json_documents import JsonDocumentError, read_json_document, resolve_document_paths
+
 from cli.constants import EXIT_ARGS
 from cli.errors import CliError
 
@@ -25,15 +27,24 @@ def json_default(value: Any) -> Any:
 
 
 def load_json(path: Path) -> dict[str, Any]:
+    """Document JSON utilisateur : UTF-8 avec ou sans BOM, sans NaN/Infinity."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = read_json_document(path)
     except FileNotFoundError as exc:
         raise CliError(f"JSON introuvable : {path}", EXIT_ARGS) from exc
     except json.JSONDecodeError as exc:
         raise CliError(f"JSON invalide {path}:{exc.lineno}:{exc.colno} : {exc.msg}", EXIT_ARGS) from exc
+    except (JsonDocumentError, UnicodeDecodeError) as exc:
+        raise CliError(f"JSON invalide {path} : {exc}", EXIT_ARGS) from exc
     if not isinstance(data, dict):
         raise CliError("Le fichier JSON racine doit être un objet.", EXIT_ARGS)
     return data
+
+
+def load_job_document(path: Path) -> dict[str, Any]:
+    """Job/template JSON dont les chemins relatifs sont résolus depuis son dossier."""
+    path = Path(path).expanduser()
+    return resolve_document_paths(load_json(path), path.absolute().parent)
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

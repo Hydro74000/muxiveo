@@ -40,6 +40,7 @@ from core.workflows.common.ffmpeg_runtime import (
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
 )
 from core.workdir import (
+    active_process_dirs,
     cleanable_work_dir_entries,
     clear_work_dir as clear_work_dir_contents,
     ensure_work_dir as ensure_work_dir_path,
@@ -910,8 +911,11 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "section": "hdr",
         "title": "HDR",
         "fields": (
-            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi", "description": "Profil Dolby Vision utilisé lors de l'injection RPU."},
-            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi", "description": "Compatibility ID Dolby Vision appliqué lors de l'injection."},
+            # V42 : réglages historiques, lus par aucun workflow (Merge DoVi : liste de son
+            # panneau ; encodage : décision par piste). Conservés tant que leur retrait
+            # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
+            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
+            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
         ),
     },
     {
@@ -1558,6 +1562,10 @@ class AppConfig:
     def work_dir_has_leftovers(self) -> bool:
         """True si le work_dir contient des éléments Muxiveo non nettoyés."""
         return bool(self.work_dir_entries())
+
+    def work_dir_active_jobs(self) -> list[Path]:
+        """Dossiers de jobs en cours (autre instance, CLI) : jamais nettoyés."""
+        return active_process_dirs(self.ensure_work_dir())
 
     def clear_work_dir(self) -> Path:
         """Supprime les entrées nettoyables du work_dir (jamais la racine)."""

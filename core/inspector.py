@@ -24,6 +24,7 @@ import json
 import re
 import shlex
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -39,7 +40,7 @@ from core.bluray import (
 from core.frame_count import frame_count_is_plausible, stream_duration_s, stream_fps
 from core.lang_tags import Rfc5646LanguageTags
 from core.matroska.reader import MatroskaReader
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe
 
 
 # =============================================================================
@@ -383,6 +384,14 @@ class InspectionError(RuntimeError):
         super().__init__(f"Inspection échouée pour {path.name} : {reason}")
 
 
+class InspectionCancelled(InspectionError):
+    """Inspection interrompue (fermeture de fenêtre, nouveau fichier)."""
+
+
+# Délai des sondes d'inspection : large (stockage réseau lent), jamais illimité.
+DEFAULT_PROBE_TIMEOUT_S = 120.0
+
+
 # =============================================================================
 # FileInspector
 # =============================================================================
@@ -412,10 +421,24 @@ class FileInspector:
         ffprobe_bin:   str = "ffprobe",
         mediainfo_bin: str = "mediainfo",
         verbose_output: Callable[[str], None] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
+        probe_timeout_s: float = DEFAULT_PROBE_TIMEOUT_S,
     ) -> None:
         self._ffprobe   = ffprobe_bin
         self._mediainfo = mediainfo_bin
         self._verbose_output = verbose_output
+        # Sondes bornées et annulables : un média ou un stockage bloqué ne
+        # retient ni l'inspection, ni l'aperçu, ni la fermeture.
+        self._cancel_event = cancel_event
+        self._probe_timeout_s = float(probe_timeout_s)
+
+    def _probe(self, cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess:
+        """Lance une sonde ; ``InspectionCancelled`` remonte telle quelle."""
+        try:
+            return run_probe(cmd, timeout=timeout or self._probe_timeout_s, cancel_event=self._cancel_event)
+        except ProbeCancelledError as exc:
+            raise InspectionCancelled(Path(cmd[-1]), "inspection annulée") from exc
 
     def _emit_verbose(self, line: str) -> None:
         callback = self._verbose_output
@@ -636,13 +659,7 @@ class FileInspector:
         try:
             cmd = [self._mediainfo, "--Inform=Video;%FrameCount%", str(path)]
             self._emit_command(cmd)
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                **subprocess_text_kwargs(),
-                # shell=True JAMAIS
-            )
+            result = self._probe(cmd)
             self._emit_process_result("mediainfo", result, preview_stdout=True)
             raw = result.stdout.strip()
             if re.fullmatch(r"\d+", raw):
@@ -650,6 +667,8 @@ class FileInspector:
                 return int(raw)
         except FileNotFoundError:
             self._emit_verbose("mediainfo introuvable dans PATH (frame count ignoré).")
+        except subprocess.TimeoutExpired:
+            self._emit_verbose(f"mediainfo sans réponse après {self._probe_timeout_s:.0f} s (frame count ignoré).")
         return None
 
     def detect_hdr_type(self, path: Path) -> HDRType:
@@ -784,16 +803,14 @@ class FileInspector:
         cmd.extend(ffprobe_input_args(path))
         self._emit_command(cmd)
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                **subprocess_text_kwargs(),
-                # shell=True JAMAIS
-            )
+            result = self._probe(cmd)
         except FileNotFoundError:
             self._emit_verbose("ffprobe introuvable dans PATH.")
             raise InspectionError(path, "ffprobe introuvable dans PATH")
+        except subprocess.TimeoutExpired:
+            raise InspectionError(
+                path, f"ffprobe sans réponse après {self._probe_timeout_s:.0f} s (média ou stockage bloqué)",
+            )
 
         self._emit_process_result("ffprobe", result)
 
@@ -837,15 +854,12 @@ class FileInspector:
         cmd.extend(ffprobe_input_args(path))
         self._emit_command(cmd)
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=30,
-                **subprocess_text_kwargs(),
-            )
+            result = self._probe(cmd, timeout=30)
         except FileNotFoundError:
             self._emit_verbose("ffprobe introuvable pour le probe HDR frame-level.")
+            return None
+        except subprocess.TimeoutExpired:
+            self._emit_verbose("ffprobe HDR frame-level sans réponse (ignoré).")
             return None
         self._emit_process_result("ffprobe", result)
         if result.returncode != 0:
@@ -909,10 +923,7 @@ class FileInspector:
                 str(path),
             ]
             self._emit_command(cmd)
-            r = subprocess.run(
-                cmd,
-                capture_output=True, check=False, **subprocess_text_kwargs(),
-            )
+            r = self._probe(cmd)
             self._emit_process_result("mediainfo", r, preview_stdout=True)
             stdout = (r.stdout or "").strip()
             mediainfo_responded = bool(stdout.replace("|", "").strip())
@@ -932,6 +943,9 @@ class FileInspector:
         except FileNotFoundError:
             self._emit_verbose("mediainfo introuvable dans PATH (détection HDR enrichie ignorée).")
             return False, False, False
+        except subprocess.TimeoutExpired:
+            self._emit_verbose("mediainfo HDR sans réponse (détection HDR enrichie ignorée).")
+            return False, False, False
 
     # ------------------------------------------------------------------
     # mediainfo JSON (source unifiée pour HDR, frame_count, profil DoVi)
@@ -950,12 +964,12 @@ class FileInspector:
         cmd = [self._mediainfo, "--Output=JSON", str(path)]
         self._emit_command(cmd)
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True, check=False, **subprocess_text_kwargs(),
-            )
+            result = self._probe(cmd)
         except FileNotFoundError:
             self._emit_verbose("mediainfo introuvable dans PATH (JSON ignoré).")
+            return None
+        except subprocess.TimeoutExpired:
+            self._emit_verbose(f"mediainfo sans réponse après {self._probe_timeout_s:.0f} s (JSON ignoré).")
             return None
         self._emit_process_result("mediainfo", result)
         if result.returncode != 0:

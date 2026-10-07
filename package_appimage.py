@@ -57,23 +57,33 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
-from core.github_release import release_asset, verify_download
+from core.github_release import github_release_asset, release_asset, verify_download
+from core.tool_manifest import (
+    LOCAL_ARCHIVE,
+    RECORDED_ONLY,
+    VERIFIED_GITHUB_DIGEST,
+    ToolManifest,
+)
 from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
     APP_NAME,
+    APP_REPOSITORY,
     APP_VERSION,
     APP_WEBSITE_URL,
     MUXIVEO_RIFE_RELEASE_TAG,
-    muxiveo_rife_asset_url,
+    MUXIVEO_RIFE_VERSION,
 )
 
 ROOT = Path(__file__).parent
+# Provenance des outils embarqués (mode --allinc), écrite dans usr/bin/tools/.
+TOOL_MANIFEST = ToolManifest()
 DIST_DIR = ROOT / "dist"
 DIST_RELEASES = ROOT / "dist" / "releases"
 BUILD_DIR = ROOT / "build"
@@ -627,13 +637,21 @@ def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
 
     _arch_tag = {"x86_64": "linux64", "aarch64": "linuxarm64"}.get(arch, f"linux{arch}")
     filename = f"ffmpeg-master-latest-{_arch_tag}-gpl.tar.xz"
-    url = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/{filename}"
     info(f"Asset : {filename}")
+    # Release roulante « latest » : SHA-256 publié par l'API GitHub vérifié,
+    # archive consignée dans le manifeste (le build du jour change).
+    asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", filename)
 
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.tar.xz"
-        _download(url, archive, timeout=120)
+        _download(asset.url, archive, timeout=120)
+        verify_download(asset, archive)
         _extract_from_tar(archive, ["ffmpeg", "ffprobe"], tools_dir)
+        TOOL_MANIFEST.add(
+            "ffmpeg", version=f"{asset.repo}@{asset.tag}", source=asset.url,
+            verification=VERIFIED_GITHUB_DIGEST, archive=archive,
+            files=[tools_dir / "ffmpeg", tools_dir / "ffprobe"],
+        )
 
     ok("ffmpeg + ffprobe (BtbN master GPL) installés")
 
@@ -680,6 +698,11 @@ def _dl_mediainfo(tools_dir: Path, arch: str) -> None:
             dest = tools_dir / "mediainfo"
             dest.write_bytes(data)
             _chmod_x(dest)
+        # MediaArea ne publie pas de somme : provenance et SHA-256 consignés.
+        TOOL_MANIFEST.add(
+            "mediainfo", version=ver, source=url, verification=RECORDED_ONLY,
+            archive=archive, files=[dest],
+        )
     ok("mediainfo installé")
 
 
@@ -692,6 +715,10 @@ def _dl_dovi_tool(tools_dir: Path, arch: str) -> None:
         _download(asset.url, archive)
         verify_download(asset, archive)
         _extract_from_tar(archive, ["dovi_tool"], tools_dir)
+        TOOL_MANIFEST.add(
+            "dovi_tool", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "dovi_tool"],
+        )
     ok("dovi_tool installé")
 
 
@@ -704,12 +731,19 @@ def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
         archive = Path(local) if local else Path(tmp) / "muxiveo-rife.tar.gz"
+        source, verification = str(archive), LOCAL_ARCHIVE
         if not local:
+            asset_name = f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-linux-x86_64.tar.gz"
             try:
-                _download(muxiveo_rife_asset_url("linux-x86_64.tar.gz"), archive, timeout=120)
-            except Exception as exc:
+                asset = github_release_asset(APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, asset_name)
+                _download(asset.url, archive, timeout=120)
+            except (OSError, urllib.error.URLError) as exc:
+                # Erreur réseau : outil facultatif absent de ce build (comportement existant).
                 warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
                 return
+            # Somme absente ou différente : refus (RuntimeError), jamais d'archive non vérifiée.
+            verify_download(asset, archive)
+            source, verification = asset.url, VERIFIED_GITHUB_DIGEST
         with tarfile.open(archive) as tf:
             prefix = os.path.commonpath([m.name for m in tf.getmembers()])
             for member in tf.getmembers():
@@ -720,6 +754,10 @@ def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
                     continue
                 member.name = rel
                 tf.extract(member, tools_dir)
+        TOOL_MANIFEST.add(
+            "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=source, verification=verification,
+            archive=archive, files=[tools_dir / "muxiveo-rife"],
+        )
     _chmod_x(tools_dir / "muxiveo-rife")
     ok("muxiveo-rife installé")
 
@@ -733,6 +771,10 @@ def _dl_hdr10plus_tool(tools_dir: Path, arch: str) -> None:
         _download(asset.url, archive)
         verify_download(asset, archive)
         _extract_from_tar(archive, ["hdr10plus_tool"], tools_dir)
+        TOOL_MANIFEST.add(
+            "hdr10plus_tool", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "hdr10plus_tool"],
+        )
     ok("hdr10plus_tool installé")
 
 
@@ -785,6 +827,10 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
             return
         shutil.copy2(binary, tools_dir / "nvencc")
         _chmod_x(tools_dir / "nvencc")
+        TOOL_MANIFEST.add(
+            "nvencc", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "nvencc"],
+        )
         # Symlink PascalCase pour compat avec la résolution Linux .deb-style.
         try:
             (tools_dir / "NVEncC").symlink_to("nvencc")
@@ -828,6 +874,7 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     step("Téléchargement des outils externes (mode all-inclusive)")
     tools_dir = appdir / "usr" / "bin" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
+    TOOL_MANIFEST.entries.clear()
 
     _dl_ffmpeg(tools_dir, arch)
     _dl_mediainfo(tools_dir, arch)
@@ -836,8 +883,9 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_nvencc(tools_dir, arch)
     _dl_muxiveo_rife(tools_dir, arch)
     _bundle_licenses(appdir)
+    manifest = TOOL_MANIFEST.write(tools_dir)
 
-    ok(f"Tous les outils embarqués dans {tools_dir}")
+    ok(f"Tous les outils embarqués dans {tools_dir} (provenance : {manifest.name})")
 
 
 # ---------------------------------------------------------------------------

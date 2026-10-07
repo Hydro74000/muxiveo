@@ -65,11 +65,13 @@ class TestBackendCapabilities:
         assert caps.supports_multi_video is True
         assert QualityMode.SIZE in caps.quality_modes
 
-    def test_nvencc_backend_hides_size_mode(self):
+    def test_nvencc_backend_offers_size_mode(self):
+        """V33 : taille cible NVEncC en une passe VBR plafonnée."""
         caps = backend_capabilities_for_codec("nvencc_hevc")
         assert caps.backend_id == "nvencc"
         assert caps.supports_multi_video is False
-        assert QualityMode.SIZE not in caps.quality_modes
+        assert QualityMode.SIZE in caps.quality_modes
+        assert "size" in {spec.rc_id for spec in caps.rate_controls}
         assert caps.supports_dynamic_hdr is True
         assert caps.supports_manual_static_hdr is True
 

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 
@@ -112,14 +113,16 @@ class InterpolationSource:
     transfer: str = ""
     colorspace: str = ""
 
-    def setparams_filter(self, *, hdr_pq: bool = False) -> str:
+    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "") -> str:
         """Filtre ``setparams`` posant le marquage couleur sur les images y4m.
 
         Depuis ffmpeg 7, l'encodeur lit ces propriétés sur les images : les options
-        de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ).
+        de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ) ;
+        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant).
         """
-        if hdr_pq:
-            values = [("color_primaries", "bt2020"), ("color_trc", "smpte2084"), ("colorspace", "bt2020nc")]
+        if hdr_pq or hdr_transfer in {"pq", "hlg"}:
+            trc = "arib-std-b67" if hdr_transfer == "hlg" else "smpte2084"
+            values = [("color_primaries", "bt2020"), ("color_trc", trc), ("colorspace", "bt2020nc")]
             color_range = "tv"
         else:
             values = [(key, value) for key, value in (("color_primaries", self.primaries),
@@ -156,8 +159,14 @@ def interpolation_source_from_probe(
     *,
     format_start_time: object = None,
     tonemap_to_sdr: bool = False,
+    p5_to_hdr10: bool = False,
 ) -> InterpolationSource:
-    """Construit les propriétés d'interpolation depuis un flux ``ffprobe -show_streams``."""
+    """Construit les propriétés d'interpolation depuis un flux ``ffprobe -show_streams``.
+
+    Les images reçues par RIFE sont décrites telles que produites par les filtres :
+    tone-mapping → BT.709 limité (prioritaire) ; source P5 convertie → BT.2020nc /
+    PQ limité (la VUI P5 d'origine, IPT plage pleine, ne les décrit plus).
+    """
     def declared(key: str) -> str:
         value = str(stream.get(key) or "").strip().lower()
         return "" if value in {"", "unknown", "unspecified", "reserved"} else value
@@ -167,6 +176,10 @@ def interpolation_source_from_probe(
         matrix = "bt709"
         color_range = "limited"
         primaries = transfer = colorspace = "bt709"
+    elif p5_to_hdr10:
+        matrix = colorspace = "bt2020nc"
+        color_range = "limited"
+        primaries, transfer = "bt2020", "smpte2084"
     else:
         primaries, transfer, colorspace = declared("color_primaries"), declared("color_transfer"), declared("color_space")
         matrix = str(stream.get("color_space") or "").strip().lower()
@@ -232,13 +245,18 @@ def stream_start_time(ffprobe_bin: str, source: Path, stream_index: int) -> floa
 
 
 def probe_interpolation_source(
-    ffprobe_bin: str, source: Path, stream_index: int, *, tonemap_to_sdr: bool = False
+    ffprobe_bin: str,
+    source: Path,
+    stream_index: int,
+    *,
+    tonemap_to_sdr: bool = False,
+    p5_to_hdr10: bool = False,
 ) -> InterpolationSource | None:
     """``InterpolationSource`` d'un flux sondé directement (None si la sonde échoue)."""
     stream = _probe_stream(ffprobe_bin, source, stream_index)
     if stream is None:
         return None
-    return interpolation_source_from_probe(stream, tonemap_to_sdr=tonemap_to_sdr)
+    return interpolation_source_from_probe(stream, tonemap_to_sdr=tonemap_to_sdr, p5_to_hdr10=p5_to_hdr10)
 
 
 def nominal_cfr_rate(r_rate: str, avg_rate: str) -> str:
@@ -643,9 +661,15 @@ def extract_hdr10plus_metadata(
     run_cmd: Callable[[list[str]], object],
     cleanup_paths: list[Path],
 ) -> Path:
-    """Extrait le JSON HDR10+ (MKV/HEVC direct, autres conteneurs via Annex B)."""
+    """Extrait le JSON HDR10+ (MKV/HEVC direct, autres conteneurs via Annex B).
+
+    MKV dont Tracks échappe au premier SeekHead (lecteur strict de hdr10plus_tool) : Annex B.
+    """
     meta_input = source
-    if source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0:
+    if (
+        source.suffix.lower() not in {".mkv", ".hevc", ".h265", ".265", ".x265"} or stream_index != 0
+        or (source.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(source))
+    ):
         meta_input = work_dir / "source_hdr10plus.hevc"
         cleanup_paths.append(meta_input)
         cmd = [ffmpeg_bin, "-nostdin", "-y"]

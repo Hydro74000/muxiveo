@@ -14,9 +14,7 @@ from core.workflows.encode.catalog import (
     NVENC_VIDEO_CODECS,
     QSV_VIDEO_CODECS,
     VAAPI_VIDEO_CODECS,
-    needs_static_hdr_bitstream_patch_codec,
 )
-from core.workflows.encode.domain.codecs import ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH
 from core.workflows.encode.models import QualityMode, VideoEncodeSettings
 _UI_ENCODE_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
 
@@ -106,17 +104,7 @@ class VideoPreparationResourcePolicy:
 
         if video.quality_mode == QualityMode.SIZE:
             base += 128 * mib
-        if (
-            video.copy_dv
-            or video.copy_hdr10plus
-            or (
-                ENABLE_EXPERIMENTAL_NVENC_STATIC_HDR_PATCH
-                and
-                bool(video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus)
-                and bool(video.master_display or video.max_cll)
-                and needs_static_hdr_bitstream_patch_codec(video.codec)
-            )
-        ):
+        if video.copy_dv or video.copy_hdr10plus:
             base += 256 * mib
 
         source_component = 0

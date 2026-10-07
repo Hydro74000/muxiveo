@@ -19,11 +19,15 @@ class DynamicHdrNormalizerCallbacks:
     video_tracks: Callable[[EncodeConfig], list[VideoEncodeSettings]]
     video_source_path: Callable[[EncodeConfig], Path]
     video_source_from_settings: Callable[[EncodeConfig, VideoEncodeSettings], Path]
-    detect_source_dynamic_hdr_presence: Callable[[Path], tuple[bool, bool] | None]
-    extract_static_hdr_metadata: Callable[[Path], tuple[str, str]]
-    extract_static_hdr_via_ffprobe: Callable[[Path], tuple[str, str]]
-    color_primaries_label: Callable[[Path], str]
+    # (source, index du flux vidéo) : un fichier peut porter plusieurs vidéos.
+    detect_source_dynamic_hdr_presence: Callable[[Path, int], tuple[bool, bool] | None]
+    extract_static_hdr_metadata: Callable[[Path, int], tuple[str, str]]
+    extract_static_hdr_via_ffprobe: Callable[[Path, int], tuple[str, str]]
+    color_primaries_label: Callable[[Path, int], str]
     build_master_display_for_primaries: Callable[[str], str]
+    #: Piste dont le HDR10 statique est complété plus tard (aperçu : P5 estimé
+    #: depuis le RPU au lancement) : aucun repli posé ici.
+    defer_static_hdr: Callable[[VideoEncodeSettings], bool] | None = None
 
 
 class DynamicHdrConfigNormalizer:
@@ -37,7 +41,8 @@ class DynamicHdrConfigNormalizer:
             return config
 
         source = self._cb.video_source_path(config)
-        detected = self._cb.detect_source_dynamic_hdr_presence(source)
+        video = self._cb.primary_video_settings(config)
+        detected = self._cb.detect_source_dynamic_hdr_presence(source, int(video.stream_index))
         if detected is None:
             self._cb.log(
                 "WARN",
@@ -45,7 +50,6 @@ class DynamicHdrConfigNormalizer:
             )
             return config
 
-        video = self._cb.primary_video_settings(config)
         normalized_video = self._normalize_video(
             video,
             source=source,
@@ -81,7 +85,7 @@ class DynamicHdrConfigNormalizer:
                 continue
 
             source = self._cb.video_source_from_settings(config, video)
-            detected = self._cb.detect_source_dynamic_hdr_presence(source)
+            detected = self._cb.detect_source_dynamic_hdr_presence(source, int(video.stream_index))
             track_label = f"Piste #{index}"
             if detected is None:
                 self._cb.log(
@@ -144,7 +148,7 @@ class DynamicHdrConfigNormalizer:
         auto_md, auto_cll = video.master_display, video.max_cll
         analysis_pending = bool(
             str(getattr(video, "static_hdr_metadata_analysis_request", "") or "").strip()
-        )
+        ) or bool(self._cb.defer_static_hdr is not None and self._cb.defer_static_hdr(video))
         if (
             (copy_dv or copy_hdr10plus)
             and video.inject_hdr_meta
@@ -153,6 +157,7 @@ class DynamicHdrConfigNormalizer:
         ):
             auto_md, auto_cll = self._fill_static_hdr_fallbacks(
                 source,
+                int(video.stream_index),
                 master_display=auto_md,
                 max_cll=auto_cll,
                 track_label=track_label,
@@ -178,6 +183,7 @@ class DynamicHdrConfigNormalizer:
     def _fill_static_hdr_fallbacks(
         self,
         source: Path,
+        stream_index: int,
         *,
         master_display: str,
         max_cll: str,
@@ -185,7 +191,7 @@ class DynamicHdrConfigNormalizer:
     ) -> tuple[str, str]:
         auto_md, auto_cll = master_display, max_cll
 
-        md_mi, cll_mi = self._cb.extract_static_hdr_metadata(source)
+        md_mi, cll_mi = self._cb.extract_static_hdr_metadata(source, stream_index)
         if not auto_md and md_mi:
             auto_md = md_mi
             self._cb.log("WARN", self._static_hdr_message(track_label, "Master Display", "mediainfo", md_mi))
@@ -194,7 +200,7 @@ class DynamicHdrConfigNormalizer:
             self._cb.log("WARN", self._static_hdr_message(track_label, "MaxCLL/MaxFALL", "mediainfo", cll_mi))
 
         if not auto_md or not auto_cll:
-            md_ff, cll_ff = self._cb.extract_static_hdr_via_ffprobe(source)
+            md_ff, cll_ff = self._cb.extract_static_hdr_via_ffprobe(source, stream_index)
             if not auto_md and md_ff:
                 auto_md = md_ff
                 self._cb.log("WARN", self._static_hdr_message(track_label, "Master Display", "ffprobe", md_ff))
@@ -203,7 +209,7 @@ class DynamicHdrConfigNormalizer:
                 self._cb.log("WARN", self._static_hdr_message(track_label, "MaxCLL/MaxFALL", "ffprobe", cll_ff))
 
         if not auto_md:
-            primaries = self._cb.color_primaries_label(source)
+            primaries = self._cb.color_primaries_label(source, stream_index)
             synth_md = self._cb.build_master_display_for_primaries(primaries)
             if synth_md:
                 auto_md = synth_md

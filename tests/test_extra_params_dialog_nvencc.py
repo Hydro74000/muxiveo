@@ -235,6 +235,12 @@ class TestParseExisting:
 
 class TestRoundTrip:
     @pytest.mark.parametrize("schema", [_NVENCC_HEVC, _NVENCC_H264, _NVENCC_AV1])
+    def test_vbr_zero_roundtrip(self, schema):
+        serialized = _serialize(schema, {"vbr": (True, 0)})
+        assert serialized == "--vbr 0"
+        assert _serialize(schema, _parse_existing(schema, serialized)) == serialized
+
+    @pytest.mark.parametrize("schema", [_NVENCC_HEVC, _NVENCC_H264, _NVENCC_AV1])
     def test_basic_combo_roundtrip(self, schema):
         original = {
             "aq": (True, True),

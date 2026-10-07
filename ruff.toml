@@ -1,0 +1,6 @@
+# Règles du gate validé lors de l'audit. Les défauts de Ruff peuvent évoluer
+# entre deux versions : le checkout doit donner le même résultat qu'en local.
+target-version = "py310"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

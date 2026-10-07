@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from core.matroska.reader import strict_demuxer_reads_tracks
 from core.subprocess_utils import subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
@@ -205,19 +206,51 @@ class DoviProfileDetector:
     # dovi_tool (fallback)
     # ------------------------------------------------------------------
 
-    def detect_from_dovi_tool(self, source: Path) -> DoviDetectionResult:
+    def detect_from_ffprobe_stream(self, stream: dict | None) -> DoviDetectionResult:
+        """Record DOVI d'un flux ffprobe (``side_data_list``), propre à chaque piste."""
+        for side_data in (stream or {}).get("side_data_list") or []:
+            if not isinstance(side_data, dict) or side_data.get("side_data_type") != "DOVI configuration record":
+                continue
+            try:
+                profile = int(side_data.get("dv_profile"))  # type: ignore[arg-type]  # None → TypeError traité
+            except (TypeError, ValueError):
+                break
+            compat = side_data.get("dv_bl_signal_compatibility_id")
+            compat_id = compat if isinstance(compat, int) else None
+            level = side_data.get("dv_level")
+            return DoviDetectionResult(
+                sub_profile=self._classify(
+                    profile=profile,
+                    compat_id=compat_id,
+                    has_enhancement_layer=bool(side_data.get("el_present_flag")),
+                ),
+                profile=profile,
+                level=level if isinstance(level, int) else None,
+                bl_signal_compat_id=compat_id,
+                raw_source="ffprobe",
+            )
+        return DoviDetectionResult(
+            sub_profile=DoviSubProfile.UNKNOWN,
+            profile=None, level=None, bl_signal_compat_id=None,
+            raw_source="ffprobe",
+        )
+
+    def detect_from_dovi_tool(self, source: Path, *, stream_index: int | None = None) -> DoviDetectionResult:
         """
         Lance ``dovi_tool info -i <RPU>`` après extraction du RPU et parse
         la sortie. ``dovi_tool info`` n'accepte qu'un fichier RPU binaire :
         pour un MKV/MP4/HEVC, on extrait d'abord le RPU via
         ``dovi_tool extract-rpu`` (qui sait lire MKV directement et HEVC
         annexB ; pour MP4 on passe par un pipe ffmpeg + bsf hevc_mp4toannexb).
+        ``stream_index`` : flux ciblé (index ffprobe), extrait par FFmpeg.
         """
         ext = source.suffix.lower()
         rpu_dir = Path(tempfile.mkdtemp(prefix="dovi_detect_"))
         rpu_bin = rpu_dir / "rpu.bin"
         try:
-            if ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
+            # MKV dont Tracks échappe au premier SeekHead : lu par le pipe FFmpeg ci-dessous.
+            direct = ext != ".mkv" or strict_demuxer_reads_tracks(source)
+            if stream_index is None and direct and ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
                 extract = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-i", str(source), "-l", "100", "-o", str(rpu_bin)],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
@@ -232,7 +265,8 @@ class DoviProfileDetector:
                 # MP4/MOV/TS : pipe ffmpeg → dovi_tool extract-rpu via stdin.
                 ff = subprocess.Popen(
                     [self._ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(source),
-                     "-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb",
+                     "-map", "0:v:0" if stream_index is None else f"0:{int(stream_index)}",
+                     "-c", "copy", "-bsf:v", "hevc_mp4toannexb",
                      "-f", "hevc", "-"],
                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 )

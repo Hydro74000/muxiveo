@@ -17,12 +17,12 @@ APP_WEBSITE_URL = "https://muxiveo.fr/"
 APP_SCHEMA_BASE_URL = "https://muxiveo.local/schema"
 APP_MACOS_BUNDLE_ID = "com.hydro74000.muxiveo"
 APP_APPSTREAM_ID = "fr.aotr.muxiveo"
-APP_VERSION = "4.2.1"
+APP_VERSION = "4.2.2"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 
 # Outil natif muxiveo-rife (native/muxiveo-rife) : release GitHub épinglée,
 # publiée par le workflow muxiveo-rife.yml sur ce même dépôt.
-MUXIVEO_RIFE_VERSION = "1.2.1"
+MUXIVEO_RIFE_VERSION = "1.2.3"
 MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
 
 

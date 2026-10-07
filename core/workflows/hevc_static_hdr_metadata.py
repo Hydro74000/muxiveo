@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import mmap
 import re
-import shutil
 import struct
 from dataclasses import dataclass
 from io import BytesIO

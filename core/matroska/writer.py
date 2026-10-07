@@ -38,6 +38,7 @@ from .native_muxer import (
 from .reader import read_element
 from .reader import MatroskaAttachment
 from .validation import MatroskaPacketValidation
+from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 
 
 #: Charge utile maximale d'un Cluster (octets). Borne le pic mémoire du
@@ -503,9 +504,8 @@ class MatroskaWriter:
         progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
     ) -> Path:
         destination = Path(plan.output)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_suffix(destination.suffix + ".partial")
-        partial.unlink(missing_ok=True)
+        if cancel_cb is not None and cancel_cb():
+            raise MatroskaWriteCancelled("Écriture Matroska annulée (avant écriture)")
 
         packets_written = 0
         packet_counts: dict[int, int] = {}
@@ -598,6 +598,9 @@ class MatroskaWriter:
                     duration = 0
             observed_end_ns = max(observed_end_ns, timestamp + duration)
 
+        # Candidat propre à cette écriture : un `.partial` existant (autre job,
+        # ancien schéma de nommage) n'est jamais réutilisé ni supprimé.
+        partial = reserve_candidate(destination)
         try:
             with partial.open("wb") as fh:
                 fh.write(_build_ebml_header())
@@ -773,7 +776,10 @@ class MatroskaWriter:
                 )
             _check_cancel("commit")
             _notify("commit", partial.stat().st_size)
-            partial.replace(destination)
+            publish_candidate(partial, destination)
+        except OutputCommitError:
+            # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
+            raise
         except BaseException:
             partial.unlink(missing_ok=True)
             raise

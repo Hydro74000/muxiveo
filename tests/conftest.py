@@ -55,3 +55,25 @@ def qt_app():
     ):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return QApplication(sys.argv)
+
+
+@pytest.fixture(autouse=True)
+def _no_vulkan_probe_by_default(monkeypatch):
+    """Commandes indépendantes de la machine : aucun GPU Vulkan sondé par le workflow.
+
+    Les tests Vulkan injectent leur capacité (``set_vulkan_capability``) ; le test
+    sur outils réels appelle ``core.workflows.encode.vulkan.detect_vulkan`` directement.
+    """
+    from core.workflows.encode import workflow as workflow_module
+    from core.workflows.encode.vulkan import VulkanCapability
+
+    monkeypatch.setattr(workflow_module, "_detect_vulkan", lambda _ffmpeg: VulkanCapability(reason="tests"))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_output_locks(monkeypatch, tmp_path_factory):
+    """Verrous de destination des workflows dans un dossier de test, jamais dans le cache utilisateur."""
+    from core import output_commit
+
+    lock_dir = tmp_path_factory.mktemp("output-locks")
+    monkeypatch.setattr(output_commit, "default_lock_dir", lambda: lock_dir)

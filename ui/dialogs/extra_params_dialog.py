@@ -36,6 +36,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.workflows.encode.backends import backend_id_for_codec
+from core.workflows.encode.domain.codecs import ffmpeg_option_name, ffmpeg_option_owned_by_workflow
+from core.workflows.encode.runtime.nvencc import (
+    NVENCC_RATE_CONTROL_OPTIONS,
+    NVENCC_WORKFLOW_OWNED_FLAGS,
+    nvencc_option_name,
+)
 from core.i18n import apply_translations, translate_text
 from ui.design_system import colors as _C
 from ui.styles import (
@@ -64,6 +70,8 @@ class ParamSpec:
     bool_repr : pour kind="bool", paire (off_value, on_value) à émettre. Par
                 défaut ("0","1"). Mettre (None,"") pour les flags x265-params
                 booléens (la clé seule suffit).
+    unit_suffix : unité ffmpeg ajoutée à la valeur sérialisée (ex. "k" : le
+                  widget saisit des kbps, ffmpeg lit des bit/s sans suffixe).
     """
     key: str
     label: str
@@ -76,6 +84,7 @@ class ParamSpec:
     suffix: str = ""
     tooltip: str = ""
     bool_repr: tuple[str | None, str | None] = ("0", "1")
+    unit_suffix: str = ""
 
 
 @dataclass(frozen=True)
@@ -181,12 +190,12 @@ _NVENC_HEVC = CodecSchema(
                               "des B-frames et la décision de QP.\n"
                               "32 = bon compromis. 0 désactive (perte de qualité notable)."),
             ParamSpec("maxrate", "Max bitrate (kbps)", "int", default=80000, minimum=0, maximum=400000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Plafond instantané du débit (mode VBR uniquement).\n"
                               "Doit être ≥ bitrate cible. Typiquement 1.5× à 2× le bitrate moyen "
                               "pour absorber les pics de complexité."),
             ParamSpec("bufsize", "Buffer size (kbps)", "int", default=160000, minimum=0, maximum=800000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Taille du buffer VBV (Video Buffering Verifier).\n"
                               "Typiquement 2× le maxrate. Plus grand = plus de souplesse pour les pics, "
                               "mais latence de décodage accrue."),
@@ -293,11 +302,11 @@ _NVENC_H264 = CodecSchema(
                       tooltip="Frames analysées en avance pour optimiser B-frames et QP.\n"
                               "32 = bon compromis. 0 désactive (perte qualité notable)."),
             ParamSpec("maxrate", "Max bitrate (kbps)", "int", default=40000, minimum=0, maximum=200000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Plafond instantané du débit (mode VBR).\n"
                               "Typique : 1.5-2× le bitrate cible. H.264 1080p HQ : ~40 Mbps suffit."),
             ParamSpec("bufsize", "Buffer size (kbps)", "int", default=80000, minimum=0, maximum=400000,
-                      suffix=" kbps",
+                      suffix=" kbps", unit_suffix="k",
                       tooltip="Taille du buffer VBV. Typiquement 2× maxrate.\n"
                               "Plus grand = plus de souplesse pour les pics."),
         )),
@@ -394,13 +403,21 @@ _NVENC_AV1 = CodecSchema(
 _AMF_QUALITY = (("speed", "speed"), ("balanced", "balanced"), ("quality", "quality"))
 _AMF_RC = (("cqp", "cqp"), ("cbr", "cbr"), ("vbr_peak", "vbr_peak"),
            ("vbr_latency", "vbr_latency"))
-_AMF_USAGE = (("transcoding", "transcoding"), ("ultralowlatency", "ultralowlatency"),
-              ("lowlatency", "lowlatency"), ("webcam", "webcam"))
+_AMF_USAGE = (("transcoding", "transcoding"), ("high_quality", "high_quality"),
+              ("ultralowlatency", "ultralowlatency"), ("lowlatency", "lowlatency"),
+              ("lowlatency_high_quality", "lowlatency_high_quality"), ("webcam", "webcam"))
 
 _AMF_USAGE_TIP = ("Profil d'usage AMF.\n"
                   "• transcoding : encodage offline qualité — recommandé pour fichiers.\n"
-                  "• lowlatency / ultralowlatency : streaming / cloud gaming.\n"
+                  "• high_quality : réglages internes orientés qualité (runtime AMF récent).\n"
+                  "• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n"
                   "• webcam : capture caméra temps réel.")
+_AMF_PREENCODE_TIP = ("Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\n"
+                      "Ignoré en CQP. Coût : quelques % de vitesse.")
+_AMF_VBAQ_TIP = ("Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit "
+                 "des blocs lisses.\n"
+                 "Ignoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR "
+                 "des zones sombres en baisse à débit égal — à juger à l'œil.")
 
 _AMF_HEVC = CodecSchema(
     codec="hevc_amf",
@@ -418,7 +435,7 @@ _AMF_HEVC = CodecSchema(
                       tooltip="QP maximum sur les I-frames. Plafond bas de qualité.\n"
                               "Réduire (~38-42) pour éviter une chute visible sur scènes complexes."),
             ParamSpec("max_au_size", "Max AU size", "int", default=0, minimum=0, maximum=100000000,
-                      tooltip="Taille maximale d'une Access Unit (frame compressée) en bytes.\n"
+                      tooltip="Taille maximale d'une Access Unit (frame compressée) en bits.\n"
                               "0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment."),
         )),
         ParamGroup("GOP / B-frames", (
@@ -443,7 +460,7 @@ _AMF_HEVC = CodecSchema(
                                     ("auto", "1", "2", "2.1", "3", "3.1", "4", "4.1", "5", "5.1", "5.2")),
                       tooltip="Level HEVC : limite résolution/framerate/bitrate.\n"
                               "auto recommandé. 5.1 = UHD 4K 60p (Blu-ray UHD)."),
-            ParamSpec("tier", "Tier", "enum", default="high",
+            ParamSpec("profile_tier", "Tier", "enum", default="high",
                       options=(("main", "main"), ("high", "high")),
                       tooltip="• main : bitrate consumer.\n"
                               "• high : bitrate étendu — requis pour UHD HDR haut débit."),
@@ -453,9 +470,8 @@ _AMF_HEVC = CodecSchema(
                       tooltip="Active une analyse pré-encodage du contenu pour optimiser bitrate et "
                               "placement des frames.\n"
                               "Améliore notablement la qualité au prix de ~10-15% de vitesse."),
-            ParamSpec("vbaq", "VBAQ", "bool",
-                      tooltip="Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\n"
-                              "Alloue plus de bits aux zones perceptuellement sensibles. Recommandé."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("vbaq", "VBAQ", "bool", tooltip=_AMF_VBAQ_TIP),
             ParamSpec("enforce_hrd", "Enforce HRD", "bool",
                       tooltip="Force le respect du modèle HRD (Hypothetical Reference Decoder).\n"
                               "Garantit que le stream est décodable en temps réel par tout décodeur "
@@ -489,9 +505,8 @@ _AMF_H264 = CodecSchema(
             ParamSpec("preanalysis", "Pre-analysis", "bool",
                       tooltip="Analyse pré-encodage qui optimise bitrate et placement des frames.\n"
                               "Coût : ~10-15% de vitesse. Gain qualité notable."),
-            ParamSpec("vbaq", "VBAQ", "bool",
-                      tooltip="Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\n"
-                              "Recommandé toujours actif."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("vbaq", "VBAQ", "bool", tooltip=_AMF_VBAQ_TIP),
             ParamSpec("__free__", "Flags libres", "text", default="",
                       tooltip="Tokens ffmpeg additionnels."),
         )),
@@ -509,6 +524,14 @@ _AMF_AV1 = CodecSchema(
                       tooltip=_AMF_USAGE_TIP + "\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent."),
         )),
         ParamGroup("Avancé / libre", (
+            ParamSpec("preanalysis", "Pre-analysis", "bool",
+                      tooltip="Analyse pré-encodage qui optimise bitrate et placement des frames."),
+            ParamSpec("preencode", "Pre-encode", "bool", tooltip=_AMF_PREENCODE_TIP),
+            ParamSpec("aq_mode", "AQ mode", "enum", default="caq",
+                      options=(("none", "none"), ("caq", "caq")),
+                      tooltip="Quantification adaptative AV1 AMF.\n"
+                              "• none : aucune.\n"
+                              "• caq : Content Adaptive Quantization."),
             ParamSpec("__free__", "Flags libres", "text", default="",
                       tooltip="Tokens ffmpeg additionnels."),
         )),
@@ -531,10 +554,9 @@ _QSV_HEVC = CodecSchema(
     style="ffmpeg_flags",
     groups=(
         ParamGroup("Rate control", (
-            ParamSpec("look_ahead", "Look-ahead", "bool", default="1",
-                      tooltip=_QSV_LOOKAHEAD_TIP),
             ParamSpec("look_ahead_depth", "Lookahead depth", "int", default=40, minimum=0, maximum=100,
-                      tooltip=_QSV_LOOKAHEAD_DEPTH_TIP),
+                      tooltip="Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n"
+                              "40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑."),
             ParamSpec("async_depth", "Async depth", "int", default=4, minimum=1, maximum=8,
                       tooltip=_QSV_ASYNC_DEPTH_TIP),
             ParamSpec("extbrc", "Extended BRC", "bool",
@@ -679,9 +701,12 @@ _VAAPI_COMMON_RATE_CONTROL_PARAMS = (
     ParamSpec("async_depth", "Async depth", "int", default=2, minimum=1, maximum=64,
               tooltip="Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\n"
                       "mais exige plus de surfaces et ajoute de la latence."),
-    ParamSpec("compression_level", "Compression level", "int", default=4, minimum=0, maximum=7,
-              tooltip="Compromis vitesse/qualité du wrapper VAAPI.\n"
-                      "Valeur plus haute = plus rapide, mais qualité/compression légèrement inférieures."),
+    ParamSpec("compression_level", "Compression level", "int", default=4, minimum=0, maximum=32,
+              tooltip="Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n"
+                      "• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n"
+                      "• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n"
+                      "  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n"
+                      "  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ."),
     ParamSpec("b", "Bitrate cible", "text", default="",
               tooltip="Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\n"
                       "Peut volontairement surcharger le mode SIZE du workflow."),
@@ -1319,6 +1344,7 @@ def _nvencc_group_rate_control() -> ParamGroup:
                           "Typique remux UHD : 18:20:22 (très haute qualité)."),
         ParamSpec("vbr", "VBR (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
                   tooltip="Mode VBR — bitrate moyen cible (kbps).\n"
+                          "0 = illimité (aucune cible de débit moyen).\n"
                           "Combinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."),
         ParamSpec("vbrhq", "VBR-HQ (kbps)", "int", minimum=0, maximum=400000, suffix=" kbps",
                   tooltip="VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis."),
@@ -1887,6 +1913,39 @@ _NVENCC_SCHEMAS: dict[str, CodecSchema] = {
 }
 
 
+def option_owned_by_workflow(codec: str, key: str) -> bool:
+    """Option toujours retirée à l'exécution (incompatible avec le workflow)."""
+    if key.startswith("__"):
+        return False
+    normalized = str(codec or "").strip().lower()
+    if backend_id_for_codec(normalized) == "nvencc":
+        return f"--{key}" in NVENCC_WORKFLOW_OWNED_FLAGS
+    if normalized in {"libx265", "libsvtav1"}:
+        return False
+    return ffmpeg_option_owned_by_workflow(f"-{key}")
+
+
+# Options VAAPI du mode de débit, réglées par la liste Mode de l'onglet Video.
+_VAAPI_RATE_CONTROL_OPTIONS = frozenset({"rc_mode", "qp", "q", "global_quality", "b"})
+
+
+def option_covered_by_mode(codec: str, key: str) -> bool:
+    """Option de débit couverte par la liste Mode (ligne grisée, saisie manuelle possible)."""
+    normalized = str(codec or "").strip().lower()
+    if backend_id_for_codec(normalized) == "nvencc":
+        return nvencc_option_name(f"--{key}") in NVENCC_RATE_CONTROL_OPTIONS
+    if normalized.endswith("_vaapi"):
+        return ffmpeg_option_name(f"-{key}") in _VAAPI_RATE_CONTROL_OPTIONS
+    return False
+
+
+def option_canonical_name(codec: str, key: str) -> str:
+    """Nom canonique de l'option d'une ligne (clé des valeurs posées par le workflow)."""
+    if backend_id_for_codec(str(codec or "").strip().lower()) == "nvencc":
+        return nvencc_option_name(f"--{key}")
+    return ffmpeg_option_name(f"-{key}")
+
+
 def schema_for(codec: str) -> CodecSchema | None:
     normalized = str(codec or "").strip().lower()
     if backend_id_for_codec(normalized) == "nvencc":
@@ -1906,7 +1965,7 @@ def _serialize_value(spec: ParamSpec, raw: Any) -> str | None:
         off_v = spec.bool_repr[0]
         return on_v if raw else off_v
     if spec.kind in ("int", "float"):
-        return str(raw)
+        return f"{raw}{spec.unit_suffix}"
     if spec.kind == "enum":
         return str(raw)
     if spec.kind == "text":
@@ -1976,7 +2035,7 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
                 if val is None:
                     continue
                 tokens_n.append(f"--{spec.key}")
-                tokens_n.append(val)
+                tokens_n.append(shlex.quote(val))
         out_n = " ".join(tokens_n)
         if free_n:
             out_n = (out_n + " " + " ".join(free_n)).strip()
@@ -2003,10 +2062,10 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
             if val is None:
                 continue
             tokens.append(f"-{spec.key}")
-            tokens.append(val)
+            tokens.append(shlex.quote(val))
     out = " ".join(tokens)
     if x264_params_inline:
-        out = (out + f' -x264-params "{x264_params_inline}"').strip()
+        out = (out + f" -x264-params {shlex.quote(x264_params_inline)}").strip()
     if free_tokens:
         out = (out + " " + " ".join(free_tokens)).strip()
     return out
@@ -2022,6 +2081,39 @@ def _looks_like_number(token: str) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+_BOOL_TRUE_TOKENS = frozenset({"1", "true", "on", "yes"})
+_BOOL_FALSE_TOKENS = frozenset({"0", "false", "off", "no"})
+_UNIT_MULTIPLIERS = {"": 0.001, "k": 1.0, "m": 1000.0, "g": 1_000_000.0}
+
+
+def _parse_bool_token(token: str | None) -> bool | None:
+    """Valeur booléenne ffmpeg explicite (0/1/true/false…), None sinon."""
+    text = str(token or "").strip().lower()
+    if text in _BOOL_TRUE_TOKENS:
+        return True
+    if text in _BOOL_FALSE_TOKENS:
+        return False
+    return None
+
+
+def _strip_unit_suffix(spec: ParamSpec | None, token: str) -> str:
+    """Ramène une valeur ffmpeg (bit/s, k, M…) dans l'unité du widget (kbps).
+
+    Un nombre nu est lu comme ffmpeg le lit : en bit/s.
+    """
+    if spec is None or spec.unit_suffix.lower() != "k":
+        return token
+    text = token.strip()
+    unit = text[-1:].lower() if text[-1:].isalpha() else ""
+    number = text[:-1] if unit else text
+    if unit not in _UNIT_MULTIPLIERS:
+        return token
+    try:
+        return str(round(float(number) * _UNIT_MULTIPLIERS[unit]))
+    except ValueError:
+        return token
 
 
 def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, Any]]:
@@ -2128,7 +2220,7 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
             leftovers.append(tok)
             i += 1
         if leftovers:
-            values["__free__"] = (True, " ".join(leftovers))
+            values["__free__"] = (True, shlex.join(leftovers))
         return values
 
     # ffmpeg_flags
@@ -2150,12 +2242,19 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
                 spec_obj = spec_map.get(key)
                 next_tok = tokens[i + 1] if i + 1 < len(tokens) else None
                 if spec_obj is not None and spec_obj.kind == "bool":
-                    values[key] = (True, True)
-                    i += 1
+                    # "-spatial-aq 0" : la valeur suit le flag ; sans valeur
+                    # reconnue, le flag seul vaut activé.
+                    flag_value = _parse_bool_token(next_tok)
+                    if flag_value is None:
+                        values[key] = (True, True)
+                        i += 1
+                    else:
+                        values[key] = (True, flag_value)
+                        i += 2
                     continue
                 if next_tok is not None:
                     if not next_tok.startswith("-"):
-                        values[key] = (True, next_tok)
+                        values[key] = (True, _strip_unit_suffix(spec_obj, next_tok))
                         i += 2
                         continue
                     if spec_obj is not None and spec_obj.kind in ("int", "float") and _looks_like_number(next_tok):
@@ -2168,7 +2267,7 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
         leftovers.append(tok)
         i += 1
     if leftovers:
-        values["__free__"] = (True, " ".join(leftovers))
+        values["__free__"] = (True, shlex.join(leftovers))
     return values
 
 
@@ -2214,6 +2313,9 @@ class _ParamRow(QWidget):
         spec: ParamSpec,
         initial: tuple[bool, Any] | None = None,
         infotip_filter: _InfotipFilter | None = None,
+        owned_by_workflow: bool = False,
+        workflow_value: str | None = None,
+        covered_by_mode: bool = False,
     ) -> None:
         super().__init__()
         self._spec = spec
@@ -2251,8 +2353,42 @@ class _ParamRow(QWidget):
 
         if initial is not None:
             enabled, raw = initial
-            self._enabled_cb.setChecked(enabled)
+            self._enabled_cb.setChecked(enabled and not owned_by_workflow)
             self._set_widget_value(raw)
+        if covered_by_mode and not owned_by_workflow:
+            # Mode de débit choisi dans l'onglet Video : ligne grisée. Une saisie
+            # manuelle existante reste décochable (elle remplace le mode, WARN).
+            if workflow_value is not None and initial is None:
+                self._set_widget_value(_strip_unit_suffix(spec, workflow_value))
+            mode_tip = translate_text(
+                "Réglé par la liste Mode de l'onglet Video{value}.",
+                value=f" : {workflow_value}" if workflow_value else "",
+            )
+            manual = bool(initial is not None and initial[0])
+            self._enabled_cb.setEnabled(manual)
+            self._enabled_cb.setToolTip(mode_tip)
+            lbl.setToolTip(mode_tip)
+            lbl.setEnabled(manual)
+        elif workflow_value is not None and not owned_by_workflow:
+            # Valeur posée par l'onglet Video : affichée, appliquée seulement si cochée.
+            if initial is None:
+                self._set_widget_value(_strip_unit_suffix(spec, workflow_value))
+            override_tip = translate_text(
+                "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.",
+                value=workflow_value or translate_text("(activée)"),
+            )
+            base_tip = translate_text(spec.tooltip) if spec.tooltip else ""
+            full_tip = f"{base_tip}\n\n{override_tip}" if base_tip else override_tip
+            self._enabled_cb.setToolTip(full_tip)
+            lbl.setToolTip(full_tip)
+        if owned_by_workflow:
+            # Mapping des pistes, géométrie, HDR : la saisir ici serait retiré à l'exécution.
+            owned_tip = translate_text("Géré par le workflow (onglet Video) : option non modifiable ici.")
+            self._enabled_cb.setChecked(False)
+            self._enabled_cb.setEnabled(False)
+            self._enabled_cb.setToolTip(owned_tip)
+            lbl.setToolTip(owned_tip)
+            lbl.setEnabled(False)
 
     def _build_value_widget(self, spec: ParamSpec) -> QWidget:
         if spec.kind == "int":
@@ -2401,14 +2537,23 @@ class ExtraParamsDialog(QDialog):
     La sortie est récupérable via ``result_text`` après ``exec()``.
     """
 
-    def __init__(self, codec: str, current_value: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        codec: str,
+        current_value: str,
+        parent: QWidget | None = None,
+        *,
+        workflow_values: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._workflow_values = dict(workflow_values or {})
         self.setWindowTitle(translate_text("Paramètres avancés — {codec}", codec=codec))
         self.setModal(True)
         self.setMinimumSize(820, 540)
         self.setStyleSheet(f"QDialog{{background:{_C.BG_DEEP};}}")
 
         self._schema = schema_for(codec)
+        self._codec = codec
         self._rows: dict[str, _ParamRow] = {}
         self._result_text: str = current_value
         self._infotip_filter = _InfotipFilter(self)
@@ -2522,6 +2667,9 @@ class ExtraParamsDialog(QDialog):
                 spec,
                 initial=initial_values.get(spec.key),
                 infotip_filter=self._infotip_filter,
+                owned_by_workflow=option_owned_by_workflow(self._codec, spec.key),
+                workflow_value=self._workflow_values.get(option_canonical_name(self._codec, spec.key)),
+                covered_by_mode=option_covered_by_mode(self._codec, spec.key),
             )
             self._rows[spec.key] = row
             row.findChild(QCheckBox).toggled.connect(self._refresh_preview)   # type: ignore[union-attr]
@@ -2618,9 +2766,19 @@ class ExtraParamsDialog(QDialog):
 # Helper one-shot
 # =============================================================================
 
-def edit_extra_params(codec: str, current: str, parent: QWidget | None = None) -> str | None:
-    """Ouvre la modale et retourne la nouvelle chaîne, ou None si annulé."""
-    dlg = ExtraParamsDialog(codec, current, parent)
+def edit_extra_params(
+    codec: str,
+    current: str,
+    parent: QWidget | None = None,
+    *,
+    workflow_values: dict[str, str] | None = None,
+) -> str | None:
+    """Ouvre la modale et retourne la nouvelle chaîne, ou None si annulé.
+
+    ``workflow_values`` : options posées par l'onglet Video (``{nom: valeur}``),
+    affichées en pré-remplissage des lignes non cochées.
+    """
+    dlg = ExtraParamsDialog(codec, current, parent, workflow_values=workflow_values)
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.result_text
     return None

@@ -59,13 +59,12 @@ def without_geometry(value):
     return value
 
 
-@pytest.mark.parametrize("crop,pad", [((0, 0, 0, 0), (0, 2, 0, 4)),
-                                      ((0, 8, 0, 10), (0, 0, 0, 0))])
-def test_real_rpu_editor_preserves_other_metadata_and_frame_ranges(tmp_path, variable_rpu, crop, pad):
+@pytest.mark.parametrize("crop", [(0, 2, 0, 4), (0, 8, 0, 10)])
+def test_real_rpu_editor_preserves_other_metadata_and_frame_ranges(tmp_path, variable_rpu, crop):
     before = export_all(variable_rpu, tmp_path / "before.json")
     edited = align_dovi_rpu_geometry(
         dovi_tool_bin="dovi_tool", rpu_input=variable_rpu, output_rpu=tmp_path / "edited.bin",
-        crop_offsets=crop, pad_offsets=pad, work_dir=tmp_path,
+        crop_offsets=crop,
     )
     after = export_all(edited, tmp_path / "after.json")
     assert len(before) == len(after) == 300
@@ -77,8 +76,8 @@ def test_real_rpu_editor_preserves_other_metadata_and_frame_ranges(tmp_path, var
     for frame_range, preset_id in l5["edits"].items():
         start = int(frame_range.split("-")[0])
         old_top = 0 if 100 <= start <= 199 else 16
-        assert presets[preset_id]["top"] == max(0, old_top - crop[1]) + pad[1]
-        assert presets[preset_id]["bottom"] == max(0, old_top - crop[3]) + pad[3]
+        assert presets[preset_id]["top"] == max(0, old_top - crop[1])
+        assert presets[preset_id]["bottom"] == max(0, old_top - crop[3])
     assert set(l5["edits"]) == {"0-99", "100-199", "200-299"}
 
 
@@ -114,11 +113,11 @@ def test_real_short_clip_cropdetect(tmp_path):
     assert detect_black_bars_ffmpeg(source, dimensions=(320, 240), duration_s=2) == (40, 40, 0, 0)
 
 
-@pytest.mark.parametrize("operation,expected_size", [("pad", (320, 192)), ("crop", (320, 160)),
+@pytest.mark.parametrize("operation,expected_size", [("fullframe", (320, 180)), ("crop", (320, 160)),
                                                      ("resize", (160, 90))])
 def test_real_nvencc_preserves_rpu_after_geometry(tmp_path, variable_mp4, operation, expected_size):
     from core.workflows.encode.models import VideoCropSettings, VideoEncodeSettings, VideoResizeSettings
-    from core.workflows.encode.runtime.dovi_geometry import align_nvencc_dovi_geometry
+    from core.workflows.encode.runtime.dovi_geometry import align_nvenc_dovi_geometry
     from core.workflows.encode.runtime.nvencc import build_nvencc_command, detect_nvencc_available
 
     nvencc = shutil.which("nvencc")
@@ -129,19 +128,20 @@ def test_real_nvencc_preserves_rpu_after_geometry(tmp_path, variable_mp4, operat
         video.crop = VideoCropSettings(enabled=True, top=2, bottom=2)
     if operation == "resize":
         video.resize = VideoResizeSettings(enabled=True, mode="size", width=160, height=90)
-    geometry = align_nvencc_dovi_geometry(video, (320, 180), (0, 0, 0, 0))
+    # Plein cadre : 192 lignes codées, sous le canevas UHD → image et RPU inchangés.
+    geometry = align_nvenc_dovi_geometry(video, (320, 180), (0, 0, 0, 0))
     rpu = None
     if geometry.needs_rpu_alignment:
         raw = extract_dovi_rpu(source=variable_mp4, stream_index=0, ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
                                output_rpu=tmp_path / "extracted.bin", work_dir=tmp_path,
                                cleanup_paths=[], run_cmd=run)
         rpu = align_dovi_rpu_geometry(
-            dovi_tool_bin="dovi_tool", rpu_input=raw, output_rpu=tmp_path / "aligned.bin", work_dir=tmp_path,
-            crop_offsets=geometry.crop_offsets or (0, 0, 0, 0), pad_offsets=geometry.pad_offsets or (0, 0, 0, 0),
+            dovi_tool_bin="dovi_tool", rpu_input=raw, output_rpu=tmp_path / "aligned.bin",
+            crop_offsets=geometry.crop_offsets or (0, 0, 0, 0),
         )
     output = tmp_path / "encoded.mkv"
     cmd = build_nvencc_command(nvencc, geometry.video, output, input_path=variable_mp4,
-                               input_reader="avsw", dovi_rpu=rpu, vpp_pad=geometry.vpp_pad, source_fps="25")
+                               input_reader="avsw", dovi_rpu=rpu, source_fps="25")
     run(cmd)
     streams = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(output)]).stdout)["streams"]
     assert (streams[0]["width"], streams[0]["height"]) == expected_size
@@ -151,6 +151,11 @@ def test_real_nvencc_preserves_rpu_after_geometry(tmp_path, variable_mp4, operat
     else:
         output_rpu = tmp_path / "output.bin"
         run(["dovi_tool", "extract-rpu", "-i", str(output), "-o", str(output_rpu)])
-        # NVEncC must insert the edited RPU in the original display order.
-        assert rpu is not None
-        assert export_all(output_rpu, tmp_path / "output.json") == export_all(rpu, tmp_path / "aligned.json")
+        # NVEncC must insert the (edited) RPU in the original display order.
+        expected = rpu if rpu is not None else variable_mp4_rpu(variable_mp4, tmp_path)
+        assert export_all(output_rpu, tmp_path / "output.json") == export_all(expected, tmp_path / "expected.json")
+
+
+def variable_mp4_rpu(source: Path, tmp_path: Path) -> Path:
+    return extract_dovi_rpu(source=source, stream_index=0, ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
+                            output_rpu=tmp_path / "source.bin", work_dir=tmp_path, cleanup_paths=[], run_cmd=run)

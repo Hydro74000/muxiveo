@@ -13,7 +13,7 @@ from core.workflows.encode.domain import (
     build_encoder_vf as _build_encoder_vf_domain,
     hardware_input_args as _hardware_input_args_domain,
 )
-from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
+from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.offsets import build_offset_specs as _build_offset_specs_plan
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
@@ -65,6 +65,17 @@ def _video_output_args(
     return args
 
 
+def _single_pass_size_bitrate(
+    callbacks: EncodeCommandBuilderCallbacks,
+    config: EncodeConfig,
+    video: VideoEncodeSettings,
+) -> int | None:
+    """Taille cible en une passe (encodeur matériel) : débit calculé ; sinon None."""
+    if video.codec != "copy" and video.quality_mode == QualityMode.SIZE:
+        return callbacks.size_to_bitrate_kbps(config)
+    return None
+
+
 def _video_input(video_map: tuple[int, int], offset_remap: dict, video_key) -> int:
     return int(offset_remap.get(video_key, video_map)[0])
 
@@ -114,6 +125,7 @@ def build_single_pass(
         video_map=track_assembly.video_map,
         offset_remap=offset_remap,
         video=video,
+        bitrate_kbps=_single_pass_size_bitrate(callbacks, config, video),
     )
     callbacks.append_common_streams_and_metadata(
         cmd,
@@ -285,6 +297,7 @@ def build_runtime_single_pass_with_sync(
         video_map=track_assembly.video_map,
         offset_remap=offset_remap,
         video=video,
+        bitrate_kbps=_single_pass_size_bitrate(callbacks, config, video),
     )
     callbacks.append_common_streams_and_metadata(
         cmd,

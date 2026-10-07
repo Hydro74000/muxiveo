@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
+from core.output_commit import candidate_pattern
 from core.subtitle_codec import plan_subtitle_codec
 from core.workflows.common.attachments import (
     ATTACHMENT_EXT_BY_MIME,
@@ -1008,7 +1009,7 @@ def plan_remux(
         audio_variants=audio_variants,
         preparation_actions=tuple(preparation_actions),
         required_tools=required_tools,
-        candidate_output=config.output.with_suffix(config.output.suffix + ".partial"),
+        candidate_output=candidate_pattern(config.output),
         output_contract=output_contract,
         mapping_errors=tuple(mapping_errors),
     )

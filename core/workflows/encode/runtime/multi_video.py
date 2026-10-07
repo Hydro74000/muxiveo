@@ -10,12 +10,11 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import run_cancellable_capture
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
+from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, dovi_geometry_edit_json
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
-    interpolated_static_hdr_lost,
     needs_static_hdr_sei_reinjection,
-    needs_static_hdr_bitstream_patch,
     should_reinject_static_hdr_metadata,
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
@@ -30,6 +29,8 @@ from core.workflows.encode.interpolation import (
     stream_start_offset,
 )
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
+from core.matroska.reader import strict_demuxer_reads_tracks
+from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
@@ -128,15 +129,9 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
-        if interpolated_static_hdr_lost(video):
-            cb.log_info(
-                f"Piste vidéo {index}: ATTENTION — l'interpolation ne transmet pas les métadonnées "
-                f"HDR10 statiques à {video.codec} (aucune réinjection possible en AV1)."
-            )
         if (
             video.copy_dv
             or video.copy_hdr10plus
-            or needs_static_hdr_bitstream_patch(video)
             or needs_static_hdr_sei_reinjection(video)
         ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
@@ -149,7 +144,11 @@ class MultiVideoPipelineRunner:
             _RAW_HEVC_EXT = {".hevc", ".h265", ".265", ".x265"}
             src_ext = source.suffix.lower()
             stream_index = int(spec.stream_index)
-            needs_annexb = (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+            needs_annexb = (
+                (src_ext not in _RAW_HEVC_EXT and src_ext != ".mkv") or stream_index != 0
+                # MKV dont Tracks échappe au premier SeekHead : illisible par dovi_tool / hdr10plus_tool.
+                or (src_ext == ".mkv" and not strict_demuxer_reads_tracks(source))
+            )
             if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
@@ -170,6 +169,13 @@ class MultiVideoPipelineRunner:
                     "-i", str(meta_input), "-o", str(rpu_bin),
                 ], f"dovi-extract-{index}")
                 local_cleanup.append(rpu_bin)
+                # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
+                rpu_bin = crop_dovi_rpu(
+                    video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],
+                    run_cmd=lambda cmd: run_cmd(cmd, f"dovi-crop-{index}"),
+                    log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
+                )
+                local_cleanup.extend([rpu_bin, dovi_geometry_edit_json(rpu_bin)])
             if video.copy_hdr10plus:
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",
@@ -178,7 +184,7 @@ class MultiVideoPipelineRunner:
                 local_cleanup.append(hdr10p_json)
 
             frame_ratio = resolve_frame_ratio(
-                video, ffprobe_bin=ffprobe_beside(cb.ffmpeg_bin), source=source, stream_index=int(video.stream_index),
+                video, ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin), source=source, stream_index=int(video.stream_index),
             )
             expand_dynamic_hdr_metadata(
                 ratio=frame_ratio,
@@ -194,9 +200,11 @@ class MultiVideoPipelineRunner:
                 record_for_rewriter = cb.build_dovi_record_from_rpu(
                     rpu_bin=rpu_bin,
                     dovi_tool_bin=cb.bins["dovi_tool"],
+                    # P8.4 / P8.2 conservés : compatibilité issue de la matrice V30.
+                    forced_compat_id=dovi_output_compat_id_for(video),
                     min_level=(
                         required_dovi_level(
-                            ffprobe_beside(cb.ffmpeg_bin), source, int(video.stream_index), frame_ratio,
+                            (cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin)), source, int(video.stream_index), frame_ratio,
                         )
                         if frame_ratio > 1
                         else None
@@ -258,7 +266,7 @@ class MultiVideoPipelineRunner:
             if video.copy_dv or video.copy_hdr10plus:
                 guard = FrameCountGuard(
                     mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
-                    ffprobe_bin=cb.bins.get("ffprobe", ffprobe_beside(cb.ffmpeg_bin)),
+                    ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin),
                     dovi_tool_bin=cb.bins.get("dovi_tool", "dovi_tool"),
                     run_command=lambda cmd, **kwargs: run_cancellable_capture(
                         cmd, cancel_cb=signals._cancel_event.is_set,
@@ -415,7 +423,7 @@ class MultiVideoPipelineRunner:
 
     def _intended_start_s(self, source: Path, stream_index: int, offset_ms: int) -> float:
         """Départ voulu d'une piste réencodée : décalage du flux dans la source + retard positif."""
-        start = stream_start_offset(ffprobe_beside(self._callbacks.ffmpeg_bin), source, stream_index)
+        start = stream_start_offset((self._callbacks.bins.get("ffprobe") or ffprobe_beside(self._callbacks.ffmpeg_bin)), source, stream_index)
         return round(start + max(0, offset_ms) / 1000.0, 6)
 
     def run(

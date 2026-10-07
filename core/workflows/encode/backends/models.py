@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from core.runner import TaskSignals
+from core.workflows.encode.catalog import RateControlSpec
+from core.workflows.encode.domain.codecs import ExtraParamsReport
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 
 if TYPE_CHECKING:
@@ -45,6 +47,8 @@ class BackendCapabilities:
     supports_dovi: bool = False
     supports_hdr10plus: bool = False
     supports_hdr: bool = True
+    #: Modes de débit proposés dans la liste Mode (catalog.VIDEO_RATE_CONTROLS).
+    rate_controls: tuple[RateControlSpec, ...] = ()
 
     def supports_quality_mode(self, mode: QualityMode) -> bool:
         return mode in self.quality_modes
@@ -113,6 +117,16 @@ class EncodeBackend(ABC):
     @abstractmethod
     def normalize_extra_params(self, video: VideoEncodeSettings) -> str:
         raise NotImplementedError
+
+    def extra_params_report(self, video: VideoEncodeSettings) -> ExtraParamsReport:
+        """Tri des paramètres avancés (retirés, remplaçant un réglage de l'onglet Video)."""
+        _ = video
+        return ExtraParamsReport()
+
+    def workflow_option_values(self, video: VideoEncodeSettings) -> dict[str, str]:
+        """Options posées par le workflow pour ces réglages (``{nom: valeur}``)."""
+        _ = video
+        return {}
 
     @abstractmethod
     def parse_progress(self, line: str) -> ProgressEvent | None:

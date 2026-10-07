@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from core.command_preview import format_preview_command, preview_comment
+from core.output_commit import OutputBusyError, OutputReservation
 from core.runner import TaskSignals, ToolRunner
 from core.version import APP_VERSION_LABEL
 from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
@@ -266,12 +268,12 @@ class RemuxWorkflow(QObject):
             list[list[object]],
             report.get("preparation_commands") or [],
         )
-        prep_text = "\n".join(" ".join(map(str, command)) for command in preparations)
+        prep_text = "\n".join(format_preview_command([str(part) for part in command]) for command in preparations)
         sections = [
-            f"# Backend: native Matroska (plan v{report['plan_version']})",
+            preview_comment(f"Backend: native Matroska (plan v{report['plan_version']})"),
             prep_text,
-            f"# Écriture interne Matroska -> {config.output}",
-            "# Référence FFmpeg compatible v1:",
+            preview_comment(f"Écriture interne Matroska -> {config.output}"),
+            preview_comment("Référence FFmpeg compatible v1:"),
             reference,
         ]
         return "\n".join(section for section in sections if section)
@@ -338,7 +340,24 @@ class RemuxWorkflow(QObject):
             command_callback=self.build_command,
         )
         backend = native_backend if plan.selected_backend == "native" else ffmpeg_backend
-        return backend.execute(config)
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(config.output)
+        except OutputBusyError as exc:
+            raise RemuxError(str(exc)) from exc
+        try:
+            signals = backend.execute(config)
+        except BaseException:
+            reservation.release()
+            raise
+        signals.connect_terminal(
+            finished=lambda *_args: reservation.release(),
+            failed=lambda *_args: reservation.release(),
+            cancelled=lambda *_args: reservation.release(),
+            direct=True,
+        )
+        return signals
 
     def _run_ffmpeg(self, config: RemuxConfig, plan: MuxExecutionPlan) -> TaskSignals:
         return RemuxRuntimeRunner(

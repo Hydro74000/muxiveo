@@ -68,7 +68,7 @@ def test_final_rejection_commits_only_after_explicit_acceptance(qt_app, tmp_path
             transaction.execute(["ffmpeg", str(output)], cwd=None, label="encode", signals=signals)
         assert output.read_bytes() == b"old result"
     assert len(requests) == (0 if answer is None else 1)
-    assert not transaction.candidate.exists()
+    assert not list(tmp_path.glob("*.partial"))
 
 
 def test_valid_output_does_not_ask_for_override(tmp_path):

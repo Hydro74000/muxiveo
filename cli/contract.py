@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-from cli.constants import FLAG_NAMES
+from cli.constants import (
+    FLAG_NAMES,
+    MUX_BACKEND_CHOICES,
+    SYNC_MODES,
+    SYNC_REWRITE_MODES,
+    SYNC_SUBTITLE_MODES,
+    TMDB_KINDS,
+)
 from cli.errors import ContractError
 
 
@@ -44,7 +52,9 @@ def _is_int(value: Any) -> bool:
 
 
 def _is_string_or_number(value: Any) -> bool:
-    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, (str, int)) and not isinstance(value, bool)
 
 
 def _validate_string_list(errors: list[str], path: str, value: Any) -> None:
@@ -100,9 +110,11 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
     if "enabled" in value:
         _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
-    for key in ("language", "title", "sync_rewrite_mode"):
+    for key in ("language", "title"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
+    if "sync_rewrite_mode" in value and value["sync_rewrite_mode"] not in SYNC_REWRITE_MODES:
+        errors.append(f"{path}.sync_rewrite_mode: attendu {SYNC_REWRITE_MODES}")
     if "flags" in value:
         _validate_flags(errors, f"{path}.flags", value["flags"])
 
@@ -223,7 +235,7 @@ def _validate_tmdb(errors: list[str], path: str, value: Any) -> None:
         return
     if "enabled" in value:
         _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
-    if "kind" in value and value["kind"] not in {"all", "movie", "tv"}:
+    if "kind" in value and value["kind"] not in TMDB_KINDS:
         errors.append(f"{path}.kind: attendu 'all', 'movie' ou 'tv'")
     for key in ("query", "title", "year", "season", "episode", "language", "api_key", "bearer_token"):
         if key in value:
@@ -245,9 +257,14 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
     if "version" not in job:
         if require_version:
             errors.append(f"{path}.version: champ requis")
-    elif job["version"] != 1:
+    elif not _is_int(job["version"]) or job["version"] != 1:
+        # `true == 1` en Python : un booléen n'est pas une version.
         errors.append(f"{path}.version: attendu 1, reçu {job['version']!r}")
-    for key, choices in (("sync_mode", ("physical", "container")), ("sync_subtitles", ("mirror", "none"))):
+    for key, choices in (
+        ("sync_mode", SYNC_MODES),
+        ("sync_subtitles", SYNC_SUBTITLE_MODES),
+        ("mux_backend", MUX_BACKEND_CHOICES),
+    ):
         if key in job and job[key] not in choices:
             errors.append(f"{path}.{key}: attendu {choices}")
     if "clean_nfo" in job and not isinstance(job["clean_nfo"], bool):

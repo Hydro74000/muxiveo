@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from core.dovi_profile_detector import DoviProfileDetector
+from core.workflows.encode.catalog import is_nvenc_hevc
 from core.subprocess_utils import subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
@@ -171,8 +172,7 @@ def align_crop_for_codec(
     if top == 0 and bottom == 0 and left == 0 and right == 0:
         return (0, 0, 0, 0)
 
-    is_nvencc_dv = (codec == "nvencc_hevc" and copy_dv)
-    mult = 32 if is_nvencc_dv else 2
+    mult = 32 if (copy_dv and is_nvenc_hevc(codec)) else 2
 
     # Round each edge up before distributing the remaining alignment pixels.
     # Moving pixels between odd edges afterwards can reintroduce a black bar.

@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
+from core.matroska.progress import native_mux_progress_label
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
 from core.i18n import apply_translations, set_current_language, translate_text
@@ -706,6 +707,10 @@ class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
     _hw_detected = Signal(object)   # set[str] — encodeurs HW disponibles
+    # (binaire FFmpeg, VulkanCapability) : sonde du thread de détection.
+    _vulkan_detected = Signal(str, object)
+    # Réémis depuis le thread principal (après le câblage de la fenêtre) vers les panneaux.
+    vulkan_ready = Signal(str, object)
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
@@ -737,6 +742,8 @@ class DashboardPage(QWidget):
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
+        self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
+        self._vulkan_badge: QLabel | None = None
         self._build_ui()
         self._start_hw_detection()
 
@@ -960,6 +967,13 @@ class DashboardPage(QWidget):
         rl.addStretch()
         root.addWidget(row)
 
+        # Filtres GPU : Vulkan (NLMeans 10 bits), sondé sur le matériel réel.
+        row, rl = _row("Filtres GPU")
+        self._vulkan_badge = self._make_encoder_badge("Vulkan", "pending")
+        rl.addWidget(self._vulkan_badge)
+        rl.addStretch()
+        root.addWidget(row)
+
         # Audio
         row, rl = _row("Audio")
         for codec_id, label in self._AUDIO:
@@ -1021,8 +1035,11 @@ class DashboardPage(QWidget):
         """Remet les badges SW/HW en état "pending" et soumet les détections à l'executor."""
         for badge, label in (*self._sw_badges.values(), *self._hw_badges.values()):
             self._apply_encoder_badge_state(badge, label, "pending")
+        if self._vulkan_badge is not None:
+            self._apply_encoder_badge_state(self._vulkan_badge, "Vulkan", "pending")
         self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
+        self._executor.submit(self._run_vulkan_detection)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
@@ -1048,6 +1065,28 @@ class DashboardPage(QWidget):
         else:
             available = result
         self._hw_detected.emit(available)
+
+    def _run_vulkan_detection(self) -> None:
+        """Thread worker : Vulkan utilisable par FFmpeg (périphérique + nlmeans_vulkan sur une image)."""
+        from core.workflows.encode.vulkan import detect_vulkan
+
+        ffmpeg = self._config.tool_ffmpeg
+        self._vulkan_detected.emit(ffmpeg, detect_vulkan(ffmpeg))
+
+    def _on_vulkan_detected(self, ffmpeg: str, capability: object) -> None:
+        """Slot Qt (thread principal) : badge Vulkan et info-bulle, puis propagation aux panneaux."""
+        self.vulkan_ready.emit(ffmpeg, capability)
+        if self._vulkan_badge is None:
+            return
+        ok = bool(getattr(capability, "nlmeans", False))
+        self._apply_encoder_badge_state(self._vulkan_badge, "Vulkan", "available" if ok else "unavailable")
+        device = str(getattr(capability, "device", "") or "")
+        reason = str(getattr(capability, "reason", "") or "")
+        self._vulkan_badge.setToolTip(
+            translate_text("NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}", device=device or "?")
+            if ok
+            else translate_text("Vulkan indisponible pour FFmpeg : {reason}", reason=reason or "?")
+        )
 
     def _on_hw_detected(self, available: set[str]) -> None:
         """Slot Qt (thread principal) : met à jour les badges HW."""
@@ -1971,6 +2010,9 @@ class MainWindow(QMainWindow):
         self._dovi_panel.op_progress_pct.connect(
             self._on_dovi_op_progress_pct, Qt.ConnectionType.QueuedConnection
         )
+        self._dovi_panel.op_progress.connect(
+            self._on_op_progress, Qt.ConnectionType.QueuedConnection
+        )
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
             self.log_requested, Qt.ConnectionType.QueuedConnection
@@ -1994,6 +2036,7 @@ class MainWindow(QMainWindow):
         self._remux_panel.subtitle_sync_finished.connect(self._on_remux_audio_sync_finished)
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
+        self._dashboard.vulkan_ready.connect(self._encode_panel.set_vulkan_capability)
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
         self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
@@ -2431,15 +2474,17 @@ class MainWindow(QMainWindow):
     def _on_op_progress(self, line: str) -> None:
         """Gère la progression selon le mode (remux ou encode)."""
         self._capture_verbose_progress_line(line)
-        if line.startswith(("Assemblage Matroska", "Écriture Matroska")):
+        native_label = native_mux_progress_label(line)
+        if native_label is not None:
             self._stop_prep_progress()
             m = re.search(r"(\d+)%", line)
             if m:
                 pct = int(m.group(1))
                 self._prog_bar.setRange(0, 100)
                 self._prog_bar.setValue(max(0, min(100, pct)))
-            self._prog_lbl.setText(line.strip())
-            self.log_requested.emit("DEBUG", line)
+            else:
+                self._prog_bar.setRange(0, 0)
+            self._prog_lbl.setText(native_label)
             return
         # Banner/listing ffmpeg : ne pas pourrir l'UI mais loguer la version
         # la 1re fois pour traçabilité standard. Le verbose file a déjà la
@@ -2974,6 +3019,10 @@ class MainWindow(QMainWindow):
 
     def _capture_verbose_progress_line(self, line: str) -> None:
         if not _config_file_logging_is_verbose(self._config):
+            return
+
+        if native_mux_progress_label(line) is not None:
+            self._append_verbose_tool_output(line, label="matroska-native")
             return
 
         payload = _parse_encode_internal_progress(line)

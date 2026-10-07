@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -61,20 +62,36 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
-from core.github_release import release_asset, verify_download
+from core.github_release import (
+    github_release_asset,
+    published_checksum,
+    release_asset,
+    verify_download,
+    verify_sha256,
+)
+from core.tool_manifest import (
+    LOCAL_ARCHIVE,
+    PREEXISTING,
+    RECORDED_ONLY,
+    VERIFIED_GITHUB_DIGEST,
+    VERIFIED_PUBLISHED_CHECKSUM,
+    ToolManifest,
+)
 from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
     APP_MACOS_BUNDLE_ID,
     APP_NAME,
+    APP_REPOSITORY,
     APP_VERSION,
     APP_WEBSITE_URL,
     MUXIVEO_RIFE_RELEASE_TAG,
     MUXIVEO_RIFE_VERSION,
-    muxiveo_rife_asset_url,
 )
 
 ROOT = Path(__file__).parent
+# Provenance des outils embarqués (mode --allinc), écrite dans tools/.
+TOOL_MANIFEST = ToolManifest()
 DIST_RELEASES = ROOT / "dist" / "releases"
 OS   = platform.system()
 
@@ -2777,20 +2794,32 @@ def _mediainfo_latest_windows_version() -> str:
     return versions[0]
 
 
+_GYAN_FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+
 def _dl_windows_ffmpeg(tools_dir: Path) -> None:
-    if (tools_dir / "ffmpeg.exe").is_file() and (tools_dir / "ffprobe.exe").is_file():
+    binaries = [tools_dir / "ffmpeg.exe", tools_dir / "ffprobe.exe"]
+    if all(path.is_file() for path in binaries):
         _ok("ffmpeg.exe et ffprobe.exe déjà présents dans tools/")
+        TOOL_MANIFEST.add("ffmpeg", version="?", source=str(tools_dir), verification=PREEXISTING, files=binaries)
         return
     _step("Téléchargement FFmpeg + FFprobe Windows (BtbN master GPL static)")
-    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.zip"
         try:
-            _download_file(url, archive, timeout=180)
-        except Exception as exc:
+            # Release roulante « latest » : SHA-256 publié par l'API GitHub.
+            asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
+            _download_file(asset.url, archive, timeout=180)
+            version, url, verification = f"{asset.repo}@{asset.tag}", asset.url, VERIFIED_GITHUB_DIGEST
+        except (OSError, urllib.error.URLError) as exc:
+            # Repli réseau uniquement ; l'archive Gyan est vérifiée par sa somme publiée.
             _warn(f"Échec BtbN ({exc}), tentative fallback Gyan...")
-            url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+            url = _GYAN_FFMPEG_URL
             _download_file(url, archive, timeout=180)
+            verify_sha256(archive, published_checksum(url + ".sha256"), Path(url).name)
+            version, verification = "gyan.dev release-essentials", VERIFIED_PUBLISHED_CHECKSUM
+        else:
+            verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 base_name = Path(name).name.lower()
@@ -2798,12 +2827,19 @@ def _dl_windows_ffmpeg(tools_dir: Path) -> None:
                     data = zf.read(name)
                     dest = tools_dir / Path(name).name
                     dest.write_bytes(data)
+        TOOL_MANIFEST.add(
+            "ffmpeg", version=version, source=url, verification=verification, archive=archive, files=binaries,
+        )
     _ok("ffmpeg.exe et ffprobe.exe installés dans tools/")
 
 
 def _dl_windows_mediainfo(tools_dir: Path) -> None:
     if (tools_dir / "MediaInfo.exe").is_file() or (tools_dir / "mediainfo.exe").is_file():
         _ok("MediaInfo.exe déjà présent dans tools/")
+        TOOL_MANIFEST.add(
+            "mediainfo", version="?", source=str(tools_dir), verification=PREEXISTING,
+            files=[tools_dir / "MediaInfo.exe", tools_dir / "mediainfo.exe"],
+        )
         return
     _step("Téléchargement MediaInfo CLI Windows (MediaArea)")
     ver = _mediainfo_latest_windows_version()
@@ -2817,6 +2853,11 @@ def _dl_windows_mediainfo(tools_dir: Path) -> None:
                 if base_name in ("MediaInfo.exe", "LIBCURL.DLL", "libcurl.dll"):
                     data = zf.read(name)
                     (tools_dir / base_name).write_bytes(data)
+        # MediaArea ne publie pas de somme : provenance et SHA-256 consignés.
+        TOOL_MANIFEST.add(
+            "mediainfo", version=ver, source=url, verification=RECORDED_ONLY, archive=archive,
+            files=[tools_dir / "MediaInfo.exe"],
+        )
     _ok("MediaInfo.exe installé dans tools/")
 
 
@@ -2838,6 +2879,10 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
     if exe.is_file() and (tools_dir / "rife-models").is_dir():
         if _muxiveo_rife_version(exe) == MUXIVEO_RIFE_VERSION:
             _ok("muxiveo-rife.exe déjà présent dans tools/")
+            TOOL_MANIFEST.add(
+                "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=str(tools_dir),
+                verification=PREEXISTING, files=[exe],
+            )
             return
         # tools/ réutilisé d'un build précédent : binaire et modèles remplacés
         _warn(f"muxiveo-rife.exe présent mais différent de {MUXIVEO_RIFE_VERSION} — remplacement.")
@@ -2846,12 +2891,19 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
         archive = Path(local) if local else Path(tmp) / "muxiveo-rife.zip"
+        source, verification = str(archive), LOCAL_ARCHIVE
         if not local:
+            asset_name = f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-windows-x86_64.zip"
             try:
-                _download_file(muxiveo_rife_asset_url("windows-x86_64.zip"), archive, timeout=180)
-            except Exception as exc:
+                asset = github_release_asset(APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, asset_name)
+                _download_file(asset.url, archive, timeout=180)
+            except (OSError, urllib.error.URLError) as exc:
+                # Erreur réseau : outil facultatif absent de ce build (comportement existant).
                 _warn(f"muxiveo-rife indisponible ({exc}) — interpolation d'images absente de ce build.")
                 return
+            # Somme absente ou différente : refus, jamais d'archive non vérifiée.
+            verify_download(asset, archive)
+            source, verification = asset.url, VERIFIED_GITHUB_DIGEST
         with zipfile.ZipFile(archive) as zf:
             names = [n for n in zf.namelist() if not n.endswith("/")]
             prefix = os.path.commonpath(names) if len(names) > 1 else ""
@@ -2862,12 +2914,19 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
                 dest = tools_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(zf.read(name))
+        TOOL_MANIFEST.add(
+            "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=source, verification=verification,
+            archive=archive, files=[exe],
+        )
     _ok("muxiveo-rife.exe installé dans tools/")
 
 
 def _dl_windows_dovi_tool(tools_dir: Path) -> None:
     if (tools_dir / "dovi_tool.exe").is_file():
         _ok("dovi_tool.exe déjà présent dans tools/")
+        TOOL_MANIFEST.add(
+            "dovi_tool", version="?", source=str(tools_dir), verification=PREEXISTING, files=[tools_dir / "dovi_tool.exe"],
+        )
         return
     _step("Téléchargement dovi_tool Windows (quietvoid/dovi_tool)")
     asset = release_asset("dovi_tool", "dovi_tool-", "x86_64-pc-windows-msvc.zip")
@@ -2879,12 +2938,19 @@ def _dl_windows_dovi_tool(tools_dir: Path) -> None:
             for name in zf.namelist():
                 if Path(name).name.lower() == "dovi_tool.exe":
                     (tools_dir / "dovi_tool.exe").write_bytes(zf.read(name))
+        TOOL_MANIFEST.add(
+            "dovi_tool", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "dovi_tool.exe"],
+        )
     _ok("dovi_tool.exe installé dans tools/")
 
 
 def _dl_windows_hdr10plus_tool(tools_dir: Path) -> None:
     if (tools_dir / "hdr10plus_tool.exe").is_file():
         _ok("hdr10plus_tool.exe déjà présent dans tools/")
+        TOOL_MANIFEST.add(
+            "hdr10plus_tool", version="?", source=str(tools_dir), verification=PREEXISTING, files=[tools_dir / "hdr10plus_tool.exe"],
+        )
         return
     _step("Téléchargement hdr10plus_tool Windows (quietvoid/hdr10plus_tool)")
     asset = release_asset("hdr10plus_tool", "hdr10plus_tool-", "x86_64-pc-windows-msvc.zip")
@@ -2896,12 +2962,19 @@ def _dl_windows_hdr10plus_tool(tools_dir: Path) -> None:
             for name in zf.namelist():
                 if Path(name).name.lower() == "hdr10plus_tool.exe":
                     (tools_dir / "hdr10plus_tool.exe").write_bytes(zf.read(name))
+        TOOL_MANIFEST.add(
+            "hdr10plus_tool", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "hdr10plus_tool.exe"],
+        )
     _ok("hdr10plus_tool.exe installé dans tools/")
 
 
 def _dl_windows_nvencc(tools_dir: Path) -> None:
     if (tools_dir / "NVEncC64.exe").is_file():
         _ok("NVEncC64.exe déjà présent dans tools/")
+        TOOL_MANIFEST.add(
+            "nvencc", version="?", source=str(tools_dir), verification=PREEXISTING, files=[tools_dir / "NVEncC64.exe"],
+        )
         return
     _step("Téléchargement NVEncC64 Windows (rigaya/NVEnc)")
     asset = release_asset("nvencc", "Aviutl_NVEnc_", ".zip")
@@ -2919,6 +2992,10 @@ def _dl_windows_nvencc(tools_dir: Path) -> None:
                 if name.startswith(prefix) and not name.endswith("/"):
                     filename = Path(name).name
                     (tools_dir / filename).write_bytes(zf.read(name))
+        TOOL_MANIFEST.add(
+            "nvencc", version=asset.tag, source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=[tools_dir / "NVEncC64.exe"],
+        )
     _ok("NVEncC64.exe et dépendances installés dans tools/")
 
 
@@ -2945,6 +3022,7 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _title("Embarquement des outils externes Windows (--allinc)")
     tools_dir = bundle_dir / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
+    TOOL_MANIFEST.entries.clear()
 
     _dl_windows_ffmpeg(tools_dir)
     _dl_windows_mediainfo(tools_dir)
@@ -2953,6 +3031,8 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_nvencc(tools_dir)
     _dl_windows_muxiveo_rife(tools_dir)
     bundle_windows_licenses(bundle_dir)
+    manifest = TOOL_MANIFEST.write(tools_dir)
+    _ok(f"Provenance des outils : {manifest}")
 
     # Pose le marqueur _ALLINC à côté de l'exécutable
     (bundle_dir / "_ALLINC").touch()

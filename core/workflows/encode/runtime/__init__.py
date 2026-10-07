@@ -58,8 +58,6 @@ from .mux_assembly import (
 )
 from .multisource_sync import EncodeMultisourceSyncService, EncodeMultisourceSyncCallbacks
 from .nvencc_execution import (
-    NvenccAssetPreparationService,
-    NvenccAssetPreparationCallbacks,
     NvenccDirectOutputRunner,
     NvenccDirectOutputRunnerCallbacks,
     NvenccPipeExecutor,
@@ -112,8 +110,6 @@ __all__ = [
     "TrackMetadataArgsBuilderCallbacks",
     "EncodeMultisourceSyncService",
     "EncodeMultisourceSyncCallbacks",
-    "NvenccAssetPreparationService",
-    "NvenccAssetPreparationCallbacks",
     "NvenccDirectOutputRunner",
     "NvenccDirectOutputRunnerCallbacks",
     "NvenccPipeExecutor",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from glob import glob
@@ -11,13 +12,15 @@ from typing import Any
 from core.config import AppConfig
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
+from core.json_documents import resolve_document_paths
+from core.output_commit import destination_key
 
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW
 from cli.contract import validate_batch_contract, validate_job_contract
 from cli.errors import CliError
 from cli.inspection import source_path_items
 from cli.jobs import apply_metadata_overrides
-from cli.json_io import deep_merge, load_json, write_json
+from cli.json_io import deep_merge, load_job_document, load_json, write_json
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.remux_config import build_remux_config
@@ -100,6 +103,65 @@ def _assert_unique_generated_outputs(jobs: list[dict[str, Any]]) -> None:
                 EXIT_ARGS,
             )
         seen[output] = input_path
+
+
+@dataclass
+class PlannedBatchJob:
+    """Job préparé avant exécution (configuration ou erreur de préparation)."""
+
+    index: int
+    input_label: str
+    output_label: str
+    remux_config: Any = None
+    error: Exception | None = None
+    generated_output: bool = False
+    template: str = ""
+
+
+def _destination_keys(output: Path) -> list[str]:
+    """Clés d'identité d'une sortie : chemin canonique, et fichier existant (alias)."""
+    keys = [destination_key(output)]
+    try:
+        stat = os.stat(output)
+    except OSError:
+        return keys
+    if stat.st_ino:
+        keys.append(f"file:{stat.st_dev}:{stat.st_ino}")
+    return keys
+
+
+def assert_unique_batch_outputs(planned: list[PlannedBatchJob]) -> None:
+    """Refuse deux jobs d'un même batch vers une même sortie, avant tout traitement.
+
+    Toutes les sorties sont comparées (explicites, héritées, générées ou
+    rendues par template) sur leur chemin canonique et l'identité des
+    fichiers existants (liens). Indépendant de ``--force``, qui n'autorise que
+    le remplacement d'une sortie préexistante.
+    """
+    seen: dict[str, PlannedBatchJob] = {}
+    for entry in planned:
+        config = entry.remux_config
+        output = getattr(config, "output", None)
+        if output is None:
+            continue
+        keys = _destination_keys(Path(output))
+        previous = next((seen[key] for key in keys if key in seen), None)
+        if previous is not None:
+            hint = (
+                f" Le template '{entry.template}' ne discrimine pas les deux sources — "
+                "ajoutez {source_name}, {episode} ou {season_episode}."
+                if entry.template
+                else " Donnez une sortie distincte à chaque job (output, --output-dir ou --output-template)."
+            )
+            raise CliError(
+                "Sortie générée en double : "
+                f"{output} pour les jobs {previous.index + 1} ({previous.input_label}) "
+                f"et {entry.index + 1} ({entry.input_label}). Aucun job n'a été lancé."
+                + hint,
+                EXIT_ARGS,
+            )
+        for key in keys:
+            seen[key] = entry
 
 
 def discover_direct_batch_jobs(
@@ -253,12 +315,16 @@ def run_batch(
             EXIT_ARGS,
         )
 
-    template = load_json(Path(template_path).expanduser())
+    # Chemins relatifs du template et des items du fichier batch : résolus
+    # depuis le dossier de leur propre document.
+    template = load_job_document(Path(template_path))
     validate_job_contract(template, require_version=True)
 
     discovery: BatchDiscovery | None = None
+    batch_base: Path | None = None
     if batch_path:
         batch = load_json(Path(batch_path).expanduser())
+        batch_base = Path(batch_path).expanduser().absolute().parent
     else:
         discovery = discover_direct_batch_jobs(
             cli_inputs=cli_inputs,
@@ -285,13 +351,13 @@ def run_batch(
         batch = {"jobs": discovery.jobs}
 
     validate_batch_contract(batch)
-    failures = 0
-    total = 0
-    summary_jobs: list[dict[str, Any]] = []
-    seen_rendered_outputs: dict[str, str] = {}
-    for item in batch_jobs(batch):
-        job_index = total
-        total += 1
+    # Phase 1 — préparation de tous les jobs, sans écriture : fusion, contrat,
+    # configuration et sortie rendue. Les collisions de sorties sont refusées
+    # ensuite, avant le premier traitement, même avec --force.
+    planned: list[PlannedBatchJob] = []
+    for job_index, item in enumerate(batch_jobs(batch)):
+        if batch_base is not None:
+            item = resolve_document_paths(item, batch_base)
         job = deep_merge(template, item)
         if mux_backend:
             job["mux_backend"] = mux_backend
@@ -315,8 +381,45 @@ def run_batch(
             job["_batch_generated_output"] = True
         elif output_all:
             job["output_all"] = True
-        input_label = job_primary_input(job)
-        output_label = str(job.get("output") or "")
+        entry = PlannedBatchJob(job_index, job_primary_input(job), str(job.get("output") or ""))
+        planned.append(entry)
+        try:
+            # `--output-dir` prime sur la sortie héritée du template quand l'item
+            # batch ne fixe pas sa propre sortie (sinon collisions dans le cwd).
+            item_output = isinstance(item, dict) and "output" in item
+            if output_dir and not item_output and "output_template" not in job:
+                first = source_path_items(job)[0]["path"]
+                job["output"] = str(Path(output_dir).expanduser() / (Path(str(first)).stem + ".mkv"))
+                job["_batch_generated_output"] = True
+                entry.output_label = str(job["output"])
+            # Sortie générée ou rendue par template : dossier créé à l'exécution.
+            entry.generated_output = bool(job.get("_batch_generated_output") or job.get("output_template"))
+            entry.template = str(job.get("output_template") or "")
+            allow_missing = bool(job.get("_allow_missing_output_dir", False))
+            if entry.generated_output:
+                # Dossier créé seulement à l'exécution (jamais en dry-run).
+                job["_allow_missing_output_dir"] = True
+            validate_job_contract(job, path=f"jobs[{job_index}]", require_version=True)
+            remux_config = build_remux_config(job, config, options, logger)
+            if entry.generated_output and not dry_run:
+                remux_config.allow_missing_output_dir = allow_missing
+            entry.remux_config = remux_config
+            entry.output_label = str(remux_config.output)
+        except Exception as exc:
+            entry.error = exc
+            if not continue_on_error:
+                break
+    assert_unique_batch_outputs(planned)
+
+    # Phase 2 — exécution dans l'ordre du batch.
+    failures = 0
+    total = 0
+    summary_jobs: list[dict[str, Any]] = []
+    for entry in planned:
+        job_index = entry.index
+        input_label = entry.input_label
+        output_label = entry.output_label
+        total += 1
         logger.emit(
             "info",
             f"Batch job {job_index + 1} démarré",
@@ -327,34 +430,13 @@ def run_batch(
             status="started",
         )
         try:
-            # `--output-dir` prime sur la sortie héritée du template quand l'item
-            # batch ne fixe pas sa propre sortie (sinon collisions dans le cwd).
-            item_output = isinstance(item, dict) and "output" in item
-            if output_dir and not item_output and "output_template" not in job:
-                first = source_path_items(job)[0]["path"]
-                job["output"] = str(Path(output_dir).expanduser() / (Path(str(first)).stem + ".mkv"))
-                job["_batch_generated_output"] = True
-                output_label = str(job["output"])
-            if dry_run and job.get("_batch_generated_output"):
-                job["_allow_missing_output_dir"] = True
-            if not dry_run and job.get("_batch_generated_output") and job.get("output"):
-                Path(str(job["output"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            validate_job_contract(job, path=f"jobs[{total - 1}]", require_version=True)
-            remux_config = build_remux_config(job, config, options, logger)
-            output_label = str(remux_config.output)
-            if job.get("output_template"):
-                previous_input = seen_rendered_outputs.get(output_label)
-                if previous_input is not None:
-                    raise CliError(
-                        f"Sortie générée en double : {output_label} pour "
-                        f"{previous_input} et {input_label}. Le template "
-                        f"'{job.get('output_template')}' ne discrimine pas les deux "
-                        "sources — ajoutez {source_name}, {episode} ou {season_episode}.",
-                        EXIT_ARGS,
-                    )
-                seen_rendered_outputs[output_label] = input_label
-                if not dry_run:
-                    Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            if entry.error is not None:
+                raise entry.error
+            remux_config = entry.remux_config
+            if remux_config is None:
+                raise ValueError("Configuration remux absente du job planifié")
+            if not dry_run and entry.generated_output:
+                Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
             if dry_run:
                 rc = preview_remux_config(config, options, logger, remux_config)
             else:

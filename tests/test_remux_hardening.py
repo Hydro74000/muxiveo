@@ -453,7 +453,10 @@ class TestWriterCancellationAndProgress:
         assert stages[-1] == "commit"
         assert events[-1].packets_written == 5
         assert events[-1].bytes_written > 0
-        assert events[-1].candidate.name == "out.mkv.partial"
+        # Candidat réservé propre à l'écriture : out.<unique>.mkv.partial
+        assert events[-1].candidate.name.startswith("out.")
+        assert events[-1].candidate.name.endswith(".mkv.partial")
+        assert events[-1].candidate.name != "out.mkv.partial"
         assert (tmp_path / "out.mkv").is_file()
         assert _no_partial_left(tmp_path)
 
@@ -613,6 +616,24 @@ class TestNativeEndToEnd:
         assert state["failed"] is None
         assert (tmp_path / "out.mkv").is_file()
         assert patched == []
+
+    def test_run_refuses_reserved_destination_then_releases_it(self, tmp_path: Path) -> None:
+        from core.output_commit import OutputReservation
+
+        wf = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe", generate_nfo=False)
+        cfg = self._config(tmp_path)
+        holder = OutputReservation.acquire(cfg.output)
+        try:
+            with pytest.raises(RemuxError, match="déjà en cours d'écriture"):
+                wf.run(cfg)
+        finally:
+            holder.release()
+        assert not (tmp_path / "out.mkv").exists()
+        state = _wait(wf.run(cfg))
+        assert state["failed"] is None
+        assert (tmp_path / "out.mkv").is_file()
+        # Réservation libérée à la fin du job : un job enchaîné peut la reprendre.
+        OutputReservation.acquire(cfg.output).release()
 
     def test_native_cleans_process_directory_after_success(self, tmp_path: Path) -> None:
         cfg = self._config(tmp_path)
@@ -794,8 +815,9 @@ class TestFfmpegRuntimeAtomicity:
         ).run(cfg, self._plan(cfg)))
         assert state["failed"] is None
         assert state["finished"] is not None
-        # Post-patchs exécutés sur le candidat, avant le commit atomique.
-        assert patched == ["out.mkv.partial", "out.mkv.partial"]
+        # Post-patchs exécutés sur le même candidat réservé, avant le commit atomique.
+        assert len(patched) == 2 and patched[0] == patched[1]
+        assert patched[0].startswith("out.") and patched[0].endswith(".mkv.partial")
         assert cfg.output.read_bytes() == _valid_candidate_bytes()
         assert _no_partial_left(tmp_path)
         assert any(level == "WARN" and "NFO" in message for level, message in logs)

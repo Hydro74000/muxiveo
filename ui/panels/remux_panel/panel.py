@@ -188,6 +188,8 @@ class RemuxPanel(QWidget):
         self._path_executor = ThreadPoolExecutor(max_workers=1)
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._scan_cancel = threading.Event()
+        # Sondes d'inspection (ffprobe/mediainfo) interrompues à la fermeture.
+        self._probe_cancel = threading.Event()
         # Le préflight du backend natif peut lire les sources ; il ne doit pas
         # partager le pool d'inspection ni bloquer la boucle Qt.
         self._preview_executor = ThreadPoolExecutor(max_workers=1)
@@ -966,6 +968,12 @@ class RemuxPanel(QWidget):
     def _apply_decision_profile_dialog(self) -> None:
         manager = self._decision_profile_manager()
         names = manager.names()
+        # Profils illisibles : conservés sur disque, signalés sans bloquer les autres.
+        for error in manager.load_errors:
+            self.log_message.emit(
+                "WARN",
+                translate_text("Profil illisible ignoré : {path} ({reason})", path=str(error.path), reason=error.reason),
+            )
         if not names:
             QMessageBox.information(
                 self,
@@ -2386,6 +2394,7 @@ class RemuxPanel(QWidget):
             self._closing = True
             self.setEnabled(False)
             self._scan_cancel.set()
+            self._probe_cancel.set()
             self._preview_timer.stop()
             self._shutdown = Shutdown(executors=(
                 self._preview_executor, self._path_executor,

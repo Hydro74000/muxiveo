@@ -11,15 +11,18 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from numpy import ndarray
 
 try:
-    import numpy as np
+    import numpy as _numpy
 except ImportError:
-    np = None
+    np: ModuleType | None = None
+else:
+    np = _numpy
 
 from core.workflows.cadence import CadenceMismatch
 

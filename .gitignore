@@ -125,3 +125,7 @@ tools/*
 !native/**/*.md
 audit_*
 !audit_mkv.py
+docs/audit*
+docs/reaudit*
+docs/plan*
+docs/dolby_vision_nvenc_workflow.md

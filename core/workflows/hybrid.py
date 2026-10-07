@@ -5,6 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+# Export des composants multi-sources matriciels
+from core.workflows.hybrid_matrix import (
+    HybridMatrix,
+    HybridRecipe,
+    MatrixEpisode,
+    MatrixSource,
+    SourceRole,
+    parse_episode_key,
+    prepare_matrix_episode,
+)
+
 _EPISODE = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})e(\d{1,3})(?!\d)")
 _VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
 
@@ -43,17 +54,6 @@ def pair_directories(reference: Path, donor: Path) -> list[HybridPair]:
         raise ValueError(f"Appariement incomplet : {missing}")
     return [HybridPair(refs[key], donors[key], *key) for key in sorted(refs)]
 
-
-# Export des composants multi-sources matriciels
-from core.workflows.hybrid_matrix import (
-    HybridMatrix,
-    HybridRecipe,
-    MatrixEpisode,
-    MatrixSource,
-    SourceRole,
-    parse_episode_key,
-    prepare_matrix_episode,
-)
 
 __all__ = [
     "HybridPair",

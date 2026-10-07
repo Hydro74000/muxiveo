@@ -1,4 +1,8 @@
 {
+  "0 = illimité (débit choisi par l'encodeur).": {
+    "fra": "0 = illimité (débit choisi par l'encodeur).",
+    "eng": "0 = unlimited (bitrate chosen by the encoder)."
+  },
   "Analyse synchro :": {
     "fra": "Analyse synchro :",
     "eng": "Sync analysis:"
@@ -1663,6 +1667,22 @@
     "fra": "Profil introuvable : {name}",
     "eng": "Profile not found: {name}"
   },
+  "Profil « {name} » non chargé : {reason}": {
+    "fra": "Profil « {name} » non chargé : {reason}",
+    "eng": "Profile \"{name}\" not loaded: {reason}"
+  },
+  "codec {codec} indisponible": {
+    "fra": "codec {codec} indisponible",
+    "eng": "codec {codec} unavailable"
+  },
+  "mode {mode} non supporté par {codec}": {
+    "fra": "mode {mode} non supporté par {codec}",
+    "eng": "mode {mode} not supported by {codec}"
+  },
+  "preset {preset} inconnu pour {codec}": {
+    "fra": "preset {preset} inconnu pour {codec}",
+    "eng": "preset {preset} unknown for {codec}"
+  },
   "Écraser le profil ?": {
     "fra": "Écraser le profil ?",
     "eng": "Overwrite profile?"
@@ -2015,10 +2035,6 @@
     "fra": "Parallélisme interne VAAPI. Augmenter peut améliorer le débit d'encodage sur un flux unique,\nmais exige plus de surfaces et ajoute de la latence.",
     "eng": "Internal parallelism VAAPI. Increasing it can improve encoding throughput on a single stream,\nbut requires more surfaces and adds latency."
   },
-  "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.": {
-    "fra": "Compromis vitesse/qualité du wrapper VAAPI.\nValeur plus haute = plus rapide, mais qualité/compression légèrement inférieures.",
-    "eng": "Speed/quality trade-off of the wrapper VAAPI.\nHigher value = faster, but slightly lower quality/compression."
-  },
   "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.": {
     "fra": "Bitrate ffmpeg standard (-b). Accepte les suffixes ffmpeg, ex: 18M ou 18000k.\nPeut volontairement surcharger le mode SIZE du workflow.",
     "eng": "Standard ffmpeg bitrate (-b). Accepts ffmpeg suffixes, e.g. 18M or 18000k.\nCan intentionally override the workflow SIZE mode."
@@ -2103,9 +2119,9 @@
     "fra": "Mode CQP — qualité constante. Format ``I:P:B`` ou ``X`` (auto-expansé en ``X:X:X``).\nRéférence absolue de qualité, pas de cible bitrate.\nTypique remux UHD : 18:20:22 (très haute qualité).",
     "eng": "CQP mode - constant quality. Format ``I:P:B`` or ``X`` (auto-expanded to ``X:X:X``).\nAbsolute quality reference, with no bitrate target.\nTypical UHD remux value: 18:20:22 (very high quality)."
   },
-  "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.": {
-    "fra": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.",
-    "eng": "Mode VBR — bitrate moyen cible (kbps).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize."
+  "Mode VBR — bitrate moyen cible (kbps).\n0 = illimité (aucune cible de débit moyen).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.": {
+    "fra": "Mode VBR — bitrate moyen cible (kbps).\n0 = illimité (aucune cible de débit moyen).\nCombinaison usuelle : --vbr <bitrate> + --max-bitrate (1.5-2×) + --vbv-bufsize.",
+    "eng": "VBR mode — average target bitrate (kbps).\n0 = unlimited (no average bitrate target).\nTypical combination: --vbr <bitrate> + --max-bitrate (1.5–2×) + --vbv-bufsize."
   },
   "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.": {
     "fra": "VBR haute qualité (NVEncC). Bitrate moyen cible avec moteur RC plus précis.",
@@ -2779,9 +2795,13 @@
     "fra": "QP maximum sur les I-frames. Plafond bas de qualité.\nRéduire (~38-42) pour éviter une chute visible sur scènes complexes.",
     "eng": "Maximum QP on I-frames. Sets the lower quality bound.\nLower it (~38-42) to avoid visible quality drops on complex scenes."
   },
-  "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.": {
-    "fra": "Taille maximale d'une Access Unit (frame compressée) en bytes.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.",
-    "eng": "Size maximale d'a Access Unit (frame compressee) en bytes.\n0 = no limit. Useful for streaming HLS/DASH with limite by segment."
+  "Taille maximale d'une Access Unit (frame compressée) en bits.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.": {
+    "fra": "Taille maximale d'une Access Unit (frame compressée) en bits.\n0 = pas de limite. Utile pour streaming HLS/DASH avec limite par segment.",
+    "eng": "Maximum size of an Access Unit (compressed frame) in bits.\n0 = no limit. Useful for HLS/DASH streaming with a per-segment limit."
+  },
+  "Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑.": {
+    "fra": "Profondeur d'analyse en frames (0-100), active seulement avec Extended BRC.\n40 = bon défaut. Plus = qualité ↑, mémoire et latence ↑.",
+    "eng": "Look-ahead depth in frames (0-100), only active with Extended BRC.\n40 = good default. Higher = better quality, more memory and latency."
   },
   "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.": {
     "fra": "Nombre de GOPs entre deux IDR (Instantaneous Decoder Refresh).\n1 = chaque keyframe est IDR (compatibilité maximale, recommandé).\nPlus grand = compression accrue mais seek dégradé.",
@@ -2807,10 +2827,6 @@
     "fra": "Active une analyse pré-encodage du contenu pour optimiser bitrate et placement des frames.\nAméliore notablement la qualité au prix de ~10-15% de vitesse.",
     "eng": "Enables pre-encode content analysis to optimize bitrate and frame placement.\nNoticeably improves quality at a ~10-15% speed cost."
   },
-  "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.": {
-    "fra": "Variance-Based Adaptive Quantization : équivalent AMF du Spatial AQ.\nAlloue plus de bits aux zones perceptuellement sensibles. Recommandé.",
-    "eng": "Variance-Based Adaptive Quantization: equivalent AMF of the Spatial AQ.\nAlloue more of bits to zones perceptuellement sensibles. Recommended."
-  },
   "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.": {
     "fra": "Force le respect du modèle HRD (Hypothetical Reference Decoder).\nGarantit que le stream est décodable en temps réel par tout décodeur conforme. Utile pour Blu-ray/diffusion.",
     "eng": "Forces HRD (Hypothetical Reference Decoder) compliance.\nEnsures the stream can be decoded in real time by any compliant decoder. Useful for Blu-ray/broadcast."
@@ -2826,10 +2842,6 @@
   "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.": {
     "fra": "Analyse pré-encodage qui optimise bitrate et placement des frames.\nCoût : ~10-15% de vitesse. Gain qualité notable.",
     "eng": "Pre-encode analysis that optimizes bitrate and frame placement.\nCost: ~10-15% speed. Quality gain is noticeable."
-  },
-  "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.": {
-    "fra": "Variance-Based Adaptive Quantization (équivalent AMF du Spatial AQ).\nRecommandé toujours actif.",
-    "eng": "Variance-Based Adaptive Quantization (equivalent AMF of the Spatial AQ).\nRecommended to keep enabled."
   },
   "Tokens ffmpeg additionnels.": {
     "fra": "Tokens ffmpeg additionnels.",
@@ -5094,5 +5106,385 @@
   "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».": {
     "fra": "Texte ajouté après un tiret à la fin du nom de fichier proposé. Vide = « NoGroup ».",
     "eng": "Text appended after a hyphen at the end of the suggested file name. Empty = “NoGroup”."
+  },
+  "Géré par le workflow (onglet Video) : option non modifiable ici.": {
+    "fra": "Géré par le workflow (onglet Video) : option non modifiable ici.",
+    "eng": "Managed by the workflow (Video tab): option cannot be changed here."
+  },
+  "Ce codec n'encode qu'une seule piste vidéo par job.": {
+    "fra": "Ce codec n'encode qu'une seule piste vidéo par job.",
+    "eng": "This codec only encodes a single video track per job."
+  },
+  "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.": {
+    "fra": "Valeur posée par l'onglet Video : {value}. Cocher pour la remplacer.",
+    "eng": "Value set by the Video tab: {value}. Check to override it."
+  },
+  "(activée)": {
+    "fra": "(activée)",
+    "eng": "(enabled)"
+  },
+  "Aucun (défaut pilote)": {
+    "fra": "Aucun (défaut pilote)",
+    "eng": "None (driver default)"
+  },
+  "Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.": {
+    "fra": "Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.",
+    "eng": "HDR10 P5→P8.1 analysis scheduled: values computed at launch."
+  },
+  "Aucune valeur connue : métadonnées de la source conservées si présentes.": {
+    "fra": "Aucune valeur connue : métadonnées de la source conservées si présentes.",
+    "eng": "No known value: source metadata kept if present."
+  },
+  "Indisponible avec le tone-mapping HDR → SDR (sortie SDR).": {
+    "fra": "Indisponible avec le tone-mapping HDR → SDR (sortie SDR).",
+    "eng": "Unavailable with HDR → SDR tone mapping (SDR output)."
+  },
+  "La source n'est pas détectée HDR : un tone-mapping HDR → SDR l'assombrirait probablement.": {
+    "fra": "La source n'est pas détectée HDR : un tone-mapping HDR → SDR l'assombrirait probablement.",
+    "eng": "The source is not detected as HDR: HDR → SDR tone mapping would probably darken it."
+  },
+  "Restaure les métadonnées HDR10 lues dans la source.": {
+    "fra": "Restaure les métadonnées HDR10 lues dans la source.",
+    "eng": "Restores the HDR10 metadata read from the source."
+  },
+  "Saisie manuelle.": {
+    "fra": "Saisie manuelle.",
+    "eng": "Manual entry."
+  },
+  "Valeurs de la source, non modifiables avec ce codec.": {
+    "fra": "Valeurs de la source, non modifiables avec ce codec.",
+    "eng": "Source values, not editable with this codec."
+  },
+  "Valeurs de la source.": {
+    "fra": "Valeurs de la source.",
+    "eng": "Source values."
+  },
+  "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).": {
+    "fra": "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).",
+    "eng": "Estimated values (P5→P8.1 analysis, confidence {confidence})."
+  },
+  "Vide : métadonnées de la source conservées au lancement (reconstruites si absentes et HDR dynamique copié).": {
+    "fra": "Vide : métadonnées de la source conservées au lancement (reconstruites si absentes et HDR dynamique copié).",
+    "eng": "Empty: source metadata kept at launch (rebuilt if missing and dynamic HDR is copied)."
+  },
+  "Valeurs source": {
+    "fra": "Valeurs source",
+    "eng": "Source values"
+  },
+  "Taille cible (Mo)": {
+    "fra": "Taille cible (Mo)",
+    "eng": "Target size (MB)"
+  },
+  "Débit moyen (kbps)": {
+    "fra": "Débit moyen (kbps)",
+    "eng": "Average bitrate (kbps)"
+  },
+  "Qualité constante (VBR + CQ)": {
+    "fra": "Qualité constante (VBR + CQ)",
+    "eng": "Constant quality (VBR + CQ)"
+  },
+  "QP constant (CQP)": {
+    "fra": "QP constant (CQP)",
+    "eng": "Constant QP (CQP)"
+  },
+  "Débit variable (VBR)": {
+    "fra": "Débit variable (VBR)",
+    "eng": "Variable bitrate (VBR)"
+  },
+  "Débit constant (CBR)": {
+    "fra": "Débit constant (CBR)",
+    "eng": "Constant bitrate (CBR)"
+  },
+  "Qualité VBR (QVBR)": {
+    "fra": "Qualité VBR (QVBR)",
+    "eng": "Quality VBR (QVBR)"
+  },
+  "VBR (pic contraint)": {
+    "fra": "VBR (pic contraint)",
+    "eng": "VBR (peak constrained)"
+  },
+  "VBR (latence contrainte)": {
+    "fra": "VBR (latence contrainte)",
+    "eng": "VBR (latency constrained)"
+  },
+  "VBR haute qualité": {
+    "fra": "VBR haute qualité",
+    "eng": "High quality VBR"
+  },
+  "CBR haute qualité": {
+    "fra": "CBR haute qualité",
+    "eng": "High quality CBR"
+  },
+  "Qualité constante (ICQ)": {
+    "fra": "Qualité constante (ICQ)",
+    "eng": "Constant quality (ICQ)"
+  },
+  "Débit moyen (AVBR)": {
+    "fra": "Débit moyen (AVBR)",
+    "eng": "Average bitrate (AVBR)"
+  },
+  "Qualité constante (QVBR)": {
+    "fra": "Qualité constante (QVBR)",
+    "eng": "Constant quality (QVBR)"
+  },
+  "VBR + qualité cible": {
+    "fra": "VBR + qualité cible",
+    "eng": "VBR + target quality"
+  },
+  "Qualité": {
+    "fra": "Qualité",
+    "eng": "Quality"
+  },
+  "Réglé par la liste Mode de l'onglet Video{value}.": {
+    "fra": "Réglé par la liste Mode de l'onglet Video{value}.",
+    "eng": "Set by the Mode list of the Video tab{value}."
+  },
+  "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).": {
+    "fra": "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).",
+    "eng": "Size of the whole file: audio, subtitles, attachments and copied video are deducted, the rest is shared between the encoded video tracks.\nSoftware: 2 passes. Hardware: 1 capped VBR pass (approximate size)."
+  },
+  "Conserver le profil source (P8.1 seulement si réencodage)": {
+    "fra": "Conserver le profil source (P8.1 seulement si réencodage)",
+    "eng": "Keep source profile (P8.1 only when re-encoding)"
+  },
+  "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)": {
+    "fra": "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)",
+    "eng": "Normalise to P8.1 (drop FEL·MEL, no re-encode in copy)"
+  },
+  "Puis tone-mapping HDR → SDR.": {
+    "fra": "Puis tone-mapping HDR → SDR.",
+    "eng": "Then HDR → SDR tone mapping."
+  },
+  "Une source P5 doit être réencodée pour devenir P8.1 : choisissez un encodeur HEVC (x265 ou NVEncC).": {
+    "fra": "Une source P5 doit être réencodée pour devenir P8.1 : choisissez un encodeur HEVC (x265 ou NVEncC).",
+    "eng": "A P5 source must be re-encoded to become P8.1: choose an HEVC encoder (x265 or NVEncC)."
+  },
+  "Image de base HLG/SDR : conversion en P8.1 impossible.": {
+    "fra": "Image de base HLG/SDR : conversion en P8.1 impossible.",
+    "eng": "HLG/SDR base layer: conversion to P8.1 is not possible."
+  },
+  "P7 → P8.1 sans réencodage : couche d'amélioration retirée, image de base recopiée.": {
+    "fra": "P7 → P8.1 sans réencodage : couche d'amélioration retirée, image de base recopiée.",
+    "eng": "P7 → P8.1 without re-encoding: enhancement layer removed, base layer copied."
+  },
+  "P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).": {
+    "fra": "P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).",
+    "eng": "P5: IPT colours converted to HDR10 BT.2020/PQ (libplacebo)."
+  },
+  "P7 → P8.1 : couche d'amélioration perdue au réencodage.": {
+    "fra": "P7 → P8.1 : couche d'amélioration perdue au réencodage.",
+    "eng": "P7 → P8.1: enhancement layer lost when re-encoding."
+  },
+  "P5 → P8.1 (RPU converti, repli HDR10 compatible).": {
+    "fra": "P5 → P8.1 (RPU converti, repli HDR10 compatible).",
+    "eng": "P5 → P8.1 (RPU converted, HDR10-compatible fallback)."
+  },
+  "Vide : Master Display et MaxCLL estimés au lancement depuis le RPU Dolby Vision (P5).": {
+    "fra": "Vide : Master Display et MaxCLL estimés au lancement depuis le RPU Dolby Vision (P5).",
+    "eng": "Empty: Master Display and MaxCLL estimated at launch from the Dolby Vision RPU (P5)."
+  },
+  "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).": {
+    "fra": "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
+    "eng": "Manual entry; {field} estimated at launch from the Dolby Vision RPU (P5)."
+  },
+  "Profondeur": {
+    "fra": "Profondeur",
+    "eng": "Bit depth"
+  },
+  "8 bits": {
+    "fra": "8 bits",
+    "eng": "8 bits"
+  },
+  "10 bits": {
+    "fra": "10 bits",
+    "eng": "10 bits"
+  },
+  "Auto : profondeur source 8/10 bits, 10 bits pour une sortie HDR.\nH.264 x264 10 bits utilise High10 : compatibilité limitée avec les lecteurs matériels.": {
+    "fra": "Auto : profondeur source 8/10 bits, 10 bits pour une sortie HDR.\nH.264 x264 10 bits utilise High10 : compatibilité limitée avec les lecteurs matériels.",
+    "eng": "Auto: source bit depth (8/10 bits), 10 bits for HDR output.\n10-bit x264 H.264 uses High10, with limited hardware player compatibility."
+  },
+  "profondeur invalide": {
+    "fra": "profondeur invalide",
+    "eng": "invalid bit depth"
+  },
+  "sortie 10 bits indisponible pour {codec}": {
+    "fra": "sortie 10 bits indisponible pour {codec}",
+    "eng": "10-bit output unavailable for {codec}"
+  },
+  "une sortie HDR exige une profondeur de 10 bits": {
+    "fra": "une sortie HDR exige une profondeur de 10 bits",
+    "eng": "HDR output requires a bit depth of 10 bits"
+  },
+  "Filtres FFmpeg": {
+    "fra": "Filtres FFmpeg",
+    "eng": "FFmpeg filters"
+  },
+  "Filtres NVEncC": {
+    "fra": "Filtres NVEncC",
+    "eng": "NVEncC filters"
+  },
+  "Profil DoVi (inutilisé)": {
+    "eng": "DoVi profile (unused)",
+    "fra": "Profil DoVi (inutilisé)"
+  },
+  "Compatibility ID DoVi (inutilisé)": {
+    "eng": "DoVi compatibility ID (unused)",
+    "fra": "Compatibility ID DoVi (inutilisé)"
+  },
+  "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste.": {
+    "eng": "Legacy setting with no effect: Merge DoVi picks the profile in its panel, encoding decides it per track.",
+    "fra": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."
+  },
+  "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow.": {
+    "eng": "Legacy setting with no effect: the Dolby Vision record compatibility follows each workflow's output profile.",
+    "fra": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."
+  },
+  "Filtres GPU": {
+    "eng": "GPU filters",
+    "fra": "Filtres GPU"
+  },
+  "NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}": {
+    "eng": "10-bit NLMeans on the GPU (nlmeans_vulkan): {device}",
+    "fra": "NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}"
+  },
+  "Vulkan indisponible pour FFmpeg : {reason}": {
+    "eng": "Vulkan unavailable for FFmpeg: {reason}",
+    "fra": "Vulkan indisponible pour FFmpeg : {reason}"
+  },
+  "Traitements en cours conservés ({count}) : {names}": {
+    "fra": "Traitements en cours conservés ({count}) : {names}",
+    "eng": "Jobs in progress kept ({count}): {names}"
+  },
+  "Profil illisible ignoré : {path} ({reason})": {
+    "fra": "Profil illisible ignoré : {path} ({reason})",
+    "eng": "Unreadable profile skipped: {path} ({reason})"
+  },
+  "Mio": {
+    "fra": "Mio",
+    "eng": "MiB"
+  },
+  "<p><b>Encodeur recommandé pour garder l'image entière</b> : {encoders} codent {src_w} × {src_h} sans débordement, avec Dolby Vision.</p>": {
+    "fra": "<p><b>Encodeur recommandé pour garder l'image entière</b> : {encoders} codent {src_w} × {src_h} sans débordement, avec Dolby Vision.</p>",
+    "eng": "<p><b>Recommended encoder to keep the whole picture</b>: {encoders} code {src_w} × {src_h} without overflow, with Dolby Vision.</p>"
+  },
+  "<p>Aucun autre encodeur Dolby Vision détecté (x265, QSV, VAAPI, AMF) : avec NVENC, seul le recadrage conserve Dolby Vision.</p>": {
+    "fra": "<p>Aucun autre encodeur Dolby Vision détecté (x265, QSV, VAAPI, AMF) : avec NVENC, seul le recadrage conserve Dolby Vision.</p>",
+    "eng": "<p>No other Dolby Vision encoder detected (x265, QSV, VAAPI, AMF): with NVENC, only cropping keeps Dolby Vision.</p>"
+  },
+  "Dolby Vision et NVENC : plein cadre": {
+    "fra": "Dolby Vision et NVENC : plein cadre",
+    "eng": "Dolby Vision and NVENC: full frame"
+  },
+  "Recadrer et continuer": {
+    "fra": "Recadrer et continuer",
+    "eng": "Crop and continue"
+  },
+  "<h3>Réencodage Dolby Vision plein cadre : limitation de NVENC</h3><p>NVENC code l'image par blocs de 32 lignes : la source {src_w} × {src_h} devient {coded_w} × {coded_h} dans le flux HEVC. Au-delà de {canvas_w} × {canvas_h} codés, les téléviseurs et box Dolby Vision rejettent le flux (repli HDR10 ou image SDR délavée), que les lignes ajoutées soient masquées ou visibles.</p><p><b>Recadrer à {out_w} × {out_h}</b> : {edges} retirés ({lost} % de l'image). Dolby Vision est conservé.</p>": {
+    "fra": "<h3>Réencodage Dolby Vision plein cadre : limitation de NVENC</h3><p>NVENC code l'image par blocs de 32 lignes : la source {src_w} × {src_h} devient {coded_w} × {coded_h} dans le flux HEVC. Au-delà de {canvas_w} × {canvas_h} codés, les téléviseurs et box Dolby Vision rejettent le flux (repli HDR10 ou image SDR délavée), que les lignes ajoutées soient masquées ou visibles.</p><p><b>Recadrer à {out_w} × {out_h}</b> : {edges} retirés ({lost} % de l'image). Dolby Vision est conservé.</p>",
+    "eng": "<h3>Full-frame Dolby Vision re-encode: NVENC limitation</h3><p>NVENC codes the picture in 32-line blocks: the {src_w} × {src_h} source becomes {coded_w} × {coded_h} in the HEVC stream. Beyond {canvas_w} × {canvas_h} coded, Dolby Vision TVs and boxes reject the stream (HDR10 fallback or washed-out SDR picture), whether the added lines are hidden or visible.</p><p><b>Crop to {out_w} × {out_h}</b>: {edges} removed ({lost} % of the picture). Dolby Vision is kept.</p>"
+  },
+  "{n} px en haut": {
+    "fra": "{n} px en haut",
+    "eng": "{n} px top"
+  },
+  "{n} px en bas": {
+    "fra": "{n} px en bas",
+    "eng": "{n} px bottom"
+  },
+  "{n} px à gauche": {
+    "fra": "{n} px à gauche",
+    "eng": "{n} px left"
+  },
+  "{n} px à droite": {
+    "fra": "{n} px à droite",
+    "eng": "{n} px right"
+  },
+  "Annuler et utiliser un autre codec": {
+    "fra": "Annuler et utiliser un autre codec",
+    "eng": "Cancel and use another codec"
+  },
+  "Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ.": {
+    "fra": "Compromis vitesse/qualité, sens propre au pilote (hors plage : borne du pilote).\n• Intel (iHD) : 1 = qualité max … 7 = vitesse max.\n• Mesa (AMD) : somme de bits — 1 (validité) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pré-encodage) + 16 (VBAQ, ignoré en CQP).\n  Ex. 13 = Quality + pré-encodage ; 1 = Balanced + pré-encodage + VBAQ.",
+    "eng": "Speed/quality trade-off; meaning depends on the driver (out of range: driver limit).\n• Intel (iHD): 1 = maximum quality … 7 = maximum speed.\n• Mesa (AMD): sum of bits - 1 (valid) + preset (0 Speed, 2 Balanced,\n  4 Quality, 6 High quality VCN 4+) + 8 (pre-encode) + 16 (VBAQ, ignored in CQP).\n  E.g. 13 = Quality + pre-encode; 1 = Balanced + pre-encode + VBAQ."
+  },
+  "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.": {
+    "fra": "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.",
+    "eng": "AMF usage profile.\n• transcoding: offline quality encoding - recommended for files.\n• high_quality: quality-oriented internal settings (recent AMF runtime).\n• lowlatency / ultralowlatency / lowlatency_high_quality: streaming / cloud gaming.\n• webcam: real-time camera capture."
+  },
+  "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent.": {
+    "fra": "Profil d'usage AMF.\n• transcoding : encodage offline qualité — recommandé pour fichiers.\n• high_quality : réglages internes orientés qualité (runtime AMF récent).\n• lowlatency / ultralowlatency / lowlatency_high_quality : streaming / cloud gaming.\n• webcam : capture caméra temps réel.\n\nAV1 AMF requiert RX 7000 (RDNA 3) ou plus récent.",
+    "eng": "AMF usage profile.\n• transcoding: offline quality encoding - recommended for files.\n• high_quality: quality-oriented internal settings (recent AMF runtime).\n• lowlatency / ultralowlatency / lowlatency_high_quality: streaming / cloud gaming.\n• webcam: real-time camera capture.\n\nAV1 AMF requires RX 7000 (RDNA 3) or newer."
+  },
+  "Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\nIgnoré en CQP. Coût : quelques % de vitesse.": {
+    "fra": "Pré-encodage : passe d'analyse à résolution réduite qui guide le contrôle de débit.\nIgnoré en CQP. Coût : quelques % de vitesse.",
+    "eng": "Pre-encode: reduced-resolution analysis pass that guides rate control.\nIgnored in CQP. Cost: a few % of speed."
+  },
+  "Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit des blocs lisses.\nIgnoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR des zones sombres en baisse à débit égal — à juger à l'œil.": {
+    "fra": "Variance-Based Adaptive Quantization : retire des bits aux blocs texturés au profit des blocs lisses.\nIgnoré en CQP. Mesuré sur VCN 3 (VAAPI, même bloc matériel) : VMAF, XPSNR et PSNR des zones sombres en baisse à débit égal — à juger à l'œil.",
+    "eng": "Variance-Based Adaptive Quantization: takes bits from textured blocks in favour of flat blocks.\nIgnored in CQP. Measured on VCN 3 (VAAPI, same hardware block): VMAF, XPSNR and dark-area PSNR drop at equal bitrate - judge by eye."
+  },
+  "Analyse pré-encodage qui optimise bitrate et placement des frames.": {
+    "fra": "Analyse pré-encodage qui optimise bitrate et placement des frames.",
+    "eng": "Pre-encode analysis that optimizes bitrate and frame placement."
+  },
+  "Quantification adaptative AV1 AMF.\n• none : aucune.\n• caq : Content Adaptive Quantization.": {
+    "fra": "Quantification adaptative AV1 AMF.\n• none : aucune.\n• caq : Content Adaptive Quantization.",
+    "eng": "AV1 AMF adaptive quantization.\n• none: none.\n• caq: Content Adaptive Quantization."
+  },
+  "Pre-encode": {
+    "fra": "Pre-encode",
+    "eng": "Pre-encode"
+  },
+  "AQ mode": {
+    "fra": "AQ mode",
+    "eng": "AQ mode"
+  },
+  "Speed (défaut pilote)": {
+    "fra": "Speed (défaut pilote)",
+    "eng": "Speed (driver default)"
+  },
+  "Balanced": {
+    "fra": "Balanced",
+    "eng": "Balanced"
+  },
+  "Quality": {
+    "fra": "Quality",
+    "eng": "Quality"
+  },
+  "High quality (VCN 4+, sinon Quality)": {
+    "fra": "High quality (VCN 4+, sinon Quality)",
+    "eng": "High quality (VCN 4+, otherwise Quality)"
+  },
+  "Quality + pré-encodage": {
+    "fra": "Quality + pré-encodage",
+    "eng": "Quality + pre-encode"
+  },
+  "High quality + pré-encodage": {
+    "fra": "High quality + pré-encodage",
+    "eng": "High quality + pre-encode"
+  },
+  "Balanced + pré-encodage + VBAQ": {
+    "fra": "Balanced + pré-encodage + VBAQ",
+    "eng": "Balanced + pre-encode + VBAQ"
+  },
+  "Quality + pré-encodage + VBAQ": {
+    "fra": "Quality + pré-encodage + VBAQ",
+    "eng": "Quality + pre-encode + VBAQ"
+  },
+  "High quality + pré-encodage + VBAQ": {
+    "fra": "High quality + pré-encodage + VBAQ",
+    "eng": "High quality + pre-encode + VBAQ"
+  },
+  "qualité max": {
+    "fra": "qualité max",
+    "eng": "maximum quality"
+  },
+  "équilibré": {
+    "fra": "équilibré",
+    "eng": "balanced"
+  },
+  "vitesse max": {
+    "fra": "vitesse max",
+    "eng": "maximum speed"
   }
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil as _shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -203,7 +204,9 @@ def validate_remux_config(
             except (TypeError, ValueError):
                 errors.append(f"Chapitre #{idx + 1} invalide : timecode non numérique.")
                 continue
-            if tc < 0:
+            if not math.isfinite(tc):
+                errors.append(f"Chapitre #{idx + 1} invalide : timecode non fini ({tc}).")
+            elif tc < 0:
                 errors.append(f"Chapitre #{idx + 1} invalide : timecode négatif ({tc}).")
 
     if plan is not None:

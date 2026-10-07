@@ -19,9 +19,11 @@ from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS as _AMF_CODECS,
     HARDWARE_VIDEO_CODECS,
+    MESA_VAAPI_PRESETS,
     NVENC_VIDEO_CODECS as _NVENC_CODECS,
     QSV_VIDEO_CODECS as _QSV_CODECS,
     SOFTWARE_VIDEO_CODECS,
+    VAAPI_PRESETS,
     VAAPI_VIDEO_CODECS as _VAAPI_CODECS,
 )
 from core.workflows.encode.hw_devices import (
@@ -35,8 +37,13 @@ from core.workflows.encode.runtime.nvencc import (
 
 
 _NULLSRC = "nullsrc=s=256x256:r=25:d=0.1"   # ≥ 1 frame garantie (25fps × 0.1s)
+_AV1_NVENC = "av1_nvenc"
+_VAAPI_SUPPORTED_MODES_RE = re.compile(r"supported modes:\s*([A-Z, ]+)")
 _GENERIC_HW_FILTER = "format=nv12"
 _VAAPI_FILTER = "format=nv12,hwupload"
+_VAAPI_DRIVER_RE = re.compile(r"VAAPI driver:\s*(.+)")
+_VAAPI_QUALITY_RANGE_RE = re.compile(r"valid range is 0-(\d+)")
+_VAAPI_QUALITY_UNSUPPORTED = "Quality attribute is not supported"
 
 
 class HardwareEncoderDetector:
@@ -64,6 +71,15 @@ class HardwareEncoderDetector:
         self._vaapi_device_cache: str | None = None
         self._vaapi_device_cached = False
         self._qsv_device_cache: dict[str, str | None] = {}
+        #: Modes de débit acceptés par le pilote, par codec sondé (VAAPI) :
+        #: identifiants de catalog.VIDEO_RATE_CONTROLS. Codec absent = non sondé.
+        self.rate_controls: dict[str, frozenset[str]] = {}
+        #: Presets énumérés par ``ffmpeg -h encoder=`` (NVENC, AMF, QSV) pour le
+        #: FFmpeg réellement utilisé : un preset absent n'est pas proposé.
+        #: VAAPI : niveaux ``-compression_level`` admis par le pilote.
+        self.presets: dict[str, frozenset[str]] = {}
+        #: Famille du pilote VAAPI par codec sondé : "mesa", "intel" ou "other".
+        self.vaapi_drivers: dict[str, str] = {}
 
     @staticmethod
     def _resolve_ffmpeg(ffmpeg_bin: str) -> str:
@@ -208,6 +224,10 @@ class HardwareEncoderDetector:
             if nvenc_compiled:
                 available |= self._detect_nvenc(resolved, nvenc_compiled)
             available |= self._probe_codecs(resolved, compiled - _NVENC_CODECS)
+            for codec_id in sorted(available & _VAAPI_CODECS):
+                supported = self._probe_vaapi_rate_controls(resolved, codec_id)
+                if supported:
+                    self.rate_controls[codec_id] = supported
         else:
             ff = ffmpeg_bin
 
@@ -285,9 +305,195 @@ class HardwareEncoderDetector:
             return self._probe_codecs(ffmpeg_bin, compiled)
 
         if self._nvidia_ok():
-            return set(compiled)
+            available = set(compiled)
+            # L'encodeur AV1 n'existe qu'à partir de la 8e génération NVENC (RTX 40) :
+            # compilé dans ffmpeg ne suffit pas.
+            if _AV1_NVENC in available and not self._nvidia_av1_capable(ffmpeg_bin):
+                available.discard(_AV1_NVENC)
+            return available
 
         return self._probe_codecs(ffmpeg_bin, compiled)
+
+    def detect_presets(self, ffmpeg_bin: str, codecs: set[str]) -> dict[str, frozenset[str]]:
+        """Presets énumérés par ``ffmpeg -h encoder=`` pour les encodeurs FFmpeg détectés.
+
+        VAAPI : niveaux ``-compression_level`` selon le pilote sondé
+        (:meth:`_probe_vaapi_quality`). NVEncC (``-u``) n'est pas concerné.
+        Résultat mémorisé dans :attr:`presets` (codec absent = liste du catalogue).
+        """
+        resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        for codec_id in sorted(codecs - _VAAPI_CODECS - _NVENCC_CODECS):
+            values = self._probe_preset_values(resolved, codec_id)
+            if values:
+                self.presets[codec_id] = values
+        for codec_id in sorted(codecs & _VAAPI_CODECS):
+            probed = self._probe_vaapi_quality(resolved, codec_id)
+            if probed is not None:
+                self.vaapi_drivers[codec_id], self.presets[codec_id] = probed
+        return dict(self.presets)
+
+    @staticmethod
+    def parse_vaapi_quality(stderr: str) -> tuple[str, frozenset[str]] | None:
+        """(famille du pilote, presets admis) d'après une sonde ``-compression_level`` hors plage.
+
+        Mesa : masque de bits (catalog.MESA_VAAPI_PRESETS) ; autres pilotes : 0 à la
+        borne annoncée. Attribut qualité non pris en charge : seul « Aucun » reste.
+        """
+        driver = _VAAPI_DRIVER_RE.search(stderr or "")
+        name = driver.group(1) if driver else ""
+        family = "mesa" if "Mesa Gallium" in name else "intel" if "Intel" in name else "other"
+        if _VAAPI_QUALITY_UNSUPPORTED in (stderr or ""):
+            return family, frozenset({""})
+        limit = _VAAPI_QUALITY_RANGE_RE.search(stderr or "")
+        if limit is None:
+            return None
+        maximum = int(limit.group(1))
+        candidates = MESA_VAAPI_PRESETS if family == "mesa" else VAAPI_PRESETS
+        return family, frozenset(value for value in candidates if not value or int(value) <= maximum)
+
+    def _probe_vaapi_quality(self, ffmpeg_bin: str, codec_id: str) -> tuple[str, frozenset[str]] | None:
+        """Pilote VAAPI et plage ``-compression_level`` (niveau hors plage → borne citée par FFmpeg)."""
+        device = self._cached_vaapi_device()
+        if device is None:
+            return None
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
+                    "-vaapi_device", device,
+                    "-f", "lavfi", "-i", _NULLSRC,
+                    "-vf", _VAAPI_FILTER, "-frames:v", "1",
+                    "-c:v", codec_id, "-compression_level", "1000",
+                    "-f", "null", "-",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=15,
+                **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return self.parse_vaapi_quality(result.stderr or "")
+
+    @staticmethod
+    def parse_preset_values(help_output: str) -> frozenset[str]:
+        """Valeurs énumérées de ``-preset`` dans ``ffmpeg -h encoder=`` (vide si non énuméré)."""
+        values: set[str] = set()
+        in_preset = False
+        for line in (help_output or "").splitlines():
+            if re.match(r"\s+-preset\s", line):
+                in_preset = True
+                continue
+            if in_preset:
+                match = re.match(r"\s{5,}(\S+)\s+(?:-?\d+\s+)?E", line)
+                if match is None:
+                    break
+                values.add(match.group(1))
+        return frozenset(values)
+
+    def _probe_preset_values(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
+        try:
+            result = subprocess.run(
+                [ffmpeg_bin, "-hide_banner", "-h", f"encoder={codec_id}"],
+                capture_output=True,
+                check=False,
+                timeout=10,
+                **subprocess_text_kwargs(),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return frozenset()
+        return self.parse_preset_values(result.stdout or "")
+
+    def _probe_vaapi_rate_controls(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
+        """Modes ``-rc_mode`` acceptés par le pilote VAAPI pour ce codec.
+
+        Un mode refusé fait lister à ffmpeg ceux du pilote (« supported modes: … ») :
+        une sonde suffit en général ; sinon chaque mode est essayé. La taille cible
+        (VBR plafonné) suit VBR.
+        """
+        device = self._cached_vaapi_device()
+        if device is None:
+            return frozenset()
+        quality = ["-global_quality", "25"]
+        cqp = quality if codec_id == "av1_vaapi" else ["-qp", "25"]
+        probes = (
+            ("ICQ", quality),
+            ("AVBR", ["-b:v", "1M"]),
+            ("QVBR", ["-b:v", "1M", *quality]),
+            ("CBR", ["-b:v", "1M"]),
+            ("VBR", ["-b:v", "1M"]),
+            ("CQP", cqp),
+        )
+        accepted: set[str] = set()
+        for mode, values in probes:
+            try:
+                result = subprocess.run(
+                    [
+                        ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
+                        "-vaapi_device", device,
+                        "-f", "lavfi", "-i", _NULLSRC,
+                        "-vf", _VAAPI_FILTER, "-frames:v", "1",
+                        "-c:v", codec_id, "-rc_mode", mode, *values,
+                        "-f", "null", "-",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=15,
+                    **subprocess_text_kwargs(),
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                return frozenset()
+            listed = _VAAPI_SUPPORTED_MODES_RE.search(result.stderr or "")
+            if listed:
+                modes = {part.strip().lower() for part in listed.group(1).split(",") if part.strip()}
+                accepted |= modes
+                break
+            if result.returncode == 0:
+                accepted.add(mode.lower())
+        if "vbr" in accepted:
+            accepted.add("size")
+        return frozenset(accepted)
+
+    def _nvidia_av1_capable(self, ffmpeg_bin: str) -> bool:
+        """GPU NVIDIA capable d'encoder l'AV1 (10 bits / HDR compris).
+
+        Compute capability ≥ 8.9 (Ada / RTX 40, Blackwell…) ; 9.0 (Hopper) n'a pas
+        de NVENC. Sans réponse de ``nvidia-smi``, sonde réelle en 10 bits.
+        """
+        capabilities = self._nvidia_compute_capabilities()
+        if capabilities:
+            return any(cap >= 8.9 and cap != 9.0 for cap in capabilities)
+        return self._probe_encoder([
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", _NULLSRC,
+            "-vf", "format=p010le",
+            "-frames:v", "1",
+            "-c:v", _AV1_NVENC,
+            "-f", "null", "-",
+        ])
+
+    @staticmethod
+    def _nvidia_compute_capabilities() -> list[float]:
+        """Compute capabilities des GPU NVIDIA (``nvidia-smi``), liste vide si indisponible."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+                **subprocess_text_kwargs(),
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return []
+        if result.returncode != 0:
+            return []
+        capabilities: list[float] = []
+        for line in (result.stdout or "").splitlines():
+            try:
+                capabilities.append(float(line.strip()))
+            except ValueError:
+                continue
+        return capabilities
 
     def _probe_codecs(
         self,

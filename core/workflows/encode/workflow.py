@@ -10,6 +10,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,12 +20,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from core.bluray import append_ffmpeg_input_args
-from core.runner import TaskCancelledError, TaskSignals, ToolRunner
+from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
     subprocess_text_kwargs,
 )
@@ -60,12 +62,13 @@ from core.workflows.common.timeline_sync import (
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.encode.catalog import (
     is_h264_video_codec,
+    is_nvenc_hevc as _is_nvenc_hevc,
     supports_dovi,
     supports_hdr_output,
 )
 from core.workflows.encode.domain import (
+    uses_two_pass_video as _uses_two_pass_video_domain,
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
-    needs_static_hdr_bitstream_patch as _needs_static_hdr_bitstream_patch_domain,
     needs_static_hdr_sei_reinjection as _needs_static_hdr_sei_reinjection_domain,
 )
 from core.workflows.remux_timeline_sync import (
@@ -149,18 +152,19 @@ from core.workflows.encode.runtime.multisource_sync import (
     append_sync_inputs as _append_sync_inputs_runtime,
 )
 from core.workflows.encode.runtime.nvencc import (
+    build_nvencc_command as _build_nvencc_command_runtime,
     is_nvencc_codec as _is_nvencc_codec_runtime,
+    nvencc_requires_ffmpeg_filter_pipe as _nvencc_requires_ffmpeg_filter_pipe,
     nvencc_supports_dynamic_hdr as _nvencc_supports_dynamic_hdr_runtime,
 )
 from core.workflows.encode.runtime.nvencc_execution import (
-    NvenccAssetPreparationCallbacks as _NvenccAssetPreparationCallbacks,
-    NvenccAssetPreparationService as _NvenccAssetPreparationService,
     NvenccDirectOutputRunner as _NvenccDirectOutputRunner,
     NvenccDirectOutputRunnerCallbacks as _NvenccDirectOutputRunnerCallbacks,
     NvenccPipeExecutor as _NvenccPipeExecutor,
     NvenccRuntimeRemuxBuilder as _NvenccRuntimeRemuxBuilder,
     NvenccRuntimeRemuxBuilderCallbacks as _NvenccRuntimeRemuxBuilderCallbacks,
     build_nvencc_pipeline_commands as _build_nvencc_pipeline_commands_runtime,
+    nvencc_needs_ffmpeg_pipe as _nvencc_needs_ffmpeg_pipe,
 )
 from core.workflows.encode.mux_backend import (
     EncodeMuxDecision as _EncodeMuxDecision,
@@ -238,6 +242,7 @@ from core.workflows.encode.planning.offsets import (
 from core.workflows.encode.planning.preview import (
     format_preview_command as _format_preview_command_plan,
     format_preview_commands as _format_preview_commands_plan,
+    preview_comment as _preview_comment,
 )
 from core.workflows.encode.planning.track_assembly import (
     resolve_track_assembly as _resolve_track_assembly_plan,
@@ -250,16 +255,53 @@ from core.workflows.encode.planning.subtitles import (
     probe_stream_indices as _probe_stream_indices_plan,
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
+from core.workflows.encode.hdr_policy import hdr_warnings as _hdr_warnings
+from core.dovi_profile_detector import DoviProfileDetector as _DoviProfileDetector
+from core.dovi_profile_detector import DoviSubProfile as _DoviSubProfile
+from core.workflows.encode.dovi_policy import (
+    NORMALIZE_P81 as _NORMALIZE_P81,
+    DoviPlan as _DoviPlan,
+    dovi_transfer_error as _dovi_transfer_error,
+    resolve_dovi_plan as _resolve_dovi_plan,
+    sub_profile_from_value as _sub_profile_from_value,
+)
+from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
+from core.workflows.encode.domain.codecs import preset_problem as _preset_problem
+from core.workflows.encode.domain.codecs import vulkan_filters_compatible as _vulkan_filters_compatible
+from core.workflows.encode.vulkan import VulkanCapability as _VulkanCapability
+from core.workflows.encode.vulkan import detect_vulkan as _detect_vulkan
+from core.workflows.encode.vulkan import vulkan_parallelism as _vulkan_parallelism
+from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard as _FrameCountGuard
+from core.workflows.encode.runtime.dovi_static_hdr import (
+    estimate_static_hdr_from_rpu as _estimate_static_hdr_from_rpu,
+)
+from core.workflows.encode.runtime.nvencc_p5 import (
+    binary_signature as _binary_signature,
+    nvencc_features as _nvencc_features,
+    nvencc_p5_features as _nvencc_p5_features,
+    run_nvencc_p5_probe as _run_nvencc_p5_probe,
+)
+from core.workflows.encode.planning.size_budget import (
+    SizeBudget,
+    SizeBudgetProbes,
+    compute_size_budget as _compute_size_budget,
+    size_target_errors as _size_target_errors,
+    size_target_warnings as _size_target_warnings,
+    stream_bitrate_bps as _stream_bitrate_from_info,
+    stream_duration_s as _stream_duration_from_info,
+    stream_pixel_rate as _stream_pixel_rate_from_info,
+)
 from core.workflows.encode.planning.validation import (
     is_dir_writable as _is_dir_writable_plan,
     validate_encode_config as _validate_encode_config_plan,
+    video_settings_errors as _video_settings_errors_plan,
 )
+from core.output_commit import OutputBusyError, OutputReservation
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
     PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
     PREVIEW_VIDEO_THUMBNAIL_COUNT, QualityMode,
     VideoEncodeSettings,
-    normalize_audio_bitrate_kbps,
 )
 from core.workflows.encode.output_contract import build_encode_output_contract
 from core.matroska.contract import ExpectedMatroskaAttachment
@@ -316,6 +358,10 @@ def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource)
     if "-fps_mode" not in cmd:
         insert_before_output(["-fps_mode", "passthrough"])
     return cmd
+
+
+# Compatibilité : le budget est calculé par planning.size_budget.
+_SizeBudget = SizeBudget
 
 
 class EncodeWorkflow(QObject):
@@ -377,14 +423,20 @@ class EncodeWorkflow(QObject):
         aac_bitrate_per_channel_kbps: int = 96,
         eac3_bitrate_per_channel_kbps: int = 96,
         regenerate_statistics: bool = True,
+        ffprobe_bin:               str | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
+        # FFprobe configuré (réglage tools/ffprobe) ; sans valeur explicite, celui
+        # placé à côté de FFmpeg. Un FFmpeg système choisi pour le matériel ne
+        # remplace jamais un FFprobe explicite.
+        self._ffprobe_explicit: str | None = ffprobe_bin or None
         self._bins: dict[str, str] = {
             "dovi_tool":      dovi_tool_bin,
             "hdr10plus_tool": hdr10plus_bin,
             "mediainfo":      mediainfo_bin,
         }
+        self._bins["ffprobe"] = self._ffprobe_path()
         # NVEncC est optionnel : None signifie "pas configuré". Stocké séparément
         # pour permettre une vérification explicite avant d'invoquer le pipeline
         # ffmpeg → NVEncC → ffmpeg.
@@ -399,6 +451,7 @@ class EncodeWorkflow(QObject):
         self._hdr_metadata_service = HdrMetadataProbeService(
             ffmpeg_bin=lambda: self._ffmpeg,
             tool_bin=lambda name: self._bins.get(name) or name,
+            ffprobe_bin=self._ffprobe_path,
         )
         self._static_hdr_estimator = _StaticHdrEstimateService(
             ffmpeg_bin=self._ffmpeg,
@@ -419,7 +472,7 @@ class EncodeWorkflow(QObject):
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
         self._writing_application = writing_application.strip()
         self._postprocess_service = RemuxPostprocessService(
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(ffmpeg_bin),
+            ffprobe_bin=self._ffprobe_path(),
         )
         from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
         from core.workflows.common.matroska_finalize import MatroskaLanguagePostAction
@@ -453,8 +506,13 @@ class EncodeWorkflow(QObject):
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
+        previous_ffprobe = self._ffprobe_path()
         self._ffmpeg = ffmpeg_bin
-        self._postprocess_service.set_ffprobe_bin(self._ffprobe_bin_from_ffmpeg(ffmpeg_bin))
+        self._bins["ffprobe"] = self._ffprobe_path()
+        self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
+        if self._bins["ffprobe"] != previous_ffprobe:
+            # Résultats de l'ancien FFprobe : à refaire avec le nouveau binaire.
+            self._hdr_metadata_service.clear_probe_caches()
         self._static_hdr_estimator = _StaticHdrEstimateService(
             ffmpeg_bin=self._ffmpeg,
             dovi_tool_bin=self._bins["dovi_tool"],
@@ -473,7 +531,19 @@ class EncodeWorkflow(QObject):
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
 
     def set_mediainfo_bin(self, mediainfo_bin: str) -> None:
+        previous = self._bins.get("mediainfo")
         self._bins["mediainfo"] = mediainfo_bin
+        if previous != mediainfo_bin:
+            self._hdr_metadata_service.clear_probe_caches()
+
+    def set_ffprobe_bin(self, ffprobe_bin: str | None) -> None:
+        """Applique le FFprobe configuré et oublie les sondes de l'ancien outil."""
+        previous = self._ffprobe_path()
+        self._ffprobe_explicit = ffprobe_bin or None
+        self._bins["ffprobe"] = self._ffprobe_path()
+        self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
+        if previous != self._bins["ffprobe"]:
+            self._hdr_metadata_service.clear_probe_caches()
 
     def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
@@ -545,6 +615,10 @@ class EncodeWorkflow(QObject):
         """
         return _common_ffmpeg_progress_args()
 
+    def _ffprobe_path(self) -> str:
+        """FFprobe effectif : configuré, sinon placé à côté du FFmpeg courant."""
+        return self._ffprobe_explicit or self._ffprobe_bin_from_ffmpeg(self._ffmpeg)
+
     @staticmethod
     def _ffprobe_bin_from_ffmpeg(ffmpeg_bin: str) -> str:
         ffmpeg_path = Path(ffmpeg_bin)
@@ -566,8 +640,7 @@ class EncodeWorkflow(QObject):
 
     @classmethod
     def _uses_two_pass(cls, config: EncodeConfig) -> bool:
-        video = cls._primary_video_settings(config)
-        return video.codec != "copy" and video.quality_mode == QualityMode.SIZE
+        return _uses_two_pass_video_domain(cls._primary_video_settings(config))
 
     @staticmethod
     def _wants_dynamic_hdr_copy(config: EncodeConfig) -> bool:
@@ -579,20 +652,13 @@ class EncodeWorkflow(QObject):
         video = EncodeWorkflow._primary_video_settings(config)
         return bool(video.copy_dv and str(video.dovi_profile or "0").strip() == "2")
 
-    @staticmethod
-    def _needs_static_hdr_bitstream_patch(config: EncodeConfig) -> bool:
-        video = EncodeWorkflow._primary_video_settings(config)
-        if video.codec == "copy":
-            return False
-        return _needs_static_hdr_bitstream_patch_domain(video)
-
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
             return cls._wants_dovi_profile_normalization(config)
         if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
             return False
-        return cls._wants_dynamic_hdr_copy(config) or cls._needs_static_hdr_bitstream_patch(config)
+        return cls._wants_dynamic_hdr_copy(config)
 
     @staticmethod
     def _video_source_path(config: EncodeConfig) -> Path:
@@ -645,8 +711,6 @@ class EncodeWorkflow(QObject):
         video = videos[0]
         if not self._nvencc_bin:
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
-        if video.quality_mode == QualityMode.SIZE:
-            errors.append("NVEncC ne supporte pas le mode taille cible (2 passes) dans cette version.")
         if video.inject_hdr_meta and not supports_hdr_output(video.codec):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if video.copy_dv and not supports_dovi(video.codec):
@@ -656,8 +720,8 @@ class EncodeWorkflow(QObject):
         _ = plan
         return errors
 
-    def _load_mediainfo_video_track(self, path: Path) -> dict | None:
-        return self._hdr_metadata_service.load_mediainfo_video_track(path)
+    def _load_mediainfo_video_track(self, path: Path, stream_index: int | None = None) -> dict | None:
+        return self._hdr_metadata_service.load_mediainfo_video_track(path, stream_index)
 
     @classmethod
     def _video_track_mapping(
@@ -673,9 +737,12 @@ class EncodeWorkflow(QObject):
             stream_index if mapped_stream_index is None else int(mapped_stream_index),
         )
 
-    def _detect_source_dynamic_hdr_presence(self, source: Path) -> tuple[bool, bool] | None:
+    def _detect_source_dynamic_hdr_presence(
+        self, source: Path, stream_index: int | None = None,
+    ) -> tuple[bool, bool] | None:
         return self._hdr_metadata_service.detect_source_dynamic_hdr_presence(
             source,
+            stream_index=stream_index,
             ffprobe_streams_payload=self._ffprobe_streams_payload,
             ffprobe_stream_dicts=self._ffprobe_stream_dicts,
             mediainfo_hdr_flags=self._mediainfo_hdr_flags,
@@ -791,40 +858,44 @@ class EncodeWorkflow(QObject):
         source: Path,
         *,
         max_frames: int = 240,
+        stream_index: int | None = None,
     ) -> tuple[bool, bool] | None:
         return self._hdr_metadata_service.ffprobe_frame_dynamic_hdr_flags(
             source,
             max_frames=max_frames,
+            stream_index=stream_index,
         )
 
-    def _mediainfo_hdr_flags(self, source: Path) -> tuple[bool, bool] | None:
-        return self._hdr_metadata_service.mediainfo_hdr_flags(source)
+    def _mediainfo_hdr_flags(self, source: Path, stream_index: int | None = None) -> tuple[bool, bool] | None:
+        return self._hdr_metadata_service.mediainfo_hdr_flags(source, stream_index)
 
     def _build_master_display_for_primaries(self, primaries_label: str) -> str:
         return self._hdr_metadata_service.build_master_display_for_primaries(primaries_label)
 
-    def _color_primaries_label(self, source: Path) -> str:
-        return self._hdr_metadata_service.color_primaries_label(source)
+    def _color_primaries_label(self, source: Path, stream_index: int | None = None) -> str:
+        return self._hdr_metadata_service.color_primaries_label(source, stream_index)
 
-    def _extract_static_hdr_via_ffprobe(self, source: Path) -> tuple[str, str]:
-        return self._hdr_metadata_service.extract_static_hdr_via_ffprobe(source)
+    def _extract_static_hdr_via_ffprobe(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
+        return self._hdr_metadata_service.extract_static_hdr_via_ffprobe(source, stream_index)
 
-    def _extract_static_hdr_metadata(self, source: Path) -> tuple[str, str]:
-        return self._hdr_metadata_service.extract_static_hdr_metadata(source)
+    def _extract_static_hdr_metadata(self, source: Path, stream_index: int | None = None) -> tuple[str, str]:
+        return self._hdr_metadata_service.extract_static_hdr_metadata(source, stream_index)
 
-    def _normalize_dynamic_hdr_config(self, config: EncodeConfig) -> EncodeConfig:
+    def _normalize_dynamic_hdr_config(self, config: EncodeConfig, *, dry_run: bool = False) -> EncodeConfig:
         return DynamicHdrConfigNormalizer(
-            self._dynamic_hdr_normalizer_callbacks()
+            self._dynamic_hdr_normalizer_callbacks(dry_run=dry_run)
         ).normalize_single(config)
 
-    def _normalize_dynamic_hdr_multi(self, config: EncodeConfig) -> EncodeConfig:
+    def _normalize_dynamic_hdr_multi(self, config: EncodeConfig, *, dry_run: bool = False) -> EncodeConfig:
         return DynamicHdrConfigNormalizer(
-            self._dynamic_hdr_normalizer_callbacks()
+            self._dynamic_hdr_normalizer_callbacks(dry_run=dry_run)
         ).normalize_multi(config)
 
-    def _dynamic_hdr_normalizer_callbacks(self) -> DynamicHdrNormalizerCallbacks:
+    def _dynamic_hdr_normalizer_callbacks(self, *, dry_run: bool = False) -> DynamicHdrNormalizerCallbacks:
+        """``dry_run`` (aperçu) : journal muet ; HDR10 d'une source P5 laissé à l'estimation RPU du lancement."""
         return DynamicHdrNormalizerCallbacks(
-            log=self.log_message.emit,
+            log=(lambda _level, _message: None) if dry_run else self.log_message.emit,
+            defer_static_hdr=(lambda video: bool(video.p5_to_hdr10)) if dry_run else None,
             wants_dynamic_hdr_copy=self._wants_dynamic_hdr_copy,
             is_video_passthrough=self._is_video_passthrough,
             primary_video_settings=self._primary_video_settings,
@@ -846,6 +917,7 @@ class EncodeWorkflow(QObject):
         """
         Retourne une commande (list[str]) ou deux commandes pour la double passe (list[list[str]]).
         """
+        config = self.resolve_source_color_transfer(config)
         plan = self._build_encode_plan(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -861,6 +933,7 @@ class EncodeWorkflow(QObject):
         En mode NVEncC, l'aperçu retourne la commande d'encode native, suivie
         au runtime d'un remux ffmpeg séparé.
         """
+        config = self.resolve_source_color_transfer(config)
         plan = self._build_encode_plan(config)
         return list(
             self._backend_for_config(config).build_single_preview(
@@ -934,34 +1007,6 @@ class EncodeWorkflow(QObject):
         if len(selection.commands) <= 1:
             return list(selection.preview_command)
         return [list(cmd) for cmd in selection.commands]
-
-    def _prepare_nvencc_dynamic_hdr_assets(
-        self,
-        config: EncodeConfig,
-        *,
-        work_dir: Path,
-        signals: TaskSignals,
-        run_cmd: Callable[[list[str], str], str],
-        cleanup_paths: list[Path] | None = None,
-    ) -> tuple[Path, int, Path | None, Path | None, bool, list[Path]]:
-        return _NvenccAssetPreparationService(
-            _NvenccAssetPreparationCallbacks(
-                ffmpeg_bin=self._ffmpeg,
-                bins=dict(self._bins),
-                log=self.log_message.emit,
-                primary_video_settings=self._primary_video_settings,
-                video_source_path=self._video_source_path,
-                video_stream_index=self._video_stream_index,
-                source_is_vfr=self._source_is_vfr,
-                load_mediainfo_video_track=self._load_mediainfo_video_track,
-            )
-        ).prepare(
-            config,
-            work_dir=work_dir,
-            signals=signals,
-            run_cmd=run_cmd,
-            cleanup_paths=cleanup_paths,
-        )
 
     def _run_nvencc_pipe_commands(
         self,
@@ -1039,6 +1084,9 @@ class EncodeWorkflow(QObject):
                 native_assemble=self._native_assemble_nvencc if native_mux else None,
                 bins=dict(self._bins),
                 wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
+                check_external_rpu=self._check_external_rpu,
+                validation_override=self._validation_override_for(config),
+                count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
             )
         ).run(
             config,
@@ -1088,7 +1136,7 @@ class EncodeWorkflow(QObject):
             ),
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
         )
 
     def _native_assemble_multi(
@@ -1127,7 +1175,7 @@ class EncodeWorkflow(QObject):
             ),
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
         )
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
@@ -1174,7 +1222,7 @@ class EncodeWorkflow(QObject):
                     for_preview=True,
                 )
             ]
-            if video.quality_mode == QualityMode.SIZE:
+            if _uses_two_pass_video_domain(video):
                 commands.extend(track_commands)
             else:
                 commands.append(track_commands[-1])
@@ -1447,7 +1495,7 @@ class EncodeWorkflow(QObject):
             }
             rewrite_service = SyncRewriteService(
                 ffmpeg_bin=self._ffmpeg,
-                ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                ffprobe_bin=self._ffprobe_path(),
                 ffmpeg_progress_args=self._ffmpeg_progress_args(),
                 ffmpeg_thread_args=self._ffmpeg_thread_args(None),
                 audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
@@ -1677,7 +1725,37 @@ class EncodeWorkflow(QObject):
             qsv_device=self._qsv_device(),
             amf_device=self._amf_device(),
             nvenc_device=self._nvenc_device(),
+            depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
         )
+
+    def set_vulkan_capability(self, ffmpeg_bin: str, capability: _VulkanCapability) -> None:
+        """Capacité Vulkan détectée au lancement de l'application (tableau de bord) pour ce FFmpeg."""
+        self.__dict__.setdefault("_vulkan_cache", {})[str(ffmpeg_bin)] = capability
+
+    def vulkan_capability(self) -> _VulkanCapability:
+        """Capacité Vulkan du FFmpeg utilisé : injectée par l'interface, sinon sondée une fois (CLI)."""
+        cache: dict[str, _VulkanCapability] = self.__dict__.setdefault("_vulkan_cache", {})
+        if self._ffmpeg not in cache:
+            cache[self._ffmpeg] = _detect_vulkan(self._ffmpeg)
+        return cache[self._ffmpeg]
+
+    def _depth_conversion_filters(self) -> frozenset[str]:
+        """Filtres GPU compilés ; un binaire sans ces filtres utilise le chemin logiciel."""
+        cached = self.__dict__.setdefault("_depth_filters_cache", {})
+        if self._ffmpeg not in cached:
+            try:
+                proc = subprocess.run(
+                    [self._ffmpeg, "-hide_banner", "-filters"], capture_output=True,
+                    check=False, timeout=10, **subprocess_text_kwargs(),
+                )
+                output = proc.stdout or ""
+                cached[self._ffmpeg] = frozenset(
+                    name for name in ("scale_cuda", "scale_vaapi")
+                    if re.search(rf"\b{name}\b", output)
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                cached[self._ffmpeg] = frozenset()
+        return cached[self._ffmpeg]
 
     @staticmethod
     def _is_h264_codec(codec: str) -> bool:
@@ -1751,13 +1829,16 @@ class EncodeWorkflow(QObject):
         return ["-ss", f"{abs(offset_ms) / 1000.0:.3f}"]
 
     def _size_to_bitrate_kbps_for_video(self, config: EncodeConfig, video: VideoEncodeSettings) -> int:
-        # Mono-vidéo (encodage séparé : RIFE, réinjection HDR) : budget audio déduit.
-        if not self._is_multi_video(config):
-            return self._size_to_bitrate_kbps(config)
-        duration = config.duration_s or 3600.0
-        total_bits = video.target_size_mb * 8 * 1024 * 1024
-        video_bits = max(total_bits, int(duration * 500_000))
-        return max(500, int(video_bits / duration / 1000))
+        """Débit (kbps) d'une piste vidéo encodée pour tenir la taille cible du fichier."""
+        shares = self._size_budget(config).video_shares_bps
+        for candidate, share in shares:
+            if candidate is video:
+                return max(1, int(share / 1000))
+        key = (video.track_entry_id, video.source_path, video.stream_index)
+        for candidate, share in shares:
+            if (candidate.track_entry_id, candidate.source_path, candidate.stream_index) == key:
+                return max(1, int(share / 1000))
+        return self._size_to_bitrate_kbps(config)
 
     @staticmethod
     def _two_pass_log_prefix(work_dir: Path, token: str) -> Path:
@@ -1797,6 +1878,7 @@ class EncodeWorkflow(QObject):
             stream,
             format_start_time=fmt.get("start_time") if isinstance(fmt, dict) else None,
             tonemap_to_sdr=bool(video.tonemap_to_sdr),
+            p5_to_hdr10=bool(video.p5_to_hdr10),
         )
         if not info.is_vfr and self._mediainfo_frame_rate_mode(source) == "vfr":
             # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
@@ -1946,22 +2028,59 @@ class EncodeWorkflow(QObject):
         )
 
     def _size_to_bitrate_kbps(self, config: EncodeConfig) -> int:
-        video = self._primary_video_settings(config)
-        duration = config.duration_s or 3600.0
-        total_bits = video.target_size_mb * 8 * 1024 * 1024
-        audio_bps = sum(
-            normalize_audio_bitrate_kbps(
-                a.codec,
-                a.bitrate_kbps,
-                a.input_channels,
-                None,
-                a.input_channel_layout,
-            ) * 1000
-            for a in config.audio_tracks
-            if a.codec not in ("copy", "flac")
+        """Débit (kbps) de la piste vidéo principale pour tenir la taille cible du fichier."""
+        budget = self._size_budget(config)
+        primary = self._primary_video_settings(config)
+        for candidate, share in budget.video_shares_bps:
+            if candidate is primary:
+                return max(1, int(share / 1000))
+        return max(1, int(budget.video_bps / 1000))
+
+    def _size_budget_probes(self) -> SizeBudgetProbes:
+        """Sondes de flux du budget de taille (FFprobe configuré, payload en cache)."""
+        return SizeBudgetProbes(
+            video_tracks=self._video_tracks,
+            primary_video=self._primary_video_settings,
+            video_source=self._video_source_from_settings,
+            video_stream=self._video_stream_from_settings,
+            stream_info=self._stream_info,
+            subtitle_streams=lambda source: [
+                index
+                for stream in self._ffprobe_stream_dicts(self._ffprobe_streams_payload(Path(source)) or {})
+                if stream.get("codec_type") == "subtitle" and isinstance(index := stream.get("index"), int)
+            ],
         )
-        video_bits = total_bits - audio_bps * duration
-        return max(500, int(video_bits / duration / 1000))
+
+    def _size_budget(self, config: EncodeConfig) -> SizeBudget:
+        """Répartition de la taille cible du fichier (voir :mod:`planning.size_budget`)."""
+        return _compute_size_budget(config, self._size_budget_probes())
+
+    def _stream_info(self, source: Path, stream_index: int) -> dict[str, object]:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        return next(
+            (stream for stream in self._ffprobe_stream_dicts(payload) if stream.get("index") == stream_index),
+            {},
+        )
+
+    def _stream_duration_s(self, source: Path, stream_index: int, fallback: float) -> float:
+        """Durée du flux (ffprobe ou tag Matroska), sinon durée de référence du job."""
+        return _stream_duration_from_info(self._stream_info(source, stream_index), fallback)
+
+    def _stream_bitrate_bps(self, source: Path, stream_index: int) -> float:
+        """Débit d'un flux source : ``bit_rate`` ffprobe, sinon statistiques Matroska (BPS)."""
+        return _stream_bitrate_from_info(self._stream_info(source, stream_index))
+
+    def _stream_pixel_rate(self, source: Path, stream_index: int) -> float:
+        """Poids d'une piste vidéo dans la répartition : largeur × hauteur × cadence."""
+        return _stream_pixel_rate_from_info(self._stream_info(source, stream_index))
+
+    def size_target_errors(self, config: EncodeConfig) -> list[str]:
+        """Taille cible invalide, contradictoire ou inatteignable (débits mesurés seuls)."""
+        return _size_target_errors(config, self._size_budget_probes())
+
+    def size_target_warnings(self, config: EncodeConfig) -> list[str]:
+        """Postes estimés ou inconnus et débits vidéo très bas."""
+        return _size_target_warnings(config, self._size_budget_probes())
 
     # ------------------------------------------------------------------
     # Helpers RAM / buffer — cross-platform (Linux · macOS · Windows)
@@ -1987,6 +2106,8 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def preview_command(self, config: EncodeConfig) -> str:
+        # Préparation « à blanc » : mêmes décisions que le lancement (V38).
+        config = self._preparation_runner().dry_run(config)
         mux_decision = self.select_mux_backend(config)
         commands = self._backend_for_config(config).build_preview(
             config,
@@ -1997,15 +2118,37 @@ class EncodeWorkflow(QObject):
         else:
             command_text = _format_preview_commands_plan(commands)
         header = [
-            f"# Muxage final Matroska : {mux_decision.selected} "
+            f"Muxage final Matroska : {mux_decision.selected} "
             f"(demandé : {mux_decision.requested})",
         ]
         if mux_decision.selected == "native":
             header.append(
-                "# Assemblage final interne ; les commandes ci-dessous préparent "
+                "Assemblage final interne ; les commandes ci-dessous préparent "
                 "les artefacts ou servent de référence."
             )
-        return "\n".join((*header, command_text))
+        primary = self._primary_video_settings(config)
+        if _is_nvencc_codec_runtime(primary.codec) and primary.has_video_transform():
+            # V18b : moteur réel des filtres et conversions couleur.
+            try:
+                piped = _nvencc_needs_ffmpeg_pipe(self._resolve_nvencc_input_routing(config))
+            except EncodeError:
+                piped = None
+            if piped is not None:
+                header.append(
+                    "Filtres et conversions couleur : "
+                    + ("FFmpeg (pipe y4m vers NVEncC)." if piped else "NVEncC (natifs).")
+                )
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if (
+                video.p5_to_hdr10 and video.inject_hdr_meta and not video.tonemap_to_sdr
+                and (not video.master_display.strip() or not video.max_cll.strip())
+            ):
+                header.append(
+                    f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
+                    "Dolby Vision (P5), absent de cet aperçu."
+                )
+        # Commentaires du shell cible (REM sous cmd.exe) : l'aperçu se colle tel quel.
+        return "\n".join((*(_preview_comment(line) for line in header), command_text))
 
     def run_preview(self, config: EncodeConfig, request: EncodePreviewRequest) -> TaskSignals:
         """Génère une preview réelle image ou vidéo dans un thread secondaire."""
@@ -2097,7 +2240,7 @@ class EncodeWorkflow(QObject):
             )
         signals.progress_pct.emit(25)
 
-        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
         token = self._preview_token(config)
         captures: list[EncodePreviewCapture] = []
         warning = ""
@@ -2264,7 +2407,7 @@ class EncodeWorkflow(QObject):
         if not encoded_hdr_kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
             # Probe may miss the bitstream metadata when container lacks it; fall back
             # to the source's HDR signature since the encoder preserved the dynamic range.
-            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path)
+            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
         thumbnails: list[EncodePreviewCapture] = []
         thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
         for idx in range(thumb_count):
@@ -2343,7 +2486,7 @@ class EncodeWorkflow(QObject):
     ) -> tuple[bool, bool]:
         has_dv = bool(video.copy_dv)
         has_hdr10plus = bool(video.copy_hdr10plus)
-        detected = self._detect_source_dynamic_hdr_presence(source)
+        detected = self._detect_source_dynamic_hdr_presence(source, self._video_stream_from_settings(video))
         if detected is not None:
             detected_dv, detected_hdr10plus = detected
             has_dv = has_dv or detected_dv
@@ -2558,6 +2701,8 @@ class EncodeWorkflow(QObject):
     # ------------------------------------------------------------------
 
     def validate(self, config: EncodeConfig) -> list[str]:
+        config = self.resolve_dovi_sources(config)
+        config = self.resolve_source_color_transfer(config)
         plan = _build_encode_plan_data(
             config,
             resolve_subtitle_tracks=lambda _config, _all_sources: ([], False),
@@ -2573,13 +2718,16 @@ class EncodeWorkflow(QObject):
             planned_video_tracks=plan.video_tracks,
             dir_writable=_is_dir_writable_plan,
         )
-        errors.extend(
-            self._backend_for_config(config).validate(
-                config,
-                plan=plan,
-                ctx=self._backend_context(plan=plan),
-            )
-        )
+        errors.extend(_video_settings_errors_plan(self._video_tracks(config)))
+        # Chaque backend présent valide la configuration : une piste NVEncC
+        # secondaire ne doit pas échapper à ses contrôles.
+        for backend in self._backends_for_config(config):
+            for error in backend.validate(config, plan=plan, ctx=self._backend_context(plan=plan)):
+                if error not in errors:
+                    errors.append(error)
+        errors.extend(self._dovi_multi_track_errors(config))
+        errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
+        errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
@@ -2590,6 +2738,526 @@ class EncodeWorkflow(QObject):
                 for reason in mux_decision.diagnostics
             )
         return errors
+
+    def _backends_for_config(self, config: EncodeConfig) -> list[Any]:
+        """Backends distincts des pistes vidéo (backend de la piste principale en tête)."""
+        backends = [self._backend_for_config(config)]
+        for video in self._video_tracks(config):
+            backend = self._backend_for_codec(video.codec)
+            if all(getattr(known, "backend_id", None) != backend.backend_id for known in backends):
+                backends.append(backend)
+        return backends
+
+    # ------------------------------------------------------------------
+    # Dolby Vision : décision par piste (matrice V30, dovi_policy)
+    # ------------------------------------------------------------------
+
+    def _dovi_sub_profile(
+        self, source: Path, stream_index: int, *, allow_tool_fallback: bool = False,
+    ) -> _DoviSubProfile:
+        """Sous-profil DV d'un flux : mediainfo par flux (mis en cache), repli dovi_tool borné sur demande."""
+        cache: dict[tuple, _DoviSubProfile] = self.__dict__.setdefault("_dovi_sub_profile_cache", {})
+        try:
+            stat = Path(source).stat()
+            key: tuple = (str(Path(source).resolve()), int(stream_index), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            key = (str(source), int(stream_index), -1, -1)
+        tried: set[tuple] = self.__dict__.setdefault("_dovi_tool_fallback_done", set())
+        cached = cache.get(key)
+        if cached is not None and (cached is not _DoviSubProfile.UNKNOWN or not allow_tool_fallback or key in tried):
+            return cached
+        detector = _DoviProfileDetector(
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_path(),
+        )
+        sub_profile: _DoviSubProfile | None = cached
+        if sub_profile is None:
+            sub_profile = detector.detect_from_mediainfo(
+                self._load_mediainfo_video_track(Path(source), int(stream_index))
+            ).sub_profile
+        if sub_profile is _DoviSubProfile.UNKNOWN:
+            # Record DOVI ffprobe du flux (payload en cache) : sans mediainfo, piste secondaire.
+            sub_profile = detector.detect_from_ffprobe_stream(
+                self._stream_info(Path(source), int(stream_index))
+            ).sub_profile
+        if sub_profile is _DoviSubProfile.UNKNOWN and allow_tool_fallback and key not in tried:
+            tried.add(key)
+            presence = self._detect_source_dynamic_hdr_presence(Path(source), int(stream_index))
+            if presence is None or presence[0]:
+                # Extraction ciblée du flux choisi (première piste lue directement).
+                first = int(stream_index) == self._first_video_stream_index(Path(source))
+                sub_profile = detector.detect_from_dovi_tool(
+                    Path(source), stream_index=None if first else int(stream_index),
+                ).sub_profile
+        cache[key] = sub_profile
+        return sub_profile
+
+    def _first_video_stream_index(self, source: Path) -> int:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("codec_type") == "video" and isinstance(index := stream.get("index"), int):
+                return index
+        return 0
+
+    def resolve_dovi_sources(self, config: EncodeConfig, *, allow_tool_fallback: bool = False) -> EncodeConfig:
+        """Sous-profil DV et conversion P5 des pistes vidéo (avant validation, aperçu et exécution).
+
+        Une piste en Copy sans « Normaliser » n'est ni analysée ni transformée.
+        """
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for video in tracks:
+            normalize = video.copy_dv and str(video.dovi_profile or "0").strip() == _NORMALIZE_P81
+            if video.codec == "copy" and not normalize:
+                resolved.append(video)
+                continue
+            sub_profile = self._dovi_sub_profile(
+                self._video_source_from_settings(config, video),
+                self._video_stream_from_settings(video),
+                allow_tool_fallback=allow_tool_fallback,
+            )
+            value = sub_profile.value if sub_profile is not _DoviSubProfile.UNKNOWN else video.dovi_source_profile
+            p5 = video.codec != "copy" and (
+                video.p5_to_hdr10 or _sub_profile_from_value(value) is _DoviSubProfile.P5
+            )
+            if value != video.dovi_source_profile or p5 != video.p5_to_hdr10:
+                video = dataclasses.replace(video, dovi_source_profile=value, p5_to_hdr10=p5)
+                changed = True
+            geometry = self._resolve_ffmpeg_dovi_geometry(config, video)
+            changed = changed or geometry != video
+            resolved.append(geometry)
+        if not changed:
+            return config
+        return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+
+    def _resolve_ffmpeg_dovi_geometry(self, config: EncodeConfig, video: VideoEncodeSettings) -> VideoEncodeSettings:
+        """Recadrage Dolby Vision d'un réencodage FFmpeg et recadrage que le RPU doit suivre.
+
+        NVEncC applique la même règle NVENC dans son routage (RPU passé à l'encodeur).
+        """
+        if not video.copy_dv or video.codec == "copy" or _is_nvencc_codec_runtime(video.codec):
+            return video
+        from core.workflows.encode.runtime.dovi_geometry import (
+            nvencc_dovi_resize_changes_scale, resolve_ffmpeg_dovi_geometry,
+        )
+
+        source = self._video_source_from_settings(config, video)
+        stream_index = self._video_stream_from_settings(video)
+        try:
+            dimensions = self._source_video_dimensions(source, stream_index=stream_index)
+        except Exception:
+            return video
+        l5_offsets = None
+        if _is_nvenc_hevc(video.codec) and not nvencc_dovi_resize_changes_scale(video, dimensions):
+            l5_offsets = self._probe_dovi_l5_offsets(source, stream_index=stream_index)
+        return resolve_ffmpeg_dovi_geometry(video, dimensions, l5_offsets=l5_offsets)
+
+    @staticmethod
+    def _dovi_plan(video: VideoEncodeSettings) -> _DoviPlan:
+        return _resolve_dovi_plan(
+            codec=video.codec,
+            copy_dv=video.copy_dv,
+            dovi_profile=video.dovi_profile,
+            sub_profile=_sub_profile_from_value(video.dovi_source_profile),
+        )
+
+    def _dovi_policy_errors(self, config: EncodeConfig) -> list[str]:
+        """Matrice V30 (combinaisons impossibles), cohérence profil / transfert, conversion P5 possible."""
+        errors: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            plan = self._dovi_plan(video)
+            if plan.passthrough:
+                continue
+            if plan.error:
+                errors.append(f"Piste vidéo #{index} — {plan.error}")
+            if video.copy_dv and video.codec != "copy" and plan.output_profile:
+                transfer_error = _dovi_transfer_error(plan.output_profile, _output_hdr_transfer(video))
+                if transfer_error:
+                    errors.append(f"Piste vidéo #{index} — {transfer_error}")
+            if video.p5_to_hdr10 and not self._p5_conversion_available(config, video):
+                errors.append(
+                    f"Piste vidéo #{index} — source Dolby Vision P5 : conversion des couleurs impossible, "
+                    "FFmpeg sans libplacebo/Vulkan fonctionnel"
+                    + (
+                        " (conversion native NVEncC non applicable : tone-mapping, interpolation, "
+                        "préfiltres, entrée HEVC brute ou NVEncC sans libdovi/libplacebo)."
+                        if _is_nvencc_codec_runtime(video.codec)
+                        else "."
+                    )
+                )
+        return errors
+
+    def _p5_conversion_available(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
+        """Capacité du parcours réellement retenu : NVEncC natif (routage) ou FFmpeg libplacebo."""
+        if _is_nvencc_codec_runtime(video.codec):
+            try:
+                if self._resolve_nvencc_input_routing(config).p5_native:
+                    return True
+            except EncodeError:
+                pass
+        return self._ffmpeg_libplacebo_ready()
+
+    def _ffmpeg_libplacebo_ready(self) -> bool:
+        """Filtre libplacebo présent et fonctionnel (une image, Vulkan créé par le filtre)."""
+        cache: dict[str, bool] = self.__dict__.setdefault("_ffmpeg_libplacebo_ready_cache", {})
+        if self._ffmpeg in cache:
+            return cache[self._ffmpeg]
+        ready = self._has_libplacebo()
+        if ready:
+            try:
+                result = subprocess.run(
+                    [self._ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error",
+                     "-f", "lavfi", "-i", "color=c=black:s=64x64,format=yuv420p10le",
+                     "-frames:v", "1", "-vf", "libplacebo=format=yuv420p10le", "-f", "null", "-"],
+                    capture_output=True,
+                    check=False,
+                    timeout=60,
+                    **subprocess_text_kwargs(),
+                )
+                ready = result.returncode == 0
+            except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+                ready = False
+        cache[self._ffmpeg] = ready
+        return ready
+
+    def _nvencc_p5_features_ok(self) -> bool:
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None:
+            return False
+        cache: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_feature_cache", {})
+        if signature not in cache:
+            cache[signature] = _nvencc_p5_features(signature[0])
+        return cache[signature]
+
+    def _nvencc_libplacebo_ready(self) -> bool:
+        """libplacebo compilé dans NVEncC : tone-mapping natif (sinon pipe FFmpeg)."""
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None:
+            return False
+        cache: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_libplacebo_cache", {})
+        if signature not in cache:
+            cache[signature] = bool(_nvencc_features(signature[0]).get("libplacebo"))
+        return cache[signature]
+
+    def _nvencc_p5_native_ready(self) -> bool:
+        """Conversion P5 native : prérequis compilés et sonde réussie (ou pas encore exécutée)."""
+        if not self._nvencc_p5_features_ok():
+            return False
+        signature = _binary_signature(self._nvencc_bin)
+        probes: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_probe_cache", {})
+        return probes.get(signature, True) if signature is not None else False
+
+    def _ensure_nvencc_p5_probe(self, work_dir: Path) -> None:
+        """Sonde réelle de la conversion P5 native (une fois par binaire NVEncC)."""
+        signature = _binary_signature(self._nvencc_bin)
+        if signature is None or not self._nvencc_p5_features_ok():
+            return
+        probes: dict[tuple, bool] = self.__dict__.setdefault("_nvencc_p5_probe_cache", {})
+        if signature in probes:
+            return
+        self.log_message.emit("INFO", "Vérification de la conversion Dolby Vision P5 par NVEncC…")
+        result = _run_nvencc_p5_probe(
+            nvencc_bin=signature[0],
+            ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            work_dir=work_dir,
+            build_command=lambda nvencc, video, output, source: _build_nvencc_command_runtime(
+                nvencc, video, output, input_path=source, input_reader="avhw",
+            ),
+            has_ffmpeg_libplacebo=self._ffmpeg_libplacebo_ready(),
+        )
+        probes[signature] = result.ok
+        if result.ok:
+            self.log_message.emit("INFO", "Conversion P5 native NVEncC validée.")
+        else:
+            self.log_message.emit(
+                "WARN",
+                f"Conversion P5 native NVEncC écartée ({result.reason}) : conversion par FFmpeg (libplacebo).",
+            )
+
+    def prepare_dovi_sources(
+        self,
+        config: EncodeConfig,
+        *,
+        work_dir: Path,
+        signals: TaskSignals | None = None,
+    ) -> EncodeConfig:
+        """Préparation Dolby Vision au lancement (thread de travail).
+
+        Repli dovi_tool du sous-profil et sonde de la conversion P5 native NVEncC,
+        puis revalidation complète de la configuration et du routage effectifs
+        (une découverte tardive ou un repli pipe peut rendre le job invalide :
+        multipiste P5, cadence variable…) avant toute écriture lourde ; enfin RPU
+        P5 converti en P8.1 extrait une fois (copie DV, HDR10 statique estimé).
+        """
+        config = self.resolve_dovi_sources(config, allow_tool_fallback=True)
+        primary = self._primary_video_settings(config)
+        if primary.p5_to_hdr10 and _is_nvencc_codec_runtime(primary.codec):
+            self._ensure_nvencc_p5_probe(work_dir)
+        errors = self.validate(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
+        dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
+
+        def run(cmd: list[str]) -> object:
+            self._check_cancelled(signals)
+            return self._runner._run_cmd(
+                cmd,
+                cwd=work_dir,
+                label="dovi-p5",
+                progress_cb=(signals.progress.emit if signals is not None else None),
+                signals=signals,
+            )
+
+        def run_capture(cmd: list[str]) -> str:
+            """Lecture dovi_tool (résumé, trame, export L9) : processus annulable, sortie non journalisée."""
+            self._check_cancelled(signals)
+            try:
+                return self._runner._run_cmd(cmd, cwd=work_dir, label="dovi-rpu-info", signals=signals)
+            except CommandError as exc:
+                # Lecture impossible : estimation par défaut, avertie (comportement tolérant inchangé).
+                return exc.stderr or ""
+
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for index, video in enumerate(tracks, start=1):
+            needs_static = bool(
+                video.inject_hdr_meta
+                and not video.tonemap_to_sdr
+                and supports_hdr_output(video.codec)
+                and not str(video.static_hdr_metadata_analysis_request or "").strip()
+                and (not video.master_display.strip() or not video.max_cll.strip())
+            )
+            if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
+                resolved.append(video)
+                continue
+            from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+            rpu = work_dir / f"p5_rpu_{index}.bin"
+            self.log_message.emit("INFO", f"Piste vidéo #{index} — extraction du RPU P5 (converti en P8.1)…")
+            extract_dovi_rpu(
+                source=self._video_source_from_settings(config, video),
+                stream_index=self._video_stream_from_settings(video),
+                ffmpeg_bin=self._ffmpeg,
+                dovi_tool_bin=dovi_bin,
+                output_rpu=rpu,
+                work_dir=work_dir,
+                run_cmd=run,
+                cleanup_paths=[],
+                mode="3",
+            )
+            updates: dict[str, Any] = {"p5_rpu_path": rpu if video.copy_dv else None}
+            if needs_static:
+                # Seuls les champs vides sont complétés ; une saisie n'est jamais écrasée.
+                estimate = _estimate_static_hdr_from_rpu(
+                    dovi_bin, rpu, run_capture, check_cancelled=lambda: self._check_cancelled(signals),
+                )
+                estimated: list[str] = []
+                if not video.master_display.strip():
+                    updates.update(
+                        master_display=estimate.master_display,
+                        static_hdr_metadata_source="rpu_estimate",
+                        static_hdr_metadata_confidence=estimate.describe_master_display(),
+                    )
+                    estimated.append(f"Master Display {estimate.master_display} ({estimate.describe_master_display()})")
+                if not video.max_cll.strip() and estimate.max_cll:
+                    updates.update(max_cll=estimate.max_cll, static_hdr_light_level_source="rpu_estimate")
+                    estimated.append(f"MaxCLL/MaxFALL {estimate.max_cll} ({estimate.describe_light_levels()})")
+                if estimated:
+                    self.log_message.emit(
+                        "WARN",
+                        f"Piste vidéo #{index} — HDR10 statique estimé depuis les métadonnées du RPU : "
+                        + " ; ".join(estimated) + ".",
+                    )
+                for warning in estimate.warnings:
+                    self.log_message.emit("WARN", f"Piste vidéo #{index} — {warning}")
+            resolved.append(dataclasses.replace(video, **updates))
+            changed = True
+        if changed:
+            config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+        return config
+
+    def _stream_is_vfr(self, source: Path, stream_index: int) -> bool:
+        """Cadence variable du flux ``stream_index`` : ffprobe (r ≠ avg) ou mediainfo (FrameRate_Mode)."""
+        stream = self._stream_info(Path(source), int(stream_index))
+        rates = []
+        for key in ("r_frame_rate", "avg_frame_rate"):
+            try:
+                value = float(Fraction(str(stream.get(key) or "0")))
+            except (ValueError, ZeroDivisionError):
+                value = 0.0
+            rates.append(value)
+        if all(rate > 0 for rate in rates) and abs(rates[0] - rates[1]) / max(rates) > 0.001:
+            return True
+        track = self._load_mediainfo_video_track(Path(source), int(stream_index)) or {}
+        mode = str(track.get("FrameRate_Mode") or track.get("FrameRate_Mode_Original") or "").strip().lower()
+        return mode in {"vfr", "variable"}
+
+    def _frame_count_guard(self) -> _FrameCountGuard:
+        return _FrameCountGuard(
+            mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
+            ffprobe_bin=self._ffprobe_path(),
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+        )
+
+    def _check_external_rpu(self, source: Path, stream_index: int, rpu_bin: Path) -> int:
+        """Garde stricte d'un RPU externe avant encodage NVEncC (trames retenues)."""
+        return self._frame_count_guard().check_external_rpu(
+            source=Path(source),
+            stream_index=int(stream_index),
+            rpu_bin=Path(rpu_bin),
+            on_warn=lambda message: self.log_message.emit("WARN", message),
+            on_info=lambda message: self.log_message.emit("INFO", message),
+        )
+
+    def _dovi_multi_track_errors(self, config: EncodeConfig) -> list[str]:
+        """Plusieurs pistes vidéo : routages DoVi réservés au chemin mono-piste refusés.
+
+        Le pipeline multi-pistes ne convertit ni P7 (EL) ni P5 (base IPT) et ne
+        normalise pas les pistes Copy : la sortie serait invalide.
+        """
+        videos = self._video_tracks(config)
+        if len(videos) < 2:
+            return []
+        errors: list[str] = []
+        for index, video in enumerate(videos, start=1):
+            if not video.copy_dv:
+                continue
+            if video.codec == "copy":
+                if str(video.dovi_profile or "0").strip() == "2":
+                    errors.append(
+                        f"Piste vidéo #{index} — « Normaliser en P8.1 » n'est pas appliqué en copie "
+                        "quand le job contient plusieurs pistes vidéo. Traitez cette piste seule."
+                    )
+                continue
+            sub_profile = self._dovi_sub_profile(
+                self._video_source_from_settings(config, video),
+                self._video_stream_from_settings(video),
+            )
+            if sub_profile.needs_p8_conversion:
+                errors.append(
+                    f"Piste vidéo #{index} — Dolby Vision {sub_profile.label} : la conversion P8.1 "
+                    "n'est disponible qu'avec une seule piste vidéo. Traitez cette piste seule."
+                )
+        return errors
+
+    def config_warnings(self, config: EncodeConfig) -> list[str]:
+        """Avertissements non bloquants, journalisés au lancement (paramètres avancés, HDR)."""
+        messages = self.extra_params_warnings(config)
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            messages.extend(f"Piste vidéo #{index} — {warning}" for warning in _hdr_warnings(video))
+            _preset_error, preset_warning = _preset_problem(video)
+            if preset_warning:
+                messages.append(f"Piste vidéo #{index} — {preset_warning}")
+            if (
+                video.codec != "copy" and video.filters.nlmeans_enabled and video.source_bit_depth > 8
+                and not video.nlmeans_vulkan
+                and (not _is_nvencc_codec_runtime(video.codec) or _nvencc_requires_ffmpeg_filter_pipe(video))
+            ):
+                # nlmeans FFmpeg n'accepte que des formats 8 bits (conversion implicite).
+                messages.append(
+                    f"Piste vidéo #{index} — NLMeans (FFmpeg) ne traite que le 8 bits : source "
+                    f"{video.source_bit_depth} bits réduite à 8 bits avant le débruitage "
+                    "(risque de banding, surtout en HDR)."
+                )
+        messages.extend(self.size_target_warnings(config))
+        return messages
+
+    def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
+        """Renseigne transfert, profondeur et capacité matérielle depuis les sondes en cache."""
+        from core.workflows.encode.domain.codecs import source_bit_depth_from_stream
+        from core.workflows.encode.runtime.nvencc import detect_nvencc_10bit_codecs
+
+        tracks = self._video_tracks(config)
+        resolved: list[VideoEncodeSettings] = []
+        changed = False
+        for video in tracks:
+            if video.codec != "copy":
+                updates: dict = {}
+                if (
+                    not video.source_color_transfer or not video.source_bit_depth
+                    or not video.source_codec or not video.source_pix_fmt
+                ):
+                    payload = self._ffprobe_streams_payload(self._video_source_from_settings(config, video)) or {}
+                    stream = next((s for s in self._ffprobe_stream_dicts(payload)
+                                   if s.get("index") == self._video_stream_from_settings(video)), {})
+                    if not video.source_color_transfer and stream.get("color_transfer"):
+                        updates["source_color_transfer"] = str(stream["color_transfer"]).strip().lower()
+                    if not video.source_bit_depth and (depth := source_bit_depth_from_stream(stream)):
+                        updates["source_bit_depth"] = depth
+                    if not video.source_codec and stream.get("codec_name"):
+                        updates["source_codec"] = str(stream["codec_name"]).strip().lower()
+                    if not video.source_pix_fmt and stream.get("pix_fmt"):
+                        updates["source_pix_fmt"] = str(stream["pix_fmt"]).strip().lower()
+                if video.codec == "nvencc_h264" and video.encoder_supports_10bit is None:
+                    updates["encoder_supports_10bit"] = video.codec in detect_nvencc_10bit_codecs(self._nvencc_bin)
+                # NLMeans 10 bits sur le GPU dédié (Vulkan) quand le matériel et l'encodeur le permettent.
+                capability = (
+                    self.vulkan_capability()
+                    if video.filters.nlmeans_enabled and _vulkan_filters_compatible(video, self._codec_domain_callbacks())
+                    else None
+                )
+                if capability is not None and capability.nlmeans and capability.index is not None:
+                    width, height = self._source_video_dimensions(
+                        self._video_source_from_settings(config, video),
+                        stream_index=self._video_stream_from_settings(video),
+                    )
+                    vulkan_updates = {
+                        "nlmeans_vulkan": True,
+                        "vulkan_device": str(capability.index),
+                        "vulkan_parallelism": _vulkan_parallelism(width, height),
+                    }
+                else:
+                    vulkan_updates = {"nlmeans_vulkan": False, "vulkan_device": "", "vulkan_parallelism": 1}
+                updates.update({
+                    key: value for key, value in vulkan_updates.items() if getattr(video, key) != value
+                })
+                if updates:
+                    video = dataclasses.replace(video, **updates)
+                    changed = True
+            resolved.append(video)
+        from core.workflows.encode.catalog import NVENC_VIDEO_CODECS, VAAPI_VIDEO_CODECS
+        from core.workflows.encode.domain.codecs import has_cpu_video_filter, resolve_output_bit_depth
+
+        if any(
+            v.codec in (NVENC_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
+            and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
+            and not has_cpu_video_filter(v) and not v.interpolates()
+            for v in resolved
+        ):
+            self._depth_conversion_filters()
+        if not changed:
+            return config
+        return dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+
+    def _stream_color_transfer(self, source: Path, stream_index: int) -> str:
+        payload = self._ffprobe_streams_payload(Path(source)) or {}
+        for stream in self._ffprobe_stream_dicts(payload):
+            if stream.get("index") == stream_index:
+                return str(stream.get("color_transfer") or "").strip().lower()
+        return ""
+
+    def extra_params_warnings(self, config: EncodeConfig) -> list[str]:
+        """Paramètres avancés retirés (incompatibles) ou remplaçant l'onglet Video."""
+        messages: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if video.codec == "copy" or not (video.extra_params or "").strip():
+                continue
+            report = self._backend_for_codec(video.codec).extra_params_report(video)
+            if report.removed:
+                messages.append(
+                    f"Piste vidéo #{index} — paramètres avancés ignorés (incompatibles avec le workflow) : "
+                    + shlex.join(report.removed)
+                )
+            if report.overriding:
+                messages.append(
+                    f"Piste vidéo #{index} — paramètres avancés qui remplacent les réglages de l'onglet Video : "
+                    + shlex.join(report.overriding)
+                )
+        return messages
 
     def _interpolation_validation_errors(self, config: EncodeConfig) -> list[str]:
         """Contrôles propres à l'interpolation RIFE (outil, cadence, entrelacement)."""
@@ -2872,10 +3540,27 @@ class EncodeWorkflow(QObject):
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
-        if not validate:
-            return self._run_async_preparation(config)
-
-        return self._run_with_preparation(config, validate=True)
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(config.output)
+        except OutputBusyError as exc:
+            raise EncodeError(str(exc)) from exc
+        try:
+            if not validate:
+                signals = self._run_async_preparation(config)
+            else:
+                signals = self._run_with_preparation(config, validate=True)
+        except BaseException:
+            reservation.release()
+            raise
+        signals.connect_terminal(
+            finished=lambda *_args: reservation.release(),
+            failed=lambda *_args: reservation.release(),
+            cancelled=lambda *_args: reservation.release(),
+            direct=True,
+        )
+        return signals
 
     def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
         return self._preparation_runner().run_async_preparation(config)
@@ -2926,6 +3611,10 @@ class EncodeWorkflow(QObject):
                 run_direct_output=self._run_direct_output,
                 select_mux_backend=self.select_mux_backend,
                 needs_split_video_encode=self._needs_split_video_encode,
+                config_warnings=self.config_warnings,
+                resolve_source_color_transfer=self.resolve_source_color_transfer,
+                resolve_dovi_sources=self.resolve_dovi_sources,
+                prepare_dovi_sources=self.prepare_dovi_sources,
             )
         )
 
@@ -3059,7 +3748,7 @@ class EncodeWorkflow(QObject):
                     ),
                     log=self.log_message.emit,
                     ffmpeg_bin=self._ffmpeg,
-                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                    ffprobe_bin=self._ffprobe_path(),
                 )
                 signals.finished.emit(str(config.output))
             except TaskCancelledError:
@@ -3290,7 +3979,7 @@ class EncodeWorkflow(QObject):
         transaction = MatroskaOutputTransaction(
             output=config.output,
             contract=contract,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
             run_command=self._run_transaction_command,
             post_actions=(
                 self._muxing_post_action.apply_if_mkv,
@@ -3459,7 +4148,7 @@ class EncodeWorkflow(QObject):
         return _probe_attachment_stream_runtime(
             source,
             stream_idx,
-            ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+            ffprobe_bin=self._ffprobe_path(),
             subprocess_run=subprocess.run,
             text_kwargs_factory=subprocess_text_kwargs,
         )
@@ -3483,7 +4172,7 @@ class EncodeWorkflow(QObject):
         try:
             result = subprocess.run(
                 [
-                    self._ffprobe_bin_from_ffmpeg(self._ffmpeg), "-v", "error",
+                    self._ffprobe_path(), "-v", "error",
                     "-show_chapters", "-of", "json", str(source),
                 ],
                 capture_output=True,
@@ -3653,7 +4342,14 @@ class EncodeWorkflow(QObject):
         return _nvencc_dovi_rpu_prm_runtime(video)
 
     def _resolve_nvencc_input_routing(self, config: EncodeConfig) -> _NvenccInputRouting:
-        return _NvenccInputRouter(self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))).resolve(config)
+        routing = _NvenccInputRouter(
+            self._nvencc_routing_callbacks(stream_index=self._video_stream_index(config))
+        ).resolve(config)
+        if routing.video.quality_mode == QualityMode.SIZE:
+            # Taille cible : VBR plafonné au débit calculé (une passe).
+            sized = dataclasses.replace(routing.video, bitrate_kbps=self._size_to_bitrate_kbps(config))
+            routing = dataclasses.replace(routing, video=sized)
+        return routing
 
     def _nvencc_routing_callbacks(self, *, stream_index: int = 0) -> _NvenccRoutingCallbacks:
         return _NvenccRoutingCallbacks(
@@ -3677,6 +4373,8 @@ class EncodeWorkflow(QObject):
                 lambda source: self._source_video_dimensions(source, stream_index=stream_index)),
             probe_dovi_l5_offsets=(self._probe_dovi_l5_offsets if stream_index == 0 else
                 lambda source: self._probe_dovi_l5_offsets(source, stream_index=stream_index)),
+            p5_native_ready=self._nvencc_p5_native_ready,
+            libplacebo_ready=self._nvencc_libplacebo_ready,
         )
 
     def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:
@@ -3684,11 +4382,11 @@ class EncodeWorkflow(QObject):
 
         dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
         try:
-            key = (dovi_bin, self._ffmpeg)
+            key = (dovi_bin, self._ffmpeg, self._ffprobe_path())
             if getattr(self, "_dovi_geometry_detector_key", None) != key:
                 self._dovi_geometry_detector = DoviProfileDetector(
                     dovi_tool_bin=dovi_bin, ffmpeg_bin=self._ffmpeg,
-                    ffprobe_bin=self._ffprobe_bin_from_ffmpeg(self._ffmpeg),
+                    ffprobe_bin=self._ffprobe_path(),
                 )
                 self._dovi_geometry_detector_key = key
             return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)

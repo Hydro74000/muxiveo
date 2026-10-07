@@ -35,9 +35,9 @@ from core.matroska.assembly import (
 from core.matroska.mux_plan import deterministic_source_identity
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.matroska.reader import MatroskaReader
+from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import (
     MatroskaWriteCancelled,
-    MatroskaWriteProgress,
     MatroskaWriter,
 )
 from core.workflows.encode.planning.sources import resolve_source_layout
@@ -658,34 +658,6 @@ def assemble_encode_output_native(
                 warn=lambda message: log("WARN", message),
             )
 
-        progress_state = {"packets": 0, "bytes": 0}
-
-        def _on_progress(progress: MatroskaWriteProgress) -> None:
-            if signals is None:
-                return
-            if progress.percent is not None and hasattr(signals, "progress_pct"):
-                signals.progress_pct.emit(progress.percent)
-            if progress.stage != "clusters":
-                pct_str = f"{progress.percent}% " if progress.percent is not None else ""
-                signals.progress.emit(
-                    f"Assemblage Matroska ({progress.stage}) : {pct_str}"
-                    f"{progress.packets_written} paquets, "
-                    f"{progress.bytes_written / (1024 * 1024):.1f} Mio"
-                )
-                return
-            if (
-                progress.packets_written - progress_state["packets"] >= 2000
-                or progress.bytes_written - progress_state["bytes"] >= 64 * 1024 * 1024
-            ):
-                progress_state["packets"] = progress.packets_written
-                progress_state["bytes"] = progress.bytes_written
-                pct_str = f"{progress.percent}% " if progress.percent is not None else ""
-                signals.progress.emit(
-                    f"Assemblage Matroska : {pct_str}"
-                    f"({progress.packets_written} paquets, "
-                    f"{progress.bytes_written / (1024 * 1024):.1f} Mio)"
-                )
-
         try:
             MatroskaWriter().write(
                 mux_plan,
@@ -696,7 +668,7 @@ def assemble_encode_output_native(
                     lambda msg: log("WARN", msg),
                 ),
                 cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
-                progress_cb=_on_progress,
+                progress_cb=native_mux_progress_callback(signals.progress.emit) if signals is not None else None,
             )
         except MatroskaWriteCancelled as exc:
             # Annulation coopérative : convertie vers le contrat des runners

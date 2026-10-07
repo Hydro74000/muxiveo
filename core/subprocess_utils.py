@@ -9,6 +9,7 @@ du système. On force donc l'UTF-8 pour éviter le mojibake du type `FranÃ§ais
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -79,10 +80,67 @@ def decode_subprocess_output(raw: bytes) -> str:
     return raw.decode(_TOOL_TEXT_ENCODING, errors=_TOOL_TEXT_ERRORS)
 
 
+class ProbeCancelledError(RuntimeError):
+    """Sonde interrompue par une annulation (fermeture de fenêtre, nouveau fichier)."""
+
+
+@contextmanager
+def _probe_process(command: list[str], **kwargs: Any) -> Iterator[subprocess.Popen]:
+    job = None
+    if sys.platform == "win32":
+        from core.windows_process_job import WindowsProcessJob
+
+        job = WindowsProcessJob()
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+    try:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs) as proc:  # nosec B603
+            if job is not None:
+                try:
+                    job.attach_and_resume(int(proc._handle), proc.pid)  # type: ignore[attr-defined]
+                    proc._muxiveo_job = job  # type: ignore[attr-defined]
+                except BaseException:
+                    proc.kill()
+                    proc.wait()
+                    raise
+            yield proc
+    finally:
+        if job is not None:
+            job.close()
+
+
+def run_probe(
+    command: list[str],
+    *,
+    timeout: float,
+    cancel_event: threading.Event | None = None,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """Sonde texte à sortie capturée, bornée et annulable.
+
+    Le processus est tué (avec ses descendants) à l'expiration du délai ou à
+    l'annulation. Erreurs distinctes : ``FileNotFoundError`` (outil absent),
+    ``subprocess.TimeoutExpired`` (délai), :class:`ProbeCancelledError`
+    (annulation) ; un code de retour non nul est rendu à l'appelant.
+    """
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProbeCancelledError("Sonde annulée.")
+
+    options = {**subprocess_text_kwargs(), **kwargs}
+    return run_cancellable_capture(
+        list(command),
+        cancel_cb=cancel_event.is_set if cancel_event is not None else None,
+        check_cancelled=check_cancelled,
+        timeout=timeout,
+        **options,
+    )
+
+
 def run_cancellable_capture(
     command: list[str],
     *,
-    cancel_cb: Callable[[], bool],
+    cancel_cb: Callable[[], bool] | None,
     check_cancelled: Callable[[], None],
     on_start: Callable[[subprocess.Popen], None] | None = None,
     on_end: Callable[[subprocess.Popen], None] | None = None,
@@ -93,14 +151,18 @@ def run_cancellable_capture(
     """Sonde avec sortie capturée, tuable même pendant une lecture silencieuse."""
     check_cancelled()
     timeout = kwargs.pop("timeout", None)
+    # Session propre : les descendants gardant stdout ouvert sont également
+    # arrêtés, sans toucher au groupe du GUI ou de la CLI.
+    if sys.platform != "win32":
+        kwargs.setdefault("start_new_session", True)
     # Commande fournie par les workflows sous forme d'argv, sans interprétation shell.
     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-    with subprocess.Popen(  # nosec B603
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
-    ) as proc:
-        if on_start is not None:
-            on_start(proc)
+    with _probe_process(command, **kwargs) as proc:
+        if sys.platform != "win32" and kwargs.get("start_new_session"):
+            proc._muxiveo_process_group = proc.pid  # type: ignore[attr-defined]
         try:
+            if on_start is not None:
+                on_start(proc)
             with watch_process_cancellation(proc, cancel_cb):
                 stdout, stderr = proc.communicate(timeout=timeout)
             check_cancelled()
@@ -207,7 +269,7 @@ def _windows_taskkill_path() -> Path:
 
 def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> None:
     """
-    Tue le processus (et ses descendants sous Windows), puis attend brièvement.
+    Tue le processus et son groupe dédié (POSIX) ou son arbre (Windows).
 
     Sous Windows :
       - `proc.kill()` (TerminateProcess) ne tue pas les enfants créés par l'outil.
@@ -218,13 +280,32 @@ def kill_process_tree(proc: subprocess.Popen | None, timeout: float = 0.5) -> No
     if proc is None:
         return
 
+    pid = getattr(proc, "pid", None)
+    job = getattr(proc, "_muxiveo_job", None)
+    if job is not None:
+        # Le parent peut être déjà sorti : le job conserve ses descendants et
+        # ferme leurs pipes avant Popen.__exit__ / les threads communicate.
+        job.terminate()
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=timeout)
+        return
+    group = getattr(proc, "_muxiveo_process_group", None)
+    if sys.platform != "win32" and isinstance(group, int):
+        with suppress(OSError):
+            os.killpg(group, signal.SIGKILL)
+    elif sys.platform != "win32" and isinstance(pid, int):
+        with suppress(OSError):
+            # Ne jamais tuer un groupe hérité. Un enfant peut garder les pipes
+            # ouverts même après la fin du processus principal.
+            if os.getpgid(pid) == pid:
+                os.killpg(pid, signal.SIGKILL)
+
     poll = getattr(proc, "poll", None)
     if callable(poll):
         with suppress(Exception):
             if poll() is not None:
                 return
 
-    pid = getattr(proc, "pid", None)
     if sys.platform == "win32" and pid is not None:
         with suppress(Exception):
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit

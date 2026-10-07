@@ -1,35 +1,15 @@
 from __future__ import annotations
 
+# Formateur partagé avec le remux ; réexporté pour les imports existants.
+from core.command_preview import (  # noqa: F401
+    _quote_cmd,
+    format_preview_command,
+    format_preview_commands,
+    preview_comment,
+    quote_preview_argument,
+)
+
 from .plan_models import EncodeCommandSelection
-
-
-def format_preview_command(cmd: list[str], *, prefix: str = "") -> str:
-    if not cmd:
-        return ""
-    lines = [cmd[0]]
-    index = 1
-    while index < len(cmd):
-        argument = cmd[index]
-        if argument == "|" and index + 1 < len(cmd):
-            # étage suivant d'un pipeline (ex. décodage | muxiveo-rife | encodeur)
-            lines.append(f"| {cmd[index + 1]}")
-            index += 2
-        elif argument.startswith("-") and index + 1 < len(cmd) and not cmd[index + 1].startswith("-") and cmd[index + 1] != "|":
-            lines.append(f"    {argument} {cmd[index + 1]}")
-            index += 2
-        else:
-            lines.append(f"    {argument}")
-            index += 1
-    return prefix + " \\\n".join(lines)
-
-
-def format_preview_commands(commands: list[list[str]]) -> str:
-    blocks: list[str] = []
-    for index, cmd in enumerate(commands, start=1):
-        if not cmd:
-            continue
-        blocks.append(f"# Commande {index}\n" + format_preview_command(cmd))
-    return "\n\n".join(blocks)
 
 
 def format_preview_selection(selection: EncodeCommandSelection) -> str:
@@ -40,7 +20,7 @@ def format_preview_selection(selection: EncodeCommandSelection) -> str:
     if not cmd:
         return ""
     prefix = (
-        "# Mode taille cible : passe 1 omise de cet aperçu\n"
+        preview_comment("Mode taille cible : passe 1 omise de cet aperçu") + "\n"
         if selection.is_two_pass
         else ""
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -417,3 +418,366 @@ def test_header_growth_without_room_leaves_original_file_intact(tmp_path, patch)
     assert result.skipped and not result.applied
     assert path.read_bytes() == data
     assert len(MatroskaReader(path).tracks()) == 1
+
+
+# ---------------------------------------------------------------------------
+# RFC 9559 §6.3 : jamais de second SeekHead non chaîné (dovi_tool : Tracks introuvable)
+# ---------------------------------------------------------------------------
+
+_TAGS_ID = b"\x12\x54\xc3\x67"
+
+
+def _seek(target: bytes, pos: int) -> bytes:
+    return element(_SEEK_ID, element(_SEEKID_ID, target) + uint_element(_SEEKPOS_ID, pos))
+
+
+def _tight_seekhead_file(path: Path) -> None:
+    """SeekHead plein (sans Void), Info, Tags, Tracks, Cluster : Tags à agrandir."""
+    info = make_info_element(make_mux_element("Lavf62.19.101"))
+    tags = element(_TAGS_ID, element(b"\x73\x73", b"\x00" * 40))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    probe = len(element(_SEEKHEAD_ID, _seek(_INFO_ID, 100) + _seek(_TAGS_ID, 100) + _seek(_TRACKS_ID, 100)))
+    sh = element(_SEEKHEAD_ID, _seek(_INFO_ID, probe) + _seek(_TAGS_ID, probe + len(info))
+                 + _seek(_TRACKS_ID, probe + len(info) + len(tags)))
+    assert len(sh) == probe
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(sh + info + tags + tracks + make_fake_cluster(4096)))
+
+
+def _seekhead_offsets(path: Path) -> list[int]:
+    data = path.read_bytes()
+    offsets, start = [], 0
+    while (found := data.find(_SEEKHEAD_ID, start)) >= 0:
+        offsets.append(found)
+        start = found + 1
+    return offsets
+
+
+def test_relocated_element_stays_indexed_by_the_only_seekhead(tmp_path: Path) -> None:
+    from core.matroska.reader import strict_demuxer_reads_tracks
+
+    path = tmp_path / "tight.mkv"
+    _tight_seekhead_file(path)
+    editor = MatroskaSegmentInfoHeaderEditor(
+        options=MatroskaSegmentInfoHeaderEditorOptions(allow_post_cluster_rebuild=False, fallback_mode="skip"),
+    )
+    editor.replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, element(b"\x73\x73", b"\x01" * 400)),
+    )
+    # Un seul SeekHead, resté premier élément du segment (agrandi sur place), qui indexe Tags et Tracks.
+    assert len(_seekhead_offsets(path)) == 1
+    assert next(MatroskaReader(path).top_level()).element_id == _SEEKHEAD_ID
+    reader = MatroskaReader(path)
+    assert reader.raw_top_level(_TAGS_ID)[0].endswith(b"\x01" * 400)
+    assert reader.tracks_indexed_for_strict_readers()
+    assert strict_demuxer_reads_tracks(path)
+
+
+def test_strict_reader_check_detects_unchained_second_seekhead(tmp_path: Path) -> None:
+    """Structure produite par l'ancien éditeur : Tracks indexé par un second SeekHead orphelin."""
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    sh1 = element(_SEEKHEAD_ID, _seek(_INFO_ID, 0))
+    sh1_len = len(sh1)
+    sh1 = element(_SEEKHEAD_ID, _seek(_INFO_ID, sh1_len))
+    cluster = make_fake_cluster(64)
+    tracks_pos = len(sh1) + len(info) + 64 + len(cluster)
+    sh2 = element(_SEEKHEAD_ID, _seek(_TRACKS_ID, tracks_pos))
+    orphan = sh1 + info + sh2 + make_void_element(64 - len(sh2) - 2) + cluster + tracks
+    path = tmp_path / "orphan.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(orphan))
+    assert not MatroskaReader(path).tracks_indexed_for_strict_readers()
+    # Second SeekHead chaîné depuis le premier : lisible.
+    chained_sh1 = element(_SEEKHEAD_ID, _seek(_INFO_ID, 0) + _seek(_SEEKHEAD_ID, 0))
+    base = len(chained_sh1)
+    chained_sh1 = element(_SEEKHEAD_ID, _seek(_INFO_ID, base) + _seek(_SEEKHEAD_ID, base + len(info)))
+    assert len(chained_sh1) == base
+    chained = chained_sh1 + info + sh2 + make_void_element(64 - len(sh2) - 2) + cluster + tracks
+    tracks_pos = len(chained_sh1) + len(info) + 64 + len(cluster)
+    chained = chained.replace(sh2, element(_SEEKHEAD_ID, _seek(_TRACKS_ID, tracks_pos)))
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(chained))
+    assert MatroskaReader(path).tracks_indexed_for_strict_readers()
+    # Sans SeekHead : Tracks avant les Clusters.
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(info + tracks + cluster))
+    assert MatroskaReader(path).tracks_indexed_for_strict_readers()
+
+
+def test_strict_reader_check_verifies_the_pointed_tracks_element(tmp_path: Path) -> None:
+    """RV7-04 : une entrée Tracks qui désigne un autre élément ne rend pas Tracks trouvable."""
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    cluster = make_fake_cluster(64)
+    probe = len(element(_SEEKHEAD_ID, _seek(_INFO_ID, 100) + _seek(_TRACKS_ID, 100)))
+    # Tracks annoncé à la position du SeekHead lui-même (0), présent seulement après les Clusters.
+    sh = element(_SEEKHEAD_ID, _seek(_INFO_ID, probe) + _seek(_TRACKS_ID, 0))
+    assert len(sh) == probe
+    path = tmp_path / "bad_pointer.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(sh + info + cluster + tracks))
+    assert not MatroskaReader(path).tracks_indexed_for_strict_readers()
+    # Position hors segment : ignorée aussi.
+    far = element(_SEEKHEAD_ID, _seek(_INFO_ID, probe) + _seek(_TRACKS_ID, 10_000_000))
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(far + info + cluster + tracks))
+    assert not MatroskaReader(path).tracks_indexed_for_strict_readers()
+
+
+
+def _two_seekheads_file(path: Path) -> None:
+    """Premier SeekHead plein (Info, Tags, Tracks, second SeekHead) ; second en fin, Clusters seuls."""
+    info = make_info_element(make_mux_element("mkvmerge-like"))
+    tags = element(_TAGS_ID, element(b"\x73\x73", b"\x00" * 40))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    cluster = make_fake_cluster(4096)
+    probe = len(element(_SEEKHEAD_ID, b"".join(_seek(i, 100) for i in (_INFO_ID, _TAGS_ID, _TRACKS_ID))
+                        + _seek(_SEEKHEAD_ID, 5000)))
+    head = probe + len(info) + len(tags) + len(tracks)
+    second = element(_SEEKHEAD_ID, _seek(_CLUSTER_ID, head))
+    first = element(_SEEKHEAD_ID, _seek(_INFO_ID, probe) + _seek(_TAGS_ID, probe + len(info))
+                    + _seek(_TRACKS_ID, probe + len(info) + len(tags)) + _seek(_SEEKHEAD_ID, head + len(cluster)))
+    assert len(first) == probe
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(first + info + tags + tracks + cluster + second))
+
+
+def test_first_seekhead_stays_first_with_a_conforming_second_seekhead(tmp_path: Path) -> None:
+    """RV7-02 : agrandi sur place, le premier SeekHead précède Info et garde la référence au second."""
+    path = tmp_path / "two.mkv"
+    _two_seekheads_file(path)
+    reader = MatroskaReader(path)
+    assert reader.tracks_indexed_for_strict_readers()
+    editor = MatroskaSegmentInfoHeaderEditor(
+        options=MatroskaSegmentInfoHeaderEditorOptions(allow_post_cluster_rebuild=False, fallback_mode="skip"),
+    )
+    editor.replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, element(b"\x73\x73", b"\x02" * 300)),
+    )
+    reader = MatroskaReader(path)
+    top = list(reader.top_level())
+    assert top[0].element_id == _SEEKHEAD_ID
+    heads = [item for item in top if item.element_id == _SEEKHEAD_ID]
+    assert len(heads) == 2
+    first_entries = dict(reader._seek_entries(heads[0]))
+    segment = reader.segment()
+    # Le premier référence le second à sa position réelle ; le second ne liste que des Clusters.
+    assert segment.payload_offset + first_entries[_SEEKHEAD_ID] == heads[1].offset
+    assert {target for target, _ in reader._seek_entries(heads[1])} == {_CLUSTER_ID}
+    assert reader.tracks_indexed_for_strict_readers()
+    assert reader.raw_top_level(_TAGS_ID)[0].endswith(b"\x02" * 300)
+
+
+@pytest.mark.parametrize("trailing_tags", [False, True])
+def test_failed_edit_restores_file_byte_for_byte(tmp_path: Path, monkeypatch, trailing_tags: bool) -> None:
+    """RV7-01 : un échec après écritures (et troncature) rend le fichier intact."""
+    path = tmp_path / "rollback.mkv"
+    if trailing_tags:
+        info = make_info_element(make_mux_element("Lavf"))
+        tags = element(_TAGS_ID, element(b"\x73\x73", b"\x00" * 40))
+        probe = len(element(_SEEKHEAD_ID, _seek(_INFO_ID, 100) + _seek(_TAGS_ID, 100)))
+        cluster = make_fake_cluster(256)
+        sh = element(_SEEKHEAD_ID, _seek(_INFO_ID, probe) + _seek(_TAGS_ID, probe + len(info) + len(cluster)))
+        path.write_bytes(make_ebml_header() + make_segment_unknown_size(sh + info + cluster + tags))
+    else:
+        _tight_seekhead_file(path)
+    original = path.read_bytes()
+    editor = MatroskaSegmentInfoHeaderEditor(
+        options=MatroskaSegmentInfoHeaderEditorOptions(allow_post_cluster_rebuild=False, fallback_mode="skip"),
+    )
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("échec simulé après écriture")
+
+    # Tags en fin : premier SeekHead plein et aucun Void avant les Clusters → refus réel
+    # après mise en Void / troncature / réécriture. Sinon : échec simulé en fin d'édition.
+    monkeypatch.setattr(editor, "_resync_meta_seeks", boom)
+    with pytest.raises(ValueError, match="Premier SeekHead plein" if trailing_tags else "échec simulé"):
+        editor.replace_level1_element(
+            path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, element(b"\x73\x73", b"\x03" * 500)),
+        )
+    assert path.read_bytes() == original
+
+
+def test_journal_bounds_reads_and_restores_overlapping_writes(monkeypatch) -> None:
+    """Le journal reste borné, même après plusieurs écritures, une troncature et un ajout."""
+    from core.matroska.editors.segment_info import _WriteJournal
+    from core.runner import TaskCancelledError
+
+    monkeypatch.setattr(_WriteJournal, "_COPY_CHUNK", 16)
+
+    class BoundedFile(BytesIO):
+        def read(self, size=-1):
+            assert 0 <= size <= 16
+            return super().read(size)
+
+    original = bytes(range(128))
+    fh = BoundedFile(original)
+    editor = MatroskaSegmentInfoHeaderEditor()
+    with pytest.raises(TaskCancelledError), editor._journaled(fh):
+        editor._write_at(fh, 5, b"a" * 80)
+        editor._write_at(fh, 20, b"b" * 60)
+        editor._truncate(fh, 40)
+        editor._write_at(fh, 40, b"c" * 150)
+        raise TaskCancelledError()
+    assert fh.getvalue() == original
+
+
+def test_journals_are_isolated_for_files_using_the_same_editor() -> None:
+    """Deux éditions qui se chevauchent ne sauvegardent jamais les octets du mauvais fichier."""
+    editor = MatroskaSegmentInfoHeaderEditor()
+    first, second = BytesIO(b"first file"), BytesIO(b"second file")
+    with pytest.raises(ValueError, match="premier"), editor._journaled(first):
+        with pytest.raises(ValueError, match="second"), editor._journaled(second):
+            editor._write_at(first, 0, b"AAAAA")
+            editor._write_at(second, 0, b"BBBBBB")
+            raise ValueError("second")
+        assert second.getvalue() == b"second file"
+        editor._write_at(first, 5, b"CCCCC")
+        raise ValueError("premier")
+    assert first.getvalue() == b"first file"
+
+
+def test_journal_rolls_back_when_the_commit_flush_fails() -> None:
+    """Une erreur d'écriture différée survient avant la fermeture du journal."""
+    class FailedFlush(BytesIO):
+        failed = False
+
+        def flush(self):
+            if not self.failed:
+                self.failed = True
+                raise OSError("flush simulé")
+            super().flush()
+
+    fh = FailedFlush(b"original")
+    editor = MatroskaSegmentInfoHeaderEditor()
+    with pytest.raises(OSError, match="flush simulé"), editor._journaled(fh):
+        editor._write_at(fh, 0, b"changed!")
+    assert fh.getvalue() == b"original"
+
+
+@pytest.mark.parametrize("front_void", [False, True])
+def test_new_seekhead_is_complete_and_can_only_be_created_at_the_front(tmp_path, front_void):
+    """Un fichier sans index reste lisible ; aucun SeekHead partiel ne masque Tracks."""
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    padding = make_void_element(100)
+    before = padding + info + tracks if front_void else info + padding + tracks
+    path = tmp_path / "nohead.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(before + make_fake_cluster(100)))
+    MatroskaSegmentInfoHeaderEditor().replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, b"x" * 300),
+    )
+    reader = MatroskaReader(path)
+    heads = [e for e in reader.top_level() if e.element_id == _SEEKHEAD_ID]
+    assert len(heads) == int(front_void)
+    if front_void:
+        assert next(reader.top_level()) == heads[0]
+        assert {target for target, _ in reader._seek_entries(heads[0])} == {_INFO_ID, _TRACKS_ID, _TAGS_ID}
+    assert reader.tracks_indexed_for_strict_readers()
+    assert reader.raw_top_level(_TAGS_ID)[0].endswith(b"x" * 300)
+
+
+def test_second_seekhead_preserves_an_index_containing_only_the_second_cluster(tmp_path):
+    """Un index partiel de Clusters conserve ses positions, pas leur rang dans l'analyse."""
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    tags = element(_TAGS_ID, b"x" * 50)
+    cluster = make_fake_cluster(100)
+    span = len(element(_SEEKHEAD_ID, _seek(_INFO_ID, 100) + _seek(_TRACKS_ID, 100) + _seek(_SEEKHEAD_ID, 5000)))
+    cluster_pos = span + len(info) + len(tags) + len(tracks)
+    second = element(_SEEKHEAD_ID, _seek(_CLUSTER_ID, cluster_pos + len(cluster)))
+    first = element(_SEEKHEAD_ID, _seek(_INFO_ID, span) + _seek(_TRACKS_ID, span + len(info) + len(tags))
+                    + _seek(_SEEKHEAD_ID, cluster_pos + 2 * len(cluster)))
+    assert len(first) == span
+    path = tmp_path / "partial-cluster-index.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(
+        first + info + tags + tracks + cluster + cluster + second,
+    ))
+    MatroskaSegmentInfoHeaderEditor().replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, b"y" * 300),
+    )
+    reader = MatroskaReader(path)
+    heads = [e for e in reader.top_level() if e.element_id == _SEEKHEAD_ID]
+    assert reader._seek_entries(heads[1]) == [(_CLUSTER_ID, cluster_pos + len(cluster))]
+    assert [reader.raw_element(e) for e in reader.cluster_elements()] == [cluster, cluster]
+
+
+def test_padded_seekpositions_allow_header_compaction_without_moving_tracks(tmp_path):
+    """Une nouvelle entrée tient grâce à la compaction des uint paddés ; la CRC est conservée."""
+    import zlib
+
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    cues_id = b"\x1c\x53\xbb\x6b"
+    cues = element(cues_id, b"")
+    padding = make_void_element(200)
+
+    def padded_seek(target, pos):
+        return element(_SEEK_ID, element(_SEEKID_ID, target) + element(_SEEKPOS_ID, pos.to_bytes(8, "big")))
+
+    probe = element(_SEEKHEAD_ID, element(b"\xbf", bytes(4)) + b"".join(
+        padded_seek(i, 0) for i in (_INFO_ID, _TRACKS_ID, cues_id)
+    ))
+    entries = padded_seek(_INFO_ID, len(probe)) + padded_seek(_TRACKS_ID, len(probe) + len(info) + len(padding))
+    entries += padded_seek(cues_id, len(probe) + len(info) + len(padding) + len(tracks))
+    first = element(_SEEKHEAD_ID, element(b"\xbf", zlib.crc32(entries).to_bytes(4, "little")) + entries)
+    assert len(first) == len(probe)
+    path = tmp_path / "padded.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(
+        first + info + padding + tracks + cues + make_fake_cluster(100),
+    ))
+    reader = MatroskaReader(path)
+    tracks_offset = next(e.offset for e in reader.top_level() if e.element_id == _TRACKS_ID)
+    assert reader.tracks_indexed_for_strict_readers()
+    MatroskaSegmentInfoHeaderEditor().replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, b"x" * 300),
+    )
+    reader = MatroskaReader(path)
+    assert next(e.offset for e in reader.top_level() if e.element_id == _TRACKS_ID) == tracks_offset
+    assert reader.tracks_indexed_for_strict_readers()
+    payload = reader.payload(next(reader.top_level()))
+    assert payload[:2] == b"\xbf\x84"
+    assert int.from_bytes(payload[2:6], "little") == zlib.crc32(payload[6:])
+
+
+def test_seekhead_growth_moves_a_chained_second_head_and_preserves_both_crcs(tmp_path):
+    """Le premier garde sa place ; le second décalé et son index de Cluster restent valides."""
+    import zlib
+
+    info = make_info_element(make_mux_element("Lavf"))
+    tracks = element(_TRACKS_ID, element(b"\xae", uint_element(b"\xd7", 1)))
+    padding = make_void_element(200)
+    cluster = make_fake_cluster(100)
+
+    def crc_head(entries):
+        return element(_SEEKHEAD_ID, element(b"\xbf", zlib.crc32(entries).to_bytes(4, "little")) + entries)
+
+    def padded_seek(target, pos):
+        return element(_SEEK_ID, element(_SEEKID_ID, target) + element(_SEEKPOS_ID, pos.to_bytes(4, "big")))
+
+    first_span = len(crc_head(b"".join(padded_seek(i, 0) for i in (_INFO_ID, _TRACKS_ID, _SEEKHEAD_ID))))
+    second_pos = first_span + len(info)
+    second_span = len(crc_head(_seek(_CLUSTER_ID, 5000)))
+    tracks_pos = second_pos + second_span + len(padding)
+    cluster_pos = tracks_pos + len(tracks)
+    second = crc_head(_seek(_CLUSTER_ID, cluster_pos))
+    first = crc_head(padded_seek(_INFO_ID, first_span) + padded_seek(_TRACKS_ID, tracks_pos)
+                     + padded_seek(_SEEKHEAD_ID, second_pos))
+    assert len(first) == first_span and len(second) == second_span
+    path = tmp_path / "shifted-second-head.mkv"
+    path.write_bytes(make_ebml_header() + make_segment_unknown_size(first + info + second + padding + tracks + cluster))
+    original_reader = MatroskaReader(path)
+    original_heads = [e for e in original_reader.top_level() if e.element_id == _SEEKHEAD_ID]
+    assert original_reader.tracks_indexed_for_strict_readers()
+
+    MatroskaSegmentInfoHeaderEditor().replace_level1_element(
+        path, element_id=_TAGS_ID, new_element_bytes=element(_TAGS_ID, b"x" * 300),
+    )
+
+    reader = MatroskaReader(path)
+    heads = [e for e in reader.top_level() if e.element_id == _SEEKHEAD_ID]
+    assert len(heads) == 2 and heads[0].offset == original_heads[0].offset
+    assert heads[1].offset > original_heads[1].offset
+    assert reader.segment().payload_offset + dict(reader._seek_entries(heads[0]))[_SEEKHEAD_ID] == heads[1].offset
+    assert reader._seek_entries(heads[1]) == [(_CLUSTER_ID, cluster_pos)]
+    assert reader.raw_element(heads[1]) == second
+    assert reader.cluster_elements()[0].offset == reader.segment().payload_offset + cluster_pos
+    assert reader.tracks_indexed_for_strict_readers()
+    for head in heads:
+        payload = reader.payload(head)
+        assert int.from_bytes(payload[2:6], "little") == zlib.crc32(payload[6:])

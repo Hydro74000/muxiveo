@@ -50,6 +50,7 @@ from core.workflows.common.validation_override import validate_final_output
 from core.runner import TaskCancelledError
 from core.matroska.validation import validate_matroska_output
 from core.subtitle_codec import plan_subtitle_codec
+from core.output_commit import OutputBusyError, OutputReservation
 from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
 from core.workflows.encode.runtime.frame_count_guard import (
@@ -106,7 +107,8 @@ from core.matroska.ids import (
 )
 from core.matroska.mux_plan import deterministic_source_identity
 from core.matroska.native_muxer import MatroskaNativeMuxer
-from core.matroska.reader import MatroskaReader
+from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
+from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import MatroskaWriter
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
@@ -746,21 +748,33 @@ class MergeDoviWorkflow(QObject):
         """
         self._cancelled = False
         output_path = self.output_path_for(film1, output_dir, output_basename)
-        # Dossier process neuf, propriété exclusive de cette exécution.
-        process_dir = create_process_work_dir(
-            work_dir,
-            output_path=output_path,
-            fallback_name="dovi_job",
-        )
-        paths = _WorkflowPaths.from_config(
-            process_dir.path, output_dir, film1, output_path.stem, owned_dir=process_dir,
-        )
+        # Destination réservée pour toute la durée du job : un second job vers
+        # la même sortie échoue ici, avant toute préparation.
+        try:
+            reservation = OutputReservation.acquire(output_path)
+        except OutputBusyError as exc:
+            self.workflow_failed.emit(WorkflowStep.VALIDATION, str(exc))
+            return
+        try:
+            # Dossier process neuf, propriété exclusive de cette exécution.
+            process_dir = create_process_work_dir(
+                work_dir,
+                output_path=output_path,
+                fallback_name="dovi_job",
+            )
+            paths = _WorkflowPaths.from_config(
+                process_dir.path, output_dir, film1, output_path.stem, owned_dir=process_dir,
+            )
 
-        outer = ThreadPoolExecutor(max_workers=1)
-        outer.submit(
-            self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
-        )
-        outer.shutdown(wait=False)
+            outer = ThreadPoolExecutor(max_workers=1)
+            outer.submit(
+                self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
+                reservation=reservation,
+            )
+            outer.shutdown(wait=False)
+        except BaseException:
+            reservation.release()
+            raise
 
     def cancel(self) -> None:
         """
@@ -801,6 +815,28 @@ class MergeDoviWorkflow(QObject):
         profile: DoviProfile,
         extra_subtitle_files: tuple[Path, ...] = (),
         metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
+        *,
+        reservation: OutputReservation | None = None,
+    ) -> None:
+        try:
+            self._run_reserved(
+                film1, film2, paths, profile, extra_subtitle_files, metadata_adjustment,
+                reservation=reservation,
+            )
+        finally:
+            if reservation is not None:
+                reservation.release()
+
+    def _run_reserved(
+        self,
+        film1: Path,
+        film2: Path,
+        paths: _WorkflowPaths,
+        profile: DoviProfile,
+        extra_subtitle_files: tuple[Path, ...],
+        metadata_adjustment: MetadataAdjustment,
+        *,
+        reservation: OutputReservation | None,
     ) -> None:
         with self._procs_lock:
             self._run_procs = []
@@ -977,6 +1013,10 @@ class MergeDoviWorkflow(QObject):
             # Nettoyage AVANT le signal terminal : l'UI ne repasse au repos
             # qu'une fois les intermédiaires traités.
             self._discard_failed_run(paths, step)
+        # Destination libérée avant le signal terminal : un job enchaîné sur
+        # la même sortie peut la réserver aussitôt.
+        if reservation is not None:
+            reservation.release()
         if kind == "finished":
             self.workflow_finished.emit(str(paths.output_mkv))
         elif kind == "cancelled":
@@ -1342,6 +1382,9 @@ class MergeDoviWorkflow(QObject):
         needs_conversion = bool(routing and routing.conversion_needed)
         return (needs_conversion and not film2_is_raw) or (
             film2.suffix.lower() != ".mkv" and not film2_is_raw
+        ) or (
+            # Tracks hors du premier SeekHead : illisible par dovi_tool / hdr10plus_tool.
+            film2.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(film2)
         )
 
     @staticmethod
@@ -2185,6 +2228,9 @@ class MergeDoviWorkflow(QObject):
             mux_plan,
             cancel_cb=lambda: self._cancelled,
             external_validator=validate,
+            progress_cb=native_mux_progress_callback(
+                lambda line: self.step_progress.emit(WorkflowStep.REMUX, line),
+            ),
             validation_error_handler=lambda path, message: accept_validation_override(
                 self._validation_override, path, message, lambda: self._cancelled,
                 lambda msg: self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {msg}"),
@@ -2965,15 +3011,31 @@ class MergeDoviWorkflow(QObject):
             return self._extract_first_rpu(path, Path(tmp) / "rpu.bin")
 
     def _extract_first_rpu(self, path: Path, rpu: Path) -> bool:
-        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu."""
+        """Extrait le premier RPU de ``path`` (``extract-rpu -l 1``) ; True si obtenu.
+
+        MKV dont Tracks échappe au premier SeekHead (lecteur strict de dovi_tool) :
+        premières images copiées en Annex B par FFmpeg, puis lues par dovi_tool.
+        """
+        source = path
         try:
+            if path.suffix.lower() == ".mkv" and not strict_demuxer_reads_tracks(path):
+                source = rpu.with_suffix(".hevc")
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                self._run_probe(
+                    [self._bins["ffmpeg"], "-nostdin", "-v", "error", "-y", "-i", str(path), "-map", "0:v:0",
+                     "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-frames:v", "8", "-f", "hevc", str(source)],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             self._run_probe(
-                [self._bins["dovi_tool"], "extract-rpu", "-i", str(path), "-l", "1", "-o", str(rpu)],
+                [self._bins["dovi_tool"], "extract-rpu", "-i", str(source), "-l", "1", "-o", str(rpu)],
                 capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
+        finally:
+            if source != path:
+                source.unlink(missing_ok=True)
         return rpu.is_file() and rpu.stat().st_size > 0
 
     def _film1_dovi_record(self, film1: Path, hevc: Path) -> DolbyVisionConfigRecord | None:
