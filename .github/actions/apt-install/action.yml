@@ -1,0 +1,17 @@
+name: apt-install
+description: >-
+  Installe des paquets Ubuntu depuis archive.ubuntu.com, sans passer par le miroir Azure
+  des runners GitHub (bloqué par intermittence : https://github.com/actions/runner-images/issues/14594).
+  Les sources du runner ne sont pas modifiées : apt lit une copie temporaire.
+inputs:
+  packages:
+    description: Paquets à installer, séparés par des espaces ou des retours à la ligne.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Ubuntu packages (archive.ubuntu.com)
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.packages }}
+      run: bash "$GITHUB_ACTION_PATH/apt-install.sh"

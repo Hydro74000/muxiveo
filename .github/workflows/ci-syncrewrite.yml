@@ -108,12 +108,12 @@ jobs:
 
       - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            libegl1 libgl1 libglib2.0-0 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libegl1 libgl1 libglib2.0-0 libdbus-1-3
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
             libxkbcommon-x11-0
 
       - name: Install Python Dependencies
@@ -163,13 +163,13 @@ jobs:
 
       - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            ffmpeg \
-            libegl1 libgl1 libglib2.0-0 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            ffmpeg
+            libegl1 libgl1 libglib2.0-0 libdbus-1-3
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
             libxkbcommon-x11-0 xvfb
 
       - name: Install media tools (macOS)
