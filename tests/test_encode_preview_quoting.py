@@ -85,6 +85,24 @@ def test_windows_preview_preserves_actual_arguments_with_delayed_expansion(tmp_p
     assert json.loads(result.stdout) == arguments
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Invite cmd.exe réelle requise")
+@pytest.mark.parametrize("delayed", ["on", "off"])
+def test_windows_preview_keeps_pipeline_binary(tmp_path, delayed):
+    source = tmp_path / "source! & unicode.py"
+    source.write_text("import sys;sys.stdout.buffer.write(bytes(range(256))*17)", encoding="utf-8")
+    command = [
+        sys.executable, str(source), "|", sys.executable, "-c",
+        "import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())",
+    ]
+    rendered = preview.format_preview_command(command, platform="win32")
+    result = subprocess.run(
+        f'cmd.exe /d /v:{delayed} /s /c "{rendered}"',
+        capture_output=True, check=False, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == bytes(range(256)) * 17
+
+
 # ---------------------------------------------------------------------------
 # A13 — aperçu remux : même formateur que l'encodage
 # ---------------------------------------------------------------------------
