@@ -8,11 +8,28 @@ n'utilisaient que QCoreApplication continuent de fonctionner.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings
 from PySide6.QtWidgets import QApplication
+
+_SETTINGS_DIR = ""
+
+
+def pytest_configure(config):
+    """Réglages QSettings (IniFormat, portée utilisateur) dans un dossier jetable : un test qui appelle
+    ``AppConfig.save()`` ou ferme la fenêtre principale ne touche jamais les réglages réels."""
+    global _SETTINGS_DIR
+    _SETTINGS_DIR = tempfile.mkdtemp(prefix="muxiveo-tests-settings-")
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, _SETTINGS_DIR)
+
+
+def pytest_unconfigure(config):
+    if _SETTINGS_DIR:
+        shutil.rmtree(_SETTINGS_DIR, ignore_errors=True)
 
 
 @pytest.hookimpl(wrapper=True)
