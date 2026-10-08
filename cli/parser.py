@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
+from cli.plugins import add_plugins_parser
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
@@ -111,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
     version.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     version.set_defaults(func=cmd_version)
+
+    add_plugins_parser(sub)
 
     for name, help_text, func in (
         ("validate", "Valider une config remux.", cmd_validate),

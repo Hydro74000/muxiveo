@@ -187,6 +187,30 @@ jobs:
           fi
           echo "build=false" >> "$GITHUB_OUTPUT"
 
+  # Extensions proposées par Muxiveo (dépôt muxiveo-plugins) : la version épinglée doit être publiée et
+  # vérifiable avant toute publication de Muxiveo.
+  plugins-state:
+    name: Extensions épinglées
+    runs-on: ubuntu-latest
+    needs: release-metadata
+    if: ${{ needs.release-metadata.outputs.publish == 'true' }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
+          git checkout --detach --force "$CHECKOUT_SHA"
+
+      - name: Release épinglée publiée (archives Linux / Windows et SHA-256)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_plugin_release.py
+
   # Suite applicative complète (Linux + contrats Windows) sur le même SHA :
   # condition de la publication, pour les branches, tags et lancements manuels.
   unit-tests:
@@ -561,9 +585,10 @@ jobs:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
     # Canal build (branche quelconque, lancement manuel) : aucun tag ni release.
-    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.unit-tests.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
+    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
       - release-metadata
+      - plugins-state
       - unit-tests
       - build-linux
       - build-windows

@@ -120,6 +120,7 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
     RIFE_HYBRID_MIN_VERSION as _RIFE_HYBRID_MIN_VERSION,
+    RIFE_TRT_MIN_VERSION as _RIFE_TRT_MIN_VERSION,
     RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
     RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
     INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
@@ -445,6 +446,8 @@ class EncodeWorkflow(QObject):
         self._nvencc_bin: str | None = nvencc_bin
         # muxiveo-rife (interpolation d'images) : optionnel, None = indisponible.
         self._rife_bin: str | None = rife_bin
+        self._rife_trt_plugin = ""
+        self._rife_trt_cache = ""
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -554,6 +557,25 @@ class EncodeWorkflow(QObject):
     def set_rife_bin(self, rife_bin: str | None) -> None:
         """Met à jour le chemin vers muxiveo-rife (None = interpolation indisponible)."""
         self._rife_bin = rife_bin or None
+
+    def set_rife_trt_plugin(self, plugin_dir: str | Path | None, cache_dir: str | Path | None = None) -> None:
+        """Extension d'accélération NVIDIA (TensorRT) de MVO-RIFE (None = Vulkan seul).
+
+        Transmise seulement à muxiveo-rife ≥ RIFE_TRT_MIN_VERSION ; il revient seul sur Vulkan si elle est
+        inutilisable (GPU, pilote), l'encodage n'échoue jamais à cause d'elle.
+        """
+        self._rife_trt_plugin = str(plugin_dir) if plugin_dir else ""
+        self._rife_trt_cache = str(cache_dir) if plugin_dir and cache_dir else ""
+
+    def _rife_trt_args(self) -> tuple[str, str]:
+        """(dossier de l'extension, cache) à passer à muxiveo-rife, ("", "") si non applicable."""
+        plugin = self._rife_trt_plugin
+        if not plugin or not self._rife_bin:
+            return "", ""
+        version = _rife_version(str(shutil.which(self._rife_bin) or self._rife_bin))
+        if version is None or version < _RIFE_TRT_MIN_VERSION:
+            return "", ""
+        return plugin, self._rife_trt_cache
 
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
@@ -1038,6 +1060,7 @@ class EncodeWorkflow(QObject):
             raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
+        trt_plugin, trt_cache = self._rife_trt_args()
         rife = _build_rife_stage(
             self._rife_bin,
             factor=int(settings.factor),
@@ -1048,6 +1071,8 @@ class EncodeWorkflow(QObject):
             gpu=settings.gpu,
             mode=settings.mode,
             tta=settings.tta,
+            trt_plugin=trt_plugin,
+            trt_cache=trt_cache,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
@@ -1861,6 +1886,7 @@ class EncodeWorkflow(QObject):
                 size_to_bitrate_kbps_for_video=self._size_to_bitrate_kbps_for_video,
                 rife_bin=self._rife_bin,
                 interpolation_source=self._interpolation_source,
+                rife_trt_args=self._rife_trt_args,
             )
         )
 

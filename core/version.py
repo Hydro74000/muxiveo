@@ -22,8 +22,14 @@ APP_VERSION_LABEL = f"v{APP_VERSION}"
 
 # Outil natif muxiveo-rife (native/muxiveo-rife) : release GitHub épinglée,
 # publiée par le workflow muxiveo-rife.yml sur ce même dépôt.
-MUXIVEO_RIFE_VERSION = "1.3.0"
+MUXIVEO_RIFE_VERSION = "1.4.0"
 MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
+
+# Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »).
+MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
+# Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : version épinglée du plugin mvo-rife-trt.
+MVO_RIFE_TRT_VERSION = "1.0.0"
+MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
 
 
 def muxiveo_rife_asset_url(platform_suffix: str) -> str:

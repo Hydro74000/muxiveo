@@ -78,6 +78,22 @@ def _no_nvof_probe_by_default(monkeypatch):
     monkeypatch.setattr(
         interpolation, "detect_nvof", lambda _rife_bin, **_kw: interpolation.NvofCapability(reason="tests")
     )
+    monkeypatch.setattr(
+        interpolation, "detect_gpu_acceleration",
+        lambda _rife_bin, **_kw: interpolation.GpuAcceleration(
+            interpolation.NvofCapability(reason="tests"), interpolation.TrtCapability(reason="tests"),
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_plugins(monkeypatch, tmp_path_factory):
+    """Extensions et moteurs TensorRT dans un dossier de test, jamais ceux de l'utilisateur."""
+    from core import plugins
+
+    base = tmp_path_factory.mktemp("plugins")
+    monkeypatch.setattr(plugins, "plugins_root", lambda *_a, **_k: base / "plugins")
+    monkeypatch.setattr(plugins, "trt_engine_cache_dir", lambda *_a, **_k: base / "trt-engines")
 
 
 @pytest.fixture(autouse=True)

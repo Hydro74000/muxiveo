@@ -3123,6 +3123,13 @@ Section "Uninstall"
 
   Delete "$INSTDIR\\Uninstall.exe"
   RMDir /r "$INSTDIR"
+
+  ; ── Extensions téléchargées (accélération NVIDIA TensorRT) et cache de leurs moteurs ─────
+  ; Retéléchargeables ; réglages, profils et outils utilisateur conservés.
+  SetShellVarContext current
+  RMDir /r "$LOCALAPPDATA\\Muxiveo\\plugins"
+  RMDir /r "$LOCALAPPDATA\\Muxiveo\\cache\\trt-engines"
+  RMDir "$LOCALAPPDATA\\Muxiveo\\cache"
   Delete "$SMPROGRAMS\\Muxiveo\\Muxiveo.lnk"
   RMDir  "$SMPROGRAMS\\Muxiveo"
   Delete "$DESKTOP\\Muxiveo.lnk"

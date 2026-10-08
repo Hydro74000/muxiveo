@@ -51,7 +51,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
@@ -101,6 +101,7 @@ from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.plugin_controller import TrtPluginController
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -703,6 +704,21 @@ class _PlaceholderPage(QWidget):
 # Dashboard
 # ---------------------------------------------------------------------------
 
+class _ClickableBadge(QLabel):
+    """Badge de tableau de bord cliquable (extension d'accélération NVIDIA)."""
+
+    clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
@@ -711,8 +727,11 @@ class DashboardPage(QWidget):
     _vulkan_detected = Signal(str, object)
     # Réémis depuis le thread principal (après le câblage de la fenêtre) vers les panneaux.
     vulkan_ready = Signal(str, object)
-    # NvofCapability : flux optique NVIDIA du moteur d'interpolation hybride (badge informatif).
-    _nvof_detected = Signal(object)
+    # GpuAcceleration : flux optique NVIDIA (badge informatif) et TensorRT, sondés en une fois.
+    _accel_detected = Signal(object)
+    # TrtCapability : compatibilité de l'accélération NVIDIA (TensorRT), pour le contrôleur d'extension.
+    trt_capability = Signal(object)
+    trt_badge_clicked = Signal()
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
@@ -745,9 +764,10 @@ class DashboardPage(QWidget):
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
-        self._nvof_detected.connect(self._on_nvof_detected, Qt.ConnectionType.QueuedConnection)
+        self._accel_detected.connect(self._on_accel_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_badge: QLabel | None = None
         self._nvof_badge: QLabel | None = None
+        self._trt_badge: _ClickableBadge | None = None
         self._build_ui()
         self._start_hw_detection()
 
@@ -978,6 +998,11 @@ class DashboardPage(QWidget):
         # Flux optique NVIDIA (CUDA) de l'interpolation hybride, sondé par muxiveo-rife.
         self._nvof_badge = self._make_encoder_badge("NVOF·CUDA", "pending")
         rl.addWidget(self._nvof_badge)
+        # Extension d'accélération NVIDIA (TensorRT) : visible seulement sur machine compatible ou si installée.
+        self._trt_badge = _ClickableBadge()
+        self._trt_badge.clicked.connect(self.trt_badge_clicked.emit)
+        self._trt_badge.hide()
+        rl.addWidget(self._trt_badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -1049,7 +1074,7 @@ class DashboardPage(QWidget):
         self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
         self._executor.submit(self._run_vulkan_detection)
-        self._executor.submit(self._run_nvof_detection)
+        self._executor.submit(self._run_accel_detection)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
@@ -1098,12 +1123,71 @@ class DashboardPage(QWidget):
             else translate_text("Vulkan indisponible pour FFmpeg : {reason}", reason=reason or "?")
         )
 
-    def _run_nvof_detection(self) -> None:
-        """Thread worker : flux optique NVIDIA sur le GPU de muxiveo-rife (``--list-gpus``)."""
+    def _run_accel_detection(self) -> None:
+        """Thread worker : flux optique NVIDIA et TensorRT sur le GPU de muxiveo-rife (``--list-gpus``)."""
+        from core import plugins
         from core.workflows.encode import interpolation
 
         rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
-        self._nvof_detected.emit(interpolation.detect_nvof(str(rife)))
+        installed = plugins.installed_plugin()
+        self._accel_detected.emit(
+            interpolation.detect_gpu_acceleration(str(rife), trt_plugin=str(installed.path) if installed else "")
+        )
+
+    def start_accel_detection(self) -> None:
+        """Nouvelle sonde des accélérations NVIDIA (après installation ou suppression de l'extension)."""
+        if self._nvof_badge is not None:
+            self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "pending")
+        self._executor.submit(self._run_accel_detection)
+
+    def _on_accel_detected(self, acceleration: object) -> None:
+        """Slot Qt (thread principal) : badge NVOF, puis compatibilité TensorRT au contrôleur d'extension."""
+        self._on_nvof_detected(getattr(acceleration, "nvof", None))
+        trt = getattr(acceleration, "trt", None)
+        if trt is not None:
+            self.trt_capability.emit(trt)
+
+    def set_trt_state(self, state: object) -> None:
+        """Badge « TensorRT » selon l'état de l'extension (TrtState)."""
+        badge = self._trt_badge
+        if badge is None:
+            return
+        if not getattr(state, "visible", False):
+            badge.hide()
+            return
+        badge.show()
+        capability = getattr(state, "capability", None)
+        device = str(getattr(capability, "device", "") or "")
+        installed = getattr(state, "installed", None)
+        busy = str(getattr(state, "busy", "") or "")
+        if busy:
+            progress = int(getattr(state, "progress", -1))
+            label = f"TensorRT {progress} %" if busy in {"install", "update"} and progress >= 0 else "TensorRT …"
+            self._apply_encoder_badge_state(badge, label, "pending")
+            badge.setToolTip(translate_text("Accélération NVIDIA (TensorRT) : opération en cours."))
+        elif installed is None:
+            self._apply_encoder_badge_state(badge, "TensorRT +", "pending")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.",
+                device=device or "?",
+            ))
+        elif getattr(state, "update_available", False):
+            self._apply_encoder_badge_state(badge, "TensorRT ↑", "pending")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions."
+            ))
+        elif getattr(state, "ready", False):
+            self._apply_encoder_badge_state(badge, "TensorRT", "available")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.", device=device or "?",
+            ))
+        else:
+            reason = str(getattr(capability, "reason", "") or "?")
+            self._apply_encoder_badge_state(badge, "TensorRT", "unavailable")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.",
+                reason=reason,
+            ))
 
     def _on_nvof_detected(self, capability: object) -> None:
         """Slot Qt (thread principal) : badge NVOF et info-bulle (information seulement)."""
@@ -1679,6 +1763,9 @@ class MainWindow(QMainWindow):
         self._stack.setMinimumHeight(0)
         self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+        # Extension d'accélération NVIDIA (TensorRT) : état partagé par tableau de bord, Paramètres et Encodage.
+        self._trt_controller = TrtPluginController(self._config, self)
+
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
         self._stack.addWidget(self._dashboard)
@@ -2074,6 +2161,7 @@ class MainWindow(QMainWindow):
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._dashboard.vulkan_ready.connect(self._encode_panel.set_vulkan_capability)
+        self._wire_trt_extension()
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
         self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
@@ -2095,6 +2183,62 @@ class MainWindow(QMainWindow):
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
+
+    def _wire_trt_extension(self) -> None:
+        """Extension TensorRT : sonde → contrôleur → badge, section Extensions, encodages."""
+        ctrl = self._trt_controller
+        self._dashboard.trt_capability.connect(ctrl.set_capability)
+        self._dashboard.trt_badge_clicked.connect(self._on_trt_badge_clicked)
+        ctrl.state_changed.connect(self._dashboard.set_trt_state)
+        ctrl.state_changed.connect(self._settings_panel.set_trt_state)
+        ctrl.state_changed.connect(self._on_trt_state_changed)
+        ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
+        ctrl.workflow_changed.connect(self._apply_trt_plugin_to_encode)
+        ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
+        self._settings_panel.trt_install_requested.connect(self._open_trt_install_dialog)
+        self._settings_panel.trt_update_requested.connect(ctrl.update)
+        self._settings_panel.trt_remove_requested.connect(self._on_trt_remove_requested)
+        self._settings_panel.trt_enabled_toggled.connect(ctrl.set_enabled)
+        self._settings_panel.trt_auto_update_toggled.connect(ctrl.set_auto_update)
+        self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
+        self._apply_trt_plugin_to_encode()
+        ctrl.cleanup()
+
+    def _apply_trt_plugin_to_encode(self) -> None:
+        self._encode_panel.set_trt_plugin(self._trt_controller.plugin_dir())
+
+    def _on_trt_state_changed(self, state: object) -> None:
+        self._encode_panel.set_trt_state(state)
+
+    def _on_trt_badge_clicked(self) -> None:
+        state = self._trt_controller.state()
+        if state.installed is None and state.compatible and not state.busy:
+            self._open_trt_install_dialog()
+            return
+        self._sidebar.select_page(5)
+        self._settings_panel.show_extensions()
+
+    def _open_trt_install_dialog(self) -> None:
+        from ui.dialogs.plugin_install_dialog import PluginInstallDialog
+
+        state = self._trt_controller.state()
+        if state.busy or state.installed is not None:
+            return
+        device = str(getattr(state.capability, "device", "") or "")
+        if PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted:
+            self._trt_controller.install()
+
+    def _on_trt_remove_requested(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            translate_text("Accélération NVIDIA (TensorRT)"),
+            translate_text(
+                "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU "
+                "(Vulkan) ; l'extension peut être réinstallée à tout moment."
+            ),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._trt_controller.remove()
 
     def _apply_locale(self) -> None:
         set_current_language(self._config.language)
@@ -3150,6 +3294,9 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
+            trt_controller = getattr(self, "_trt_controller", None)
+            if trt_controller is not None:
+                trt_controller.shutdown()
             for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer"):
                 timer = getattr(self, name, None)
                 if timer is not None:

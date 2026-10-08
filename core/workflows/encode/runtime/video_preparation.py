@@ -45,6 +45,8 @@ class VideoOnlyCommandBuilderCallbacks:
     # Interpolation RIFE : binaire muxiveo-rife et propriétés couleur/départ de la source.
     rife_bin: str | None = None
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
+    # Accélération NVIDIA (TensorRT) : dossier de l'extension et cache des moteurs ("" = Vulkan seul).
+    rife_trt_args: Callable[[], tuple[str, str]] | None = None
 
 
 _RAW_VIDEO_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc"})
@@ -131,6 +133,7 @@ class VideoOnlyCommandBuilder:
             vf=decode_vf,
             pre_input_args=decode_pre,
         )
+        trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
         rife = build_rife_stage(
             cb.rife_bin,
             factor=int(settings.factor),
@@ -141,6 +144,8 @@ class VideoOnlyCommandBuilder:
             gpu=settings.gpu,
             mode=settings.mode,
             tta=settings.tta,
+            trt_plugin=trt_plugin,
+            trt_cache=trt_cache,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

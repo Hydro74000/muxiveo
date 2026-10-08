@@ -153,6 +153,7 @@ Le tableau de bord affiche :
 - les dossiers configurés (travail, sortie, app data)
 - les encodeurs logiciels vus par `ffmpeg -encoders`
 - les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
+- les filtres GPU et accélérations NVIDIA de l'interpolation : `Vulkan`, `NVOF·CUDA` et, sur carte NVIDIA compatible seulement, l'extension `TensorRT`
 - les plans d'encodage et badges utiles pour visualiser plus clairement les traitements prepares
 
 > Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
@@ -260,6 +261,42 @@ Ergonomie du panneau :
 - progression "la plus lente" pour les preparations video multi-pistes, avec suivi plus detaille par traitement disponible
 - **suppression de source accélérée** via suivi incrémental (pas de rescan global à chaque retrait)
 - covers TMDB cliquables dans les résultats de recherche (aperçu grand format avant validation)
+
+### Interpolation d'images (MVO-RIFE)
+
+La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s. Préréglages :
+
+| Préréglage | Traitement |
+|---|---|
+| Rapide | RIFE v4.6 |
+| Équilibré (défaut) | hybride : RIFE v4.6 + compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits) |
+| Qualité | hybride avec RIFE v4.15 |
+| Light | RIFE v4.15-lite en mode Fast, pour les petites cartes graphiques |
+
+Le calcul se fait sur le GPU (Vulkan, toutes marques). Sur carte NVIDIA, le moteur hybride utilise en plus le flux
+optique matériel (NVOF) quand il est disponible.
+
+#### Accélération NVIDIA (TensorRT)
+
+Extension facultative pour les cartes NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récentes, sous Linux et Windows :
+l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec des images identiques à l'œil.
+
+- **Proposée seulement aux machines compatibles** : badge `TensorRT +` du tableau de bord, indication unique sur la
+  ligne MVO-RIFE, section **Extensions** des Paramètres. Rien n'apparaît sur une autre carte ou sous macOS.
+- **Installation en un clic** après acceptation de la licence NVIDIA : téléchargement vérifié (SHA-256 publié par
+  GitHub, puis empreinte de chaque fichier), préparation des moteurs pour la carte, sans redémarrage.
+- **Mises à jour automatiques** (désactivables) quand une nouvelle version de Muxiveo épingle une nouvelle version de
+  l'extension ; l'ancienne version reste utilisée jusqu'à la bascule.
+- **Repli automatique** : sans extension, extension désactivée, pilote trop ancien ou erreur, l'interpolation continue
+  sur Vulkan ; un encodage n'échoue jamais à cause d'elle.
+- **Emplacements**, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage comprise) :
+  `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
+  `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows.
+- **Désinstallation** : bouton **Supprimer** des Paramètres > Extensions ou `muxiveo --cli plugins remove` ; le
+  désinstalleur Windows retire aussi ces deux dossiers.
+- Sans interface : `muxiveo --cli plugins list | install --accept-license | update | remove`.
+
+Le code de l'extension est publié dans [muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
 
 ### Profils
 
@@ -617,6 +654,7 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 - **Encodage** : profil DoVi, compat-id, buffer RAM
 - **Logs** : niveau de verbosite, journal fichier, rotation et capture des sorties outils dans les options
 - **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`), génération optionnelle de `.nfo` (`generate_nfo`)
+- **Extensions** (cartes NVIDIA compatibles) : accélération NVIDIA (TensorRT) de l'interpolation — installation, mise à jour, suppression, activation et mises à jour automatiques
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
 
@@ -892,6 +930,7 @@ Sous-commandes disponibles :
 | `remux` / `run` | exécute un remux headless (avec synchronisation optionnelle) |
 | `batch` | applique un template ou profil à plusieurs entrées / dossiers |
 | `profile` | valide, prévisualise ou applique un profil décisionnel |
+| `plugins` | extensions facultatives (accélération NVIDIA TensorRT) : `list`, `install --accept-license`, `update`, `remove` |
 | `sync-scan` | analyse le calage acoustique FFT ou par sous-titres |
 | `shift-subs` | décale physiquement des sous-titres (SRT, ASS) |
 | `hybrid` | assemble automatiquement une référence vidéo et un donneur audio/subs |

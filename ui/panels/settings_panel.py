@@ -84,6 +84,12 @@ _DEPENDENT_FIELDS: dict[tuple[str, str], tuple[str, str]] = {
 
 class SettingsPanel(QWidget):
     settings_saved = Signal()
+    # Extension d'accélération NVIDIA (TensorRT), traitée par TrtPluginController.
+    trt_install_requested = Signal()
+    trt_update_requested = Signal()
+    trt_remove_requested = Signal()
+    trt_enabled_toggled = Signal(bool)
+    trt_auto_update_toggled = Signal(bool)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,6 +97,9 @@ class SettingsPanel(QWidget):
         self._field_widgets: dict[tuple[str, str], QWidget] = {}
         self._slider_value_labels: dict[tuple[str, str], QLabel] = {}
         self._status_label: QLabel | None = None
+        self._scroll: QScrollArea | None = None
+        self._extensions_label: QLabel | None = None
+        self._extensions_card: QWidget | None = None
         self._build_ui()
         self._load_from_config()
         self._sync_dependent_field_states()
@@ -106,6 +115,7 @@ class SettingsPanel(QWidget):
         root.setSpacing(0)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(
@@ -139,6 +149,14 @@ class SettingsPanel(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(_separator())
 
+        # Extensions : visibles seulement sur machine compatible (ou si déjà installées).
+        self._extensions_label = _section_label("EXTENSIONS")
+        self._extensions_card = self._build_extensions_card()
+        self._extensions_label.hide()
+        self._extensions_card.hide()
+        layout.addWidget(self._extensions_label)
+        layout.addWidget(self._extensions_card)
+
         _section_order = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3, "paths": 4}
         groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 4))
         for group in groups:
@@ -167,6 +185,104 @@ class SettingsPanel(QWidget):
 
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
+
+    def _build_extensions_card(self) -> QWidget:
+        card = _card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
+        layout.setSpacing(_scale(10))
+        title = QLabel("Accélération NVIDIA (TensorRT)")
+        title.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:{_font_px(13)}px;font-weight:700;background:transparent;")
+        desc = QLabel(
+            "Exécute l'interpolation MVO-RIFE sur les Tensor Cores des cartes NVIDIA (NVIDIA TensorRT for RTX) : "
+            "traitement nettement plus rapide, images identiques à l'œil. Sans elle, l'interpolation fonctionne "
+            "sur le GPU (Vulkan)."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
+        self._trt_status = QLabel("")
+        self._trt_status.setWordWrap(True)
+        self._trt_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._trt_status.setStyleSheet(f"color:{_C.TEXT_PRI};font-size:{_font_px(11)}px;background:transparent;")
+        self._trt_message = QLabel("")
+        self._trt_message.setWordWrap(True)
+        self._trt_message.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
+
+        self._trt_enabled_box = QCheckBox("Utiliser l'accélération TensorRT pour l'interpolation")
+        self._trt_enabled_box.setStyleSheet(_checkbox_style())
+        self._trt_enabled_box.setChecked(bool(getattr(self._config, "trt_enabled", True)))
+        self._trt_enabled_box.toggled.connect(self.trt_enabled_toggled.emit)
+        self._trt_auto_box = QCheckBox("Mises à jour automatiques")
+        self._trt_auto_box.setStyleSheet(_checkbox_style())
+        self._trt_auto_box.setChecked(bool(getattr(self._config, "plugins_auto_update", True)))
+        self._trt_auto_box.toggled.connect(self.trt_auto_update_toggled.emit)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(_scale(8))
+        buttons.addStretch()
+        self._trt_install_btn = _primary_button("Installer…")
+        self._trt_install_btn.clicked.connect(self.trt_install_requested.emit)
+        self._trt_update_btn = _primary_button("Mettre à jour")
+        self._trt_update_btn.clicked.connect(self.trt_update_requested.emit)
+        self._trt_remove_btn = _secondary_button("Supprimer")
+        self._trt_remove_btn.clicked.connect(self.trt_remove_requested.emit)
+        for btn in (self._trt_install_btn, self._trt_update_btn, self._trt_remove_btn):
+            buttons.addWidget(btn)
+
+        for widget in (title, desc, self._trt_status, self._trt_message, self._trt_enabled_box, self._trt_auto_box):
+            layout.addWidget(widget)
+        layout.addLayout(buttons)
+        return card
+
+    def set_trt_state(self, state: object) -> None:
+        """Section Extensions selon l'état de l'extension TensorRT (TrtState)."""
+        if self._extensions_card is None or self._extensions_label is None:
+            return
+        visible = bool(getattr(state, "visible", False))
+        self._extensions_label.setVisible(visible)
+        self._extensions_card.setVisible(visible)
+        if not visible:
+            return
+        capability = getattr(state, "capability", None)
+        device = str(getattr(capability, "device", "") or "")
+        installed = getattr(state, "installed", None)
+        busy = str(getattr(state, "busy", "") or "")
+        progress = int(getattr(state, "progress", -1))
+        if busy == "remove":
+            status = translate_text("Suppression en cours…")
+        elif busy == "warmup":
+            status = translate_text("Préparation des moteurs TensorRT pour cette carte…")
+        elif busy:
+            status = translate_text("Téléchargement : {progress} %", progress=progress) if progress >= 0 else translate_text("Téléchargement…")
+        elif installed is None:
+            status = translate_text("Non installée. GPU compatible : {device}.", device=device or "?")
+        else:
+            size = round(installed.size_bytes / 1e6)
+            ready = bool(getattr(state, "ready", False))
+            status = translate_text(
+                "Version {version} installée ({size} Mo) dans {path}.", version=installed.version, size=size,
+                path=str(installed.path),
+            ) + " " + (
+                translate_text("Active sur {device}.", device=device or "?") if ready
+                else translate_text("Inutilisable : {reason}.", reason=str(getattr(capability, "reason", "") or "?"))
+            )
+            if getattr(state, "update_available", False):
+                status += " " + translate_text("Mise à jour disponible.")
+        self._trt_status.setText(status)
+        self._trt_message.setText(str(getattr(state, "message", "") or ""))
+        self._trt_message.setVisible(bool(getattr(state, "message", "")))
+        self._trt_install_btn.setVisible(installed is None)
+        self._trt_install_btn.setEnabled(not busy and bool(getattr(state, "compatible", False)))
+        self._trt_update_btn.setVisible(bool(getattr(state, "update_available", False)))
+        self._trt_update_btn.setEnabled(not busy)
+        self._trt_remove_btn.setVisible(installed is not None)
+        self._trt_remove_btn.setEnabled(not busy)
+        self._trt_enabled_box.setEnabled(installed is not None)
+
+    def show_extensions(self) -> None:
+        """Fait défiler la page jusqu'à la section Extensions."""
+        if self._scroll is not None and self._extensions_label is not None and self._extensions_label.isVisible():
+            self._scroll.ensureWidgetVisible(self._extensions_label, 0, _scale(24))
 
     def _build_group_card(self, group: dict[str, Any]) -> QWidget:
         section = group["section"]

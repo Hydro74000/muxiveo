@@ -1401,6 +1401,10 @@ class AppConfig:
             "",
         )
         self.generate_nfo = self._resolve_bool("metadata", "generate_nfo", "metadata/generate_nfo", True)
+        # Extensions (core/plugins.py) : accélération NVIDIA TensorRT de MVO-RIFE.
+        self.trt_enabled = self._resolve_bool("plugins", "tensorrt_enabled", "plugins/tensorrt_enabled", True)
+        self.plugins_auto_update = self._resolve_bool("plugins", "auto_update", "plugins/auto_update", True)
+        self.trt_hint_shown = str(self._settings.value("plugins/tensorrt_hint_shown", "false") or "").lower() == "true"
 
     def reload(self) -> None:
         self._ini = _load_ini()
@@ -1480,6 +1484,9 @@ class AppConfig:
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.setValue("metadata/generate_nfo", "true" if self.generate_nfo else "false")
+        s.setValue("plugins/tensorrt_enabled", "true" if self.trt_enabled else "false")
+        s.setValue("plugins/auto_update", "true" if self.plugins_auto_update else "false")
+        s.setValue("plugins/tensorrt_hint_shown", "true" if self.trt_hint_shown else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
 
@@ -1693,6 +1700,10 @@ class AppConfig:
                 "tmdb_api_key": self.tmdb_api_key,
                 "tmdb_bearer_token": self.tmdb_bearer_token,
                 "generate_nfo": self.generate_nfo,
+            },
+            "plugins": {
+                "tensorrt_enabled": self.trt_enabled,
+                "auto_update": self.plugins_auto_update,
             },
         }
 

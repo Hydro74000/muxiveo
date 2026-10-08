@@ -77,6 +77,8 @@ INTERPOLATION_TTA_LEVELS: tuple[int, ...] = (1, 2, 4, 8)
 RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
 # Moteur hybride (--engine hybrid, flux optique NVIDIA facultatif) : release 1.3.0.
 RIFE_HYBRID_MIN_VERSION: tuple[int, int, int] = (1, 3, 0)
+# Plugin d'accélération NVIDIA TensorRT (--trt-plugin / --trt-cache) : release 1.4.0.
+RIFE_TRT_MIN_VERSION: tuple[int, int, int] = (1, 4, 0)
 
 
 def interpolation_preset(quality: str | None) -> InterpolationPreset:
@@ -346,12 +348,16 @@ def build_rife_stage(
     gpu: int = -1,
     mode: str = "normal",
     tta: int = 1,
+    trt_plugin: str = "",
+    trt_cache: str = "",
 ) -> list[str]:
     """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
 
     ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
     ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
     Préréglage hybride : ``--engine hybrid`` (flux optique NVIDIA utilisé s'il est disponible).
+    ``trt_plugin`` : dossier de l'accélération NVIDIA (TensorRT) ; muxiveo-rife revient seul sur Vulkan si
+    elle est inutilisable (ne le passer qu'à muxiveo-rife ≥ RIFE_TRT_MIN_VERSION).
     """
     preset = interpolation_preset(quality)
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
@@ -373,6 +379,10 @@ def build_rife_stage(
         cmd.extend(["--gpu", str(int(gpu))])
     if int(tta) > 1:
         cmd.extend(["--tta", str(int(tta))])
+    if trt_plugin:
+        cmd.extend(["--trt-plugin", str(trt_plugin)])
+        if trt_cache:
+            cmd.extend(["--trt-cache", str(trt_cache)])
     return cmd
 
 
@@ -431,39 +441,101 @@ class NvofCapability:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class TrtCapability:
+    """Accélération NVIDIA (TensorRT) de muxiveo-rife sur son GPU par défaut.
+
+    ``compatible`` : GPU et pilote compatibles (extension proposable) ; ``ready`` : extension fournie et
+    réellement utilisable sur ce GPU. Information seulement : muxiveo-rife revient seul sur Vulkan.
+    """
+
+    compatible: bool = False
+    ready: bool = False
+    device: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class GpuAcceleration:
+    """Accélérations NVIDIA facultatives sondées en un seul ``muxiveo-rife --list-gpus``."""
+
+    nvof: NvofCapability
+    trt: TrtCapability
+
+
+def _resolve_rife(rife_bin: str | None) -> str | None:
+    resolved = shutil.which(str(rife_bin)) if rife_bin else None
+    if not resolved and rife_bin and Path(rife_bin).is_file():
+        resolved = str(rife_bin)
+    return resolved
+
+
+def detect_gpu_acceleration(
+    rife_bin: str | None, *, trt_plugin: str = "", gpu: int = -1, timeout: float = 90.0,
+) -> GpuAcceleration:
+    """Flux optique NVIDIA (≥ 1.3.0) et TensorRT (≥ 1.4.0) sur le GPU d'encodage de muxiveo-rife.
+
+    ``gpu`` : index Vulkan (-1 = GPU par défaut). ``trt_plugin`` : dossier de l'extension installée.
+    """
+    return _probe_acceleration(rife_bin, trt_plugin, gpu, timeout)
+
+
+def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout: float) -> GpuAcceleration:
+    resolved = _resolve_rife(rife_bin)
+    if not resolved:
+        reason = "muxiveo-rife introuvable"
+        return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
+    version = rife_version(resolved)
+    installed = ".".join(map(str, version)) if version else "?"
+    if version is None or version < RIFE_HYBRID_MIN_VERSION:
+        required = ".".join(map(str, RIFE_HYBRID_MIN_VERSION))
+        reason = f"muxiveo-rife {required} ou plus récent requis (installé : {installed})"
+        return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
+    with_trt = version >= RIFE_TRT_MIN_VERSION
+    cmd = [resolved, "--list-gpus"]
+    if with_trt and trt_plugin:
+        cmd.extend(["--trt-plugin", str(trt_plugin)])
+    try:
+        # Binaire RIFE configuré ; arguments constants (et dossier de l'extension), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
+            cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
+        )
+        payload = json.loads(result.stdout or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        reason = f"liste des GPU illisible ({type(exc).__name__})"
+        return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
+    gpus = [g for g in payload.get("gpus") or [] if isinstance(g, dict)] if isinstance(payload, dict) else []
+    index = int(gpu) if int(gpu) >= 0 else int(payload.get("default", -1) if isinstance(payload, dict) else -1)
+    chosen = next((g for g in gpus if g.get("index") == index), None)
+    if chosen is None:
+        reason = "aucun GPU Vulkan"
+        return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
+    device = str(chosen.get("name") or "")
+    nvof = (
+        NvofCapability(available=True, device=device) if chosen.get("nvof") is True
+        else NvofCapability(device=device, reason=str(chosen.get("nvof_status") or "indisponible"))
+    )
+    if not with_trt:
+        required = ".".join(map(str, RIFE_TRT_MIN_VERSION))
+        trt = TrtCapability(device=device, reason=f"muxiveo-rife {required} ou plus récent requis (installé : {installed})")
+    else:
+        compatible = chosen.get("trt_compatible") is True
+        trt = TrtCapability(
+            compatible=compatible,
+            ready=compatible and chosen.get("trt") is True,
+            device=device,
+            reason=str(chosen.get("trt_status") or ""),
+        )
+    return GpuAcceleration(nvof, trt)
+
+
 def detect_nvof(rife_bin: str | None, *, gpu: int = -1, timeout: float = 60.0) -> NvofCapability:
     """Disponibilité du flux optique NVIDIA, sondée par ``muxiveo-rife --list-gpus`` (≥ 1.3.0).
 
     ``gpu`` : index Vulkan (-1 = GPU par défaut de muxiveo-rife, celui des encodages).
     """
-    resolved = shutil.which(str(rife_bin)) if rife_bin else None
-    if not resolved and rife_bin and Path(rife_bin).is_file():
-        resolved = str(rife_bin)
-    if not resolved:
-        return NvofCapability(reason="muxiveo-rife introuvable")
-    version = rife_version(resolved)
-    if version is None or version < RIFE_HYBRID_MIN_VERSION:
-        installed = ".".join(map(str, version)) if version else "?"
-        required = ".".join(map(str, RIFE_HYBRID_MIN_VERSION))
-        return NvofCapability(reason=f"muxiveo-rife {required} ou plus récent requis (installé : {installed})")
-    try:
-        # Binaire RIFE configuré ; seul argument constant --list-gpus, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [resolved, "--list-gpus"], capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
-        )
-        payload = json.loads(result.stdout or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        return NvofCapability(reason=f"liste des GPU illisible ({type(exc).__name__})")
-    gpus = [g for g in payload.get("gpus") or [] if isinstance(g, dict)] if isinstance(payload, dict) else []
-    index = int(gpu) if int(gpu) >= 0 else int(payload.get("default", -1) if isinstance(payload, dict) else -1)
-    chosen = next((g for g in gpus if g.get("index") == index), None)
-    if chosen is None:
-        return NvofCapability(reason="aucun GPU Vulkan")
-    device = str(chosen.get("name") or "")
-    if chosen.get("nvof") is True:
-        return NvofCapability(available=True, device=device)
-    return NvofCapability(device=device, reason=str(chosen.get("nvof_status") or "indisponible"))
+    return _probe_acceleration(rife_bin, "", gpu, timeout).nvof
 
 
 @dataclass(frozen=True)
@@ -770,6 +842,10 @@ __all__ = [
     "NvofCapability",
     "detect_nvof",
     "RIFE_HYBRID_MIN_VERSION",
+    "RIFE_TRT_MIN_VERSION",
+    "GpuAcceleration",
+    "TrtCapability",
+    "detect_gpu_acceleration",
     "RIFE_MIN_VERSION",
     "RIFE_TTA_MIN_VERSION",
     "interpolation_preset",

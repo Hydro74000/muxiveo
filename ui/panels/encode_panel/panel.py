@@ -130,6 +130,8 @@ class EncodePanel(QWidget):
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
+    # Indication « accélération NVIDIA disponible » cliquée : dialogue d'installation (fenêtre principale).
+    trt_install_requested    = Signal()
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
     _hw_detected             = Signal(object, object, object, object, object, object, object)
@@ -209,6 +211,9 @@ class EncodePanel(QWidget):
         self._vaapi_drivers: dict[str, str] = {}
         # NLMeans 10 bits sur le GPU (Vulkan détecté au lancement).
         self._vulkan_nlmeans = False
+        # Extension d'accélération NVIDIA (TensorRT) : dossier transmis aux encodages et état (TrtState).
+        self._trt_plugin_dir = ""
+        self._trt_state: object | None = None
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -1801,6 +1806,16 @@ class EncodePanel(QWidget):
             self._interp_tta_combo.addItem("TTA : Désactivé" if level == 1 else f"TTA : ×{level}", level)
         self._interp_tta_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_fps_label = self._filter_tech_label("")
+        # Indication discrète, affichée une seule fois, sur machine NVIDIA compatible sans l'extension.
+        self._trt_hint = QLabel()
+        self._trt_hint.setTextFormat(Qt.TextFormat.RichText)
+        self._trt_hint.setText(
+            "<a href='install' style='color:" + _C.ACCENT + ";'>"
+            + translate_text("Accélération NVIDIA disponible (TensorRT) — Installer…") + "</a>"
+        )
+        self._trt_hint.setStyleSheet("background:transparent;")
+        self._trt_hint.linkActivated.connect(lambda _link: self.trt_install_requested.emit())
+        self._trt_hint.hide()
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
             self._filter_tech_label("MVO-RIFE"),
@@ -1809,6 +1824,7 @@ class EncodePanel(QWidget):
             self._interp_mode_combo,
             self._interp_tta_combo,
             self._interp_fps_label,
+            self._trt_hint,
         ))
         self._sync_interpolation_availability()
 
@@ -1854,6 +1870,7 @@ class EncodePanel(QWidget):
             self._set_combo_data(self._interp_mode_combo, "fast")
         self._interp_mode_combo.setEnabled(enabled and not light)
         self._interp_tta_combo.setEnabled(enabled)
+        self._sync_trt_hint()
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
     def _interpolation_fps_hint(self) -> str:
@@ -2459,6 +2476,37 @@ class EncodePanel(QWidget):
         self._update_passthrough_controls()
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
+
+    def set_trt_plugin(self, plugin_dir: str) -> None:
+        """Dossier de l'accélération NVIDIA (TensorRT) à passer à MVO-RIFE ("" : Vulkan seul)."""
+        from core.plugins import trt_engine_cache_dir
+
+        self._trt_plugin_dir = plugin_dir or ""
+        self._workflow.set_rife_trt_plugin(self._trt_plugin_dir or None, trt_engine_cache_dir())
+        self._refresh_video_source_rows()
+        self._rebuild_preview()
+
+    def set_trt_state(self, state: object) -> None:
+        """État de l'extension TensorRT (TrtState) : badge « TRT » et indication d'installation."""
+        self._trt_state = state
+        self._sync_trt_hint()
+        self._refresh_video_source_rows()
+
+    def _sync_trt_hint(self) -> None:
+        if not hasattr(self, "_trt_hint"):
+            return
+        state = self._trt_state
+        offer = (
+            state is not None and bool(getattr(state, "compatible", False))
+            and getattr(state, "installed", None) is None and not getattr(state, "busy", "")
+            and self._interp_cb.isChecked()
+        )
+        if offer and not self._trt_hint.isVisible() and not getattr(self._config, "trt_hint_shown", False):
+            self._trt_hint.show()
+            self._config.trt_hint_shown = True
+            self._config.save()
+        elif not offer:
+            self._trt_hint.hide()
 
     def set_vulkan_capability(self, ffmpeg_bin: str, capability: object) -> None:
         """Capacité Vulkan détectée au lancement (tableau de bord) : workflow et badges NLMeans."""
@@ -4750,6 +4798,8 @@ class EncodePanel(QWidget):
                 badge += " Fast"
             if int(interpolation.tta) > 1:
                 badge += f" TTA ×{int(interpolation.tta)}"
+            if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
+                badge += " TRT"
             badges.append(badge)
         codec = self._video_state_target_codec(state)
         if badges and is_nvencc_codec(codec):

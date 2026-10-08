@@ -5494,5 +5494,153 @@
   "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.": {
     "fra": "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.",
     "eng": "NVIDIA optical flow unavailable: {reason}. Hybrid interpolation remains available on the Vulkan GPU alone."
+  },
+  "Accélération NVIDIA (TensorRT)": {
+    "fra": "Accélération NVIDIA (TensorRT)",
+    "eng": "NVIDIA acceleration (TensorRT)"
+  },
+  "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU (Vulkan) ; l'extension peut être réinstallée à tout moment.": {
+    "fra": "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU (Vulkan) ; l'extension peut être réinstallée à tout moment.",
+    "eng": "Remove NVIDIA acceleration (TensorRT)? MVO-RIFE interpolation will keep running on the GPU (Vulkan); the extension can be reinstalled at any time."
+  },
+  "Accélération NVIDIA (TensorRT) : opération en cours.": {
+    "fra": "Accélération NVIDIA (TensorRT) : opération en cours.",
+    "eng": "NVIDIA acceleration (TensorRT): operation in progress."
+  },
+  "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.": {
+    "fra": "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.",
+    "eng": "NVIDIA acceleration (TensorRT) available for {device}: click to install it."
+  },
+  "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions.": {
+    "fra": "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions.",
+    "eng": "NVIDIA acceleration (TensorRT): update available. Click to open extensions."
+  },
+  "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.": {
+    "fra": "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.",
+    "eng": "NVIDIA acceleration (TensorRT) active: MVO-RIFE interpolation on {device}."
+  },
+  "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.": {
+    "fra": "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.",
+    "eng": "NVIDIA acceleration (TensorRT) installed but unusable: {reason}. Interpolation stays on Vulkan."
+  },
+  "Accélération NVIDIA (TensorRT) : mise à jour automatique vers la version {version}.": {
+    "fra": "Accélération NVIDIA (TensorRT) : mise à jour automatique vers la version {version}.",
+    "eng": "NVIDIA acceleration (TensorRT): automatic update to version {version}."
+  },
+  "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : l'interpolation reste sur Vulkan.": {
+    "fra": "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : l'interpolation reste sur Vulkan.",
+    "eng": "NVIDIA acceleration (TensorRT) installed, but unusable on this machine ({reason}): interpolation stays on Vulkan."
+  },
+  "Accélération NVIDIA (TensorRT) {done} : version {version}.": {
+    "fra": "Accélération NVIDIA (TensorRT) {done} : version {version}.",
+    "eng": "NVIDIA acceleration (TensorRT) {done}: version {version}."
+  },
+  "Accélération NVIDIA (TensorRT) supprimée.": {
+    "fra": "Accélération NVIDIA (TensorRT) supprimée.",
+    "eng": "NVIDIA acceleration (TensorRT) removed."
+  },
+  "Accélération NVIDIA (TensorRT) désactivée ; fichiers encore utilisés retirés au prochain démarrage.": {
+    "fra": "Accélération NVIDIA (TensorRT) désactivée ; fichiers encore utilisés retirés au prochain démarrage.",
+    "eng": "NVIDIA acceleration (TensorRT) disabled; files still in use will be removed at next startup."
+  },
+  "Installation annulée.": {
+    "fra": "Installation annulée.",
+    "eng": "Installation cancelled."
+  },
+  "Accélération NVIDIA (TensorRT) : échec ({reason}).": {
+    "fra": "Accélération NVIDIA (TensorRT) : échec ({reason}).",
+    "eng": "NVIDIA acceleration (TensorRT): failed ({reason})."
+  },
+  "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans Paramètres > Extensions.": {
+    "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans Paramètres > Extensions.",
+    "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in Settings > Extensions."
+  },
+  "Installer l'accélération NVIDIA (TensorRT) ?": {
+    "fra": "Installer l'accélération NVIDIA (TensorRT) ?",
+    "eng": "Install NVIDIA acceleration (TensorRT)?"
+  },
+  "L'interpolation MVO-RIFE peut s'exécuter sur les Tensor Cores de votre carte NVIDIA{device} avec NVIDIA TensorRT for RTX : traitement nettement plus rapide, images identiques à l'œil. Sans cette extension, l'interpolation continue de fonctionner sur le GPU (Vulkan).": {
+    "fra": "L'interpolation MVO-RIFE peut s'exécuter sur les Tensor Cores de votre carte NVIDIA{device} avec NVIDIA TensorRT for RTX : traitement nettement plus rapide, images identiques à l'œil. Sans cette extension, l'interpolation continue de fonctionner sur le GPU (Vulkan).",
+    "eng": "MVO-RIFE interpolation can run on the Tensor Cores of your NVIDIA card{device} with NVIDIA TensorRT for RTX: much faster processing, visually identical frames. Without this extension, interpolation keeps working on the GPU (Vulkan)."
+  },
+  "L'extension contient NVIDIA TensorRT for RTX, distribué sous <a href=\"{url}\">licence NVIDIA</a>, pour un usage sur carte NVIDIA.": {
+    "fra": "L'extension contient NVIDIA TensorRT for RTX, distribué sous <a href=\"{url}\">licence NVIDIA</a>, pour un usage sur carte NVIDIA.",
+    "eng": "The extension contains NVIDIA TensorRT for RTX, distributed under the <a href=\"{url}\">NVIDIA license</a>, for use on NVIDIA cards."
+  },
+  "J'accepte la licence NVIDIA TensorRT for RTX": {
+    "fra": "J'accepte la licence NVIDIA TensorRT for RTX",
+    "eng": "I accept the NVIDIA TensorRT for RTX license"
+  },
+  "Suppression en cours…": {
+    "fra": "Suppression en cours…",
+    "eng": "Removing…"
+  },
+  "Préparation des moteurs TensorRT pour cette carte…": {
+    "fra": "Préparation des moteurs TensorRT pour cette carte…",
+    "eng": "Preparing TensorRT engines for this card…"
+  },
+  "Téléchargement : {progress} %": {
+    "fra": "Téléchargement : {progress} %",
+    "eng": "Download: {progress} %"
+  },
+  "Téléchargement…": {
+    "fra": "Téléchargement…",
+    "eng": "Downloading…"
+  },
+  "Non installée. GPU compatible : {device}.": {
+    "fra": "Non installée. GPU compatible : {device}.",
+    "eng": "Not installed. Compatible GPU: {device}."
+  },
+  "Version {version} installée ({size} Mo) dans {path}.": {
+    "fra": "Version {version} installée ({size} Mo) dans {path}.",
+    "eng": "Version {version} installed ({size} MB) in {path}."
+  },
+  "Active sur {device}.": {
+    "fra": "Active sur {device}.",
+    "eng": "Active on {device}."
+  },
+  "Inutilisable : {reason}.": {
+    "fra": "Inutilisable : {reason}.",
+    "eng": "Unusable: {reason}."
+  },
+  "Mise à jour disponible.": {
+    "fra": "Mise à jour disponible.",
+    "eng": "Update available."
+  },
+  "Accélération NVIDIA disponible (TensorRT) — Installer…": {
+    "fra": "Accélération NVIDIA disponible (TensorRT) — Installer…",
+    "eng": "NVIDIA acceleration available (TensorRT) — Install…"
+  },
+  "Exécute l'interpolation MVO-RIFE sur les Tensor Cores des cartes NVIDIA (NVIDIA TensorRT for RTX) : traitement nettement plus rapide, images identiques à l'œil. Sans elle, l'interpolation fonctionne sur le GPU (Vulkan).": {
+    "fra": "Exécute l'interpolation MVO-RIFE sur les Tensor Cores des cartes NVIDIA (NVIDIA TensorRT for RTX) : traitement nettement plus rapide, images identiques à l'œil. Sans elle, l'interpolation fonctionne sur le GPU (Vulkan).",
+    "eng": "Runs MVO-RIFE interpolation on the Tensor Cores of NVIDIA cards (NVIDIA TensorRT for RTX): much faster processing, visually identical frames. Without it, interpolation runs on the GPU (Vulkan)."
+  },
+  "Utiliser l'accélération TensorRT pour l'interpolation": {
+    "fra": "Utiliser l'accélération TensorRT pour l'interpolation",
+    "eng": "Use TensorRT acceleration for interpolation"
+  },
+  "Mises à jour automatiques": {
+    "fra": "Mises à jour automatiques",
+    "eng": "Automatic updates"
+  },
+  "Installer…": {
+    "fra": "Installer…",
+    "eng": "Install…"
+  },
+  "Mettre à jour": {
+    "fra": "Mettre à jour",
+    "eng": "Update"
+  },
+  "installée": {
+    "fra": "installée",
+    "eng": "installed"
+  },
+  "mise à jour": {
+    "fra": "mise à jour",
+    "eng": "updated"
+  },
+  "EXTENSIONS": {
+    "fra": "EXTENSIONS",
+    "eng": "EXTENSIONS"
   }
 }
