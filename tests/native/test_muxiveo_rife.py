@@ -410,3 +410,71 @@ def test_hybrid_rejects_unknown_option_values(args: list[str]) -> None:
     proc = run_rife(data, *args, "--matrix", "bt709")
     assert proc.returncode == 1
     assert args[0].encode() in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Plugin TensorRT facultatif (mvo-rife-trt), 1.4.0+
+# ---------------------------------------------------------------------------
+
+needs_trt_support = pytest.mark.skipif(_rife_version() < (1, 4, 0), reason="plugin TensorRT : muxiveo-rife ≥ 1.4.0")
+TRT_PLUGIN = os.environ.get("MUXIVEO_RIFE_TRT_PLUGIN", "")
+needs_trt_plugin = pytest.mark.skipif(
+    not TRT_PLUGIN or not any(g.get("trt_compatible") for g in GPUS),
+    reason="plugin TensorRT (MUXIVEO_RIFE_TRT_PLUGIN) et GPU NVIDIA compatible requis",
+)
+
+
+@needs_trt_support
+def test_gpu_listing_reports_tensorrt_compatibility() -> None:
+    for gpu in GPUS:
+        assert isinstance(gpu.get("trt_compatible"), bool) and gpu.get("trt_status")
+        if "NVIDIA" not in gpu["name"]:
+            assert gpu["trt_compatible"] is False
+
+
+@needs_trt_support
+def test_missing_trt_plugin_falls_back_to_vulkan(tmp_path: Path) -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=3)
+    proc = subprocess.run(
+        [RIFE_BIN, "-g", str(_test_gpu()), "--trt-plugin", str(tmp_path / "absent"), "--matrix", "bt709"],
+        input=data, capture_output=True, timeout=120, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert "inférence RIFE : Vulkan (TensorRT indisponible" in proc.stderr.decode()
+    assert len(parse_y4m(proc.stdout).frames) == 6
+
+
+@needs_trt_support
+def test_tensorrt_backend_without_plugin_is_refused() -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
+    proc = run_rife(data, "--backend", "tensorrt", "--matrix", "bt709")
+    assert proc.returncode == 3
+    assert b"TensorRT" in proc.stderr
+
+
+@needs_trt_support
+@needs_trt_plugin
+@pytest.mark.parametrize("extra", [[], ["--engine", "hybrid"], ["--uhd"], ["--tta", "2"]])
+def test_tensorrt_inference_keeps_originals_and_matches_vulkan(tmp_path: Path, extra: list[str]) -> None:
+    data = make_y4m("testsrc2=size=160x96:rate=25", frames=6, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    common = ["--factor", "2", "--matrix", "bt709", "--trt-plugin", TRT_PLUGIN, "--trt-cache", str(tmp_path), *extra]
+    trt = subprocess.run([RIFE_BIN, "-g", str(_trt_gpu()), "--backend", "tensorrt", *common],
+                         input=data, capture_output=True, timeout=600, check=False)
+    vk = subprocess.run([RIFE_BIN, "-g", str(_trt_gpu()), "--backend", "vulkan", *common],
+                        input=data, capture_output=True, timeout=600, check=False)
+    assert trt.returncode == 0, trt.stderr.decode()
+    assert vk.returncode == 0, vk.stderr.decode()
+    assert "inférence RIFE : TensorRT" in trt.stderr.decode()
+    out = parse_y4m(trt.stdout)
+    assert len(out.frames) == 2 * len(src.frames)
+    assert out.frames[0::2] == src.frames
+    # même modèle, deux implémentations (ncnn TNTwise / ONNX des poids officiels, fp16) : images proches.
+    # Sur une mire 160x96 en fort mouvement, les bords (traitement légèrement différent) pèsent lourd :
+    # 32 à 36 dB ici, écart < 0,1 dB sur les bancs 4K réels.
+    assert _psnr(out.frames[1], parse_y4m(vk.stdout).frames[1], 10) > 28.0
+
+
+def _trt_gpu() -> int:
+    """Premier GPU compatible TensorRT."""
+    return next(g["index"] for g in GPUS if g.get("trt_compatible"))
