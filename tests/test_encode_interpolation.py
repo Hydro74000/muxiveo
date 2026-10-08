@@ -70,7 +70,8 @@ from core.workflows.encode.runtime.metadata_inject import _build_dovi_record_fro
 from core.workflows.encode.workflow import _interpolation_decode_cmd
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard
 from core.workflows.encode.runtime.nvencc import nvencc_requires_ffmpeg_filter_pipe
-from core.workflows.encode.runtime.nvencc_execution import NvenccPipeExecutor
+from core.workflows.encode.runtime.nvencc_execution import NvenccPipeExecutor, build_nvencc_pipeline_commands
+from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
 from core.workflows.encode.runtime.video_preparation import (
     VideoOnlyCommandBuilder,
     VideoOnlyCommandBuilderCallbacks,
@@ -598,6 +599,20 @@ def test_nvencc_executor_reports_intermediate_root_cause(qt_app):
             signals=TaskSignals(),
         )
     assert "code 5" in str(exc.value) and "VRAM" in str(exc.value)
+
+
+def test_nvencc_preview_gop_follows_interpolated_rate(tmp_path):
+    """Aperçu = exécution : GOP Dolby Vision borné à 2 s de la cadence de sortie (23,976 -> 59,94 : 120)."""
+    video = _video(codec="nvencc_hevc", copy_dv=True, interpolation=_interp(target_fps="60000/1001"))
+    cfg = EncodeConfig(source=tmp_path / "src.mkv", output=tmp_path / "out.mkv", video=video, work_dir=tmp_path)
+    routing = NvenccInputRouting(input_path=cfg.source, stream_index=0, video=video, source_fps="24000/1001")
+    cmds = build_nvencc_pipeline_commands(
+        cfg, nvencc_bin="nvencc", ffmpeg_bin="ffmpeg", video_tracks=lambda _c: [video],
+        resolve_input_routing=lambda _c: routing,
+    )
+    assert cmds is not None
+    encode = next(c for c in cmds if c and Path(c[0]).name == "nvencc")
+    assert encode[encode.index("--gop-len") + 1] == "120"
 
 
 def test_nvencc_pipe_forced_by_interpolation():

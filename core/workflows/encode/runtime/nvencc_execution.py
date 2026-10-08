@@ -765,6 +765,10 @@ def build_nvencc_pipeline_commands(
             dovi_rpu_preview = work_dir / "rpu_aligned.bin"
         elif routing.video.p5_to_hdr10 or routing.video.interpolates():
             dovi_rpu_preview = work_dir / "source_rpu.bin"
+    # Cadence encodée comme à l'exécution (interpolation : GOP Dolby Vision borné sur la cadence de sortie).
+    preview_fps = routing.source_fps or routing.input_fps
+    if needs_ffmpeg_pipe and routing.video.interpolates() and preview_fps:
+        preview_fps = _multiply_fps_expr(preview_fps, routing.video.frame_ratio(str(preview_fps))) or preview_fps
     encode = _build_nvencc_command_runtime(
         nvencc_bin,
         (
@@ -777,7 +781,7 @@ def build_nvencc_pipeline_commands(
         stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
         input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
         input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
-        source_fps=routing.source_fps or routing.input_fps,
+        source_fps=preview_fps,
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
         dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
