@@ -277,7 +277,7 @@ class SettingsPanel(QWidget):
         self._trt_update_btn.setEnabled(not busy)
         self._trt_remove_btn.setVisible(installed is not None)
         self._trt_remove_btn.setEnabled(not busy)
-        self._trt_enabled_box.setEnabled(installed is not None)
+        self._trt_enabled_box.setVisible(installed is not None)
 
     def show_extensions(self) -> None:
         """Fait défiler la page jusqu'à la section Extensions."""

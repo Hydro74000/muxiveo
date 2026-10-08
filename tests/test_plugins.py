@@ -342,9 +342,11 @@ def test_settings_extensions_section(qt_app, tmp_path):
     panel.set_trt_state(_state(capability=TrtCapability(compatible=True, device="RTX")))
     assert not panel._extensions_card.isHidden()
     assert not panel._trt_install_btn.isHidden() and panel._trt_remove_btn.isHidden()
+    assert panel._trt_enabled_box.isHidden()
     installed = plugins.InstalledPlugin(MVO_RIFE_TRT_VERSION, tmp_path, {})
     panel.set_trt_state(_state(installed=installed, capability=TrtCapability(compatible=True, ready=True, device="RTX")))
     assert panel._trt_install_btn.isHidden() and not panel._trt_remove_btn.isHidden()
+    assert not panel._trt_enabled_box.isHidden()
     assert "RTX" in panel._trt_status.text()
     panel.close()
 
