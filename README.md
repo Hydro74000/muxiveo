@@ -269,7 +269,7 @@ La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) o
 | Préréglage | Traitement |
 |---|---|
 | Rapide | RIFE v4.6 |
-| Équilibré (défaut) | hybride : RIFE v4.6 + compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits) |
+| Équilibré (défaut) | hybride : RIFE v4.6 + compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements (flou de bougé, panoramiques rapides) |
 | Qualité | hybride avec RIFE v4.15 |
 | Light | RIFE v4.15-lite en mode Fast, pour les petites cartes graphiques |
 

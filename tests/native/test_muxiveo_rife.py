@@ -413,6 +413,65 @@ def test_hybrid_rejects_unknown_option_values(args: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Grands mouvements du moteur hybride (RIFE à flux demi-résolution), 1.5.0+
+# ---------------------------------------------------------------------------
+
+needs_large_motion = pytest.mark.skipif(_rife_version() < (1, 5, 0), reason="grands mouvements : muxiveo-rife ≥ 1.5.0")
+
+
+def _panning(step: int) -> bytes:
+    """Panoramique horizontal de ``step`` px par image (mire recadrée)."""
+    return make_y4m(f"testsrc2=size=640x192:rate=25,crop=320:192:n*{step}:0", frames=6)
+
+
+def _run_verbose(data: bytes, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([RIFE_BIN, "-g", str(_test_gpu()), *args], input=data, capture_output=True,
+                          timeout=600, check=False)
+
+
+@needs_large_motion
+def test_large_motion_pass_replaces_hybrid_on_fast_pan() -> None:
+    data = _panning(48)
+    src = parse_y4m(data)
+    common = ("--engine", "hybrid", "--nvof", "off", "--scene-threshold", "0", "--factor", "2", "--matrix", "bt709")
+    on = _run_verbose(data, *common)
+    off = _run_verbose(data, *common, "--large-motion", "off")
+    assert on.returncode == 0, on.stderr.decode()
+    assert off.returncode == 0, off.stderr.decode()
+    assert "grands mouvements : RIFE flux demi-résolution au-delà de 16 px" in on.stderr.decode()
+    assert "grands mouvements : 5 paire(s) sur 5" in on.stderr.decode()
+    assert "grands mouvements : désactivé" in off.stderr.decode()
+    out_on, out_off = parse_y4m(on.stdout), parse_y4m(off.stdout)
+    assert out_on.frames[0::2] == src.frames
+    assert out_on.frames[1::2] != out_off.frames[1::2]
+
+
+@needs_large_motion
+def test_large_motion_pass_skipped_below_threshold() -> None:
+    data = _panning(2)
+    common = ("--engine", "hybrid", "--nvof", "off", "--scene-threshold", "0", "--factor", "2", "--matrix", "bt709")
+    on = _run_verbose(data, *common, "--large-motion", "64")
+    off = _run_verbose(data, *common, "--large-motion", "off")
+    assert on.returncode == 0, on.stderr.decode()
+    assert "grands mouvements : 0 paire(s) sur 5" in on.stderr.decode()
+    # aucune paire au-delà du seuil : image identique à l'hybride seul (padding x2 sans effet sur 320x192)
+    assert parse_y4m(on.stdout).frames == parse_y4m(off.stdout).frames
+
+
+@needs_large_motion
+def test_large_motion_option_values() -> None:
+    data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
+    bad = run_rife(data, "--engine", "hybrid", "--large-motion", "fast", "--matrix", "bt709")
+    assert bad.returncode == 1 and b"--large-motion" in bad.stderr
+    custom = _run_verbose(data, "--engine", "hybrid", "--large-motion", "24", "--matrix", "bt709")
+    assert custom.returncode == 0, custom.stderr.decode()
+    assert "au-delà de 24 px" in custom.stderr.decode()
+    uhd = _run_verbose(data, "--engine", "hybrid", "--uhd", "--matrix", "bt709")
+    assert uhd.returncode == 0, uhd.stderr.decode()
+    assert "grands mouvements : flux demi-résolution partout (--uhd)" in uhd.stderr.decode()
+
+
+# ---------------------------------------------------------------------------
 # Plugin TensorRT facultatif (mvo-rife-trt), 1.4.0+
 # ---------------------------------------------------------------------------
 

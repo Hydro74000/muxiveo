@@ -46,6 +46,33 @@ PSNR-Y en dB (image entière / zone) :
 - Modèles écartés pour l'hybride : v4.25 (36,50 / 31,91 / 34,86), v4.26 (36,54 / 31,94 / 34,95), v4.25-lite (inférieur) ; v4.15 *ensemble* (export maison) : 36,74 / 32,22 / 35,18 pour 1,5 × le coût de v4.15, sans gain.
 - `scale=0.5` (mode Fast, `--uhd`) : −2,3 dB sur les barreaux ; à réserver au préréglage Light.
 
+## Grands mouvements (muxiveo-rife 1.5.0, 2026-10-08)
+
+Retour utilisateur sur RPO (Qualité, 24 → 59,94) : passage derrière un poteau métallique flou et descente en
+rappel devant un objet flou montraient des « gouttes » et contours ondulés sur les images créées, absents
+d'une interpolation RIFE v4.15 seule (scale 0,5, *ensemble*, par un autre logiciel). Cause : la compensation
+par blocs est choisie par défaut et seulement écartée quand son erreur bilatérale est forte ; dans le flou
+de bougé, des vecteurs faux coûtent peu. RIFE pleine résolution est propre visuellement, mais RIFE à flux
+demi-résolution suit mieux ces grands déplacements.
+
+Correctif : second réseau RIFE à flux demi-résolution là où le déplacement entre sources dépasse 16 px
+(rampe jusqu'à 48 px, champ dilaté, plancher sur toute l'image quand le mouvement médian de la paire dépasse
+24 px), passe lancée seulement si au moins 1 % des blocs dépassent 24 px.
+
+Images paires interpolées ×2 comparées aux impaires (déplacements doublés : seuil de 32 px dans ce protocole),
+PSNR-Y image entière / 1 % des blocs 64 × 64 les pires (zone pour barreaux et hélice) :
+
+| Plan | RIFE v4.15 | RIFE v4.15 scale 0,5 | Hybride v4.15 (1.4) | Hybride v4.15 (1.5) |
+|---|---|---|---|---|
+| Poteau (12 images) | 27,54 / 16,13 | 29,07 / 16,82 | 27,33 / 16,09 | **29,09 / 16,93** |
+| Rappel (31 images) | 34,39 / 19,93 | 34,59 / 20,40 | 34,16 / 19,63 | **34,70 / 20,44** |
+| Barrières ×2 (zone) | 35,95 / 33,37 | 33,70 / 30,53 | 36,74 / 34,81 | **36,74 / 34,81** |
+| Ville + hélice ×2 (zone) | 35,41 / 33,01 | 35,09 / 32,37 | 35,24 / 32,66 | 35,39 / 32,86 |
+
+*Ensemble* v4.15 : sans effet mesurable (poteau 27,42, rappel 34,29). Vrai 24 → 59,94 sur les barrières :
+écart avec l'hybride 1.4 ≥ 44,6 dB dans la zone des barreaux ; +20 % de temps en Vulkan (passe active pour
+43 % des paires).
+
 ## Vitesse
 
 Vrai 24 → 59,94, 12 s en 4K (RTX 4070 Ti SUPER, `hevc_nvenc`) :
