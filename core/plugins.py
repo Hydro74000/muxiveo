@@ -210,9 +210,16 @@ def _safe_member(staging: Path, name: str) -> Path:
     return target
 
 
-def _extract(archive: Path, staging: Path) -> None:
+def _extract(archive: Path, staging: Path, is_zip: bool) -> None:
     """Extraction contrôlée : chemins confinés au dossier, fichiers et dossiers seulement."""
-    if archive.name.endswith(".zip"):
+    try:
+        _extract_members(archive, staging, is_zip)
+    except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError) as exc:
+        raise PluginError(f"archive illisible ({exc})") from exc
+
+
+def _extract_members(archive: Path, staging: Path, is_zip: bool) -> None:
+    if is_zip:
         with zipfile.ZipFile(archive) as z:
             for info in z.infolist():
                 _safe_member(staging, info.filename)
@@ -277,7 +284,7 @@ def install(
     try:
         _download(asset, archive, progress, cancel)
         staging.mkdir()
-        _extract(archive, staging)
+        _extract(archive, staging, asset.name.endswith(".zip"))
         entries = [p for p in staging.iterdir()]
         if len(entries) != 1 or not entries[0].is_dir():
             raise PluginError("structure d'archive inattendue")

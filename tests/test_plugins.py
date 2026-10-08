@@ -7,6 +7,7 @@ import io
 import json
 import subprocess
 import tarfile
+import zipfile
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -121,6 +122,33 @@ def test_invalid_archives_are_refused_and_previous_version_kept(tmp_path, proble
     assert not (tmp_path / "evasion.txt").exists()
     names = [p.name for p in (root / plugins.TRT_PLUGIN_ID).iterdir()]
     assert not any(n.startswith((".download-", ".staging-")) for n in names)
+
+
+def test_windows_zip_archive_is_installed(tmp_path, monkeypatch):
+    """Archive Windows (.zip) téléchargée sous un nom temporaire : format déduit du nom de l'asset."""
+    win = "windows-x86_64"
+    monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: win)
+    lib = plugins.TRT_LIBRARIES[win]
+    files = {lib: b"dll", "models/rife-v4.6.onnx": b"modele"}
+    manifest = {"name": plugins.TRT_PLUGIN_ID, "version": MVO_RIFE_TRT_VERSION, "abi": plugins.TRT_PLUGIN_ABI,
+                "platform": win, "library": lib, "models": ["rife-v4.6"],
+                "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}}
+    top = f"mvo-rife-trt-{MVO_RIFE_TRT_VERSION}-{win}"
+    archive = tmp_path / f"{top}.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        for name, data in [*files.items(), ("manifest.json", json.dumps(manifest).encode())]:
+            z.writestr(f"{top}/{name}", data)
+    asset = ReleaseAsset("r", "t", archive.name, archive.as_uri(), hashlib.sha256(archive.read_bytes()).hexdigest())
+    installed = plugins.install(tmp_path / "plugins", asset=asset)
+    assert (installed.path / lib).read_bytes() == b"dll"
+
+
+def test_corrupted_archive_raises_plugin_error(tmp_path):
+    bad = tmp_path / f"mvo-rife-trt-{MVO_RIFE_TRT_VERSION}-{PLATFORM}.tar.gz"
+    bad.write_bytes(b"pas une archive")
+    asset = ReleaseAsset("r", "t", bad.name, bad.as_uri(), hashlib.sha256(bad.read_bytes()).hexdigest())
+    with pytest.raises(plugins.PluginError, match="archive illisible"):
+        plugins.install(tmp_path / "plugins", asset=asset)
 
 
 def test_reinstall_replaces_previous_directory(tmp_path):

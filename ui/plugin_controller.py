@@ -132,7 +132,7 @@ class TrtPluginController(QObject):
         except plugins.PluginCancelled:
             self._finish(translate_text("Installation annulée."), level="WARN")
             return
-        except plugins.PluginError as exc:
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
             self._finish(translate_text("Accélération NVIDIA (TensorRT) : échec ({reason}).", reason=str(exc)), level="ERROR")
             return
         self._set_state(installed=installed, busy="warmup", progress=-1)
