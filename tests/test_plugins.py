@@ -131,6 +131,20 @@ def test_reinstall_replaces_previous_directory(tmp_path):
     assert plugins.installed_plugin(root) == second
 
 
+def test_version_change_clears_engine_cache_but_reinstall_keeps_it(tmp_path):
+    root = tmp_path / "plugins"
+    cache = tmp_path / "trt-engines"
+    plugins.install(root, asset=_archive(tmp_path), cache_dir=cache)
+    cache.mkdir()
+    (cache / "moteur.engine").write_bytes(b"x")
+    plugins.install(root, asset=_archive(tmp_path), cache_dir=cache)
+    assert (cache / "moteur.engine").exists()
+    pointer = root / plugins.TRT_PLUGIN_ID / "current.json"
+    pointer.write_text(json.dumps({**json.loads(pointer.read_text()), "version": "0.9.0"}))
+    plugins.install(root, asset=_archive(tmp_path), cache_dir=cache)
+    assert not cache.exists()
+
+
 def test_cancelled_download_installs_nothing(tmp_path):
     root = tmp_path / "plugins"
     cancel = threading.Event()
@@ -143,9 +157,9 @@ def test_cancelled_download_installs_nothing(tmp_path):
 def test_remove_deletes_plugin_and_engine_cache(tmp_path):
     root = tmp_path / "plugins"
     cache = tmp_path / "trt-engines"
+    plugins.install(root, asset=_archive(tmp_path))
     cache.mkdir()
     (cache / "moteur.engine").write_bytes(b"x")
-    plugins.install(root, asset=_archive(tmp_path))
     assert plugins.remove(root, cache)
     assert plugins.installed_plugin(root) is None
     assert not (root / plugins.TRT_PLUGIN_ID).exists() and not cache.exists()

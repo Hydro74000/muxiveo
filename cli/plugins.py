@@ -35,10 +35,27 @@ def _status(config: AppConfig) -> dict:
     }
 
 
-def _progress(done: int, total: int) -> None:
-    if total > 0:
-        sys.stderr.write(f"\rTéléchargement : {done * 100 // total} %")
+class _Progress:
+    """Progression du téléchargement : ligne réécrite sur un terminal, palier de 10 % sinon."""
+
+    def __init__(self) -> None:
+        self._last = -1
+        self._tty = sys.stderr.isatty()
+
+    def __call__(self, done: int, total: int) -> None:
+        if total <= 0:
+            return
+        percent = done * 100 // total
+        step = percent if self._tty else percent - percent % 10
+        if step == self._last:
+            return
+        self._last = step
+        sys.stderr.write(f"\rTéléchargement : {step} %" if self._tty else f"Téléchargement : {step} %\n")
         sys.stderr.flush()
+
+    def end(self) -> None:
+        if self._tty and self._last >= 0:
+            sys.stderr.write("\n")
 
 
 def _install(args: argparse.Namespace, config: AppConfig, logger: Logger, status: dict) -> int:
@@ -50,13 +67,14 @@ def _install(args: argparse.Namespace, config: AppConfig, logger: Logger, status
         logger.emit("error", f"Machine incompatible ({status['status'] or 'GPU NVIDIA Turing ou plus récent requis'}) ; "
                              "--force pour installer quand même.")
         return EXIT_TOOL
+    progress = _Progress()
     try:
-        installed = plugins.install(progress=_progress)
+        installed = plugins.install(progress=progress)
     except plugins.PluginError as exc:
-        sys.stderr.write("\n")
+        progress.end()
         logger.emit("error", f"Installation impossible : {exc}")
         return EXIT_WORKFLOW
-    sys.stderr.write("\n")
+    progress.end()
     rife = getattr(config, "tool_muxiveo_rife", None) or ""
     failures = plugins.warm_up(rife, installed, log=lambda m: logger.emit("info", f"Préparation du moteur {m}")) if rife else []
     if failures:
@@ -84,8 +102,9 @@ def cmd_plugins(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
         else:
             state = f"installée ({status['installed_version']})" if status["installed_version"] else "non installée"
             print(f"{status['label']} [{status['name']}] : {state} ; version épinglée {status['pinned_version']}")
+            detail = "" if status["ready"] or status["status"] in ("", "compatible") else f" ({status['status']})"
             print(f"  GPU : {status['device'] or '?'} — {'compatible' if status['compatible'] else 'incompatible'}"
-                  f"{' — active' if status['ready'] else ''} ({status['status']})")
+                  f"{' — active' if status['ready'] else ''}{detail}")
             if status["update_available"]:
                 print("  Mise à jour disponible : muxiveo --cli plugins update")
         return EXIT_OK

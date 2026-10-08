@@ -257,11 +257,17 @@ def install(
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
     asset: ReleaseAsset | None = None,
+    cache_dir: Path | None = None,
 ) -> InstalledPlugin:
-    """Télécharge, vérifie et active la version épinglée ; l'ancienne version reste active en cas d'échec."""
+    """Télécharge, vérifie et active la version épinglée ; l'ancienne version reste active en cas d'échec.
+
+    Changement de version : le cache des moteurs TensorRT est vidé (modèles ONNX éventuellement différents
+    sous le même nom), le préchauffage le reconstruit.
+    """
     platform = platform_tag()
     if platform is None:
         raise PluginError("plate-forme non prise en charge (Linux ou Windows x86-64 requis)")
+    previous = installed_plugin(root, platform)
     base = _plugin_dir(root)
     base.mkdir(parents=True, exist_ok=True)
     asset = asset or release_asset(platform)
@@ -287,6 +293,8 @@ def install(
     finally:
         archive.unlink(missing_ok=True)
         _remove_tree(staging)
+    if previous is None or previous.version != MVO_RIFE_TRT_VERSION:
+        _remove_tree(cache_dir or trt_engine_cache_dir())
     cleanup_orphans(root)
     plugin = installed_plugin(root, platform)
     if plugin is None:
