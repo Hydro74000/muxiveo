@@ -404,6 +404,18 @@ def test_hybrid_reports_optical_flow_status() -> None:
 
 
 @needs_hybrid
+@pytest.mark.parametrize("engine", ["rife", "hybrid", "mc"])
+@pytest.mark.parametrize("size", ["1742x676", "1750x660"])
+def test_frame_size_not_multiple_of_16_bytes(engine: str, size: str) -> None:
+    # trame de taille non multiple de 16 octets : ncnn copie la taille alignée (débordement corrigé en 1.5.0)
+    data = make_y4m(f"testsrc2=size={size}:rate=24", frames=4, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    proc = run_rife(data, "--engine", engine, "--factor", "2", "--matrix", "bt709")
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert parse_y4m(proc.stdout).frames[0::2] == src.frames
+
+
+@needs_hybrid
 @pytest.mark.parametrize("args", [["--engine", "magic"], ["--nvof", "on"]])
 def test_hybrid_rejects_unknown_option_values(args: list[str]) -> None:
     data = make_y4m("testsrc2=size=96x64:rate=25", frames=2)
