@@ -802,6 +802,27 @@ jobs:
               "${create_args[@]}"
           fi
 
+      # Dernière étape : la release et ses fichiers sont publiés, le flux du canal peut pointer dessus.
+      # Muxiveo lit releases/download/update-feed/<canal>.json au lieu de parcourir la liste des releases.
+      - name: Publish update feed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          CHANNEL: ${{ needs.release-metadata.outputs.channel }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/write_update_feed.py --channel "$CHANNEL" --tag "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --artifacts artifacts --out "feed/${CHANNEL}.json"
+          if ! gh release view update-feed >/dev/null 2>&1; then
+            # Pré-version : jamais « latest » ; tag ignoré par la vérification des mises à jour (pas vX.Y.Z).
+            gh release create update-feed --prerelease --target "$GITHUB_SHA" \
+              --title "Flux de mise à jour" \
+              --notes "Fichiers lus par Muxiveo pour détecter les mises à jour (un par canal). Ne pas supprimer."
+          fi
+          gh release upload update-feed "feed/${CHANNEL}.json" --clobber
+
   publish-homebrew-tap:
     name: Publish Homebrew tap
     runs-on: ubuntu-latest

@@ -2,8 +2,11 @@
 core/update_check.py — Vérification passive d'une nouvelle version publiée sur GitHub.
 
 Canaux :
-- « stable »   : dernière release stable (`releases/latest`, publiée depuis `main`) ;
+- « stable »   : dernière release stable (publiée depuis `main`) ;
 - « unstable » : release la plus récente, pré-versions `-unstable.*` de `devel-cli` comprises.
+
+Source : flux `<canal>.json` écrit par la CI dans la release fixe `update-feed` (≈ 1 Ko quel que soit le
+nombre de releases, sans quota d'API) ; secours sur l'API GitHub si le flux est injoignable ou invalide.
 
 Aucune dépendance externe (urllib uniquement). Toute erreur est silencieuse :
 la vérification ne doit jamais gêner l'utilisateur.
@@ -23,6 +26,9 @@ from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_REPOSITOR
 RELEASES_API_URL = f"https://api.github.com/repos/{APP_REPOSITORY}/releases"
 LATEST_RELEASE_API_URL = f"{RELEASES_API_URL}/latest"
 RELEASE_DOWNLOAD_URL_PREFIX = f"{APP_REPOSITORY_URL}releases/download/"
+# Flux de mise à jour par canal (scripts/write_update_feed.py, étape finale de release.yml).
+UPDATE_FEED_TAG = "update-feed"
+UPDATE_FEED_SCHEMA = 1
 # Délai total (connexion + lecture) d'une vérification : au-delà, abandon silencieux.
 UPDATE_CHECK_TIMEOUT_S = 5.0
 # Pré-versions récentes examinées en canal unstable (requête légère).
@@ -155,11 +161,60 @@ def _parse_release(payload: object) -> UpdateInfo | None:
     )
 
 
+def update_feed_url(channel: str) -> str:
+    """URL du flux d'un canal (fichier de la release fixe `update-feed`)."""
+    return f"{RELEASE_DOWNLOAD_URL_PREFIX}{UPDATE_FEED_TAG}/{channel}.json"
+
+
+def _parse_feed(payload: object, channel: str) -> UpdateInfo | None:
+    """Release décrite par le flux d'un canal (None si schéma, canal ou version inattendus)."""
+    if not isinstance(payload, dict) or payload.get("schema") != UPDATE_FEED_SCHEMA or payload.get("channel") != channel:
+        return None
+    tag = str(payload.get("tag") or "").strip()
+    if not version_key(tag):
+        return None
+    url = str(payload.get("url") or "")
+    if not is_repository_url(url):
+        url = release_page_url(tag)
+    raw_assets = [
+        {"name": item.get("name"), "browser_download_url": item.get("url"), "size": item.get("size")}
+        for item in payload.get("assets") or [] if isinstance(item, dict)
+    ]
+    return UpdateInfo(
+        version=tag.lstrip("vV"),
+        url=url,
+        assets=_parse_assets(raw_assets),
+        prerelease=channel == UPDATE_CHANNEL_UNSTABLE,
+    )
+
+
+def _query_feed(channel: str, timeout: float) -> UpdateInfo | None:
+    """Dernière release du canal d'après les flux (None si aucun flux exploitable).
+
+    Canal unstable : la plus récente des releases stable et unstable (une stable publiée après les
+    pré-versions reste proposée, comme avec la liste des releases).
+    """
+    channels = (UPDATE_CHANNEL_UNSTABLE, UPDATE_CHANNEL_STABLE) if channel == UPDATE_CHANNEL_UNSTABLE else (channel,)
+    found: list[UpdateInfo] = []
+    deadline = time.monotonic() + timeout          # une seule échéance pour tous les flux
+    for name in channels:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            info = _parse_feed(_get_json(update_feed_url(name), remaining, accept="application/json"), name)
+        except Exception:  # flux absent ou invalide : secours sur l'API
+            info = None
+        if info is not None:
+            found.append(info)
+    return max(found, key=lambda info: version_key(info.version), default=None)
+
+
 class UpdateCheckError(Exception):
     """Vérification impossible (réseau, SSL, délai dépassé, réponse GitHub invalide)."""
 
 
-def _get_json(url: str, timeout: float) -> object:
+def _get_json(url: str, timeout: float, accept: str = "application/vnd.github+json") -> object:
     """GET JSON borné : `timeout` couvre toute la requête (connexion, en-têtes et corps).
 
     ``urlopen`` attend les en-têtes sans échéance globale (le timeout socket
@@ -170,7 +225,7 @@ def _get_json(url: str, timeout: float) -> object:
 
     def _worker() -> None:
         try:
-            outcome["value"] = _fetch_json(url, timeout)
+            outcome["value"] = _fetch_json(url, timeout, accept)
         except BaseException as exc:  # relayée à l'appelant
             outcome["error"] = exc
 
@@ -184,13 +239,10 @@ def _get_json(url: str, timeout: float) -> object:
     return outcome.get("value")
 
 
-def _fetch_json(url: str, timeout: float) -> object:
+def _fetch_json(url: str, timeout: float, accept: str = "application/vnd.github+json") -> object:
     """Lecture JSON avec échéance entre deux blocs (la borne globale est dans `_get_json`)."""
     deadline = time.monotonic() + timeout
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": APP_USER_AGENT, "Accept": "application/vnd.github+json"},
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT, "Accept": accept})
     chunks: list[bytes] = []
     size = 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310  # URL HTTPS constante
@@ -215,8 +267,12 @@ def query_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float =
     Lève UpdateCheckError si GitHub est injoignable : un échec ne doit pas
     être confondu avec « aucune mise à jour ».
     """
+    channel = normalize_update_channel(channel)
+    feed = _query_feed(channel, timeout)
+    if feed is not None:
+        return feed
     try:
-        if normalize_update_channel(channel) == UPDATE_CHANNEL_STABLE:
+        if channel == UPDATE_CHANNEL_STABLE:
             return _parse_release(_get_json(LATEST_RELEASE_API_URL, timeout))
         payload = _get_json(f"{RELEASES_API_URL}?per_page={UNSTABLE_RELEASES_PAGE_SIZE}", timeout)
     except Exception as exc:
