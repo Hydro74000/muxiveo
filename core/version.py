@@ -28,7 +28,7 @@ MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
 # Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »).
 MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
 # Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : version épinglée du plugin mvo-rife-trt.
-MVO_RIFE_TRT_VERSION = "1.0.0"
+MVO_RIFE_TRT_VERSION = "1.1.0"
 MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
 
 
