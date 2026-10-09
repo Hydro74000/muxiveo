@@ -319,7 +319,8 @@ class ExtensionsPanel(QWidget):
         else:
             ready = bool(getattr(state, "ready", False))
             status = _installed_status(installed) + " " + (
-                translate_text("Active sur {device}.", device=device or "?") if ready
+                translate_text("Vérification de la compatibilité de cette machine…") if capability is None
+                else translate_text("Active sur {device}.", device=device or "?") if ready
                 else translate_text("Inutilisable : {reason}.", reason=str(getattr(capability, "reason", "") or "?"))
             )
             if getattr(state, "update_available", False):

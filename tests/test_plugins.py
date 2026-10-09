@@ -358,8 +358,11 @@ def test_extensions_page_sections(qt_app, tmp_path):
         assert panel._available_box.indexOf(card) >= 0 and panel._incompatible_toggle.isHidden()
         assert not card.install_btn.isHidden() and card.remove_btn.isHidden()
         assert panel._trt_enabled_box.isHidden()
-        # installée : suppression et activation proposées
+        # installée, sonde du GPU en cours : vérification annoncée (pas « inutilisable »)
         installed = plugins.InstalledPlugin(MVO_RIFE_TRT_VERSION, tmp_path, {})
+        panel.set_trt_state(_state(installed=installed))
+        assert card.status.text().endswith(translate_text("Vérification de la compatibilité de cette machine…"))
+        # installée : suppression et activation proposées
         panel.set_trt_state(_state(installed=installed, capability=TrtCapability(compatible=True, ready=True, device="RTX")))
         assert card.install_btn.isHidden() and not card.remove_btn.isHidden()
         assert not panel._trt_enabled_box.isHidden()
