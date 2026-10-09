@@ -698,12 +698,22 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
         result = subprocess.run(  # nosec B603
             cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
         )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, cmd)
         payload = json.loads(result.stdout or "{}")
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        reason = f"liste des GPU illisible ({type(exc).__name__})"
+        if not isinstance(payload, dict):
+            raise ValueError("objet JSON attendu pour la liste des GPU")
+        entries = payload.get("gpus") or []
+        if not isinstance(entries, list):
+            raise ValueError("tableau JSON attendu pour les GPU")
+        gpus = [g for g in entries if isinstance(g, dict)]
+        index = int(gpu) if int(gpu) >= 0 else int(payload.get("default", -1))
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+        reason = (
+            f"liste des GPU en échec (code {exc.returncode})" if isinstance(exc, subprocess.CalledProcessError)
+            else f"liste des GPU illisible ({type(exc).__name__})"
+        )
         return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
-    gpus = [g for g in payload.get("gpus") or [] if isinstance(g, dict)] if isinstance(payload, dict) else []
-    index = int(gpu) if int(gpu) >= 0 else int(payload.get("default", -1) if isinstance(payload, dict) else -1)
     chosen = next((g for g in gpus if g.get("index") == index), None)
     if chosen is None:
         reason = "aucun GPU Vulkan"

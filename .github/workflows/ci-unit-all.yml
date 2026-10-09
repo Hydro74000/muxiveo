@@ -120,6 +120,7 @@ jobs:
           tests/test_profile_store.py
           tests/test_json_documents.py
           tests/test_probe_lifecycle.py
+          tests/test_optional_capability_detection.py
           tests/test_windows_pytest_bootstrap.py
           tests/test_python_requirements.py
           tests/test_qt_binding_sanity.py
