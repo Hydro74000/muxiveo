@@ -267,7 +267,7 @@ class FrameInterpolationSettings:
     enabled: bool = False
     factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | quality | light (moteur + modèle, interpolation.py)
+    quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
@@ -282,8 +282,14 @@ class FrameInterpolationSettings:
         return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
 
     def fast_mode(self) -> bool:
-        """Mode Fast effectif : choisi, ou imposé par le préréglage Light."""
+        """Mode Fast effectif : choisi, ou imposé par le préréglage Light (jamais en Ultra)."""
+        if self.quality == "ultra":
+            return False
         return self.mode == "fast" or self.quality == "light"
+
+    def tta_passes(self) -> int:
+        """Passes TTA effectives (Ultra : 1, muxiveo-rife refuse --ultra avec --tta)."""
+        return 1 if self.quality == "ultra" else max(1, int(self.tta))
 
     def ratio(self, source_rate: str | None = None) -> Fraction:
         """Rapport cadence de sortie / cadence source (``target_fps`` exige ``source_rate``)."""

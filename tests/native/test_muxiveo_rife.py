@@ -484,6 +484,122 @@ def test_large_motion_option_values() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sélecteur appris par blocs et mode Ultra, 1.6.0+
+# ---------------------------------------------------------------------------
+
+needs_selector = pytest.mark.skipif(_rife_version() < (1, 6, 0), reason="sélecteur appris : muxiveo-rife ≥ 1.6.0")
+_SEL = ("--engine", "hybrid", "--scene-threshold", "0", "--matrix", "bt709")
+
+
+@needs_selector
+@pytest.mark.parametrize("extra", [[], ["--ultra"], ["--nvof", "off"], ["--ultra", "--nvof", "off"]])
+@pytest.mark.parametrize("pix_fmt", ["yuv420p", "yuv420p10le"])
+def test_selector_keeps_originals_bit_exact(extra: list[str], pix_fmt: str) -> None:
+    data = _panning(6) if pix_fmt == "yuv420p" else make_y4m(
+        "testsrc2=size=640x192:rate=25,crop=320:192:n*6:0", frames=6, pix_fmt=pix_fmt)
+    src = parse_y4m(data)
+    proc = run_rife(data, *_SEL, *extra, "--factor", "2")
+    assert proc.returncode == 0, proc.stderr.decode()
+    out = parse_y4m(proc.stdout)
+    assert out.frames[0::2] == src.frames
+    assert all(f not in src.frames for f in out.frames[1:-1:2])  # dernière image : duplication de fin de flux
+    fps = run_rife(data, *_SEL, *extra, "--fps", "60/1")
+    assert fps.returncode == 0, fps.stderr.decode()
+    assert len(parse_y4m(fps.stdout).frames) == 15  # ceil(6 × 2,4)
+
+
+@needs_selector
+def test_selector_reports_weights_and_changes_interpolation() -> None:
+    data = _panning(6)
+    learned = _run_verbose(data, *_SEL, "--nvof", "off", "--model", "rife-v4.15")
+    rule = _run_verbose(data, *_SEL, "--nvof", "off", "--model", "rife-v4.15", "--selector", "off")
+    ultra = _run_verbose(data, *_SEL, "--nvof", "off", "--model", "rife-v4.15", "--ultra")
+    for proc in (learned, rule, ultra):
+        assert proc.returncode == 0, proc.stderr.decode()
+    assert "sélecteur : appris (v4.15)" in learned.stderr.decode()
+    assert "sélecteur : règle fixe" in rule.stderr.decode()
+    assert "sélecteur : appris (v4.15, Ultra)" in ultra.stderr.decode()
+    frames = [parse_y4m(p.stdout).frames[1::2] for p in (learned, rule, ultra)]
+    assert frames[0] != frames[1] and frames[0] != frames[2]
+    # même scène : écarts limités aux zones où les candidats divergent
+    assert all(_psnr(a, b, 8) > 25.0 for a, b in zip(frames[0], frames[2]))
+    v46 = _run_verbose(data, *_SEL, "--nvof", "off", "--model", "rife-v4.6")
+    assert v46.returncode == 0, v46.stderr.decode()
+    assert "sélecteur : appris (v4.6)" in v46.stderr.decode()
+
+
+@needs_selector
+def test_selector_uses_fine_tuned_model_weights() -> None:
+    models = Path(RIFE_BIN).resolve().parent / "rife-models"
+    if not (models / "rife-v4.15-mvo1" / "flownet.param").is_file():
+        pytest.skip("modèle rife-v4.15-mvo1 absent")
+    data = _panning(6)
+    src = parse_y4m(data)
+    proc = _run_verbose(data, *_SEL, "--nvof", "off", "--model", "rife-v4.15-mvo1", "--factor", "2")
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert "sélecteur : appris (v4.15 MVO)" in proc.stderr.decode()
+    assert parse_y4m(proc.stdout).frames[0::2] == src.frames
+
+
+@needs_selector
+@pytest.mark.parametrize("size", ["96x64", "334x202", "720x480", "1742x676"])
+def test_selector_any_size_without_seams(size: str) -> None:
+    # bloc proportionnel à la largeur (8 px en SD … 64 px en 8K) : tailles non multiples du bloc acceptées
+    data = make_y4m(f"testsrc2=size={size}:rate=24", frames=3, pix_fmt="yuv420p10le")
+    src = parse_y4m(data)
+    for extra in ([], ["--ultra"]):
+        proc = run_rife(data, *_SEL, *extra, "--factor", "2")
+        assert proc.returncode == 0, proc.stderr.decode()
+        assert parse_y4m(proc.stdout).frames[0::2] == src.frames
+    # aplat : tous les candidats concordent, la pondération par blocs ne crée aucune couture
+    flat = make_y4m(f"color=c=0x406080:size={size}:rate=24,noise=alls=1:allf=t", frames=3)
+    proc = run_rife(flat, *_SEL, "--ultra", "--factor", "2")
+    assert proc.returncode == 0, proc.stderr.decode()
+    mid = np.frombuffer(parse_y4m(proc.stdout).frames[1], dtype=np.uint8)
+    w, h = (int(v) for v in size.split("x"))
+    luma = mid[: w * h].reshape(h, w).astype(np.int16)
+    assert int(np.abs(np.diff(luma, axis=1)).max()) <= 8 and int(np.abs(np.diff(luma, axis=0)).max()) <= 8
+
+
+@needs_selector
+def test_ultra_pairs_do_not_share_state() -> None:
+    src = parse_y4m(_panning(6))
+    header = _panning(6).split(b"\n", 1)[0] + b"\n"
+    args = (*_SEL, "--ultra", "--nvof", "off", "--factor", "2")
+    full = parse_y4m(run_rife(header + b"".join(b"FRAME\n" + f for f in src.frames), *args).stdout)
+    for k in (0, 3):
+        pair = run_rife(header + b"".join(b"FRAME\n" + f for f in src.frames[k:k + 2]), *args)
+        assert pair.returncode == 0, pair.stderr.decode()
+        assert full.frames[2 * k + 1] == parse_y4m(pair.stdout).frames[1], f"paire {k}"
+
+
+@needs_selector
+@pytest.mark.parametrize(
+    "args", [["--ultra"], ["--ultra", "--engine", "hybrid", "--uhd"], ["--ultra", "--engine", "hybrid", "--tta", "2"],
+             ["--ultra", "--engine", "hybrid", "--selector", "off"], ["--engine", "hybrid", "--selector", "on"]])
+def test_ultra_and_selector_option_values(args: list[str]) -> None:
+    proc = run_rife(make_y4m("testsrc2=size=96x64:rate=25", frames=2), *args, "--matrix", "bt709")
+    assert proc.returncode == 1
+    assert b"--ultra" in proc.stderr or b"--selector" in proc.stderr
+
+
+@needs_selector
+def test_selector_uses_nvidia_flow_candidate_when_available() -> None:
+    gpu = GPUS[_test_gpu()] if _test_gpu() >= 0 else next((g for g in GPUS if g["index"] == 0), GPUS[0])
+    if not gpu.get("nvof"):
+        pytest.skip("flux optique NVIDIA indisponible sur ce GPU")
+    data = _panning(6)
+    src = parse_y4m(data)
+    for extra in ([], ["--ultra"]):
+        proc = _run_verbose(data, *_SEL, *extra, "--factor", "2")
+        assert proc.returncode == 0, proc.stderr.decode()
+        assert "sélecteur : 5 image(s) avec le candidat flux NVIDIA" in proc.stderr.decode()
+        assert parse_y4m(proc.stdout).frames[0::2] == src.frames
+    off = _run_verbose(data, *_SEL, "--nvof", "off", "--factor", "2")
+    assert "sélecteur : 0 image(s) avec le candidat flux NVIDIA" in off.stderr.decode()
+
+
+# ---------------------------------------------------------------------------
 # Plugin TensorRT facultatif (mvo-rife-trt), 1.4.0+
 # ---------------------------------------------------------------------------
 

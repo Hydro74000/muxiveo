@@ -143,7 +143,7 @@ class VideoOnlyCommandBuilder:
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
-            tta=settings.tta,
+            tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
         )

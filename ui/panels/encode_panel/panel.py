@@ -108,6 +108,27 @@ from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 # Pas de borne haute applicative (limite technique de QIntValidator).
 _INT_INPUT_MAX = 2**31 - 1
 
+# Préréglages d'interpolation : libellé et infobulle (entrée de la liste et préréglage choisi).
+_INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("Rapide", "fast",
+     "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) "
+     "peuvent onduler."),
+    ("Équilibré", "balanced",
+     "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, "
+     "la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux "
+     "demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le "
+     "temps de Rapide."),
+    ("Qualité", "quality",
+     "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, "
+     "occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide."),
+    ("Ultra", "ultra",
+     "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme "
+     "candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ "
+     "1,5 fois le temps de Qualité."),
+    ("Light", "light",
+     "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques)."),
+)
+
 
 def _format_fps(value: float) -> str:
     """Cadence lisible à la française (ex. 59,94)."""
@@ -1761,6 +1782,10 @@ class EncodePanel(QWidget):
             self._chroma_strength_combo,
         ))
 
+        # mode et TTA choisis hors préréglages qui les imposent (Light, Ultra), rétablis en les quittant
+        self._interp_user_mode: object = "normal"
+        self._interp_user_tta: object = 1
+        self._interp_last_quality: object = None
         self._interp_cb = QCheckBox("Interpolation")
         self._interp_cb.setStyleSheet(_checkbox_style())
         self._interp_cb.toggled.connect(lambda _: self._on_interpolation_changed())
@@ -1776,32 +1801,29 @@ class EncodePanel(QWidget):
         self._interp_factor_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
-        self._interp_quality_combo.setToolTip(
-            "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, "
-            "barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité "
-            "(hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, "
-            "petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est "
-            "disponible, sinon le GPU Vulkan seul."
-        )
-        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Qualité", "quality"), ("Light", "light")):
+        for label, value, _tip in _INTERPOLATION_PRESET_ITEMS:
+            if value == "light":
+                self._interp_quality_combo.insertSeparator(self._interp_quality_combo.count())
             self._interp_quality_combo.addItem(label, value)
         self._set_combo_data(self._interp_quality_combo, "balanced")
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_mode_combo = QComboBox()
         self._interp_mode_combo.setStyleSheet(_combo_style())
-        self._interp_mode_combo.setToolTip(
+        self._interp_mode_tip = (
             "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée."
         )
+        self._interp_mode_combo.setToolTip(self._interp_mode_tip)
         for label, value in (("Mode : Normal", "normal"), ("Mode : Fast", "fast")):
             self._interp_mode_combo.addItem(label, value)
         self._interp_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_tta_combo = QComboBox()
         self._interp_tta_combo.setStyleSheet(_combo_style())
-        self._interp_tta_combo.setToolTip(
+        self._interp_tta_tip = (
             "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, "
             "ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. "
             "Sans effet sur les motifs répétitifs (grilles, barreaux)."
         )
+        self._interp_tta_combo.setToolTip(self._interp_tta_tip)
         for level in INTERPOLATION_TTA_LEVELS:
             self._interp_tta_combo.addItem("TTA : Désactivé" if level == 1 else f"TTA : ×{level}", level)
         self._interp_tta_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
@@ -1864,12 +1886,45 @@ class EncodePanel(QWidget):
         enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
         self._interp_factor_combo.setEnabled(enabled)
         self._interp_quality_combo.setEnabled(enabled)
-        # Light impose le mode Fast (v4.15 lite + flux à demi-résolution)
-        light = self._interp_quality_combo.currentData() == "light"
+        # Light impose le mode Fast (v4.15 lite + flux à demi-résolution) ; Ultra impose le mode Normal sans TTA.
+        # En quittant ces préréglages, le mode et le TTA choisis auparavant sont rétablis.
+        quality = self._interp_quality_combo.currentData()
+        light = quality == "light"
+        ultra = quality == "ultra"
+        previous = self._interp_last_quality
+        self._interp_last_quality = quality
         if light:
             self._set_combo_data(self._interp_mode_combo, "fast")
-        self._interp_mode_combo.setEnabled(enabled and not light)
-        self._interp_tta_combo.setEnabled(enabled)
+        elif ultra:
+            self._set_combo_data(self._interp_mode_combo, "normal")
+            self._set_combo_data(self._interp_tta_combo, 1)
+        elif previous in ("light", "ultra"):
+            mode, tta = self._interp_user_mode, self._interp_user_tta   # lus avant les rappels imbriqués
+            self._set_combo_data(self._interp_mode_combo, mode)
+            self._set_combo_data(self._interp_tta_combo, tta)
+        if not (light or ultra):
+            self._interp_user_mode = self._interp_mode_combo.currentData()
+        if not ultra:
+            self._interp_user_tta = self._interp_tta_combo.currentData()
+        self._interp_mode_combo.setEnabled(enabled and not (light or ultra))
+        self._interp_tta_combo.setEnabled(enabled and not ultra)
+        # infobulles : préréglages (traduits à chaque mise à jour), préréglage choisi, réglages imposés expliqués
+        for index in range(self._interp_quality_combo.count()):
+            item_tip = next((t for _label, value, t in _INTERPOLATION_PRESET_ITEMS
+                             if value == self._interp_quality_combo.itemData(index)), "")
+            if item_tip:
+                self._interp_quality_combo.setItemData(index, translate_text(item_tip), Qt.ItemDataRole.ToolTipRole)
+        tip = next((t for _label, value, t in _INTERPOLATION_PRESET_ITEMS if value == quality), "")
+        self._interp_quality_combo.setToolTip(translate_text(tip) if tip else "")
+        self._interp_mode_combo.setToolTip(translate_text(
+            "Mode Fast imposé par le préréglage Light." if light
+            else "Mode Normal imposé par le préréglage Ultra." if ultra
+            else self._interp_mode_tip
+        ))
+        self._interp_tta_combo.setToolTip(translate_text(
+            "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le "
+            "sélecteur." if ultra else self._interp_tta_tip
+        ))
         self._sync_trt_hint()
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
@@ -1920,6 +1975,7 @@ class EncodePanel(QWidget):
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
         if not hasattr(self, "_interp_cb"):
             return
+        self._interp_last_quality = None   # réglages chargés : aucun choix antérieur à rétablir
         self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
         self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
         quality = settings.quality if settings.quality in INTERPOLATION_PRESETS else INTERPOLATION_DEFAULT_QUALITY
@@ -4790,14 +4846,16 @@ class EncodePanel(QWidget):
             )
             if interpolation.quality == "light":
                 badge += " Light"
+            elif interpolation.quality == "ultra":
+                badge += " Ultra"
             elif interpolation.quality == "quality":
                 badge += " " + translate_text("Qualité")
             elif interpolation.quality == "fast":
                 badge += " " + translate_text("Rapide")
             if interpolation.fast_mode():
                 badge += " Fast"
-            if int(interpolation.tta) > 1:
-                badge += f" TTA ×{int(interpolation.tta)}"
+            if interpolation.tta_passes() > 1:
+                badge += f" TTA ×{interpolation.tta_passes()}"
             if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
                 badge += " TRT"
             badges.append(badge)

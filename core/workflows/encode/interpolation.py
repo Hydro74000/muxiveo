@@ -45,16 +45,20 @@ class InterpolationPreset:
     engine: str           # rife | hybrid (RIFE + compensation de mouvement par blocs)
     model: str
     force_fast: bool = False  # mode Fast (--uhd) imposé
+    ultra: bool = False       # candidats supplémentaires du sélecteur (--ultra) : mode Normal et TTA x1 imposés
 
 
 # Moteur hybride : barreaux et motifs fins répétitifs gardés droits là où RIFE les fait onduler
 # (docs/benchmarks/2026-10-07-interpolation-hybride.md). v4.6 : meilleur VMAF moyen, débit le
 # plus élevé et VRAM la plus basse ; v4.15 : meilleur résultat hybride (coût ≈ 2 × RIFE) ;
-# Light = v4.15-lite toujours en mode Fast (petites cartes).
+# Light = v4.15-lite toujours en mode Fast (petites cartes) ; Ultra = hybride avec RIFE inversé en candidat
+# supplémentaire du sélecteur appris (muxiveo-rife 1.6.0, docs/benchmarks/2026-10-08-selecteur-hybride.md).
+# Qualité / Ultra : RIFE v4.15 affiné par Muxiveo (rife-v4.15-mvo1, même architecture et même coût que v4.15).
 INTERPOLATION_PRESETS: dict[str, InterpolationPreset] = {
     "fast": InterpolationPreset("rife", "rife-v4.6"),
     "balanced": InterpolationPreset("hybrid", "rife-v4.6"),
-    "quality": InterpolationPreset("hybrid", "rife-v4.15"),
+    "quality": InterpolationPreset("hybrid", "rife-v4.15-mvo1"),
+    "ultra": InterpolationPreset("hybrid", "rife-v4.15-mvo1", ultra=True),
     "light": InterpolationPreset("rife", "rife-v4.15-lite", force_fast=True),
 }
 # Ancien préréglage « max » (presets enregistrés) : remplacé par « quality ».
@@ -63,6 +67,10 @@ INTERPOLATION_MODELS: dict[str, str] = {name: preset.model for name, preset in I
 # Préréglages qui imposent le mode Fast (--uhd).
 INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset(
     name for name, preset in INTERPOLATION_PRESETS.items() if preset.force_fast
+)
+# Préréglages Ultra : mode Normal et TTA x1 imposés (muxiveo-rife refuse --ultra avec --uhd ou --tta).
+INTERPOLATION_ULTRA_QUALITIES: frozenset[str] = frozenset(
+    name for name, preset in INTERPOLATION_PRESETS.items() if preset.ultra
 )
 INTERPOLATION_DEFAULT_QUALITY = "balanced"
 INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
@@ -79,6 +87,8 @@ RIFE_TTA_MIN_VERSION: tuple[int, int, int] = (1, 2, 0)
 RIFE_HYBRID_MIN_VERSION: tuple[int, int, int] = (1, 3, 0)
 # Plugin d'accélération NVIDIA TensorRT (--trt-plugin / --trt-cache) : release 1.4.0.
 RIFE_TRT_MIN_VERSION: tuple[int, int, int] = (1, 4, 0)
+# Préréglage Ultra (--ultra, sélecteur appris par blocs) : release 1.6.0.
+RIFE_ULTRA_MIN_VERSION: tuple[int, int, int] = (1, 6, 0)
 
 
 def interpolation_preset(quality: str | None) -> InterpolationPreset:
@@ -355,7 +365,8 @@ def build_rife_stage(
 
     ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
     ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
-    Préréglage hybride : ``--engine hybrid`` (flux optique NVIDIA utilisé s'il est disponible).
+    Préréglage hybride : ``--engine hybrid`` (flux optique NVIDIA utilisé s'il est disponible) ;
+    préréglage Ultra : ``--ultra``, sans ``--uhd`` ni ``--tta`` (combinaisons refusées par muxiveo-rife).
     ``trt_plugin`` : dossier de l'accélération NVIDIA (TensorRT) ; muxiveo-rife revient seul sur Vulkan si
     elle est inutilisable (ne le passer qu'à muxiveo-rife ≥ RIFE_TRT_MIN_VERSION).
     """
@@ -373,11 +384,13 @@ def build_rife_stage(
     ]
     if preset.engine != "rife":
         cmd.extend(["--engine", preset.engine])
-    if mode == "fast" or preset.force_fast:
+    if preset.ultra:
+        cmd.append("--ultra")
+    elif mode == "fast" or preset.force_fast:
         cmd.append("--uhd")
     if int(gpu) >= 0:
         cmd.extend(["--gpu", str(int(gpu))])
-    if int(tta) > 1:
+    if int(tta) > 1 and not preset.ultra:
         cmd.extend(["--tta", str(int(tta))])
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -836,6 +849,7 @@ __all__ = [
     "INTERPOLATION_MODELS",
     "INTERPOLATION_MODES",
     "INTERPOLATION_FAST_QUALITIES",
+    "INTERPOLATION_ULTRA_QUALITIES",
     "INTERPOLATION_LEGACY_QUALITIES",
     "INTERPOLATION_PRESETS",
     "InterpolationPreset",
@@ -848,6 +862,7 @@ __all__ = [
     "detect_gpu_acceleration",
     "RIFE_MIN_VERSION",
     "RIFE_TTA_MIN_VERSION",
+    "RIFE_ULTRA_MIN_VERSION",
     "interpolation_preset",
     "INTERPOLATION_TTA_LEVELS",
     "rife_model_available",

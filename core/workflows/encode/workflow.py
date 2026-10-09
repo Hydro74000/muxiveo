@@ -121,6 +121,7 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
     RIFE_HYBRID_MIN_VERSION as _RIFE_HYBRID_MIN_VERSION,
     RIFE_TRT_MIN_VERSION as _RIFE_TRT_MIN_VERSION,
+    RIFE_ULTRA_MIN_VERSION as _RIFE_ULTRA_MIN_VERSION,
     RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
     RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
     INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
@@ -1070,7 +1071,7 @@ class EncodeWorkflow(QObject):
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
-            tta=settings.tta,
+            tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
         )
@@ -3359,7 +3360,11 @@ class EncodeWorkflow(QObject):
                         f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
                         f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
                     )
-                elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
+                elif (
+                    version is not None
+                    and settings.tta_passes() > 1
+                    and version < _RIFE_TTA_MIN_VERSION
+                ):
                     errors.append(
                         "Interpolation d'images : le TTA requiert muxiveo-rife "
                         f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
@@ -3375,6 +3380,17 @@ class EncodeWorkflow(QObject):
                         f"muxiveo-rife {'.'.join(map(str, _RIFE_HYBRID_MIN_VERSION))} ou plus récent "
                         f"(installé : {'.'.join(map(str, version))}) ; relancer le setup, "
                         "ou choisir le préréglage Rapide."
+                    )
+                elif (
+                    version is not None
+                    and _interpolation_preset(settings.quality).ultra
+                    and version < _RIFE_ULTRA_MIN_VERSION
+                ):
+                    errors.append(
+                        "Interpolation d'images : le préréglage Ultra requiert "
+                        f"muxiveo-rife {'.'.join(map(str, _RIFE_ULTRA_MIN_VERSION))} ou plus récent "
+                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup, "
+                        "ou choisir le préréglage Qualité."
                     )
                 elif version is not None and model and not _rife_model_available(resolved, model):
                     errors.append(

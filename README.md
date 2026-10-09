@@ -266,15 +266,21 @@ Ergonomie du panneau :
 
 La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s. Préréglages :
 
-| Préréglage | Traitement |
-|---|---|
-| Rapide | RIFE v4.6 |
-| Équilibré (défaut) | hybride : RIFE v4.6 + compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements (flou de bougé, panoramiques rapides) |
-| Qualité | hybride avec RIFE v4.15 |
-| Light | RIFE v4.15-lite en mode Fast, pour les petites cartes graphiques |
+| Préréglage | Traitement | Temps de calcul |
+|---|---|---|
+| Rapide | RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler. | référence |
+| Équilibré (défaut) | Moteur hybride avec RIFE v4.6 : pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements (flou de bougé, panoramiques rapides) et le flux optique NVIDIA s'il est disponible. | ≈ 2 × Rapide |
+| Qualité | Même moteur hybride, avec RIFE v4.15 affiné par Muxiveo : plus précis sur les mouvements complexes, les occultations (objet qui passe devant un autre), les détails fins et les textes incrustés. | ≈ 3 × Rapide |
+| Ultra | Qualité, plus une seconde passe RIFE calculée dans le sens inverse et proposée au sélecteur comme candidat supplémentaire : moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. | ≈ 1,5 × Qualité |
+| Light | RIFE v4.15 lite en mode Fast : le moins gourmand en mémoire GPU, pour les petites cartes graphiques. | ≈ Rapide |
+
+Temps mesurés en 4K sur GPU Vulkan ; ils varient selon la scène (la passe des grands mouvements ne se déclenche que
+lorsqu'elle est utile).
 
 Le calcul se fait sur le GPU (Vulkan, toutes marques). Sur carte NVIDIA, le moteur hybride utilise en plus le flux
-optique matériel (NVOF) quand il est disponible.
+optique matériel (NVOF) quand il est disponible, comme candidat du sélecteur. Le sélecteur choisit, pour chaque
+zone de l'image, le mélange des candidats le plus fidèle ; il a été appris sur un corpus de films et de séries de la
+SD à la 4K (tailles de zone proportionnelles à la largeur de l'image, jusqu'à la 8K).
 
 #### Accélération NVIDIA (TensorRT)
 

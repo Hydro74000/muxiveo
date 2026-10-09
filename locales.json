@@ -4951,10 +4951,6 @@
     "fra": "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.",
     "eng": "Fast mode: optical flow computed at half resolution (RIFE UHD). In 4K: 16 to 36% faster and 44% less GPU memory, for a slight quality loss; at 1080p the loss is larger."
   },
-  "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité (hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est disponible, sinon le GPU Vulkan seul.": {
-    "fra": "Préréglage : Rapide (RIFE v4.6) ; Équilibré (hybride : RIFE v4.6 + compensation de mouvement, barreaux et motifs répétitifs gardés droits, environ 1,35 fois le temps de Rapide) ; Qualité (hybride avec RIFE v4.15, environ 2 fois le temps de Rapide) ; Light (v4.15 lite + mode Fast, petites cartes graphiques). Les préréglages hybrides utilisent le flux optique NVIDIA s'il est disponible, sinon le GPU Vulkan seul.",
-    "eng": "Preset: Fast (RIFE v4.6); Balanced (hybrid: RIFE v4.6 + motion compensation, keeps bars and repeating patterns straight, about 1.35 times the Fast time); Quality (hybrid with RIFE v4.15, about 2 times the Fast time); Light (v4.15 lite + Fast mode, small graphics cards). Hybrid presets use NVIDIA optical flow when available, otherwise the Vulkan GPU alone."
-  },
   "Light": {
     "fra": "Light",
     "eng": "Light"
@@ -5642,5 +5638,41 @@
   "EXTENSIONS": {
     "fra": "EXTENSIONS",
     "eng": "EXTENSIONS"
+  },
+  "Ultra": {
+    "fra": "Ultra",
+    "eng": "Ultra"
+  },
+  "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler.": {
+    "fra": "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler.",
+    "eng": "Fast: RIFE v4.6 alone. The fastest; fine repeating patterns (bars, panning grids) may wobble."
+  },
+  "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le temps de Rapide.": {
+    "fra": "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le temps de Rapide.",
+    "eng": "Balanced: hybrid engine with RIFE v4.6. For each area of the picture, a learned selector blends RIFE, block motion compensation (keeps bars and repeating patterns straight), half-resolution-flow RIFE on large motion and NVIDIA optical flow when available. About 2 times the Fast time."
+  },
+  "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ 1,5 fois le temps de Qualité.": {
+    "fra": "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ 1,5 fois le temps de Qualité.",
+    "eng": "Ultra: Quality with a second RIFE pass computed in reverse, offered to the selector as an extra candidate; fewer artifacts in difficult scenes. Normal mode, no TTA. About 1.5 times the Quality time."
+  },
+  "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques).": {
+    "fra": "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques).",
+    "eng": "Light: RIFE v4.15 lite in Fast mode, the lowest GPU memory use (small graphics cards)."
+  },
+  "Mode Fast imposé par le préréglage Light.": {
+    "fra": "Mode Fast imposé par le préréglage Light.",
+    "eng": "Fast mode required by the Light preset."
+  },
+  "Mode Normal imposé par le préréglage Ultra.": {
+    "fra": "Mode Normal imposé par le préréglage Ultra.",
+    "eng": "Normal mode required by the Ultra preset."
+  },
+  "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le sélecteur.": {
+    "fra": "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le sélecteur.",
+    "eng": "TTA disabled: the Ultra preset already computes a reversed pass, chosen area by area by the selector."
+  },
+  "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.": {
+    "fra": "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.",
+    "eng": "Quality: same hybrid engine with RIFE v4.15 fine-tuned by Muxiveo, more accurate (complex motion, occlusions, fine detail, burned-in text). About 3 times the Fast time."
   }
 }

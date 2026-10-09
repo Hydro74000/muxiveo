@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from PySide6.QtCore import Qt
 
 from core.pipeline_command import (
     PipelineCommand,
@@ -207,7 +208,7 @@ def test_rife_stage_arguments():
     assert cmd[0] == "/opt/muxiveo-rife"
     assert cmd[cmd.index("--factor") + 1] == "3"
     # ancien préréglage Max : préréglage Qualité (hybride + v4.15)
-    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["quality"] == "rife-v4.15"
+    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["quality"] == "rife-v4.15-mvo1"
     assert cmd[cmd.index("--engine") + 1] == "hybrid"
     assert cmd[cmd.index("--matrix") + 1] == "bt2020nc"
     assert cmd[cmd.index("--chroma-loc") + 1] == "topleft"
@@ -225,7 +226,7 @@ def test_rife_stage_arguments():
 
 def test_presets_map_to_benchmarked_models():
     assert INTERPOLATION_MODELS["fast"] == INTERPOLATION_MODELS["balanced"] == "rife-v4.6"
-    assert INTERPOLATION_MODELS["quality"] == "rife-v4.15"
+    assert INTERPOLATION_MODELS["quality"] == "rife-v4.15-mvo1"
     assert "max" not in INTERPOLATION_MODELS
     fast = build_rife_stage("r", quality="fast", source=InterpolationSource())
     assert "--engine" not in fast  # RIFE seul : commande inchangée, compatible avec les anciens binaires
@@ -238,6 +239,18 @@ def test_presets_map_to_benchmarked_models():
     assert "--uhd" in light  # Light impose le mode Fast
     assert _interp(quality="light").fast_mode()
     assert not _interp(quality="balanced").fast_mode()
+
+
+def test_ultra_preset_forces_normal_mode_without_tta():
+    assert INTERPOLATION_MODELS["ultra"] == "rife-v4.15-mvo1"
+    ultra = build_rife_stage("r", quality="ultra", source=InterpolationSource(), mode="fast", tta=4)
+    assert ultra[ultra.index("--engine") + 1] == "hybrid"
+    assert "--ultra" in ultra
+    assert "--uhd" not in ultra and "--tta" not in ultra  # combinaisons refusées par muxiveo-rife
+    assert "--ultra" not in build_rife_stage("r", quality="quality", source=InterpolationSource())
+    settings = _interp(quality="ultra", mode="fast", tta=4)
+    assert not settings.fast_mode() and settings.tta_passes() == 1
+    assert _interp(quality="quality", tta=4).tta_passes() == 4
 
 
 _GPU_LISTING = json.dumps({"version": "1.3.0", "default": 0, "gpus": [
@@ -721,7 +734,7 @@ class TestWorkflowInterpolation:
         assert len(old) == 1 and "TTA" in old[0] and "1.2.0" in old[0] and "1.1.1" in old[0]
 
     def test_hybrid_presets_require_rife_1_3_and_their_model(self, interp_workflow, tmp_path):
-        for name in ("rife-v4.6", "rife-v4.15"):
+        for name in ("rife-v4.6", "rife-v4.15-mvo1"):
             (tmp_path / "rife-models" / name).mkdir(parents=True)
         (tmp_path / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
         balanced = _cfg(tmp_path, _video(interpolation=_interp()))
@@ -734,10 +747,23 @@ class TestWorkflowInterpolation:
             with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 3, 0)):
                 assert interp_workflow._interpolation_validation_errors(balanced) == []
                 missing = interp_workflow._interpolation_validation_errors(quality)
-                assert len(missing) == 1 and "rife-v4.15" in missing[0]
-                (tmp_path / "rife-models" / "rife-v4.15" / "flownet.param").write_text("")
+                assert len(missing) == 1 and "rife-v4.15-mvo1" in missing[0]
+                (tmp_path / "rife-models" / "rife-v4.15-mvo1" / "flownet.param").write_text("")
                 assert interp_workflow._interpolation_validation_errors(quality) == []
         assert len(old) == 1 and "hybride" in old[0] and "1.3.0" in old[0] and "1.2.3" in old[0]
+
+    def test_ultra_preset_requires_rife_1_6(self, interp_workflow, tmp_path):
+        model = tmp_path / "rife-models" / "rife-v4.15-mvo1"
+        model.mkdir(parents=True)
+        (model / "flownet.param").write_text("")
+        # TTA enregistré ignoré en Ultra : pas d'erreur de version TTA
+        ultra = _cfg(tmp_path, _video(interpolation=_interp(quality="ultra", tta=4)))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 5, 0)):
+                old = interp_workflow._interpolation_validation_errors(ultra)
+            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 6, 0)):
+                assert interp_workflow._interpolation_validation_errors(ultra) == []
+        assert len(old) == 1 and "Ultra" in old[0] and "1.6.0" in old[0] and "1.5.0" in old[0]
 
     def test_vfr_with_dynamic_hdr_copy_rejected(self, interp_workflow, tmp_path):
         payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")
@@ -983,3 +1009,40 @@ def test_required_dovi_level_capped_for_tv_compat():
     with patch("core.workflows.encode.interpolation._probe_stream", return_value=stream):
         assert required_dovi_level("ffprobe", Path("s.mkv"), 0, 2) == 9            # 100 i/s : plafonné (TV)
         assert required_dovi_level("ffprobe", Path("s.mkv"), 0, Fraction(6, 5)) == 9  # 60 i/s
+
+
+def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
+    from core.config import AppConfig
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    panel = EncodePanel(AppConfig())
+    panel._set_combo_data(panel._interp_mode_combo, "fast")
+    panel._set_combo_data(panel._interp_tta_combo, 4)
+    panel._set_combo_data(panel._interp_quality_combo, "ultra")
+    panel._sync_interpolation_controls()
+    settings = panel._current_interpolation_settings()
+    assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
+    assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
+    panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
+    assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
+    assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
+
+
+def test_panel_restores_user_choices_after_forcing_presets(qt_app):
+    from core.config import AppConfig
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    panel = EncodePanel(AppConfig())
+    panel._apply_interpolation_settings(_interp(quality="quality", mode="fast", tta=4))
+    for forcing in ("ultra", "light"):
+        panel._set_combo_data(panel._interp_quality_combo, forcing)
+        panel._set_combo_data(panel._interp_quality_combo, "balanced")
+        assert panel._interp_mode_combo.currentData() == "fast" and panel._interp_tta_combo.currentData() == 4
+    # préréglage chargé : ses valeurs priment sur les choix antérieurs
+    panel._set_combo_data(panel._interp_quality_combo, "ultra")
+    panel._apply_interpolation_settings(_interp(quality="balanced", mode="normal", tta=2))
+    assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 2
+    # infobulle de chaque entrée et du préréglage choisi
+    assert panel._interp_quality_combo.toolTip().startswith("Équilibré")
+    tips = [panel._interp_quality_combo.itemData(i, Qt.ItemDataRole.ToolTipRole) for i in range(panel._interp_quality_combo.count())]
+    assert sum(1 for t in tips if t) == 5
