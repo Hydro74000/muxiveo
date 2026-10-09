@@ -1016,16 +1016,19 @@ def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
     from ui.panels.encode_panel.panel import EncodePanel
 
     panel = EncodePanel(AppConfig())
-    panel._set_combo_data(panel._interp_mode_combo, "fast")
-    panel._set_combo_data(panel._interp_tta_combo, 4)
-    panel._set_combo_data(panel._interp_quality_combo, "ultra")
-    panel._sync_interpolation_controls()
-    settings = panel._current_interpolation_settings()
-    assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
-    assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
-    panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
-    assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
-    assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
+    try:
+        panel._set_combo_data(panel._interp_mode_combo, "fast")
+        panel._set_combo_data(panel._interp_tta_combo, 4)
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
+        panel._sync_interpolation_controls()
+        settings = panel._current_interpolation_settings()
+        assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
+        assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
+        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
+        assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
+        assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
+    finally:
+        panel.close()   # arrête les sondes du panneau (threads) avant la destruction
 
 
 def test_panel_restores_user_choices_after_forcing_presets(qt_app):
@@ -1033,16 +1036,20 @@ def test_panel_restores_user_choices_after_forcing_presets(qt_app):
     from ui.panels.encode_panel.panel import EncodePanel
 
     panel = EncodePanel(AppConfig())
-    panel._apply_interpolation_settings(_interp(quality="quality", mode="fast", tta=4))
-    for forcing in ("ultra", "light"):
-        panel._set_combo_data(panel._interp_quality_combo, forcing)
-        panel._set_combo_data(panel._interp_quality_combo, "balanced")
-        assert panel._interp_mode_combo.currentData() == "fast" and panel._interp_tta_combo.currentData() == 4
-    # préréglage chargé : ses valeurs priment sur les choix antérieurs
-    panel._set_combo_data(panel._interp_quality_combo, "ultra")
-    panel._apply_interpolation_settings(_interp(quality="balanced", mode="normal", tta=2))
-    assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 2
-    # infobulle de chaque entrée et du préréglage choisi
-    assert panel._interp_quality_combo.toolTip().startswith("Équilibré")
-    tips = [panel._interp_quality_combo.itemData(i, Qt.ItemDataRole.ToolTipRole) for i in range(panel._interp_quality_combo.count())]
-    assert sum(1 for t in tips if t) == 5
+    try:
+        panel._apply_interpolation_settings(_interp(quality="quality", mode="fast", tta=4))
+        for forcing in ("ultra", "light"):
+            panel._set_combo_data(panel._interp_quality_combo, forcing)
+            panel._set_combo_data(panel._interp_quality_combo, "balanced")
+            assert panel._interp_mode_combo.currentData() == "fast" and panel._interp_tta_combo.currentData() == 4
+        # préréglage chargé : ses valeurs priment sur les choix antérieurs
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
+        panel._apply_interpolation_settings(_interp(quality="balanced", mode="normal", tta=2))
+        assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 2
+        # infobulle de chaque entrée, et du préréglage choisi (= celle de son entrée), quelle que soit la langue
+        combo = panel._interp_quality_combo
+        tips = [combo.itemData(i, Qt.ItemDataRole.ToolTipRole) for i in range(combo.count())]
+        assert sum(1 for t in tips if t) == 5
+        assert combo.toolTip() == tips[combo.currentIndex()] and combo.currentData() == "balanced"
+    finally:
+        panel.close()
