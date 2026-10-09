@@ -16,6 +16,7 @@ def test_requirements_file_is_the_single_source():
     assert set(requirements) == {"PySide6", "numpy", "pymediainfo", "certifi"}
     assert requirements["PySide6"].module == "PySide6"  # casse exacte du module
     assert requirements["PySide6"].minimum == (6, 6, 0)
+    assert requirements["PySide6"].excluded == ((6, 12, 0),)  # None décrémenté par les méthodes sans retour
     assert requirements["certifi"].minimum is None
 
 
@@ -23,7 +24,7 @@ def test_setup_installs_from_requirements():
     import setup
 
     assert setup.PYTHON_PACKAGES == [r.spec for r in read_requirements()]
-    assert "PySide6>=6.6.0" in setup.PYTHON_PACKAGES and "certifi" in setup.PYTHON_PACKAGES
+    assert "PySide6>=6.6.0,!=6.12.0" in setup.PYTHON_PACKAGES and "certifi" in setup.PYTHON_PACKAGES
 
 
 def test_unsupported_requirement_syntax_is_explicit(tmp_path: Path):
@@ -68,7 +69,23 @@ def test_only_missing_or_outdated_are_installed(setup_module, monkeypatch):
     setup, commands = setup_module
     _installed(monkeypatch, {"PySide6": "6.5.3", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": None})
     setup.install_python_packages(dry_run=False)
-    assert commands == [[sys.executable, "-m", "pip", "install", "PySide6>=6.6.0", "certifi"]]
+    assert commands == [[sys.executable, "-m", "pip", "install", "PySide6>=6.6.0,!=6.12.0", "certifi"]]
+
+
+def test_excluded_version_is_reinstalled(setup_module, monkeypatch):
+    setup, commands = setup_module
+    _installed(monkeypatch, {"PySide6": "6.12.0", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"})
+    setup.install_python_packages(dry_run=False)
+    assert commands == [[sys.executable, "-m", "pip", "install", "PySide6>=6.6.0,!=6.12.0"]]
+
+
+def test_exclusion_syntax(tmp_path: Path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("Lib>=1.2, != 1.3.0 ,!=1.4\nOther,!=2\n", encoding="utf-8")
+    lib, other = read_requirements(path)
+    assert lib.spec == "Lib>=1.2,!=1.3.0,!=1.4" and lib.excluded == ((1, 3, 0), (1, 4))
+    assert other.spec == "Other!=2" and other.minimum is None
+    assert reqs.is_excluded("1.4.0", lib) and reqs.is_excluded("1.3", lib) and not reqs.is_excluded("1.3.1", lib)
 
 
 def test_frozen_application_never_calls_pip(setup_module, monkeypatch):

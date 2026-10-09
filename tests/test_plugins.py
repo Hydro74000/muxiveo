@@ -333,6 +333,7 @@ def test_dashboard_tensorrt_badge(qt_app, tmp_path):
 
 def test_extensions_page_sections(qt_app, tmp_path):
     from core.config import AppConfig
+    from core.i18n import translate_text
     from ui.panels.extensions_panel import ExtensionsPanel
 
     panel = ExtensionsPanel(AppConfig())
@@ -340,7 +341,7 @@ def test_extensions_page_sections(qt_app, tmp_path):
     # sonde du GPU en cours : carte disponible, sans bouton d'installation
     panel.set_trt_state(_state())
     assert panel._available_box.indexOf(card) >= 0 and panel._trt_install_btn.isHidden()
-    assert "Vérification" in panel._trt_status.text()
+    assert panel._trt_status.text() == translate_text("Vérification de la compatibilité de cette machine…")
     # machine incompatible : carte repliée dans « Non compatibles », avec la raison
     panel.set_trt_state(_state(capability=TrtCapability(reason="GPU non NVIDIA")))
     assert panel._incompatible_box.indexOf(card) >= 0 and panel._available_box.indexOf(card) < 0

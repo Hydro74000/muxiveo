@@ -641,7 +641,7 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 def _ensure_pyinstaller() -> None:
     required: list[tuple[str, str]] = [
         ("PyInstaller", "pyinstaller"),
-        ("PySide6", "PySide6>=6.6.0"),
+        ("PySide6", "PySide6>=6.6.0,!=6.12.0"),
         ("pymediainfo", "pymediainfo>=6.1.0"),
         ("numpy", "numpy>=1.24"),
         ("certifi", "certifi"),

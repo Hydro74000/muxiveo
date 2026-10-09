@@ -257,7 +257,7 @@ jobs:
       - name: Install Linux packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller
+          pip install "PySide6>=6.6.0,!=6.12.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller
 
       - name: Embed build version
         shell: bash
@@ -330,7 +330,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller
+          pip install "PySide6>=6.6.0,!=6.12.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller
 
       - name: Install NSIS
         shell: pwsh
@@ -425,7 +425,7 @@ jobs:
       - name: Install macOS packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller pillow
+          pip install "PySide6>=6.6.0,!=6.12.0" "pymediainfo>=6.1.0" "numpy>=1.24" certifi pyinstaller pillow
 
       - name: Embed build version
         shell: bash

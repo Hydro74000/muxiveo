@@ -219,7 +219,7 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 # Paquets nécessaires au build (PyInstaller doit pouvoir les importer)
 _BUILD_DEPS: list[str] = [
     "pyinstaller",
-    "PySide6>=6.6.0",
+    "PySide6>=6.6.0,!=6.12.0",
     "pymediainfo>=6.1.0",
     "numpy>=1.24",
     "certifi",
@@ -261,7 +261,7 @@ def ensure_build_deps() -> None:
         missing_py.append("pyinstaller")
 
     if importlib.util.find_spec("PySide6") is None:
-        missing_py.append("PySide6>=6.6.0")
+        missing_py.append("PySide6>=6.6.0,!=6.12.0")
 
     if importlib.util.find_spec("numpy") is None:
         missing_py.append("numpy>=1.24")
