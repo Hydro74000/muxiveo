@@ -2877,7 +2877,8 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
     """Extension mvo-rife préinstallée (muxiveo-rife.exe, rife-models/, presets.json) : archive locale
     ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée du dépôt des extensions."""
     exe = tools_dir / "muxiveo-rife.exe"
-    if exe.is_file() and (tools_dir / "rife-models").is_dir():
+    # Réutilisation d'un tools/ précédent : extension complète seulement (manifeste, préréglages, modèles).
+    if exe.is_file() and (tools_dir / "rife-models").is_dir() and (tools_dir / "manifest.json").is_file():
         if _muxiveo_rife_version(exe) == MVO_RIFE_VERSION:
             _ok("muxiveo-rife.exe déjà présent dans tools/")
             TOOL_MANIFEST.add(
