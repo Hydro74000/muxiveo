@@ -82,11 +82,11 @@ from core.version import (
     APP_EXECUTABLE_NAME,
     APP_MACOS_BUNDLE_ID,
     APP_NAME,
-    APP_REPOSITORY,
     APP_VERSION,
     APP_WEBSITE_URL,
-    MUXIVEO_RIFE_RELEASE_TAG,
-    MUXIVEO_RIFE_VERSION,
+    MUXIVEO_PLUGINS_REPOSITORY,
+    MVO_RIFE_RELEASE_TAG,
+    MVO_RIFE_VERSION,
 )
 
 ROOT = Path(__file__).parent
@@ -2874,28 +2874,29 @@ def _muxiveo_rife_version(exe: Path) -> str | None:
 
 
 def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
-    """muxiveo-rife.exe + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
+    """Extension mvo-rife préinstallée (muxiveo-rife.exe, rife-models/, presets.json) : archive locale
+    ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée du dépôt des extensions."""
     exe = tools_dir / "muxiveo-rife.exe"
     if exe.is_file() and (tools_dir / "rife-models").is_dir():
-        if _muxiveo_rife_version(exe) == MUXIVEO_RIFE_VERSION:
+        if _muxiveo_rife_version(exe) == MVO_RIFE_VERSION:
             _ok("muxiveo-rife.exe déjà présent dans tools/")
             TOOL_MANIFEST.add(
-                "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=str(tools_dir),
+                "muxiveo-rife", version=MVO_RIFE_VERSION, source=str(tools_dir),
                 verification=PREEXISTING, files=[exe],
             )
             return
         # tools/ réutilisé d'un build précédent : binaire et modèles remplacés
-        _warn(f"muxiveo-rife.exe présent mais différent de {MUXIVEO_RIFE_VERSION} — remplacement.")
+        _warn(f"muxiveo-rife.exe présent mais différent de {MVO_RIFE_VERSION} — remplacement.")
         shutil.rmtree(tools_dir / "rife-models", ignore_errors=True)
-    _step(f"muxiveo-rife Windows ({MUXIVEO_RIFE_RELEASE_TAG})")
+    _step(f"muxiveo-rife Windows ({MVO_RIFE_RELEASE_TAG})")
     with tempfile.TemporaryDirectory() as tmp:
         local = os.environ.get("MUXIVEO_RIFE_ARCHIVE")
         archive = Path(local) if local else Path(tmp) / "muxiveo-rife.zip"
         source, verification = str(archive), LOCAL_ARCHIVE
         if not local:
-            asset_name = f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-windows-x86_64.zip"
+            asset_name = f"mvo-rife-{MVO_RIFE_VERSION}-windows-x86_64.zip"
             try:
-                asset = github_release_asset(APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, asset_name)
+                asset = github_release_asset(MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_RELEASE_TAG, asset_name)
                 _download_file(asset.url, archive, timeout=180)
             except (OSError, urllib.error.URLError) as exc:
                 # Erreur réseau : outil facultatif absent de ce build (comportement existant).
@@ -2915,7 +2916,7 @@ def _dl_windows_muxiveo_rife(tools_dir: Path) -> None:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(zf.read(name))
         TOOL_MANIFEST.add(
-            "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=source, verification=verification,
+            "muxiveo-rife", version=MVO_RIFE_VERSION, source=source, verification=verification,
             archive=archive, files=[exe],
         )
     _ok("muxiveo-rife.exe installé dans tools/")

@@ -105,12 +105,14 @@ def _no_nvof_probe_by_default(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_plugins(monkeypatch, tmp_path_factory):
-    """Extensions et moteurs TensorRT dans un dossier de test, jamais ceux de l'utilisateur."""
+    """Extensions et moteurs TensorRT dans un dossier de test, jamais ceux de l'utilisateur ; flux hors ligne."""
     from core import plugins
 
     base = tmp_path_factory.mktemp("plugins")
     monkeypatch.setattr(plugins, "plugins_root", lambda *_a, **_k: base / "plugins")
     monkeypatch.setattr(plugins, "trt_engine_cache_dir", lambda *_a, **_k: base / "trt-engines")
+    # flux des versions publiées : jamais de réseau en test (repli sur la version épinglée)
+    monkeypatch.setattr(plugins, "fetch_feed", lambda *_a, **_k: None)
 
 
 @pytest.fixture(autouse=True)

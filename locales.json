@@ -5714,5 +5714,77 @@
   "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.": {
     "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.",
     "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in the Extensions page."
+  },
+  "Extension Interpolation d'images non installée : page Extensions.": {
+    "fra": "Extension Interpolation d'images non installée : page Extensions.",
+    "eng": "Frame interpolation extension not installed: see the Extensions page."
+  },
+  "Interpolation d'images (MVO-RIFE)": {
+    "fra": "Interpolation d'images (MVO-RIFE)",
+    "eng": "Frame interpolation (MVO-RIFE)"
+  },
+  "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.": {
+    "fra": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.",
+    "eng": "Frame interpolation (MVO-RIFE): path used only without the Interpolation extension (Extensions page), which takes priority."
+  },
+  "Interpolation d'images (extension MVO-RIFE) : page Extensions.": {
+    "fra": "Interpolation d'images (extension MVO-RIFE) : page Extensions.",
+    "eng": "Frame interpolation (MVO-RIFE extension): Extensions page."
+  },
+  "Interpolation non installée — Installer…": {
+    "fra": "Interpolation non installée — Installer…",
+    "eng": "Interpolation not installed — Install…"
+  },
+  "Mettre à jour automatiquement les extensions installées": {
+    "fra": "Mettre à jour automatiquement les extensions installées",
+    "eng": "Automatically update installed extensions"
+  },
+  "Non compatible : plate-forme non prise en charge. Requiert Linux ou Windows x86-64, ou macOS (Apple Silicon), avec un GPU Vulkan.": {
+    "fra": "Non compatible : plate-forme non prise en charge. Requiert Linux ou Windows x86-64, ou macOS (Apple Silicon), avec un GPU Vulkan.",
+    "eng": "Not compatible: unsupported platform. Requires Linux or Windows x86-64, or macOS (Apple Silicon), with a Vulkan GPU."
+  },
+  "Non installée : l'interpolation d'images est indisponible.": {
+    "fra": "Non installée : l'interpolation d'images est indisponible.",
+    "eng": "Not installed: frame interpolation is unavailable."
+  },
+  "Non installée : moteur hors extension utilisé ({path}).": {
+    "fra": "Non installée : moteur hors extension utilisé ({path}).",
+    "eng": "Not installed: engine outside the extension in use ({path})."
+  },
+  "Requiert l'extension Interpolation d'images.": {
+    "fra": "Requiert l'extension Interpolation d'images.",
+    "eng": "Requires the Frame interpolation extension."
+  },
+  "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.": {
+    "fra": "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.",
+    "eng": "Remove the frame interpolation extension? Interpolation will no longer be offered when encoding; the extension can be reinstalled at any time."
+  },
+  "Version {version} disponible.": {
+    "fra": "Version {version} disponible.",
+    "eng": "Version {version} available."
+  },
+  "{label} : mise à jour automatique vers la version {version}.": {
+    "fra": "{label} : mise à jour automatique vers la version {version}.",
+    "eng": "{label}: automatic update to version {version}."
+  },
+  "{label} : échec ({reason}).": {
+    "fra": "{label} : échec ({reason}).",
+    "eng": "{label}: failed ({reason})."
+  },
+  "{label} désactivée ; fichiers encore utilisés retirés au prochain démarrage.": {
+    "fra": "{label} désactivée ; fichiers encore utilisés retirés au prochain démarrage.",
+    "eng": "{label} disabled; files still in use will be removed at the next start."
+  },
+  "{label} supprimée.": {
+    "fra": "{label} supprimée.",
+    "eng": "{label} removed."
+  },
+  "{label} {done} : version {version}.": {
+    "fra": "{label} {done} : version {version}.",
+    "eng": "{label} {done}: version {version}."
+  },
+  "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
+    "fra": "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
+    "eng": "Multiplies the frame rate when encoding (×2, ×3, ×4, 59.94 / 60 fps) by generating in-between frames on the GPU (Vulkan): MVO-RIFE engine, RIFE models and presets. Updated independently of Muxiveo (new models, settings)."
   }
 }

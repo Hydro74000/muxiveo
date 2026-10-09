@@ -119,18 +119,13 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
-    RIFE_HYBRID_MIN_VERSION as _RIFE_HYBRID_MIN_VERSION,
-    RIFE_TRT_MIN_VERSION as _RIFE_TRT_MIN_VERSION,
-    RIFE_ULTRA_MIN_VERSION as _RIFE_ULTRA_MIN_VERSION,
-    RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
-    RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
     INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
-    rife_model_available as _rife_model_available,
     interpolation_preset as _interpolation_preset,
+    rife_capabilities as _rife_capabilities,
+    rife_support_errors as _rife_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     parse_rife_progress as _parse_rife_progress,
-    rife_version as _rife_version,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
 from core.workflows.encode.runtime.metadata_inject import (
@@ -562,7 +557,7 @@ class EncodeWorkflow(QObject):
     def set_rife_trt_plugin(self, plugin_dir: str | Path | None, cache_dir: str | Path | None = None) -> None:
         """Extension d'accélération NVIDIA (TensorRT) de MVO-RIFE (None = Vulkan seul).
 
-        Transmise seulement à muxiveo-rife ≥ RIFE_TRT_MIN_VERSION ; il revient seul sur Vulkan si elle est
+        Transmise seulement à un muxiveo-rife qui prend en charge --trt-plugin ; il revient seul sur Vulkan si elle est
         inutilisable (GPU, pilote), l'encodage n'échoue jamais à cause d'elle.
         """
         self._rife_trt_plugin = str(plugin_dir) if plugin_dir else ""
@@ -573,8 +568,8 @@ class EncodeWorkflow(QObject):
         plugin = self._rife_trt_plugin
         if not plugin or not self._rife_bin:
             return "", ""
-        version = _rife_version(str(shutil.which(self._rife_bin) or self._rife_bin))
-        if version is None or version < _RIFE_TRT_MIN_VERSION:
+        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin))
+        if capabilities is None or not capabilities.supports("trt-plugin"):
             return "", ""
         return plugin, self._rife_trt_cache
 
@@ -3347,56 +3342,15 @@ class EncodeWorkflow(QObject):
             rife_bin = self._rife_bin
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
-                    "Interpolation d'images : outil muxiveo-rife introuvable "
-                    "(Paramètres > Outils externes, ou relancer le setup)."
+                    "Interpolation d'images : moteur muxiveo-rife introuvable "
+                    "(installer l'extension Interpolation depuis la page Extensions)."
                 )
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
-                version = _rife_version(resolved)
-                model = _INTERPOLATION_MODELS.get(settings.quality, "")
-                if version is not None and version < _RIFE_MIN_VERSION:
-                    errors.append(
-                        "Interpolation d'images : muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif (
-                    version is not None
-                    and settings.tta_passes() > 1
-                    and version < _RIFE_TTA_MIN_VERSION
-                ):
-                    errors.append(
-                        "Interpolation d'images : le TTA requiert muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif (
-                    version is not None
-                    and _interpolation_preset(settings.quality).engine == "hybrid"
-                    and version < _RIFE_HYBRID_MIN_VERSION
-                ):
-                    errors.append(
-                        "Interpolation d'images : le moteur hybride (préréglages Équilibré et Qualité) requiert "
-                        f"muxiveo-rife {'.'.join(map(str, _RIFE_HYBRID_MIN_VERSION))} ou plus récent "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup, "
-                        "ou choisir le préréglage Rapide."
-                    )
-                elif (
-                    version is not None
-                    and _interpolation_preset(settings.quality).ultra
-                    and version < _RIFE_ULTRA_MIN_VERSION
-                ):
-                    errors.append(
-                        "Interpolation d'images : le préréglage Ultra requiert "
-                        f"muxiveo-rife {'.'.join(map(str, _RIFE_ULTRA_MIN_VERSION))} ou plus récent "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup, "
-                        "ou choisir le préréglage Qualité."
-                    )
-                elif version is not None and model and not _rife_model_available(resolved, model):
-                    errors.append(
-                        f"Interpolation d'images : modèle RIFE « {model} » absent de "
-                        f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
-                    )
+                errors.extend(_rife_support_errors(
+                    _rife_capabilities(resolved), _interpolation_preset(settings.quality, resolved),
+                    tta=settings.tta_passes(), rife_bin=resolved,
+                ))
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):

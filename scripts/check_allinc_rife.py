@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Vérifie qu'un paquet all-inclusive embarque muxiveo-rife (version épinglée + modèles).
+"""Vérifie qu'un paquet all-inclusive embarque l'extension mvo-rife préinstallée (version épinglée, contrat,
+SHA-256 du moteur, des modèles, des poids du sélecteur et des préréglages d'après son manifest.json).
 
-Le packaging se contente d'un avertissement quand muxiveo-rife est indisponible :
+Le packaging se contente d'un avertissement quand l'extension est indisponible :
 ce contrôle fait échouer la release dans ce cas.
 
 Usage : python scripts/check_allinc_rife.py <paquet>...
@@ -26,18 +27,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.version import MUXIVEO_RIFE_VERSION  # noqa: E402
+from core.version import MVO_RIFE_CONTRACT, MVO_RIFE_VERSION  # noqa: E402
 
-MODELS: dict = json.loads((ROOT / "native" / "muxiveo-rife" / "models.json").read_text(encoding="utf-8"))["models"]
-_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/)")
+_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/|manifest\.json$|presets\.json$)")
 
 
 def _extract(package: Path, dest: Path) -> None:
-    """Extrait muxiveo-rife et rife-models/ de ``package`` dans ``dest``."""
+    """Extrait muxiveo-rife, rife-models/, manifest.json et presets.json de ``package`` dans ``dest``."""
     name = package.name
     if name.endswith(".AppImage"):
         package.chmod(package.stat().st_mode | 0o111)
-        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*"):
+        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*", "usr/bin/tools/manifest.json",
+                        "usr/bin/tools/presets.json"):
             subprocess.run(
                 [str(package.resolve()), "--appimage-extract", pattern],
                 cwd=dest, check=True, stdout=subprocess.DEVNULL,
@@ -47,7 +48,8 @@ def _extract(package: Path, dest: Path) -> None:
             zf.extractall(dest, [n for n in zf.namelist() if _TOOLS_MEMBER.search(n)])
     elif name.endswith(".exe"):
         subprocess.run(
-            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "-r", "-y"],
+            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/manifest.json",
+             "tools/presets.json", "-r", "-y"],
             check=True, stdout=subprocess.DEVNULL,
         )
     else:
@@ -78,25 +80,35 @@ def check(package: Path) -> list[str]:
             out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=60, check=False)
             match = re.search(r"muxiveo-rife (\d+\.\d+\.\d+)", out.stdout or "")
             version = match.group(1) if match else None
-            if version != MUXIVEO_RIFE_VERSION:
-                errors.append(f"version {version or 'illisible'} != {MUXIVEO_RIFE_VERSION} ({(out.stdout or out.stderr).strip()})")
+            if version != MVO_RIFE_VERSION:
+                errors.append(f"version {version or 'illisible'} != {MVO_RIFE_VERSION} ({(out.stdout or out.stderr).strip()})")
             else:
                 print(f"  {exe.name} {version}")
-        models_dir = exe.parent / "rife-models"
-        for model, spec in MODELS.items():
-            for filename, meta in spec["files"].items():
-                path = models_dir / model / filename
-                if not path.is_file():
-                    errors.append(f"modèle manquant : rife-models/{model}/{filename}")
-                elif _sha256(path) != meta["sha256"]:
-                    errors.append(f"sha256 inattendu : rife-models/{model}/{filename}")
+        try:
+            manifest = json.loads((exe.parent / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return errors + [f"manifest.json de l'extension illisible ({exc})"]
+        if manifest.get("name") != "mvo-rife" or manifest.get("version") != MVO_RIFE_VERSION:
+            errors.append(f"extension {manifest.get('name')} {manifest.get('version')} au lieu de mvo-rife {MVO_RIFE_VERSION}")
+        if manifest.get("contract") != MVO_RIFE_CONTRACT:
+            errors.append(f"contrat {manifest.get('contract')} au lieu de {MVO_RIFE_CONTRACT}")
+        checked = 0
+        for rel, digest in (manifest.get("files") or {}).items():
+            if not (rel.startswith("rife-models/") or rel in (exe.name, "presets.json")):
+                continue
+            path = exe.parent / rel
+            if not path.is_file():
+                errors.append(f"fichier manquant : {rel}")
+            elif _sha256(path) != digest:
+                errors.append(f"sha256 inattendu : {rel}")
+            checked += 1
         if not errors:
-            print(f"  modèles : {', '.join(MODELS)}")
+            print(f"  extension mvo-rife {MVO_RIFE_VERSION} : {checked} fichiers vérifiés ({', '.join(manifest.get('models') or [])})")
         return errors
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Vérifie muxiveo-rife dans des paquets all-inclusive.")
+    parser = argparse.ArgumentParser(description="Vérifie l'extension mvo-rife dans des paquets all-inclusive.")
     parser.add_argument("packages", nargs="+", type=Path)
     args = parser.parse_args()
     failed = False

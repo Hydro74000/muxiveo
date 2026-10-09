@@ -25,6 +25,7 @@ from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
+from core import plugins
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
 from core.ui_language import system_ui_language
@@ -894,7 +895,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
-            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire."},
         ),
     },
     {
@@ -1195,6 +1196,26 @@ class AppConfig:
             self._detected_ini_tools.setdefault(ini_key, resolved)
         return resolved
 
+    def _resolve_rife_tool(self) -> str:
+        """
+        muxiveo-rife (interpolation) : extension mvo-rife installée dans le dossier utilisateur en priorité ;
+        sinon, transitoire, binaire embarqué (paquets hors ligne), config.ini ou PATH.
+        """
+        extension = plugins.rife_executable()
+        if extension is not None:
+            return str(extension)
+        return self._resolve_tool_value(
+            "muxiveo_rife",
+            "tools/muxiveo_rife",
+            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
+        )
+
+    def refresh_rife_tool(self) -> str:
+        """Nouvelle résolution de muxiveo-rife après installation ou suppression de l'extension mvo-rife."""
+        self.tool_muxiveo_rife = self._resolve_rife_tool()
+        self.refresh_tool_versions()
+        return self.tool_muxiveo_rife
+
     # ------------------------------------------------------------------
     # Chargement
     # ------------------------------------------------------------------
@@ -1251,12 +1272,7 @@ class AppConfig:
                 if fallback:
                     resolved = fallback
             self.tool_nvencc = resolved
-        # muxiveo-rife : binaire Muxiveo (native/muxiveo-rife), optionnel.
-        self.tool_muxiveo_rife = self._resolve_tool_value(
-            "muxiveo_rife",
-            "tools/muxiveo_rife",
-            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
-        )
+        self.tool_muxiveo_rife = self._resolve_rife_tool()
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(

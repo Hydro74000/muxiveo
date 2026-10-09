@@ -31,7 +31,7 @@ jobs:
         run: >-
           python -m ruff check --output-format concise
           core cli ui workers main.py launcher.py setup.py setup_brew.py
-          package.py package_appimage.py native/muxiveo-rife/scripts
+          package.py package_appimage.py
 
       - name: Mypy
         run: python -m mypy core cli ui workers main.py launcher.py

@@ -264,7 +264,14 @@ Ergonomie du panneau :
 
 ### Interpolation d'images (MVO-RIFE)
 
-La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s. Préréglages :
+La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s.
+
+L'interpolation est une **extension** (`mvo-rife` : moteur, modèles, poids du sélecteur, préréglages), installée depuis
+la page **Extensions** ou directement depuis la ligne MVO-RIFE (« Interpolation non installée — Installer… »), dans le
+dossier utilisateur (Linux, Windows x86-64, macOS Apple Silicon). Elle évolue sans nouvelle version de Muxiveo :
+Muxiveo installe la version la plus récente compatible avec lui (nouveaux modèles, réglages des préréglages),
+vérifiée par SHA-256. Les paquets all-inclusive (AppImage, Setup-AllInc, zip portable) l'embarquent préinstallée ;
+une extension installée dans le dossier utilisateur reste prioritaire. Préréglages :
 
 | Préréglage | Traitement | Temps de calcul |
 |---|---|---|
@@ -292,18 +299,21 @@ l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec
   bord et indication unique sur la ligne MVO-RIFE (« Installer… », « Gérer les extensions »).
 - **Installation en un clic** après acceptation de la licence NVIDIA : téléchargement vérifié (SHA-256 publié par
   GitHub, puis empreinte de chaque fichier), préparation des moteurs pour la carte, sans redémarrage.
-- **Mises à jour automatiques** (désactivables) quand une nouvelle version de Muxiveo épingle une nouvelle version de
-  l'extension ; l'ancienne version reste utilisée jusqu'à la bascule.
+- **Mises à jour automatiques** (désactivables, communes à toutes les extensions) dès qu'une version compatible plus
+  récente est publiée ; l'ancienne version reste utilisée jusqu'à la bascule. L'extension Interpolation est requise.
 - **Repli automatique** : sans extension, extension désactivée, pilote trop ancien ou erreur, l'interpolation continue
   sur Vulkan ; un encodage n'échoue jamais à cause d'elle.
-- **Emplacements**, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage comprise) :
-  `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
-  `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows.
-- **Désinstallation** : bouton **Supprimer** de la page Extensions ou `muxiveo --cli plugins remove` ; le
-  désinstalleur Windows retire aussi ces deux dossiers.
-- Sans interface : `muxiveo --cli plugins list | install --accept-license | update | remove`.
+- **Emplacements** des extensions, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage
+  comprise) : `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
+  `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows,
+  `~/Library/Application Support/Muxiveo/plugins` sous macOS.
+- **Désinstallation** : bouton **Supprimer** de la page Extensions ou `muxiveo --cli plugins remove <extension>` ; le
+  désinstalleur Windows retire aussi ces dossiers.
+- Sans interface : `muxiveo --cli plugins list`, `install mvo-rife`, `install mvo-rife-trt --accept-license`,
+  `update [extension]`, `remove <extension>`.
 
-Le code de l'extension est publié dans [muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
+Le code des extensions (moteur MVO-RIFE compris) est publié dans
+[muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
 
 ### Profils
 
@@ -661,7 +671,6 @@ Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à 
 - **Encodage** : profil DoVi, compat-id, buffer RAM
 - **Logs** : niveau de verbosite, journal fichier, rotation et capture des sorties outils dans les options
 - **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`), génération optionnelle de `.nfo` (`generate_nfo`)
-- **Extensions** (cartes NVIDIA compatibles) : accélération NVIDIA (TensorRT) de l'interpolation — installation, mise à jour, suppression, activation et mises à jour automatiques
 
 Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
 

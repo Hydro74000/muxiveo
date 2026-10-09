@@ -252,16 +252,9 @@ def _jobs(filename):
     return jobs
 
 
-def test_jobs_downstream_of_skippable_rife_job_are_not_skipped():
-    """Le job muxiveo-rife est sauté quand sa release existe : ses dépendants doivent l'ignorer."""
+def test_jobs_downstream_of_optional_jobs_are_not_skipped():
+    """Formule et tap Homebrew : un job amont sauté (canal sans publication) ne doit pas les faire sauter."""
     jobs = _jobs("release.yml")
-    assert "muxiveo-rife" in jobs and "homebrew-formula" in jobs
-
-    def depends_on_rife(name, seen=()):
-        return any(n == "muxiveo-rife" or (n not in seen and depends_on_rife(n, (*seen, n))) for n in jobs[name][0])
-
-    downstream = [name for name in jobs if depends_on_rife(name)]
-    assert {"build-linux", "build-windows", "homebrew-formula", "release", "publish-homebrew-tap"} <= set(downstream)
-    for name in downstream:
+    for name in ("homebrew-formula", "publish-homebrew-tap", "release"):
         condition = jobs[name][1]
         assert "!cancelled()" in condition or "always()" in condition, name

@@ -1,18 +1,28 @@
 """
 core/plugins.py — Extensions facultatives téléchargées à la demande (dépôt muxiveo-plugins).
 
-Seule extension : ``mvo-rife-trt``, accélération NVIDIA (TensorRT for RTX) de l'inférence RIFE de
-muxiveo-rife, proposée uniquement sur les GPU NVIDIA compatibles (Linux et Windows x86-64).
+Registre (``EXTENSIONS``) :
+
+- ``mvo-rife`` : interpolation d'images (moteur muxiveo-rife, modèles, poids du sélecteur, préréglages) ;
+  Linux et Windows x86-64, macOS arm64 ;
+- ``mvo-rife-trt`` : accélération NVIDIA (TensorRT for RTX) de l'inférence RIFE de muxiveo-rife, proposée
+  uniquement sur les GPU NVIDIA compatibles (Linux et Windows x86-64).
+
+Version installée : la plus récente compatible annoncée par le flux de l'extension (release
+``extensions-feed``, ``<extension>.json`` : contrat de mvo-rife, interface de mvo-rife-trt), jamais en dessous
+de la version épinglée par Muxiveo (``MVO_*_VERSION``), qui sert aussi de repli quand le flux est injoignable.
 
 Emplacements, jamais dans le paquet de l'application (AppImage en lecture seule, MSIX, Program Files) :
 
 - Linux : ``$XDG_DATA_HOME/muxiveo/plugins/<extension>/<version>/`` ;
   moteurs TensorRT : ``$XDG_CACHE_HOME/muxiveo/trt-engines/`` ;
-- Windows : ``%LOCALAPPDATA%\\Muxiveo\\plugins\\…`` et ``%LOCALAPPDATA%\\Muxiveo\\cache\\trt-engines\\``.
+- Windows : ``%LOCALAPPDATA%\\Muxiveo\\plugins\\…`` et ``%LOCALAPPDATA%\\Muxiveo\\cache\\trt-engines\\`` ;
+- macOS : ``~/Library/Application Support/Muxiveo/plugins/…``.
 
 Installation : archive vérifiée (SHA-256 publié par GitHub), extraction dans un dossier temporaire, contrôle du
-manifeste (interface, plate-forme, SHA-256 de chaque fichier), déplacement, puis bascule atomique du pointeur
-``current.json`` ; l'ancienne version est supprimée ensuite (ou au prochain nettoyage si elle est encore utilisée).
+manifeste (extension, contrat ou interface, plate-forme, SHA-256 de chaque fichier), déplacement, puis bascule
+atomique du pointeur ``current.json`` ; l'ancienne version est supprimée ensuite (ou au prochain nettoyage si
+elle est encore utilisée).
 """
 
 from __future__ import annotations
@@ -20,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import platform as _platform
+import re
 import shutil
 import subprocess
 import sys
@@ -37,13 +48,30 @@ from pathlib import Path
 from core.atomic_io import atomic_write_text
 from core.github_release import ReleaseAsset, fetch_release_by_repo, file_sha256, select_asset, verify_download
 from core.subprocess_utils import subprocess_text_kwargs
-from core.version import APP_USER_AGENT, MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_TRT_RELEASE_TAG, MVO_RIFE_TRT_VERSION
+from core.version import (
+    APP_USER_AGENT,
+    MUXIVEO_PLUGINS_REPOSITORY,
+    MVO_RIFE_CONTRACT,
+    MVO_RIFE_TRT_VERSION,
+    MVO_RIFE_VERSION,
+)
 
 TRT_PLUGIN_ID = "mvo-rife-trt"
-# Interface C attendue par muxiveo-rife (native/muxiveo-rife/src/trt_plugin_abi.h).
+# Interface C attendue par muxiveo-rife (mvo-rife/src/trt_plugin_abi.h du dépôt muxiveo-plugins).
 TRT_PLUGIN_ABI = 1
 TRT_LIBRARIES = {"linux-x86_64": "libmvo_rife_trt.so", "windows-x86_64": "mvo_rife_trt.dll"}
 TRT_LICENSE_URL = "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html"
+RIFE_PLUGIN_ID = "mvo-rife"
+RIFE_EXECUTABLES = {
+    "linux-x86_64": "muxiveo-rife",
+    "windows-x86_64": "muxiveo-rife.exe",
+    "macos-arm64": "muxiveo-rife",
+}
+# Release fixe du flux des extensions (un ``<extension>.json`` par extension, écrit par sa CI).
+FEED_TAG = "extensions-feed"
+FEED_SCHEMA = 1
+_FEED_MAX_BYTES = 1 << 20
+_VERSION_RE = re.compile(r"^\d+(\.\d+){1,3}$")
 
 _POINTER = "current.json"
 _DOWNLOAD_CHUNK = 1 << 20
@@ -73,9 +101,11 @@ class InstalledPlugin:
 
 
 def platform_tag(sys_platform: str | None = None, machine: str | None = None) -> str | None:
-    """Plate-forme des extensions (``linux-x86_64`` / ``windows-x86_64``), ``None`` si non prise en charge."""
+    """Plate-forme des extensions (``linux-x86_64``, ``windows-x86_64``, ``macos-arm64``), ``None`` sinon."""
     sys_platform = sys.platform if sys_platform is None else sys_platform
     machine = (_platform.machine() if machine is None else machine).lower()
+    if sys_platform == "darwin":
+        return "macos-arm64" if machine in {"arm64", "aarch64"} else None
     if machine not in {"x86_64", "amd64"}:
         return None
     if sys_platform.startswith("linux"):
@@ -90,6 +120,8 @@ def _local_base(env: Mapping[str, str], sys_platform: str, cache: bool) -> Path:
         local = env.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         base = Path(local) / "Muxiveo"
         return base / "cache" if cache else base
+    if sys_platform == "darwin":
+        return Path.home() / "Library" / ("Caches" if cache else "Application Support") / "Muxiveo"
     xdg = env.get("XDG_CACHE_HOME" if cache else "XDG_DATA_HOME")
     default = Path.home() / (".cache" if cache else ".local/share")
     return (Path(xdg) if xdg else default) / "muxiveo"
@@ -105,33 +137,77 @@ def trt_engine_cache_dir(env: Mapping[str, str] | None = None, sys_platform: str
     return _local_base(os.environ if env is None else env, sys.platform if sys_platform is None else sys_platform, True) / "trt-engines"
 
 
-def _plugin_dir(root: Path | None) -> Path:
-    return (root or plugins_root()) / TRT_PLUGIN_ID
+def version_key(version: str) -> tuple[int, ...]:
+    """Clé de comparaison d'une version ``X.Y.Z`` (composantes manquantes à zéro)."""
+    parts = tuple(int(p) for p in str(version).split(".") if p.isdigit())
+    return parts + (0,) * (4 - len(parts))
 
 
-def _validate(path: Path, platform: str) -> dict:
+def _check_rife(manifest: Mapping) -> str | None:
+    contract = manifest.get("contract")
+    if contract != MVO_RIFE_CONTRACT:
+        return f"contrat {contract} non pris en charge (version {MVO_RIFE_CONTRACT} attendue)"
+    return None
+
+
+def _check_trt(manifest: Mapping) -> str | None:
+    abi = manifest.get("abi")
+    if abi != TRT_PLUGIN_ABI:
+        return f"interface {abi} incompatible (version {TRT_PLUGIN_ABI} attendue)"
+    return None
+
+
+@dataclass(frozen=True)
+class PluginSpec:
+    """Extension connue de Muxiveo : version épinglée, fichier principal par plate-forme, compatibilité."""
+
+    id: str
+    min_version: str                                # plancher et repli (flux injoignable)
+    files: Mapping[str, str]                        # plate-forme → exécutable ou bibliothèque principale
+    check: Callable[[Mapping], str | None]          # raison d'incompatibilité d'un manifeste (ou d'une entrée du flux)
+    cache_dir: Callable[[], Path] | None = None     # cache reconstructible vidé au changement de version
+
+    def tag(self, version: str) -> str:
+        return f"{self.id}-v{version}"
+
+    def supports(self, platform: str | None) -> bool:
+        return platform is not None and platform in self.files
+
+
+RIFE = PluginSpec(RIFE_PLUGIN_ID, MVO_RIFE_VERSION, RIFE_EXECUTABLES, _check_rife)
+# Cache lu au moment de l'appel (tests : emplacement isolé par tests/conftest.py).
+TRT = PluginSpec(TRT_PLUGIN_ID, MVO_RIFE_TRT_VERSION, TRT_LIBRARIES, _check_trt, lambda: trt_engine_cache_dir())
+EXTENSIONS: dict[str, PluginSpec] = {spec.id: spec for spec in (RIFE, TRT)}
+
+
+def _plugin_dir(spec: PluginSpec, root: Path | None) -> Path:
+    return (root or plugins_root()) / spec.id
+
+
+def _validate(spec: PluginSpec, path: Path, platform: str) -> dict:
     """Manifeste d'une extension extraite ; lève PluginError si elle est incomplète ou incompatible."""
     try:
         manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise PluginError(f"manifeste illisible ({exc})") from exc
-    if not isinstance(manifest, dict) or manifest.get("name") != TRT_PLUGIN_ID:
+    if not isinstance(manifest, dict) or manifest.get("name") != spec.id:
         raise PluginError("archive d'une autre extension")
-    if manifest.get("abi") != TRT_PLUGIN_ABI:
-        raise PluginError(f"interface {manifest.get('abi')} incompatible (version {TRT_PLUGIN_ABI} attendue)")
+    reason = spec.check(manifest)
+    if reason:
+        raise PluginError(reason)
     if manifest.get("platform") != platform:
         raise PluginError(f"plate-forme {manifest.get('platform')} au lieu de {platform}")
-    if not (path / TRT_LIBRARIES[platform]).is_file():
-        raise PluginError("bibliothèque de l'extension absente")
+    if not spec.supports(platform) or not (path / spec.files[platform]).is_file():
+        raise PluginError("fichier principal de l'extension absent")
     return manifest
 
 
-def installed_plugin(root: Path | None = None, platform: str | None = None) -> InstalledPlugin | None:
+def installed_plugin(spec: PluginSpec, root: Path | None = None, platform: str | None = None) -> InstalledPlugin | None:
     """Extension active (pointeur ``current.json``), ``None`` si absente ou inutilisable."""
     platform = platform or platform_tag()
     if platform is None:
         return None
-    base = _plugin_dir(root)
+    base = _plugin_dir(spec, root)
     try:
         pointer = json.loads((base / _POINTER).read_text(encoding="utf-8"))
         version = str(pointer["version"])
@@ -141,30 +217,101 @@ def installed_plugin(root: Path | None = None, platform: str | None = None) -> I
     if path.parent != base or not path.is_dir():
         return None
     try:
-        manifest = _validate(path, platform)
+        manifest = _validate(spec, path, platform)
     except PluginError:
         return None
     return InstalledPlugin(version, path, manifest)
 
 
-def update_available(root: Path | None = None) -> bool:
-    """Vrai si l'extension installée n'est pas la version épinglée par cette version de Muxiveo."""
-    plugin = installed_plugin(root)
-    return plugin is not None and plugin.version != MVO_RIFE_TRT_VERSION
+def main_file(spec: PluginSpec, plugin: InstalledPlugin, platform: str | None = None) -> Path:
+    """Exécutable ou bibliothèque principale d'une extension installée."""
+    platform = platform or platform_tag() or ""
+    return plugin.path / spec.files[platform]
 
 
-def release_asset(platform: str | None = None, timeout: float = 30.0) -> ReleaseAsset:
-    """Archive de la version épinglée pour cette plate-forme (SHA-256 publié par GitHub obligatoire)."""
-    platform = platform or platform_tag()
-    if platform is None:
-        raise PluginError("plate-forme non prise en charge")
+def rife_executable(root: Path | None = None) -> Path | None:
+    """muxiveo-rife de l'extension mvo-rife installée, ``None`` sans extension."""
+    plugin = installed_plugin(RIFE, root)
+    return main_file(RIFE, plugin) if plugin is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Flux des versions publiées
+# ---------------------------------------------------------------------------
+
+
+def feed_url(spec: PluginSpec) -> str:
+    return f"https://github.com/{MUXIVEO_PLUGINS_REPOSITORY}/releases/download/{FEED_TAG}/{spec.id}.json"
+
+
+def parse_feed(spec: PluginSpec, data: object) -> list[dict] | None:
+    """Entrées valides du flux d'une extension (version, tag, plates-formes), ``None`` si le flux est invalide."""
+    if not isinstance(data, dict) or data.get("schema") != FEED_SCHEMA or data.get("name") != spec.id:
+        return None
+    releases = data.get("releases")
+    if not isinstance(releases, list):
+        return None
+    entries: list[dict] = []
+    for entry in releases:
+        if not isinstance(entry, dict):
+            continue
+        version = str(entry.get("version") or "")
+        platforms = entry.get("platforms")
+        if (not _VERSION_RE.match(version) or entry.get("tag") != spec.tag(version)
+                or not isinstance(platforms, list)):
+            continue
+        entries.append(entry)
+    return entries
+
+
+def fetch_feed(spec: PluginSpec, timeout: float = 10.0) -> list[dict] | None:
+    """Versions publiées de l'extension (flux ``<extension>.json``) ; ``None`` si injoignable ou invalide."""
+    req = urllib.request.Request(feed_url(spec), headers={"User-Agent": APP_USER_AGENT, "Accept": "application/json"})
     try:
-        release = fetch_release_by_repo(
-            MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_TRT_RELEASE_TAG, user_agent=APP_USER_AGENT, timeout=timeout,
-        )
-        return select_asset(release, MUXIVEO_PLUGINS_REPOSITORY, f"{TRT_PLUGIN_ID}-{MVO_RIFE_TRT_VERSION}-{platform}.")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 — URL github.com constante
+            raw = resp.read(_FEED_MAX_BYTES + 1)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > _FEED_MAX_BYTES:
+        return None
+    try:
+        return parse_feed(spec, json.loads(raw.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def target_version(spec: PluginSpec, feed: list[dict] | None, platform: str | None = None) -> str:
+    """Version à installer : la plus récente compatible du flux pour cette plate-forme, sinon la version épinglée."""
+    platform = platform or platform_tag()
+    best = spec.min_version
+    for entry in feed or []:
+        version = str(entry["version"])
+        if version_key(version) <= version_key(best) or spec.check(entry):
+            continue
+        if any(isinstance(p, dict) and p.get("platform") == platform for p in entry["platforms"]):
+            best = version
+    return best
+
+
+def update_available(spec: PluginSpec, target: str | None = None, root: Path | None = None) -> bool:
+    """Vrai si l'extension installée est antérieure à la version cible (épinglée par défaut)."""
+    plugin = installed_plugin(spec, root)
+    return plugin is not None and version_key(plugin.version) < version_key(target or spec.min_version)
+
+
+def release_asset(spec: PluginSpec, version: str | None = None, platform: str | None = None,
+                  timeout: float = 30.0) -> ReleaseAsset:
+    """Archive d'une version pour cette plate-forme (SHA-256 publié par GitHub obligatoire)."""
+    platform = platform or platform_tag()
+    version = version or spec.min_version
+    if not spec.supports(platform):
+        raise PluginError("plate-forme non prise en charge")
+    tag = spec.tag(version)
+    try:
+        release = fetch_release_by_repo(MUXIVEO_PLUGINS_REPOSITORY, tag, user_agent=APP_USER_AGENT, timeout=timeout)
+        return select_asset(release, MUXIVEO_PLUGINS_REPOSITORY, f"{spec.id}-{version}-{platform}.")
     except (OSError, ValueError, RuntimeError) as exc:
-        raise PluginError(f"release {MVO_RIFE_TRT_RELEASE_TAG} introuvable ({exc})") from exc
+        raise PluginError(f"release {tag} introuvable ({exc})") from exc
 
 
 def asset_size(asset: ReleaseAsset, timeout: float = 15.0) -> int:
@@ -258,26 +405,36 @@ def _remove_tree(path: Path) -> bool:
         return False  # bibliothèque encore chargée (Windows) : retirée au prochain nettoyage
 
 
+def _cache_of(spec: PluginSpec, cache_dir: Path | None) -> Path | None:
+    if cache_dir is not None:
+        return cache_dir
+    return spec.cache_dir() if spec.cache_dir is not None else None
+
+
 def install(
+    spec: PluginSpec,
     root: Path | None = None,
     *,
+    version: str | None = None,
     progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
     asset: ReleaseAsset | None = None,
     cache_dir: Path | None = None,
 ) -> InstalledPlugin:
-    """Télécharge, vérifie et active la version épinglée ; l'ancienne version reste active en cas d'échec.
+    """Télécharge, vérifie et active une version (épinglée par défaut) ; l'ancienne reste active en cas d'échec.
 
-    Changement de version : le cache des moteurs TensorRT est vidé (modèles ONNX éventuellement différents
-    sous le même nom), le préchauffage le reconstruit.
+    Changement de version : le cache reconstructible de l'extension est vidé (TensorRT : modèles ONNX
+    éventuellement différents sous le même nom ; le préchauffage le reconstruit).
     """
     platform = platform_tag()
-    if platform is None:
-        raise PluginError("plate-forme non prise en charge (Linux ou Windows x86-64 requis)")
-    previous = installed_plugin(root, platform)
-    base = _plugin_dir(root)
+    if not spec.supports(platform):
+        raise PluginError("plate-forme non prise en charge")
+    assert platform is not None
+    version = version or spec.min_version
+    previous = installed_plugin(spec, root, platform)
+    base = _plugin_dir(spec, root)
     base.mkdir(parents=True, exist_ok=True)
-    asset = asset or release_asset(platform)
+    asset = asset or release_asset(spec, version, platform)
     token = uuid.uuid4().hex[:12]
     archive = base / f".download-{token}.part"
     staging = base / f".staging-{token}"
@@ -288,33 +445,36 @@ def install(
         entries = [p for p in staging.iterdir()]
         if len(entries) != 1 or not entries[0].is_dir():
             raise PluginError("structure d'archive inattendue")
-        manifest = _validate(entries[0], platform)
-        if str(manifest.get("version")) != MVO_RIFE_TRT_VERSION:
-            raise PluginError(f"version {manifest.get('version')} au lieu de {MVO_RIFE_TRT_VERSION}")
+        manifest = _validate(spec, entries[0], platform)
+        if str(manifest.get("version")) != version:
+            raise PluginError(f"version {manifest.get('version')} au lieu de {version}")
         _verify_files(entries[0], manifest)
-        target = base / f"{MVO_RIFE_TRT_VERSION}-{token}"
+        target = base / f"{version}-{token}"
         entries[0].rename(target)
         atomic_write_text(base / _POINTER, json.dumps(
-            {"version": MVO_RIFE_TRT_VERSION, "dir": target.name, "installed_at": int(time.time())}, indent=2,
+            {"version": version, "dir": target.name, "installed_at": int(time.time())}, indent=2,
         ) + "\n")
     finally:
         archive.unlink(missing_ok=True)
         _remove_tree(staging)
-    if previous is None or previous.version != MVO_RIFE_TRT_VERSION:
-        _remove_tree(cache_dir or trt_engine_cache_dir())
-    cleanup_orphans(root)
-    plugin = installed_plugin(root, platform)
+    cache = _cache_of(spec, cache_dir)
+    if (previous is None or previous.version != version) and cache is not None:
+        _remove_tree(cache)
+    cleanup_orphans(spec, root)
+    plugin = installed_plugin(spec, root, platform)
     if plugin is None:
         raise PluginError("extension installée mais illisible")
     return plugin
 
 
-def remove(root: Path | None = None, cache_dir: Path | None = None) -> bool:
-    """Supprime l'extension et le cache des moteurs ; faux si des fichiers encore utilisés restent."""
-    base = _plugin_dir(root)
+def remove(spec: PluginSpec, root: Path | None = None, cache_dir: Path | None = None) -> bool:
+    """Supprime l'extension (et son cache) ; faux si des fichiers encore utilisés restent."""
+    base = _plugin_dir(spec, root)
     (base / _POINTER).unlink(missing_ok=True)
     complete = _remove_tree(base)
-    _remove_tree(cache_dir or trt_engine_cache_dir())
+    cache = _cache_of(spec, cache_dir)
+    if cache is not None:
+        _remove_tree(cache)
     return complete
 
 
@@ -368,12 +528,12 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
     return failures
 
 
-def cleanup_orphans(root: Path | None = None) -> None:
+def cleanup_orphans(spec: PluginSpec, root: Path | None = None) -> None:
     """Retire les versions remplacées et les restes de téléchargements interrompus."""
-    base = _plugin_dir(root)
+    base = _plugin_dir(spec, root)
     if not base.is_dir():
         return
-    current = installed_plugin(root)
+    current = installed_plugin(spec, root)
     for entry in base.iterdir():
         if entry.name == _POINTER or (current is not None and entry == current.path):
             continue
@@ -384,20 +544,33 @@ def cleanup_orphans(root: Path | None = None) -> None:
 
 
 __all__ = [
+    "EXTENSIONS",
+    "FEED_TAG",
     "InstalledPlugin",
     "PluginCancelled",
     "PluginError",
+    "PluginSpec",
+    "RIFE",
+    "RIFE_PLUGIN_ID",
+    "TRT",
     "TRT_LICENSE_URL",
     "TRT_PLUGIN_ID",
     "asset_size",
     "cleanup_orphans",
+    "feed_url",
+    "fetch_feed",
     "install",
     "installed_plugin",
+    "main_file",
+    "parse_feed",
     "platform_tag",
     "plugins_root",
     "release_asset",
     "remove",
+    "rife_executable",
+    "target_version",
     "trt_engine_cache_dir",
     "update_available",
+    "version_key",
     "warm_up",
 ]

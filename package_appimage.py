@@ -74,11 +74,11 @@ from core.version import (
     APP_APPSTREAM_ID,
     APP_EXECUTABLE_NAME,
     APP_NAME,
-    APP_REPOSITORY,
     APP_VERSION,
     APP_WEBSITE_URL,
-    MUXIVEO_RIFE_RELEASE_TAG,
-    MUXIVEO_RIFE_VERSION,
+    MUXIVEO_PLUGINS_REPOSITORY,
+    MVO_RIFE_RELEASE_TAG,
+    MVO_RIFE_VERSION,
 )
 
 ROOT = Path(__file__).parent
@@ -723,8 +723,10 @@ def _dl_dovi_tool(tools_dir: Path, arch: str) -> None:
 
 
 def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
-    """muxiveo-rife + rife-models/ (archive locale ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée)."""
-    step(f"muxiveo-rife ({MUXIVEO_RIFE_RELEASE_TAG})")
+    """Extension mvo-rife préinstallée (moteur, rife-models/, presets.json) : archive locale
+    ``MUXIVEO_RIFE_ARCHIVE`` ou release épinglée du dépôt des extensions. L'extension installée dans le dossier
+    utilisateur reste prioritaire."""
+    step(f"muxiveo-rife ({MVO_RIFE_RELEASE_TAG})")
     if arch != "x86_64":
         warn(f"muxiveo-rife : pas de build {arch} — interpolation d'images indisponible.")
         return
@@ -733,9 +735,9 @@ def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
         archive = Path(local) if local else Path(tmp) / "muxiveo-rife.tar.gz"
         source, verification = str(archive), LOCAL_ARCHIVE
         if not local:
-            asset_name = f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-linux-x86_64.tar.gz"
+            asset_name = f"mvo-rife-{MVO_RIFE_VERSION}-linux-x86_64.tar.gz"
             try:
-                asset = github_release_asset(APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, asset_name)
+                asset = github_release_asset(MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_RELEASE_TAG, asset_name)
                 _download(asset.url, archive, timeout=120)
             except (OSError, urllib.error.URLError) as exc:
                 # Erreur réseau : outil facultatif absent de ce build (comportement existant).
@@ -755,7 +757,7 @@ def _dl_muxiveo_rife(tools_dir: Path, arch: str) -> None:
                 member.name = rel
                 tf.extract(member, tools_dir)
         TOOL_MANIFEST.add(
-            "muxiveo-rife", version=MUXIVEO_RIFE_VERSION, source=source, verification=verification,
+            "muxiveo-rife", version=MVO_RIFE_VERSION, source=source, verification=verification,
             archive=archive, files=[tools_dir / "muxiveo-rife"],
         )
     _chmod_x(tools_dir / "muxiveo-rife")

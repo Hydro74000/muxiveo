@@ -20,23 +20,26 @@ APP_APPSTREAM_ID = "fr.aotr.muxiveo"
 APP_VERSION = "4.3.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 
-# Outil natif muxiveo-rife (native/muxiveo-rife) : release GitHub épinglée,
-# publiée par le workflow muxiveo-rife.yml sur ce même dépôt.
-MUXIVEO_RIFE_VERSION = "1.6.0"
-MUXIVEO_RIFE_RELEASE_TAG = f"muxiveo-rife-v{MUXIVEO_RIFE_VERSION}"
-
-# Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »).
+# Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »). Version épinglée de
+# chacune : plancher, repli quand le flux des extensions est injoignable, version embarquée des paquets hors ligne.
+# Au-delà, Muxiveo installe la version la plus récente compatible annoncée par le flux (core/plugins.py).
 MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
-# Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : version épinglée du plugin mvo-rife-trt.
+# Interpolation d'images (moteur muxiveo-rife, modèles, poids du sélecteur, préréglages) : extension mvo-rife.
+MVO_RIFE_VERSION = "1.7.0"
+MVO_RIFE_RELEASE_TAG = f"mvo-rife-v{MVO_RIFE_VERSION}"
+# Contrat avec le moteur (muxiveo-rife --capabilities) : flux y4m, nombre de trames, stderr, codes de sortie.
+MVO_RIFE_CONTRACT = 1
+# Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : extension mvo-rife-trt.
 MVO_RIFE_TRT_VERSION = "1.1.0"
 MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
 
 
-def muxiveo_rife_asset_url(platform_suffix: str) -> str:
-    """URL de l'archive muxiveo-rife (ex. ``linux-x86_64.tar.gz``) de la release épinglée."""
+def mvo_rife_asset_url(platform: str) -> str:
+    """URL de l'archive de l'extension mvo-rife épinglée (``linux-x86_64`` → ``….tar.gz``, Windows → ``.zip``)."""
+    extension = "zip" if platform.startswith("windows") else "tar.gz"
     return (
-        f"https://github.com/{APP_REPOSITORY}/releases/download/{MUXIVEO_RIFE_RELEASE_TAG}/"
-        f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-{platform_suffix}"
+        f"https://github.com/{MUXIVEO_PLUGINS_REPOSITORY}/releases/download/{MVO_RIFE_RELEASE_TAG}/"
+        f"mvo-rife-{MVO_RIFE_VERSION}-{platform}.{extension}"
     )
 
 # Version complète du build (ex. « 4.0.0-unstable.20260924.123.abc1234 »), injectée

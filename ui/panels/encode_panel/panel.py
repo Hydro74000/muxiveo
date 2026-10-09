@@ -154,6 +154,7 @@ class EncodePanel(QWidget):
     # Indication « accélération NVIDIA disponible » cliquée : dialogue d'installation (fenêtre principale).
     trt_install_requested    = Signal()
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
+    rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
     _hw_detected             = Signal(object, object, object, object, object, object, object)
@@ -236,6 +237,7 @@ class EncodePanel(QWidget):
         # Extension d'accélération NVIDIA (TensorRT) : dossier transmis aux encodages et état (TrtState).
         self._trt_plugin_dir = ""
         self._trt_state: object | None = None
+        self._rife_state: object | None = None
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -1843,6 +1845,20 @@ class EncodePanel(QWidget):
             lambda link: self.extensions_page_requested.emit() if link == "manage" else self.trt_install_requested.emit()
         )
         self._trt_hint.hide()
+        # Moteur d'interpolation absent : installation directe de l'extension, ou page Extensions.
+        self._rife_hint = QLabel()
+        self._rife_hint.setTextFormat(Qt.TextFormat.RichText)
+        self._rife_hint.setText(
+            "<a href='install' style='color:" + _C.ACCENT + ";'>"
+            + translate_text("Interpolation non installée — Installer…") + "</a>"
+            + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
+            + translate_text("Gérer les extensions") + "</a>"
+        )
+        self._rife_hint.setStyleSheet("background:transparent;")
+        self._rife_hint.linkActivated.connect(
+            lambda link: self.extensions_page_requested.emit() if link == "manage" else self.rife_install_requested.emit()
+        )
+        self._rife_hint.hide()
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
             self._filter_tech_label("MVO-RIFE"),
@@ -1852,6 +1868,7 @@ class EncodePanel(QWidget):
             self._interp_tta_combo,
             self._interp_fps_label,
             self._trt_hint,
+            self._rife_hint,
         ))
         self._sync_interpolation_availability()
 
@@ -1875,8 +1892,9 @@ class EncodePanel(QWidget):
                 "Dolby Vision et HDR10+ suivent la nouvelle cadence."
             )
             if available
-            else translate_text("muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.")
+            else translate_text("Extension Interpolation d'images non installée : page Extensions.")
         )
+        self._rife_hint.setVisible(not available and not getattr(self._rife_state, "busy", ""))
         if not available and self._interp_cb.isChecked():
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
@@ -2544,6 +2562,18 @@ class EncodePanel(QWidget):
 
         self._trt_plugin_dir = plugin_dir or ""
         self._workflow.set_rife_trt_plugin(self._trt_plugin_dir or None, trt_engine_cache_dir())
+        self._refresh_video_source_rows()
+        self._rebuild_preview()
+
+    def set_rife_state(self, state: object) -> None:
+        """État de l'extension Interpolation (RifeState) : indication d'installation pendant le téléchargement."""
+        self._rife_state = state
+        self._sync_interpolation_availability()
+
+    def refresh_rife_tool(self) -> None:
+        """Moteur muxiveo-rife changé (extension installée ou supprimée) : workflow, disponibilité, aperçu."""
+        self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
+        self._sync_interpolation_availability()
         self._refresh_video_source_rows()
         self._rebuild_preview()
 

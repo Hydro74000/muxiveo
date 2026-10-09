@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 from core.ui_language import system_ui_language
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
-from core.version import APP_CONFIG_DIR_NAME, APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
+from core.version import APP_CONFIG_DIR_NAME
 from core.python_requirements import installed_version, is_excluded, read_requirements, unsatisfied_requirements
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,6 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "dovi_tool",
     "hdr10plus_tool",
     "eac3to",
-    "muxiveo_rife",
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
@@ -183,11 +182,6 @@ WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
     "hdr10plus_tool",
 )
 
-# Outils GitHub facultatifs sous Windows : installés (ou mis à jour) par le
-# setup sans conditionner la santé de l'installation.
-WINDOWS_OPTIONAL_GITHUB_TOOLS: tuple[str, ...] = (
-    "muxiveo_rife",
-)
 
 
 @dataclass(frozen=True)
@@ -288,25 +282,6 @@ SYSTEM_TOOLS: dict[str, dict] = {
 #   suffix  — substring that uniquely identifies the asset filename
 #   fmt     — "tar.gz" or "zip"
 GITHUB_TOOLS: dict[str, dict] = {
-    "muxiveo_rife": {
-        "repo": APP_REPOSITORY,
-        "release_tag": MUXIVEO_RIFE_RELEASE_TAG,
-        "desc": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo",
-        # Archive complète : binaire + rife-models/ (+ MoltenVK sous macOS).
-        "bundle": True,
-        # Une installation plus ancienne est remplacée (modèles livrés par release).
-        "min_version": MUXIVEO_RIFE_VERSION,
-        "binary_name": {
-            "Linux":   "muxiveo-rife",
-            "Darwin":  "muxiveo-rife",
-            "Windows": "muxiveo-rife.exe",
-        },
-        "asset_patterns": {
-            ("Linux",   "x86_64"): {"suffix": "-linux-x86_64.tar.gz",   "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
-            ("Darwin",  "arm64"):  {"suffix": "-macos-arm64.tar.gz",    "fmt": "tar.gz", "name_prefix": "muxiveo-rife-"},
-            ("Windows", "x86_64"): {"suffix": "-windows-x86_64.zip",    "fmt": "zip",    "name_prefix": "muxiveo-rife-"},
-        },
-    },
     "dovi_tool": {
         "repo": "quietvoid/dovi_tool",
         "desc": "Dolby Vision RPU extraction and injection",
@@ -2314,17 +2289,6 @@ def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
     return ToolPresenceReport(required, found, tuple(missing))
 
 
-def _optional_tool_needs_install(tool_name: str, prefix: Path, force: bool) -> bool:
-    """Outil GitHub facultatif absent ou plus ancien que sa ``min_version``."""
-    meta = GITHUB_TOOLS.get(tool_name)
-    if meta is None:
-        return False
-    if force:
-        return True
-    path = _detect_tool_path(tool_name, prefix)
-    return not path or _github_tool_outdated(tool_name, meta, Path(path))
-
-
 def ensure_windows_required_tools(
     prefix: Path,
     dry_run: bool = False,
@@ -2333,19 +2297,15 @@ def ensure_windows_required_tools(
 ) -> ToolPresenceReport:
     """Install only missing required Windows dependencies and re-check them.
 
-    Les outils facultatifs (muxiveo-rife) absents ou trop anciens sont aussi installés.
+    L'interpolation (muxiveo-rife) n'est plus un outil du setup : extension proposée par la page Extensions.
     """
     report = check_windows_required_tools(prefix)
-    optional = {
-        name for name in WINDOWS_OPTIONAL_GITHUB_TOOLS
-        if install_github and _optional_tool_needs_install(name, prefix, force)
-    }
-    if report.healthy and not force and not optional:
+    if report.healthy and not force:
         return report
 
     candidates = set(report.required if force else report.missing)
     system_missing = candidates.intersection(SYSTEM_TOOLS)
-    github_missing = (candidates.intersection(GITHUB_TOOLS) | optional) if install_github else set()
+    github_missing = candidates.intersection(GITHUB_TOOLS) if install_github else set()
     if system_missing:
         install_winget(dry_run, force=force, tool_names=system_missing)
     if github_missing:

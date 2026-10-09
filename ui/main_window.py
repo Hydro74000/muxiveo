@@ -102,7 +102,7 @@ from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.panels.extensions_panel import ExtensionsPanel
-from ui.plugin_controller import TrtPluginController
+from ui.plugin_controller import RifePluginController, TrtPluginController
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -706,7 +706,7 @@ class _PlaceholderPage(QWidget):
 # ---------------------------------------------------------------------------
 
 class _ClickableBadge(QLabel):
-    """Badge de tableau de bord cliquable (extension d'accélération NVIDIA)."""
+    """Badge de tableau de bord cliquable (extensions : interpolation, accélération NVIDIA)."""
 
     clicked = Signal()
 
@@ -733,6 +733,7 @@ class DashboardPage(QWidget):
     # TrtCapability : compatibilité de l'accélération NVIDIA (TensorRT), pour le contrôleur d'extension.
     trt_capability = Signal(object)
     trt_badge_clicked = Signal()
+    rife_badge_clicked = Signal()       # badge muxiveo-rife → page Extensions
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
@@ -769,6 +770,7 @@ class DashboardPage(QWidget):
         self._vulkan_badge: QLabel | None = None
         self._nvof_badge: QLabel | None = None
         self._trt_badge: _ClickableBadge | None = None
+        self._rife_badge: _ClickableBadge | None = None
         self._build_ui()
         self._start_hw_detection()
 
@@ -820,7 +822,14 @@ class DashboardPage(QWidget):
 
         availability = self._config.all_tools_available()
         for tool_name, available in availability.items():
-            badge = self._make_tool_badge(tool_name, available)
+            if tool_name == "muxiveo-rife":
+                # Moteur de l'extension Interpolation : badge cliquable vers la page Extensions.
+                self._rife_badge = _ClickableBadge()
+                self._rife_badge.clicked.connect(self.rife_badge_clicked.emit)
+                badge = self._make_tool_badge(tool_name, available, self._rife_badge)
+                badge.setToolTip(translate_text("Interpolation d'images (extension MVO-RIFE) : page Extensions."))
+            else:
+                badge = self._make_tool_badge(tool_name, available)
             grid_layout.addWidget(badge)
 
         root.addWidget(tools_grid)
@@ -896,12 +905,13 @@ class DashboardPage(QWidget):
             rl.addStretch()
             root.addWidget(row)
 
-    def _make_tool_badge(self, name: str, available: bool) -> QLabel:
+    def _make_tool_badge(self, name: str, available: bool, lbl: QLabel | None = None) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
         bg     = _Colors.BADGE_OK_BG if available else _Colors.BADGE_ERROR_BG
         border = _Colors.BADGE_OK_BORDER if available else _Colors.BADGE_ERROR_BORDER
         symbol = "●"             if available else "○"
-        lbl = QLabel(f" {symbol}  {name} ")
+        lbl = lbl if lbl is not None else QLabel()
+        lbl.setText(f" {symbol}  {name} ")
         lbl.setStyleSheet(f"""
             QLabel {{
                 background: {bg};
@@ -1130,7 +1140,7 @@ class DashboardPage(QWidget):
         from core.workflows.encode import interpolation
 
         rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
-        installed = plugins.installed_plugin()
+        installed = plugins.installed_plugin(plugins.TRT)
         self._accel_detected.emit(
             interpolation.detect_gpu_acceleration(str(rife), trt_plugin=str(installed.path) if installed else "")
         )
@@ -1147,6 +1157,17 @@ class DashboardPage(QWidget):
         trt = getattr(acceleration, "trt", None)
         if trt is not None:
             self.trt_capability.emit(trt)
+
+    def set_rife_state(self, state: object) -> None:
+        """Badge muxiveo-rife selon l'extension Interpolation (RifeState) : disponible, téléchargement."""
+        badge = self._rife_badge
+        if badge is None:
+            return
+        busy = str(getattr(state, "busy", "") or "")
+        progress = int(getattr(state, "progress", -1))
+        self._make_tool_badge("muxiveo-rife", bool(getattr(state, "ready", False)), badge)
+        if busy in {"install", "update"}:
+            badge.setText(f" ○  muxiveo-rife {progress} % " if progress >= 0 else " ○  muxiveo-rife … ")
 
     def set_trt_state(self, state: object) -> None:
         """Badge « TensorRT » selon l'état de l'extension (TrtState)."""
@@ -1766,7 +1787,8 @@ class MainWindow(QMainWindow):
         self._stack.setMinimumHeight(0)
         self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Extension d'accélération NVIDIA (TensorRT) : état partagé par tableau de bord, Paramètres et Encodage.
+        # Extensions (interpolation, accélération NVIDIA) : état partagé par tableau de bord, page Extensions et Encodage.
+        self._rife_controller = RifePluginController(self._config, self)
         self._trt_controller = TrtPluginController(self._config, self)
 
         # Page 0 — Dashboard (fonctionnelle)
@@ -2168,7 +2190,7 @@ class MainWindow(QMainWindow):
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._dashboard.vulkan_ready.connect(self._encode_panel.set_vulkan_capability)
-        self._wire_trt_extension()
+        self._wire_extensions()
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
         self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
@@ -2191,27 +2213,63 @@ class MainWindow(QMainWindow):
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
 
-    def _wire_trt_extension(self) -> None:
-        """Extension TensorRT : sonde → contrôleur → badge, page Extensions, encodages."""
-        ctrl = self._trt_controller
-        self._dashboard.trt_capability.connect(ctrl.set_capability)
+    def _wire_extensions(self) -> None:
+        """Extensions : sonde → contrôleurs → badges, page Extensions, encodages ; flux des versions lu en tâche de fond."""
+        rife, trt = self._rife_controller, self._trt_controller
+        panel = self._extensions_panel
+        for ctrl in (rife, trt):
+            ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
+            ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
+        rife.state_changed.connect(self._dashboard.set_rife_state)
+        rife.state_changed.connect(panel.set_rife_state)
+        rife.state_changed.connect(self._encode_panel.set_rife_state)
+        rife.workflow_changed.connect(self._encode_panel.refresh_rife_tool)
+        self._dashboard.rife_badge_clicked.connect(self.show_extensions_page)
+        self._dashboard.trt_capability.connect(trt.set_capability)
         self._dashboard.trt_badge_clicked.connect(self._on_trt_badge_clicked)
-        ctrl.state_changed.connect(self._dashboard.set_trt_state)
-        ctrl.state_changed.connect(self._extensions_panel.set_trt_state)
-        ctrl.state_changed.connect(self._on_trt_state_changed)
-        ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
-        ctrl.workflow_changed.connect(self._apply_trt_plugin_to_encode)
-        ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
-        self._extensions_panel.trt_install_requested.connect(self._open_trt_install_dialog)
-        self._extensions_panel.trt_update_requested.connect(ctrl.update)
-        self._extensions_panel.trt_remove_requested.connect(self._on_trt_remove_requested)
-        self._extensions_panel.trt_enabled_toggled.connect(ctrl.set_enabled)
-        self._extensions_panel.trt_auto_update_toggled.connect(ctrl.set_auto_update)
-        self._extensions_panel.set_trt_state(ctrl.state())
+        trt.state_changed.connect(self._dashboard.set_trt_state)
+        trt.state_changed.connect(panel.set_trt_state)
+        trt.state_changed.connect(self._on_trt_state_changed)
+        trt.workflow_changed.connect(self._apply_trt_plugin_to_encode)
+        panel.install_requested.connect(self._on_extension_install_requested)
+        panel.update_requested.connect(lambda plugin_id: self._extension_controller(plugin_id).update())
+        panel.remove_requested.connect(self._on_extension_remove_requested)
+        panel.trt_enabled_toggled.connect(trt.set_enabled)
+        panel.auto_update_toggled.connect(trt.set_auto_update)
+        panel.set_rife_state(rife.state())
+        panel.set_trt_state(trt.state())
+        self._dashboard.set_rife_state(rife.state())
+        self._encode_panel.rife_install_requested.connect(rife.install)
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
         self._apply_trt_plugin_to_encode()
-        ctrl.cleanup()
+        for ctrl in (rife, trt):
+            ctrl.cleanup()
+            ctrl.refresh_feed()
+
+    def _extension_controller(self, plugin_id: str) -> RifePluginController | TrtPluginController:
+        return self._rife_controller if plugin_id == self._rife_controller.spec.id else self._trt_controller
+
+    def _on_extension_install_requested(self, plugin_id: str) -> None:
+        if plugin_id == self._trt_controller.spec.id:
+            self._open_trt_install_dialog()
+        else:
+            self._rife_controller.install()
+
+    def _on_extension_remove_requested(self, plugin_id: str) -> None:
+        if plugin_id == self._trt_controller.spec.id:
+            self._on_trt_remove_requested()
+            return
+        answer = QMessageBox.question(
+            self,
+            translate_text("Interpolation d'images (MVO-RIFE)"),
+            translate_text(
+                "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à "
+                "l'encodage ; l'extension peut être réinstallée à tout moment."
+            ),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._rife_controller.remove()
 
     def _apply_trt_plugin_to_encode(self) -> None:
         self._encode_panel.set_trt_plugin(self._trt_controller.plugin_dir())
@@ -3308,9 +3366,10 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
-            trt_controller = getattr(self, "_trt_controller", None)
-            if trt_controller is not None:
-                trt_controller.shutdown()
+            for name in ("_rife_controller", "_trt_controller"):
+                controller = getattr(self, name, None)
+                if controller is not None:
+                    controller.shutdown()
             for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer"):
                 timer = getattr(self, name, None)
                 if timer is not None:

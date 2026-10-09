@@ -17,7 +17,7 @@ import package as package_mod
 import package_appimage as appimage_mod
 from core.github_release import ReleaseAsset
 from core.tool_manifest import MANIFEST_NAME, ToolManifest
-from core.version import APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, MUXIVEO_RIFE_VERSION
+from core.version import MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_RELEASE_TAG, MVO_RIFE_VERSION
 
 
 def _sha(data: bytes) -> str:
@@ -100,9 +100,9 @@ def test_manifest_lists_tools_with_hashes(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _rife_asset(data: bytes, suffix: str, *, sha: str | None = None) -> ReleaseAsset:
-    name = f"muxiveo-rife-{MUXIVEO_RIFE_VERSION}-{suffix}"
-    url = f"https://github.com/{APP_REPOSITORY}/releases/download/{MUXIVEO_RIFE_RELEASE_TAG}/{name}"
-    return ReleaseAsset(APP_REPOSITORY, MUXIVEO_RIFE_RELEASE_TAG, name, url, sha or _sha(data))
+    name = f"mvo-rife-{MVO_RIFE_VERSION}-{suffix}"
+    url = f"https://github.com/{MUXIVEO_PLUGINS_REPOSITORY}/releases/download/{MVO_RIFE_RELEASE_TAG}/{name}"
+    return ReleaseAsset(MUXIVEO_PLUGINS_REPOSITORY, MVO_RIFE_RELEASE_TAG, name, url, sha or _sha(data))
 
 
 def test_appimage_rife_verified_and_recorded(tmp_path, monkeypatch):

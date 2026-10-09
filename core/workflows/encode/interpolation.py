@@ -1,7 +1,7 @@
 """
 core/workflows/encode/interpolation.py — Interpolation d'images RIFE (muxiveo-rife).
 
-Le binaire ``muxiveo-rife`` (``native/muxiveo-rife``) lit et écrit du y4m :
+Le binaire ``muxiveo-rife`` (extension mvo-rife, dépôt muxiveo-plugins) lit et écrit du y4m :
 la vidéo passe par un pipeline de trois processus reliés par des pipes ::
 
     ffmpeg (décodage + filtres logiciels) | muxiveo-rife | encodeur
@@ -34,18 +34,24 @@ from core.matroska.editors.dovi import minimum_dovi_level
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.subprocess_utils import subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
+from core.version import MVO_RIFE_CONTRACT
 
 if TYPE_CHECKING:
     from core.workflows.encode.models import VideoEncodeSettings
 
 @dataclass(frozen=True)
 class InterpolationPreset:
-    """Préréglage qualité : moteur muxiveo-rife et modèle RIFE embarqué (native/muxiveo-rife/models.json)."""
+    """Préréglage qualité : moteur muxiveo-rife, modèle RIFE et arguments supplémentaires.
+
+    Moteur, modèle et arguments viennent du ``presets.json`` de l'extension installée (``rife_presets``) ;
+    ``force_fast`` et ``ultra`` restent définis par Muxiveo (règles de l'interface).
+    """
 
     engine: str           # rife | hybrid (RIFE + compensation de mouvement par blocs)
     model: str
     force_fast: bool = False  # mode Fast (--uhd) imposé
     ultra: bool = False       # candidats supplémentaires du sélecteur (--ultra) : mode Normal et TTA x1 imposés
+    args: tuple[str, ...] = ()  # options supplémentaires fournies par l'extension
 
 
 # Moteur hybride : barreaux et motifs fins répétitifs gardés droits là où RIFE les fait onduler
@@ -89,12 +95,70 @@ RIFE_HYBRID_MIN_VERSION: tuple[int, int, int] = (1, 3, 0)
 RIFE_TRT_MIN_VERSION: tuple[int, int, int] = (1, 4, 0)
 # Préréglage Ultra (--ultra, sélecteur appris par blocs) : release 1.6.0.
 RIFE_ULTRA_MIN_VERSION: tuple[int, int, int] = (1, 6, 0)
+# Capacités annoncées par le binaire (--capabilities) et préréglages de l'extension (presets.json) : 1.7.0.
+RIFE_CAPABILITIES_MIN_VERSION: tuple[int, int, int] = (1, 7, 0)
+# Options des binaires antérieurs à --capabilities, selon leur version.
+_LEGACY_RIFE_OPTIONS: tuple[tuple[tuple[int, int, int], frozenset[str]], ...] = (
+    (RIFE_MIN_VERSION, frozenset({
+        "input", "output", "factor", "fps", "model", "gpu", "matrix", "range", "chroma-loc", "scene-threshold",
+        "uhd", "fp32", "padding", "threads", "allow-interlaced", "progress-interval", "quiet", "verbose",
+        "list-gpus", "version",
+    })),
+    (RIFE_TTA_MIN_VERSION, frozenset({"tta"})),
+    (RIFE_HYBRID_MIN_VERSION, frozenset({"engine", "nvof"})),
+    (RIFE_TRT_MIN_VERSION, frozenset({"trt-plugin", "trt-cache", "backend"})),
+    ((1, 5, 0), frozenset({"large-motion"})),
+    (RIFE_ULTRA_MIN_VERSION, frozenset({"selector", "ultra"})),
+)
 
 
-def interpolation_preset(quality: str | None) -> InterpolationPreset:
-    """Préréglage d'un nom de qualité (ancien nom migré, inconnu → défaut)."""
+def interpolation_preset(quality: str | None, rife_bin: str | None = None) -> InterpolationPreset:
+    """Préréglage d'un nom de qualité (ancien nom migré, inconnu → défaut), selon l'extension de ``rife_bin``."""
+    presets = rife_presets(rife_bin) if rife_bin else INTERPOLATION_PRESETS
     name = INTERPOLATION_LEGACY_QUALITIES.get(str(quality or ""), str(quality or ""))
-    return INTERPOLATION_PRESETS.get(name, INTERPOLATION_PRESETS[INTERPOLATION_DEFAULT_QUALITY])
+    return presets.get(name, presets[INTERPOLATION_DEFAULT_QUALITY])
+
+
+def _rife_dir(rife_bin: str) -> Path | None:
+    try:
+        return Path(shutil.which(str(rife_bin)) or rife_bin).resolve().parent
+    except OSError:
+        return None
+
+
+def rife_presets(rife_bin: str) -> dict[str, InterpolationPreset]:
+    """Préréglages de l'extension (``presets.json`` à côté du binaire) ; table intégrée pour ce qui manque."""
+    folder = _rife_dir(rife_bin)
+    if folder is None:
+        return dict(INTERPOLATION_PRESETS)
+    try:
+        info = (folder / "presets.json").stat()
+        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        return dict(INTERPOLATION_PRESETS)
+    return dict(_rife_presets_cached(str(folder / "presets.json"), identity))
+
+
+@functools.lru_cache(maxsize=8)
+def _rife_presets_cached(path: str, identity: tuple[int, int, int]) -> tuple[tuple[str, InterpolationPreset], ...]:
+    _ = identity
+    presets = dict(INTERPOLATION_PRESETS)
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return tuple(presets.items())
+    described = data.get("presets") if isinstance(data, dict) and data.get("schema") == 1 else None
+    for name, base in INTERPOLATION_PRESETS.items():
+        entry = described.get(name) if isinstance(described, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        engine, model, args = entry.get("engine"), entry.get("model"), entry.get("args", [])
+        if engine not in ("rife", "hybrid") or not isinstance(model, str) or not model:
+            continue
+        if not isinstance(args, list) or not all(isinstance(a, str) and a for a in args):
+            continue
+        presets[name] = InterpolationPreset(engine, model, base.force_fast, base.ultra, tuple(args))
+    return tuple(presets.items())
 
 # Intervalle des lignes ``progress`` de muxiveo-rife : alimentent la barre de
 # progression (non journalisées, log verbose uniquement).
@@ -368,9 +432,10 @@ def build_rife_stage(
     Préréglage hybride : ``--engine hybrid`` (flux optique NVIDIA utilisé s'il est disponible) ;
     préréglage Ultra : ``--ultra``, sans ``--uhd`` ni ``--tta`` (combinaisons refusées par muxiveo-rife).
     ``trt_plugin`` : dossier de l'accélération NVIDIA (TensorRT) ; muxiveo-rife revient seul sur Vulkan si
-    elle est inutilisable (ne le passer qu'à muxiveo-rife ≥ RIFE_TRT_MIN_VERSION).
+    elle est inutilisable (ne le passer qu'à un binaire qui prend en charge ``--trt-plugin``).
+    Moteur, modèle et arguments supplémentaires : préréglage de l'extension (``presets.json``).
     """
-    preset = interpolation_preset(quality)
+    preset = interpolation_preset(quality, rife_bin)
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
     cmd = [
         str(rife_bin),
@@ -384,6 +449,7 @@ def build_rife_stage(
     ]
     if preset.engine != "rife":
         cmd.extend(["--engine", preset.engine])
+    cmd.extend(preset.args)
     if preset.ultra:
         cmd.append("--ultra")
     elif mode == "fast" or preset.force_fast:
@@ -399,13 +465,130 @@ def build_rife_stage(
     return cmd
 
 
-def rife_model_available(rife_bin: str, model: str) -> bool:
-    """Vrai si ``<dossier réel du binaire>/rife-models/<model>`` contient le modèle."""
+def rife_model_available(rife_bin: str, model: str, capabilities: RifeCapabilities | None = None) -> bool:
+    """Vrai si le modèle est livré : liste des capacités, sinon ``<dossier du binaire>/rife-models/<model>``."""
+    if capabilities is not None and capabilities.models is not None:
+        return model in capabilities.models
+    exe_dir = _rife_dir(rife_bin)
+    return exe_dir is not None and (exe_dir / "rife-models" / model / "flownet.param").is_file()
+
+
+@dataclass(frozen=True)
+class RifeCapabilities:
+    """Capacités de muxiveo-rife : ``--capabilities`` (≥ 1.7.0), sinon déduites de ``--version``."""
+
+    version: tuple[int, int, int]
+    contract: int = 1
+    options: frozenset[str] = frozenset()
+    models: frozenset[str] | None = None  # None : binaire sans --capabilities (contrôle par dossier)
+    selector_status: str = ""             # « ok », raison d'indisponibilité, ou "" (inconnu)
+
+    @property
+    def label(self) -> str:
+        return ".".join(map(str, self.version))
+
+    def supports(self, option: str) -> bool:
+        return option in self.options
+
+
+def _legacy_capabilities(version: tuple[int, int, int]) -> RifeCapabilities:
+    options: set[str] = set()
+    for minimum, added in _LEGACY_RIFE_OPTIONS:
+        if version >= minimum:
+            options |= added
+    return RifeCapabilities(version, 1, frozenset(options))
+
+
+def _option_min_version(option: str) -> str:
+    """Première version d'un binaire sans --capabilities qui reconnaît l'option."""
+    for minimum, added in _LEGACY_RIFE_OPTIONS:
+        if option in added:
+            return ".".join(map(str, minimum))
+    return ".".join(map(str, RIFE_CAPABILITIES_MIN_VERSION))
+
+
+_RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
+
+
+def rife_support_errors(
+    capabilities: RifeCapabilities | None, preset: InterpolationPreset, *, tta: int, rife_bin: str,
+) -> list[str]:
+    """Réglages d'interpolation non pris en charge par le binaire (contrat, options, modèle, sélecteur).
+
+    Capacités illisibles (None) : aucun blocage ici, muxiveo-rife signalera lui-même une option inconnue.
+    """
+    if capabilities is None:
+        return []
+    label = capabilities.label
+    if capabilities.contract != MVO_RIFE_CONTRACT:
+        return [f"Interpolation d'images : muxiveo-rife {label} (contrat {capabilities.contract}) incompatible avec "
+                f"cette version de Muxiveo ; {_RIFE_UPDATE_HINT}."]
+    if capabilities.version < RIFE_MIN_VERSION:
+        return [f"Interpolation d'images : muxiveo-rife {'.'.join(map(str, RIFE_MIN_VERSION))} ou plus récent "
+                f"requis (installé : {label}) ; {_RIFE_UPDATE_HINT}."]
+    features = (
+        ("tta", tta > 1 and not preset.ultra, "le TTA", ""),
+        ("engine", preset.engine == "hybrid", "le moteur hybride (préréglages Équilibré et Qualité)",
+         ", ou choisir le préréglage Rapide"),
+        ("ultra", preset.ultra, "le préréglage Ultra", ", ou choisir le préréglage Qualité"),
+    )
+    for option, needed, feature, alternative in features:
+        if needed and not capabilities.supports(option):
+            return [f"Interpolation d'images : {feature} requiert muxiveo-rife {_option_min_version(option)} ou plus "
+                    f"récent (installé : {label}) ; {_RIFE_UPDATE_HINT}{alternative}."]
+    unknown = [a for a in preset.args if a.startswith("--") and not capabilities.supports(a[2:])]
+    if unknown:
+        return [f"Interpolation d'images : option {unknown[0]} du préréglage inconnue de muxiveo-rife {label} ; "
+                f"{_RIFE_UPDATE_HINT}."]
+    if not rife_model_available(rife_bin, preset.model, capabilities):
+        folder = _rife_dir(rife_bin)
+        where = folder / "rife-models" if folder is not None else "rife-models"
+        return [f"Interpolation d'images : modèle RIFE « {preset.model} » absent de {where} ; {_RIFE_UPDATE_HINT}."]
+    if preset.ultra and capabilities.selector_status not in ("", "ok"):
+        return [f"Interpolation d'images : préréglage Ultra indisponible (poids du sélecteur : "
+                f"{capabilities.selector_status}) ; {_RIFE_UPDATE_HINT}, ou choisir le préréglage Qualité."]
+    return []
+
+
+def rife_capabilities(rife_bin: str) -> RifeCapabilities | None:
+    """Capacités du binaire (None s'il est illisible) ; cache indexé sur l'identité du fichier."""
+    resolved = str(shutil.which(str(rife_bin)) or rife_bin)
     try:
-        exe_dir = Path(rife_bin).resolve().parent
+        info = Path(resolved).stat()
+        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
     except OSError:
-        return False
-    return (exe_dir / "rife-models" / model / "flownet.param").is_file()
+        identity = (0, 0, 0)
+    return _rife_capabilities_cached(resolved, identity)
+
+
+@functools.lru_cache(maxsize=8)
+def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> RifeCapabilities | None:
+    version = _rife_version_cached(rife_bin, identity)
+    if version is None:
+        return None
+    if version < RIFE_CAPABILITIES_MIN_VERSION:
+        return _legacy_capabilities(version)
+    try:
+        # Binaire RIFE configuré ; seul argument constant --capabilities, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
+            [rife_bin, "--capabilities"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
+        )
+        data = json.loads(result.stdout or "")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return _legacy_capabilities(version)
+    if not isinstance(data, dict):
+        return _legacy_capabilities(version)
+    selector = data.get("selector")
+    selector = selector if isinstance(selector, dict) else {}
+    contract = data.get("contract")
+    return RifeCapabilities(
+        version,
+        contract if isinstance(contract, int) else 0,
+        frozenset(str(o) for o in data.get("options") or [] if isinstance(o, str)),
+        frozenset(str(m) for m in data.get("models") or [] if isinstance(m, str)),
+        str(selector.get("status") or ""),
+    )
 
 
 def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
@@ -438,8 +621,10 @@ def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple
 
 
 def clear_rife_version_cache() -> None:
-    """Vide le cache des versions ``muxiveo-rife`` (tests)."""
+    """Vide les caches ``muxiveo-rife`` : versions, capacités, préréglages (tests)."""
     _rife_version_cached.cache_clear()
+    _rife_capabilities_cached.cache_clear()
+    _rife_presets_cached.cache_clear()
 
 
 @dataclass(frozen=True)
@@ -486,7 +671,7 @@ def _resolve_rife(rife_bin: str | None) -> str | None:
 def detect_gpu_acceleration(
     rife_bin: str | None, *, trt_plugin: str = "", gpu: int = -1, timeout: float = 90.0,
 ) -> GpuAcceleration:
-    """Flux optique NVIDIA (≥ 1.3.0) et TensorRT (≥ 1.4.0) sur le GPU d'encodage de muxiveo-rife.
+    """Flux optique NVIDIA et TensorRT (selon les capacités du binaire) sur le GPU d'encodage de muxiveo-rife.
 
     ``gpu`` : index Vulkan (-1 = GPU par défaut). ``trt_plugin`` : dossier de l'extension installée.
     """
@@ -498,13 +683,12 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
     if not resolved:
         reason = "muxiveo-rife introuvable"
         return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
-    version = rife_version(resolved)
-    installed = ".".join(map(str, version)) if version else "?"
-    if version is None or version < RIFE_HYBRID_MIN_VERSION:
-        required = ".".join(map(str, RIFE_HYBRID_MIN_VERSION))
-        reason = f"muxiveo-rife {required} ou plus récent requis (installé : {installed})"
+    capabilities = rife_capabilities(resolved)
+    installed = capabilities.label if capabilities else "?"
+    if capabilities is None or not capabilities.supports("nvof"):
+        reason = f"muxiveo-rife {_option_min_version('nvof')} ou plus récent requis (installé : {installed})"
         return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
-    with_trt = version >= RIFE_TRT_MIN_VERSION
+    with_trt = capabilities.supports("trt-plugin")
     cmd = [resolved, "--list-gpus"]
     if with_trt and trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -530,7 +714,7 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
         else NvofCapability(device=device, reason=str(chosen.get("nvof_status") or "indisponible"))
     )
     if not with_trt:
-        required = ".".join(map(str, RIFE_TRT_MIN_VERSION))
+        required = _option_min_version("trt-plugin")
         trt = TrtCapability(device=device, reason=f"muxiveo-rife {required} ou plus récent requis (installé : {installed})")
     else:
         compatible = chosen.get("trt_compatible") is True
@@ -865,7 +1049,12 @@ __all__ = [
     "RIFE_ULTRA_MIN_VERSION",
     "interpolation_preset",
     "INTERPOLATION_TTA_LEVELS",
+    "rife_capabilities",
+    "rife_support_errors",
     "rife_model_available",
+    "rife_presets",
+    "RifeCapabilities",
+    "RIFE_CAPABILITIES_MIN_VERSION",
     "InterpolationSource",
     "PipelineCommand",
     "RifeProgress",

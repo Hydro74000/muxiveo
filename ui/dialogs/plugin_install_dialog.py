@@ -98,7 +98,7 @@ class PluginInstallDialog(QDialog):
 
     def _fetch_size(self) -> None:
         try:
-            size = plugins.asset_size(plugins.release_asset())
+            size = plugins.asset_size(plugins.release_asset(plugins.TRT))
         except plugins.PluginError:
             size = 0
         try:

@@ -103,10 +103,12 @@ def test_release_publication_requires_unit_tests_of_same_run():
     assert re.search(r"needs:\n(?:      - .*\n)*      - unit-tests\n", release)
 
 
-def test_native_publication_also_waits_for_application_gate():
+def test_interpolation_engine_is_no_longer_built_here():
+    """Moteur d'interpolation : extension mvo-rife du dépôt muxiveo-plugins (release vérifiée par plugins-state)."""
     text = _text("release.yml")
-    native = text[text.index("\n  muxiveo-rife:\n"):text.index("\n  build-linux:\n")]
-    assert "needs: [muxiveo-rife-state, unit-tests]" in native
+    assert "\n  muxiveo-rife:\n" not in text and "muxiveo-rife-state" not in text
+    assert not (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "muxiveo-rife.yml").exists()
+    assert "python3 scripts/check_plugin_release.py" in text
 
 
 def test_release_downloads_only_deliverable_artifacts():
