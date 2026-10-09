@@ -130,12 +130,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   # Extensions proposées par Muxiveo (dépôt muxiveo-plugins) : la version épinglée de chacune (plancher, paquets
-  # hors ligne : mvo-rife préinstallée) doit être publiée et vérifiable avant toute publication de Muxiveo.
+  # hors ligne : mvo-rife préinstallée) doit être publiée et vérifiable. Contrôle au départ, sans dépendance :
+  # aucun paquet n'est construit avant (tous canaux, builds manuels compris).
   plugins-state:
     name: Extensions épinglées
     runs-on: ubuntu-latest
-    needs: release-metadata
-    if: ${{ needs.release-metadata.outputs.publish == 'true' }}
     steps:
       - name: Checkout
         shell: bash
@@ -162,8 +161,8 @@ jobs:
   build-linux:
     name: Build Linux AppImage
     runs-on: ubuntu-latest
-    # Extension mvo-rife préinstallée : release du dépôt des extensions (contrôlée par plugins-state).
-    needs: [release-metadata]
+    # Extension mvo-rife préinstallée : release du dépôt des extensions, contrôlée avant le build.
+    needs: [release-metadata, plugins-state]
     steps:
       - name: Checkout
         shell: bash
@@ -238,8 +237,8 @@ jobs:
   build-windows:
     name: Build Windows installer
     runs-on: windows-latest
-    # Extension mvo-rife préinstallée : release du dépôt des extensions (contrôlée par plugins-state).
-    needs: [release-metadata]
+    # Extension mvo-rife préinstallée : release du dépôt des extensions, contrôlée avant le build.
+    needs: [release-metadata, plugins-state]
     steps:
       - name: Checkout
         shell: pwsh
@@ -335,7 +334,7 @@ jobs:
   build-macos:
     name: Build macOS packages
     runs-on: macos-latest
-    needs: release-metadata
+    needs: [release-metadata, plugins-state]
     steps:
       - name: Checkout
         shell: bash

@@ -258,3 +258,11 @@ def test_jobs_downstream_of_optional_jobs_are_not_skipped():
     for name in ("homebrew-formula", "publish-homebrew-tap", "release"):
         condition = jobs[name][1]
         assert "!cancelled()" in condition or "always()" in condition, name
+
+def test_pinned_extensions_checked_first_and_gate_every_build():
+    """Extensions épinglées : contrôle au départ (sans dépendance), avant tout paquet."""
+    jobs = _jobs("release.yml")
+    needs, condition = jobs["plugins-state"]
+    assert needs == [] and condition == ""
+    for name in ("build-linux", "build-windows", "build-macos"):
+        assert "plugins-state" in jobs[name][0], name
