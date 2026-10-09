@@ -287,8 +287,9 @@ SD à la 4K (tailles de zone proportionnelles à la largeur de l'image, jusqu'à
 Extension facultative pour les cartes NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récentes, sous Linux et Windows :
 l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec des images identiques à l'œil.
 
-- **Proposée seulement aux machines compatibles** : badge `TensorRT +` du tableau de bord, indication unique sur la
-  ligne MVO-RIFE, section **Extensions** des Paramètres. Rien n'apparaît sur une autre carte ou sous macOS.
+- **Page Extensions** (barre latérale) : installation, mise à jour et suppression ; sur une machine incompatible,
+  l'extension est rangée sous « Non compatibles avec cette machine » avec la raison. Badge `TensorRT +` du tableau de
+  bord et indication unique sur la ligne MVO-RIFE (« Installer… », « Gérer les extensions »).
 - **Installation en un clic** après acceptation de la licence NVIDIA : téléchargement vérifié (SHA-256 publié par
   GitHub, puis empreinte de chaque fichier), préparation des moteurs pour la carte, sans redémarrage.
 - **Mises à jour automatiques** (désactivables) quand une nouvelle version de Muxiveo épingle une nouvelle version de
@@ -298,7 +299,7 @@ l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec
 - **Emplacements**, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage comprise) :
   `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
   `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows.
-- **Désinstallation** : bouton **Supprimer** des Paramètres > Extensions ou `muxiveo --cli plugins remove` ; le
+- **Désinstallation** : bouton **Supprimer** de la page Extensions ou `muxiveo --cli plugins remove` ; le
   désinstalleur Windows retire aussi ces deux dossiers.
 - Sans interface : `muxiveo --cli plugins list | install --accept-license | update | remove`.
 

@@ -92,7 +92,7 @@ class PluginInstallDialog(QDialog):
         approx = "" if size > 0 else "≈ "
         return translate_text(
             "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; "
-            "suppression à tout moment dans Paramètres > Extensions.",
+            "suppression à tout moment dans la page Extensions.",
             approx=approx, size=megabytes, path=str(plugins.plugins_root()),
         )
 

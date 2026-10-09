@@ -2,7 +2,7 @@
 ui/plugin_controller.py — état et opérations de l'extension d'accélération NVIDIA (TensorRT) de MVO-RIFE.
 
 Un seul contrôleur, propriété de la fenêtre principale : le tableau de bord lui transmet la compatibilité
-sondée, la section Extensions des Paramètres et le panneau Encodage lisent son état. Téléchargement,
+sondée, la page Extensions et le panneau Encodage lisent son état. Téléchargement,
 installation, préparation des moteurs et suppression tournent hors du thread de l'interface ; les résultats
 reviennent par signaux.
 """

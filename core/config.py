@@ -810,6 +810,7 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("encoding", "Encodage"),
     ("hybrid", "Hybridation"),
     ("dovi", "DoVi / HDR10+"),
+    ("extensions", "Extensions"),
     ("settings", "Paramètres"),
 )
 
@@ -833,6 +834,8 @@ def _normalize_startup_panel(value: str | None) -> str:
         "settings": "settings",
         "parametres": "settings",
         "paramètres": "settings",
+        "extensions": "extensions",
+        "plugins": "extensions",
     }
     return aliases.get(raw, "dashboard")
 

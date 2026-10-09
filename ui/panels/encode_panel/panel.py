@@ -153,6 +153,7 @@ class EncodePanel(QWidget):
     video_tracks_encoding_changed = Signal(object)
     # Indication « accélération NVIDIA disponible » cliquée : dialogue d'installation (fenêtre principale).
     trt_install_requested    = Signal()
+    extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
     _hw_detected             = Signal(object, object, object, object, object, object, object)
@@ -1834,9 +1835,13 @@ class EncodePanel(QWidget):
         self._trt_hint.setText(
             "<a href='install' style='color:" + _C.ACCENT + ";'>"
             + translate_text("Accélération NVIDIA disponible (TensorRT) — Installer…") + "</a>"
+            + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
+            + translate_text("Gérer les extensions") + "</a>"
         )
         self._trt_hint.setStyleSheet("background:transparent;")
-        self._trt_hint.linkActivated.connect(lambda _link: self.trt_install_requested.emit())
+        self._trt_hint.linkActivated.connect(
+            lambda link: self.extensions_page_requested.emit() if link == "manage" else self.trt_install_requested.emit()
+        )
         self._trt_hint.hide()
         fl.addWidget(self._build_filter_row(
             self._interp_cb,

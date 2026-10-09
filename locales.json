@@ -5547,10 +5547,6 @@
     "fra": "Accélération NVIDIA (TensorRT) : échec ({reason}).",
     "eng": "NVIDIA acceleration (TensorRT): failed ({reason})."
   },
-  "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans Paramètres > Extensions.": {
-    "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans Paramètres > Extensions.",
-    "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in Settings > Extensions."
-  },
   "Installer l'accélération NVIDIA (TensorRT) ?": {
     "fra": "Installer l'accélération NVIDIA (TensorRT) ?",
     "eng": "Install NVIDIA acceleration (TensorRT)?"
@@ -5674,5 +5670,49 @@
   "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.": {
     "fra": "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.",
     "eng": "Quality: same hybrid engine with RIFE v4.15 fine-tuned by Muxiveo, more accurate (complex motion, occlusions, fine detail, burned-in text). About 3 times the Fast time."
+  },
+  "Extensions": {
+    "fra": "Extensions",
+    "eng": "Extensions"
+  },
+  "Composants facultatifs téléchargés à la demande, vérifiés (SHA-256) puis installés dans votre dossier utilisateur. Muxiveo fonctionne sans eux ; seules les extensions compatibles avec cette machine peuvent être installées.": {
+    "fra": "Composants facultatifs téléchargés à la demande, vérifiés (SHA-256) puis installés dans votre dossier utilisateur. Muxiveo fonctionne sans eux ; seules les extensions compatibles avec cette machine peuvent être installées.",
+    "eng": "Optional components downloaded on demand, verified (SHA-256) and installed in your user folder. Muxiveo works without them; only extensions compatible with this machine can be installed."
+  },
+  "DISPONIBLES POUR CETTE MACHINE": {
+    "fra": "DISPONIBLES POUR CETTE MACHINE",
+    "eng": "AVAILABLE FOR THIS MACHINE"
+  },
+  "Aucune extension compatible avec cette machine pour l'instant.": {
+    "fra": "Aucune extension compatible avec cette machine pour l'instant.",
+    "eng": "No extension is compatible with this machine yet."
+  },
+  "Non compatibles avec cette machine ({count})": {
+    "fra": "Non compatibles avec cette machine ({count})",
+    "eng": "Not compatible with this machine ({count})"
+  },
+  "Vérification de la compatibilité de cette machine…": {
+    "fra": "Vérification de la compatibilité de cette machine…",
+    "eng": "Checking this machine's compatibility…"
+  },
+  "Non compatible : {reason}.": {
+    "fra": "Non compatible : {reason}.",
+    "eng": "Not compatible: {reason}."
+  },
+  "Non compatible avec cette machine.": {
+    "fra": "Non compatible avec cette machine.",
+    "eng": "Not compatible with this machine."
+  },
+  "Requiert une carte NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récente, sous Linux ou Windows.": {
+    "fra": "Requiert une carte NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récente, sous Linux ou Windows.",
+    "eng": "Requires an NVIDIA Turing card (RTX 20xx, GTX 16xx) or newer, on Linux or Windows."
+  },
+  "Gérer les extensions": {
+    "fra": "Gérer les extensions",
+    "eng": "Manage extensions"
+  },
+  "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.": {
+    "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.",
+    "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in the Extensions page."
   }
 }

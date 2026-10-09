@@ -331,23 +331,58 @@ def test_dashboard_tensorrt_badge(qt_app, tmp_path):
     assert badge.text == "TensorRT 42 %:pending"
 
 
-def test_settings_extensions_section(qt_app, tmp_path):
+def test_extensions_page_sections(qt_app, tmp_path):
     from core.config import AppConfig
-    from ui.panels.settings_panel import SettingsPanel
+    from ui.panels.extensions_panel import ExtensionsPanel
 
-    panel = SettingsPanel(AppConfig())
-    assert panel._extensions_card is not None
+    panel = ExtensionsPanel(AppConfig())
+    card = panel._trt_card
+    # sonde du GPU en cours : carte disponible, sans bouton d'installation
+    panel.set_trt_state(_state())
+    assert panel._available_box.indexOf(card) >= 0 and panel._trt_install_btn.isHidden()
+    assert "Vérification" in panel._trt_status.text()
+    # machine incompatible : carte repliée dans « Non compatibles », avec la raison
     panel.set_trt_state(_state(capability=TrtCapability(reason="GPU non NVIDIA")))
-    assert panel._extensions_card.isHidden()
+    assert panel._incompatible_box.indexOf(card) >= 0 and panel._available_box.indexOf(card) < 0
+    assert not panel._none_label.isHidden() and not panel._incompatible_toggle.isHidden()
+    assert "(1)" in panel._incompatible_toggle.text() and panel._incompatible_container.isHidden()
+    assert "GPU non NVIDIA" in panel._trt_status.text() and panel._trt_install_btn.isHidden()
+    panel._incompatible_toggle.setChecked(True)
+    assert not panel._incompatible_container.isHidden()
+    # compatible : disponible, installation proposée
     panel.set_trt_state(_state(capability=TrtCapability(compatible=True, device="RTX")))
-    assert not panel._extensions_card.isHidden()
+    assert panel._available_box.indexOf(card) >= 0 and panel._incompatible_toggle.isHidden()
     assert not panel._trt_install_btn.isHidden() and panel._trt_remove_btn.isHidden()
     assert panel._trt_enabled_box.isHidden()
+    # installée : suppression et activation proposées
     installed = plugins.InstalledPlugin(MVO_RIFE_TRT_VERSION, tmp_path, {})
     panel.set_trt_state(_state(installed=installed, capability=TrtCapability(compatible=True, ready=True, device="RTX")))
     assert panel._trt_install_btn.isHidden() and not panel._trt_remove_btn.isHidden()
     assert not panel._trt_enabled_box.isHidden()
     assert "RTX" in panel._trt_status.text()
+    panel.close()
+
+
+def test_settings_no_longer_hosts_extensions(qt_app):
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    panel = SettingsPanel(AppConfig())
+    assert not hasattr(panel, "set_trt_state") and not hasattr(panel, "_extensions_card")
+    panel.close()
+
+
+def test_encode_hint_links_install_and_extensions_page(qt_app):
+    from core.config import AppConfig
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    panel = EncodePanel(AppConfig())
+    got: list[str] = []
+    panel.trt_install_requested.connect(lambda: got.append("install"))
+    panel.extensions_page_requested.connect(lambda: got.append("manage"))
+    panel._trt_hint.linkActivated.emit("install")
+    panel._trt_hint.linkActivated.emit("manage")
+    assert got == ["install", "manage"]
     panel.close()
 
 

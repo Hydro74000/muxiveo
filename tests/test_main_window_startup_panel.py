@@ -22,6 +22,20 @@ def test_startup_page_index_mapping() -> None:
     assert MainWindow.startup_page_index("container") == 3
     assert MainWindow.startup_page_index("hybrid") == 4
     assert MainWindow.startup_page_index("settings") == 5
+    assert MainWindow.startup_page_index("extensions") == 6
+
+
+def test_extensions_startup_panel_alias() -> None:
+    from core.config import _normalize_startup_panel
+
+    assert _normalize_startup_panel("plugins") == "extensions" == _normalize_startup_panel("Extensions")
+
+
+def test_show_extensions_page_switches_stack_and_sidebar() -> None:
+    win = SimpleNamespace(_stack=MagicMock(), _sidebar=MagicMock(), _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY)
+    MainWindow.show_extensions_page(cast(Any, win))
+    win._stack.setCurrentIndex.assert_called_once_with(6)
+    win._sidebar.select_page.assert_called_once_with(6)
 
 
 def test_startup_page_index_fallback_dashboard() -> None:

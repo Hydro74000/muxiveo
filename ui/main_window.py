@@ -11,7 +11,7 @@ Architecture :
     │  │          │      ─ MergeDoviPanel     (index 1)    │  │
     │  │          │      ─ EncodePanel        (index 2)    │  │
     │  │          │      ─ RemuxPanel         (index 3)    │  │
-    │  │          │      ─ SettingsPanel      (index 4)    │  │
+    │  │          │      ─ SettingsPanel      (index 5)    │  │
     │  └──────────┴────────────────────────────────────────┘  │
     │  ┌────────────────────────────────────────────────────┐  │
     │  │ Action bar globale : état, progression, exécuter, │  │
@@ -101,6 +101,7 @@ from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.panels.extensions_panel import ExtensionsPanel
 from ui.plugin_controller import TrtPluginController
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
@@ -1406,6 +1407,7 @@ class _Sidebar(QWidget):
         ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
         ("Hybridation",     "⧉", 4, False),
         ("DoVi / HDR10+",   "◈", 1, False),
+        ("Extensions",      "⊕", 6, False),
         ("Paramètres",      "⚙", 5, False),
     ]
     _FULL_WIDTH = 200
@@ -1614,6 +1616,7 @@ class MainWindow(QMainWindow):
         "container": 3,
         "hybrid": 4,
         "settings": 5,
+        "extensions": 6,
     }
 
     @property
@@ -1795,6 +1798,10 @@ class MainWindow(QMainWindow):
         # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
+
+        # Page 6 — Extensions (installation, mise à jour, suppression)
+        self._extensions_panel = ExtensionsPanel(self._config)
+        self._stack.addWidget(self._extensions_panel)
 
         self._install_source_drop_targets(self._dashboard)
         self._install_source_drop_targets(self._encode_panel)
@@ -2185,22 +2192,24 @@ class MainWindow(QMainWindow):
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
 
     def _wire_trt_extension(self) -> None:
-        """Extension TensorRT : sonde → contrôleur → badge, section Extensions, encodages."""
+        """Extension TensorRT : sonde → contrôleur → badge, page Extensions, encodages."""
         ctrl = self._trt_controller
         self._dashboard.trt_capability.connect(ctrl.set_capability)
         self._dashboard.trt_badge_clicked.connect(self._on_trt_badge_clicked)
         ctrl.state_changed.connect(self._dashboard.set_trt_state)
-        ctrl.state_changed.connect(self._settings_panel.set_trt_state)
+        ctrl.state_changed.connect(self._extensions_panel.set_trt_state)
         ctrl.state_changed.connect(self._on_trt_state_changed)
         ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
         ctrl.workflow_changed.connect(self._apply_trt_plugin_to_encode)
         ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
-        self._settings_panel.trt_install_requested.connect(self._open_trt_install_dialog)
-        self._settings_panel.trt_update_requested.connect(ctrl.update)
-        self._settings_panel.trt_remove_requested.connect(self._on_trt_remove_requested)
-        self._settings_panel.trt_enabled_toggled.connect(ctrl.set_enabled)
-        self._settings_panel.trt_auto_update_toggled.connect(ctrl.set_auto_update)
+        self._extensions_panel.trt_install_requested.connect(self._open_trt_install_dialog)
+        self._extensions_panel.trt_update_requested.connect(ctrl.update)
+        self._extensions_panel.trt_remove_requested.connect(self._on_trt_remove_requested)
+        self._extensions_panel.trt_enabled_toggled.connect(ctrl.set_enabled)
+        self._extensions_panel.trt_auto_update_toggled.connect(ctrl.set_auto_update)
+        self._extensions_panel.set_trt_state(ctrl.state())
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
+        self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
         self._apply_trt_plugin_to_encode()
         ctrl.cleanup()
 
@@ -2215,8 +2224,13 @@ class MainWindow(QMainWindow):
         if state.installed is None and state.compatible and not state.busy:
             self._open_trt_install_dialog()
             return
-        self._sidebar.select_page(5)
-        self._settings_panel.show_extensions()
+        self.show_extensions_page()
+
+    def show_extensions_page(self) -> None:
+        """Ouvre la page Extensions (badges du tableau de bord, liens des fonctions)."""
+        index = self._PAGE_INDEX_BY_PANEL_KEY["extensions"]
+        self._stack.setCurrentIndex(index)
+        self._sidebar.select_page(index)
 
     def _open_trt_install_dialog(self) -> None:
         from ui.dialogs.plugin_install_dialog import PluginInstallDialog
