@@ -363,6 +363,34 @@ def test_ensure_pyinstaller_deps_list_format():
         assert "numpy>=1.24" in cmd
 
 
+@pytest.mark.parametrize("module", [package_mod, package_appimage_mod], ids=["native", "appimage"])
+@pytest.mark.parametrize("python_version", [(3, 10), (3, 11), (3, 12), (3, 14)])
+@pytest.mark.parametrize("installed_pyside", ["6.5.3", "6.12.0", "6.12.1"])
+def test_packaging_repairs_incompatible_pyside_even_when_importable(
+    monkeypatch, module, python_version, installed_pyside,
+):
+    import core.python_requirements as reqs
+
+    requirements = reqs.read_requirements(python_version=python_version)
+    versions = {"PySide6": installed_pyside, "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"}
+    monkeypatch.setattr(reqs, "installed_version", versions.get)
+    monkeypatch.setattr(module, "read_requirements", lambda: requirements)
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tool")
+    packages = []
+    monkeypatch.setattr(package_mod, "_run", lambda command: packages.extend(command[4:]))
+    monkeypatch.setattr(package_appimage_mod, "_pip_install", packages.extend)
+
+    if module is package_mod:
+        module._ensure_pyinstaller()
+    else:
+        module.ensure_build_deps()
+
+    incompatible = installed_pyside == "6.5.3" or (installed_pyside == "6.12.0" and python_version < (3, 12))
+    pyside = next(r for r in requirements if r.distribution == "PySide6")
+    assert packages == ([pyside.spec] if incompatible else [])
+
+
 
 def test_verify_wine_pyside6_runtime_raises_with_missing_dlls(tmp_path):
     wine_python = tmp_path / "drive_c" / "Python311" / "python.exe"
@@ -1113,4 +1141,3 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
     assert tools_bundled == [True]
     assert portable_built == [True]
-

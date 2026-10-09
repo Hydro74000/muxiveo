@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import threading
@@ -9,7 +10,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -46,6 +47,7 @@ from ui.panels.remux_panel.theme import (
     _table_style,
 )
 from ui.styles import _bolt_icon
+from ui.shutdown import Shutdown, defer_close
 from ui.widgets.waveform_view import WaveformView
 
 if TYPE_CHECKING:
@@ -140,6 +142,13 @@ class SyncStudioDialog(QDialog):
         self._audio_output: QAudioOutput | None = None
         self._is_playing = False
         self._closing = False
+        self._cancel_event = threading.Event()
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sync-studio")
+        self._shutdown: Shutdown | None = None
+        self._pending_result: int | None = None
+        self._done_timer = QTimer(self)
+        self._done_timer.setInterval(50)
+        self._done_timer.timeout.connect(self._finish_done_when_ready)
 
         self._waveform_loading.connect(self._on_waveform_loading)
         self._segment_audio_ready.connect(self._on_segment_audio_ready)
@@ -692,6 +701,8 @@ class SyncStudioDialog(QDialog):
         self._update_cuts_table()
 
     def _load_segment_audio_async(self, idx: int, start_s: float, cut_ms: float | None) -> None:
+        if self._closing:
+            return
         key = round(start_s * 1000.0)
         if key in self._audio_cache:
             ref_samples, tgt_samples = self._audio_cache[key]
@@ -714,7 +725,9 @@ class SyncStudioDialog(QDialog):
                 # Extraction des sous-titres si applicable
                 if (is_tgt_sub or is_ref_sub) and (not self._tgt_cues and not self._ref_cues):
                     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-                    sub_scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                    sub_scanner = SubtitleSyncScanner(
+                        self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event,
+                    )
                     new_ref_cues = []
                     new_tgt_cues = []
                     if is_ref_sub and self.reference_source_path is not None and self.reference_stream_index is not None:
@@ -727,10 +740,11 @@ class SyncStudioDialog(QDialog):
                             new_tgt_cues = sub_scanner.extract_cues(self.target_source_path, self.target_stream_index)
                         except Exception:
                             new_tgt_cues = []
-                    self._subtitles_ready.emit(new_ref_cues, new_tgt_cues)
+                    if not self._closing:
+                        self._subtitles_ready.emit(new_ref_cues, new_tgt_cues)
 
                 # Échantillons audio
-                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
                 ref_samples = np.array([], dtype=np.float32)
                 tgt_samples = np.array([], dtype=np.float32)
 
@@ -744,11 +758,13 @@ class SyncStudioDialog(QDialog):
                     tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
                     tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
 
-                self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
+                if not self._closing:
+                    self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
             except Exception as exc:
-                self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
+                if not self._closing:
+                    self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
     def _on_subtitles_ready(self, ref_cues, tgt_cues) -> None:
         if getattr(self, "_closing", False):
@@ -760,7 +776,7 @@ class SyncStudioDialog(QDialog):
         self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
     def _run_auto_subtitle_sync(self) -> None:
-        if self._is_sub_sync_running:
+        if self._closing or self._is_sub_sync_running:
             return
         self._is_sub_sync_running = True
         if hasattr(self, "btn_auto_sub_sync"):
@@ -771,7 +787,7 @@ class SyncStudioDialog(QDialog):
         def _worker() -> None:
             try:
                 from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-                scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
                 is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
                 ref_src = self.reference_source_path or self.target_source_path
                 ref_idx = self.reference_stream_index if self.reference_stream_index is not None else 0
@@ -783,11 +799,13 @@ class SyncStudioDialog(QDialog):
                     is_ref_sub=is_ref_sub,
                     detect_cuts=True,
                 )
-                self._auto_sub_sync_ready.emit(cal)
+                if not self._closing:
+                    self._auto_sub_sync_ready.emit(cal)
             except Exception as exc:
-                self._auto_sub_sync_failed.emit(str(exc))
+                if not self._closing:
+                    self._auto_sub_sync_failed.emit(str(exc))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
     def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
         if getattr(self, "_closing", False):
@@ -859,6 +877,8 @@ class SyncStudioDialog(QDialog):
             self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
     def _toggle_listen(self) -> None:
+        if self._closing:
+            return
         if self._is_playing:
             self._stop_playback()
             return
@@ -871,7 +891,7 @@ class SyncStudioDialog(QDialog):
         def _worker() -> None:
             try:
                 out_path = Path(self._temp_dir.name) / f"{uuid.uuid4().hex}.wav"
-                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
 
                 if is_sub:
                     # Pour les sous-titres, extraire l'audio de référence à écouter
@@ -924,11 +944,13 @@ class SyncStudioDialog(QDialog):
                 res = scanner._run(cmd, timeout=30, **subprocess_text_kwargs())
                 if res.returncode != 0:
                     raise RuntimeError(res.stderr)
-                self._preview_ready.emit(str(out_path))
+                if not self._closing:
+                    self._preview_ready.emit(str(out_path))
             except Exception as exc:
-                self._preview_error.emit(str(exc))
+                if not self._closing:
+                    self._preview_error.emit(str(exc))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
     def _on_preview_ready(self, path: str) -> None:
         if getattr(self, "_closing", False):
@@ -1027,16 +1049,35 @@ class SyncStudioDialog(QDialog):
     def result_calibration(self) -> tuple[SyncCalibration, int]:
         return self.current_calibration, round(self.current_calibration.segments[0].shift_ms)
 
+    def _begin_shutdown(self) -> Shutdown:
+        if self._shutdown is None:
+            self._closing = True
+            self.setEnabled(False)
+            self._cancel_event.set()
+            self._stop_playback()
+            if self._player is not None:
+                self._player.setSource(QUrl())
+            self._shutdown = Shutdown(executors=(self._executor,))
+        return self._shutdown
+
+    def _finish_done_when_ready(self) -> None:
+        if self._shutdown is None or not self._shutdown.done.is_set():
+            return
+        self._done_timer.stop()
+        self._temp_dir.cleanup()
+        if self._pending_result is not None:
+            super().done(self._pending_result)
+
     def done(self, r: int) -> None:
-        self._closing = True
-        self._stop_playback()
-        super().done(r)
+        self._pending_result = r
+        self._begin_shutdown()
+        self._finish_done_when_ready()
+        if self._shutdown is not None and not self._shutdown.done.is_set():
+            self._done_timer.start()
 
     def closeEvent(self, event) -> None:
-        self._closing = True
-        self._stop_playback()
-        try:
-            self._temp_dir.cleanup()
-        except Exception:  # nosec B110
-            pass
+        shutdown = self._begin_shutdown()
+        if defer_close(self, event, ready=shutdown.done.is_set()):
+            return
+        self._temp_dir.cleanup()
         super().closeEvent(event)

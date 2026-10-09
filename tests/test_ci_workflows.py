@@ -75,15 +75,18 @@ def test_matroska_filters_point_to_existing_modules():
 def test_general_suite_collects_every_test_file():
     text = _text("ci-unit-all.yml")
     # Collecte du dossier entier : un nouveau test est exécuté sans liste manuelle.
-    assert re.search(r"python -m pytest -q -rs tests --junitxml", text)
+    assert re.search(r"python -m pytest -q -rs tests\s+", text)
+    assert "--junitxml=pytest-linux-${{ matrix.python }}.xml" in text
+    assert "-W error::pytest.PytestUnhandledThreadExceptionWarning" in text
     assert "workflow_call:" in text
+    assert "continue-on-error:" not in text  # toute version Python prise en charge bloque la publication
 
 
 def test_windows_job_runs_real_cmd_and_lock_tests():
     text = _text("ci-unit-all.yml")
     windows = text[text.index("  windows:"):]
     assert "runs-on: windows-latest" in windows
-    assert "windows_pytest_bootstrap" not in windows
+    assert "scripts/windows_pytest_bootstrap.py" not in windows
     for test_file in ("test_encode_preview_quoting.py", "test_output_commit.py", "test_workdir_ownership.py"):
         assert f"tests/{test_file}" in windows
         assert (_WORKFLOWS.parents[1] / "tests" / test_file).is_file()

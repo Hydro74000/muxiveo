@@ -7,8 +7,8 @@ name: Sync Rewrite & Profiles Tests (Windows)
 # monkeypatchent à True deviennent no-op et exécutent la vraie branche
 # Windows de ``start_live_demux_session``.
 #
-# Le bootstrap ``scripts/windows_pytest_bootstrap.py`` stub PySide6 pour
-# permettre d'exécuter les tests Qt sans installer Qt sur le runner Windows.
+# Le bootstrap utilise le Qt réel de l'application, installé depuis
+# requirements.txt, et conserve les contrôles de pytest-qt.
 
 on:
   workflow_dispatch:
@@ -41,6 +41,8 @@ on:
       - "tests/test_cli.py"
       - "tests/conftest.py"
       - "scripts/windows_pytest_bootstrap.py"
+      - "requirements.txt"
+      - "core/python_requirements.py"
       - ".github/workflows/ci-syncrewrite-windows.yml"
   push:
     paths:
@@ -68,6 +70,8 @@ on:
       - "tests/test_cli.py"
       - "tests/conftest.py"
       - "scripts/windows_pytest_bootstrap.py"
+      - "requirements.txt"
+      - "core/python_requirements.py"
       - ".github/workflows/ci-syncrewrite-windows.yml"
 
 jobs:
@@ -89,7 +93,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest numpy
+          python -m pip install -r requirements.txt pytest pytest-qt
           winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
           $ffPath = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*" -Directory | Select-Object -First 1).FullName
           $binDir = (Get-ChildItem -Path $ffPath -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
@@ -99,6 +103,8 @@ jobs:
 
       - name: Run Sync Rewrite & Profiles Tests
         shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           python scripts/windows_pytest_bootstrap.py `
             tests/test_audio_sync_workflow.py `

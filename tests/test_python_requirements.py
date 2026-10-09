@@ -11,12 +11,15 @@ import core.python_requirements as reqs
 from core.python_requirements import parse_version, read_requirements
 
 
-def test_requirements_file_is_the_single_source():
-    requirements = {r.distribution: r for r in read_requirements()}
+@pytest.mark.parametrize("python_version", [(3, 10), (3, 11), (3, 12), (3, 14), (3, 100)])
+def test_requirements_file_is_the_single_source(python_version):
+    selected = read_requirements(python_version=python_version)
+    requirements = {r.distribution: r for r in selected}
+    assert len(selected) == len(requirements) == 4  # une seule règle active par dépendance
     assert set(requirements) == {"PySide6", "numpy", "pymediainfo", "certifi"}
     assert requirements["PySide6"].module == "PySide6"  # casse exacte du module
     assert requirements["PySide6"].minimum == (6, 6, 0)
-    assert requirements["PySide6"].excluded == ((6, 12, 0),)  # None décrémenté par les méthodes sans retour
+    assert requirements["PySide6"].excluded == (((6, 12, 0),) if python_version < (3, 12) else ())
     assert requirements["certifi"].minimum is None
 
 
@@ -24,7 +27,7 @@ def test_setup_installs_from_requirements():
     import setup
 
     assert setup.PYTHON_PACKAGES == [r.spec for r in read_requirements()]
-    assert "PySide6>=6.6.0,!=6.12.0" in setup.PYTHON_PACKAGES and "certifi" in setup.PYTHON_PACKAGES
+    assert "certifi" in setup.PYTHON_PACKAGES
 
 
 def test_unsupported_requirement_syntax_is_explicit(tmp_path: Path):
@@ -39,8 +42,8 @@ def test_parse_version(text, expected):
     assert parse_version(text) == expected
 
 
-@pytest.fixture
-def setup_module(monkeypatch):
+@pytest.fixture(params=[(3, 10), (3, 11), (3, 12), (3, 14)])
+def setup_module(monkeypatch, request):
     import setup
 
     commands: list[list[str]] = []
@@ -48,6 +51,9 @@ def setup_module(monkeypatch):
     for name in ("title", "ok", "warn", "step"):
         monkeypatch.setattr(setup, name, lambda *_a, **_k: None)
     monkeypatch.delattr(sys, "frozen", raising=False)
+    requirements = read_requirements(python_version=request.param)
+    monkeypatch.setattr(setup, "PYTHON_REQUIREMENTS", requirements)
+    monkeypatch.setattr(setup, "PYTHON_PACKAGES", [r.spec for r in requirements])
     return setup, commands
 
 
@@ -69,14 +75,24 @@ def test_only_missing_or_outdated_are_installed(setup_module, monkeypatch):
     setup, commands = setup_module
     _installed(monkeypatch, {"PySide6": "6.5.3", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": None})
     setup.install_python_packages(dry_run=False)
-    assert commands == [[sys.executable, "-m", "pip", "install", "PySide6>=6.6.0,!=6.12.0", "certifi"]]
+    pyside = next(r for r in setup.PYTHON_REQUIREMENTS if r.distribution == "PySide6")
+    assert commands == [[sys.executable, "-m", "pip", "install", pyside.spec, "certifi"]]
 
 
-def test_excluded_version_is_reinstalled(setup_module, monkeypatch):
+def test_pyside_612_is_reinstalled_only_on_older_python(setup_module, monkeypatch):
     setup, commands = setup_module
     _installed(monkeypatch, {"PySide6": "6.12.0", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"})
     setup.install_python_packages(dry_run=False)
-    assert commands == [[sys.executable, "-m", "pip", "install", "PySide6>=6.6.0,!=6.12.0"]]
+    pyside = next(r for r in setup.PYTHON_REQUIREMENTS if r.distribution == "PySide6")
+    expected = [[sys.executable, "-m", "pip", "install", pyside.spec]] if pyside.excluded else []
+    assert commands == expected
+
+
+def test_newer_pyside_remains_allowed(setup_module, monkeypatch):
+    setup, commands = setup_module
+    _installed(monkeypatch, {"PySide6": "6.12.1", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"})
+    setup.install_python_packages(dry_run=False)
+    assert commands == []
 
 
 def test_exclusion_syntax(tmp_path: Path):
@@ -86,6 +102,42 @@ def test_exclusion_syntax(tmp_path: Path):
     assert lib.spec == "Lib>=1.2,!=1.3.0,!=1.4" and lib.excluded == ((1, 3, 0), (1, 4))
     assert other.spec == "Other!=2" and other.minimum is None
     assert reqs.is_excluded("1.4.0", lib) and reqs.is_excluded("1.3", lib) and not reqs.is_excluded("1.3.1", lib)
+
+
+@pytest.mark.parametrize("python_version", [(3, 9), (3, 10), (3, 11), (3, 12), (3, 14), (3, 100)])
+def test_python_markers_match_pip_selection(python_version):
+    from packaging.requirements import Requirement
+
+    expected = []
+    environment = {"python_version": ".".join(map(str, python_version))}
+    for line in reqs.REQUIREMENTS_FILE.read_text(encoding="utf-8").splitlines():
+        spec = line.split("#", 1)[0].strip()
+        if not spec:
+            continue
+        requirement = Requirement(spec)
+        if requirement.marker is None or requirement.marker.evaluate(environment):
+            expected.append(requirement.name + str(requirement.specifier))
+    # packaging trie les clauses ; compare les contraintes normalisées.
+    actual = [r.spec for r in read_requirements(python_version=python_version)]
+    assert [str(Requirement(spec)) for spec in actual] == [str(Requirement(spec)) for spec in expected]
+
+
+@pytest.mark.parametrize("marker", [
+    'python_version << "3.12"', 'python_version < "3.12.0"',
+    'python_version < 3.12', 'os_name == "nt"', "",
+])
+def test_unsupported_marker_is_explicit_even_on_inactive_requirement(tmp_path, marker):
+    path = tmp_path / "requirements.txt"
+    path.write_text(f'Lib>=1; {marker}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="Condition non prise en charge"):
+        read_requirements(path)
+
+
+def test_marker_accepts_single_quotes_and_spaces(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("Lib>=1 ; python_version < '3.12' # ancien Python\n", encoding="utf-8")
+    assert [r.spec for r in read_requirements(path, python_version=(3, 11))] == ["Lib>=1"]
+    assert read_requirements(path, python_version=(3, 12)) == []
 
 
 def test_frozen_application_never_calls_pip(setup_module, monkeypatch):

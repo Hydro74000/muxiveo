@@ -2,7 +2,7 @@
 
 PySide6 6.12.0 rend None sans référence (Python < 3.12, où None n'est pas immortel) : chaque appel
 décrémente son compteur jusqu'à « deallocating None » et l'abandon du processus (application et
-tests). Version exclue dans requirements.txt ; ce test signale toute version défectueuse installée.
+tests). Version exclue sur ces Python dans requirements.txt ; ce test signale une version défectueuse installée.
 """
 
 from __future__ import annotations

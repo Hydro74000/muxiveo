@@ -97,8 +97,8 @@ def _probe_process(command: list[str], **kwargs: Any) -> Iterator[subprocess.Pop
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs) as proc:  # nosec B603
             if job is not None:
                 try:
-                    job.attach_and_resume(int(proc._handle), proc.pid)  # type: ignore[attr-defined]
-                    proc._muxiveo_job = job  # type: ignore[attr-defined]
+                    job.attach_and_resume(int(getattr(proc, "_handle")), proc.pid)
+                    setattr(proc, "_muxiveo_job", job)
                 except BaseException:
                     proc.kill()
                     proc.wait()

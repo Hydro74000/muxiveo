@@ -69,6 +69,7 @@ from core.github_release import (
     verify_download,
     verify_sha256,
 )
+from core.python_requirements import read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     PREEXISTING,
@@ -639,21 +640,18 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 
 
 def _ensure_pyinstaller() -> None:
-    required: list[tuple[str, str]] = [
-        ("PyInstaller", "pyinstaller"),
-        ("PySide6", "PySide6>=6.6.0,!=6.12.0"),
-        ("pymediainfo", "pymediainfo>=6.1.0"),
-        ("numpy", "numpy>=1.24"),
-        ("certifi", "certifi"),
-    ]
+    requirements = read_requirements()
+    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
     missing: list[str] = []
-    for module_name, pip_name in required:
-        if importlib.util.find_spec(module_name) is None:
-            missing.append(pip_name)
+    if importlib.util.find_spec("PyInstaller") is None:
+        missing.append("pyinstaller")
+    for requirement in requirements:
+        if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
+            missing.append(requirement.spec)
     if not missing:
         _ok("Dépendances de packaging Python disponibles")
         return
-    _info(f"Installation des dépendances manquantes : {', '.join(missing)}")
+    _info(f"Installation des dépendances absentes ou incompatibles : {', '.join(missing)}")
     _run([sys.executable, "-m", "pip", "install", *missing])
 
 

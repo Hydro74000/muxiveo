@@ -9,7 +9,6 @@ WINEPREFIX=${WINEPREFIX:-$WINE_TEST_ROOT/prefix}
 KEEP_WINE_TEST_ROOT=${KEEP_WINE_TEST_ROOT:-0}
 PYTHON_INSTALLER=${PYTHON_INSTALLER:-$REPO_ROOT/python-3.11.9-amd64.exe}
 WINDOWS_PY="$WINEPREFIX/drive_c/Python311/python.exe"
-WINDOWS_PIP="$WINEPREFIX/drive_c/Python311/Scripts/pip.exe"
 WINDOWS_FFMPEG_BIN="$WINEPREFIX/drive_c/tools/ffmpeg/bin"
 FFMPEG_URL=${FFMPEG_URL:-https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip}
 FFMPEG_ARCHIVE="$WINE_TEST_ROOT/ffmpeg-release-essentials.zip"
@@ -61,10 +60,10 @@ ensure_prefix() {
     fi
 }
 
-ensure_pytest() {
-    if ! wine "$WINDOWS_PY" -c "import pytest" >/dev/null 2>&1; then
-        wine "$WINDOWS_PIP" install pytest
-    fi
+ensure_test_dependencies() {
+    # Même Qt que l'application : aucun stub pour dissimuler un runtime manquant.
+    REQUIREMENTS_WINE=$(to_wine_path "$REPO_ROOT/requirements.txt")
+    wine "$WINDOWS_PY" -m pip install -r "$REQUIREMENTS_WINE" pytest pytest-qt
 }
 
 ensure_windows_ffmpeg() {
@@ -109,6 +108,6 @@ run_tests() {
 }
 
 ensure_prefix
-ensure_pytest
+ensure_test_dependencies
 ensure_windows_ffmpeg
 run_tests

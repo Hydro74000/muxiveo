@@ -5,12 +5,14 @@ Le nom de distribution (pip) et le module importable peuvent différer
 (``PySide6`` s'importe sous ce nom exact, avec sa casse). Une borne minimale
 et des versions exclues (``!=x.y.z``, version défectueuse connue) sont vérifiées
 sur la version installée de la distribution (``importlib.metadata``) : un import
-réussi ne prouve pas la version.
+réussi ne prouve pas la version. Les conditions ``python_version < "x.y"``
+et ``python_version >= "x.y"`` sélectionnent les dépendances de l'interpréteur.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -22,6 +24,9 @@ _MODULE_NAMES = {"pyside6": "PySide6"}
 _LINE_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:>=\s*(?P<minimum>[0-9][0-9.]*))?"
     r"(?P<excluded>(?:\s*,\s*!=\s*[0-9][0-9.]*)*)$"
+)
+_MARKER_RE = re.compile(
+    r"""^python_version\s*(?P<operator><|>=)\s*(?P<quote>["'])(?P<version>\d+\.\d+)(?P=quote)$"""
 )
 
 
@@ -49,16 +54,29 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def read_requirements(path: Path = REQUIREMENTS_FILE) -> list[PythonRequirement]:
-    """Dépendances déclarées ; formes admises : ``Nom``, ``Nom>=x.y``, suivies d'exclusions ``,!=x.y.z``."""
+def read_requirements(
+    path: Path = REQUIREMENTS_FILE, *, python_version: tuple[int, int] | None = None,
+) -> list[PythonRequirement]:
+    """Dépendances actives : borne minimale, exclusions et condition optionnelle sur Python."""
+    if python_version is None:
+        python_version = (sys.version_info.major, sys.version_info.minor)
     requirements: list[PythonRequirement] = []
     for raw in Path(path).read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        match = _LINE_RE.match(line)
+        spec, separator, marker = line.partition(";")
+        match = _LINE_RE.fullmatch(spec.strip())
         if match is None:
             raise ValueError(f"Dépendance non prise en charge dans {path.name} : {line}")
+        if separator:
+            condition = _MARKER_RE.fullmatch(marker.strip())
+            if condition is None:
+                raise ValueError(f"Condition non prise en charge dans {path.name} : {marker.strip()}")
+            boundary = parse_version(condition.group("version"))
+            below = python_version < boundary
+            if below != (condition.group("operator") == "<"):
+                continue
         name = match.group("name")
         minimum = match.group("minimum")
         excluded = re.findall(r"!=\s*([0-9][0-9.]*)", match.group("excluded"))

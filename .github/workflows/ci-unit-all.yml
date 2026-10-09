@@ -44,9 +44,6 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.10"]
-    # Python 3.10 (minimum annoncé) : résultat informatif tant que la suite
-    # n'y a pas été validée ; la 3.12 conditionne la publication.
-    continue-on-error: ${{ matrix.python == '3.10' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,7 +72,10 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         # -rs : chaque test ignoré (outil, GPU, plateforme) est listé avec sa raison.
-        run: python -m pytest -q -rs tests --junitxml=pytest-linux-${{ matrix.python }}.xml
+        run: >-
+          python -m pytest -q -rs tests
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
+          --junitxml=pytest-linux-${{ matrix.python }}.xml
 
       - name: Upload test report
         if: always()
@@ -112,6 +112,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: >-
           python -m pytest -q -rs
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
           tests/test_encode_preview_quoting.py
           tests/test_output_commit.py
           tests/test_workdir_ownership.py
@@ -119,6 +120,10 @@ jobs:
           tests/test_profile_store.py
           tests/test_json_documents.py
           tests/test_probe_lifecycle.py
+          tests/test_windows_pytest_bootstrap.py
+          tests/test_python_requirements.py
+          tests/test_qt_binding_sanity.py
+          tests/test_shutdown_cleanup.py::test_sync_studio_cancels_audio_and_keeps_resources_until_worker_finishes
           --junitxml=pytest-windows.xml
 
       - name: Upload test report

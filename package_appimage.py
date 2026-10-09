@@ -64,6 +64,7 @@ from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
 from core.github_release import github_release_asset, release_asset, verify_download
+from core.python_requirements import read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     RECORDED_ONLY,
@@ -216,16 +217,6 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 # Étape 0 — Dépendances du script lui-même
 # ---------------------------------------------------------------------------
 
-# Paquets nécessaires au build (PyInstaller doit pouvoir les importer)
-_BUILD_DEPS: list[str] = [
-    "pyinstaller",
-    "PySide6>=6.6.0,!=6.12.0",
-    "pymediainfo>=6.1.0",
-    "numpy>=1.24",
-    "certifi",
-]
-
-
 def _pip_install(packages: list[str]) -> None:
     run([sys.executable, "-m", "pip", "install", "--upgrade", *packages])
 
@@ -260,18 +251,14 @@ def ensure_build_deps() -> None:
     if importlib.util.find_spec("PyInstaller") is None:
         missing_py.append("pyinstaller")
 
-    if importlib.util.find_spec("PySide6") is None:
-        missing_py.append("PySide6>=6.6.0,!=6.12.0")
-
-    if importlib.util.find_spec("numpy") is None:
-        missing_py.append("numpy>=1.24")
-    if importlib.util.find_spec("pymediainfo") is None:
-        missing_py.append("pymediainfo>=6.1.0")
-    if importlib.util.find_spec("certifi") is None:
-        missing_py.append("certifi")
+    requirements = read_requirements()
+    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
+    for requirement in requirements:
+        if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
+            missing_py.append(requirement.spec)
 
     if missing_py:
-        info(f"Paquets Python manquants : {', '.join(missing_py)}")
+        info(f"Paquets Python absents ou incompatibles : {', '.join(missing_py)}")
         _pip_install(missing_py)
 
     # ── mksquashfs — appimagetool l'embarque en interne, non bloquant ────────

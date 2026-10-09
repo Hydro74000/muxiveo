@@ -200,9 +200,16 @@ def test_bundled_tools_dir_windows_allinc(tmp_path, monkeypatch):
     assert resolved == str(tools / "ffmpeg.exe")
 
 
-def test_launcher_is_allinc_and_setup_bypass(tmp_path, monkeypatch):
+@pytest.mark.parametrize("healthy", [False, True])
+def test_launcher_is_allinc_and_setup_bypass(tmp_path, monkeypatch, healthy):
     import sys
+    from types import SimpleNamespace
     import launcher
+    import setup as setup_mod
+
+    monkeypatch.setattr(
+        setup_mod, "check_windows_required_tools", lambda _prefix: SimpleNamespace(healthy=healthy),
+    )
 
     exe_dir = tmp_path / "app"
     exe_dir.mkdir()
@@ -218,8 +225,7 @@ def test_launcher_is_allinc_and_setup_bypass(tmp_path, monkeypatch):
 
     assert launcher._is_allinc() is False
     assert launcher._needs_windows_post_install_setup() is True
-    # Missing tools check returns True without _ALLINC (or error in fake env)
-    assert launcher._windows_required_tools_missing() is True
+    assert launcher._windows_required_tools_missing() is not healthy
 
     # Avec marqueur _ALLINC
     (exe_dir / "_ALLINC").touch()

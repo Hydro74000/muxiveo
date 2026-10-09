@@ -62,6 +62,10 @@ Cette documentation correspond à **Muxiveo v4.2.1**.
 
 `setup.py` installe ensuite **tous les autres prérequis** pour **Windows**, **Linux Fedora / RHEL**, **Linux Debian / Ubuntu** et **macOS**, y compris **PySide6** et les outils externes nécessaires.
 
+Les dépendances sont définies dans `requirements.txt` et adaptées au Python utilisé.
+PySide6 6.12.0 est exclue sous Python 3.10 et 3.11 à cause d'un défaut de gestion
+des références de `None` ; elle reste autorisée à partir de Python 3.12.
+
 ### Installation avec binaires (recommandée)
 
 Depuis les releases, récupérer le binaire associé à votre OS.

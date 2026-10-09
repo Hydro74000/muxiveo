@@ -4,9 +4,10 @@
 # =============================================================================
  
 # Interface graphique
-# 6.12.0 exclue : chaque méthode Qt sans valeur de retour décrémente None (Python < 3.12 :
-# « deallocating None », abandon du processus).
-PySide6>=6.6.0,!=6.12.0
+# Sous Python < 3.12, 6.12.0 décrémente None à chaque méthode sans retour :
+# « deallocating None », abandon du processus. None est immortel depuis 3.12.
+PySide6>=6.6.0,!=6.12.0; python_version < "3.12"
+PySide6>=6.6.0; python_version >= "3.12"
 
 # Corrélation FFT du scanner hybride
 numpy>=1.24
