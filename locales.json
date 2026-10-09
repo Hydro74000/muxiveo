@@ -1811,6 +1811,14 @@
     "fra": "Répertoire de travail non nettoyé",
     "eng": "Work directory not cleaned"
   },
+  "Dossier de travail inaccessible": {
+    "fra": "Dossier de travail inaccessible",
+    "eng": "Work directory inaccessible"
+  },
+  "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}": {
+    "fra": "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}",
+    "eng": "The configured work directory is not accessible at startup:\n{path}"
+  },
   "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?": {
     "fra": "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?",
     "eng": "The work directory contains leftover files or folders.\nDo you want to keep them or clean the work_dir?"

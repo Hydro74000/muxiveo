@@ -120,9 +120,17 @@ class _QSettings:
         UserScope = 0
 
     _stores: dict[tuple[str, ...], dict[str, Any]] = {}
+    _paths: dict[tuple[int, int], str] = {}
+
+    @classmethod
+    def setPath(cls, format: int, scope: int, path: str) -> None:
+        cls._paths[(format, scope)] = str(path)
 
     def __init__(self, *args, **_kwargs) -> None:
         key = tuple(str(arg) for arg in args)
+        if len(args) == 4:
+            # Comme Qt, le chemin configuré sépare les réglages user-scope.
+            key = (self._paths.get((args[0], args[1]), ""), *key)
         self._values = self._stores.setdefault(key, {})
 
     def value(self, key: str, default=None):

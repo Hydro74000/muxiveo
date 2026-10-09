@@ -5,6 +5,8 @@ import sys
 from typing import Callable
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import main as main_mod
 
 
@@ -25,7 +27,12 @@ def test_startup_paths_from_argv_filters_only_existing_files(tmp_path) -> None:
     assert main_mod._startup_paths_from_argv(argv) == [existing_a, existing_b]
 
 
-def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "work_dir_error",
+    [None, PermissionError("parent denied"), FileNotFoundError("parent missing"),
+     NotADirectoryError("parent is a file"), OSError("network share unavailable")],
+)
+def test_main_routes_startup_file_to_main_window(tmp_path, work_dir_error) -> None:
     startup_file = tmp_path / "movie.mkv"
     startup_file.write_text("", encoding="utf-8")
 
@@ -75,13 +82,16 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
         theme="dark",
         ui_scale_percent=100,
         language="eng",
+        work_dir=tmp_path / "configured" / "work",
     )
+    configured_work_dir = fake_config.work_dir
 
     with patch.object(main_mod, "QApplication", FakeQApplication), \
          patch.object(main_mod, "AppConfig", return_value=fake_config), \
          patch.object(main_mod, "DesignSystem", autospec=True) as mock_design, \
          patch.object(main_mod, "set_current_language") as mock_set_language, \
-         patch.object(main_mod, "_prompt_work_dir_cleanup") as mock_cleanup, \
+         patch.object(main_mod, "_prompt_work_dir_cleanup", side_effect=work_dir_error) as mock_cleanup, \
+         patch.object(main_mod.QMessageBox, "warning") as mock_warning, \
          patch.object(main_mod, "_show_startup_splash") as mock_splash, \
          patch.object(main_mod, "QIcon"), \
          patch.object(main_mod.QTimer, "singleShot", side_effect=fake_single_shot), \
@@ -96,6 +106,19 @@ def test_main_routes_startup_file_to_main_window(tmp_path) -> None:
     mock_design.apply_to_application.assert_called_once_with(fake_app)
     mock_set_language.assert_called_once_with("eng")
     mock_cleanup.assert_called_once_with(fake_config)
+    assert fake_config.work_dir == configured_work_dir
+    assert not configured_work_dir.exists()
+    if work_dir_error is None:
+        mock_warning.assert_not_called()
+    else:
+        mock_warning.assert_called_once_with(
+            None,
+            main_mod.translate_text("Dossier de travail inaccessible"),
+            main_mod.translate_text(
+                "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}",
+                path=str(configured_work_dir),
+            ),
+        )
     mock_splash.return_value.finish.assert_called_once()
     fake_app.setApplicationName.assert_called_once_with("Muxiveo")
     fake_app.setApplicationVersion.assert_called_once()
