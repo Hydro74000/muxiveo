@@ -18,6 +18,7 @@ from tests.integration._synth import wait_task
 
 _LIBRARY = os.environ.get("MUXIVEO_TEST_FEL_LIBRARY", "")
 _FIXTURE = os.environ.get("MUXIVEO_TEST_FEL_FIXTURE", "")
+_DIRECT = os.environ.get("MUXIVEO_TEST_FEL_DIRECT_FFMPEG", "")
 pytestmark = pytest.mark.skipif(
     not (_LIBRARY and _FIXTURE and all(shutil.which(t) for t in ("ffmpeg", "ffprobe", "dovi_tool"))),
     reason="Plugin et séquence synthétique FEL requis (MUXIVEO_TEST_FEL_LIBRARY/FIXTURE)",
@@ -37,24 +38,29 @@ def _mkv_fixture(tmp_path: Path, *, variable: bool = False) -> Path:
     return source
 
 
-@pytest.mark.parametrize("mode", ["hdr10", "dv", "sdr", "two_pass", "ffmpeg_nvenc", "nvencc", "rife"])
+@pytest.mark.parametrize("mode", ["hdr10", "dv", "sdr", "two_pass", "ffmpeg_nvenc", "direct_nvenc", "nvencc", "rife"])
 def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
-    engine = FelEngine(Path(_LIBRARY))
+    if mode == "direct_nvenc" and not _DIRECT:
+        pytest.skip("Prototype FFmpeg direct requis")
+    engine = FelEngine(Path(_LIBRARY), direct_ffmpeg=Path(_DIRECT) if mode == "direct_nvenc" else None)
     monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
     source = Path(_FIXTURE)
-    if mode == "rife":
+    if mode in {"rife", "direct_nvenc"}:
         source = _mkv_fixture(tmp_path)
+    if mode == "direct_nvenc":
+        # Exerce réellement les deux niveaux d'échappement du graphe FFmpeg.
+        source = source.rename(source.with_name("a:b'[film],;.mkv"))
     output = tmp_path / f"fel_{mode}.mkv"
     if mode == "nvencc" and not shutil.which("nvencc"):
         pytest.skip("NVEncC requis")
     if mode == "rife" and not shutil.which("muxiveo-rife"):
         pytest.skip("RIFE requis")
     video = VideoEncodeSettings(
-        codec={"ffmpeg_nvenc": "hevc_nvenc", "nvencc": "nvencc_hevc"}.get(mode, "libx265"),
+        codec={"ffmpeg_nvenc": "hevc_nvenc", "direct_nvenc": "hevc_nvenc", "nvencc": "nvencc_hevc"}.get(mode, "libx265"),
         quality_mode=QualityMode.SIZE if mode == "two_pass" else QualityMode.CRF,
-        crf=24, preset="p1" if mode == "ffmpeg_nvenc" else "default" if mode == "nvencc" else "ultrafast",
+        crf=24, preset="p1" if mode in {"ffmpeg_nvenc", "direct_nvenc"} else "default" if mode == "nvencc" else "ultrafast",
         target_size_mb=1,
-        bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=mode in {"dv", "nvencc", "rife"},
+        bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=mode in {"dv", "direct_nvenc", "nvencc", "rife"},
         source_path=source, source_bit_depth=10, force_10bit=mode != "sdr",
         bit_depth="8" if mode == "sdr" else "10",
         input_frame_rate="24000/1001", source_color_transfer="smpte2084",
@@ -71,6 +77,8 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     assert state["failed"] is None, state["failed"]
     assert any("FEL confirmé" in message for message in messages), messages
     assert any("reconstruction FEL réussie" in message for message in messages), messages
+    if mode == "direct_nvenc":
+        assert any("transport direct Vulkan/CUDA" in message for message in messages), messages
     probe = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-show_streams",
         "-select_streams", "v:0", "-of", "json", str(output)], check=True, text=True, capture_output=True)
     stream = json.loads(probe.stdout)["streams"][0]
@@ -79,7 +87,7 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     assert stream["pix_fmt"] == ("yuv420p" if mode == "sdr" else "yuv420p10le")
     record = next((s for s in stream.get("side_data_list", [])
         if s.get("side_data_type") == "DOVI configuration record"), None)
-    if mode in {"dv", "nvencc", "rife"}:
+    if mode in {"dv", "direct_nvenc", "nvencc", "rife"}:
         assert record is not None
         assert record["dv_profile"] == 8 and record["dv_bl_signal_compatibility_id"] == 1
         assert record["rpu_present_flag"] == 1 and record["el_present_flag"] == 0
@@ -115,16 +123,19 @@ def test_fel_presentation_timestamps_on_selected_track(qt_app, tmp_path):
     assert float(original[0]) >= 1.25
 
 
-@pytest.mark.parametrize("codec", ["libx265", "nvencc_hevc"])
+@pytest.mark.parametrize("codec", ["libx265", "nvencc_hevc", "direct_nvenc"])
 def test_fel_variable_timestamps_survive_encoding(qt_app, tmp_path, monkeypatch, codec):
     """Une pause en milieu de séquence reste présente, sans dupliquer de trame/RPU."""
     if codec == "nvencc_hevc" and not shutil.which("nvencc"):
         pytest.skip("NVEncC requis")
-    engine = FelEngine(Path(_LIBRARY))
+    if codec == "direct_nvenc" and not _DIRECT:
+        pytest.skip("Prototype FFmpeg direct requis")
+    engine = FelEngine(Path(_LIBRARY), direct_ffmpeg=Path(_DIRECT) if codec == "direct_nvenc" else None)
     monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
     source = _mkv_fixture(tmp_path, variable=True)
     output = tmp_path / "variable.mkv"
-    video = VideoEncodeSettings(codec=codec, preset="default" if codec == "nvencc_hevc" else "ultrafast",
+    video = VideoEncodeSettings(codec="hevc_nvenc" if codec == "direct_nvenc" else codec,
+        preset="p1" if codec == "direct_nvenc" else "default" if codec == "nvencc_hevc" else "ultrafast",
         source_path=source, bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=True,
         bit_depth="10", input_frame_rate="24000/1001", source_color_transfer="smpte2084")
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],

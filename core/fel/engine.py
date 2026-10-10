@@ -29,8 +29,10 @@ _Progress = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int64)
 class FelEngine:
     """Bibliothèque privée du plugin, conservée en mémoire pendant le job."""
 
-    def __init__(self, library: Path) -> None:
+    def __init__(self, library: Path, *, direct_ffmpeg: Path | None = None) -> None:
         self.path = library
+        # Prototype fourni explicitement ; aucun remplacement du FFmpeg configuré.
+        self.direct_ffmpeg = direct_ffmpeg
         if (library.parent / "manifest.json").is_file():
             try:
                 lease = plugins.PluginLease(library.parent)
@@ -45,6 +47,9 @@ class FelEngine:
             self.lib.mvo_fel_capabilities.restype = ctypes.c_char_p
             capabilities = json.loads(self.lib.mvo_fel_capabilities())
             self.capabilities = capabilities
+            if capabilities.get("statistics") == 1:
+                self.lib.mvo_fel_statistics.argtypes = [ctypes.c_void_p]
+                self.lib.mvo_fel_statistics.restype = ctypes.c_char_p
             if capabilities.get("device_selection") == 1:
                 self.lib.mvo_fel_devices.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
                 self.lib.mvo_fel_devices.restype = ctypes.c_size_t
@@ -73,7 +78,10 @@ class FelEngine:
         installed = plugins.installed_plugin(plugins.FEL)
         if installed is None:
             raise FelError("Extension mvo-fel absente ou incompatible ; disponible dans Extensions")
-        return cls(plugins.main_file(plugins.FEL, installed))
+        direct_name = installed.manifest.get("direct_ffmpeg")
+        direct = (installed.path / direct_name if isinstance(direct_name, str)
+                  and Path(direct_name).name == direct_name else None)
+        return cls(plugins.main_file(plugins.FEL, installed), direct_ffmpeg=direct)
 
     def devices(self) -> tuple[FelDevice, ...]:
         """Énumération dynamique sans démarrer de décodeur ni d'encodeur."""
@@ -236,6 +244,9 @@ class FelProducer:
                     if self.source.engine.capabilities.get("device_selection") == 1:
                         backend = (lib.mvo_fel_backend(self._handle) or b"inconnu").decode("utf-8", errors="replace")
                         self.source.device_plan.log("INFO", f"FEL — moteur exécuté : {backend} ; {self.frames} images.")
+                    if self.source.engine.capabilities.get("statistics") == 1:
+                        timings = self.source.engine.lib.mvo_fel_statistics(self._handle).decode("utf-8")
+                        self.source.device_plan.log("INFO", f"FEL — mesures internes : {timings}")
             except RuntimeError:
                 # L'émetteur Qt peut déjà être fermé pendant l'annulation.
                 pass

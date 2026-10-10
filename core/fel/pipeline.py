@@ -18,6 +18,7 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
     context = video.fel_context
     if context is None:
         return command
+    original = list(command)
     if context.source.device_plan is not None:
         # Les capacités/filtres matériels sont maintenant résolus par le workflow.
         context.source.device_plan.video = video
@@ -51,4 +52,6 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
     hardware = next((marker for marker in (",format=p010,hwupload", ",format=nv12,hwupload") if marker in chain), "")
     first[pos] = chain.replace(hardware, "," + reduce + hardware) if hardware else chain + "," + reduce
     source = replace(context.source, threads=max(1, threads)) if threads else context.source
-    return PipelineCommand(command if upstream else first, upstream, producer=source)
+    result = PipelineCommand(command if upstream else first, upstream, producer=source)
+    from core.fel.direct import direct_command
+    return direct_command(result, original, video, threads)

@@ -667,6 +667,18 @@ class ToolRunner(QObject):
         Les lignes contenant un pourcentage (`XX%`) sont alors dédoublonnées :
         seul le changement de pourcentage est transmis au callback.
         """
+        from core.fel.direct import DirectFelCommand
+        if isinstance(cmd, DirectFelCommand):
+            from core.fel.engine import FelError
+            try:
+                with cmd.execution() as resolved:
+                    return self._run_cmd(resolved, cwd=cwd, env=env, label=label, progress_cb=progress_cb,
+                                         progress_pct_cb=progress_pct_cb, signals=signals)
+            except CommandError as exc:
+                if "MVO_FEL_RECOVERABLE" in exc.stderr:
+                    raise FelError(exc.stderr) from exc
+                raise
+
         proc_env = {**os.environ, **(env or {})} if env else None
 
         if progress_cb:

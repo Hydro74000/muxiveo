@@ -150,9 +150,13 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
                 "pts_error_ms": pts_error_ms,
                 "output_mbit_s": output.stat().st_size*8/source_duration/1e6,
                 "fel_device": video.fel_device, "rife": video.interpolation.is_active(),
+                "fel_transport": ("direct" if any("transport direct Vulkan/CUDA" in message
+                                                for _, message in messages) else "nut") if enabled else "bl",
                 "rife_gpu": video.interpolation.gpu, "telemetry": telemetry,
                 "fel_backend": [message for _, message in messages
-                                if "moteur choisi" in message or "moteur exécuté" in message or "backend" in message]}
+                                if "moteur choisi" in message or "moteur exécuté" in message or "backend" in message],
+                "fel_timings": [json.loads(message.split("mesures internes : ", 1)[1])
+                                for _, message in messages if "mesures internes : " in message]}
     print(f"FIN {label} : {seconds:.3f} s, {measured['fps']:.3f} i/s", flush=True)
     return measured
 
@@ -167,6 +171,7 @@ def summaries(cases: list[dict]) -> list[dict]:
         reconstructed = [case["seconds"] for case in selected if case["fel"]]
         before, after = statistics.median(baseline), statistics.median(reconstructed)
         result.append({"codec": codec, "preset": selected[0]["preset"],
+                       "fel_transports": sorted({case.get("fel_transport", "nut") for case in selected if case["fel"]}),
                        "bl_median_s": before, "fel_median_s": after,
                        "bl_range_s": [min(baseline), max(baseline)],
                        "fel_range_s": [min(reconstructed), max(reconstructed)],
@@ -188,7 +193,9 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=12)
     parser.add_argument("--fast-pipe-probe", action="store_true",
                         help="Expérience : analyse minimale des pipes NUT internes")
-    parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc"),
+    parser.add_argument("--direct-ffmpeg", type=Path,
+                        help="Prototype privé : comparer aussi le transport GPU direct pour hevc_nvenc")
+    parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc", "hevc_nvenc"),
                         default=["libx265", "nvencc_hevc"])
     args = parser.parse_args()
     if args.runs < 1 or args.duration <= 0 or args.threads < 1:
@@ -201,14 +208,16 @@ def main() -> None:
     print(f"Résultats : {root}", flush=True)
     source_stat = args.source.stat()
     source, stream, key = excerpt(args.source, root, args.start, args.duration)
-    engine = FelEngine(args.library)
+    engine = FelEngine(args.library, direct_ffmpeg=args.direct_ffmpeg)
     document = {"date": time.strftime("%Y-%m-%d %H:%M:%S %z"), "platform": platform.platform(),
                 "source": str(args.source), "source_bytes": source_stat.st_size,
                 "source_mtime_ns": source_stat.st_mtime_ns, "excerpt_start_s": key,
                 "frames": int(stream["nb_read_frames"]), "frame_rate": stream["avg_frame_rate"],
                 "threads": args.threads, "runs": args.runs, "fel_device": args.device, "fast_pipe_probe": args.fast_pipe_probe,
                 "engine_capabilities": json.loads(engine.lib.mvo_fel_capabilities()),
-                "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(), "cases": []}
+                "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(),
+                "direct_ffmpeg_sha256": hashlib.sha256(args.direct_ffmpeg.read_bytes()).hexdigest() if args.direct_ffmpeg else None,
+                "cases": []}
     common = VideoEncodeSettings(source_path=source, copy_dv=True, dovi_source_profile="p7_fel",
                                 bit_depth="10", source_bit_depth=10, source_pix_fmt="yuv420p10le",
                                 source_codec="hevc", source_color_transfer="smpte2084",
@@ -232,7 +241,7 @@ def main() -> None:
             for codec in args.codecs:
                 # Alterner l'ordre limite les biais de cache et de montée en température.
                 for enabled in ([False, True] if repeat % 2 else [True, False]):
-                    video = replace(common, codec=codec, preset="medium" if codec == "libx265" else "default",
+                    video = replace(common, codec=codec, preset="medium" if codec == "libx265" else "p5" if codec == "hevc_nvenc" else "default",
                                     bake_dovi_fel=enabled)
                     document["cases"].append(run_case(root, source, stream, video, args.threads, repeat))
                     report.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
