@@ -20,7 +20,7 @@ from dataclasses import replace
 from contextlib import nullcontext
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication
@@ -31,6 +31,22 @@ from core.runner import ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode import EncodeConfig, EncodeWorkflow, VideoEncodeSettings
 from tests.integration._synth import wait_task
+
+
+class Monitor(Protocol):
+    def start(self) -> None: ...
+    def stop(self) -> dict: ...
+
+
+class BenchmarkCleanupError(BaseException):
+    """Arrête la matrice si le workflow précédent pourrait encore fonctionner."""
+
+
+def cancel_and_wait(signals: Any) -> None:
+    signals.cancel()
+    state = wait_task(signals, timeout=15)
+    if state["finished"] is None and not state["failed"] and not state["cancelled"]:
+        raise BenchmarkCleanupError("Annulation non confirmée : arrêt du benchmark pour éviter des workflows simultanés.")
 
 
 def probe(path: Path, *args: str) -> dict:
@@ -48,7 +64,8 @@ def excerpt(source: Path, root: Path, start: float, duration: float) -> tuple[Pa
     subprocess.run([
         "ffmpeg", "-v", "error", "-nostdin", "-ss", key, "-i", str(source),
         "-t", str(duration), "-map", "0:v:0", "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)",
-        "-map_chapters", "-1", "-an", "-sn", "-dn", str(output),
+        "-map_chapters", "-1", "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
+        "-an", "-sn", "-dn", str(output),
     ], check=True, capture_output=True, **subprocess_text_kwargs())
     stream = probe(output, "-count_frames", "-show_streams")["streams"][0]
     record = next(item for item in stream.get("side_data_list", [])
@@ -59,27 +76,41 @@ def excerpt(source: Path, root: Path, start: float, duration: float) -> tuple[Pa
 
 
 def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
-             threads: int, repeat: int) -> dict:
+             threads: int, repeat: int, *, rife_bin: str | None = None,
+             label_suffix: str = "", monitor: Monitor | None = None) -> dict:
     enabled = video.bake_dovi_fel is True
-    label = f"{video.codec}-{'fel' if enabled else 'bl'}-{repeat}"
+    label = f"{video.codec}-{'fel' if enabled else 'bl'}{label_suffix}-{repeat}"
     directory = root / label
     directory.mkdir()
     output = directory / "output.mkv"
+    source_duration = int(stream["nb_read_frames"])/float(Fraction(stream["avg_frame_rate"]))
     workflow = EncodeWorkflow(ffmpeg_threads=threads, ram_buffer_enabled=False, generate_nfo=False,
-                              nvencc_bin=shutil.which("nvencc"))
+                              nvencc_bin=shutil.which("nvencc"), rife_bin=rife_bin)
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
                           copy_subtitles=False, keep_chapters=False, work_dir=directory,
-                          duration_s=int(stream["nb_read_frames"])/float(Fraction(stream["avg_frame_rate"])))
+                          duration_s=source_duration)
     messages = []
     workflow.log_message.connect(lambda level, message: messages.append((level, message)))
     print(f"DÉBUT {label}", flush=True)
+    if monitor:
+        monitor.start()
     started = time.perf_counter()
-    signals = workflow.run(config)
-    state = wait_task(signals, timeout=1800)
-    seconds = time.perf_counter()-started
+    try:
+        signals = workflow.run(config)
+        state = wait_task(signals, timeout=1800)
+        seconds = time.perf_counter()-started
+        if state["finished"] is None and not state["failed"] and not state["cancelled"]:
+            raise TimeoutError(f"Délai du workflow dépassé : {label}")
+    except BaseException:
+        if "signals" in locals():
+            cancel_and_wait(signals)
+        raise
+    finally:
+        telemetry = monitor.stop() if monitor else {}
     (directory / "workflow.json").write_text(json.dumps({
         "seconds": seconds, "messages": messages, "progress": state["progress"],
         "failed": str(state["failed"]) if state["failed"] else None,
+        "telemetry": telemetry,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     if state["failed"] or state["cancelled"] or state["finished"] is None:
         signals.cancel()
@@ -93,15 +124,35 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
     result = probe(output, "-count_frames", "-show_streams")["streams"][0]
     record = next(item for item in result.get("side_data_list", [])
                   if item.get("side_data_type") == "DOVI configuration record")
-    if (result["nb_read_frames"] != stream["nb_read_frames"] or record["dv_profile"] != 8
+    expected_frames = int(stream["nb_read_frames"])
+    expected_rate = Fraction(stream["avg_frame_rate"])
+    if video.interpolation.is_active():
+        ratio = video.interpolation.ratio(stream["avg_frame_rate"])
+        expected_frames = int(expected_frames * ratio)
+        expected_rate *= ratio
+    if (int(result["nb_read_frames"]) != expected_frames or record["dv_profile"] != 8
             or record["dv_bl_signal_compatibility_id"] != 1 or record["el_present_flag"] != 0
             or record["rpu_present_flag"] != 1 or result["pix_fmt"] != "yuv420p10le"
             or result["color_transfer"] != "smpte2084"):
         raise RuntimeError(f"Sortie inattendue pour {label}")
+    frames = probe(output, "-show_frames", "-show_entries", "frame=best_effort_timestamp_time")["frames"]
+    pts = [float(frame["best_effort_timestamp_time"]) for frame in frames]
+    pts_error_ms = max(abs(value-pts[0]-float(index/expected_rate))*1000
+                       for index, value in enumerate(pts))
+    if (len(pts) != expected_frames or any(a >= b for a, b in zip(pts, pts[1:]))
+            or pts_error_ms > 1.01):
+        raise RuntimeError(f"Horodatages inattendus pour {label} : {pts_error_ms:.6f} ms")
     measured = {"codec": video.codec, "preset": video.preset, "fel": enabled,
                 "repeat": repeat, "seconds": seconds, "frames": int(result["nb_read_frames"]),
                 "fps": int(result["nb_read_frames"])/seconds, "width": result["width"],
-                "height": result["height"], "bytes": output.stat().st_size}
+                "height": result["height"], "bytes": output.stat().st_size,
+                "source_frames": int(stream["nb_read_frames"]),
+                "pts_error_ms": pts_error_ms,
+                "output_mbit_s": output.stat().st_size*8/source_duration/1e6,
+                "fel_device": video.fel_device, "rife": video.interpolation.is_active(),
+                "rife_gpu": video.interpolation.gpu, "telemetry": telemetry,
+                "fel_backend": [message for _, message in messages
+                                if "moteur choisi" in message or "moteur exécuté" in message or "backend" in message]}
     print(f"FIN {label} : {seconds:.3f} s, {measured['fps']:.3f} i/s", flush=True)
     return measured
 
@@ -130,6 +181,7 @@ def main() -> None:
     parser.add_argument("source", type=Path)
     parser.add_argument("--library", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument("--device", default="auto", help="auto, cpu ou UUID Vulkan du plugin")
     parser.add_argument("--start", type=float, default=480)
     parser.add_argument("--duration", type=float, default=3)
     parser.add_argument("--runs", type=int, default=3)
@@ -154,13 +206,13 @@ def main() -> None:
                 "source": str(args.source), "source_bytes": source_stat.st_size,
                 "source_mtime_ns": source_stat.st_mtime_ns, "excerpt_start_s": key,
                 "frames": int(stream["nb_read_frames"]), "frame_rate": stream["avg_frame_rate"],
-                "threads": args.threads, "runs": args.runs, "fast_pipe_probe": args.fast_pipe_probe,
+                "threads": args.threads, "runs": args.runs, "fel_device": args.device, "fast_pipe_probe": args.fast_pipe_probe,
                 "engine_capabilities": json.loads(engine.lib.mvo_fel_capabilities()),
                 "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(), "cases": []}
     common = VideoEncodeSettings(source_path=source, copy_dv=True, dovi_source_profile="p7_fel",
                                 bit_depth="10", source_bit_depth=10, source_pix_fmt="yuv420p10le",
                                 source_codec="hevc", source_color_transfer="smpte2084",
-                                input_frame_rate=stream["avg_frame_rate"], crf=18, cq=26)
+                                input_frame_rate=stream["avg_frame_rate"], crf=18, cq=26, fel_device=args.device)
     report = root / "results.json"
     normal_run = ToolRunner._run_cmd
 

@@ -166,11 +166,42 @@ def test_producer_propagates_errors_except_closed_consumer(error):
     producer.check_error()
 
 
+@pytest.mark.parametrize("failed_thread", ["mvo-fel", "mvo-fel-cancel"])
+def test_producer_thread_start_failure_releases_native_resources(monkeypatch, tmp_path, failed_thread):
+    import threading
+    from types import SimpleNamespace
+    from core.fel.engine import FelSource
+
+    lib = Mock()
+    lib.mvo_fel_create.return_value = 1
+    lib.mvo_fel_set_device.return_value = 0
+    release = Mock()
+    plan = Mock(acquire=Mock(return_value=("cpu", release)))
+    source = FelSource(SimpleNamespace(lib=lib, capabilities={"device_selection": 1}), tmp_path / "source.mkv", 0,
+                       device_plan=plan)
+    start = threading.Thread.start
+
+    def fail_start(thread):
+        if thread.name == failed_thread:
+            raise RuntimeError("thread indisponible")
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    output = Mock()
+    with pytest.raises(RuntimeError, match="thread indisponible"):
+        source.start(output, threading.Event())
+    release.assert_called_once()
+    lib.mvo_fel_destroy.assert_called_once_with(1)
+    lib.mvo_fel_run.assert_not_called()
+    output.close.assert_called_once()
+
+
 @pytest.mark.parametrize("status,error_type", [(1, FelError), (4, OSError)])
 def test_native_storage_errors_are_not_reconstruction_errors(status, error_type):
     lib = SimpleNamespace(mvo_fel_run=Mock(return_value=status), mvo_fel_error=Mock(return_value=b"source error"))
     producer = FelProducer.__new__(FelProducer)
-    producer.source = SimpleNamespace(engine=SimpleNamespace(lib=lib))
+    producer.source = SimpleNamespace(engine=SimpleNamespace(lib=lib), device_plan=None)
+    producer._release_device = lambda: None
     producer.cancelled = threading.Event()
     producer._stop = threading.Event()
     producer._handle = 1
@@ -179,6 +210,24 @@ def test_native_storage_errors_are_not_reconstruction_errors(status, error_type)
     producer._run()
     with pytest.raises(error_type, match="source error"):
         producer.check_error()
+
+
+def test_closed_logger_does_not_leak_gpu_reservation_or_pipe():
+    lib = SimpleNamespace(mvo_fel_run=Mock(return_value=0), mvo_fel_backend=Mock(return_value=b"vulkan"))
+    producer = FelProducer.__new__(FelProducer)
+    producer.source = SimpleNamespace(engine=SimpleNamespace(lib=lib, capabilities={"device_selection": 1}),
+                                     device_plan=SimpleNamespace(log=Mock(side_effect=RuntimeError("Qt fermé"))))
+    producer._release_device = Mock()
+    producer.cancelled = threading.Event()
+    producer._stop = threading.Event()
+    producer._handle = 1
+    producer.frames = 12
+    producer.output = Mock()
+    producer.error = None
+    producer._run()
+    producer.check_error()
+    producer._release_device.assert_called_once()
+    producer.output.close.assert_called_once()
 
 
 @pytest.mark.parametrize("kind", ["mel", "sans_el"])

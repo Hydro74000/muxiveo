@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.fel.context import FelExecution
+from core.fel.devices import FelDevicePlan
 from core.fel.engine import FelCancelled, FelEngine, FelError, FelSource
 from core.runner import TaskCancelledError
 from core.workflows.encode.dovi_policy import sub_profile_from_value, wants_fel_bake
@@ -37,7 +38,13 @@ def prepare_fel(
         if kind != "fel":
             log("INFO", prefix + f"Reconstruction FEL sans effet ({kind}).")
             return replace(video, bake_dovi_fel=False)
-        context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate),
+        devices = engine.devices()
+        choice = video.fel_device
+        if choice not in {"auto", "cpu"} and not any(d.uuid == choice for d in devices):
+            log("WARN", prefix + "GPU FEL mémorisé indisponible : choix automatique pour cette exécution.")
+            choice = "auto"
+        plan = FelDevicePlan(choice, devices, video, log)
+        context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan),
                                rpu, video.max_cll, video.static_hdr_light_level_source)
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")
         if video.inject_hdr_meta and not video.tonemap_to_sdr:

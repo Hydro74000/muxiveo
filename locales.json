@@ -1,4 +1,16 @@
 {
+  "Moteur de reconstruction FEL": {
+    "fra": "Moteur de reconstruction FEL",
+    "eng": "FEL reconstruction engine"
+  },
+  "GPU indisponible ({id})": {
+    "fra": "GPU indisponible ({id})",
+    "eng": "GPU unavailable ({id})"
+  },
+  "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue.": {
+    "fra": "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue.",
+    "eng": "Auto prefers an available dedicated GPU, then an integrated GPU, then the CPU. Among dedicated GPUs, it considers other pipeline stages and known load."
+  },
   "Version publiée indisponible.": {
     "fra": "Version publiée indisponible.",
     "eng": "Published version unavailable."

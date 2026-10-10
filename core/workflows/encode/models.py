@@ -362,6 +362,7 @@ class VideoEncodeSettings:
     # HDR dynamique
     copy_dv:          bool         = False
     bake_dovi_fel:    bool | None  = None  # None/absent : désactivé ; True : demande explicite.
+    fel_device: str = "auto"  # auto | cpu | UUID Vulkan stable.
     fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
@@ -401,6 +402,8 @@ class VideoEncodeSettings:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        from core.fel.devices import device_choice
+        self.fel_device = device_choice(self.fel_device)
         if not isinstance(self.quality_mode, QualityMode):
             self.quality_mode = QualityMode(str(self.quality_mode))
         if self.rate_control:
@@ -624,6 +627,7 @@ class EncodePreset:
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
     interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     inject_hdr_meta:            bool = False
+    fel_device: str = "auto"
     bake_dovi_fel:              bool | None = None  # Même défaut désactivé pour les anciens profils.
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -638,6 +642,8 @@ class EncodePreset:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        from core.fel.devices import device_choice
+        self.fel_device = device_choice(self.fel_device)
         # Ancien preset logique NVENC « safe » (retiré de l'interface) → p5, son équivalent.
         if self.preset == "safe" and self.codec.endswith("_nvenc"):
             self.preset = "p5"
@@ -660,6 +666,7 @@ class EncodePreset:
             interpolation=self.interpolation,
             inject_hdr_meta=self.inject_hdr_meta,
             bake_dovi_fel=self.bake_dovi_fel,
+            fel_device=self.fel_device,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,

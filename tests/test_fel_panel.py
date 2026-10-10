@@ -57,3 +57,42 @@ def test_profile_changes_keep_default_disabled(qt_app, monkeypatch):
         assert panel._bake_fel_choice is None
     finally:
         panel.close()
+
+
+def test_device_combo_dynamic_selection_and_track_state(qt_app, monkeypatch):
+    from core.fel.engine import FelEngine
+    from tests.test_fel_devices import NVIDIA, SECOND
+    from unittest.mock import Mock
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_rebuild_preview", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_schedule_static_hdr_estimate", lambda *a, **k: None)
+    engine = Mock()
+    engine.devices.return_value = (NVIDIA, SECOND)
+    monkeypatch.setattr(FelEngine, "installed", lambda: engine)
+    panel = EncodePanel(AppConfig())
+    try:
+        panel.set_video_tracks([(_file_info(_PATH_A), _video_entry(), _COLOR)])
+        combo = panel._fel_device_combo
+        combo.refresh_devices()
+        assert [combo.itemData(i) for i in range(combo.count())] == ["auto", NVIDIA.uuid, SECOND.uuid, "cpu"]
+        assert not combo.isEnabled()
+        panel._set_combo_data(panel._codec_combo, "libx265")
+        panel._bake_fel_cb.click()
+        assert combo.isEnabled()
+        combo.setCurrentIndex(combo.findData(SECOND.uuid))
+        combo.activated.emit(combo.currentIndex())
+        state = panel._current_video_state()
+        assert state["fel_device"] == SECOND.uuid
+        panel._set_combo_data(panel._codec_combo, "copy")
+        assert not combo.isEnabled()
+        panel._apply_video_state(state)
+        assert panel._current_video_settings().fel_device == SECOND.uuid
+        engine.devices.return_value = (NVIDIA,)
+        combo.refresh_devices()
+        assert combo.currentData() == SECOND.uuid
+        assert "indisponible" in combo.currentText()
+        combo.setCurrentIndex(combo.findData("cpu"))
+        combo.activated.emit(combo.currentIndex())
+        assert panel._current_video_settings().fel_device == "cpu"
+    finally:
+        panel.close()

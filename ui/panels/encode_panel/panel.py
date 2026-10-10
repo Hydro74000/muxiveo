@@ -1271,6 +1271,19 @@ class EncodePanel(QWidget):
         ))
         self._bake_fel_cb.clicked.connect(self._on_fel_clicked)
         cl.addWidget(self._bake_fel_cb)
+        from ui.panels.encode_panel.fel_device_combo import FelDeviceCombo
+        self._fel_device_choice = "auto"
+        fel_device_row = QHBoxLayout()
+        fel_device_row.addWidget(QLabel(translate_text("Moteur de reconstruction FEL")))
+        self._fel_device_combo = FelDeviceCombo()
+        self._fel_device_combo.setStyleSheet(_combo_style())
+        self._fel_device_combo.setToolTip(translate_text(
+            "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. "
+            "Entre GPU dédiés, il tient compte des autres étapes et de la charge connue."
+        ))
+        self._fel_device_combo.activated.connect(self._on_fel_device_changed)
+        fel_device_row.addWidget(self._fel_device_combo, 1)
+        cl.addLayout(fel_device_row)
         self._fel_extensions_link = QLabel(
             "<a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
         )
@@ -3874,6 +3887,8 @@ class EncodePanel(QWidget):
             )
             return
         self._bake_fel_choice = vs.bake_dovi_fel
+        self._fel_device_choice = vs.fel_device
+        self._fel_device_combo.set_choice(vs.fel_device)
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -3990,6 +4005,7 @@ class EncodePanel(QWidget):
             filters=vs.filters,
             interpolation=vs.interpolation,
             bake_dovi_fel=vs.bake_dovi_fel,
+            fel_device=vs.fel_device,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4405,6 +4421,7 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_request": "",
             "copy_dv": self._source_has_dv(source_hdr),
             "bake_dovi_fel": None,
+            "fel_device": "auto",
             "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
             "dovi_profile": "0",
             "tonemap_to_sdr": False,
@@ -4553,6 +4570,11 @@ class EncodePanel(QWidget):
         """Source PQ / HLG ou Dolby Vision (P5 compris, transfert non déclaré) ; P8.2 (base SDR) exclue."""
         return source_is_hdr(self._selected_video_hdr_type(), self._selected_video_transfer())
 
+    def _on_fel_device_changed(self, _index: int) -> None:
+        self._fel_device_choice = str(self._fel_device_combo.currentData() or "auto")
+        self._save_current_video_state()
+        self._rebuild_preview()
+
     def _on_fel_clicked(self, checked: bool) -> None:
         self._bake_fel_choice = checked
         self._sync_dovi_profile_options()
@@ -4571,6 +4593,7 @@ class EncodePanel(QWidget):
         from core.workflows.encode.dovi_policy import wants_fel_bake
         self._bake_fel_cb.setChecked(wants_fel_bake(self._bake_fel_choice, sub_profile))
         self._bake_fel_cb.setEnabled(codec != "copy")
+        self._fel_device_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
@@ -4774,6 +4797,7 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
             "bake_dovi_fel": self._bake_fel_choice,
+            "fel_device": self._fel_device_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
@@ -5035,6 +5059,9 @@ class EncodePanel(QWidget):
     def _apply_video_state(self, state: dict[str, object]) -> None:
         choice = state.get("bake_dovi_fel")
         self._bake_fel_choice = choice if isinstance(choice, bool) else None
+        from core.fel.devices import device_choice
+        self._fel_device_choice = device_choice(state.get("fel_device"))
+        self._fel_device_combo.set_choice(self._fel_device_choice)
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
         self._tonemap_enabled_by_codec = False
@@ -5483,6 +5510,7 @@ class EncodePanel(QWidget):
             master_display=master_display,
             max_cll=max_cll,
             bake_dovi_fel=self._bake_fel_choice,
+            fel_device=self._fel_device_choice,
             static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
@@ -5551,6 +5579,7 @@ class EncodePanel(QWidget):
             master_display=master_display,
             max_cll=max_cll,
             bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
+            fel_device=str(state.get("fel_device") or "auto"),
             static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),

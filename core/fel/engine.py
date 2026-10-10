@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import IO, Any, Callable
 
 from core import plugins
+from core.fel.devices import FelDevice, FelDevicePlan
 
 
 class FelError(RuntimeError):
@@ -43,6 +44,14 @@ class FelEngine:
                 raise FelError("Interface du plugin FEL incompatible")
             self.lib.mvo_fel_capabilities.restype = ctypes.c_char_p
             capabilities = json.loads(self.lib.mvo_fel_capabilities())
+            self.capabilities = capabilities
+            if capabilities.get("device_selection") == 1:
+                self.lib.mvo_fel_devices.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                self.lib.mvo_fel_devices.restype = ctypes.c_size_t
+                self.lib.mvo_fel_set_device.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_device.restype = ctypes.c_int
+                self.lib.mvo_fel_backend.argtypes = [ctypes.c_void_p]
+                self.lib.mvo_fel_backend.restype = ctypes.c_char_p
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -65,6 +74,22 @@ class FelEngine:
         if installed is None:
             raise FelError("Extension mvo-fel absente ou incompatible ; disponible dans Extensions")
         return cls(plugins.main_file(plugins.FEL, installed))
+
+    def devices(self) -> tuple[FelDevice, ...]:
+        """Énumération dynamique sans démarrer de décodeur ni d'encodeur."""
+        if self.capabilities.get("device_selection") != 1:
+            return ()
+        size = self.lib.mvo_fel_devices(None, 0)
+        if not 0 < size <= 65536:
+            raise FelError("Énumération des GPU FEL impossible")
+        buffer = ctypes.create_string_buffer(size)
+        actual = self.lib.mvo_fel_devices(buffer, size)
+        if actual != size:
+            raise FelError("La liste des GPU FEL a changé pendant sa lecture")
+        try:
+            return tuple(FelDevice(**item) for item in json.loads(buffer.value))
+        except (TypeError, ValueError) as exc:
+            raise FelError("Liste des GPU FEL invalide") from exc
 
     def classify(self, path: Path, cancelled: Callable[[], bool]) -> str:
         """Valide chaque RPU original sans charger le fichier complet en mémoire."""
@@ -110,6 +135,7 @@ class FelSource:
     stream: int
     threads: int = 1
     frame_rate: str = ""
+    device_plan: FelDevicePlan | None = None
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
@@ -132,10 +158,35 @@ class FelProducer:
         )
         if not self._handle:
             raise FelError("Création du contexte FEL impossible")
+        self._release_device: Callable[[], None] = lambda: None
+        if source.device_plan is not None:
+            try:
+                device, self._release_device = source.device_plan.acquire()
+                if source.engine.capabilities.get("device_selection") == 1:
+                    if source.engine.lib.mvo_fel_set_device(self._handle, device.encode("ascii")) != 0:
+                        raise FelError("Le plugin refuse le moteur FEL sélectionné")
+                elif device != "cpu":
+                    raise FelError("Ce plugin FEL ne permet pas de choisir un GPU")
+            except BaseException:
+                self._release_device()
+                source.engine.lib.mvo_fel_destroy(self._handle)
+                self._handle = None
+                raise
         self._thread = threading.Thread(target=self._run, name="mvo-fel", daemon=True)
         self._watcher = threading.Thread(target=self._watch, name="mvo-fel-cancel", daemon=True)
-        self._thread.start()
-        self._watcher.start()
+        try:
+            # Le producteur ne doit jamais écrire sans surveillant opérationnel.
+            self._watcher.start()
+            self._thread.start()
+        except BaseException:
+            self._stop.set()
+            if self._watcher.ident is not None:
+                self._watcher.join()
+            self._release_device()
+            source.engine.lib.mvo_fel_destroy(self._handle)
+            self._handle = None
+            self.output.close()
+            raise
 
     def _watch(self) -> None:
         while not self._stop.wait(.05):
@@ -181,9 +232,19 @@ class FelProducer:
         finally:
             self._stop.set()
             try:
-                self.output.close()
-            except OSError:
+                if self.source.device_plan is not None:
+                    if self.source.engine.capabilities.get("device_selection") == 1:
+                        backend = (lib.mvo_fel_backend(self._handle) or b"inconnu").decode("utf-8", errors="replace")
+                        self.source.device_plan.log("INFO", f"FEL — moteur exécuté : {backend} ; {self.frames} images.")
+            except RuntimeError:
+                # L'émetteur Qt peut déjà être fermé pendant l'annulation.
                 pass
+            finally:
+                self._release_device()
+                try:
+                    self.output.close()
+                except OSError:
+                    pass
 
     def check_error(self) -> None:
         """Propage les erreurs ; seul EPIPE est attendu si l'aval s'arrête tôt."""

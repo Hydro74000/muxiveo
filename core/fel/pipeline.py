@@ -18,6 +18,11 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
     context = video.fel_context
     if context is None:
         return command
+    if context.source.device_plan is not None:
+        # Les capacités/filtres matériels sont maintenant résolus par le workflow.
+        context.source.device_plan.video = video
+        stages = [*command.upstream, list(command)] if isinstance(command, PipelineCommand) else [command]
+        context.source.device_plan.commands = tuple(tuple(s) for s in stages)
     upstream = [list(s) for s in command.upstream] if isinstance(command, PipelineCommand) else []
     first = upstream[0] if upstream else list(command)
     index = first.index("-i")
