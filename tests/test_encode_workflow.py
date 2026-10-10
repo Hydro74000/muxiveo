@@ -5022,8 +5022,13 @@ class TestEncodeRuntimeMultiSourceSync:
         assert "-ss" in final_cmd
         assert final_cmd[final_cmd.index("-ss") + 1] == "0.080"
         map_values = [final_cmd[i + 1] for i, tok in enumerate(final_cmd[:-1]) if tok == "-map"]
-        assert "3:2" in map_values
-        assert "4:3" in map_values
+        # Les offsets doivent viser leurs entrées auxiliaires, après celle
+        # réservée aux sous-titres du mux avec vidéo préparée.
+        inputs = [i for i, token in enumerate(final_cmd) if token == "-i"]
+        audio_input = next(n for n, i in enumerate(inputs) if final_cmd[i - 2:i] == ["-itsoffset", "0.120"])
+        subtitle_input = next(n for n, i in enumerate(inputs) if final_cmd[i - 2:i] == ["-ss", "0.080"])
+        assert f"{audio_input}:2" in map_values
+        assert f"{subtitle_input}:3" in map_values
 
     def test_run_multi_video_pipeline_keeps_video_offsets_stream_specific(self, tmp_path):
         src = tmp_path / "src.mkv"
@@ -6405,3 +6410,98 @@ class TestEncodeContractAuditFixes:
         assert any(".mkv" in error for error in errors)
         errors_mkv = wf.validate(_make_config(src, tmp_path / "out.mkv"))
         assert not any("sortie d'encodage" in error for error in errors_mkv)
+
+
+class TestPreparedVideoSubtitleIsolation:
+    @pytest.mark.parametrize("route", ["nvencc", "multi_video", "metadata_inject", "preview"])
+    @pytest.mark.parametrize("subtitles", ["explicit", "auto", "wildcard", "none"])
+    @pytest.mark.parametrize("offsets", [False, True])
+    def test_final_mux_keeps_audio_independent_of_sparse_subtitles(
+        self, tmp_path, route, subtitles, offsets,
+    ):
+        from core.inspector import ChapterEntry
+
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\0" * 200_000)
+        wf = _make_workflow(enabled=False)
+        cfg = _make_config(
+            src, tmp_path / "output.mkv", work_dir=tmp_path,
+            video=_make_video_settings(codec="copy" if route == "multi_video" else "libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+            subtitle_tracks=[(src, 2), (src, 3)] if subtitles == "explicit" else [],
+            copy_subtitles=subtitles in {"auto", "wildcard"},
+            attachment_streams=[(src, 4)],
+            chapter_overrides=[ChapterEntry(timecode_s=0, name="Intro")],
+            tag_overrides={"GENRE": "Drama"},
+        )
+        if offsets and route != "preview":
+            cfg.track_time_offsets = [
+                TrackTimeOffset("audio", src, 1, 120),
+                TrackTimeOffset("subtitle", src, 2, -80),
+            ]
+        resolved = ([(src, 2), (src, 3)], True) if subtitles in {"explicit", "auto"} else ([], subtitles == "none")
+        captured = []
+        chapter_contents = {}
+        failures = []
+        signals = TaskSignals()
+        signals.failed.connect(lambda message, _exc: failures.append(message))
+
+        def fake_run(cmd, **_kwargs):
+            # All preparation commands are intercepted; no encoder is run.
+            for arg in reversed(cmd):
+                if str(arg).endswith((".mkv", ".hevc", ".bin")):
+                    path = Path(arg)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\0" * 100_000)
+                    break
+            return ""
+
+        def capture_final(_config, cmd, *_args, **_kwargs):
+            captured.append(cmd)
+            for i, token in enumerate(cmd[:-1]):
+                if token == "-i" and cmd[i + 1].endswith(".ffmetadata"):
+                    path = Path(cmd[i + 1])
+                    chapter_contents[path] = path.read_text()
+            return str(cfg.output)
+
+        with patch.object(wf, "_resolved_subtitle_tracks_for_encode", return_value=resolved), \
+             patch.object(wf._runner, "_run_cmd", side_effect=fake_run), \
+             patch.object(wf, "_finalize_ffmpeg_output", side_effect=capture_final):
+            if route == "nvencc":
+                cmd, live, cleanup = wf._build_runtime_nvencc_remux_cmd(
+                    cfg, tmp_path / "prepared.mkv", chapter_materialize_dir=tmp_path,
+                )
+                assert live is None and cleanup == []
+            elif route == "preview":
+                cmd = wf._build_multi_video_final_mux_command(cfg, [], chapter_materialize_dir=tmp_path)
+            else:
+                if route == "multi_video":
+                    wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=signals)
+                else:
+                    wf._run_with_metadata_inject(cfg, prep_signals=signals)
+                assert not failures
+                assert len(captured) == 1
+                cmd = captured[0]
+
+        maps = [cmd[i + 1] for i, token in enumerate(cmd[:-1]) if token == "-map"]
+        input_positions = [i for i, token in enumerate(cmd) if token == "-i"]
+        assert max(input_positions) < cmd.index("-map")
+        audio_input = int(maps[1].split(":")[0])
+        if subtitles != "none":
+            for value in maps[2:-1]:
+                assert int(value.split(":")[0]) != audio_input
+        else:
+            assert len(maps) == 3  # video, audio, attachment
+        assert maps[-1] == "1:4"  # attachments still refer to the original source
+        chapter_input = int(cmd[cmd.index("-map_chapters") + 1])
+        chapter_path = Path(cmd[input_positions[chapter_input] + 1])
+        chapter_text = chapter_contents[chapter_path] if chapter_path in chapter_contents else chapter_path.read_text()
+        assert "Intro" in chapter_text
+        assert "GENRE=Drama" in cmd
+        assert cmd[cmd.index("-c:a:0") + 1] == "copy"
+        assert not any("truehd_core" in token for token in cmd)
+        if offsets and route != "preview":
+            assert cmd[input_positions[audio_input] - 2:input_positions[audio_input]] == ["-itsoffset", "0.120"]
+            if subtitles in {"explicit", "auto"}:
+                sub_input = int(maps[2].split(":")[0])
+                assert cmd[input_positions[sub_input] - 2:input_positions[sub_input]] == ["-ss", "0.080"]

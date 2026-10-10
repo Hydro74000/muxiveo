@@ -15,6 +15,7 @@ from core.workflows.common.metadata import (
 from core.workflows.encode.domain import audio_codec_args as _audio_codec_args_domain
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_metadata import resolve_track_metadata
 from core.workflows.encode.planning.sources import source_input_index_map as _source_input_index_map_plan
 
@@ -218,11 +219,18 @@ class EncodeFinalMuxBuilder:
         for src in all_sources:
             append_ffmpeg_input_args(cmd, src)
 
+        subtitle_inputs = plan_isolated_subtitle_inputs(
+            config, plan, source_idx=source_idx, sync_remap={},
+            start_input_index=len(video_inputs) + len(all_sources),
+        )
+        for source in subtitle_inputs.paths:
+            append_ffmpeg_input_args(cmd, source)
+
         next_input_index, chapter_input_index, tag_input_index = cb.prepare_container_metadata_inputs(
             cmd,
             config,
             source_idx=source_idx,
-            next_input_index=len(video_inputs) + len(all_sources),
+            next_input_index=len(video_inputs) + len(all_sources) + len(subtitle_inputs.paths),
             plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
             chapter_probe_source=config.source,
@@ -238,7 +246,8 @@ class EncodeFinalMuxBuilder:
             cmd,
             config,
             source_idx=source_idx,
-            subtitle_copy_input_indices=list(source_idx.values()),
+            subtitle_copy_input_indices=list(subtitle_inputs.copy_input_indices),
+            sync_remap=subtitle_inputs.remap,
             subtitle_tracks_override=list(plan.resolved_subtitle_tracks),
             force_copy_subtitles_wildcard=(config.copy_subtitles and not plan.subtitles_resolved),
         )

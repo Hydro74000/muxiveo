@@ -33,6 +33,7 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, VideoEncodeS
 from core.workflows.encode.planning.offsets import track_offset_ms as _track_offset_ms_plan
 from core.workflows.encode.planning.offsets import build_offset_specs as _build_offset_specs_plan
 from core.workflows.encode.planning.plan_models import EncodePlan, MaterializedContainerMetadataPlan
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_assembly import (
     build_track_input_paths as _build_track_input_paths_plan,
     resolve_track_assembly as _resolve_track_assembly_plan,
@@ -325,10 +326,18 @@ class NvenccRuntimeRemuxBuilder:
             append_ffmpeg_input_args(cmd, src)
         cb.append_sync_inputs(cmd, sync_inputs)
 
+        subtitle_inputs = plan_isolated_subtitle_inputs(
+            config, plan, source_idx=source_idx_shifted, sync_remap=sync_remap,
+            start_input_index=1 + len(all_sources) + len(sync_inputs),
+        )
+        for source in subtitle_inputs.paths:
+            append_ffmpeg_input_args(cmd, source)
+        sync_remap = subtitle_inputs.remap
+
         metadata_inputs = cb.materialize_container_metadata_inputs(
             config,
             source_idx=source_idx_shifted,
-            next_input_index=1 + len(all_sources) + len(sync_inputs),
+            next_input_index=1 + len(all_sources) + len(sync_inputs) + len(subtitle_inputs.paths),
             plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
             chapter_probe_source=config.source,
@@ -340,7 +349,7 @@ class NvenccRuntimeRemuxBuilder:
             leading_inputs=(encoded_video,),
             all_sources=all_sources,
             sync_inputs=sync_inputs,
-        )
+        ) + subtitle_inputs.paths
         track_assembly = _resolve_track_assembly_plan(
             config,
             plan,
@@ -366,7 +375,7 @@ class NvenccRuntimeRemuxBuilder:
             cmd,
             config,
             source_idx=source_idx_shifted,
-            subtitle_copy_input_indices=[index + 1 for index in range(len(all_sources))],
+            subtitle_copy_input_indices=list(subtitle_inputs.copy_input_indices),
             sync_remap=sync_remap,
             offset_remap=offset_remap,
             subtitle_tracks_override=list(plan.resolved_subtitle_tracks),

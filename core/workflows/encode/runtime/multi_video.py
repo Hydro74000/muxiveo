@@ -19,6 +19,7 @@ from core.workflows.encode.domain import (
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.workflows.encode.interpolation import (
@@ -685,11 +686,19 @@ class MultiVideoPipelineRunner:
                     for proc in live_sync_session.processes:
                         signals._register_proc(proc)
 
+                subtitle_inputs = plan_isolated_subtitle_inputs(
+                    config, encode_plan, source_idx=source_idx, sync_remap=sync_remap,
+                    start_input_index=len(prepared_inputs_ready) + len(all_sources) + len(sync_inputs),
+                )
+                for source in subtitle_inputs.paths:
+                    append_ffmpeg_input_args(final_cmd, source)
+                sync_remap = subtitle_inputs.remap
+
                 next_input_index, chapter_input_index, tag_input_index = cb.prepare_container_metadata_inputs(
                     final_cmd,
                     config,
                     source_idx=source_idx,
-                    next_input_index=len(prepared_inputs_ready) + len(all_sources) + len(sync_inputs),
+                    next_input_index=len(prepared_inputs_ready) + len(all_sources) + len(sync_inputs) + len(subtitle_inputs.paths),
                     plan=encode_plan,
                     chapter_materialize_dir=chapter_dir,
                     chapter_probe_source=config.source,
@@ -699,7 +708,7 @@ class MultiVideoPipelineRunner:
                     leading_inputs=[prepared_input.path for prepared_input in prepared_inputs_ready],
                     all_sources=all_sources,
                     sync_inputs=sync_inputs,
-                )
+                ) + subtitle_inputs.paths
                 if cb.resolve_track_assembly_and_offset_remap is not None:
                     _track_assembly, offset_remap = cb.resolve_track_assembly_and_offset_remap(
                         cmd=final_cmd,
@@ -744,7 +753,7 @@ class MultiVideoPipelineRunner:
                     final_cmd,
                     config,
                     source_idx=source_idx,
-                    subtitle_copy_input_indices=list(source_idx.values()),
+                    subtitle_copy_input_indices=list(subtitle_inputs.copy_input_indices),
                     sync_remap=sync_remap,
                     offset_remap=offset_remap,
                     subtitle_tracks_override=resolved_subtitle_tracks,
