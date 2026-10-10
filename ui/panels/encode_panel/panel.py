@@ -1261,6 +1261,23 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
         cl.addWidget(self._copy_dv_cb)
+        self._bake_fel_choice: bool | None = None
+        self._bake_fel_cb = QCheckBox(translate_text("Intégrer la couche FEL à l’image avant encodage"))
+        self._bake_fel_cb.setStyleSheet(_checkbox_style())
+        self._bake_fel_cb.setToolTip(translate_text(
+            "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. "
+            "Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. "
+            "Nécessite l’extension mvo-fel."
+        ))
+        self._bake_fel_cb.clicked.connect(self._on_fel_clicked)
+        cl.addWidget(self._bake_fel_cb)
+        self._fel_extensions_link = QLabel(
+            "<a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
+        )
+        self._fel_extensions_link.setStyleSheet("background:transparent;")
+        self._fel_extensions_link.linkActivated.connect(lambda _: self.extensions_page_requested.emit())
+        self._fel_extensions_link.hide()
+        cl.addWidget(self._fel_extensions_link)
 
         # Alerte visuelle pour Dolby Vision non supporté
         self._dovi_warning_widget = QWidget()
@@ -1301,7 +1318,7 @@ class EncodePanel(QWidget):
             translate_text("Conserver le profil source (P8.1 seulement si réencodage)"), "0",
         )
         self._dovi_profile_combo.addItem(
-            translate_text("Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)"), NORMALIZE_P81,
+            translate_text("Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)"), NORMALIZE_P81,
         )
         self._dovi_profile_combo.currentIndexChanged.connect(self._on_dovi_profile_changed)
         dp_l.addWidget(dp_lbl)
@@ -3856,6 +3873,7 @@ class EncodePanel(QWidget):
                 translate_text("Profil « {name} » non chargé : {reason}", name=name, reason=problem),
             )
             return
+        self._bake_fel_choice = vs.bake_dovi_fel
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -3971,6 +3989,7 @@ class EncodePanel(QWidget):
             crop=vs.crop,
             filters=vs.filters,
             interpolation=vs.interpolation,
+            bake_dovi_fel=vs.bake_dovi_fel,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4385,6 +4404,7 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_mode": "",
             "static_hdr_metadata_analysis_request": "",
             "copy_dv": self._source_has_dv(source_hdr),
+            "bake_dovi_fel": None,
             "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
             "dovi_profile": "0",
             "tonemap_to_sdr": False,
@@ -4533,6 +4553,12 @@ class EncodePanel(QWidget):
         """Source PQ / HLG ou Dolby Vision (P5 compris, transfert non déclaré) ; P8.2 (base SDR) exclue."""
         return source_is_hdr(self._selected_video_hdr_type(), self._selected_video_transfer())
 
+    def _on_fel_clicked(self, checked: bool) -> None:
+        self._bake_fel_choice = checked
+        self._sync_dovi_profile_options()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
     def _sync_dovi_profile_options(self) -> None:
         """Option « Normaliser » grisée selon la matrice V30 ; bandeau du traitement prévu."""
         if not hasattr(self, "_dovi_plan_label"):
@@ -4542,6 +4568,9 @@ class EncodePanel(QWidget):
             getattr(source, "dovi_profile", None), getattr(source, "dovi_compat_id", None),
         )
         codec = str(self._codec_combo.currentData() or "libx265")
+        from core.workflows.encode.dovi_policy import wants_fel_bake
+        self._bake_fel_cb.setChecked(wants_fel_bake(self._bake_fel_choice, sub_profile))
+        self._bake_fel_cb.setEnabled(codec != "copy")
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
@@ -4566,8 +4595,18 @@ class EncodePanel(QWidget):
             copy_dv=self._copy_dv_cb.isChecked(),
             dovi_profile=str(self._dovi_profile_combo.currentData() or "0"),
             sub_profile=sub_profile,
+            bake_dovi_fel=self._bake_fel_choice,
         )
         notes = [translate_text(note) for note in plan.notes]
+        self._fel_extensions_link.hide()
+        if self._bake_fel_cb.isChecked():
+            if codec == "copy":
+                notes.append(translate_text("La reconstruction FEL nécessite un réencodage."))
+            else:
+                from core import plugins
+                if plugins.installed_plugin(plugins.FEL) is None:
+                    notes.append(translate_text("Extension mvo-fel absente : repli BL. Installation dans Extensions."))
+                    self._fel_extensions_link.show()
         if self._tonemap_cb.isChecked() and plan.color_convert:
             notes.append(translate_text("Puis tone-mapping HDR → SDR."))
         self._dovi_plan_label.setText("\n".join(notes))
@@ -4734,6 +4773,7 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_mode": str(prev.get("static_hdr_metadata_analysis_mode") or ""),
             "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
+            "bake_dovi_fel": self._bake_fel_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
@@ -4993,6 +5033,8 @@ class EncodePanel(QWidget):
         self._emit_video_encoding_plans()
 
     def _apply_video_state(self, state: dict[str, object]) -> None:
+        choice = state.get("bake_dovi_fel")
+        self._bake_fel_choice = choice if isinstance(choice, bool) else None
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
         self._tonemap_enabled_by_codec = False
@@ -5440,6 +5482,8 @@ class EncodePanel(QWidget):
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
+            bake_dovi_fel=self._bake_fel_choice,
+            static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(current_state.get("static_hdr_metadata_analysis_mode") or ""),
@@ -5506,6 +5550,8 @@ class EncodePanel(QWidget):
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
+            bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
+            static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(state.get("static_hdr_metadata_analysis_mode") or ""),

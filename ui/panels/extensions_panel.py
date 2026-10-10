@@ -37,7 +37,7 @@ from ui.panels.encode_panel.theme import (
 )
 
 # Ordre d'affichage des cartes.
-_ORDER = (plugins.RIFE_PLUGIN_ID, plugins.TRT_PLUGIN_ID)
+_ORDER = (plugins.RIFE_PLUGIN_ID, plugins.TRT_PLUGIN_ID, plugins.FEL_PLUGIN_ID)
 
 
 class _ExtensionCard(QFrame):
@@ -219,7 +219,12 @@ class ExtensionsPanel(QWidget):
         self._trt_enabled_box.setChecked(bool(getattr(self._config, "trt_enabled", True)))
         self._trt_enabled_box.toggled.connect(self.trt_enabled_toggled.emit)
         self._trt_card.extras.addWidget(self._trt_enabled_box)
-        for card in (self._rife_card, self._trt_card):
+        self._fel_card = _ExtensionCard(
+            plugins.FEL_PLUGIN_ID, "Reconstruction Dolby Vision FEL",
+            "Intègre la couche FEL à l’image avant les filtres et l’encodage. "
+            "Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.",
+        )
+        for card in (self._rife_card, self._trt_card, self._fel_card):
             card.install_btn.clicked.connect(lambda _=False, c=card: self.install_requested.emit(c.plugin_id))
             card.update_btn.clicked.connect(lambda _=False, c=card: self.update_requested.emit(c.plugin_id))
             card.remove_btn.clicked.connect(lambda _=False, c=card: self.remove_requested.emit(c.plugin_id))
@@ -288,6 +293,23 @@ class ExtensionsPanel(QWidget):
         card.sync_buttons(state, offer_install=compatible, install_enabled=compatible)
         if self._trt_state is not None:
             self.set_trt_state(self._trt_state)
+        self._sync_sections()
+
+    def set_fel_state(self, state: object) -> None:
+        """Carte du moteur CPU FEL, indépendant des capacités GPU."""
+        compatible = plugins.FEL.supports(plugins.platform_tag())
+        installed = getattr(state, "installed", None)
+        card = self._fel_card
+        self._place(card, compatible=compatible or installed is not None)
+        card.status.setText(_busy_status(state) or (
+            _installed_status(installed) if installed is not None else
+            translate_text("Non installée : une demande FEL utilisera le BL avec avertissement.")
+        ))
+        published = bool(getattr(state, "target", ""))
+        card.show_message(str(getattr(state, "message", "") or (
+            "" if published else translate_text("Version publiée indisponible.")
+        )))
+        card.sync_buttons(state, offer_install=compatible, install_enabled=compatible and published)
         self._sync_sections()
 
     def set_trt_state(self, state: object) -> None:

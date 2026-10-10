@@ -312,8 +312,9 @@ def build_decode_pipe_cmd(
     extra_input_args: list[str] | None = None,
     vf: str | None = None,
     frame_exact: bool = False,
+    nut: bool = False,
 ) -> list[str]:
-    """Phase 1 : décode ffmpeg → yuv4mpegpipe sur stdout.
+    """Phase 1 : images décodées vers stdout (NUT horodaté ou yuv4mpegpipe).
 
     Le ``-vf`` optionnel sert uniquement aux préfiltrages portables que
     NVEncC ne couvre pas nativement dans l'application.
@@ -329,9 +330,13 @@ def build_decode_pipe_cmd(
     ])
     if vf:
         cmd.extend(["-vf", str(vf)])
-    if frame_exact:
+    if frame_exact or nut:
         cmd.extend(["-fps_mode", "passthrough"])
-    cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
+    if nut:
+        # Transport sans compression : aucun encodage intermédiaire avec pertes.
+        cmd.extend(["-c:v", "rawvideo", "-f", "nut", "-"])
+    else:
+        cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
     return cmd
 
 
@@ -943,7 +948,10 @@ def build_nvencc_command(
 
     cmd: list[str] = [str(nvencc_bin), "-c", codec_flag]
     if input_path is None:
-        if sys.platform != "win32":
+        if video.fel_context is not None and not video.interpolates():
+            # Le NUT conserve les PTS du producteur FEL, même en cadence variable.
+            cmd.extend(["--avsw", "--input-format", "nut", "--avsync", "vfr", "-i", "-"])
+        elif sys.platform != "win32":
             # NVEncC 9.16/9.19 : hors Windows, la couche POSIX rigaya mappe
             # strtok_s sur strtok (non ré-entrant) dans le parseur Y4M natif,
             # alors que l'initialisation est parallèle.

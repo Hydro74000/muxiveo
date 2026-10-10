@@ -53,6 +53,7 @@ from core.subtitle_codec import plan_subtitle_codec
 from core.output_commit import OutputBusyError, OutputReservation
 from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
+from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAudit,
     FrameCountAuditError,
@@ -1840,6 +1841,17 @@ class MergeDoviWorkflow(QObject):
                 "vérifiez que l'étape d'extraction s'est bien déroulée.",
             )
         self._ensure_free_space(step, paths.work_dir, hevc_input.stat().st_size, "l'injection RPU")
+
+        if profile == DoviProfile.P8_1:
+            # `-m 2` est sans effet sur inject-rpu : un RPU P7 restant (Film 2
+            # au record P8 mal étiqueté) est converti ici, en place.
+            converted = paths.film2_rpu.with_name("film2_rpu.p81.bin")
+            if convert_p7_rpu_to_p81(
+                dovi_tool_bin=self._bins["dovi_tool"], rpu_bin=paths.film2_rpu,
+                output_rpu=converted, run_cmd=lambda cmd: self._run_cmd(cmd, step),
+            ):
+                os.replace(converted, paths.film2_rpu)
+                self.step_progress.emit(step, "RPU P7 converti en P8.1 (mode 2).")
 
         # -m est un flag GLOBAL de dovi_tool placé avant la sous-commande.
         # La valeur de DoviProfile.value est directement le flag -m à passer.

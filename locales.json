@@ -1,4 +1,48 @@
 {
+  "Version publiée indisponible.": {
+    "fra": "Version publiée indisponible.",
+    "eng": "Published version unavailable."
+  },
+  "Intégrer la couche FEL à l’image avant encodage": {
+    "fra": "Intégrer la couche FEL à l’image avant encodage",
+    "eng": "Integrate the FEL layer into the image before encoding"
+  },
+  "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. Nécessite l’extension mvo-fel.": {
+    "fra": "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. Nécessite l’extension mvo-fel.",
+    "eng": "Reconstructs the Dolby Vision image with the FEL layer before filtering and encoding. Also works without retaining the RPU. FEL presence is confirmed at launch. Requires the mvo-fel extension."
+  },
+  "Reconstruction Dolby Vision FEL": {
+    "fra": "Reconstruction Dolby Vision FEL",
+    "eng": "Dolby Vision FEL reconstruction"
+  },
+  "Intègre la couche FEL à l’image avant les filtres et l’encodage. Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.": {
+    "fra": "Intègre la couche FEL à l’image avant les filtres et l’encodage. Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.",
+    "eng": "Integrates the FEL layer into the image before filtering and encoding. Runs on CPU, with or without retaining the Dolby Vision RPU."
+  },
+  "La reconstruction FEL nécessite un réencodage.": {
+    "fra": "La reconstruction FEL nécessite un réencodage.",
+    "eng": "FEL reconstruction requires re-encoding."
+  },
+  "Extension mvo-fel absente : repli BL. Installation dans Extensions.": {
+    "fra": "Extension mvo-fel absente : repli BL. Installation dans Extensions.",
+    "eng": "mvo-fel extension missing: BL fallback. Install it in Extensions."
+  },
+  "Non installée : une demande FEL utilisera le BL avec avertissement.": {
+    "fra": "Non installée : une demande FEL utilisera le BL avec avertissement.",
+    "eng": "Not installed: a FEL request will use the BL with a warning."
+  },
+  "Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.": {
+    "fra": "Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.",
+    "eng": "FEL reconstruction requested (mvo-fel extension), to be confirmed at launch."
+  },
+  "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.": {
+    "fra": "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.",
+    "eng": "P7 → P8.1: FEL contribution integrated into pixels if confirmed."
+  },
+  "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)": {
+    "fra": "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)",
+    "eng": "Normalize the RPU to P8.1 (remove the EL from the output stream)"
+  },
   "0 = illimité (débit choisi par l'encodeur).": {
     "fra": "0 = illimité (débit choisi par l'encodeur).",
     "eng": "0 = unlimited (bitrate chosen by the encoder)."

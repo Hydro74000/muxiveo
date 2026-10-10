@@ -98,6 +98,16 @@ def _french_ui(monkeypatch):
     yield
     set_current_language(previous)
 
+
+@pytest.fixture(autouse=True)
+def _no_real_hardware_probe(monkeypatch):
+    """Tests de widgets : capacités injectées, sans démarrer 100 sondes GPU concurrentes.
+
+    Les tests de capacités appellent _on_hw_detected avec leur propre résultat.
+    Une sonde réelle prend jusqu'à 15 secondes et dépasse le délai de fermeture Qt.
+    """
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+
 def _at(
     index: int = 1,
     codec: str = "eac3",

@@ -102,7 +102,7 @@ from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.panels.extensions_panel import ExtensionsPanel
-from ui.plugin_controller import RifePluginController, TrtPluginController
+from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -1789,6 +1789,7 @@ class MainWindow(QMainWindow):
 
         # Extensions (interpolation, accélération NVIDIA) : état partagé par tableau de bord, page Extensions et Encodage.
         self._rife_controller = RifePluginController(self._config, self)
+        self._fel_controller = FelPluginController(self._config, self)
         self._trt_controller = TrtPluginController(self._config, self)
 
         # Page 0 — Dashboard (fonctionnelle)
@@ -2215,13 +2216,15 @@ class MainWindow(QMainWindow):
 
     def _wire_extensions(self) -> None:
         """Extensions : sonde → contrôleurs → badges, page Extensions, encodages ; flux des versions lu en tâche de fond."""
-        rife, trt = self._rife_controller, self._trt_controller
+        rife, trt, fel = self._rife_controller, self._trt_controller, self._fel_controller
         panel = self._extensions_panel
-        for ctrl in (rife, trt):
+        for ctrl in (rife, trt, fel):
             ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
             ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
         rife.state_changed.connect(self._dashboard.set_rife_state)
         rife.state_changed.connect(panel.set_rife_state)
+        fel.state_changed.connect(panel.set_fel_state)
+        fel.state_changed.connect(lambda _: self._encode_panel._sync_dovi_profile_options())
         rife.state_changed.connect(self._encode_panel.set_rife_state)
         rife.workflow_changed.connect(self._encode_panel.refresh_rife_tool)
         self._dashboard.rife_badge_clicked.connect(self.show_extensions_page)
@@ -2237,26 +2240,30 @@ class MainWindow(QMainWindow):
         panel.trt_enabled_toggled.connect(trt.set_enabled)
         panel.auto_update_toggled.connect(trt.set_auto_update)
         panel.set_rife_state(rife.state())
+        panel.set_fel_state(fel.state())
         panel.set_trt_state(trt.state())
         self._dashboard.set_rife_state(rife.state())
         self._encode_panel.rife_install_requested.connect(rife.install)
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
         self._apply_trt_plugin_to_encode()
-        for ctrl in (rife, trt):
+        for ctrl in (rife, trt, fel):
             ctrl.cleanup()
             ctrl.refresh_feed()
 
-    def _extension_controller(self, plugin_id: str) -> RifePluginController | TrtPluginController:
-        return self._rife_controller if plugin_id == self._rife_controller.spec.id else self._trt_controller
+    def _extension_controller(self, plugin_id: str) -> PluginController:
+        return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
 
     def _on_extension_install_requested(self, plugin_id: str) -> None:
         if plugin_id == self._trt_controller.spec.id:
             self._open_trt_install_dialog()
         else:
-            self._rife_controller.install()
+            self._extension_controller(plugin_id).install()
 
     def _on_extension_remove_requested(self, plugin_id: str) -> None:
+        if plugin_id == self._fel_controller.spec.id:
+            self._fel_controller.remove()
+            return
         if plugin_id == self._trt_controller.spec.id:
             self._on_trt_remove_requested()
             return
@@ -3366,7 +3373,7 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
-            for name in ("_rife_controller", "_trt_controller"):
+            for name in ("_rife_controller", "_trt_controller", "_fel_controller"):
                 controller = getattr(self, name, None)
                 if controller is not None:
                     controller.shutdown()

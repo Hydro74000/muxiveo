@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, cast
 
@@ -10,7 +10,7 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import run_cancellable_capture
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
-from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, dovi_geometry_edit_json
+from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, dovi_geometry_edit_json
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
@@ -30,7 +30,7 @@ from core.workflows.encode.interpolation import (
 )
 from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
+from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_extract_mode
 from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
@@ -118,6 +118,39 @@ class MultiVideoPipelineRunner:
         signals: TaskSignals,
         run_cmd: Callable[[list[str], str], str],
     ) -> tuple[PreparedVideoInput, list[Path]]:
+        from core.fel.engine import FelError
+        from core.fel.preparation import fallback_video
+        if spec.video.fel_context is None:
+            return self._prepare_multi_video_track(config=config, spec=spec, work_dir=work_dir,
+                total_tracks=total_tracks, thread_count=thread_count, signals=signals, run_cmd=run_cmd)
+        # Dossier possédé par cette tentative uniquement ; les autres pistes restent intactes.
+        with tempfile.TemporaryDirectory(prefix=f"fel_{spec.order}_", dir=work_dir) as folder:
+            attempt = Path(folder)
+            try:
+                result, cleanup = self._prepare_multi_video_track(config=config, spec=spec, work_dir=attempt,
+                    total_tracks=total_tracks, thread_count=thread_count, signals=signals, run_cmd=run_cmd)
+                path = Path(result.path)
+                destination = work_dir / path.name
+                path.replace(destination)
+                self._callbacks.log_info(f"Piste vidéo {spec.order+1} : reconstruction FEL réussie.")
+                return replace(result, path=destination), [destination]
+            except FelError as exc:
+                self._callbacks.check_cancelled(signals)
+                signals.progress.emit(f"[WARN] Piste vidéo {spec.order+1} : {exc} ; reprise complète sur le BL.")
+        return self._prepare_multi_video_track(config=config, spec=replace(spec, video=fallback_video(spec.video)),
+            work_dir=work_dir, total_tracks=total_tracks, thread_count=thread_count, signals=signals, run_cmd=run_cmd)
+
+    def _prepare_multi_video_track(
+        self,
+        *,
+        config: EncodeConfig,
+        spec: VideoTrackPrepSpec,
+        work_dir: Path,
+        total_tracks: int,
+        thread_count: int | None,
+        signals: TaskSignals,
+        run_cmd: Callable[[list[str], str], str],
+    ) -> tuple[PreparedVideoInput, list[Path]]:
         cb = self._callbacks
         order = spec.order
         video = spec.video
@@ -164,11 +197,21 @@ class MultiVideoPipelineRunner:
             else:
                 meta_input = source
             if video.copy_dv:
+                mode = rpu_extract_mode(video)
                 run_cmd([
-                    cb.bins["dovi_tool"], "extract-rpu",
+                    cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
                     "-i", str(meta_input), "-o", str(rpu_bin),
                 ], f"dovi-extract-{index}")
                 local_cleanup.append(rpu_bin)
+                rpu_p81 = rpu_bin.with_name(f"{rpu_bin.stem}.p81.bin")
+                # Source au record P8 portant un RPU P7 : image réencodée sans couche d'amélioration.
+                if not mode and video.codec != "copy" and convert_p7_rpu_to_p81(
+                    dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=rpu_bin, output_rpu=rpu_p81,
+                    run_cmd=lambda cmd: run_cmd(cmd, f"dovi-p81-{index}"),
+                ):
+                    cb.log_info(f"Piste vidéo {index}: RPU P7 converti en P8.1.")
+                    local_cleanup.append(rpu_p81)
+                    rpu_bin = rpu_p81
                 # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
                 rpu_bin = crop_dovi_rpu(
                     video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],

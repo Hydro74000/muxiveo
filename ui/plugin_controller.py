@@ -229,6 +229,30 @@ class PluginController(QObject):
         self._executor.shutdown(wait=False, cancel_futures=True)
 
 
+class FelPluginController(PluginController):
+    """Extension CPU FEL : même cycle de vie que les autres moteurs."""
+    spec = plugins.FEL
+    label = "Reconstruction Dolby Vision FEL"
+
+    def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
+        super().__init__(config, PluginState(installed=plugins.installed_plugin(self.spec),
+                                            target=""), parent)
+
+    def _start(self, op: str) -> None:
+        if not self._state.target:
+            self._set_state(message=translate_text("Version publiée indisponible."))
+            return
+        super()._start(op)
+
+    def _verify(self, installed: plugins.InstalledPlugin) -> str:
+        from core.fel.engine import FelEngine, FelError
+        try:
+            FelEngine(plugins.main_file(self.spec, installed))
+            return ""
+        except FelError as exc:
+            return str(exc)
+
+
 class RifePluginController(PluginController):
     """Extension d'interpolation d'images (mvo-rife) : moteur muxiveo-rife, modèles, préréglages."""
 

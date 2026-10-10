@@ -259,6 +259,8 @@ def static_hdr_from_rpu_data(
     summary: RpuSummary,
     frame: RpuFrame,
     l9_counts: dict[_Primaries, int] | None = None,
+    *,
+    prefer_l1: bool = False,
 ) -> RpuStaticHdr:
     """Combine résumé, trame structurée et comptage L9 selon les règles par champ (fonction pure)."""
     warnings: list[str] = []
@@ -300,6 +302,8 @@ def static_hdr_from_rpu_data(
     # MaxCLL et MaxFALL résolus séparément : L6 non nul, sinon maximum des L1.
     l6_cll = max((cll for _lo, _hi, cll, _fall in summary.l6 if cll > 0), default=0.0)
     l6_fall = max((fall for _lo, _hi, _cll, fall in summary.l6 if fall > 0), default=0.0)
+    if prefer_l1:
+        l6_cll = l6_fall = 0.0
     l1_cll, l1_fall = summary.l1 if summary.l1 is not None else (0.0, 0.0)
     cll, max_cll_source = (l6_cll, "rpu_l6") if l6_cll > 0 else ((l1_cll, "rpu_l1") if l1_cll > 0 else (0.0, ""))
     fall, max_fall_source = (
@@ -343,6 +347,7 @@ def estimate_static_hdr_from_rpu(
     *,
     check_cancelled: Callable[[], None] | None = None,
     count_l9: Callable[..., dict[_Primaries, int] | None] = export_l9_counts,
+    prefer_l1: bool = False,
 ) -> RpuStaticHdr:
     """Résumé, première trame et, en cas de doute sur les L9, comptage complet des L9."""
     summary = parse_rpu_summary(run_capture([dovi_tool_bin, "info", "-i", str(rpu_path), "--summary"]))
@@ -352,7 +357,7 @@ def estimate_static_hdr_from_rpu(
         if needs_l9_count(summary, frame)
         else None
     )
-    return static_hdr_from_rpu_data(summary, frame, counts)
+    return static_hdr_from_rpu_data(summary, frame, counts, prefer_l1=prefer_l1)
 
 
 __all__ = [

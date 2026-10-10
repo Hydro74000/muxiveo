@@ -600,3 +600,35 @@ def test_crop_dovi_rpu_realigns_l5_only_when_cropped(tmp_path: Path):
     assert out.read_bytes() == b"edited"
     assert json.loads((tmp_path / "rpu.crop.l5.json").read_text())["active_area"]["presets"][0]["top"] == 0
     assert logs and "(0, 280, 0, 280)" in logs[0]
+
+
+_SUMMARY_P7 = "Parsing RPU file...\n\nSummary:\n  Frames: 60\n  Profile: 7 (FEL)\n  DM version: 1 (CM v2.9)\n"
+_SUMMARY_P8 = "Parsing RPU file...\n\nSummary:\n  Frames: 60\n  Profile: 8\n  DM version: 1 (CM v2.9)\n"
+
+
+@pytest.mark.parametrize(("summary", "converted"), [(_SUMMARY_P7, True), (_SUMMARY_P8, False), ("", False)])
+def test_convert_p7_rpu_to_p81_uses_editor_mode_2(tmp_path: Path, summary: str, converted: bool):
+    """RPU P7 : éditeur ``{"mode": 2}`` (``-m`` ignoré par inject-rpu) ; P8 ou illisible : inchangé."""
+    from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81
+
+    rpu = tmp_path / "rpu.bin"
+    rpu.write_bytes(b"rpu")
+    out = tmp_path / "rpu.p81.bin"
+    calls: list[list[str]] = []
+    edits: list[str] = []
+
+    def run(cmd: list[str]) -> str:
+        calls.append(cmd)
+        edits.append(Path(cmd[cmd.index("-j") + 1]).read_text(encoding="utf-8"))
+        return ""
+
+    probe = MagicMock(stdout=summary, stderr="")
+    with patch("core.workflows.encode.runtime.dovi_geometry.subprocess.run", return_value=probe) as info:
+        assert convert_p7_rpu_to_p81(dovi_tool_bin="dovi_tool", rpu_bin=rpu, output_rpu=out, run_cmd=run) is converted
+    assert info.call_args[0][0] == ["dovi_tool", "info", "-i", str(rpu), "--summary"]
+    if converted:
+        assert calls == [["dovi_tool", "editor", "-i", str(rpu), "-j", str(out.with_suffix(".mode2.json")), "-o", str(out)]]
+        assert edits == ['{"mode": 2}']
+        assert not out.with_suffix(".mode2.json").exists()
+    else:
+        assert calls == []

@@ -32,6 +32,8 @@ MVO_RIFE_CONTRACT = 1
 # Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : extension mvo-rife-trt.
 MVO_RIFE_TRT_VERSION = "1.1.0"
 MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
+# Version de développement du contrat FEL ; pas de préinstallation obligatoire avant publication.
+MVO_FEL_VERSION = "0.1.0"
 
 
 def mvo_rife_asset_url(platform: str) -> str:

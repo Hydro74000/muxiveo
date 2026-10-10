@@ -1232,12 +1232,13 @@ def build_vf(video: VideoEncodeSettings) -> str:
     if not video.tonemap_to_sdr:
         return ",".join(chain)
     algo = video.tonemap_algorithm or "hable"
+    dither = ":dither=error_diffusion" if video.fel_context is not None else ""
     chain.append(
         "zscale=transfer=linear:npl=100,"
         "format=gbrpf32le,"
         "zscale=primaries=bt709,"
         f"tonemap=tonemap={algo}:desat=0,"
-        "zscale=transfer=bt709:matrix=bt709:range=tv,"
+        f"zscale=transfer=bt709:matrix=bt709:range=tv{dither},"
         "format=yuv420p,"
         # Les métadonnées HDR de frame traversent tonemap : l'encodeur les
         # réécrirait en SEI dans un flux SDR.

@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.atomic_io import atomic_write_text
+from core.file_lock import FileLock, lock_is_free
 from core.github_release import ReleaseAsset, fetch_release_by_repo, file_sha256, select_asset, verify_download
 from core.subprocess_utils import subprocess_text_kwargs
 from core.version import (
@@ -54,6 +55,7 @@ from core.version import (
     MVO_RIFE_CONTRACT,
     MVO_RIFE_TRT_VERSION,
     MVO_RIFE_VERSION,
+    MVO_FEL_VERSION,
 )
 
 TRT_PLUGIN_ID = "mvo-rife-trt"
@@ -62,6 +64,13 @@ TRT_PLUGIN_ABI = 1
 TRT_LIBRARIES = {"linux-x86_64": "libmvo_rife_trt.so", "windows-x86_64": "mvo_rife_trt.dll"}
 TRT_LICENSE_URL = "https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html"
 RIFE_PLUGIN_ID = "mvo-rife"
+FEL_PLUGIN_ID = "mvo-fel"
+FEL_PLUGIN_ABI = 1
+FEL_LIBRARIES = {
+    "linux-x86_64": "libmvo_fel.so",
+    "windows-x86_64": "mvo_fel.dll",
+    "macos-arm64": "libmvo_fel.dylib",
+}
 RIFE_EXECUTABLES = {
     "linux-x86_64": "muxiveo-rife",
     "windows-x86_64": "muxiveo-rife.exe",
@@ -166,6 +175,7 @@ class PluginSpec:
     files: Mapping[str, str]                        # plate-forme → exécutable ou bibliothèque principale
     check: Callable[[Mapping], str | None]          # raison d'incompatibilité d'un manifeste (ou d'une entrée du flux)
     cache_dir: Callable[[], Path] | None = None     # cache reconstructible vidé au changement de version
+    pinned_release: bool = True                    # repli vers une version déjà publiée
 
     def tag(self, version: str) -> str:
         return f"{self.id}-v{version}"
@@ -177,7 +187,10 @@ class PluginSpec:
 RIFE = PluginSpec(RIFE_PLUGIN_ID, MVO_RIFE_VERSION, RIFE_EXECUTABLES, _check_rife)
 # Cache lu au moment de l'appel (tests : emplacement isolé par tests/conftest.py).
 TRT = PluginSpec(TRT_PLUGIN_ID, MVO_RIFE_TRT_VERSION, TRT_LIBRARIES, _check_trt, lambda: trt_engine_cache_dir())
-EXTENSIONS: dict[str, PluginSpec] = {spec.id: spec for spec in (RIFE, TRT)}
+FEL = PluginSpec(FEL_PLUGIN_ID, MVO_FEL_VERSION, FEL_LIBRARIES,
+                 lambda manifest: None if manifest.get("abi") == FEL_PLUGIN_ABI else "Interface FEL incompatible",
+                 pinned_release=False)
+EXTENSIONS: dict[str, PluginSpec] = {spec.id: spec for spec in (RIFE, TRT, FEL)}
 
 
 def _plugin_dir(spec: PluginSpec, root: Path | None) -> Path:
@@ -283,10 +296,11 @@ def fetch_feed(spec: PluginSpec, timeout: float = 10.0) -> list[dict] | None:
 def target_version(spec: PluginSpec, feed: list[dict] | None, platform: str | None = None) -> str:
     """Version à installer : la plus récente compatible du flux pour cette plate-forme, sinon la version épinglée."""
     platform = platform or platform_tag()
-    best = spec.min_version
+    best = spec.min_version if spec.pinned_release else ""
     for entry in feed or []:
         version = str(entry["version"])
-        if version_key(version) <= version_key(best) or spec.check(entry):
+        if (version_key(version) < version_key(spec.min_version)
+                or (best and version_key(version) <= version_key(best)) or spec.check(entry)):
             continue
         if any(isinstance(p, dict) and p.get("platform") == platform for p in entry["platforms"]):
             best = version
@@ -296,6 +310,8 @@ def target_version(spec: PluginSpec, feed: list[dict] | None, platform: str | No
 def update_available(spec: PluginSpec, target: str | None = None, root: Path | None = None) -> bool:
     """Vrai si l'extension installée est antérieure à la version cible (épinglée par défaut)."""
     plugin = installed_plugin(spec, root)
+    if not target and not spec.pinned_release:
+        return False
     return plugin is not None and version_key(plugin.version) < version_key(target or spec.min_version)
 
 
@@ -405,6 +421,36 @@ def _remove_tree(path: Path) -> bool:
         return False  # bibliothèque encore chargée (Windows) : retirée au prochain nettoyage
 
 
+class PluginLease:
+    """Maintient les fichiers d'une version FEL tant qu'une bibliothèque est référencée."""
+
+    def __init__(self, version_dir: Path) -> None:
+        self.lock = FileLock(version_dir / f".lease-{uuid.uuid4().hex}")
+        gate = FileLock(version_dir.parent / ".usage.lock")
+        if not gate.try_acquire():
+            raise PluginError("Extension en cours de modification ; réessayez au prochain lancement")
+        try:
+            if not version_dir.is_dir() or not self.lock.try_acquire():
+                raise PluginError("Version de l'extension indisponible")
+        finally:
+            gate.release()
+
+    def release(self) -> None:
+        self.lock.release(unlink=True)
+
+
+def _remove_fel_version(path: Path) -> bool:
+    gate = FileLock(path.parent / ".usage.lock")
+    if not gate.try_acquire():
+        return False
+    try:
+        if any(not lock_is_free(lease) for lease in path.glob(".lease-*")):
+            return False
+        return _remove_tree(path)
+    finally:
+        gate.release()
+
+
 def _cache_of(spec: PluginSpec, cache_dir: Path | None) -> Path | None:
     if cache_dir is not None:
         return cache_dir
@@ -471,7 +517,10 @@ def remove(spec: PluginSpec, root: Path | None = None, cache_dir: Path | None = 
     """Supprime l'extension (et son cache) ; faux si des fichiers encore utilisés restent."""
     base = _plugin_dir(spec, root)
     (base / _POINTER).unlink(missing_ok=True)
-    complete = _remove_tree(base)
+    if spec.id == FEL_PLUGIN_ID and base.is_dir():
+        complete = all([_remove_fel_version(path) for path in base.iterdir() if path.is_dir()])
+    else:
+        complete = _remove_tree(base)
     cache = _cache_of(spec, cache_dir)
     if cache is not None:
         _remove_tree(cache)
@@ -538,7 +587,10 @@ def cleanup_orphans(spec: PluginSpec, root: Path | None = None) -> None:
         if entry.name == _POINTER or (current is not None and entry == current.path):
             continue
         if entry.is_dir():
-            _remove_tree(entry)
+            if spec.id == FEL_PLUGIN_ID:
+                _remove_fel_version(entry)
+            else:
+                _remove_tree(entry)
         elif entry.name.startswith(".download-"):
             entry.unlink(missing_ok=True)
 

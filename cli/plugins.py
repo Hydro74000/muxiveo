@@ -15,6 +15,7 @@ from core.workflows.encode.interpolation import detect_gpu_acceleration
 _LABELS = {
     plugins.RIFE_PLUGIN_ID: "Interpolation d'images (MVO-RIFE)",
     plugins.TRT_PLUGIN_ID: "Accélération NVIDIA (TensorRT)",
+    plugins.FEL_PLUGIN_ID: "Reconstruction Dolby Vision FEL",
 }
 
 
@@ -41,6 +42,8 @@ def _status(spec: plugins.PluginSpec, config: AppConfig, feed: list[dict] | None
             enabled=bool(getattr(config, "trt_enabled", True)), compatible=trt.compatible, ready=trt.ready,
             device=trt.device, status=trt.reason, engine_cache=str(plugins.trt_engine_cache_dir()),
         )
+    elif spec is plugins.FEL:
+        status["library"] = str(plugins.main_file(spec, installed)) if installed else None
     else:
         status["executable"] = str(plugins.main_file(spec, installed)) if installed else None
     return status
@@ -70,6 +73,9 @@ class _Progress:
 
 
 def _install(spec: plugins.PluginSpec, args: argparse.Namespace, config: AppConfig, logger: Logger, status: dict) -> int:
+    if not status["available_version"]:
+        logger.emit("error", "Aucune version publiée compatible disponible pour cette extension.")
+        return EXIT_WORKFLOW
     if spec is plugins.TRT and not args.accept_license:
         logger.emit("error", "Installation de NVIDIA TensorRT for RTX : licence à accepter avec --accept-license "
                              f"({plugins.TRT_LICENSE_URL}).")

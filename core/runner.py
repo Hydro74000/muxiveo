@@ -676,7 +676,7 @@ class ToolRunner(QObject):
         # Le premier match émet un warning unique, les suivants sont supprimés.
         progress_cb = _wrap_noise_filter(progress_cb) if progress_cb else None
 
-        if isinstance(cmd, PipelineCommand) and cmd.upstream:
+        if isinstance(cmd, PipelineCommand) and (cmd.upstream or cmd.producer):
             return self._run_pipeline(
                 cmd,
                 cwd=cwd,
@@ -805,6 +805,7 @@ class ToolRunner(QObject):
         procs: list[subprocess.Popen] = []
         tails: list[deque[str]] = []
         readers: list[threading.Thread] = []
+        producer = None
 
         def _relay(stream, label: str, tail: deque[str]) -> None:
             for raw in iter(stream.readline, b""):
@@ -823,6 +824,8 @@ class ToolRunner(QObject):
                 popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
                 if prev_stdout is not None:
                     popen_kwargs["stdin"] = prev_stdout
+                elif index == 0 and cmd.producer is not None:
+                    popen_kwargs["stdin"] = subprocess.PIPE
                 proc = subprocess.Popen(
                     stage,
                     stdout=subprocess.PIPE,
@@ -850,6 +853,11 @@ class ToolRunner(QObject):
                     reader.start()
                     readers.append(reader)
 
+            if cmd.producer is not None:
+                assert procs[0].stdin is not None
+                producer = cmd.producer.start(
+                    procs[0].stdin, signals._cancel_event if signals is not None else threading.Event(),
+                )
             last_proc = procs[-1]
             lines = self._pump_output(last_proc, progress_cb=progress_cb, signals=signals)
             last_proc.wait()
@@ -860,6 +868,13 @@ class ToolRunner(QObject):
 
             if signals is not None and signals._cancel_event.is_set():
                 raise TaskCancelledError()
+
+            if producer is not None:
+                from core.fel.engine import FelCancelled
+                producer.finish()
+                if isinstance(producer.error, FelCancelled):
+                    raise TaskCancelledError()
+                producer.check_error()
 
             output = "\n".join(lines[-10000:])
             # Cause première : un étage tué par un pipe fermé (aval arrêté) ou
@@ -883,11 +898,15 @@ class ToolRunner(QObject):
                 )
             return output
         finally:
+            if producer is not None:
+                producer.cancel()
             for proc in procs:
                 if proc.poll() is None:
                     kill_process_tree(proc, timeout=0.2)
                 if signals is not None:
                     signals._unregister_proc(proc)
+            if producer is not None:
+                producer.finish()
 
     # ------------------------------------------------------------------
     # Variante pty pour outils à barre de progression (dovi_tool, hdr10plus_tool)

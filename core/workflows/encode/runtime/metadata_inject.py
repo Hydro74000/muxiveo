@@ -39,7 +39,7 @@ from core.workflows.encode.runtime.frame_count_guard import (
 from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
-from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, extract_dovi_rpu
+from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
@@ -407,6 +407,17 @@ class MetadataInjectRunner:
                         "-i", str(meta_input), "-o", str(rpu_bin),
                     ])
                     _check()
+                    # Vidéo injectée toujours sans couche d'amélioration (P7 converti
+                    # en amont) : un RPU P7 restant (record P8 d'un fichier mal
+                    # étiqueté) est converti en P8.1.
+                    rpu_p81 = tmp / "rpu.p81.bin"
+                    if convert_p7_rpu_to_p81(
+                        dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=rpu_bin,
+                        output_rpu=rpu_p81, run_cmd=_run,
+                    ):
+                        cb.log_info("Dolby Vision : RPU P7 sur une vidéo sans couche d'amélioration, converti en P8.1.")
+                        rpu_bin = rpu_p81
+                    _check()
                 if video.copy_dv:
                     # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
                     rpu_bin = crop_dovi_rpu(
@@ -697,10 +708,9 @@ class MetadataInjectRunner:
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
-                    # Si une normalisation P7/P5→P8.1 a effectivement eu
-                    # lieu en amont, on force -m 2 pour que le RPU réinjecté
-                    # soit explicitement tagué P8.1. `inject-rpu` n'accepte
-                    # pas --compat-id : le mode est porté par `-m`.
+                    # `-m` est sans effet sur `inject-rpu` (dovi_tool 2.3) : le RPU
+                    # est déjà P8.1 (extraction du flux converti ou conversion P7
+                    # ci-dessus) ; compat id porté par le record Matroska.
                     inject_mode = video.dovi_profile
                     if (
                         p7_router_decision is not None

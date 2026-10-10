@@ -2151,6 +2151,15 @@ class EncodeWorkflow(QObject):
                 "les artefacts ou servent de référence."
             )
         primary = self._primary_video_settings(config)
+        from core.fel.preparation import requested as fel_requested
+        for index, candidate in enumerate(self._video_tracks(config), start=1):
+            if fel_requested(candidate):
+                header.append(
+                    f"Piste vidéo #{index} : reconstruction FEL interne par mvo-fel → pipe NUT RGB PQ, "
+                    "avant filtres et encodage ; FEL et disponibilité du moteur confirmés au lancement. "
+                    "Les commandes source ci-dessous décrivent le parcours BL de repli ; "
+                    "le producteur natif n'est pas une commande shell."
+                )
         if _is_nvencc_codec_runtime(primary.codec) and primary.has_video_transform():
             # V18b : moteur réel des filtres et conversions couleur.
             try:
@@ -2235,6 +2244,22 @@ class EncodeWorkflow(QObject):
         request: EncodePreviewRequest,
         signals: TaskSignals,
     ) -> EncodePreviewResult:
+        from core.fel.preparation import requested
+        resolved = self.resolve_dovi_sources(config)
+        if not requested(self._primary_video_settings(resolved)):
+            return self._run_image_preview_prepared(config, request, signals)
+        directory = self._preview_output_dir(config)
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="fel_preview_", dir=directory) as work:
+            prepared = self.prepare_dovi_sources(resolved, work_dir=Path(work), signals=signals)
+            return self._run_image_preview_prepared(prepared, request, signals)
+
+    def _run_image_preview_prepared(
+        self,
+        config: EncodeConfig,
+        request: EncodePreviewRequest,
+        signals: TaskSignals,
+    ) -> EncodePreviewResult:
         preview_dir = self._preview_output_dir(config)
         preview_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2284,14 +2309,16 @@ class EncodeWorkflow(QObject):
                 stream_index=source_stream,
                 hdr_kind=hdr_kind,
             )
-            self._runner._run_cmd(
-                extract_cmd,
-                cwd=preview_dir,
-                label=f"ffmpeg-preview-image-{idx:02d}",
-                progress_cb=lambda line: signals.progress.emit(line),
-                progress_pct_cb=lambda _pct: None,
-                signals=signals,
-            )
+            from core.fel.pipeline import with_fel_input
+            from core.fel.engine import FelError
+            command = with_fel_input(extract_cmd, source_video)
+            try:
+                self._runner._run_cmd(command, cwd=preview_dir, label=f"ffmpeg-preview-image-{idx:02d}",
+                    progress_cb=signals.progress.emit, progress_pct_cb=lambda _pct: None, signals=signals)
+            except FelError as exc:
+                warning = f"Reconstruction FEL indisponible ({exc}) : aperçu BL."
+                signals.progress.emit(f"[WARN] {warning}")
+                self._runner._run_cmd(extract_cmd, cwd=preview_dir, label="ffmpeg-preview-bl", signals=signals)
             self._check_cancelled(signals)
             if image_path.exists():
                 captures.append(EncodePreviewCapture(
@@ -2885,6 +2912,7 @@ class EncodeWorkflow(QObject):
             copy_dv=video.copy_dv,
             dovi_profile=video.dovi_profile,
             sub_profile=_sub_profile_from_value(video.dovi_source_profile),
+            bake_dovi_fel=video.bake_dovi_fel,
         )
 
     def _dovi_policy_errors(self, config: EncodeConfig) -> list[str]:
@@ -3047,6 +3075,16 @@ class EncodeWorkflow(QObject):
         tracks = self._video_tracks(config)
         resolved: list[VideoEncodeSettings] = []
         changed = False
+        from core.fel.engine import FelEngine
+        from core.fel.preparation import prepare_fel
+        fel_engine: FelEngine | None = None
+
+        def load_fel_engine() -> FelEngine:
+            nonlocal fel_engine
+            if fel_engine is None:
+                fel_engine = FelEngine.installed()
+            return fel_engine
+
         for index, video in enumerate(tracks, start=1):
             needs_static = bool(
                 video.inject_hdr_meta
@@ -3055,6 +3093,15 @@ class EncodeWorkflow(QObject):
                 and not str(video.static_hdr_metadata_analysis_request or "").strip()
                 and (not video.master_display.strip() or not video.max_cll.strip())
             )
+            prepared_fel = prepare_fel(
+                video, source=self._video_source_from_settings(config, video), work_dir=work_dir, index=index,
+                ffmpeg=self._ffmpeg, dovi=dovi_bin, threads=max(1, self._ffmpeg_threads), run=run, capture=run_capture,
+                cancelled=(signals._cancel_event.is_set if signals is not None else lambda: False),
+                log=self.log_message.emit,
+                engine_loader=load_fel_engine,
+            )
+            changed = changed or prepared_fel is not video
+            video = prepared_fel
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
                 resolved.append(video)
                 continue
@@ -3102,6 +3149,9 @@ class EncodeWorkflow(QObject):
             changed = True
         if changed:
             config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+        errors = self.validate(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
         return config
 
     def _stream_is_vfr(self, source: Path, stream_index: int) -> bool:
@@ -3378,6 +3428,10 @@ class EncodeWorkflow(QObject):
         après encodage : la commande FFmpeg directe (toutes pistes en une passe) est
         remplacée par l'encode vidéo seul suivi de l'assemblage du pipeline multi-pistes.
         """
+        from core.fel.preparation import requested
+        primary = self._primary_video_settings(config)
+        if requested(primary) and not _is_nvencc_codec_runtime(primary.codec):
+            return True
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)

@@ -73,6 +73,21 @@ class VideoOnlyCommandBuilder:
         offset_ms: int = 0,
         thread_count: int | None = None,
     ) -> list[str]:
+        from core.fel.pipeline import with_fel_input
+        return with_fel_input(self._build_video_track_base_cmd(
+            video=video, source=source, stream_index=stream_index,
+            offset_ms=offset_ms, thread_count=thread_count,
+        ), video, thread_count)
+
+    def _build_video_track_base_cmd(
+        self,
+        *,
+        video: VideoEncodeSettings,
+        source: Path,
+        stream_index: int,
+        offset_ms: int = 0,
+        thread_count: int | None = None,
+    ) -> list[str]:
         cb = self._cb
         if video.interpolates():
             return self._build_interpolated_base_cmd(
@@ -88,7 +103,7 @@ class VideoOnlyCommandBuilder:
         cmd.extend(hardware_input_args(video, callbacks=cb.codec_domain_callbacks()))
         cmd.extend(raw_input_rate_args(video, source))
         append_ffmpeg_input_args(cmd, source)
-        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks())
+        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks(), hw_decoded=video.fel_context is None)
         if vf:
             cmd.extend(["-vf", vf])
         cmd.extend(cb.ffmpeg_thread_args(thread_count))

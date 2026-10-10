@@ -16,6 +16,7 @@ from enum import Enum
 from fractions import Fraction
 from pathlib import Path
 from typing import Protocol
+from core.fel.context import FelExecution
 
 from core.workflows.common.track_types import TrackMetaEdit, TrackTimeOffset
 
@@ -360,6 +361,8 @@ class VideoEncodeSettings:
     static_hdr_metadata_analysis_request: str = ""
     # HDR dynamique
     copy_dv:          bool         = False
+    bake_dovi_fel:    bool | None  = None  # None/absent : désactivé ; True : demande explicite.
+    fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
@@ -621,6 +624,7 @@ class EncodePreset:
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
     interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     inject_hdr_meta:            bool = False
+    bake_dovi_fel:              bool | None = None  # Même défaut désactivé pour les anciens profils.
     master_display:             str  = ""
     max_cll:                    str  = ""
     tonemap_to_sdr:             bool = False
@@ -655,6 +659,7 @@ class EncodePreset:
             filters=self.filters,
             interpolation=self.interpolation,
             inject_hdr_meta=self.inject_hdr_meta,
+            bake_dovi_fel=self.bake_dovi_fel,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,

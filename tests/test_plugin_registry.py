@@ -47,8 +47,8 @@ def _entry(version: str, *, contract: int = MVO_RIFE_CONTRACT, platforms=(PLATFO
             "platforms": [{"platform": p, "asset": f"mvo-rife-{version}-{p}.tar.gz", "size": 1} for p in platforms]}
 
 
-def test_registry_lists_both_extensions():
-    assert list(plugins.EXTENSIONS) == ["mvo-rife", "mvo-rife-trt"]
+def test_registry_lists_extensions():
+    assert list(plugins.EXTENSIONS) == ["mvo-rife", "mvo-rife-trt", "mvo-fel"]
     assert plugins.RIFE.supports("macos-arm64") and not plugins.TRT.supports("macos-arm64")
     assert plugins.RIFE.tag("1.7.0") == "mvo-rife-v1.7.0"
 

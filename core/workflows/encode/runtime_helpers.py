@@ -106,6 +106,10 @@ class VideoPreparationResourcePolicy:
             base += 128 * mib
         if video.copy_dv or video.copy_hdr10plus:
             base += 256 * mib
+        if video.fel_context is not None:
+            # Deux décodeurs HEVC, files BL/EL bornées et images RGB : réserve
+            # prudente pour une source UHD, en plus de celle de l'encodeur.
+            base += 3072 * mib
 
         source_component = 0
         if source_size > 0:

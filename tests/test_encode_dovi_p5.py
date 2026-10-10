@@ -745,3 +745,18 @@ def test_l5_a10_static_provenance_per_field(tmp_path, qt_app):
     assert prepared.max_cll == "758,143" and prepared.static_hdr_light_level_source == "rpu_estimate"
     estimated = [line for line in logs if "estimé depuis les métadonnées du RPU" in line]
     assert estimated and "MaxCLL/MaxFALL 758,143" in estimated[0] and "Master Display" not in estimated[0]
+
+
+@pytest.mark.parametrize(("kwargs", "mode"), [
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p7_fel"}, "2"),
+    ({"codec": "libx265", "dovi_source_profile": "p7_mel"}, "2"),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p5", "p5_to_hdr10": True}, "3"),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p8_1"}, None),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": ""}, None),
+    ({"codec": "copy", "dovi_source_profile": "p7_fel"}, None),
+])
+def test_rpu_extract_mode_converts_p7_for_reencoded_base_layer(kwargs, mode):
+    """Réencodage d'une source P7 : RPU extrait en P8.1 (``-m 2``), sinon NVEncC injecte un RPU P7."""
+    from core.workflows.encode.dovi_policy import rpu_extract_mode
+
+    assert rpu_extract_mode(VideoEncodeSettings(copy_dv=True, **kwargs)) == mode
