@@ -97,6 +97,7 @@ RIFE_TRT_MIN_VERSION: tuple[int, int, int] = (1, 4, 0)
 RIFE_ULTRA_MIN_VERSION: tuple[int, int, int] = (1, 6, 0)
 # Capacités annoncées par le binaire (--capabilities) et préréglages de l'extension (presets.json) : 1.7.0.
 RIFE_CAPABILITIES_MIN_VERSION: tuple[int, int, int] = (1, 7, 0)
+RIFE_FEATURE_CACHE_MIN_VERSION: tuple[int, int, int] = (1, 7, 1)
 # Options des binaires antérieurs à --capabilities, selon leur version.
 _LEGACY_RIFE_OPTIONS: tuple[tuple[tuple[int, int, int], frozenset[str]], ...] = (
     (RIFE_MIN_VERSION, frozenset({
@@ -109,6 +110,7 @@ _LEGACY_RIFE_OPTIONS: tuple[tuple[tuple[int, int, int], frozenset[str]], ...] = 
     (RIFE_TRT_MIN_VERSION, frozenset({"trt-plugin", "trt-cache", "backend"})),
     ((1, 5, 0), frozenset({"large-motion"})),
     (RIFE_ULTRA_MIN_VERSION, frozenset({"selector", "ultra"})),
+    (RIFE_FEATURE_CACHE_MIN_VERSION, frozenset({"feature-cache", "feature-cache-reserve"})),
 )
 
 
@@ -422,6 +424,7 @@ def build_rife_stage(
     gpu: int = -1,
     mode: str = "normal",
     tta: int = 1,
+    feature_cache: bool = False,
     trt_plugin: str = "",
     trt_cache: str = "",
 ) -> list[str]:
@@ -458,6 +461,8 @@ def build_rife_stage(
         cmd.extend(["--gpu", str(int(gpu))])
     if int(tta) > 1 and not preset.ultra:
         cmd.extend(["--tta", str(int(tta))])
+    if feature_cache:
+        cmd.append("--feature-cache")
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
         if trt_cache:
@@ -512,6 +517,7 @@ _RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
 
 def rife_support_errors(
     capabilities: RifeCapabilities | None, preset: InterpolationPreset, *, tta: int, rife_bin: str,
+    feature_cache: bool = False,
 ) -> list[str]:
     """Réglages d'interpolation non pris en charge par le binaire (contrat, options, modèle, sélecteur).
 
@@ -531,6 +537,7 @@ def rife_support_errors(
         ("engine", preset.engine == "hybrid", "le moteur hybride (préréglages Équilibré et Qualité)",
          ", ou choisir le préréglage Rapide"),
         ("ultra", preset.ultra, "le préréglage Ultra", ", ou choisir le préréglage Qualité"),
+        ("feature-cache", feature_cache, "le cache des caractéristiques", ", ou désactiver ce cache"),
     )
     for option, needed, feature, alternative in features:
         if needed and not capabilities.supports(option):

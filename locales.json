@@ -1,4 +1,12 @@
 {
+  "Cache des caractéristiques": {
+    "fra": "Cache des caractéristiques",
+    "eng": "Feature cache"
+  },
+  "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.": {
+    "fra": "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.",
+    "eng": "Speeds up successive outputs with Vulkan for Quality, Ultra and Light, including TTA. Preserves the same calculations. The cache turns off if available GPU memory cannot keep at least 1 GiB and 20% of the budget in reserve. Has no effect with TensorRT or RIFE v4.6."
+  },
   "Auto": {
     "fra": "Auto",
     "eng": "Auto"

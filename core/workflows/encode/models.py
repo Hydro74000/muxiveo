@@ -271,6 +271,7 @@ class FrameInterpolationSettings:
     quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
+    feature_cache: bool = False       # cache optionnel des caractéristiques, avec réserve VRAM automatique
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 

@@ -134,6 +134,10 @@ def test_support_errors_cover_contract_options_models_and_selector(tmp_path):
     args = InterpolationPreset("hybrid", "rife-v4.6", args=("--nouvelle-option", "1"))
     unknown = rife_support_errors(_caps(), args, tta=1, rife_bin=rife)
     assert len(unknown) == 1 and "--nouvelle-option" in unknown[0]
+    cache = rife_support_errors(_caps(), ultra, tta=1, rife_bin=rife, feature_cache=True)
+    assert len(cache) == 1 and "1.7.1" in cache[0] and "cache" in cache[0]
+    supported = _caps(version=(1, 7, 1), options=frozenset(_CAPS["options"] + ["feature-cache"]))
+    assert rife_support_errors(supported, ultra, tta=1, rife_bin=rife, feature_cache=True) == []
 
 
 def test_config_prefers_installed_extension(tmp_path, monkeypatch):

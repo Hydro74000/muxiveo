@@ -1012,6 +1012,16 @@ def test_required_dovi_level_capped_for_tv_compat():
         assert required_dovi_level("ffprobe", Path("s.mkv"), 0, Fraction(6, 5)) == 9  # 60 i/s
 
 
+@pytest.mark.parametrize("quality", ["fast", "balanced", "quality", "ultra", "light"])
+def test_optional_feature_cache_is_forwarded_for_every_preset(quality):
+    cmd = build_rife_stage("r", quality=quality, source=InterpolationSource(), feature_cache=True)
+    assert "--feature-cache" in cmd
+    plain = build_rife_stage("r", quality=quality, source=InterpolationSource())
+    assert "--feature-cache" not in plain
+    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": True}))
+    assert preset.to_video_settings().interpolation.feature_cache
+
+
 def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
     from core.config import AppConfig
     from ui.panels.encode_panel.panel import EncodePanel
@@ -1025,8 +1035,12 @@ def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
         settings = panel._current_interpolation_settings()
         assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
         assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
-        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
+        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8, feature_cache=True))
         assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
+        assert panel._interp_cache_cb.isChecked() and panel._current_interpolation_settings().feature_cache
+        panel._set_combo_data(panel._interp_quality_combo, "light")
+        assert panel._current_interpolation_settings().feature_cache
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
         assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
     finally:
         panel.close()   # arrête les sondes du panneau (threads) avant la destruction

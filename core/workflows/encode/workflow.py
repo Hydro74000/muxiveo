@@ -1067,6 +1067,7 @@ class EncodeWorkflow(QObject):
             gpu=settings.gpu,
             mode=settings.mode,
             tta=settings.tta_passes(),
+            feature_cache=settings.feature_cache,
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
         )
@@ -3400,6 +3401,7 @@ class EncodeWorkflow(QObject):
                 errors.extend(_rife_support_errors(
                     _rife_capabilities(resolved), _interpolation_preset(settings.quality, resolved),
                     tta=settings.tta_passes(), rife_bin=resolved,
+                    feature_cache=settings.feature_cache,
                 ))
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled

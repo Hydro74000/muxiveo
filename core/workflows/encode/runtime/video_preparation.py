@@ -159,6 +159,7 @@ class VideoOnlyCommandBuilder:
             gpu=settings.gpu,
             mode=settings.mode,
             tta=settings.tta_passes(),
+            feature_cache=settings.feature_cache,
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
         )
