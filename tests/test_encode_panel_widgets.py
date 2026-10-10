@@ -552,7 +552,7 @@ class TestAudioTableReloadPreservesSettings:
 
 class TestAudioTableCurrentAudioSettings:
 
-    def test_truehd_atmos_copy_enables_truehd_core_extraction(self, table):
+    def test_truehd_atmos_copy_preserves_atmos_without_core_extraction(self, table):
         track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")
         _load_one(table, track)
 
@@ -560,7 +560,7 @@ class TestAudioTableCurrentAudioSettings:
 
         assert len(settings) == 1
         assert settings[0].codec == "copy"
-        assert settings[0].extract_truehd_core is True
+        assert settings[0].extract_truehd_core is False
 
     def test_truehd_atmos_transcode_disables_truehd_core_extraction(self, table):
         track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")

@@ -42,15 +42,19 @@ def encode_vint_size(value: int, *, length: int) -> bytes:
         raise ValueError(
             f"Valeur {value} trop grande pour VINT de {length} octets."
         )
-    raw = value.to_bytes(length, "big")
-    marker = 1 << (8 - length)
-    return bytes([raw[0] | marker]) + raw[1:]
+    return (value | (1 << (7 * length))).to_bytes(length, "big")
 
 
 def encode_vint_size_minimal(value: int) -> bytes:
     """Encode ``value`` sur le minimum d'octets possible (1..8)."""
     if value < 0:
         raise ValueError("VINT négatif interdit.")
+    # Tailles usuelles des blocks et numéros de pistes : évite la boucle et
+    # un deuxième appel d'encodage sur chaque paquet.
+    if value < 127:
+        return bytes((value | 0x80,))
+    if value < 16383:
+        return (value | 0x4000).to_bytes(2, "big")
     for length in range(1, 9):
         max_known = (1 << (7 * length)) - 2
         if value <= max_known:

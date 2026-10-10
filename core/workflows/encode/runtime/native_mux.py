@@ -400,7 +400,9 @@ def build_encode_assembly_plan(
     identities: dict[Path, str] = {}
 
     def _identity(path: Path) -> str:
-        return identities.setdefault(path, deterministic_source_identity(path))
+        if path not in identities:
+            identities[path] = deterministic_source_identity(path)
+        return identities[path]
 
     ordered: list[MatroskaAssemblyTrack] = []
     for ref in video_artifacts:

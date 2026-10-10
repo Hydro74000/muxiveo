@@ -2,7 +2,6 @@
 ui/panels/encode_panel/widgets.py — Reusable sub-widgets for the encode panel.
 
 Public:
-    _has_atmos       — detects Atmos layer in TrueHD track
     _FileZone        — drag-drop file source selector
     _AudioSourceDialog — popup for adding custom audio track
     _AudioTable      — editable audio tracks table
@@ -50,11 +49,6 @@ if TYPE_CHECKING:
 # =============================================================================
 # Helpers
 # =============================================================================
-
-def _has_atmos(track: AudioTrack) -> bool:
-    """True si la piste est TrueHD avec couche Atmos (utilisé pour extract_truehd_core)."""
-    return track.codec.lower() == "truehd" and track.atmos_flag
-
 
 def _channel_count(track: AudioTrack) -> int:
     """Retourne le nombre de canaux de la piste, avec fallback raisonnable."""
@@ -624,7 +618,7 @@ class _AudioTable(QTableWidget):
     def __init__(self, config: "AppConfig | None" = None, parent: QWidget | None = None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
         self._config = config
-        self._row_data: list[dict] = []   # {combo, bitrate, has_atmos, track, color, source_path, del_btn}
+        self._row_data: list[dict] = []   # {combo, bitrate, track, color, source_path, del_btn}
         self._changed_cb = None
         self._prev_lang: dict[int, str] = {}
         self._setup_table()
@@ -770,7 +764,9 @@ class _AudioTable(QTableWidget):
                 stream_index=d["track"].index,
                 codec=codec,
                 bitrate_kbps=bitrate,
-                extract_truehd_core=d["has_atmos"] and codec == "copy",
+                # Une copie conserve le bitstream complet, y compris Atmos.
+                # L'extraction du core reste une option explicite du modèle.
+                extract_truehd_core=False,
                 input_channels=d["track"].channels,
                 input_channel_layout=d["track"].channel_layout,
                 source_path=d.get("source_path"),
@@ -881,7 +877,6 @@ class _AudioTable(QTableWidget):
         self._row_data.append({
             "combo":       combo,
             "bitrate":     bitrate_edit,
-            "has_atmos":   _has_atmos(track),
             "track":       track,
             "color":       color,
             "source_path": source_path,

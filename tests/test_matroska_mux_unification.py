@@ -591,6 +591,62 @@ class TestRemuxPreviewPlanningCost:
 
 class TestNativeEncodeAssembly:
 
+    @pytest.mark.parametrize("codec_id", ["A_AAC", "A_AC3", "A_EAC3", "A_TRUEHD", "A_FLAC"])
+    def test_simple_copy_never_extracts_audio(self, tmp_path, monkeypatch, codec_id):
+        source = _write_mkv(
+            tmp_path / "source.mkv",
+            [_entry_bytes(1, 1, "V_MPEGH/ISO/HEVC"), _entry_bytes(2, 2, codec_id)],
+            clusters=_simple_cluster(1) + _simple_cluster(2, payload=b"audio"),
+        )
+        remux = RemuxConfig(
+            sources=[SourceInput(source, 0, [
+                TrackEntry(0, "video", "HEVC", "", "und", ""),
+                TrackEntry(1, "audio", codec_id.removeprefix("A_"), "", "und", ""),
+            ])],
+            output=tmp_path / "remux.mkv", track_order=[(0, 0), (0, 1)],
+            keep_chapters=False, mux_backend="native",
+        )
+        execution = plan_remux(remux)
+        assert execution.selected_backend == "native"
+        assert not execution.audio_variants
+        assert not any(action.command for action in execution.preparation_actions)
+        config = _encode_config(
+            tmp_path, source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+            copy_subtitles=False, keep_chapters=False,
+        )
+        commands = []
+        identity_paths = []
+        monkeypatch.setattr(
+            "core.workflows.encode.runtime.native_mux.deterministic_source_identity",
+            lambda path: identity_paths.append(path) or "stable-identity",
+        )
+        output = assemble_encode_output_native(
+            config, video_artifacts=[NativeVideoArtifactRef(source)],
+            work_dir=tmp_path, signals=None,
+            run_cmd=self._fake_run_cmd(commands), log=lambda *_args: None,
+        )
+        assert [command[0] for command in commands] == ["ffprobe"]
+        assert MatroskaReader(output).tracks()[1].codec_id == codec_id
+        assert [block.payload for block in MatroskaReader(output).blocks(track_numbers={2})] == [b"audio"]
+        assert not list(tmp_path.glob("native_audio_*"))
+        assert identity_paths == [source]
+
+    def test_truehd_core_is_materialized_only_when_explicitly_requested(self, tmp_path):
+        from core.workflows.encode.runtime.native_mux import materialize_audio_artifacts
+
+        source, _artifact = self._sources(tmp_path)
+        config = _encode_config(tmp_path, source=source, audio_tracks=[AudioTrackSettings(
+            stream_index=0, codec="copy", extract_truehd_core=True,
+        )])
+        commands = []
+        materialize_audio_artifacts(
+            config, work_dir=tmp_path, ffmpeg_bin="ffmpeg",
+            run_cmd=self._fake_run_cmd(commands),
+        )
+        assert len(commands) == 1
+        assert "truehd_core" in commands[0]
+
     def test_extra_cover_contract_uses_writer_canonical_name(self, tmp_path: Path) -> None:
         """Le contrat natif doit attendre le nom réellement écrit."""
         artifact = _write_mkv(

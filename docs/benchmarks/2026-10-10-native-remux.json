@@ -1,0 +1,390 @@
+{
+  "protocol": "One excluded warmup, three alternating runs per backend, hot cache, semantic validation and ffprobe included, cProfile excluded from timings.",
+  "mmap_window_bytes": 33554432,
+  "reports": [
+    {
+      "source_label": "HEVC/AAC",
+      "source_filename": "hevc-1800s.mkv",
+      "source_bytes": 101269874,
+      "python": "3.14.7",
+      "platform": "Linux-7.2.8-ogc5.1.fc44.x86_64-x86_64-with-glibc2.43",
+      "ffmpeg": "ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers",
+      "before": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.0027427099994383752,
+              "compile_s": 0.0010583799885353073,
+              "packets": 138600,
+              "first_progress_s": 0.003998889995273203,
+              "semantic_validation_s": 0.002289702999405563,
+              "ffprobe_s": 0.0839802919945214,
+              "write_including_validation_s": 1.752377302997047,
+              "total_s": 1.7561797659873264,
+              "output_bytes": 101256192
+            },
+            {
+              "contract_s": 0.002541814013966359,
+              "compile_s": 0.0010286739998264238,
+              "packets": 138600,
+              "first_progress_s": 0.003707384006702341,
+              "semantic_validation_s": 0.002734164008870721,
+              "ffprobe_s": 0.09106551499280613,
+              "write_including_validation_s": 1.799198171007447,
+              "total_s": 1.8027698210062226,
+              "output_bytes": 101256192
+            },
+            {
+              "contract_s": 0.0025666209985502064,
+              "compile_s": 0.0010325210023438558,
+              "packets": 138600,
+              "first_progress_s": 0.0037576780014205724,
+              "semantic_validation_s": 0.0021131329995114356,
+              "ffprobe_s": 0.08259214600548148,
+              "write_including_validation_s": 1.737952192008379,
+              "total_s": 1.7415525069955038,
+              "output_bytes": 101256192
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.40502739998919424,
+              "total_s": 0.5056117599888239,
+              "output_bytes": 101269874
+            },
+            {
+              "copy_s": 0.39412060000177007,
+              "total_s": 0.4890886539942585,
+              "output_bytes": 101269874
+            },
+            {
+              "copy_s": 0.39182940300088376,
+              "total_s": 0.484764526001527,
+              "output_bytes": 101269874
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 1.7561797659873264,
+          "ffmpeg": 0.4890886539942585
+        }
+      },
+      "after": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.002580519998446107,
+              "compile_s": 0.0010286769975209609,
+              "packets": 138600,
+              "first_progress_s": 0.0037669710000045598,
+              "semantic_validation_s": 0.0019863230118062347,
+              "ffprobe_s": 0.09034160998999141,
+              "write_including_validation_s": 0.9377736690075835,
+              "total_s": 0.9413840990018798,
+              "output_bytes": 101256192
+            },
+            {
+              "contract_s": 0.0025966300017898902,
+              "compile_s": 0.0010455689916852862,
+              "packets": 138600,
+              "first_progress_s": 0.0037722010019933805,
+              "semantic_validation_s": 0.0018065669864881784,
+              "ffprobe_s": 0.08323434200428892,
+              "write_including_validation_s": 0.930686188992695,
+              "total_s": 0.9343291989935096,
+              "output_bytes": 101256192
+            },
+            {
+              "contract_s": 0.002642375009600073,
+              "compile_s": 0.0010150220041396096,
+              "packets": 138600,
+              "first_progress_s": 0.003800764010520652,
+              "semantic_validation_s": 0.0019351869996171445,
+              "ffprobe_s": 0.08487545099342242,
+              "write_including_validation_s": 0.9477681690041209,
+              "total_s": 0.9514270890067564,
+              "output_bytes": 101256192
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.3946724599954905,
+              "total_s": 0.48369197599822655,
+              "output_bytes": 101269874
+            },
+            {
+              "copy_s": 0.380746643000748,
+              "total_s": 0.467155222009751,
+              "output_bytes": 101269874
+            },
+            {
+              "copy_s": 0.38171555900771637,
+              "total_s": 0.47197266200964805,
+              "output_bytes": 101269874
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 0.9413840990018798,
+          "ffmpeg": 0.47197266200964805
+        }
+      }
+    },
+    {
+      "source_label": "HEVC/TrueHD/EAC3",
+      "source_filename": "truehd-60s.mkv",
+      "source_bytes": 74174386,
+      "python": "3.14.7",
+      "platform": "Linux-7.2.8-ogc5.1.fc44.x86_64-x86_64-with-glibc2.43",
+      "ffmpeg": "ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers",
+      "before": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.0030352870089700446,
+              "compile_s": 0.001562903999001719,
+              "packets": 75317,
+              "first_progress_s": 0.004781113006174564,
+              "semantic_validation_s": 0.0014046069991309196,
+              "ffprobe_s": 0.08555697101110127,
+              "write_including_validation_s": 0.9903393170097843,
+              "total_s": 0.994938900010311,
+              "output_bytes": 74174483
+            },
+            {
+              "contract_s": 0.0032341490004910156,
+              "compile_s": 0.0015717299975221977,
+              "packets": 75317,
+              "first_progress_s": 0.004981146994396113,
+              "semantic_validation_s": 0.0014006900019012392,
+              "ffprobe_s": 0.08299026101303753,
+              "write_including_validation_s": 0.9815153419913258,
+              "total_s": 0.9863227540045045,
+              "output_bytes": 74174483
+            },
+            {
+              "contract_s": 0.0031142049992922693,
+              "compile_s": 0.0015441279974766076,
+              "packets": 75317,
+              "first_progress_s": 0.004825976997381076,
+              "semantic_validation_s": 0.001548055006423965,
+              "ffprobe_s": 0.08347621899156366,
+              "write_including_validation_s": 0.9858447300066473,
+              "total_s": 0.9905041449965211,
+              "output_bytes": 74174483
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.2630854719900526,
+              "total_s": 0.34375999099574983,
+              "output_bytes": 74174386
+            },
+            {
+              "copy_s": 0.2652364159876015,
+              "total_s": 0.346123732990236,
+              "output_bytes": 74174386
+            },
+            {
+              "copy_s": 0.2723341920063831,
+              "total_s": 0.3556108379998477,
+              "output_bytes": 74174386
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 0.9905041449965211,
+          "ffmpeg": 0.346123732990236
+        }
+      },
+      "after": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.002969905995996669,
+              "compile_s": 0.0013971040025353432,
+              "packets": 75317,
+              "first_progress_s": 0.004532147999270819,
+              "semantic_validation_s": 0.0013578709913417697,
+              "ffprobe_s": 0.08410834199457895,
+              "write_including_validation_s": 0.5664160270098364,
+              "total_s": 0.570784288996947,
+              "output_bytes": 74174483
+            },
+            {
+              "contract_s": 0.0028141060029156506,
+              "compile_s": 0.0013028779940214008,
+              "packets": 75317,
+              "first_progress_s": 0.004250323006999679,
+              "semantic_validation_s": 0.001394399005221203,
+              "ffprobe_s": 0.08226777100935578,
+              "write_including_validation_s": 0.5539069499936886,
+              "total_s": 0.5580255680106347,
+              "output_bytes": 74174483
+            },
+            {
+              "contract_s": 0.002815598010784015,
+              "compile_s": 0.0013169249868951738,
+              "packets": 75317,
+              "first_progress_s": 0.004294395010219887,
+              "semantic_validation_s": 0.0013641529949381948,
+              "ffprobe_s": 0.08338944100250956,
+              "write_including_validation_s": 0.5642661799938651,
+              "total_s": 0.5683998050080845,
+              "output_bytes": 74174483
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.280278828999144,
+              "total_s": 0.36476337100612,
+              "output_bytes": 74174386
+            },
+            {
+              "copy_s": 0.2625971509987721,
+              "total_s": 0.34364848499535583,
+              "output_bytes": 74174386
+            },
+            {
+              "copy_s": 0.2661986340099247,
+              "total_s": 0.34828946601192,
+              "output_bytes": 74174386
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 0.5683998050080845,
+          "ffmpeg": 0.34828946601192
+        }
+      }
+    },
+    {
+      "source_label": "AVC/AAC",
+      "source_filename": "source-180s.mkv",
+      "source_bytes": 458841276,
+      "python": "3.14.7",
+      "platform": "Linux-7.2.8-ogc5.1.fc44.x86_64-x86_64-with-glibc2.43",
+      "ffmpeg": "ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers",
+      "before": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.002792433006106876,
+              "compile_s": 0.0011902359983650967,
+              "packets": 13860,
+              "first_progress_s": 0.004150742999627255,
+              "semantic_validation_s": 0.0034170209983130917,
+              "ffprobe_s": 0.08690337000007275,
+              "write_including_validation_s": 0.500563396999496,
+              "total_s": 0.5045473890058929,
+              "output_bytes": 458841995
+            },
+            {
+              "contract_s": 0.002534239989472553,
+              "compile_s": 0.0009431150101590902,
+              "packets": 13860,
+              "first_progress_s": 0.0036196909932186827,
+              "semantic_validation_s": 0.003236805001506582,
+              "ffprobe_s": 0.08796276099747047,
+              "write_including_validation_s": 0.4841062149935169,
+              "total_s": 0.4875845709902933,
+              "output_bytes": 458841995
+            },
+            {
+              "contract_s": 0.002546853997046128,
+              "compile_s": 0.0009563490020809695,
+              "packets": 13860,
+              "first_progress_s": 0.0036521119909593835,
+              "semantic_validation_s": 0.0033040400012396276,
+              "ffprobe_s": 0.08822951999900397,
+              "write_including_validation_s": 0.49630341900046915,
+              "total_s": 0.4998075240000617,
+              "output_bytes": 458841995
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.3557781309937127,
+              "total_s": 0.44623957699513994,
+              "output_bytes": 458841276
+            },
+            {
+              "copy_s": 0.34183839699835517,
+              "total_s": 0.44297456899948884,
+              "output_bytes": 458841276
+            },
+            {
+              "copy_s": 0.3601805759972194,
+              "total_s": 0.45253970999328885,
+              "output_bytes": 458841276
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 0.4998075240000617,
+          "ffmpeg": 0.44623957699513994
+        }
+      },
+      "after": {
+        "runs": {
+          "native": [
+            {
+              "contract_s": 0.002780472001177259,
+              "compile_s": 0.0009196539904223755,
+              "packets": 13860,
+              "first_progress_s": 0.003867077990435064,
+              "semantic_validation_s": 0.0029483749967766926,
+              "ffprobe_s": 0.09159263099718373,
+              "write_including_validation_s": 0.36031369800912216,
+              "total_s": 0.3640156269975705,
+              "output_bytes": 458841995
+            },
+            {
+              "contract_s": 0.002810778998536989,
+              "compile_s": 0.000909886002773419,
+              "packets": 13860,
+              "first_progress_s": 0.003852200010442175,
+              "semantic_validation_s": 0.0028832339885411784,
+              "ffprobe_s": 0.0873871829971904,
+              "write_including_validation_s": 0.35329243099840824,
+              "total_s": 0.35701431799679995,
+              "output_bytes": 458841995
+            },
+            {
+              "contract_s": 0.0028126429970143363,
+              "compile_s": 0.0009350229956908152,
+              "packets": 13860,
+              "first_progress_s": 0.003888227991410531,
+              "semantic_validation_s": 0.0030653830035589635,
+              "ffprobe_s": 0.08669425200787373,
+              "write_including_validation_s": 0.35949408999294974,
+              "total_s": 0.3632431479927618,
+              "output_bytes": 458841995
+            }
+          ],
+          "ffmpeg": [
+            {
+              "copy_s": 0.3576529480051249,
+              "total_s": 0.45147220000217203,
+              "output_bytes": 458841276
+            },
+            {
+              "copy_s": 0.3537572770001134,
+              "total_s": 0.44210326799657196,
+              "output_bytes": 458841276
+            },
+            {
+              "copy_s": 0.4043212139949901,
+              "total_s": 0.5093987709988141,
+              "output_bytes": 458841276
+            }
+          ]
+        },
+        "medians_s": {
+          "native": 0.3632431479927618,
+          "ffmpeg": 0.45147220000217203
+        }
+      }
+    }
+  ]
+}

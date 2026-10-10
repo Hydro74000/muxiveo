@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from core.matroska.ebml import element, float_element
+from core.matroska.ebml import element, encode_vint_size_minimal, float_element, sint_element, uint_element
 from core.matroska.ids import EBML_HEADER_ID, INFO_ID, SEGMENT_ID
 from core.matroska.reader import MatroskaReader
 
@@ -87,6 +87,173 @@ def test_reader_resumes_after_unknown_size_clusters(tmp_path: Path) -> None:
     reader = MatroskaReader(path)
     assert [item.element_id for item in reader.top_level()] == [cluster, cluster]
     assert [(item.timestamp_ms, item.payload) for item in reader.blocks()] == [(0, b"a"), (10, b"b")]
+
+
+@pytest.mark.parametrize("scale_ns", [1_000, 1_000_000, 10_000_000])
+@pytest.mark.parametrize("track_numbers", [None, {129}, {2}, set()])
+def test_packet_reader_matches_stream_for_laces_and_block_group_metadata(
+    tmp_path, scale_ns, track_numbers,
+):
+    """Même ordre, nanosecondes et payloads : mmap, flux et mux lacé."""
+    def raw(track, relative, flags, payload):
+        return encode_vint_size_minimal(track) + relative.to_bytes(2, "big", signed=True) + bytes([flags]) + payload
+
+    packets = b"".join(
+        element(b"\xa3", raw(129, relative, flags, payload))
+        for relative, flags, payload in (
+            (3, 0x89, b"plain"), (-2, 0x82, b"\x01\x01abb"),
+            (1, 0x84, b"\x01aabb"), (0, 0x86, b"\x01\x81abb"),
+            (4, 0x82, b"\x02\xff\x2d\xff\x2d" + b"x" * 900),
+        )
+    )
+    additions = element(b"\xa6", uint_element(b"\xee", 1) + element(b"\xa5", b"extra"))
+    group = element(b"\xa0", b"".join((
+        element(b"\xa1", raw(2, -3, 0x0C, b"\x01ccdd")),
+        uint_element(b"\x9b", 5), sint_element(b"\xfb", -2), sint_element(b"\xfb", 3),
+        sint_element(bytes.fromhex("75a2"), -123456),
+        element(b"\xa4", b"codec-state"), element(bytes.fromhex("75a1"), additions),
+    )))
+    cluster = bytes.fromhex("1f43b675")
+    path = tmp_path / "packet-parity.mkv"
+    path.write_bytes(
+        element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff"
+        + element(INFO_ID, uint_element(bytes.fromhex("2ad7b1"), scale_ns))
+        + cluster + b"\xff" + uint_element(b"\xe7", 40) + packets + group
+        + cluster + b"\xff" + uint_element(b"\xe7", 80) + packets + group
+    )
+    reader = MatroskaReader(path)
+    streamed = list(reader._blocks_stream(track_numbers=track_numbers))
+    assert list(reader.blocks(track_numbers=track_numbers)) == streamed
+    first_frames = [block for block in streamed if block.lace_index == 0]
+    assert list(reader.blocks(track_numbers=track_numbers, first_lace_only=True)) == first_frames
+    assert list(reader._blocks_stream(track_numbers=track_numbers, first_lace_only=True)) == first_frames
+    if track_numbers is None:
+        grouped = next(block for block in first_frames if block.track_number == 2)
+        assert grouped.timestamp_ns == 37 * scale_ns
+        assert grouped.references_ns == (-2 * scale_ns, 3 * scale_ns)
+        assert grouped.duration_ns == 5 * scale_ns
+        assert grouped.discard_padding_ns == -123456
+        assert grouped.codec_state == b"codec-state"
+        assert grouped.block_additions == additions
+
+
+@pytest.mark.parametrize("error", [OSError, ValueError, OverflowError])
+def test_packet_reader_falls_back_when_mapping_unavailable(tmp_path, monkeypatch, error):
+    import core.matroska.reader as module
+
+    path = _blocks_file(tmp_path, b"\x81\x00\x00\x86\x01\x81abb", grouped=True)
+    reader = MatroskaReader(path)
+    expected = list(reader._blocks_stream(first_lace_only=True))
+
+    def unavailable(*args, **kwargs):
+        raise error("mapping unavailable")
+
+    monkeypatch.setattr(module.mmap, "mmap", unavailable)
+    assert list(reader.blocks(first_lace_only=True)) == expected
+
+
+def test_packet_reader_consumes_unknown_clusters_without_boundary_prescan(tmp_path, monkeypatch):
+    cluster = bytes.fromhex("1f43b675")
+    path = tmp_path / "unknown-streaming.mkv"
+    path.write_bytes(
+        element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + element(INFO_ID, b"")
+        + cluster + b"\xff" + element(b"\xa3", b"\x81\x00\x00\x80first")
+        + cluster + b"\xff" + uint_element(b"\xe7", 10)
+        + element(b"\xa3", b"\x81\x00\x00\x80second")
+        + element(bytes.fromhex("1254c367"), b"")
+        + element(cluster, uint_element(b"\xe7", 20) + element(b"\xa3", b"\x81\x00\x00\x80third"))
+    )
+    reader = MatroskaReader(path)
+    expected = list(reader._blocks_stream())
+
+    def unexpected_prescan():
+        pytest.fail("Le lecteur de paquets doit trouver les frontières pendant sa passe média")
+
+    monkeypatch.setattr(reader, "top_level", unexpected_prescan)
+    assert list(reader.blocks()) == expected
+    assert [block.timestamp_ns for block in expected] == [0, 10_000_000, 20_000_000]
+
+
+@pytest.mark.parametrize("unknown_clusters", [False, True])
+def test_packet_reader_window_boundaries_and_oversized_packets(tmp_path, monkeypatch, unknown_clusters):
+    import core.matroska.reader as module
+
+    # Fenêtre réduite : plusieurs remappings, un paquet plus grand que la
+    # fenêtre, des en-têtes traversant sa frontière et des métadonnées groupées.
+    monkeypatch.setattr(module._MappedInput, "_WINDOW_BYTES", 4096)
+    cluster = bytes.fromhex("1f43b675")
+    media = b""
+    for index in range(12):
+        block = b"\x81\x00\x00\x80" + bytes([index]) * (5000 if index == 4 else 1021)
+        group = element(b"\xa0", element(b"\xa1", block) + uint_element(b"\x9b", 40))
+        body = uint_element(b"\xe7", index * 40) + group + element(b"\xa3", block)
+        media += cluster + b"\xff" + body if unknown_clusters else element(cluster, body)
+    path = tmp_path / "windows.mkv"
+    path.write_bytes(element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + element(INFO_ID, b"") + media)
+    reader = MatroskaReader(path)
+    expected = list(reader._blocks_stream())
+    observed = list(reader.blocks())
+    assert observed == expected
+    # Les bytes déjà émis restent valides après fermeture de toutes les fenêtres.
+    assert observed[8].payload == bytes([4]) * 5000
+
+
+def test_packet_reader_element_header_crosses_mapping_window(tmp_path, monkeypatch):
+    import core.matroska.reader as module
+
+    monkeypatch.setattr(module._MappedInput, "_WINDOW_BYTES", 4096)
+    prefix = element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + element(INFO_ID, b"")
+    timestamp = uint_element(b"\xe7", 0)
+    packet = element(b"\xa3", b"\x81\x00\x00\x80" + b"f" * 128)
+    # Cluster : ID 4 + VINT 2 ; Void : ID 1 + VINT 2.
+    padding = element(b"\xec", b"\x00" * (4095 - len(prefix) - 6 - len(timestamp) - 3))
+    document = prefix + element(bytes.fromhex("1f43b675"), timestamp + padding + packet)
+    assert document.index(packet) == 4095
+    path = tmp_path / "header-boundary.mkv"
+    path.write_bytes(document)
+    reader = MatroskaReader(path)
+    assert list(reader.blocks()) == list(reader._blocks_stream())
+
+
+def test_packet_reader_closes_mapping_when_iteration_stops(tmp_path, monkeypatch):
+    import core.matroska.reader as module
+
+    path = _blocks_file(tmp_path, b"\x81\x00\x00\x80frame")
+    mappings = []
+    original = module.mmap.mmap
+
+    def record_mapping(*args, **kwargs):
+        result = original(*args, **kwargs)
+        mappings.append(result)
+        return result
+
+    monkeypatch.setattr(module.mmap, "mmap", record_mapping)
+    iterator = MatroskaReader(path).blocks()
+    assert next(iterator).payload == b"frame"
+    assert mappings and not mappings[0].closed
+    iterator.close()
+    assert all(mapping.closed for mapping in mappings)
+
+
+@pytest.mark.parametrize("corrupt", [b"\x00", b"\xa3", b"\xa3\x40", b"\xa3\x88", b"\xa3\x82\x81\x00"])
+def test_packet_reader_rejects_corruption_without_replaying_previous_packets(tmp_path, monkeypatch, corrupt):
+    path = _blocks_file(tmp_path, b"\x81\x00\x00\x80good")
+    # Remplace le Cluster par un master valide contenant un enfant tronqué.
+    path.write_bytes(
+        element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff"
+        + element(bytes.fromhex("1f43b675"),
+                  element(b"\xa3", b"\x81\x00\x00\x80good") + corrupt)
+    )
+    reader = MatroskaReader(path)
+
+    def unexpected_replay(*args, **kwargs):
+        pytest.fail("Une erreur de parsing ne doit pas relancer la lecture")
+
+    monkeypatch.setattr(reader, "_blocks_stream", unexpected_replay)
+    iterator = reader.blocks()
+    assert next(iterator).payload == b"good"
+    with pytest.raises(ValueError):
+        next(iterator)
 
 
 def test_reader_models_nested_video_audio_colour_and_dovi_mapping(tmp_path: Path) -> None:

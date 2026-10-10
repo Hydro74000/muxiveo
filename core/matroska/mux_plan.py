@@ -90,6 +90,9 @@ class MatroskaMuxPlan:
     #: Durée connue seulement après consommation du flux (ex. flux tronqué
     #: accepté sur dérogation) : Info réécrite à taille égale en fin d'écriture.
     final_duration_ns: Callable[[], int] | None = field(default=None, compare=False)
+    #: Compteurs calculés pendant l'écriture, puis Tags indexés en fin de
+    #: Segment. Évite une première lecture exhaustive des sources.
+    regenerate_statistics: bool = False
 
     def __post_init__(self) -> None:
         if not self.tracks:
