@@ -90,7 +90,8 @@ def test_device_combo_dynamic_selection_and_track_state(qt_app, monkeypatch):
         engine.devices.return_value = (NVIDIA,)
         combo.refresh_devices()
         assert combo.currentData() == SECOND.uuid
-        assert "indisponible" in combo.currentText()
+        from core.i18n import translate_text
+        assert combo.currentText() == translate_text("GPU indisponible ({id})", id=SECOND.uuid[:8])
         combo.setCurrentIndex(combo.findData("cpu"))
         combo.activated.emit(combo.currentIndex())
         assert panel._current_video_settings().fel_device == "cpu"

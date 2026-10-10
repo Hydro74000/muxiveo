@@ -1,4 +1,12 @@
 {
+  "Auto": {
+    "fra": "Auto",
+    "eng": "Auto"
+  },
+  "CPU": {
+    "fra": "CPU",
+    "eng": "CPU"
+  },
   "Moteur de reconstruction FEL": {
     "fra": "Moteur de reconstruction FEL",
     "eng": "FEL reconstruction engine"
