@@ -25,12 +25,12 @@ APP_VERSION_LABEL = f"v{APP_VERSION}"
 # Au-delà, Muxiveo installe la version la plus récente compatible annoncée par le flux (core/plugins.py).
 MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
 # Interpolation d'images (moteur muxiveo-rife, modèles, poids du sélecteur, préréglages) : extension mvo-rife.
-MVO_RIFE_VERSION = "1.8.0"
+MVO_RIFE_VERSION = "1.9.0"
 MVO_RIFE_RELEASE_TAG = f"mvo-rife-v{MVO_RIFE_VERSION}"
 # Contrat avec le moteur (muxiveo-rife --capabilities) : flux y4m, nombre de trames, stderr, codes de sortie.
 MVO_RIFE_CONTRACT = 1
 # Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : extension mvo-rife-trt.
-MVO_RIFE_TRT_VERSION = "1.1.0"
+MVO_RIFE_TRT_VERSION = "1.2.0"
 MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
 # Version de développement du contrat FEL ; pas de préinstallation obligatoire avant publication.
 MVO_FEL_VERSION = "0.1.0"
