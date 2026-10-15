@@ -98,6 +98,39 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
         assert record is None
 
 
+@pytest.mark.parametrize("codec", ["libx265", "nvencc_hevc"])
+@pytest.mark.parametrize("location", ["topleft", "left"])
+@pytest.mark.parametrize("output", ["hdr10", "dv", "sdr"])
+def test_fel_chroma_location_matches_bl(qt_app, tmp_path, monkeypatch, codec, location, output):
+    """Position chroma signalée = celle des images FEL (BL), quel que soit l'encodeur ou la sortie."""
+    if codec == "nvencc_hevc" and not shutil.which("nvencc"):
+        pytest.skip("NVEncC requis")
+    engine = FelEngine(Path(_LIBRARY))
+    monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
+    source = Path(_FIXTURE)
+    if location == "left":
+        # Même flux FEL, VUI du BL réécrite (chroma_sample_loc_type 0).
+        source = tmp_path / "left.hevc"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", _FIXTURE, "-map", "0:v:0", "-c", "copy",
+            "-bsf:v", "hevc_metadata=chroma_sample_loc_type=0", "-f", "hevc", str(source)], check=True)
+    video = VideoEncodeSettings(codec=codec, crf=24, preset="default" if codec == "nvencc_hevc" else "ultrafast",
+        bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=output == "dv", source_path=source,
+        source_bit_depth=10, bit_depth="8" if output == "sdr" else "10", tonemap_to_sdr=output == "sdr",
+        input_frame_rate="24000/1001", source_color_transfer="smpte2084")
+    target = tmp_path / "out.mkv"
+    config = EncodeConfig(source=source, output=target, video=video, audio_tracks=[],
+        copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
+    workflow = EncodeWorkflow(ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+        nvencc_bin=shutil.which("nvencc"))
+    state = wait_task(workflow.run(config), timeout=120)
+    assert state["failed"] is None, state["failed"]
+    stream = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=chroma_location",
+        "-select_streams", "v:0", "-of", "json", str(target)], check=True, text=True, capture_output=True).stdout)
+    # « left » (type 0) est aussi la valeur implicite d'une VUI sans position.
+    assert stream["streams"][0].get("chroma_location", "left") in ({location} | ({"unspecified"} if location == "left"
+                                                                                   else set()))
+
+
 def test_fel_presentation_timestamps_on_selected_track(qt_app, tmp_path):
     """Deux pistes, B-frames et départ non nul : comparer chaque PTS décodé."""
     source = tmp_path / "two_tracks.mkv"

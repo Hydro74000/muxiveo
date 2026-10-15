@@ -196,7 +196,9 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
     # Avant l'upload matériel ; sinon à la fin du traitement logiciel/RIFE.
     chain = first[pos]
     hardware = next((marker for marker in (",format=p010,hwupload", ",format=nv12,hwupload") if marker in chain), "")
-    first[pos] = chain.replace(hardware, "," + reduce + hardware) if hardware else chain + "," + reduce
+    # Tone mapping FEL (build_vf) : images déjà en 4:2:0 à la position du BL, et marquées.
+    if f"setparams=chroma_location={context.chroma_location}" not in chain:
+        first[pos] = chain.replace(hardware, "," + reduce + hardware) if hardware else chain + "," + reduce
     source = replace(source, threads=max(1, threads)) if threads else source
     result = PipelineCommand(command if upstream else first, upstream, producer=source)
     from core.fel.direct import direct_command

@@ -492,19 +492,27 @@ def nvencc_p5_native_args() -> list[str]:
     ]
 
 
+# ``--chromaloc`` NVEncC : chroma_sample_loc_type H.273 (noms FFmpeg).
+_NVENCC_CHROMA_LOCATIONS = {"left": 0, "center": 1, "topleft": 2, "top": 3, "bottomleft": 4, "bottom": 5}
+
+
 def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> list[str]:
     """Signalisation couleur HDR (VUI) et recopie des métadonnées statiques source.
 
     Sans ``--transfer``/``--colorprim``, NVEncC émet un flux PQ non signalé,
     lu comme SDR : la VUI doit suivre dès qu'un HDR statique ou dynamique est
     conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
+    FEL : images 4:2:0 produites par Muxiveo à la position chroma du BL, HDR comme SDR.
     """
+    fel = video.fel_context
+    fel_location = (["--chromaloc", str(_NVENCC_CHROMA_LOCATIONS.get(fel.chroma_location, 0))]
+                    if fel is not None and not direct_input else [])
     # NVEncC H.264 refuse toute signalisation HDR (--master-display/--max-cll).
     # Sortie HDR (source PQ/HLG sans tone-mapping) : la VUI suit, même sans
     # métadonnées statiques (case HDR10 décochée).
     transfer = output_hdr_transfer(video)
     if not transfer:
-        return []
+        return fel_location
     static = bool(getattr(video, "inject_hdr_meta", False))
     if direct_input and getattr(video, "p5_to_hdr10", False):
         # VUI d'origine IPT-PQ-c2 plage pleine : décrire l'image convertie.
@@ -520,7 +528,9 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
             "--colorprim", "bt2020",
             "--transfer", "arib-std-b67" if transfer == "hlg" else "smpte2084",
         ]
-        if getattr(video, "copy_dv", False):
+        if fel_location:
+            args.extend(fel_location)
+        elif getattr(video, "copy_dv", False):
             args.extend(["--chromaloc", "2"])
         return args
     args = [

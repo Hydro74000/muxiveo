@@ -333,6 +333,31 @@ def test_conversion_uses_bl_chroma_location(tmp_path):
     assert "chroma_location=topleft" in (direct_filter("", "topleft") or "")
 
 
+def test_tonemap_is_reduced_once_at_bl_chroma_location(tmp_path):
+    """SDR : le tone mapping sous-échantillonne déjà à la position du BL ; zscale suppose « left »
+    sur des images non marquées et rééchantillonnerait la chroma une seconde fois."""
+    from core.workflows.encode.domain.codecs import build_vf
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, {}, "topleft"), tonemap_to_sdr=True,
+                                bit_depth="8", source_color_transfer="smpte2084")
+    result = with_fel_input(["ffmpeg", "-i", "original.mkv", "-vf", build_vf(video), "out.mkv"], video)
+    vf = result[result.index("-vf")+1]
+    assert vf.count("chromal=") == 1 and "chromal=topleft,format=yuv420p,setparams=chroma_location=topleft" in vf
+
+
+@pytest.mark.parametrize("location,copy_dv,sdr,expected", [
+    ("topleft", False, False, "2"), ("left", True, False, "0"), ("bottom", True, False, "5"),
+    ("topleft", False, True, "2"), ("left", False, True, "0"),
+])
+def test_nvencc_signals_fel_chroma_location(tmp_path, location, copy_dv, sdr, expected):
+    """NVEncC lit les images FEL par pipe : la VUI suit la position du BL, et non la règle de la copie DV."""
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command
+    video = VideoEncodeSettings(codec="nvencc_hevc", fel_context=seek_context(tmp_path, {}, location),
+                                copy_dv=copy_dv, tonemap_to_sdr=sdr, bit_depth="8" if sdr else "10",
+                                source_bit_depth=10, source_color_transfer="smpte2084")
+    cmd = build_nvencc_command("nvencc", video, "out.hevc")
+    assert cmd.count("--chromaloc") == 1 and cmd[cmd.index("--chromaloc")+1] == expected
+
+
 def test_preparation_reads_bl_chroma_location(tmp_path, monkeypatch):
     import core.fel.preparation as preparation
     monkeypatch.setattr(preparation, "extract_dovi_rpu", Mock())
