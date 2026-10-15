@@ -57,6 +57,9 @@ class FelEngine:
                 self.lib.mvo_fel_set_device.restype = ctypes.c_int
                 self.lib.mvo_fel_backend.argtypes = [ctypes.c_void_p]
                 self.lib.mvo_fel_backend.restype = ctypes.c_char_p
+            if capabilities.get("seek") == 1:
+                self.lib.mvo_fel_set_start.argtypes = [ctypes.c_void_p, ctypes.c_int64]
+                self.lib.mvo_fel_set_start.restype = ctypes.c_int
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -144,12 +147,15 @@ class FelSource:
     threads: int = 1
     frame_rate: str = ""
     device_plan: FelDevicePlan | None = None
+    # Départ dans la source (sémantique -ss d'entrée de FFmpeg), en microsecondes.
+    start_us: int = 0
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
 
     def describe(self) -> str:
-        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream} → NUT RGB PQ"
+        start = f", départ {self.start_us / 1e6:.3f} s" if self.start_us else ""
+        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream}{start} → NUT RGB PQ"
 
 
 class FelProducer:
@@ -166,6 +172,10 @@ class FelProducer:
         )
         if not self._handle:
             raise FelError("Création du contexte FEL impossible")
+        if source.start_us and source.engine.lib.mvo_fel_set_start(self._handle, source.start_us) != 0:
+            source.engine.lib.mvo_fel_destroy(self._handle)
+            self._handle = None
+            raise FelError("Départ FEL refusé par le plugin")
         self._release_device: Callable[[], None] = lambda: None
         if source.device_plan is not None:
             try:

@@ -1,6 +1,7 @@
 """Confirmation au lancement et état de reprise BL d'une piste."""
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -15,6 +16,22 @@ from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
 from core.workflows.encode.runtime.dovi_static_hdr import estimate_static_hdr_from_rpu
 
 
+CHROMA_LOCATIONS = frozenset({"left", "center", "topleft", "top", "bottomleft", "bottom"})
+
+
+def source_chroma_location(ffprobe: str, source: Path, stream: int, capture: Callable[[list[str]], str]) -> str:
+    """Position chroma déclarée par la piste ; à défaut celle du HEVC non signalé (left)."""
+    text = str(capture([ffprobe, "-v", "error", "-select_streams", str(stream), "-show_entries",
+                        "stream=chroma_location", "-of", "json", str(source)]) or "")
+    try:
+        # JSON : le CSV ajoute des champs vides pour la side data Dolby Vision.
+        streams = json.loads(text[text.index("{"):text.rindex("}")+1]).get("streams") or [{}]
+        value = str(streams[0].get("chroma_location") or "").lower()
+    except (ValueError, AttributeError, IndexError):
+        value = ""
+    return value if value in CHROMA_LOCATIONS else "left"
+
+
 def requested(video: VideoEncodeSettings) -> bool:
     return wants_fel_bake(video.bake_dovi_fel, sub_profile_from_value(video.dovi_source_profile), video.codec)
 
@@ -22,6 +39,7 @@ def requested(video: VideoEncodeSettings) -> bool:
 def prepare_fel(
     video: VideoEncodeSettings, *, source: Path, work_dir: Path, index: int,
     ffmpeg: str, dovi: str, threads: int, run: Callable[[list[str]], object],
+    ffprobe: str = "ffprobe",
     capture: Callable[[list[str]], str], cancelled: Callable[[], bool], log: Callable[[str, str], None],
     engine_loader: Callable[[], FelEngine] | None = None,
 ) -> VideoEncodeSettings:
@@ -45,7 +63,8 @@ def prepare_fel(
             choice = "auto"
         plan = FelDevicePlan(choice, devices, video, log)
         context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan),
-                               rpu, video.max_cll, video.static_hdr_light_level_source)
+                               rpu, video.max_cll, video.static_hdr_light_level_source,
+                               source_chroma_location(ffprobe, source, video.stream_index, capture))
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")
         if video.inject_hdr_meta and not video.tonemap_to_sdr:
             provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source

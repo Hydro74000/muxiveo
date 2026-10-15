@@ -3108,6 +3108,7 @@ class EncodeWorkflow(QObject):
             prepared_fel = prepare_fel(
                 video, source=self._video_source_from_settings(config, video), work_dir=work_dir, index=index,
                 ffmpeg=self._ffmpeg, dovi=dovi_bin, threads=max(1, self._ffmpeg_threads), run=run, capture=run_capture,
+                ffprobe=self._ffprobe_path(),
                 cancelled=(signals._cancel_event.is_set if signals is not None else lambda: False),
                 log=self.log_message.emit,
                 engine_loader=load_fel_engine,

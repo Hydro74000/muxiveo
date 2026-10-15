@@ -1232,7 +1232,9 @@ def build_vf(video: VideoEncodeSettings) -> str:
     if not video.tonemap_to_sdr:
         return ",".join(chain)
     algo = video.tonemap_algorithm or "hable"
-    dither = ":dither=error_diffusion" if video.fel_context is not None else ""
+    # FEL : images RGB reconstruites, tramées et sous-échantillonnées à la position chroma du BL.
+    dither = (f":dither=error_diffusion:chromal={video.fel_context.chroma_location}"
+              if video.fel_context is not None else "")
     chain.append(
         "zscale=transfer=linear:npl=100,"
         "format=gbrpf32le,"

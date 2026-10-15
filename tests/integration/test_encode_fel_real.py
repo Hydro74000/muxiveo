@@ -86,6 +86,9 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
     assert stream["nb_read_frames"] == source_stream["nb_read_frames"]
     assert stream["color_transfer"] == ("bt709" if mode == "sdr" else "smpte2084")
     assert stream["pix_fmt"] == ("yuv420p" if mode == "sdr" else "yuv420p10le")
+    if mode != "sdr" and source_stream.get("chroma_location"):
+        # Images reconstruites sous-échantillonnées et signalées comme le BL.
+        assert stream.get("chroma_location") == source_stream["chroma_location"]
     record = next((item for item in stream.get("side_data_list", [])
         if item.get("side_data_type") == "DOVI configuration record"), None)
     if mode.endswith("_dv"):

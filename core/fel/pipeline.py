@@ -1,6 +1,7 @@
 """Remplacement de l'entrée vidéo par le producteur FEL, sans fichier d'images."""
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 from core.pipeline_command import PipelineCommand
@@ -11,6 +12,18 @@ RGB_TO_YUV = (
     "setparams=range=full:color_primaries=bt2020:color_trc=smpte2084:colorspace=gbr,"
     "zscale=matrix=bt2020nc:range=limited:dither=error_diffusion,format=yuv444p16le"
 )
+
+
+def seek_microseconds(value: str) -> int | None:
+    """Durée FFmpeg (secondes ou [HH:]MM:SS[.ms]) en microsecondes ; None si illisible."""
+    match = re.fullmatch(r"(?:(\d+):)?(?:(\d+):)?(\d+(?:\.\d*)?|\.\d+)", value.strip())
+    if not match:
+        return None
+    hours, minutes, seconds = match.groups()
+    if hours is not None and minutes is None:
+        hours, minutes = None, hours
+    total = int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds)
+    return round(total * 1_000_000)
 
 
 def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int | None = None) -> list[str]:
@@ -33,7 +46,18 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         while flag in before:
             pos = before.index(flag)
             del before[pos:pos+2]
-    first[:] = [*before, "-f", "nut", "-i", "pipe:0", *first[index+2:]]
+    source = context.source
+    if "-ss" in before and source.engine.capabilities.get("seek") == 1:
+        # Le plugin se positionne lui-même : sinon FFmpeg jetterait toutes les
+        # images reconstruites depuis le début du fichier jusqu'au point demandé.
+        pos = before.index("-ss")
+        start = seek_microseconds(before[pos+1]) if pos + 1 < len(before) else None
+        if start is not None:
+            del before[pos:pos+2]
+            source = replace(source, start_us=start)
+    # Signalisation explicite : hevc_nvenc ignore la position chroma portée par les images.
+    first[:] = [*before, "-f", "nut", "-i", "pipe:0", "-chroma_sample_location", context.chroma_location,
+                *first[index+2:]]
     if "-map" in first:
         first[first.index("-map")+1] = "0:0"
     if "-vf" in first:
@@ -46,12 +70,16 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         first[position:position] = ["-vf", RGB_TO_YUV]
     pos = first.index("-vf") + 1
     depth = resolve_output_bit_depth(video)
-    reduce = f"zscale=dither=error_diffusion,format=yuv420p{'10le' if depth == 10 else ''}"
+    # Sous-échantillonnage à la position chroma du BL : celle que signalent les encodeurs.
+    # zscale ne marque pas les images : sans setparams, l'encodeur signalerait « left ».
+    reduce = (f"zscale=dither=error_diffusion:chromal={context.chroma_location},"
+              f"format=yuv420p{'10le' if depth == 10 else ''},"
+              f"setparams=chroma_location={context.chroma_location}")
     # Avant l'upload matériel ; sinon à la fin du traitement logiciel/RIFE.
     chain = first[pos]
     hardware = next((marker for marker in (",format=p010,hwupload", ",format=nv12,hwupload") if marker in chain), "")
     first[pos] = chain.replace(hardware, "," + reduce + hardware) if hardware else chain + "," + reduce
-    source = replace(context.source, threads=max(1, threads)) if threads else context.source
+    source = replace(source, threads=max(1, threads)) if threads else source
     result = PipelineCommand(command if upstream else first, upstream, producer=source)
     from core.fel.direct import direct_command
     return direct_command(result, original, video, threads)

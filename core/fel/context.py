@@ -14,3 +14,5 @@ class FelExecution:
     # Valeurs à restaurer intégralement lors d'une reprise BL.
     original_max_cll: str
     original_light_source: str
+    # Position chroma du BL : la conversion 4:2:0 des images reconstruites la reprend.
+    chroma_location: str = "left"

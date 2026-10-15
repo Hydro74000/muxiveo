@@ -85,6 +85,9 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     assert int(stream["nb_read_frames"]) == (24 if mode == "rife" else 12)
     assert stream["color_transfer"] == ("bt709" if mode == "sdr" else "smpte2084")
     assert stream["pix_fmt"] == ("yuv420p" if mode == "sdr" else "yuv420p10le")
+    if mode == "direct_nvenc":
+        # Squelette MKV en chromaloc=2 : position du BL conservée par le transport direct.
+        assert stream.get("chroma_location") == "topleft"
     record = next((s for s in stream.get("side_data_list", [])
         if s.get("side_data_type") == "DOVI configuration record"), None)
     if mode in {"dv", "direct_nvenc", "nvencc", "rife"}:

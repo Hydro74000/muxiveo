@@ -28,7 +28,8 @@ def prepared(tmp_path, monkeypatch):
     engine = SimpleNamespace(path=tmp_path/"libmvo_fel.so", direct_ffmpeg=binary)
     plan = FelDevicePlan(GPU.uuid, (GPU, AMD))
     source = FelSource(engine, tmp_path/"a:b'[film],;.mkv", 2, device_plan=plan)
-    video = VideoEncodeSettings(codec="hevc_nvenc", bit_depth="10", fel_context=SimpleNamespace(source=source))
+    video = VideoEncodeSettings(codec="hevc_nvenc", bit_depth="10",
+                                fel_context=SimpleNamespace(source=source, chroma_location="topleft"))
     plan.video = video
     original = ["ffmpeg", "-progress", "pipe:1", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
                 "-i", str(source.path), "-vf", "setparams=color_trc=smpte2084:range=tv", "-map", "0:2"]

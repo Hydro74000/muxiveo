@@ -524,6 +524,12 @@ class NvenccDirectOutputRunner:
                     if runtime_video.p5_to_hdr10 and prepared is not None and Path(prepared).is_file():
                         return Path(prepared)
                     cleanup_paths.append(target)
+                    fel = runtime_video.fel_context
+                    # FEL : RPU original de la préparation converti en P8.1, sans relire la source.
+                    if fel is not None and fel.original_rpu.is_file() and convert_p7_rpu_to_p81(
+                        dovi_tool_bin=dovi_bin, rpu_bin=fel.original_rpu, output_rpu=target, run_cmd=run_metadata,
+                    ):
+                        return target
                     signals.progress.emit("Extraction RPU Dolby Vision…")
                     mode = rpu_extract_mode(runtime_video)
                     rpu = extract_dovi_rpu(

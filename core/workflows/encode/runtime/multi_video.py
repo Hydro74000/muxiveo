@@ -183,7 +183,10 @@ class MultiVideoPipelineRunner:
                 # MKV dont Tracks échappe au premier SeekHead : illisible par dovi_tool / hdr10plus_tool.
                 or (src_ext == ".mkv" and not strict_demuxer_reads_tracks(source))
             )
-            if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+            # FEL : le RPU original extrait à la préparation évite une relecture complète de la source.
+            fel_rpu = video.fel_context.original_rpu if video.fel_context is not None else None
+            reuse_fel_rpu = bool(video.copy_dv and fel_rpu is not None and fel_rpu.is_file())
+            if needs_annexb and ((video.copy_dv and not reuse_fel_rpu) or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
@@ -197,7 +200,15 @@ class MultiVideoPipelineRunner:
                 meta_input = annexb_src
             else:
                 meta_input = source
-            if video.copy_dv:
+            if video.copy_dv and reuse_fel_rpu and fel_rpu is not None and convert_p7_rpu_to_p81(
+                dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=fel_rpu, output_rpu=rpu_bin,
+                run_cmd=lambda cmd: run_cmd(cmd, f"dovi-fel-p81-{index}"),
+            ):
+                # Mode 2 par l'éditeur : octet pour octet identique à « -m 2 extract-rpu ».
+                local_cleanup.append(rpu_bin)
+            elif video.copy_dv:
+                if reuse_fel_rpu and needs_annexb:
+                    raise EncodeError("Dolby Vision : RPU FEL original inattendu (profil autre que 7).")
                 mode = rpu_extract_mode(video)
                 run_cmd([
                     cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",

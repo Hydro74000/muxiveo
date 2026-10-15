@@ -36,7 +36,7 @@ def compatible_driver(uuid: str) -> bool:
         return False
 
 
-def direct_filter(chain: str) -> str | None:
+def direct_filter(chain: str, chroma_location: str = "left") -> str | None:
     """Accepter seulement une géométrie sans rééchantillonnage et les tags HDR."""
     crop = ""
     for item in chain.split(",") if chain else []:
@@ -60,7 +60,7 @@ def direct_filter(chain: str) -> str | None:
             return None
     return ("libplacebo=inherit_device=1:format=p010le:colorspace=bt2020nc:color_primaries=bt2020:"
             "color_trc=smpte2084:range=limited:apply_dolbyvision=0:apply_filmgrain=0:"
-            "peak_detect=0:tonemapping=clip:gamut_mode=clip:contrast_recovery=0:chroma_location=topleft"
+            "peak_detect=0:tonemapping=clip:gamut_mode=clip:contrast_recovery=0:chroma_location=" + chroma_location
             + crop + ",mvo_fel_cuda")
 
 
@@ -122,7 +122,8 @@ class DirectFelCommand(PipelineCommand):
                         args[i+1] = "cuda"
             plan.log("INFO", "FEL — transport direct Vulkan/CUDA ; aucun NUT ni transfert intermédiaire en RAM.")
             yield [str(self.binary), *before, "-init_hw_device", f"vulkan=fel:{uuid},disable_multiplane=1",
-                   "-filter_hw_device", "fel", "-filter_complex", graph, *after, *suffix]
+                   "-filter_hw_device", "fel", "-filter_complex", graph,
+                   "-chroma_sample_location", context.chroma_location, *after, *suffix]
         finally:
             release()
 
@@ -143,5 +144,5 @@ def direct_command(fallback: PipelineCommand, original: list[str], video: VideoE
            for i, arg in enumerate(original[:-1]) if arg in {"-pix_fmt", "-pix_fmt:v"}):
         return fallback
     chain = original[original.index("-vf")+1] if "-vf" in original else ""
-    conversion = direct_filter(chain)
+    conversion = direct_filter(chain, context.chroma_location)
     return DirectFelCommand(fallback, original, video, binary, conversion, threads) if conversion else fallback

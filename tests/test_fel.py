@@ -292,3 +292,69 @@ def test_whole_track_retry_not_other_errors(tmp_path):
         runner.prepare_multi_video_track(config=config, spec=spec, work_dir=tmp_path,
                                          total_tracks=1, thread_count=2, signals=TaskSignals(), run_cmd=Mock())
     assert runner._prepare_multi_video_track.call_count == 1
+
+
+def seek_context(tmp_path, capabilities, chroma="left"):
+    engine = SimpleNamespace(capabilities=capabilities)
+    source = FelSource(engine, tmp_path / "original.mkv", 3, 2, "24000/1001")
+    return FelExecution(source, tmp_path / "rpu.bin", "", "", chroma)
+
+
+def test_input_seek_is_performed_by_the_plugin(tmp_path):
+    """Aperçu à 20 min : aucune image reconstruite avant ce point."""
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, {"seek": 1}))
+    command = ["ffmpeg", "-hide_banner", "-y", "-ss", "1234.5", "-i", "original.mkv", "-map", "0:3",
+               "-frames:v", "1", "out.png"]
+    result = with_fel_input(command, video)
+    assert "-ss" not in result
+    assert result.producer.start_us == 1_234_500_000
+    assert "1234.5" in command
+
+
+def test_input_seek_stays_in_ffmpeg_without_plugin_support(tmp_path):
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, {}))
+    result = with_fel_input(["ffmpeg", "-ss", "12", "-i", "original.mkv", "out.png"], video)
+    assert result[result.index("-ss")+1] == "12"
+    assert result.producer.start_us == 0
+
+
+@pytest.mark.parametrize("value,expected", [("12.5", 12_500_000), ("01:02:03.25", 3_723_250_000),
+                                            ("02:03", 123_000_000), (".5", 500_000), ("abc", None), ("-3", None)])
+def test_seek_values(value, expected):
+    from core.fel.pipeline import seek_microseconds
+    assert seek_microseconds(value) == expected
+
+
+def test_conversion_uses_bl_chroma_location(tmp_path):
+    from core.fel.direct import direct_filter
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, {}, "topleft"))
+    result = with_fel_input(["ffmpeg", "-i", "original.mkv", "out.mkv"], video)
+    assert "chromal=topleft" in result[result.index("-vf")+1]
+    assert "chroma_location=topleft" in (direct_filter("", "topleft") or "")
+
+
+def test_preparation_reads_bl_chroma_location(tmp_path, monkeypatch):
+    import core.fel.preparation as preparation
+    monkeypatch.setattr(preparation, "extract_dovi_rpu", Mock())
+    engine = Mock()
+    engine.classify.return_value = "fel"
+    engine.devices.return_value = ()
+    capture = Mock(return_value='{"programs": [], "streams": [{"chroma_location": "topleft", "side_data_list": [{}]}]}')
+    video = VideoEncodeSettings(bake_dovi_fel=True, stream_index=4)
+    result = prepare_fel(video, source=tmp_path / "original.mkv", work_dir=tmp_path, index=1,
+                         ffmpeg="ffmpeg", ffprobe="ffprobe-x", dovi="dovi_tool", threads=2, run=Mock(),
+                         capture=capture, cancelled=lambda: False, log=Mock(), engine_loader=lambda: engine)
+    assert result.fel_context.chroma_location == "topleft"
+    probe = capture.call_args.args[0]
+    assert probe[0] == "ffprobe-x" and probe[probe.index("-select_streams")+1] == "4"
+
+
+def test_producer_applies_start_or_releases_context(tmp_path):
+    lib = Mock()
+    lib.mvo_fel_create.return_value = 7
+    lib.mvo_fel_set_start.return_value = -1
+    source = FelSource(SimpleNamespace(lib=lib, capabilities={"seek": 1}), tmp_path / "s.mkv", 0, start_us=5)
+    with pytest.raises(FelError, match="Départ"):
+        source.start(Mock(), threading.Event())
+    lib.mvo_fel_set_start.assert_called_once_with(7, 5)
+    lib.mvo_fel_destroy.assert_called_once_with(7)
