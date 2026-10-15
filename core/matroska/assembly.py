@@ -17,7 +17,7 @@ import hashlib
 import heapq
 import mimetypes
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import gcd
 from pathlib import Path
 
@@ -39,7 +39,7 @@ from .mux_plan import (
     deterministic_uid,
     deterministic_uid128,
 )
-from .reader import MatroskaAttachment, MatroskaReader
+from .reader import MatroskaAttachment, MatroskaReader, MatroskaTrack
 from .validation import TRACK_TYPE_LABELS
 from .writer import (
     build_attachments_element,
@@ -94,6 +94,45 @@ class MatroskaAssemblyTrack:
     #: Provenance complémentaire pour reconstruire les UIDs de façon stable
     #: (ex. ``"audio:2:aac"`` pour une variante matérialisée).
     provenance: str = ""
+    #: Piste d'origine (artefact Matroska, index) remplacée par ``artifact``
+    #: (audio réencodé, sync réelle) : langue, nom et flags non fixés en
+    #: sont repris, et ses tags ciblés suivent la piste de sortie.
+    origin: tuple[Path, int] | None = None
+
+
+def _origin_track(track: MatroskaAssemblyTrack, tracks_of) -> MatroskaTrack | None:
+    """TrackEntry d'origine d'une piste remplacée (``None`` si aucune)."""
+    if track.origin is None:
+        return None
+    origin_path, origin_index = track.origin
+    origin_tracks = tracks_of(origin_path)
+    if not 0 <= origin_index < len(origin_tracks):
+        raise ValueError(f"Piste d'origine introuvable : {origin_path} #{origin_index}")
+    return origin_tracks[origin_index]
+
+
+def _with_origin_metadata(track: MatroskaAssemblyTrack, origin: MatroskaTrack | None) -> MatroskaAssemblyTrack:
+    """Langue, nom et flags non fixés repris explicitement de la piste d'origine."""
+    if origin is None:
+        return track
+    return replace(
+        track,
+        language_value=(
+            track.language_value
+            if track.language_value is not None
+            else (origin.language_bcp47 or origin.language or None)
+        ),
+        name=track.name if track.name is not None else origin.name,
+        flags=track.flags if track.flags is not None else MatroskaTrackFlags(
+            enabled=origin.flag_enabled,
+            default=origin.flag_default,
+            forced=origin.flag_forced,
+            hearing_impaired=origin.flag_hearing_impaired,
+            visual_impaired=origin.flag_visual_impaired,
+            original=origin.flag_original,
+            commentary=origin.flag_commentary,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -154,6 +193,9 @@ def assembly_output_contract(
                 f"Piste d'assemblage introuvable : {track.artifact} #{track.artifact_track_index}"
             )
         source_track = native_tracks[track.artifact_track_index]
+        track = _with_origin_metadata(track, _origin_track(
+            track, lambda path: readers.setdefault(path, MatroskaReader(path)).tracks(),
+        ))
         track_type = TRACK_TYPE_LABELS.get(source_track.track_type, str(source_track.track_type))
         types.append(track_type)
         flags = track.flags
@@ -267,6 +309,17 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         timestamp_scale_ns = gcd(timestamp_scale_ns, abs(int(track.time_shift_ms or 0)) * 1_000_000)
     timestamp_scale_ns = timestamp_scale_ns or 1_000_000
 
+    origin_tracks: dict[Path, list[MatroskaTrack]] = {}
+
+    def _tracks_of(path: Path) -> list[MatroskaTrack]:
+        # Pistes d'origine lues hors ``readers`` : aucun effet sur la fusion
+        # des paquets ni sur le TimestampScale de sortie.
+        if path in native_tracks:
+            return native_tracks[path]
+        if path not in origin_tracks:
+            origin_tracks[path] = MatroskaReader(path).tracks()
+        return origin_tracks[path]
+
     output_tracks: list[MatroskaMuxTrack] = []
     track_uid_maps: dict[Path, dict[int, int]] = {}
     # artefact → numéro de piste source → [(piste sortie, offset ms)].
@@ -278,6 +331,8 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 f"Piste d'assemblage introuvable : {track.artifact} #{track.artifact_track_index}"
             )
         source_track = artifact_tracks[track.artifact_track_index]
+        origin_track = _origin_track(track, _tracks_of)
+        track = _with_origin_metadata(track, origin_track)
         identity = (
             f"{track.source_identity}:{track.provenance}"
             if track.provenance
@@ -292,10 +347,13 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         uid_default = track.flags.default if track.flags is not None else source_track.flag_default
         uid_forced = track.flags.forced if track.flags is not None else source_track.flag_forced
         uid = deterministic_uid(
-            identity, source_track.uid, output_index,
+            identity, (origin_track or source_track).uid, output_index,
             uid_language, uid_name, uid_default, uid_forced,
         )
         track_uid_maps.setdefault(track.artifact, {})[source_track.uid] = uid
+        if track.origin is not None and origin_track is not None:
+            # Tags de la source ciblant la piste remplacée : suivent la sortie.
+            track_uid_maps.setdefault(track.origin[0], {}).setdefault(origin_track.uid, uid)
 
         if track.language_value is not None:
             legacy_language = matroska_legacy_language(track.language_value)

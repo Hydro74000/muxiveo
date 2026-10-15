@@ -23,8 +23,20 @@ from core.subtitle_codec import plan_subtitle_codec
 from core.workdir import remove_path
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.metadata import matroska_video_tag_args
-from core.workflows.encode.domain.codecs import audio_codec_args
-from core.workflows.encode.models import EncodeConfig, EncodeError
+from core.workflows.common.sync_rewrite import (
+    EmptySubtitleRewrite,
+    REWRITE_AUDIO_CODECS,
+    SYNC_REWRITE_MODE_OFFSET,
+    SyncRewriteService,
+    sync_rewrite_output_token,
+)
+from core.workflows.encode.domain.codecs import audio_codec_args, needs_ac3_51_downmix
+from core.workflows.encode.models import (
+    AudioTrackSettings,
+    EncodeConfig,
+    EncodeError,
+    normalize_audio_bitrate_kbps,
+)
 from core.matroska.assembly import (
     MatroskaAssemblyPlan,
     MatroskaAssemblyTrack,
@@ -39,6 +51,11 @@ from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import (
     MatroskaWriteCancelled,
     MatroskaWriter,
+)
+from core.workflows.encode.planning.offsets import (
+    track_time_offset_calibration_lookup,
+    track_time_offset_lookup,
+    track_time_offset_mode_lookup,
 )
 from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.planning.plan_models import PlannedTrackMetadata
@@ -85,6 +102,16 @@ class NativeEncodePreparation:
 
     def artifact_for_container(self, source: Path) -> Path:
         return self.container_artifacts.get(Path(source), Path(source))
+
+
+@dataclass(frozen=True)
+class NativeSyncRewrites:
+    """Pistes audio/sous-titres réécrites (sync réelle) : décalage intégré aux paquets."""
+
+    #: index de piste audio de la config → artefact MKV mono-piste réécrit.
+    audio: dict[int, Path] = field(default_factory=dict)
+    #: (source, index) du sous-titre → artefact MKV mono-piste réécrit.
+    subtitles: dict[tuple[Path, int], Path] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -378,6 +405,157 @@ def resolve_native_subtitle_tracks(config: EncodeConfig) -> list[tuple[Path, int
     return resolved
 
 
+def _audio_rewrite_is_final(audio: AudioTrackSettings) -> bool:
+    """Réécriture produite directement au format de sortie (aucun encodage après).
+
+    Copie sans BSF, ou codec cible réécrivable sans downmix : mêmes codec et
+    débit normalisé qu'``audio_codec_args``. Sinon la réécriture garde les
+    paramètres source et l'encodage habituel s'applique à son artefact.
+    """
+    codec = str(audio.codec or "copy").strip().lower()
+    if codec == "copy":
+        return not audio.extract_truehd_core
+    return codec in REWRITE_AUDIO_CODECS and not needs_ac3_51_downmix(audio)
+
+
+def _matroska_origin(preparation: NativeEncodePreparation, source: Path, stream_index: int) -> tuple[Path, int] | None:
+    """Piste d'origine lisible (source Matroska ou artefact canonique), sinon ``None``."""
+    artifact, index = preparation.artifact_for_track(source, stream_index)
+    return (artifact, index) if _is_matroska(artifact) and artifact.is_file() else None
+
+
+def _assembly_subtitles(
+    config: EncodeConfig,
+    resolved_subtitles: list[tuple[Path, int]] | None,
+    preparation: NativeEncodePreparation,
+) -> list[tuple[Path, int]]:
+    """Sous-titres de sortie : plan d'encodage, sinon préparation, sinon résolution native."""
+    if resolved_subtitles is not None:
+        return [(Path(path), int(index)) for path, index in resolved_subtitles]
+    if preparation.subtitles_prepared:
+        return list(preparation.resolved_subtitles)
+    return resolve_native_subtitle_tracks(config)
+
+
+def rewrite_native_sync_tracks(
+    config: EncodeConfig,
+    *,
+    service: SyncRewriteService | None,
+    preparation: NativeEncodePreparation,
+    resolved_subtitles: list[tuple[Path, int]] | None,
+    work_dir: Path,
+    ffprobe_bin: str,
+    cleanup_paths: list[Path],
+    cancel_cb: Callable[[], bool] | None = None,
+) -> NativeSyncRewrites:
+    """Réécriture sync réelle des pistes audio/sous-titres décalées (miroir du chemin FFmpeg).
+
+    Pistes en mode « offset » sans calibration : décalage laissé au TimeShift
+    de l'assemblage. Une calibration multi-segments exige la réécriture ;
+    sans service (réécriture désactivée) ou si la piste n'est pas éligible,
+    l'assemblage est refusé plutôt que de décaler tout le fichier.
+    """
+    offsets = track_time_offset_lookup(config)
+    modes = track_time_offset_mode_lookup(config)
+    calibrations = track_time_offset_calibration_lookup(config)
+    if calibrations and service is None:
+        raise EncodeError(
+            "Synchronisation multi-segments : la réécriture sync réelle est requise "
+            "(activer sync.rewrite_enabled) ; le décalage du 1er segment seul décalerait tout le fichier."
+        )
+    result = NativeSyncRewrites()
+    if service is None:
+        return result
+    probed: dict[Path, dict[int, ProbedStream] | None] = {}
+
+    def _codec(path: Path, index: int) -> str:
+        if path not in probed:
+            probed[path] = probe_source_streams(path, ffprobe_bin)
+        stream = (probed[path] or {}).get(int(index))
+        return stream.codec_name if stream is not None else ""
+
+    def _rewrite(
+        track_type: str,
+        source: Path,
+        stream_index: int,
+        **audio_kwargs,
+    ) -> Path | None:
+        key = (track_type, source, int(stream_index))
+        offset_ms = offsets.get(key, 0)
+        calibration = calibrations.get(key)
+        if offset_ms == 0 and calibration is None:
+            return None
+        if modes.get(key) == SYNC_REWRITE_MODE_OFFSET and calibration is None:
+            return None
+        # Entrée lisible : source Matroska, ou artefact canonique d'une source non MKV.
+        artifact, artifact_index = preparation.artifact_for_track(source, stream_index)
+        try:
+            prepared = service.maybe_materialize(
+                source_path=artifact,
+                stream_index=artifact_index,
+                track_type=track_type,
+                codec=_codec(artifact, artifact_index),
+                offset_ms=offset_ms,
+                tmp_dir=work_dir,
+                input_idx=0,
+                token=sync_rewrite_output_token(source, int(stream_index), track_type),
+                cancel_cb=cancel_cb,
+                calibration=calibration,
+                **audio_kwargs,
+            )
+        except EmptySubtitleRewrite:
+            if track_type != "subtitle":
+                raise
+            # Une piste vide reste une piste sélectionnée : conserver son
+            # TrackEntry (notamment CodecPrivate ASS), sans aucun paquet.
+            from core.matroska.mux_plan import MatroskaMuxPlan, MatroskaMuxTrack
+
+            target = work_dir / f"native_empty_subtitle_{len(cleanup_paths)}.mks"
+            cleanup_paths.append(target)
+            track = MatroskaReader(artifact).tracks()[artifact_index]
+            MatroskaWriter().write(
+                MatroskaMuxPlan(
+                    output=target,
+                    tracks=(MatroskaMuxTrack(
+                        artifact, track, 1, track.uid,
+                        patch_language=False, patch_name=False, patch_flags=False,
+                    ),),
+                    packets=(),
+                ),
+            )
+            return target
+        if prepared is None:
+            if calibration is not None:
+                raise EncodeError(
+                    "Calibration multi-segments non applicable à cette piste "
+                    f"({track_type} #{int(stream_index)}) : synchronisation interrompue.",
+                )
+            return None
+        cleanup_paths.append(prepared.path)
+        return prepared.path
+
+    for audio_index, audio in enumerate(config.audio_tracks):
+        target_codec = str(audio.codec or "copy").strip().lower()
+        direct = target_codec != "copy" and _audio_rewrite_is_final(audio)
+        path = _rewrite(
+            "audio",
+            Path(audio.source_path or config.source),
+            int(audio.stream_index),
+            preserve_source_audio_params=not direct,
+            audio_target_codec=target_codec if direct else "",
+            audio_target_bitrate_kbps=normalize_audio_bitrate_kbps(
+                target_codec, audio.bitrate_kbps, audio.input_channels, None, audio.input_channel_layout,
+            ) if direct else None,
+        )
+        if path is not None:
+            result.audio[audio_index] = path
+    for subtitle_path, subtitle_index in _assembly_subtitles(config, resolved_subtitles, preparation):
+        path = _rewrite("subtitle", subtitle_path, subtitle_index)
+        if path is not None:
+            result.subtitles[(subtitle_path, subtitle_index)] = path
+    return result
+
+
 def build_encode_assembly_plan(
     config: EncodeConfig,
     *,
@@ -386,6 +564,7 @@ def build_encode_assembly_plan(
     resolved_subtitles: list[tuple[Path, int]] | None = None,
     track_metadata: tuple[PlannedTrackMetadata, ...] | None = None,
     preparation: NativeEncodePreparation | None = None,
+    sync_rewrites: NativeSyncRewrites | None = None,
 ) -> MatroskaAssemblyPlan:
     """Compile la configuration encode vers le contrat d'assemblage partagé.
 
@@ -395,8 +574,10 @@ def build_encode_assembly_plan(
     ``resolved_subtitles`` transporte la résolution du plan d'encodage
     (toutes sources) ; à ``None``, la résolution native équivalente
     (:func:`resolve_native_subtitle_tracks`) est appliquée.
+    ``sync_rewrites`` : pistes réécrites (sync réelle), décalage déjà intégré.
     """
     preparation = preparation or NativeEncodePreparation()
+    sync_rewrites = sync_rewrites or NativeSyncRewrites()
     identities: dict[Path, str] = {}
 
     def _identity(path: Path) -> str:
@@ -418,11 +599,18 @@ def build_encode_assembly_plan(
         source = Path(audio.source_path or config.source)
         audio_artifact = materialized_audio.get(audio_index)
         if audio_artifact is not None:
+            # Le décalage demandé est déjà intégré aux échantillons réécrits.
+            # Recaler leur origine comme FFmpeg, en conservant CodecDelay.
             ordered.append(MatroskaAssemblyTrack(
                 artifact=audio_artifact,
                 artifact_track_index=0,
                 source_identity=_identity(source),
+                time_shift_ms=(
+                    _rewritten_audio_time_shift(audio_artifact) if audio_index in sync_rewrites.audio
+                    else _offset_ms(config, "audio", source, audio.stream_index)
+                ),
                 provenance=f"audio:{audio.stream_index}:{audio.codec}",
+                origin=_matroska_origin(preparation, source, audio.stream_index),
             ))
         else:
             track_artifact, track_index = preparation.artifact_for_track(source, audio.stream_index)
@@ -433,13 +621,17 @@ def build_encode_assembly_plan(
                 time_shift_ms=_offset_ms(config, "audio", source, audio.stream_index),
             ))
 
-    if resolved_subtitles is not None:
-        subtitles = [(Path(path), int(index)) for path, index in resolved_subtitles]
-    elif preparation.subtitles_prepared:
-        subtitles = list(preparation.resolved_subtitles)
-    else:
-        subtitles = resolve_native_subtitle_tracks(config)
+    subtitles = _assembly_subtitles(config, resolved_subtitles, preparation)
     for subtitle_path, subtitle_index in subtitles:
+        rewritten = sync_rewrites.subtitles.get((subtitle_path, subtitle_index))
+        if rewritten is not None:
+            ordered.append(MatroskaAssemblyTrack(
+                artifact=rewritten,
+                artifact_track_index=0,
+                source_identity=_identity(subtitle_path),
+                origin=_matroska_origin(preparation, subtitle_path, subtitle_index),
+            ))
+            continue
         track_artifact, track_index = preparation.artifact_for_track(subtitle_path, subtitle_index)
         ordered.append(MatroskaAssemblyTrack(
             artifact=track_artifact,
@@ -536,6 +728,20 @@ def build_encode_assembly_plan(
     )
 
 
+def _rewritten_audio_time_shift(artifact: Path) -> int:
+    """Ramène le début du mono-flux à zéro, comme le démuxeur FFmpeg.
+
+    Le CodecDelay du TrackEntry reste intact : le premier paquet AC3 peut
+    commencer à 5 ms alors que sa première trame décodée doit démarrer à zéro.
+    """
+    blocks = iter(MatroskaReader(artifact).blocks())
+    try:
+        first = next(blocks, None)
+        return -first.timestamp_ms if first is not None else 0
+    finally:
+        blocks.close()
+
+
 def materialize_audio_artifacts(
     config: EncodeConfig,
     *,
@@ -543,25 +749,34 @@ def materialize_audio_artifacts(
     ffmpeg_bin: str,
     run_cmd: Callable[[list[str], str], str],
     cleanup_paths: list[Path] | None = None,
+    sync_rewrites: NativeSyncRewrites | None = None,
 ) -> dict[int, Path]:
     """Matérialise en MKV mono-piste les pistes audio réencodées.
 
     Les pistes ``copy`` sans BSF restent copiées directement depuis leur
-    source Matroska par l'assembleur (aucun artefact nécessaire).
+    source Matroska par l'assembleur (aucun artefact nécessaire). Une piste
+    réécrite (sync réelle) déjà au format de sortie est reprise telle quelle ;
+    sinon l'encodage habituel s'applique à l'artefact réécrit.
     """
     artifacts: dict[int, Path] = {}
+    rewritten = sync_rewrites.audio if sync_rewrites is not None else {}
     for audio_index, audio in enumerate(config.audio_tracks):
         codec = str(audio.codec or "copy").strip().lower()
+        rewritten_path = rewritten.get(audio_index)
+        if rewritten_path is not None and _audio_rewrite_is_final(audio):
+            artifacts[audio_index] = rewritten_path
+            continue
         if codec == "copy" and not audio.extract_truehd_core:
             continue
-        source = Path(audio.source_path or config.source)
+        source = rewritten_path or Path(audio.source_path or config.source)
+        stream_index = 0 if rewritten_path is not None else int(audio.stream_index)
         target = work_dir / f"native_audio_{audio_index}.mkv"
         if cleanup_paths is not None:
             cleanup_paths.append(target)
         command = [
             ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
             *ffmpeg_progress_args(),
-            "-i", str(source), "-map", f"0:{int(audio.stream_index)}",
+            "-i", str(source), "-map", f"0:{stream_index}",
         ]
         command.extend(audio_codec_args(0, audio))
         command.append(str(target))
@@ -583,6 +798,7 @@ def assemble_encode_output_native(
     resolved_subtitles: list[tuple[Path, int]] | None = None,
     track_metadata: tuple[PlannedTrackMetadata, ...] | None = None,
     validation_override: ValidationOverride | None = None,
+    sync_rewrite: SyncRewriteService | None = None,
 ) -> Path:
     """Assemblage final natif : matérialisation audio, contrat, écriture atomique.
 
@@ -590,6 +806,7 @@ def assemble_encode_output_native(
     écrite dans les ``TrackEntry`` lors de l'assemblage.
     ``resolved_subtitles`` : résolution des sous-titres issue du plan
     d'encodage (toutes sources) ; à ``None``, résolution native équivalente.
+    ``sync_rewrite`` : service de réécriture sync réelle (``None`` = désactivée).
     """
     if not video_artifacts:
         raise EncodeError("Assemblage natif sans artefact vidéo.")
@@ -597,13 +814,6 @@ def assemble_encode_output_native(
     audio_cleanup_paths: list[Path] = []
     preparation_cleanup_paths: tuple[Path, ...] = ()
     try:
-        materialized_audio = materialize_audio_artifacts(
-            config,
-            work_dir=work_dir,
-            ffmpeg_bin=ffmpeg_bin,
-            run_cmd=run_cmd,
-            cleanup_paths=audio_cleanup_paths,
-        ) if config.audio_tracks else {}
         # Seules les pistes vidéo copiées depuis une source déclarée sont
         # canonicalisables : un artefact encodé non Matroska doit échouer,
         # pas être remuxé silencieusement (cadence d'un flux brut perdue).
@@ -622,6 +832,24 @@ def assemble_encode_output_native(
             ],
         )
         preparation_cleanup_paths = preparation.cleanup_paths
+        sync_rewrites = rewrite_native_sync_tracks(
+            config,
+            service=sync_rewrite,
+            preparation=preparation,
+            resolved_subtitles=resolved_subtitles,
+            work_dir=work_dir,
+            ffprobe_bin=ffprobe_bin,
+            cleanup_paths=audio_cleanup_paths,
+            cancel_cb=(signals._cancel_event.is_set if signals is not None else None),
+        )
+        materialized_audio = materialize_audio_artifacts(
+            config,
+            work_dir=work_dir,
+            ffmpeg_bin=ffmpeg_bin,
+            run_cmd=run_cmd,
+            cleanup_paths=audio_cleanup_paths,
+            sync_rewrites=sync_rewrites,
+        ) if config.audio_tracks else {}
         assembly = build_encode_assembly_plan(
             config,
             video_artifacts=video_artifacts,
@@ -629,6 +857,7 @@ def assemble_encode_output_native(
             resolved_subtitles=resolved_subtitles,
             track_metadata=track_metadata,
             preparation=preparation,
+            sync_rewrites=sync_rewrites,
         )
         dovi_video_indexes = {
             index
@@ -686,10 +915,12 @@ def assemble_encode_output_native(
 __all__ = [
     "NativeVideoArtifactRef",
     "NativeEncodePreparation",
+    "NativeSyncRewrites",
     "assemble_encode_output_native",
     "build_encode_assembly_plan",
     "materialize_audio_artifacts",
     "prepare_native_encode_inputs",
     "probe_source_streams",
     "resolve_native_subtitle_tracks",
+    "rewrite_native_sync_tracks",
 ]

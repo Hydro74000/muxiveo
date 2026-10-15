@@ -271,11 +271,13 @@ class EncodePreparationRunner:
                 f"pipeline={mux_decision.pipeline}",
             )
             diagnostics = mux_decision.diagnostics
-            if mux_decision.pipeline not in {PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO} and any(
-                getattr(offset, "calibration", None) for offset in prepared_config.track_time_offsets or []
+            if (
+                not native_mux
+                and mux_decision.pipeline not in {PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO}
+                and any(getattr(offset, "calibration", None) for offset in prepared_config.track_time_offsets or [])
             ):
-                # Seuls les assemblages FFmpeg direct et multi-pistes matérialisent les
-                # calibrations (réécriture sync réelle) ; le backend natif est écarté en amont.
+                # Assemblages matérialisant les calibrations (réécriture sync réelle) :
+                # natif, FFmpeg direct et multi-pistes.
                 raise EncodeError(
                     "Synchronisation multi-segments non prise en charge sur ce pipeline "
                     f"({mux_decision.pipeline}) : le décalage du 1er segment seul décalerait tout le fichier."

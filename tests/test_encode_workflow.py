@@ -5363,7 +5363,10 @@ class TestEncodeRuntimeMultiSourceSync:
 
         assert max_active == 1
 
-    def test_run_multi_video_pipeline_parallelizes_disjoint_resources(self, tmp_path):
+    def test_run_multi_video_pipeline_parallelizes_disjoint_resources(self, tmp_path, monkeypatch):
+        # Ce test vérifie les ressources CPU/GPU distinctes ; une pression
+        # mémoire réelle peut légitimement sérialiser les deux tâches.
+        monkeypatch.setattr(EncodeWorkflow, "_available_ram_bytes", staticmethod(lambda: 16 * 1024**3))
         src = tmp_path / "src.mkv"
         out = tmp_path / "out.mkv"
         src.touch()

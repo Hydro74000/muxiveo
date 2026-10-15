@@ -1161,6 +1161,7 @@ class EncodeWorkflow(QObject):
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
             ffprobe_bin=self._ffprobe_path(),
+            sync_rewrite=self._native_sync_rewrite(signals),
         )
 
     def _native_assemble_multi(
@@ -1200,6 +1201,7 @@ class EncodeWorkflow(QObject):
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
             ffprobe_bin=self._ffprobe_path(),
+            sync_rewrite=self._native_sync_rewrite(signals),
         )
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
@@ -1475,6 +1477,22 @@ class EncodeWorkflow(QObject):
             encode_plan=plan,
         )
 
+    def _sync_rewrite_service(self, signals: TaskSignals | None) -> SyncRewriteService:
+        """Service de réécriture sync réelle (audio coupé/complété, sous-titres réhorodatés)."""
+        return SyncRewriteService(
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_path(),
+            ffmpeg_progress_args=self._ffmpeg_progress_args(),
+            ffmpeg_thread_args=self._ffmpeg_thread_args(None),
+            audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
+            log_cb=lambda message: self.log_message.emit("INFO", message),
+            progress_cb=(signals.progress.emit if signals is not None else None),
+        )
+
+    def _native_sync_rewrite(self, signals: TaskSignals | None) -> SyncRewriteService | None:
+        """Réécriture sync réelle de l'assemblage natif ; ``None`` si désactivée."""
+        return self._sync_rewrite_service(signals) if self._sync_rewrite_enabled else None
+
     def _resolve_track_assembly_and_offset_remap(
         self,
         *,
@@ -1517,15 +1535,7 @@ class EncodeWorkflow(QObject):
                 (Path(audio.source_path or config.source), int(audio.stream_index), "audio"): audio
                 for audio in config.audio_tracks
             }
-            rewrite_service = SyncRewriteService(
-                ffmpeg_bin=self._ffmpeg,
-                ffprobe_bin=self._ffprobe_path(),
-                ffmpeg_progress_args=self._ffmpeg_progress_args(),
-                ffmpeg_thread_args=self._ffmpeg_thread_args(None),
-                audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
-                log_cb=lambda message: self.log_message.emit("INFO", message),
-                progress_cb=(signals.progress.emit if signals is not None else None),
-            )
+            rewrite_service = self._sync_rewrite_service(signals)
             work_dir = sync_rewrite_work_dir or config.work_dir or config.source.parent
             for map_key, input_path, input_stream_index in track_assembly.track_mappings:
                 source_path, source_stream_index, track_type = map_key
@@ -2771,6 +2781,7 @@ class EncodeWorkflow(QObject):
             dir_writable=_is_dir_writable_plan,
         )
         errors.extend(_video_settings_errors_plan(self._video_tracks(config)))
+        errors.extend(self._sync_rewrite_errors(config))
         # Chaque backend présent valide la configuration : une piste NVEncC
         # secondaire ne doit pas échapper à ses contrôles.
         for backend in self._backends_for_config(config):
@@ -3642,11 +3653,24 @@ class EncodeWorkflow(QObject):
         validate: bool,
         prep_signals: TaskSignals | None = None,
     ) -> TaskSignals:
+        # Ce prérequis reste obligatoire pour run(validate=False), avant
+        # préparation et encodage des artefacts vidéo.
+        errors = self._sync_rewrite_errors(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
         return self._preparation_runner().run_with_preparation(
             config,
             validate=validate,
             prep_signals=prep_signals,
         )
+
+    def _sync_rewrite_errors(self, config: EncodeConfig) -> list[str]:
+        if not self._sync_rewrite_enabled and _track_time_offset_calibration_lookup_plan(config):
+            return [
+                "Synchronisation multi-segments : la réécriture sync réelle est requise "
+                "(activer sync.rewrite_enabled)."
+            ]
+        return []
 
     def _preparation_runner(self) -> _EncodePreparationRunner:
         return _EncodePreparationRunner(
@@ -3814,6 +3838,7 @@ class EncodeWorkflow(QObject):
                     log=self.log_message.emit,
                     ffmpeg_bin=self._ffmpeg,
                     ffprobe_bin=self._ffprobe_path(),
+                    sync_rewrite=self._native_sync_rewrite(signals),
                 )
                 signals.finished.emit(str(config.output))
             except TaskCancelledError:

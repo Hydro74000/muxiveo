@@ -90,6 +90,10 @@ class SyncRewritePreparedInput:
     residual_label: str = ""
 
 
+class EmptySubtitleRewrite(RemuxError):
+    """La transformation a supprimé tous les événements de la piste."""
+
+
 def normalized_rewrite_codec(codec: str) -> str:
     raw = str(codec or "").strip().lower()
     compact = re.sub(r"[\s_./+]+", "-", raw)
@@ -998,6 +1002,13 @@ class SyncRewriteService:
                 raise
             text = extracted.read_text(encoding="utf-8-sig", errors="replace")
             shifted.write_text(self._shift_subtitle_text(text, text_kind, offset_ms), encoding="utf-8")
+        shifted_text = shifted.read_text(encoding="utf-8-sig")
+        has_events = (
+            bool(re.search(r"^Dialogue:", shifted_text, re.MULTILINE | re.IGNORECASE))
+            if text_kind == "ass" else "-->" in shifted_text
+        )
+        if not has_events:
+            raise EmptySubtitleRewrite("La réécriture a supprimé tous les événements du sous-titre.")
         wrap_cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
@@ -1383,6 +1394,7 @@ class SyncRewriteService:
 
 
 __all__ = [
+    "EmptySubtitleRewrite",
     "REWRITE_AUDIO_CODECS",
     "REWRITE_SUBTITLE_CODECS",
     "SYNC_REWRITE_MODE_AUTO",

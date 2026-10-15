@@ -162,7 +162,8 @@ def test_bridge_carries_calibration_to_encode(tmp_path):
     merged = merge_remux_into_encode_config(enc, rmx)
     offsets = [o for o in merged.track_time_offsets if o.track_type == "audio"]
     assert len(offsets) == 1 and offsets[0].calibration == audio.sync_calibration
-    assert any("multi-segments" in r for r in encode_native_mux_blockers(merged, pipeline=PIPELINE_FFMPEG_DIRECT))
+    # L'assemblage natif matérialise la calibration (rewrite_native_sync_tracks) : aucun blocage.
+    assert not any("multi-segments" in r for r in encode_native_mux_blockers(merged, pipeline=PIPELINE_FFMPEG_DIRECT))
 
 
 def test_physical_applies_track_calibration_once(tmp_path):
