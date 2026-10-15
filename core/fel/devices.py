@@ -5,6 +5,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 import threading
 from collections import Counter
 from dataclasses import dataclass, field
@@ -196,6 +197,15 @@ def select_device(devices: tuple[FelDevice, ...], loads: dict[str, DeviceLoad],
     ), default=None)
 
 
+def automatic_gpu_allowed(platform: str | None = None) -> bool:
+    """macOS : GPU FEL proposé en choix manuel seulement, Auto sur CPU.
+
+    Seuls les runners de CI macOS sont disponibles : aucun contenu FEL réel n'y valide
+    le GPU (MoltenVK). Borne validée par l'utilisateur le 15/10/2026.
+    """
+    return (platform or sys.platform) != "darwin"
+
+
 @dataclass
 class FelDevicePlan:
     """Choix figé dès la première passe, réservation limitée à sa production."""
@@ -218,7 +228,9 @@ class FelDevicePlan:
             with _LOCK:
                 first = self.selected is None
                 if first:
-                    if self.choice == "auto":
+                    if self.choice == "auto" and not automatic_gpu_allowed():
+                        self.selected = "cpu"
+                    elif self.choice == "auto":
                         # Budget UHD ; les allocations natives vérifient les dimensions.
                         selected = select_device(self.devices, loads, occupied, _ACTIVE, 768 << 20)
                         self.selected = selected.uuid if selected else "cpu"
@@ -242,7 +254,8 @@ class FelDevicePlan:
         if first:
             chosen = next((d for d in self.devices if d.uuid == key), None)
             label = chosen.name if chosen else key
-            rule = " ; priorité GPU dédié > iGPU > CPU" if self.choice == "auto" else ""
+            rule = ("" if self.choice != "auto" else " ; priorité GPU dédié > iGPU > CPU" if automatic_gpu_allowed()
+                    else " ; macOS : GPU en choix manuel uniquement")
             try:
                 self.log("INFO", f"FEL — moteur choisi : {label} ({self.choice}{rule}).")
             except BaseException:

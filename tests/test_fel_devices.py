@@ -144,3 +144,20 @@ def test_logging_failure_releases_gpu_reservation():
     with pytest.raises(RuntimeError, match="Qt fermé"):
         plan.acquire()
     assert devices._ACTIVE == before
+
+
+def test_macos_auto_stays_on_cpu_but_manual_gpu_is_kept(monkeypatch):
+    """Borne validée : macOS sans validation sur contenu réel → Auto sur CPU, GPU manuel possible."""
+    from core.fel import devices as module
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "probe_load", lambda _devices: {})
+    gpu = module.FelDevice("a"*32, "Apple M2", 0x106B, 0, "integrated", 8 << 30)
+    messages = []
+    auto = module.FelDevicePlan("auto", (gpu,), log=lambda level, message: messages.append(message))
+    key, release = auto.acquire()
+    release()
+    assert key == "cpu" and "macOS" in messages[0]
+    manual = module.FelDevicePlan(gpu.uuid, (gpu,))
+    key, release = manual.acquire()
+    release()
+    assert key == gpu.uuid
