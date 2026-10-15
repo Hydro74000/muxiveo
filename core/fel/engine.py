@@ -62,6 +62,9 @@ class FelEngine:
             if capabilities.get("fd_output") == 1:
                 self.lib.mvo_fel_run_fd.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, _Progress, ctypes.c_void_p]
                 self.lib.mvo_fel_run_fd.restype = ctypes.c_int
+            if "yuv420p10le" in (capabilities.get("output_formats") or []):
+                self.lib.mvo_fel_set_output.argtypes = [ctypes.c_void_p, *([ctypes.c_char_p] * 3)]
+                self.lib.mvo_fel_set_output.restype = ctypes.c_int
             if capabilities.get("seek") == 1:
                 self.lib.mvo_fel_set_start.argtypes = [ctypes.c_void_p, ctypes.c_int64]
                 self.lib.mvo_fel_set_start.restype = ctypes.c_int
@@ -154,13 +157,18 @@ class FelSource:
     device_plan: FelDevicePlan | None = None
     # Départ dans la source (sémantique -ss d'entrée de FFmpeg), en microsecondes.
     start_us: int = 0
+    # Images produites : RGB PQ 16 bits, ou Y'CbCr 4:2:0 final tramé par le plugin.
+    pixel_format: str = "gbrp16le"
+    chroma_location: str = "left"
+    dither: str = "blue"
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
 
     def describe(self) -> str:
         start = f", départ {self.start_us / 1e6:.3f} s" if self.start_us else ""
-        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream}{start} → NUT RGB PQ"
+        output = "RGB PQ" if self.pixel_format == "gbrp16le" else f"{self.pixel_format} tramé ({self.dither})"
+        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream}{start} → NUT {output}"
 
 
 class FelProducer:
@@ -177,10 +185,17 @@ class FelProducer:
         )
         if not self._handle:
             raise FelError("Création du contexte FEL impossible")
+        refused = ""
         if source.start_us and source.engine.lib.mvo_fel_set_start(self._handle, source.start_us) != 0:
+            refused = "Départ FEL refusé par le plugin"
+        elif source.pixel_format != "gbrp16le" and source.engine.lib.mvo_fel_set_output(
+                self._handle, source.pixel_format.encode("ascii"), source.chroma_location.encode("ascii"),
+                source.dither.encode("ascii")) != 0:
+            refused = "Format de sortie FEL refusé par le plugin"
+        if refused:
             source.engine.lib.mvo_fel_destroy(self._handle)
             self._handle = None
-            raise FelError("Départ FEL refusé par le plugin")
+            raise FelError(refused)
         self._release_device: Callable[[], None] = lambda: None
         if source.device_plan is not None:
             try:

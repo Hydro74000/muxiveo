@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
 from core.fel.devices import pipeline_devices, probe_load
+from core.fel.pipeline import FINAL_DITHER, listed_capability
 from core.pipeline_command import PipelineCommand
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.encode.domain.codecs import resolve_output_bit_depth
@@ -36,9 +37,10 @@ def compatible_driver(uuid: str) -> bool:
         return False
 
 
-def direct_filter(chain: str, chroma_location: str = "left") -> str | None:
-    """Accepter seulement une géométrie sans rééchantillonnage et les tags HDR."""
-    crop = ""
+def direct_crop(chain: str) -> tuple[int, int, int, int] | None:
+    """Marges (gauche, haut, droite, bas) d'une chaîne sans rééchantillonnage ; None sinon."""
+    crop = (0, 0, 0, 0)
+    seen = False
     for item in chain.split(",") if chain else []:
         if item.startswith("setparams="):
             if not all(p in {"color_primaries=bt2020", "color_trc=smpte2084", "colorspace=bt2020nc",
@@ -50,18 +52,33 @@ def direct_filter(chain: str, chroma_location: str = "left") -> str | None:
                       "format=p010le", "format=p010", "format=yuv420p10le"}:
             continue
         elif match := re.fullmatch(r"crop=iw-(\d+)-(\d+):ih-(\d+)-(\d+):(\d+):(\d+)", item):
-            if crop:
+            if seen:
                 return None
             left, right, top, bottom, x, y = map(int, match.groups())
             if (x, y) != (left, top) or any(p % 2 for p in (left, right, top, bottom)):
                 return None
-            crop = f":crop_x={left}:crop_y={top}:crop_w=iw-{left}-{right}:crop_h=ih-{top}-{bottom}:w=iw-{left}-{right}:h=ih-{top}-{bottom}"
+            crop, seen = (left, top, right, bottom), True
         else:
             return None
-    return ("libplacebo=inherit_device=1:format=p010le:colorspace=bt2020nc:color_primaries=bt2020:"
+    return crop
+
+
+def direct_filter(chain: str, chroma_location: str = "left", final: bool = False) -> str | None:
+    """Conversion du direct : P010 final produit par le plugin, sinon filtre libplacebo (plugins antérieurs)."""
+    crop = direct_crop(chain)
+    if crop is None:
+        return None
+    left, top, right, bottom = crop
+    if final:
+        # Recadrage et tramage dans le plugin : un seul tramage, identique au parcours NUT.
+        return (f":format=p010:chroma={chroma_location}:dither={FINAL_DITHER}:crop_left={left}:crop_top={top}"
+                f":crop_right={right}:crop_bottom={bottom},mvo_fel_cuda")
+    geometry = (f":crop_x={left}:crop_y={top}:crop_w=iw-{left}-{right}:crop_h=ih-{top}-{bottom}"
+                f":w=iw-{left}-{right}:h=ih-{top}-{bottom}") if any(crop) else ""
+    return (",libplacebo=inherit_device=1:format=p010le:colorspace=bt2020nc:color_primaries=bt2020:"
             "color_trc=smpte2084:range=limited:apply_dolbyvision=0:apply_filmgrain=0:"
             "peak_detect=0:tonemapping=clip:gamut_mode=clip:contrast_recovery=0:chroma_location=" + chroma_location
-            + crop + ",mvo_fel_cuda")
+            + geometry + ",mvo_fel_cuda")
 
 
 class DirectFelCommand(PipelineCommand):
@@ -100,7 +117,7 @@ class DirectFelCommand(PipelineCommand):
             uuid = f"{key[:8]}-{key[8:12]}-{key[12:16]}-{key[16:20]}-{key[20:]}"
             graph = (f"mvo_fel=source={filter_string(str(source.path.resolve()))}:"
                      f"library={filter_string(str(source.engine.path.resolve()))}:stream={source.stream}:"
-                     f"threads={max(1,self.threads or source.threads)},{self.conversion}[fel]")
+                     f"threads={max(1,self.threads or source.threads)}{self.conversion}[fel]")
             first = self.original
             index = first.index("-i")
             before = list(first[1:index])
@@ -144,5 +161,6 @@ def direct_command(fallback: PipelineCommand, original: list[str], video: VideoE
            for i, arg in enumerate(original[:-1]) if arg in {"-pix_fmt", "-pix_fmt:v"}):
         return fallback
     chain = original[original.index("-vf")+1] if "-vf" in original else ""
-    conversion = direct_filter(chain, context.chroma_location)
+    final = "p010" in listed_capability(context.source.engine, "direct_formats")
+    conversion = direct_filter(chain, context.chroma_location, final)
     return DirectFelCommand(fallback, original, video, binary, conversion, threads) if conversion else fallback

@@ -14,6 +14,41 @@ RGB_TO_YUV = (
 )
 
 
+# Étages sans effet sur les pixels : métadonnées, recadrage pair, format déjà final.
+_PASSTHROUGH = re.compile(
+    r"crop=iw-(\d+)-(\d+):ih-(\d+)-(\d+):(\d+):(\d+)|setparams=[^,]*|sidedata=mode=delete:type=[A-Z_]+"
+    r"|format=(?:yuv420p10le|yuv420p10|p010le|p010|yuv420p|nv12)")
+_UPLOADS = (",format=p010,hwupload", ",format=nv12,hwupload")
+# Tramage déterministe des sorties finales (identique CPU/GPU, deux passes identiques).
+FINAL_DITHER = "blue"
+
+
+def listed_capability(engine: object, key: str) -> tuple[str, ...]:
+    """Valeurs d'une capacité-liste du plugin ; vide si absente ou d'un autre type."""
+    capabilities = getattr(engine, "capabilities", None)
+    value = capabilities.get(key) if isinstance(capabilities, dict) else None
+    return tuple(str(item) for item in value) if isinstance(value, (list, tuple)) else ()
+
+
+def final_output_format(chain: str, depth: int) -> str | None:
+    """Format final que le plugin peut produire lui-même, sinon None (RGB 16 bits).
+
+    Le point de quantification actuel est la fin de la chaîne logicielle ou l'upload
+    matériel : seuls les étages qui précèdent ce point doivent laisser les pixels intacts.
+    """
+    prefix = "," + chain
+    for marker in _UPLOADS:
+        prefix = prefix.split(marker)[0]
+    for item in filter(None, prefix.split(",")):
+        match = _PASSTHROUGH.fullmatch(item)
+        if match is None:
+            return None
+        # 4:2:0 : un recadrage impair déplacerait la grille chroma.
+        if item.startswith("crop=") and any(int(value) % 2 for value in match.groups()[:6]):
+            return None
+    return {10: "yuv420p10le", 8: "yuv420p"}.get(depth)
+
+
 def seek_microseconds(value: str) -> int | None:
     """Durée FFmpeg (secondes ou [HH:]MM:SS[.ms]) en microsecondes ; None si illisible."""
     match = re.fullmatch(r"(?:(\d+):)?(?:(\d+):)?(\d+(?:\.\d*)?|\.\d+)", value.strip())
@@ -60,6 +95,24 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
                 *first[index+2:]]
     if "-map" in first:
         first[first.index("-map")+1] = "0:0"
+    depth = resolve_output_bit_depth(video)
+    chain = first[first.index("-vf")+1] if "-vf" in first else ""
+    final = (final_output_format(chain, depth)
+             if "yuv420p10le" in listed_capability(source.engine, "output_formats") else None)
+    if final is not None:
+        # Images déjà finales (Y'CbCr 4:2:0 tramé par le plugin) : ni conversion ni second tramage.
+        tags = ("setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:"
+                f"chroma_location={context.chroma_location}")
+        if "-vf" in first:
+            first[first.index("-vf")+1] = tags + "," + chain
+        else:
+            position = first.index("-i") + 4
+            first[position:position] = ["-vf", tags]
+        source = replace(source, pixel_format=final, chroma_location=context.chroma_location, dither=FINAL_DITHER)
+        source = replace(source, threads=max(1, threads)) if threads else source
+        result = PipelineCommand(command if upstream else first, upstream, producer=source)
+        from core.fel.direct import direct_command
+        return direct_command(result, original, video, threads)
     if "-vf" in first:
         pos = first.index("-vf")+1
         first[pos] = RGB_TO_YUV + "," + first[pos]
@@ -69,7 +122,6 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         position = first.index("-i") + 2
         first[position:position] = ["-vf", RGB_TO_YUV]
     pos = first.index("-vf") + 1
-    depth = resolve_output_bit_depth(video)
     # Sous-échantillonnage à la position chroma du BL : celle que signalent les encodeurs.
     # zscale ne marque pas les images : sans setparams, l'encodeur signalerait « left ».
     reduce = (f"zscale=dither=error_diffusion:chromal={context.chroma_location},"

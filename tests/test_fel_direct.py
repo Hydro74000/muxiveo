@@ -101,6 +101,14 @@ def test_exact_even_crop_without_resize():
     assert direct.direct_filter("crop=iw-0-0:ih-280-280:0:280,scale=1920:800") is None
 
 
+def test_plugin_made_p010_replaces_libplacebo():
+    """Plugin récent : recadrage et tramage dans la source FEL, un seul tramage."""
+    chain = direct.direct_filter("crop=iw-0-0:ih-280-280:0:280", "topleft", final=True)
+    assert chain == (":format=p010:chroma=topleft:dither=blue:crop_left=0:crop_top=280:crop_right=0"
+                     ":crop_bottom=280,mvo_fel_cuda")
+    assert "libplacebo" not in chain
+
+
 @pytest.mark.parametrize("failure", [
     CommandError([], 1, "MVO_FEL_RECOVERABLE : EL désalignée"),
     CommandError([], 1, "MVO_FEL_SOURCE_ERROR : lecture impossible"),

@@ -386,3 +386,47 @@ def test_producer_writes_natively_to_the_pipe_when_supported(descriptor):
         assert lib.mvo_fel_run_fd.call_args.args[:2] == (1, descriptor)
         lib.mvo_fel_run.assert_not_called()
     producer.output.close.assert_called_once()
+
+
+FINAL_CAPABILITIES = {"seek": 1, "output_formats": ["gbrp16le", "yuv420p16le", "yuv420p10le", "yuv420p"]}
+
+
+@pytest.mark.parametrize("chain,expected", [
+    ("", "yuv420p10le"),
+    ("crop=iw-0-0:ih-280-280:0:280,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL", "yuv420p10le"),
+    ("setparams=color_trc=smpte2084,format=p010,hwupload,scale_cuda=1920:1080", "yuv420p10le"),
+    ("crop=iw-1-0:ih-0-0:1:0", None),
+    ("scale=1920:1080", None),
+    ("fps=24000/1001", None),
+])
+def test_final_format_only_when_pixels_are_untouched_before_quantization(chain, expected):
+    from core.fel.pipeline import final_output_format
+    assert final_output_format(chain, 10) == expected
+
+
+def test_final_format_is_produced_by_the_plugin(tmp_path):
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, FINAL_CAPABILITIES, "topleft"), bit_depth="10")
+    result = with_fel_input(["ffmpeg", "-i", "original.mkv", "-vf", "crop=iw-0-0:ih-8-8:0:8", "out.mkv"], video)
+    vf = result[result.index("-vf")+1]
+    assert "zscale" not in vf and vf.startswith("setparams=range=tv:") and vf.endswith("crop=iw-0-0:ih-8-8:0:8")
+    assert (result.producer.pixel_format, result.producer.chroma_location, result.producer.dither) == (
+        "yuv420p10le", "topleft", "blue")
+
+
+def test_pixel_filters_keep_rgb_reconstruction(tmp_path):
+    video = VideoEncodeSettings(fel_context=seek_context(tmp_path, FINAL_CAPABILITIES), bit_depth="10")
+    result = with_fel_input(["ffmpeg", "-i", "original.mkv", "-vf", "scale=1920:1080", "out.mkv"], video)
+    assert result.producer.pixel_format == "gbrp16le"
+    assert "zscale=matrix=bt2020nc" in result[result.index("-vf")+1]
+
+
+def test_producer_requests_final_output_or_releases_context(tmp_path):
+    lib = Mock()
+    lib.mvo_fel_create.return_value = 7
+    lib.mvo_fel_set_output.return_value = -1
+    source = FelSource(SimpleNamespace(lib=lib, capabilities=FINAL_CAPABILITIES), tmp_path / "s.mkv", 0,
+                       pixel_format="yuv420p10le", chroma_location="topleft", dither="blue")
+    with pytest.raises(FelError, match="Format de sortie"):
+        source.start(Mock(), threading.Event())
+    lib.mvo_fel_set_output.assert_called_once_with(7, b"yuv420p10le", b"topleft", b"blue")
+    lib.mvo_fel_destroy.assert_called_once_with(7)
