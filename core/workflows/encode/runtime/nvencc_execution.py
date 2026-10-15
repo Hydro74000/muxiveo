@@ -132,9 +132,14 @@ class NvenccPipeExecutor:
         signals: TaskSignals,
         monitor: NvenccDoviRpuMonitor | None = None,
     ) -> str:
-        producer_stages = command_stages(decode_cmd)
+        from core.fel.pipeline import direct_feed
         from core.pipeline_command import PipelineCommand
-        native = decode_cmd.producer if isinstance(decode_cmd, PipelineCommand) else None
+        # FEL : étage FFmpeg réduit à une recopie du NUT, NVEncC lit directement le plugin.
+        feed = direct_feed(decode_cmd)
+        producer_stages = [] if feed is not None else command_stages(decode_cmd)
+        native = feed or (decode_cmd.producer if isinstance(decode_cmd, PipelineCommand) else None)
+        if feed is not None:
+            signals.progress.emit("FEL — NVEncC alimenté directement par le plugin (sans étage FFmpeg).")
         fel_producer = None
         # Étage intermédiaire (muxiveo-rife) : c'est lui qui rapporte la
         # position dans la source ; les compteurs NVEncC (trames ×N) sont écartés.
@@ -198,7 +203,7 @@ class NvenccPipeExecutor:
 
             encode_proc = subprocess.Popen(
                 encode_cmd,
-                stdin=prev_stdout,
+                stdin=prev_stdout if prev_stdout is not None else (subprocess.PIPE if native is not None else None),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(cwd),
@@ -222,8 +227,9 @@ class NvenccPipeExecutor:
         readers.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
         try:
             if native is not None:
-                assert producers[0].stdin is not None
-                fel_producer = native.start(producers[0].stdin, signals._cancel_event)
+                target = producers[0].stdin if producers else encode_proc.stdin
+                assert target is not None
+                fel_producer = native.start(target, signals._cancel_event)
             encode_rc = encode_proc.wait()
             producer_rcs = [proc.wait() for proc in producers]
             readers.shutdown(wait=True)

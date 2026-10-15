@@ -62,6 +62,12 @@ class FelEngine:
             if capabilities.get("fd_output") == 1:
                 self.lib.mvo_fel_run_fd.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, _Progress, ctypes.c_void_p]
                 self.lib.mvo_fel_run_fd.restype = ctypes.c_int
+            if capabilities.get("crop") == 1:
+                self.lib.mvo_fel_set_crop.argtypes = [ctypes.c_void_p, *([ctypes.c_int] * 4)]
+                self.lib.mvo_fel_set_crop.restype = ctypes.c_int
+            if "zero" in (capabilities.get("timestamps") or []):
+                self.lib.mvo_fel_set_timestamps.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_timestamps.restype = ctypes.c_int
             if "yuv420p10le" in (capabilities.get("output_formats") or []):
                 self.lib.mvo_fel_set_output.argtypes = [ctypes.c_void_p, *([ctypes.c_char_p] * 3)]
                 self.lib.mvo_fel_set_output.restype = ctypes.c_int
@@ -161,6 +167,10 @@ class FelSource:
     pixel_format: str = "gbrp16le"
     chroma_location: str = "left"
     dither: str = "blue"
+    # "zero" : PTS relatifs à la première image, comme FFmpeg à l'entrée d'un NUT.
+    timestamps: str = "source"
+    # Marges paires (gauche, haut, droite, bas) retirées par le plugin, sorties Y'CbCr.
+    crop: tuple[int, int, int, int] = (0, 0, 0, 0)
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
@@ -192,6 +202,11 @@ class FelProducer:
                 self._handle, source.pixel_format.encode("ascii"), source.chroma_location.encode("ascii"),
                 source.dither.encode("ascii")) != 0:
             refused = "Format de sortie FEL refusé par le plugin"
+        elif any(source.crop) and source.engine.lib.mvo_fel_set_crop(self._handle, *source.crop) != 0:
+            refused = "Recadrage FEL refusé par le plugin"
+        elif source.timestamps != "source" and source.engine.lib.mvo_fel_set_timestamps(
+                self._handle, source.timestamps.encode("ascii")) != 0:
+            refused = "Horodatages FEL refusés par le plugin"
         if refused:
             source.engine.lib.mvo_fel_destroy(self._handle)
             self._handle = None

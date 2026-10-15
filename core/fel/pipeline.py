@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from core.fel.engine import FelSource
 from core.pipeline_command import PipelineCommand
 from core.workflows.encode.models import VideoEncodeSettings
 from core.workflows.encode.domain.codecs import resolve_output_bit_depth
@@ -47,6 +48,65 @@ def final_output_format(chain: str, depth: int) -> str | None:
         if item.startswith("crop=") and any(int(value) % 2 for value in match.groups()[:6]):
             return None
     return {10: "yuv420p10le", 8: "yuv420p"}.get(depth)
+
+
+# Options d'un étage FFmpeg NUT → NUT sans autre effet (valeur attendue ou None).
+_FEED_FLAGS = {"-hide_banner": False, "-y": False, "-nostdin": False, "-loglevel": True, "-i": True,
+               "-chroma_sample_location": True, "-map": True, "-fps_mode": True, "-c:v": True, "-f": True,
+               "-vf": True}
+
+
+def direct_feed(command: object) -> FelSource | None:
+    """Producteur à brancher directement sur l'encodeur si l'étage FFmpeg ne fait que recopier le NUT.
+
+    Images finales et simple marquage : l'encodeur (NVEncC) peut lire le NUT du plugin.
+    Les PTS deviennent relatifs à la première image, comme à la sortie de cet étage.
+    """
+    if not isinstance(command, PipelineCommand) or command.producer is None or command.upstream:
+        return None
+    source = command.producer
+    if source.pixel_format == "gbrp16le" or "zero" not in listed_capability(source.engine, "timestamps"):
+        return None
+    args = list(command)
+    if len(args) < 2 or args[-1] != "-":
+        return None
+    values: dict[str, list[str]] = {}
+    position = 1
+    while position < len(args) - 1:
+        flag = args[position]
+        if flag not in _FEED_FLAGS:
+            return None
+        if _FEED_FLAGS[flag]:
+            if position + 1 >= len(args) - 1:
+                return None
+            values.setdefault(flag, []).append(args[position + 1])
+            position += 2
+        else:
+            position += 1
+    if (values.get("-i") != ["pipe:0"] or values.get("-f") != ["nut", "nut"]
+            or values.get("-c:v", ["rawvideo"]) != ["rawvideo"] or values.get("-map", ["0:0"]) != ["0:0"]
+            or values.get("-fps_mode", ["passthrough"]) != ["passthrough"]):
+        return None
+    if any(not item.startswith("setparams=") for chain in values.get("-vf", []) for item in chain.split(",")):
+        return None
+    return replace(source, timestamps="zero")
+
+
+def plugin_crop(chain: str) -> tuple[str, tuple[int, int, int, int]] | None:
+    """Recadrage pair d'une chaîne finale confié au plugin : (chaîne sans le crop, marges)."""
+    items = chain.split(",") if chain else []
+    crops = [(index, _PASSTHROUGH.fullmatch(item)) for index, item in enumerate(items) if item.startswith("crop=")]
+    if len(crops) != 1 or crops[0][1] is None:
+        return None
+    index, match = crops[0]
+    left, right, top, bottom, x, y = map(int, match.groups()[:6])
+    if (x, y) != (left, top) or any(value % 2 for value in (left, right, top, bottom)):
+        return None
+    # Le crop doit précéder le point de quantification (upload matériel éventuel).
+    prefix = ("," + chain).split(_UPLOADS[0])[0].split(_UPLOADS[1])[0]
+    if items[index] not in prefix.split(","):
+        return None
+    return ",".join(items[:index] + items[index+1:]), (left, top, right, bottom)
 
 
 def seek_microseconds(value: str) -> int | None:
@@ -103,8 +163,14 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         # Images déjà finales (Y'CbCr 4:2:0 tramé par le plugin) : ni conversion ni second tramage.
         tags = ("setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:"
                 f"chroma_location={context.chroma_location}")
+        moved = plugin_crop(chain) if source.engine.capabilities.get("crop") == 1 else None
+        if moved is not None:
+            # Recadrage dans le plugin : images plus petites et étage FFmpeg réduit au marquage.
+            chain, margins = moved
+            first[first.index("-vf")+1] = chain
+            source = replace(source, crop=margins)
         if "-vf" in first:
-            first[first.index("-vf")+1] = tags + "," + chain
+            first[first.index("-vf")+1] = tags + ("," + chain if chain else "")
         else:
             position = first.index("-i") + 4
             first[position:position] = ["-vf", tags]

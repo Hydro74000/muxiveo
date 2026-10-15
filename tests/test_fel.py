@@ -430,3 +430,40 @@ def test_producer_requests_final_output_or_releases_context(tmp_path):
         source.start(Mock(), threading.Event())
     lib.mvo_fel_set_output.assert_called_once_with(7, b"yuv420p10le", b"topleft", b"blue")
     lib.mvo_fel_destroy.assert_called_once_with(7)
+
+
+FEED_CAPABILITIES = {**FINAL_CAPABILITIES, "timestamps": ["source", "zero"]}
+
+
+def test_nvencc_reads_the_plugin_without_a_copy_stage(tmp_path):
+    from core.fel.pipeline import direct_feed
+    from core.workflows.encode.runtime.nvencc import build_decode_pipe_cmd
+    video = VideoEncodeSettings(codec="nvencc_hevc", bit_depth="10",
+                                fel_context=seek_context(tmp_path, FEED_CAPABILITIES, "topleft"))
+    decode = with_fel_input(build_decode_pipe_cmd("ffmpeg", "original.mkv", nut=True), video)
+    feed = direct_feed(decode)
+    assert feed is not None and feed.timestamps == "zero" and feed.pixel_format == "yuv420p10le"
+    assert decode.producer.timestamps == "source"
+
+
+@pytest.mark.parametrize("vf,capabilities", [("crop=iw-0-0:ih-8-8:0:8", FEED_CAPABILITIES),
+                                             ("", FINAL_CAPABILITIES), ("scale=1920:1080", FEED_CAPABILITIES)])
+def test_copy_stage_is_kept_when_it_does_something(tmp_path, vf, capabilities):
+    from core.fel.pipeline import direct_feed
+    from core.workflows.encode.runtime.nvencc import build_decode_pipe_cmd
+    video = VideoEncodeSettings(codec="nvencc_hevc", bit_depth="10", fel_context=seek_context(tmp_path, capabilities))
+    decode = with_fel_input(build_decode_pipe_cmd("ffmpeg", "original.mkv", nut=True, vf=vf or None), video)
+    assert direct_feed(decode) is None
+
+
+def test_even_crop_moves_into_the_plugin_and_nvencc_reads_it_directly(tmp_path):
+    from core.fel.pipeline import direct_feed
+    from core.workflows.encode.runtime.nvencc import build_decode_pipe_cmd
+    capabilities = {**FEED_CAPABILITIES, "crop": 1}
+    video = VideoEncodeSettings(codec="nvencc_hevc", bit_depth="10", fel_context=seek_context(tmp_path, capabilities))
+    decode = with_fel_input(build_decode_pipe_cmd("ffmpeg", "original.mkv", nut=True,
+                                                  vf="crop=iw-0-0:ih-8-8:0:8"), video)
+    assert "crop=" not in decode[decode.index("-vf")+1]
+    assert decode.producer.crop == (0, 8, 0, 8)
+    feed = direct_feed(decode)
+    assert feed is not None and feed.crop == (0, 8, 0, 8)

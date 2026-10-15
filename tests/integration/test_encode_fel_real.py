@@ -77,6 +77,9 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
     (tmp_path / "workflow.json").write_text(json.dumps({"seconds": seconds, "log": messages,
         "progress": state["progress"], "failed": state["failed"]}, ensure_ascii=False, indent=2))
     assert state["failed"] is None, state["failed"]
+    if mode == "nvencc_dv" and "zero" in (engine.capabilities.get("timestamps") or []):
+        # Image finale sans filtre : NVEncC lit le NUT du plugin, sans étage FFmpeg.
+        assert any("alimenté directement" in line for line in state["progress"])
     if mode != "bl_only":
         assert any("FEL confirmé" in message for _, message in messages), messages
         assert any("reconstruction FEL réussie" in message for _, message in messages), messages
