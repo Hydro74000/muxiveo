@@ -358,3 +358,31 @@ def test_producer_applies_start_or_releases_context(tmp_path):
         source.start(Mock(), threading.Event())
     lib.mvo_fel_set_start.assert_called_once_with(7, 5)
     lib.mvo_fel_destroy.assert_called_once_with(7)
+
+
+@pytest.mark.parametrize("descriptor", [9, None])
+def test_producer_writes_natively_to_the_pipe_when_supported(descriptor):
+    """fd_output : le plugin écrit sur le pipe ; sans descripteur, callback historique."""
+    import io
+    lib = SimpleNamespace(mvo_fel_run=Mock(return_value=0), mvo_fel_run_fd=Mock(return_value=0))
+    producer = FelProducer.__new__(FelProducer)
+    producer.source = SimpleNamespace(engine=SimpleNamespace(lib=lib, capabilities={"fd_output": 1}), device_plan=None)
+    producer._release_device = lambda: None
+    producer.cancelled = threading.Event()
+    producer._stop = threading.Event()
+    producer._handle = 1
+    producer.output = Mock()
+    if descriptor is None:
+        producer.output.fileno.side_effect = io.UnsupportedOperation()
+    else:
+        producer.output.fileno.return_value = descriptor
+    producer.error = None
+    producer._run()
+    assert producer.error is None
+    if descriptor is None:
+        lib.mvo_fel_run.assert_called_once()
+        lib.mvo_fel_run_fd.assert_not_called()
+    else:
+        assert lib.mvo_fel_run_fd.call_args.args[:2] == (1, descriptor)
+        lib.mvo_fel_run.assert_not_called()
+    producer.output.close.assert_called_once()

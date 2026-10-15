@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import ctypes
+import io
 import json
+import os
 import threading
 import weakref
 from dataclasses import dataclass
@@ -57,6 +59,9 @@ class FelEngine:
                 self.lib.mvo_fel_set_device.restype = ctypes.c_int
                 self.lib.mvo_fel_backend.argtypes = [ctypes.c_void_p]
                 self.lib.mvo_fel_backend.restype = ctypes.c_char_p
+            if capabilities.get("fd_output") == 1:
+                self.lib.mvo_fel_run_fd.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, _Progress, ctypes.c_void_p]
+                self.lib.mvo_fel_run_fd.restype = ctypes.c_int
             if capabilities.get("seek") == 1:
                 self.lib.mvo_fel_set_start.argtypes = [ctypes.c_void_p, ctypes.c_int64]
                 self.lib.mvo_fel_set_start.restype = ctypes.c_int
@@ -234,7 +239,12 @@ class FelProducer:
             self.frames = frames
 
         try:
-            status = lib.mvo_fel_run(self._handle, _Write(write), _Progress(progress), None)
+            target = self._native_target()
+            if target is not None:
+                # Le plugin écrit lui-même sur le pipe : ni GIL ni copie Python par image.
+                status = lib.mvo_fel_run_fd(self._handle, target, _Progress(progress), None)
+            else:
+                status = lib.mvo_fel_run(self._handle, _Write(write), _Progress(progress), None)
             if self.cancelled.is_set() or status == 3:
                 self.error = FelCancelled()
             elif status == 1:
@@ -266,6 +276,22 @@ class FelProducer:
                     self.output.close()
                 except OSError:
                     pass
+
+    def _native_target(self) -> int | None:
+        """Descripteur (POSIX) ou HANDLE (Windows) du pipe, si le plugin sait y écrire."""
+        if getattr(self.source.engine, "capabilities", {}).get("fd_output") != 1:
+            return None
+        try:
+            self.output.flush()
+            descriptor = self.output.fileno()
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            return None
+        if not isinstance(descriptor, int):
+            return None
+        if os.name == "nt":
+            import msvcrt
+            return int(msvcrt.get_osfhandle(descriptor))
+        return descriptor
 
     def check_error(self) -> None:
         """Propage les erreurs ; seul EPIPE est attendu si l'aval s'arrête tôt."""
