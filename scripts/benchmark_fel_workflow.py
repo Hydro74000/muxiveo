@@ -61,24 +61,12 @@ def excerpt(source: Path, root: Path, start: float, duration: float) -> tuple[Pa
     packets = probe(source, "-read_intervals", f"{start}%+0.5", "-show_packets")["packets"]
     key = next(packet["pts_time"] for packet in packets if "K" in packet.get("flags", ""))
     output = root / "source-excerpt.mkv"
-    for _ in range(8):
-        subprocess.run([
-            "ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", key, "-i", str(source),
-            "-t", str(duration), "-map", "0:v:0", "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)",
-            "-map_chapters", "-1", "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
-            "-an", "-sn", "-dn", str(output),
-        ], check=True, capture_output=True, **subprocess_text_kwargs())
-        # Coupe en copie : une image B perdue en fin d'extrait laisse un trou de PTS.
-        # Recouper avant le trou garantit une référence à cadence régulière.
-        frames = probe(output, "-show_entries", "frame=pts_time")["frames"]
-        pts = [float(frame["pts_time"]) for frame in frames]
-        step = statistics.median(b-a for a, b in zip(pts, pts[1:]))
-        hole = next((a for a, b in zip(pts, pts[1:]) if b-a > 1.5*step), None)
-        if hole is None:
-            break
-        duration = hole - pts[0]
-    else:
-        raise RuntimeError("Extrait sans trou de PTS introuvable.")
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-nostdin", "-ss", key, "-i", str(source),
+        "-t", str(duration), "-map", "0:v:0", "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)",
+        "-map_chapters", "-1", "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
+        "-an", "-sn", "-dn", str(output),
+    ], check=True, capture_output=True, **subprocess_text_kwargs())
     stream = probe(output, "-count_frames", "-show_streams")["streams"][0]
     record = next(item for item in stream.get("side_data_list", [])
                   if item.get("side_data_type") == "DOVI configuration record")
@@ -151,6 +139,15 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
     pts = [float(frame["best_effort_timestamp_time"]) for frame in frames]
     pts_error_ms = max(abs(value-pts[0]-float(index/expected_rate))*1000
                        for index, value in enumerate(pts))
+    if not video.interpolation.is_active():
+        # Coupe en copie : les images de tête de l'image clé suivante manquent en fin
+        # d'extrait. FEL conserve ces PTS de la source, le BL les régularise : les deux valent.
+        reference = [float(frame["best_effort_timestamp_time"])
+                     for frame in probe(source, "-show_frames", "-show_entries",
+                                        "frame=best_effort_timestamp_time")["frames"]]
+        if len(reference) == len(pts):
+            faithful = max(abs((a-pts[0])-(b-reference[0]))*1000 for a, b in zip(pts, reference))
+            pts_error_ms = min(pts_error_ms, faithful)
     if (len(pts) != expected_frames or any(a >= b for a, b in zip(pts, pts[1:]))
             or pts_error_ms > 1.01):
         raise RuntimeError(f"Horodatages inattendus pour {label} : {pts_error_ms:.6f} ms")
