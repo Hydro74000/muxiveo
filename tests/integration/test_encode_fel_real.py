@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from core.fel.engine import FelEngine
-from core.workflows.encode import EncodeConfig, EncodeWorkflow, VideoEncodeSettings
+from core.workflows.encode import EncodeConfig, EncodeWorkflow, VideoCropSettings, VideoEncodeSettings
 from tests.integration._synth import wait_task
 
 _SOURCE = os.environ.get("MUXIVEO_TEST_FEL_SOURCE", "")
@@ -47,21 +47,43 @@ def real_excerpt(tmp_path_factory):
     return excerpt, stream
 
 
-@pytest.mark.parametrize("mode", ["x265_dv", "x265_hdr10", "ffmpeg_nvenc_dv", "nvencc_dv", "bl_only", "sdr"])
+def _level5(path: Path, work: Path) -> dict:
+    """Zone active L5 de la première image du RPU réellement présent dans le fichier."""
+    rpu = work / f"{path.stem}-l5.bin"
+    subprocess.run(["dovi_tool", "-m", "0", "extract-rpu", "-i", str(path), "-o", str(rpu)],
+        check=True, capture_output=True)
+    info = subprocess.run(["dovi_tool", "info", "-i", str(rpu), "-f", "0"], check=True, capture_output=True,
+        text=True).stdout
+
+    def find(node):
+        if isinstance(node, dict):
+            if "Level5" in node:
+                return node["Level5"]
+            return next((found for value in node.values() if (found := find(value)) is not None), None)
+        if isinstance(node, list):
+            return next((found for value in node if (found := find(value)) is not None), None)
+        return None
+
+    return find(json.loads(info[info.index("{"):])) or {}
+
+
+@pytest.mark.parametrize("mode", ["x265_dv", "x265_dv_crop", "x265_hdr10", "ffmpeg_nvenc_dv", "nvencc_dv",
+                                  "nvencc_dv_crop", "bl_only", "sdr"])
 def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
     source, source_stream = real_excerpt
-    if mode == "nvencc_dv" and not shutil.which("nvencc"):
+    if mode.startswith("nvencc") and not shutil.which("nvencc"):
         pytest.skip("NVEncC requis")
     engine = FelEngine(Path(_LIBRARY))
     monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
     workflow = EncodeWorkflow(ffmpeg_threads=12, ram_buffer_enabled=False, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     master, light = workflow._extract_static_hdr_metadata(source, 0) if mode == "x265_hdr10" else ("", "")
-    codec = {"ffmpeg_nvenc_dv": "hevc_nvenc", "nvencc_dv": "nvencc_hevc"}.get(mode, "libx265")
+    codec = "hevc_nvenc" if mode.startswith("ffmpeg_nvenc") else "nvencc_hevc" if mode.startswith("nvencc") else "libx265"
     video = VideoEncodeSettings(codec=codec, source_path=source,
         preset="p1" if codec == "hevc_nvenc" else "default" if codec == "nvencc_hevc" else "ultrafast",
-        bake_dovi_fel=mode != "bl_only", dovi_source_profile="p7_fel", copy_dv=mode.endswith("_dv"),
+        bake_dovi_fel=mode != "bl_only", dovi_source_profile="p7_fel", copy_dv="_dv" in mode,
         bit_depth="8" if mode == "sdr" else "10", tonemap_to_sdr=mode == "sdr",
+        crop=VideoCropSettings(enabled=True, top=8, bottom=8) if mode.endswith("_crop") else VideoCropSettings(),
         source_bit_depth=10, source_color_transfer="smpte2084",
         inject_hdr_meta=mode == "x265_hdr10", master_display=master, max_cll=light,
         static_hdr_metadata_source="source", static_hdr_light_level_source="source",
@@ -77,8 +99,8 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
     (tmp_path / "workflow.json").write_text(json.dumps({"seconds": seconds, "log": messages,
         "progress": state["progress"], "failed": state["failed"]}, ensure_ascii=False, indent=2))
     assert state["failed"] is None, state["failed"]
-    if mode == "nvencc_dv" and "zero" in (engine.capabilities.get("timestamps") or []):
-        # Image finale sans filtre : NVEncC lit le NUT du plugin, sans étage FFmpeg.
+    if mode.startswith("nvencc") and "zero" in (engine.capabilities.get("timestamps") or []):
+        # Image finale, recadrage compris : NVEncC lit le NUT du plugin, sans étage FFmpeg.
         assert any("alimenté directement" in line for line in state["progress"])
     if mode != "bl_only":
         assert any("FEL confirmé" in message for _, message in messages), messages
@@ -87,6 +109,12 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
             for message in [*(m for _, m in messages), *state["progress"]])
     stream = _probe(output, "-count_frames", "-show_streams")["streams"][0]
     assert stream["nb_read_frames"] == source_stream["nb_read_frames"]
+    if mode.endswith("_crop"):
+        # RPU original réutilisé puis réaligné : zone active décalée du recadrage (saturée à 0).
+        assert stream["height"] == source_stream["height"] - 16
+        before, after = _level5(source, tmp_path), _level5(output, tmp_path)
+        for edge in ("active_area_top_offset", "active_area_bottom_offset"):
+            assert after.get(edge) == max(0, int(before.get(edge, 0)) - 8), (before, after)
     assert stream["color_transfer"] == ("bt709" if mode == "sdr" else "smpte2084")
     assert stream["pix_fmt"] == ("yuv420p" if mode == "sdr" else "yuv420p10le")
     if mode != "sdr" and source_stream.get("chroma_location"):
@@ -94,7 +122,7 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
         assert stream.get("chroma_location") == source_stream["chroma_location"]
     record = next((item for item in stream.get("side_data_list", [])
         if item.get("side_data_type") == "DOVI configuration record"), None)
-    if mode.endswith("_dv"):
+    if "_dv" in mode:
         assert record is not None
         assert record["dv_profile"] == 8 and record["dv_bl_signal_compatibility_id"] == 1
         assert record["rpu_present_flag"] == record["bl_present_flag"] == 1 and record["el_present_flag"] == 0

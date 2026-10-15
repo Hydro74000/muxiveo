@@ -200,30 +200,32 @@ class MultiVideoPipelineRunner:
                 meta_input = annexb_src
             else:
                 meta_input = source
-            if video.copy_dv and reuse_fel_rpu and fel_rpu is not None and convert_p7_rpu_to_p81(
-                dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=fel_rpu, output_rpu=rpu_bin,
-                run_cmd=lambda cmd: run_cmd(cmd, f"dovi-fel-p81-{index}"),
-            ):
-                # Mode 2 par l'éditeur : octet pour octet identique à « -m 2 extract-rpu ».
-                local_cleanup.append(rpu_bin)
-            elif video.copy_dv:
-                if reuse_fel_rpu and needs_annexb:
-                    raise EncodeError("Dolby Vision : RPU FEL original inattendu (profil autre que 7).")
-                mode = rpu_extract_mode(video)
-                run_cmd([
-                    cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
-                    "-i", str(meta_input), "-o", str(rpu_bin),
-                ], f"dovi-extract-{index}")
-                local_cleanup.append(rpu_bin)
-                rpu_p81 = rpu_bin.with_name(f"{rpu_bin.stem}.p81.bin")
-                # Source au record P8 portant un RPU P7 : image réencodée sans couche d'amélioration.
-                if not mode and video.codec != "copy" and convert_p7_rpu_to_p81(
-                    dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=rpu_bin, output_rpu=rpu_p81,
-                    run_cmd=lambda cmd: run_cmd(cmd, f"dovi-p81-{index}"),
+            if video.copy_dv:
+                if reuse_fel_rpu and fel_rpu is not None and convert_p7_rpu_to_p81(
+                    dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=fel_rpu, output_rpu=rpu_bin,
+                    run_cmd=lambda cmd: run_cmd(cmd, f"dovi-fel-p81-{index}"),
                 ):
-                    cb.log_info(f"Piste vidéo {index}: RPU P7 converti en P8.1.")
-                    local_cleanup.append(rpu_p81)
-                    rpu_bin = rpu_p81
+                    # Mode 2 par l'éditeur : octet pour octet identique à « -m 2 extract-rpu ».
+                    local_cleanup.append(rpu_bin)
+                else:
+                    if reuse_fel_rpu and needs_annexb:
+                        raise EncodeError("Dolby Vision : RPU FEL original inattendu (profil autre que 7).")
+                    mode = rpu_extract_mode(video)
+                    run_cmd([
+                        cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
+                        "-i", str(meta_input), "-o", str(rpu_bin),
+                    ], f"dovi-extract-{index}")
+                    local_cleanup.append(rpu_bin)
+                    rpu_p81 = rpu_bin.with_name(f"{rpu_bin.stem}.p81.bin")
+                    # Source au record P8 portant un RPU P7 : image réencodée sans couche d'amélioration.
+                    if not mode and video.codec != "copy" and convert_p7_rpu_to_p81(
+                        dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=rpu_bin, output_rpu=rpu_p81,
+                        run_cmd=lambda cmd: run_cmd(cmd, f"dovi-p81-{index}"),
+                    ):
+                        cb.log_info(f"Piste vidéo {index}: RPU P7 converti en P8.1.")
+                        local_cleanup.append(rpu_p81)
+                        rpu_bin = rpu_p81
+                # RPU extrait ou réutilisé : même traitement de géométrie avant expansion et injection.
                 # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
                 rpu_bin = crop_dovi_rpu(
                     video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],
