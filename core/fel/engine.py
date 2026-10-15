@@ -4,7 +4,7 @@ from __future__ import annotations
 import ctypes
 import io
 import json
-import os
+import sys
 import threading
 import weakref
 from dataclasses import dataclass
@@ -288,7 +288,7 @@ class FelProducer:
             return None
         if not isinstance(descriptor, int):
             return None
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
             return int(msvcrt.get_osfhandle(descriptor))
         return descriptor
