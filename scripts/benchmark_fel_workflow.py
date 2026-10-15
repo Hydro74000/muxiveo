@@ -61,12 +61,24 @@ def excerpt(source: Path, root: Path, start: float, duration: float) -> tuple[Pa
     packets = probe(source, "-read_intervals", f"{start}%+0.5", "-show_packets")["packets"]
     key = next(packet["pts_time"] for packet in packets if "K" in packet.get("flags", ""))
     output = root / "source-excerpt.mkv"
-    subprocess.run([
-        "ffmpeg", "-v", "error", "-nostdin", "-ss", key, "-i", str(source),
-        "-t", str(duration), "-map", "0:v:0", "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)",
-        "-map_chapters", "-1", "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
-        "-an", "-sn", "-dn", str(output),
-    ], check=True, capture_output=True, **subprocess_text_kwargs())
+    for _ in range(8):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", key, "-i", str(source),
+            "-t", str(duration), "-map", "0:v:0", "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)",
+            "-map_chapters", "-1", "-map_metadata", "-1", "-map_metadata:s:v:0", "-1",
+            "-an", "-sn", "-dn", str(output),
+        ], check=True, capture_output=True, **subprocess_text_kwargs())
+        # Coupe en copie : une image B perdue en fin d'extrait laisse un trou de PTS.
+        # Recouper avant le trou garantit une référence à cadence régulière.
+        frames = probe(output, "-show_entries", "frame=pts_time")["frames"]
+        pts = [float(frame["pts_time"]) for frame in frames]
+        step = statistics.median(b-a for a, b in zip(pts, pts[1:]))
+        hole = next((a for a, b in zip(pts, pts[1:]) if b-a > 1.5*step), None)
+        if hole is None:
+            break
+        duration = hole - pts[0]
+    else:
+        raise RuntimeError("Extrait sans trou de PTS introuvable.")
     stream = probe(output, "-count_frames", "-show_streams")["streams"][0]
     record = next(item for item in stream.get("side_data_list", [])
                   if item.get("side_data_type") == "DOVI configuration record")
@@ -162,22 +174,25 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
 
 
 def summaries(cases: list[dict]) -> list[dict]:
+    """Une ligne par encodeur et transport FEL, référence BL commune à l'encodeur."""
     result = []
     for codec in dict.fromkeys(case["codec"] for case in cases):
         selected = [case for case in cases if case["codec"] == codec]
         if len({(case["frames"], case["width"], case["height"]) for case in selected}) != 1:
             raise RuntimeError(f"Comparaison de géométrie ou de durée inégales : {codec}")
         baseline = [case["seconds"] for case in selected if not case["fel"]]
-        reconstructed = [case["seconds"] for case in selected if case["fel"]]
-        before, after = statistics.median(baseline), statistics.median(reconstructed)
-        result.append({"codec": codec, "preset": selected[0]["preset"],
-                       "fel_transports": sorted({case.get("fel_transport", "nut") for case in selected if case["fel"]}),
-                       "bl_median_s": before, "fel_median_s": after,
-                       "bl_range_s": [min(baseline), max(baseline)],
-                       "fel_range_s": [min(reconstructed), max(reconstructed)],
-                       "added_s": after-before, "added_percent": 100*(after/before-1),
-                       "time_ratio": after/before, "bl_fps": selected[0]["frames"]/before,
-                       "fel_fps": selected[0]["frames"]/after})
+        before = statistics.median(baseline)
+        for transport in dict.fromkeys(case.get("fel_transport", "nut") for case in selected if case["fel"]):
+            reconstructed = [case["seconds"] for case in selected
+                             if case["fel"] and case.get("fel_transport", "nut") == transport]
+            after = statistics.median(reconstructed)
+            result.append({"codec": codec, "preset": selected[0]["preset"], "fel_transport": transport,
+                           "bl_median_s": before, "fel_median_s": after,
+                           "bl_range_s": [min(baseline), max(baseline)],
+                           "fel_range_s": [min(reconstructed), max(reconstructed)],
+                           "added_s": after-before, "added_percent": 100*(after/before-1),
+                           "time_ratio": after/before, "bl_fps": selected[0]["frames"]/before,
+                           "fel_fps": selected[0]["frames"]/after})
     return result
 
 
@@ -195,6 +210,8 @@ def main() -> None:
                         help="Expérience : analyse minimale des pipes NUT internes")
     parser.add_argument("--direct-ffmpeg", type=Path,
                         help="Prototype privé : comparer aussi le transport GPU direct pour hevc_nvenc")
+    parser.add_argument("--compare-direct", action="store_true",
+                        help="hevc_nvenc : mesurer FEL en NUT et en direct dans la même série")
     parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc", "hevc_nvenc"),
                         default=["libx265", "nvencc_hevc"])
     args = parser.parse_args()
@@ -202,6 +219,8 @@ def main() -> None:
         parser.error("Durée, passages et threads doivent être positifs.")
     if "nvencc_hevc" in args.codecs and not shutil.which("nvencc"):
         parser.error("NVEncC absent ; choisir --codecs libx265.")
+    if args.compare_direct and not args.direct_ffmpeg:
+        parser.error("--compare-direct exige --direct-ffmpeg.")
     app = QCoreApplication.instance() or QCoreApplication([])
     args.work_dir.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="fel-benchmark-", dir=args.work_dir))
@@ -209,6 +228,8 @@ def main() -> None:
     source_stat = args.source.stat()
     source, stream, key = excerpt(args.source, root, args.start, args.duration)
     engine = FelEngine(args.library, direct_ffmpeg=args.direct_ffmpeg)
+    # Même bibliothèque, sans FFmpeg direct : force le transport NUT.
+    nut_engine = FelEngine(args.library) if args.compare_direct else engine
     document = {"date": time.strftime("%Y-%m-%d %H:%M:%S %z"), "platform": platform.platform(),
                 "source": str(args.source), "source_bytes": source_stat.st_size,
                 "source_mtime_ns": source_stat.st_mtime_ns, "excerpt_start_s": key,
@@ -236,14 +257,21 @@ def main() -> None:
         return normal_run(self, command, *values, **keywords)
 
     probe_patch = patch.object(ToolRunner, "_run_cmd", new=fast_pipe_run) if args.fast_pipe_probe else nullcontext()
-    with patch.object(FelEngine, "installed", return_value=engine), probe_patch:
+    with probe_patch:
         for repeat in range(1, args.runs+1):
             for codec in args.codecs:
+                variants = [(False, engine, "")]
+                if args.compare_direct and codec == "hevc_nvenc":
+                    variants += [(True, nut_engine, "-nut"), (True, engine, "-direct")]
+                else:
+                    variants.append((True, engine, ""))
                 # Alterner l'ordre limite les biais de cache et de montée en température.
-                for enabled in ([False, True] if repeat % 2 else [True, False]):
+                for enabled, selected, suffix in (variants if repeat % 2 else variants[::-1]):
                     video = replace(common, codec=codec, preset="medium" if codec == "libx265" else "p5" if codec == "hevc_nvenc" else "default",
                                     bake_dovi_fel=enabled)
-                    document["cases"].append(run_case(root, source, stream, video, args.threads, repeat))
+                    with patch.object(FelEngine, "installed", return_value=selected):
+                        document["cases"].append(run_case(root, source, stream, video, args.threads, repeat,
+                                                          label_suffix=suffix))
                     report.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     document["summary"] = summaries(document["cases"])
     final_stat = args.source.stat()
