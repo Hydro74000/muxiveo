@@ -28,6 +28,7 @@ import shutil
 from functools import lru_cache
 from collections.abc import Callable
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
@@ -920,6 +921,24 @@ def _hdr_dynamic_args(
     return args
 
 
+def nvencc_fps_arg(value: str | float | None) -> str | None:
+    """Cadence exacte pour ``--fps`` (``num/den``), ou None si inconnue ou invalide.
+
+    Les flottants issus d'une sonde (23,976023976…) sont ramenés à la fraction la plus proche
+    de dénominateur ≤ 1001 (24000/1001, 25/1, 30000/1001, 60000/1001…).
+    """
+    try:
+        if isinstance(value, str):
+            rate = Fraction(value.strip())
+        elif isinstance(value, (int, float)):
+            rate = Fraction(value).limit_denominator(1001)
+        else:
+            return None
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+    return f"{rate.numerator}/{rate.denominator}" if rate > 0 else None
+
+
 def build_nvencc_command(
     nvencc_bin: str,
     video: VideoEncodeSettings,
@@ -960,7 +979,15 @@ def build_nvencc_command(
     if input_path is None:
         if video.fel_context is not None and not video.interpolates():
             # Le NUT conserve les PTS du producteur FEL, même en cadence variable.
-            cmd.extend(["--avsw", "--input-format", "nut", "--avsync", "vfr", "-i", "-"])
+            # Analyse d'entrée courte : le NUT décrit son flux, et l'analyse par défaut (5 s)
+            # accumule ~100 images brutes UHD avant la première image encodée (7 à 10 s perdues).
+            cmd.extend(["--avsw", "--input-format", "nut", "--input-analyze", "0.2", "--avsync", "vfr", "-i", "-"])
+            # Le NUT ne porte aucune cadence (base de temps de la source, souvent 1/1000 en MKV) :
+            # NVEncC la devinerait (24/1 pour 23,976). Cadence de la source déclarée ; les
+            # horodatages restent ceux du producteur (--avsync vfr).
+            fps = nvencc_fps_arg(source_fps or input_fps)
+            if fps:
+                cmd.extend(["--fps", fps])
         elif sys.platform != "win32":
             # NVEncC 9.16/9.19 : hors Windows, la couche POSIX rigaya mappe
             # strtok_s sur strtok (non ré-entrant) dans le parseur Y4M natif,

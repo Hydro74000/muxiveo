@@ -86,6 +86,23 @@ def test_nvencc_fel_pipe_keeps_timestamps_without_a_compressed_intermediate(tmp_
     assert decode[-3:] == ["-f", "nut", "-"]
     encode = build_nvencc_command("nvencc", video, tmp_path / "encoded.mkv")
     assert encode[encode.index("--input-format")+1] == "nut"
+    # Analyse d'entrée courte : sinon ~100 images brutes UHD lues avant la première image encodée.
+    assert encode[encode.index("--input-analyze")+1] == "0.2"
+
+
+@pytest.mark.parametrize("rate,expected", [("24000/1001", "24000/1001"), ("25", "25/1"), (23.976023976023978, "24000/1001"),
+                                           (59.94005994005994, "60000/1001"), ("50/1", "50/1"), ("", None), (None, None),
+                                           ("0/1", None), ("abc", None)])
+def test_nvencc_nut_input_declares_source_rate(tmp_path, rate, expected):
+    # Le NUT ne porte pas de cadence : celle de la source est transmise telle quelle, horodatages en vfr.
+    from core.workflows.encode.runtime.nvencc import build_nvencc_command
+    video = VideoEncodeSettings(codec="nvencc_hevc", fel_context=context(tmp_path), bake_dovi_fel=True)
+    encode = build_nvencc_command("nvencc", video, tmp_path / "encoded.hevc", source_fps=rate)
+    assert encode[encode.index("--avsync")+1] == "vfr"
+    if expected is None:
+        assert "--fps" not in encode
+    else:
+        assert encode[encode.index("--fps")+1] == expected
     assert encode[encode.index("--avsync")+1] == "vfr"
 
 
