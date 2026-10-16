@@ -737,6 +737,8 @@ def _rewritten_audio_time_shift(artifact: Path, ffprobe_bin: str) -> int:
     même origine que le mux de référence, sans modifier le TrackEntry.
     """
     try:
+        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(  # nosec B603
             [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=start_time", "-of", "json",
