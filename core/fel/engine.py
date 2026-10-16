@@ -7,13 +7,13 @@ import json
 import sys
 import threading
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from fractions import Fraction
 from pathlib import Path
 from typing import IO, Any, Callable
 
 from core import plugins
-from core.fel.devices import FelDevice, FelDevicePlan
+from core.fel.devices import PRECISION_LABELS, FelDevice, FelDevicePlan
 
 
 class FelError(RuntimeError):
@@ -26,6 +26,12 @@ class FelCancelled(RuntimeError):
 
 _Write = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t)
 _Progress = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int64)
+
+
+def precision_supported(engine: object) -> bool:
+    """Précisions exacte et standard sur GPU (plugin ≥ 0.2.0) ; le CPU est toujours exact."""
+    capabilities = getattr(engine, "capabilities", None)
+    return isinstance(capabilities, dict) and {"exact", "standard", "fast"} <= set(capabilities.get("precision") or [])
 
 
 class FelEngine:
@@ -59,6 +65,12 @@ class FelEngine:
                 self.lib.mvo_fel_set_device.restype = ctypes.c_int
                 self.lib.mvo_fel_backend.argtypes = [ctypes.c_void_p]
                 self.lib.mvo_fel_backend.restype = ctypes.c_char_p
+            if "float64" in (capabilities.get("device_features") or []):
+                self.lib.mvo_fel_devices_features.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                self.lib.mvo_fel_devices_features.restype = ctypes.c_size_t
+            if precision_supported(self):
+                self.lib.mvo_fel_set_precision.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_precision.restype = ctypes.c_int
             if capabilities.get("fd_output") == 1:
                 self.lib.mvo_fel_run_fd.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, _Progress, ctypes.c_void_p]
                 self.lib.mvo_fel_run_fd.restype = ctypes.c_int
@@ -100,20 +112,28 @@ class FelEngine:
                   and Path(direct_name).name == direct_name else None)
         return cls(plugins.main_file(plugins.FEL, installed), direct_ffmpeg=direct)
 
+    @property
+    def supports_precision(self) -> bool:
+        return precision_supported(self)
+
     def devices(self) -> tuple[FelDevice, ...]:
         """Énumération dynamique sans démarrer de décodeur ni d'encodeur."""
         if self.capabilities.get("device_selection") != 1:
             return ()
-        size = self.lib.mvo_fel_devices(None, 0)
+        # Liste enrichie (double natif) si annoncée ; clés inconnues ignorées (versions futures).
+        listing = (self.lib.mvo_fel_devices_features if "float64" in (self.capabilities.get("device_features") or [])
+                   else self.lib.mvo_fel_devices)
+        size = listing(None, 0)
         if not 0 < size <= 65536:
             raise FelError("Énumération des GPU FEL impossible")
         buffer = ctypes.create_string_buffer(size)
-        actual = self.lib.mvo_fel_devices(buffer, size)
+        actual = listing(buffer, size)
         if actual != size:
             raise FelError("La liste des GPU FEL a changé pendant sa lecture")
+        known = {item.name for item in fields(FelDevice)}
         try:
-            return tuple(FelDevice(**item) for item in json.loads(buffer.value))
-        except (TypeError, ValueError) as exc:
+            return tuple(FelDevice(**{k: v for k, v in item.items() if k in known}) for item in json.loads(buffer.value))
+        except (TypeError, ValueError, AttributeError) as exc:
             raise FelError("Liste des GPU FEL invalide") from exc
 
     def classify(self, path: Path, cancelled: Callable[[], bool]) -> str:
@@ -171,6 +191,8 @@ class FelSource:
     timestamps: str = "source"
     # Marges paires (gauche, haut, droite, bas) retirées par le plugin, sorties Y'CbCr.
     crop: tuple[int, int, int, int] = (0, 0, 0, 0)
+    # Précision du rendu GPU (exact, standard, fast) ; transmise si le plugin la connaît.
+    precision: str = "exact"
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
@@ -178,7 +200,8 @@ class FelSource:
     def describe(self) -> str:
         start = f", départ {self.start_us / 1e6:.3f} s" if self.start_us else ""
         output = "RGB PQ" if self.pixel_format == "gbrp16le" else f"{self.pixel_format} tramé ({self.dither})"
-        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream}{start} → NUT {output}"
+        precision = f", précision {PRECISION_LABELS.get(self.precision, self.precision)}" if precision_supported(self.engine) else ""
+        return f"Reconstruction FEL interne (mvo-fel), piste {self.stream}{start}{precision} → NUT {output}"
 
 
 class FelProducer:
@@ -207,6 +230,9 @@ class FelProducer:
         elif source.timestamps != "source" and source.engine.lib.mvo_fel_set_timestamps(
                 self._handle, source.timestamps.encode("ascii")) != 0:
             refused = "Horodatages FEL refusés par le plugin"
+        elif precision_supported(source.engine) and source.engine.lib.mvo_fel_set_precision(
+                self._handle, source.precision.encode("ascii")) != 0:
+            refused = "Précision FEL refusée par le plugin"
         if refused:
             source.engine.lib.mvo_fel_destroy(self._handle)
             self._handle = None

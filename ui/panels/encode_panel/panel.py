@@ -1272,14 +1272,25 @@ class EncodePanel(QWidget):
         self._bake_fel_cb.clicked.connect(self._on_fel_clicked)
         cl.addWidget(self._bake_fel_cb)
         from ui.panels.encode_panel.fel_device_combo import FelDeviceCombo
+        from ui.panels.encode_panel.fel_precision_combo import FelPrecisionCombo
+        self._fel_precision_choice = "exact"
+        fel_precision_row = QHBoxLayout()
+        fel_precision_row.addWidget(QLabel(translate_text("Précision de la reconstruction FEL")))
+        self._fel_precision_combo = FelPrecisionCombo(_C.WARN)
+        self._fel_precision_combo.setStyleSheet(_combo_style())
+        self._fel_precision_combo.activated.connect(self._on_fel_precision_changed)
+        fel_precision_row.addWidget(self._fel_precision_combo, 1)
+        cl.addLayout(fel_precision_row)
         self._fel_device_choice = "auto"
         fel_device_row = QHBoxLayout()
         fel_device_row.addWidget(QLabel(translate_text("Moteur de reconstruction FEL")))
         self._fel_device_combo = FelDeviceCombo()
         self._fel_device_combo.setStyleSheet(_combo_style())
         self._fel_device_combo.setToolTip(translate_text(
-            "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. "
-            "Entre GPU dédiés, il tient compte des autres étapes et de la charge connue."
+            "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; "
+            "Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, "
+            "puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. "
+            "Un GPU sans double précision passe sur CPU en Lent et en Standard."
         ))
         self._fel_device_combo.activated.connect(self._on_fel_device_changed)
         fel_device_row.addWidget(self._fel_device_combo, 1)
@@ -3902,6 +3913,8 @@ class EncodePanel(QWidget):
         self._bake_fel_choice = vs.bake_dovi_fel
         self._fel_device_choice = vs.fel_device
         self._fel_device_combo.set_choice(vs.fel_device)
+        self._fel_precision_choice = vs.fel_precision
+        self._fel_precision_combo.set_choice(vs.fel_precision)
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -4019,6 +4032,7 @@ class EncodePanel(QWidget):
             interpolation=vs.interpolation,
             bake_dovi_fel=vs.bake_dovi_fel,
             fel_device=vs.fel_device,
+            fel_precision=vs.fel_precision,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4588,6 +4602,11 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         self._rebuild_preview()
 
+    def _on_fel_precision_changed(self, _index: int) -> None:
+        self._fel_precision_choice = self._fel_precision_combo.choice()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
     def _on_fel_clicked(self, checked: bool) -> None:
         self._bake_fel_choice = checked
         self._sync_dovi_profile_options()
@@ -4607,6 +4626,7 @@ class EncodePanel(QWidget):
         self._bake_fel_cb.setChecked(wants_fel_bake(self._bake_fel_choice, sub_profile))
         self._bake_fel_cb.setEnabled(codec != "copy")
         self._fel_device_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
+        self._fel_precision_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
@@ -4811,6 +4831,7 @@ class EncodePanel(QWidget):
             "copy_dv": self._copy_dv_cb.isChecked(),
             "bake_dovi_fel": self._bake_fel_choice,
             "fel_device": self._fel_device_choice,
+            "fel_precision": self._fel_precision_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
@@ -5072,9 +5093,11 @@ class EncodePanel(QWidget):
     def _apply_video_state(self, state: dict[str, object]) -> None:
         choice = state.get("bake_dovi_fel")
         self._bake_fel_choice = choice if isinstance(choice, bool) else None
-        from core.fel.devices import device_choice
+        from core.fel.devices import device_choice, precision_choice
         self._fel_device_choice = device_choice(state.get("fel_device"))
         self._fel_device_combo.set_choice(self._fel_device_choice)
+        self._fel_precision_choice = precision_choice(state.get("fel_precision"))
+        self._fel_precision_combo.set_choice(self._fel_precision_choice)
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
         self._tonemap_enabled_by_codec = False
@@ -5524,6 +5547,7 @@ class EncodePanel(QWidget):
             max_cll=max_cll,
             bake_dovi_fel=self._bake_fel_choice,
             fel_device=self._fel_device_choice,
+            fel_precision=self._fel_precision_choice,
             static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
@@ -5593,6 +5617,7 @@ class EncodePanel(QWidget):
             max_cll=max_cll,
             bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
             fel_device=str(state.get("fel_device") or "auto"),
+            fel_precision=str(state.get("fel_precision") or "exact"),
             static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),

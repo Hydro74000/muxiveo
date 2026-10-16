@@ -23,10 +23,6 @@
     "fra": "GPU indisponible ({id})",
     "eng": "GPU unavailable ({id})"
   },
-  "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue.": {
-    "fra": "Auto privilégie un GPU dédié disponible, puis un GPU intégré, puis le CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue.",
-    "eng": "Auto prefers an available dedicated GPU, then an integrated GPU, then the CPU. Among dedicated GPUs, it considers other pipeline stages and known load."
-  },
   "Version publiée indisponible.": {
     "fra": "Version publiée indisponible.",
     "eng": "Published version unavailable."
@@ -5866,5 +5862,41 @@
   "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
     "fra": "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
     "eng": "Multiplies the frame rate when encoding (×2, ×3, ×4, 59.94 / 60 fps) by generating in-between frames on the GPU (Vulkan): MVO-RIFE engine, RIFE models and presets. Updated independently of Muxiveo (new models, settings)."
+  },
+  "Précision de la reconstruction FEL": {
+    "fra": "Précision de la reconstruction FEL",
+    "eng": "FEL reconstruction precision"
+  },
+  "Lent (recommandé)": {
+    "fra": "Lent (recommandé)",
+    "eng": "Slow (recommended)"
+  },
+  "Standard (rapide, moins précis)": {
+    "fra": "Standard (rapide, moins précis)",
+    "eng": "Standard (fast, less precise)"
+  },
+  "Rapide (non recommandé)": {
+    "fra": "Rapide (non recommandé)",
+    "eng": "Fast (not recommended)"
+  },
+  "Double précision sur toute la chaîne : couleurs identiques au bit près à la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. Environ 2,5 fois plus lent que le mode Standard sur GPU dédié.": {
+    "fra": "Double précision sur toute la chaîne : couleurs identiques au bit près à la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. Environ 2,5 fois plus lent que le mode Standard sur GPU dédié.",
+    "eng": "Double precision across the whole chain: colours bit-identical to the CPU reference, extreme colours included. On GPU, requires a GPU computing in double precision (NVIDIA, AMD, Intel up to 11th generation); in Auto, a dedicated GPU, otherwise the CPU. About 2.5 times slower than Standard mode on a dedicated GPU."
+  },
+  "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; sinon la reconstruction bascule automatiquement sur le CPU, plus lent mais exact. Sur GPU intégré, le gain face au CPU peut être faible.": {
+    "fra": "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; sinon la reconstruction bascule automatiquement sur le CPU, plus lent mais exact. Sur GPU intégré, le gain face au CPU peut être faible.",
+    "eng": "Automatic hybrid with a slight possible colour drift at the extremes of 1/64th of a colour code. Not visible to the naked eye. Requires a GPU computing in double precision (NVIDIA, AMD, Intel up to 11th generation); otherwise reconstruction automatically switches to the CPU, slower but exact. On an integrated GPU, the gain over the CPU may be small."
+  },
+  "⚠ Dérive colorimétrique forte possible sur les scènes aux couleurs extrêmes et vives, comme les films d’animation. Calcul en simple précision, compatible avec tous les GPU. Sur CPU, le calcul reste exact.": {
+    "fra": "⚠ Dérive colorimétrique forte possible sur les scènes aux couleurs extrêmes et vives, comme les films d’animation. Calcul en simple précision, compatible avec tous les GPU. Sur CPU, le calcul reste exact.",
+    "eng": "⚠ Strong colour drift possible on scenes with extreme, vivid colours, such as animated films. Single-precision computation, compatible with all GPUs. On CPU, the computation remains exact."
+  },
+  "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. Un GPU sans double précision passe sur CPU en Lent et en Standard.": {
+    "fra": "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. Un GPU sans double précision passe sur CPU en Lent et en Standard.",
+    "eng": "Auto depends on the precision: Slow, a dedicated GPU computing in double precision, otherwise the CPU; Standard, a dedicated then integrated GPU computing in double precision, otherwise the CPU; Fast, a dedicated GPU, then integrated, then the CPU. Between dedicated GPUs, it takes the other stages and known load into account. A GPU without double precision uses the CPU in Slow and Standard."
+  },
+  "sans double précision : CPU en Lent et Standard": {
+    "fra": "sans double précision : CPU en Lent et Standard",
+    "eng": "no double precision: CPU in Slow and Standard"
   }
 }

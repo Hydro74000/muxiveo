@@ -8,7 +8,7 @@ from typing import Callable
 
 from core.fel.context import FelExecution
 from core.fel.devices import FelDevicePlan
-from core.fel.engine import FelCancelled, FelEngine, FelError, FelSource
+from core.fel.engine import FelCancelled, FelEngine, FelError, FelSource, precision_supported
 from core.runner import TaskCancelledError
 from core.workflows.encode.dovi_policy import sub_profile_from_value, wants_fel_bake
 from core.workflows.encode.models import VideoEncodeSettings
@@ -61,8 +61,9 @@ def prepare_fel(
         if choice not in {"auto", "cpu"} and not any(d.uuid == choice for d in devices):
             log("WARN", prefix + "GPU FEL mémorisé indisponible : choix automatique pour cette exécution.")
             choice = "auto"
-        plan = FelDevicePlan(choice, devices, video, log)
-        context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan),
+        plan = FelDevicePlan(choice, devices, video, log, precision_supported=precision_supported(engine))
+        context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan,
+                                         precision=video.fel_precision),
                                rpu, video.max_cll, video.static_hdr_light_level_source,
                                source_chroma_location(ffprobe, source, video.stream_index, capture))
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")

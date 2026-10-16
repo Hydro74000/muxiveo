@@ -13,7 +13,8 @@ from core.pipeline_command import PipelineCommand
 from core.runner import CommandError, TaskCancelledError, ToolRunner
 from core.workflows.encode.models import VideoEncodeSettings
 
-GPU = FelDevice("b"*32, "RTX", 0x10DE, 0, "discrete", 16 << 30)
+GPU = FelDevice("b"*32, "RTX", 0x10DE, 0, "discrete", 16 << 30, float64=True)
+PRECISIONS = {"precision": ["exact", "standard", "fast"]}
 AMD = FelDevice("a"*32, "AMD", 0x1002, 1, "integrated", 8 << 30)
 
 
@@ -25,7 +26,7 @@ def prepared(tmp_path, monkeypatch):
     monkeypatch.setattr(direct, "compatible_driver", lambda _: True)
     binary = tmp_path / "ffmpeg-fel"
     binary.touch()
-    engine = SimpleNamespace(path=tmp_path/"libmvo_fel.so", direct_ffmpeg=binary)
+    engine = SimpleNamespace(path=tmp_path/"libmvo_fel.so", direct_ffmpeg=binary, capabilities=PRECISIONS)
     plan = FelDevicePlan(GPU.uuid, (GPU, AMD))
     source = FelSource(engine, tmp_path/"a:b'[film],;.mkv", 2, device_plan=plan)
     video = VideoEncodeSettings(codec="hevc_nvenc", bit_depth="10",
@@ -51,7 +52,8 @@ def test_direct_uses_same_device_and_preserves_encoder_options(prepared):
         assert "-hwaccel" not in resolved and "-vf" not in resolved
         assert resolved[resolved.index("-map")+1] == "[fel]"
         graph = resolved[resolved.index("-filter_complex")+1]
-        assert ":stream=2:threads=12," in graph and ",mvo_fel_cuda[fel]" in graph
+        # Précision Lent par défaut, transmise au filtre (refus : repli NUT récupérable).
+        assert ":stream=2:threads=12:precision=exact," in graph and ",mvo_fel_cuda[fel]" in graph
         assert "pipe:0" not in resolved
     assert devices._ACTIVE == before
     assert cmd[-len(suffix):] == suffix
@@ -148,3 +150,23 @@ def test_old_driver_keeps_existing_nut_transport(prepared, monkeypatch):
 def test_driver_gate_checks_actual_version(monkeypatch, version, accepted):
     monkeypatch.setattr(direct.subprocess, "run", Mock(return_value=SimpleNamespace(returncode=0, stdout=version)))
     assert direct.compatible_driver(GPU.uuid) is accepted
+
+
+@pytest.mark.parametrize("precision", ["standard", "fast"])
+def test_direct_passes_selected_precision(prepared, precision):
+    fallback, original, video = prepared
+    # Préparation : la précision des réglages est recopiée dans la source (lue par le filtre).
+    video.fel_precision = precision
+    video.fel_context.source = replace(video.fel_context.source, precision=precision)
+    with direct.direct_command(fallback, original, video, 12).execution() as resolved:
+        graph = resolved[resolved.index("-filter_complex")+1]
+        assert f":precision={precision}" in graph
+
+
+def test_gpu_without_double_keeps_nut_transport_for_exact_precision(prepared):
+    """GPU sans double natif : le plan retient le CPU, le transport reste NUT."""
+    fallback, original, video = prepared
+    plan = video.fel_context.source.device_plan
+    plan.devices = (replace(GPU, float64=False), AMD)
+    with direct.direct_command(fallback, original, video, 12).execution() as resolved:
+        assert isinstance(resolved, PipelineCommand)

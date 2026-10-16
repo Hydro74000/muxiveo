@@ -31,15 +31,20 @@ class FelDeviceCombo(QComboBox):
     def refresh_devices(self) -> None:
         selected = str(self.currentData() or "auto")
         try:
-            devices = FelEngine.installed().devices()
+            engine = FelEngine.installed()
+            devices = engine.devices()
+            # Double précision connue seulement si le plugin l'annonce (≥ 0.2.0).
+            capabilities = getattr(engine, "capabilities", None)
+            known = isinstance(capabilities, dict) and "float64" in (capabilities.get("device_features") or [])
         except FelError:
-            devices = ()
+            devices, known = (), False
         blocked = self.blockSignals(True)
         try:
             self.clear()
             self.addItem(translate_text("Auto"), "auto")
             for device in devices:
-                self.addItem(f"GPU {device.index} — {device.name}", device.uuid)
+                note = f" ({translate_text('sans double précision : CPU en Lent et Standard')})" if known and not device.float64 else ""
+                self.addItem(f"GPU {device.index} — {device.name}{note}", device.uuid)
             self.addItem(translate_text("CPU"), "cpu")
             self.set_choice(selected)
         finally:

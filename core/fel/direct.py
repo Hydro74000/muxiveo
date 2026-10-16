@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
 from core.fel.devices import pipeline_devices, probe_load
+from core.fel.engine import precision_supported
 from core.fel.pipeline import FINAL_DITHER, listed_capability
 from core.pipeline_command import PipelineCommand
 from core.subprocess_utils import subprocess_text_kwargs
@@ -115,9 +116,11 @@ class DirectFelCommand(PipelineCommand):
                 yield PipelineCommand(self, self.upstream, producer=self.producer)
                 return
             uuid = f"{key[:8]}-{key[8:12]}-{key[12:16]}-{key[16:20]}-{key[20:]}"
+            # Précision du rendu (refus : erreur récupérable du filtre, repli NUT).
+            precision = f":precision={source.precision}" if precision_supported(source.engine) else ""
             graph = (f"mvo_fel=source={filter_string(str(source.path.resolve()))}:"
                      f"library={filter_string(str(source.engine.path.resolve()))}:stream={source.stream}:"
-                     f"threads={max(1,self.threads or source.threads)}{self.conversion}[fel]")
+                     f"threads={max(1,self.threads or source.threads)}{precision}{self.conversion}[fel]")
             first = self.original
             index = first.index("-i")
             before = list(first[1:index])

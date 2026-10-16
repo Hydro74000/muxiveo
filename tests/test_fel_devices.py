@@ -161,3 +161,67 @@ def test_macos_auto_stays_on_cpu_but_manual_gpu_is_kept(monkeypatch):
     key, release = manual.acquire()
     release()
     assert key == gpu.uuid
+
+
+# Précisions : Lent (exact) et Standard exigent le double natif ; Auto Lent écarte les iGPU.
+IGPU64 = FelDevice("d"*32, "Radeon intégré", 0x1002, 0, "integrated", 8 << 30, float64=True)
+RTX64 = FelDevice("e"*32, "RTX", 0x10DE, 1, "discrete", 16 << 30, float64=True)
+ARC = FelDevice("f"*32, "Arc", 0x8086, 2, "discrete", 16 << 30, float64=False)
+
+
+@pytest.mark.parametrize("precision,devices,expected", [
+    ("exact", (IGPU64, RTX64), RTX64.uuid),
+    ("exact", (IGPU64,), "cpu"),            # iGPU : double natif partout plus lent que le CPU
+    ("exact", (ARC,), "cpu"),               # GPU dédié sans double
+    ("standard", (IGPU64, ARC), IGPU64.uuid),
+    ("standard", (ARC,), "cpu"),
+    ("fast", (ARC,), ARC.uuid),
+])
+def test_auto_choice_follows_precision(monkeypatch, precision, devices, expected):
+    monkeypatch.setattr("core.fel.devices.probe_load", lambda _: {})
+    messages = []
+    plan = FelDevicePlan("auto", devices, VideoEncodeSettings(codec="libx265", fel_precision=precision),
+                         lambda _level, message: messages.append(message))
+    key, release = plan.acquire()
+    release()
+    assert key == expected
+    assert "précision" in messages[-1]
+
+
+@pytest.mark.parametrize("precision", ["exact", "standard"])
+def test_explicit_gpu_without_double_switches_to_cpu(precision):
+    messages = []
+    plan = FelDevicePlan(ARC.uuid, (ARC,), VideoEncodeSettings(codec="libx265", fel_precision=precision),
+                         lambda level, message: messages.append((level, message)))
+    key, release = plan.acquire()
+    release()
+    assert key == "cpu"
+    assert messages[0][0] == "WARN" and "Arc" in messages[0][1] and "CPU" in messages[0][1]
+
+
+def test_explicit_integrated_gpu_with_double_is_kept_in_exact_mode():
+    plan = FelDevicePlan(IGPU64.uuid, (IGPU64,), VideoEncodeSettings(codec="libx265", fel_precision="exact"))
+    key, release = plan.acquire()
+    release()
+    assert key == IGPU64.uuid
+
+
+def test_plugin_without_precision_keeps_precise_modes_on_cpu(monkeypatch):
+    monkeypatch.setattr("core.fel.devices.probe_load", lambda _: {})
+    video = VideoEncodeSettings(codec="libx265", fel_precision="standard")
+    key, release = FelDevicePlan("auto", (RTX64,), video, precision_supported=False).acquire()
+    release()
+    assert key == "cpu"
+    fast = VideoEncodeSettings(codec="libx265", fel_precision="fast")
+    key, release = FelDevicePlan("auto", (RTX64,), fast, precision_supported=False).acquire()
+    release()
+    assert key == RTX64.uuid
+
+
+@pytest.mark.parametrize("value,expected", [("exact", "exact"), ("STANDARD", "standard"), ("fast", "fast"),
+                                            ("", "exact"), (None, "exact"), ("double", "exact")])
+def test_precision_choice_and_profile_roundtrip(value, expected):
+    assert VideoEncodeSettings(fel_precision=value).fel_precision == expected
+    preset = EncodePreset(fel_precision=value)
+    assert EncodePreset(**preset.to_json_dict()).to_video_settings().fel_precision == expected
+    assert EncodePreset().fel_precision == "exact"

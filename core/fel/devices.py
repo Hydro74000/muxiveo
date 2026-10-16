@@ -26,6 +26,25 @@ class FelDevice:
     index: int
     kind: str
     memory_bytes: int
+    # Double natif (shaderFloat64) : requis par les précisions exacte et standard.
+    float64: bool = False
+
+
+# Précision du rendu FEL : exact (Lent, double natif partout), standard (hybride borné),
+# fast (float32). Le CPU calcule toujours en double.
+FEL_PRECISIONS = ("exact", "standard", "fast")
+PRECISION_LABELS = {"exact": "Lent", "standard": "Standard", "fast": "Rapide"}
+
+
+def precision_choice(value: object) -> str:
+    """Valeur inconnue ou absente : Lent (recommandé)."""
+    text = str(value or "exact").lower().strip()
+    return text if text in FEL_PRECISIONS else "exact"
+
+
+def renders_precision(device: FelDevice, precision: str) -> bool:
+    """Le GPU peut-il produire cette précision ? Exacte et standard exigent le double natif."""
+    return precision == "fast" or device.float64
 
 
 @dataclass(frozen=True)
@@ -215,7 +234,22 @@ class FelDevicePlan:
     log: Callable[[str, str], None] = lambda *_: None
     selected: str | None = None
     commands: tuple[tuple[str, ...], ...] = ()
+    # Le plugin accepte-t-il les précisions exacte et standard sur GPU (capacité precision) ?
+    precision_supported: bool = True
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def precision(self) -> str:
+        return precision_choice(getattr(self.video, "fel_precision", "exact")) if self.video else "fast"
+
+    def eligible(self, device: FelDevice, automatic: bool) -> bool:
+        """GPU utilisable pour la précision ; en Auto, le mode Lent écarte les iGPU (double natif
+        partout plus lent que le CPU sur iGPU, mesuré 2,1 i/s contre 8,1 i/s)."""
+        precision = self.precision
+        if precision != "fast" and not self.precision_supported:
+            return False
+        return renders_precision(device, precision) and not (
+            automatic and precision == "exact" and device.kind != "discrete")
 
     def acquire(self) -> tuple[str, Callable[[], None]]:
         with self._lock:
@@ -225,6 +259,7 @@ class FelDevicePlan:
                 # Les outils externes ne doivent jamais retenir le verrou global.
                 loads = probe_load(self.devices)
                 occupied = pipeline_devices(self.video, self.devices, loads, self.commands) if self.video else frozenset()
+            downgraded = False
             with _LOCK:
                 first = self.selected is None
                 if first:
@@ -232,10 +267,14 @@ class FelDevicePlan:
                         self.selected = "cpu"
                     elif self.choice == "auto":
                         # Budget UHD ; les allocations natives vérifient les dimensions.
-                        selected = select_device(self.devices, loads, occupied, _ACTIVE, 768 << 20)
+                        candidates = tuple(d for d in self.devices if self.eligible(d, True))
+                        selected = select_device(candidates, loads, occupied, _ACTIVE, 768 << 20)
                         self.selected = selected.uuid if selected else "cpu"
                     else:
-                        self.selected = self.choice
+                        explicit = next((d for d in self.devices if d.uuid == self.choice), None)
+                        # GPU incapable de la précision demandée : CPU, toujours en double.
+                        downgraded = explicit is not None and not self.eligible(explicit, False)
+                        self.selected = "cpu" if downgraded else self.choice
                 key = self.selected
                 assert key is not None
                 if key != "cpu":
@@ -254,10 +293,19 @@ class FelDevicePlan:
         if first:
             chosen = next((d for d in self.devices if d.uuid == key), None)
             label = chosen.name if chosen else key
-            rule = ("" if self.choice != "auto" else " ; priorité GPU dédié > iGPU > CPU" if automatic_gpu_allowed()
+            precision = self.precision
+            rules = {"exact": "GPU dédié calculant en double, sinon CPU",
+                     "standard": "GPU dédié puis iGPU calculant en double, sinon CPU",
+                     "fast": "priorité GPU dédié > iGPU > CPU"}
+            rule = ("" if self.choice != "auto" else f" ; {rules[precision]}" if automatic_gpu_allowed()
                     else " ; macOS : GPU en choix manuel uniquement")
             try:
-                self.log("INFO", f"FEL — moteur choisi : {label} ({self.choice}{rule}).")
+                if downgraded:
+                    requested = next((d.name for d in self.devices if d.uuid == self.choice), self.choice)
+                    self.log("WARN", f"FEL — {requested} ne calcule pas en double précision : précision "
+                                     f"{PRECISION_LABELS[precision]} impossible sur ce GPU, reconstruction sur CPU.")
+                self.log("INFO", f"FEL — moteur choisi : {label} ({self.choice}{rule}) ; précision "
+                                 f"{PRECISION_LABELS[precision]}.")
             except BaseException:
                 release()
                 raise

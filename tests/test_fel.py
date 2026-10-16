@@ -492,3 +492,42 @@ def test_even_crop_moves_into_the_plugin_and_nvencc_reads_it_directly(tmp_path):
     assert decode.producer.crop == (0, 8, 0, 8)
     feed = direct_feed(decode)
     assert feed is not None and feed.crop == (0, 8, 0, 8)
+
+
+PRECISION_CAPABILITIES = {**FINAL_CAPABILITIES, "precision": ["exact", "standard", "fast"],
+                          "device_features": ["float64"]}
+
+
+@pytest.mark.parametrize("capabilities,expected", [(PRECISION_CAPABILITIES, b"standard"), (FINAL_CAPABILITIES, None)])
+def test_producer_sends_precision_when_supported(tmp_path, capabilities, expected):
+    lib = Mock()
+    lib.mvo_fel_create.return_value = 7
+    lib.mvo_fel_set_precision.return_value = -1
+    source = FelSource(SimpleNamespace(lib=lib, capabilities=capabilities), tmp_path / "s.mkv", 0, precision="standard")
+    if expected is None:
+        # Plugin antérieur : rien à transmettre (le plan a retenu le CPU, toujours exact).
+        assert "précision" not in source.describe()
+        return
+    assert "précision Standard" in source.describe()
+    with pytest.raises(FelError, match="Précision"):
+        source.start(Mock(), threading.Event())
+    lib.mvo_fel_set_precision.assert_called_once_with(7, expected)
+    lib.mvo_fel_destroy.assert_called_once_with(7)
+
+
+def test_device_list_uses_features_and_ignores_unknown_keys():
+    import ctypes
+    import json
+    payload = json.dumps([{"uuid": "a"*32, "name": "RTX", "vendor": 4318, "index": 0, "kind": "discrete",
+                           "memory_bytes": 1 << 34, "float64": True, "futur": 1}]).encode() + b"\0"
+
+    def listing(buffer, _capacity):
+        if buffer:
+            ctypes.memmove(buffer, payload, len(payload))
+        return len(payload)
+
+    engine = object.__new__(FelEngine)
+    engine.capabilities = {"device_selection": 1, "device_features": ["float64"]}
+    engine.lib = SimpleNamespace(mvo_fel_devices_features=listing, mvo_fel_devices=Mock(side_effect=AssertionError))
+    (device,) = engine.devices()
+    assert device.float64 and device.name == "RTX"
