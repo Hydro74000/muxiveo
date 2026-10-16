@@ -845,6 +845,8 @@ class FileInspector:
         cmd = [
             self._ffprobe,
             "-v", "quiet",
+            # Décodage multifil : ffprobe décode sur un seul fil par défaut.
+            "-threads", "0",
             "-print_format", "json",
             "-select_streams", "v:0",
             "-read_intervals", f"%+#{max(1, int(max_frames))}",
