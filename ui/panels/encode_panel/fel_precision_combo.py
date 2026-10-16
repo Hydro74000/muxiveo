@@ -14,8 +14,8 @@ PRECISIONS = (
      "Résultat certifié : chaque couleur est l’arrondi exact démontré du calcul, identique au bit près à "
      "la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double "
      "précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. "
-     "Environ 2 fois plus lent que le mode Standard sur GPU NVIDIA récent, 3 fois sur GPU intégré ; sans "
-     "effet sur la durée quand l’encodeur est plus lent que lui (x265, NVEncC en qualité élevée)."),
+     "Environ 1,5 fois plus lent que le mode Standard sur GPU NVIDIA récent, 2 à 3 fois sur GPU intégré ; "
+     "sans effet sur la durée quand l’encodeur est plus lent que lui (x265, NVEncC en qualité élevée)."),
     ("standard", "Standard (rapide, moins précis)",
      "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. "
      "Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à "
