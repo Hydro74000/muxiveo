@@ -108,7 +108,11 @@ def preparation_commands(config, root, ffmpeg):
                 # Les codecs à pré-roll doivent conserver leur CodecDelay.
                 if codec in {"aac", "opus", "mp3"}:
                     continue
-                command = base + ["-c:a", "copy", "-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
+                command = base + ["-c:a", "copy"]
+                # AC-3/E-AC-3 peuvent aussi porter un CodecDelay : leur
+                # pré-roll doit être conservé en copie comme en réencodage.
+                if codec not in {"ac3", "eac3"}:
+                    command += ["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
             else:
                 if codec not in {"aac", "ac3", "eac3", "flac"} or track_has_object_audio_metadata(
                         codec=track.codec, title=track.title, display_info=track.display_info):
@@ -118,8 +122,9 @@ def preparation_commands(config, root, ffmpeg):
                 bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
                 if codec != "flac" and bitrate:
                     command += ["-b:a", f"{bitrate}k"]
-                if codec in {"ac3", "eac3", "flac"}:
-                    command += ["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
+                # Le filtre remet déjà le PCM à zéro. Conserver les timestamps
+                # de l'encodeur : setts annulerait son pré-roll tout en gardant
+                # le CodecDelay Matroska (+5 ms avec AC-3/E-AC-3 à 48 kHz).
             command += [str(output)]
         else:
             codec = track.codec.casefold()
