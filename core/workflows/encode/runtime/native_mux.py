@@ -565,6 +565,7 @@ def build_encode_assembly_plan(
     track_metadata: tuple[PlannedTrackMetadata, ...] | None = None,
     preparation: NativeEncodePreparation | None = None,
     sync_rewrites: NativeSyncRewrites | None = None,
+    ffprobe_bin: str = "ffprobe",
 ) -> MatroskaAssemblyPlan:
     """Compile la configuration encode vers le contrat d'assemblage partagé.
 
@@ -606,7 +607,7 @@ def build_encode_assembly_plan(
                 artifact_track_index=0,
                 source_identity=_identity(source),
                 time_shift_ms=(
-                    _rewritten_audio_time_shift(audio_artifact) if audio_index in sync_rewrites.audio
+                    _rewritten_audio_time_shift(audio_artifact, ffprobe_bin) if audio_index in sync_rewrites.audio
                     else _offset_ms(config, "audio", source, audio.stream_index)
                 ),
                 provenance=f"audio:{audio.stream_index}:{audio.codec}",
@@ -728,18 +729,26 @@ def build_encode_assembly_plan(
     )
 
 
-def _rewritten_audio_time_shift(artifact: Path) -> int:
-    """Ramène le début du mono-flux à zéro, comme le démuxeur FFmpeg.
+def _rewritten_audio_time_shift(artifact: Path, ffprobe_bin: str) -> int:
+    """Recale le mono-flux sur son origine démuxée, comme le mux FFmpeg.
 
-    Le CodecDelay du TrackEntry reste intact : le premier paquet AC3 peut
-    commencer à 5 ms alors que sa première trame décodée doit démarrer à zéro.
+    Le premier bloc ne suffit pas : selon la version de FFmpeg, CodecDelay
+    est soustrait des PTS AC3 au démuxage. La sonde configurée fournit la
+    même origine que le mux de référence, sans modifier le TrackEntry.
     """
-    blocks = iter(MatroskaReader(artifact).blocks())
     try:
-        first = next(blocks, None)
-        return -first.timestamp_ms if first is not None else 0
-    finally:
-        blocks.close()
+        result = subprocess.run(  # nosec B603
+            [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=start_time", "-of", "json",
+             *ffprobe_input_args(artifact)],
+            capture_output=True, check=True, timeout=20,
+            **subprocess_text_kwargs(),
+        )
+        start_time = json.loads(result.stdout)["streams"][0]["start_time"]
+        return -round(float(start_time) * 1000)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError,
+            TypeError, OverflowError) as exc:
+        raise EncodeError(f"Origine audio réécrite illisible : {artifact.name}") from exc
 
 
 def materialize_audio_artifacts(
@@ -858,6 +867,7 @@ def assemble_encode_output_native(
             track_metadata=track_metadata,
             preparation=preparation,
             sync_rewrites=sync_rewrites,
+            ffprobe_bin=ffprobe_bin,
         )
         dovi_video_indexes = {
             index
