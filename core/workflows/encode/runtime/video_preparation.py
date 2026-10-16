@@ -151,7 +151,7 @@ class VideoOnlyCommandBuilder:
         trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
         rife = build_rife_stage(
             cb.rife_bin,
-            factor=int(settings.factor),
+            factor=settings.factor,
             target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,

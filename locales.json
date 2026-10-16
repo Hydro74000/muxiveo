@@ -5011,9 +5011,9 @@
     "fra": "Max",
     "eng": "Max"
   },
-  "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).": {
-    "fra": "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).",
-    "eng": "Frame rate multiplier (x2: 29.97 -> 59.94 fps) or target frame rate (23.976 -> 59.94 fps)."
+  "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s).": {
+    "fra": "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s).",
+    "eng": "Frame rate multiplier (x2.5: 23.976 -> 59.94 fps; 24 -> 60 fps)."
   },
   "Mode : Normal": {
     "fra": "Mode : Normal",

@@ -50,7 +50,6 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_DEFAULT_QUALITY,
     INTERPOLATION_FACTORS,
     INTERPOLATION_PRESETS,
-    INTERPOLATION_TARGET_FPS,
     INTERPOLATION_TTA_LEVELS,
 )
 from core.workflows.encode.catalog import (
@@ -1836,12 +1835,10 @@ class EncodePanel(QWidget):
         self._interp_factor_combo = QComboBox()
         self._interp_factor_combo.setStyleSheet(_combo_style())
         self._interp_factor_combo.setToolTip(
-            "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s)."
+            "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s)."
         )
         for factor in INTERPOLATION_FACTORS:
-            self._interp_factor_combo.addItem(f"x{factor}", str(factor))
-        for target in INTERPOLATION_TARGET_FPS:
-            self._interp_factor_combo.addItem(f"{_format_fps(float(Fraction(target)))} i/s", target)
+            self._interp_factor_combo.addItem("x" + f"{factor:g}".replace(".", ","), f"{factor:g}")
         self._interp_factor_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
@@ -2039,7 +2036,7 @@ class EncodePanel(QWidget):
         is_target = "/" in choice
         return FrameInterpolationSettings(
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
-            factor=2 if is_target else int(choice),
+            factor=2 if is_target else float(choice),
             target_fps=choice if is_target else "",
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
             mode="fast" if self._interp_quality_combo.currentData() == "light"
@@ -2053,7 +2050,12 @@ class EncodePanel(QWidget):
             return
         self._interp_last_quality = None   # réglages chargés : aucun choix antérieur à rétablir
         self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
-        self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
+        # Conserver une cadence cible explicite des anciens projets sans la convertir en facteur.
+        if settings.target_fps and self._interp_factor_combo.findData(settings.target_fps) < 0:
+            self._interp_factor_combo.addItem(
+                f"{_format_fps(float(Fraction(settings.target_fps)))} i/s", settings.target_fps,
+            )
+        self._set_combo_data(self._interp_factor_combo, settings.target_fps or f"{settings.factor:g}")
         quality = settings.quality if settings.quality in INTERPOLATION_PRESETS else INTERPOLATION_DEFAULT_QUALITY
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
@@ -4975,7 +4977,7 @@ class EncodePanel(QWidget):
             badge = (
                 f"MVO-RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
                 if interpolation.target_fps
-                else f"MVO-RIFE x{int(interpolation.factor)}"
+                else "MVO-RIFE x" + f"{interpolation.factor:g}".replace(".", ",")
             )
             if interpolation.quality == "light":
                 badge += " Light"

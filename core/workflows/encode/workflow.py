@@ -1059,7 +1059,7 @@ class EncodeWorkflow(QObject):
         trt_plugin, trt_cache = self._rife_trt_args()
         rife = _build_rife_stage(
             self._rife_bin,
-            factor=int(settings.factor),
+            factor=settings.factor,
             target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,
@@ -3380,7 +3380,7 @@ class EncodeWorkflow(QObject):
                     # dynamiques non étendues, contrôle du nombre de trames faussé).
                     errors.append(
                         f"Interpolation d'images : cadence de {source.name} inconnue ; "
-                        "choisir un facteur (x2, x3, x4) plutôt qu'une cadence cible."
+                        "choisir un facteur (x2, x2,5, x3, x4) plutôt qu'une cadence cible."
                     )
                 elif settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
                     errors.append(
@@ -3388,7 +3388,7 @@ class EncodeWorkflow(QObject):
                         f"celle de {source.name}"
                         + (" après désentrelacement (une image par champ)." if video.filters.field_rate_multiplier() > 1 else ".")
                     )
-            elif int(settings.factor) not in _INTERPOLATION_FACTORS:
+            elif settings.factor not in _INTERPOLATION_FACTORS:
                 errors.append(
                     f"Interpolation d'images : facteur x{settings.factor} non supporté "
                     f"(valeurs : {', '.join(f'x{f}' for f in _INTERPOLATION_FACTORS)})."

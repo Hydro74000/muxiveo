@@ -2610,3 +2610,27 @@ def test_file_target_size_is_shared_by_all_video_tracks(qt_app):
         assert panel._file_target_size_mb([crf]) is None
     finally:
         panel.deleteLater()
+
+
+def test_interpolation_fractional_factor_and_legacy_target(qt_app, monkeypatch):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        combo = panel._interp_factor_combo
+        assert [combo.itemData(i) for i in range(combo.count())] == ["2", "2.5", "3", "4"]
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2.5))
+        assert combo.currentText() == "x2,5"
+        settings = panel._current_interpolation_settings()
+        assert settings.factor == 2.5
+        assert settings.target_fps == ""
+        badges = panel._video_filter_badges_from_state(
+            {"interpolation": FrameInterpolationSettings(enabled=True, factor=2.5)}
+        )
+        assert any("MVO-RIFE x2,5" in badge for badge in badges)
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, target_fps="60000/1001"))
+        assert panel._current_interpolation_settings().target_fps == "60000/1001"
+    finally:
+        panel.close()

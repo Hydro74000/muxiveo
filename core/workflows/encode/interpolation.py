@@ -79,8 +79,8 @@ INTERPOLATION_ULTRA_QUALITIES: frozenset[str] = frozenset(
     name for name, preset in INTERPOLATION_PRESETS.items() if preset.ultra
 )
 INTERPOLATION_DEFAULT_QUALITY = "balanced"
-INTERPOLATION_FACTORS: tuple[int, ...] = (2, 3, 4)
-# Cadences cibles proposées (rapport non entier possible, ex. 23,976 -> 59,94 = x2,5).
+INTERPOLATION_FACTORS: tuple[float, ...] = (2, 2.5, 3, 4)
+# Anciennes cadences cibles, conservées pour la compatibilité des projets enregistrés.
 INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
 # Mode de calcul du flux optique : "fast" = muxiveo-rife --uhd (flux à demi-résolution).
 INTERPOLATION_MODES: tuple[str, ...] = ("normal", "fast")
@@ -416,7 +416,7 @@ def build_decode_stage(
 def build_rife_stage(
     rife_bin: str,
     *,
-    factor: int = 2,
+    factor: float = 2,
     target_fps: str = "",
     quality: str,
     source: InterpolationSource,
@@ -439,7 +439,7 @@ def build_rife_stage(
     Moteur, modèle et arguments supplémentaires : préréglage de l'extension (``presets.json``).
     """
     preset = interpolation_preset(quality, rife_bin)
-    rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(int(factor))]
+    rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(Fraction(str(factor)))]
     cmd = [
         str(rife_bin),
         *rate_args,

@@ -266,7 +266,7 @@ class VideoFilterSettings:
 class FrameInterpolationSettings:
     """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
     enabled: bool = False
-    factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
+    factor: float = 2                 # multiplicateur de cadence (2,5 = 24 -> 60)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
     quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
@@ -281,7 +281,7 @@ class FrameInterpolationSettings:
             self.quality = "quality"
 
     def is_active(self) -> bool:
-        return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
+        return bool(self.enabled) and (bool(self.target_fps) or self.factor > 1)
 
     def fast_mode(self) -> bool:
         """Mode Fast effectif : choisi, ou imposé par le préréglage Light (jamais en Ultra)."""
@@ -301,7 +301,7 @@ class FrameInterpolationSettings:
                 return Fraction(str(self.target_fps)) / source if source > 0 else Fraction(1)
             except (TypeError, ValueError, ZeroDivisionError):
                 return Fraction(1)
-        return Fraction(max(1, int(self.factor)))
+        return max(Fraction(1), Fraction(str(self.factor)))
 
     @classmethod
     def from_value(cls, value: object) -> "FrameInterpolationSettings":

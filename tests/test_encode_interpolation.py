@@ -1068,3 +1068,16 @@ def test_panel_restores_user_choices_after_forcing_presets(qt_app):
         assert combo.toolTip() == tips[combo.currentIndex()] and combo.currentData() == "balanced"
     finally:
         panel.close()
+
+
+@pytest.mark.parametrize("source_rate, expected", [("24000/1001", "60000/1001"), ("24", "60"), ("25", "125/2")])
+def test_fractional_multiplier_preserves_source_cadence(source_rate, expected):
+    settings = FrameInterpolationSettings.from_value({"enabled": True, "factor": 2.5})
+    video = _video(interpolation=settings)
+    assert video.interpolates()
+    assert Fraction(source_rate) * video.frame_ratio(source_rate) == Fraction(expected)
+    restored = EncodePreset(**json.loads(json.dumps(EncodePreset(name="x25", interpolation=settings).to_json_dict())))
+    assert restored.to_video_settings().frame_ratio(source_rate) == Fraction(5, 2)
+    command = build_rife_stage("rife", factor=settings.factor, quality="balanced", source=InterpolationSource())
+    assert command[command.index("--factor") + 1] == "5/2"
+    assert "--fps" not in command
