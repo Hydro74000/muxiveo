@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import platform
 import shutil
 import statistics
@@ -29,7 +30,8 @@ from core.fel.engine import FelEngine
 from core.pipeline_command import PipelineCommand
 from core.runner import ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
-from core.workflows.encode import EncodeConfig, EncodeWorkflow, QualityMode, VideoEncodeSettings
+from core.workflows.encode import (EncodeConfig, EncodeWorkflow, FrameInterpolationSettings, QualityMode,
+                                   VideoEncodeSettings)
 from tests.integration._synth import wait_task
 
 
@@ -134,7 +136,8 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
     expected_rate = Fraction(stream["avg_frame_rate"])
     if video.interpolation.is_active():
         ratio = video.interpolation.ratio(stream["avg_frame_rate"])
-        expected_frames = int(expected_frames * ratio)
+        # Règle muxiveo-rife : l'image i en donne ceil((i+1)r) - ceil(ir), soit ceil(N·r) au total.
+        expected_frames = math.ceil(expected_frames * ratio)
         expected_rate *= ratio
     if (int(result["nb_read_frames"]) != expected_frames or record["dv_profile"] != 8
             or record["dv_bl_signal_compatibility_id"] != 1 or record["el_present_flag"] != 0
@@ -218,6 +221,9 @@ def main() -> None:
     parser.add_argument("--fel-precision", choices=("exact", "standard", "fast"),
                         help="Précision de la reconstruction FEL (défaut : celle de VideoEncodeSettings)")
     parser.add_argument("--nvencc-preset", default="default", help="Preset NVEncC (default, performance, quality…)")
+    parser.add_argument("--rife", action="store_true",
+                        help="Interpolation RIFE 24 → 59,94 i/s (préréglage Équilibré) sur le même GPU")
+    parser.add_argument("--rife-bin", help="Binaire muxiveo-rife (avec --rife)")
     parser.add_argument("--nvencc-hq", action="store_true",
                         help="NVEncC « standard HQ » : VBR 34 Mbit/s, 2 passes au quart, UHQ, lookahead, AQ temporelle")
     parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc", "hevc_nvenc"),
@@ -244,6 +250,7 @@ def main() -> None:
                 "frames": int(stream["nb_read_frames"]), "frame_rate": stream["avg_frame_rate"],
                 "threads": args.threads, "runs": args.runs, "fel_device": args.device, "fast_pipe_probe": args.fast_pipe_probe,
                 "fel_precision": args.fel_precision, "nvencc_preset": args.nvencc_preset, "nvencc_hq": args.nvencc_hq,
+                "rife": args.rife, "rife_bin": args.rife_bin,
                 "gpu_workers": __import__("os").environ.get("MVO_FEL_GPU_WORKERS"),
                 "engine_capabilities": json.loads(engine.lib.mvo_fel_capabilities()),
                 "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(),
@@ -282,11 +289,15 @@ def main() -> None:
                     video = replace(common, codec=codec,
                                     preset="medium" if codec == "libx265" else "p5" if codec == "hevc_nvenc" else args.nvencc_preset,
                                     bake_dovi_fel=enabled)
+                    if args.rife:
+                        video = replace(video, interpolation=FrameInterpolationSettings(
+                            enabled=True, target_fps="60000/1001", quality="balanced"))
                     if args.nvencc_hq and codec == "nvencc_hevc":
                         video = replace(video, quality_mode=QualityMode.BITRATE, rate_control="vbr", bitrate_kbps=34000,
                                         extra_params=NVENCC_HQ)
                     with patch.object(FelEngine, "installed", return_value=selected):
                         document["cases"].append(run_case(root, source, stream, video, args.threads, repeat,
+                                                          rife_bin=args.rife_bin if args.rife else None,
                                                           label_suffix=suffix))
                     report.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     document["summary"] = summaries(document["cases"])
