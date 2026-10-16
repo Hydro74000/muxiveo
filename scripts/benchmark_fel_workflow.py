@@ -29,8 +29,14 @@ from core.fel.engine import FelEngine
 from core.pipeline_command import PipelineCommand
 from core.runner import ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
-from core.workflows.encode import EncodeConfig, EncodeWorkflow, VideoEncodeSettings
+from core.workflows.encode import EncodeConfig, EncodeWorkflow, QualityMode, VideoEncodeSettings
 from tests.integration._synth import wait_task
+
+
+# Réglage NVEncC « standard HQ » (débit fixé par le workflow : VBR 34 000 kbit/s).
+NVENCC_HQ = ("--sar 1:1 --max-bitrate 85000 --multipass 2pass-quarter --bframes 3 --bref-mode auto --ref 3 "
+             "--no-i-adapt --no-b-adapt --lookahead 24 --weightp --mv-precision Q-pel --tune uhq --aq --aq-temporal "
+             "--aq-strength 4 --cu-min 8 --tf-level 0 --aud --repeat-headers --pic-struct --cuda-mt 1")
 
 
 class Monitor(Protocol):
@@ -209,6 +215,11 @@ def main() -> None:
                         help="Prototype privé : comparer aussi le transport GPU direct pour hevc_nvenc")
     parser.add_argument("--compare-direct", action="store_true",
                         help="hevc_nvenc : mesurer FEL en NUT et en direct dans la même série")
+    parser.add_argument("--fel-precision", choices=("exact", "standard", "fast"),
+                        help="Précision de la reconstruction FEL (défaut : celle de VideoEncodeSettings)")
+    parser.add_argument("--nvencc-preset", default="default", help="Preset NVEncC (default, performance, quality…)")
+    parser.add_argument("--nvencc-hq", action="store_true",
+                        help="NVEncC « standard HQ » : VBR 34 Mbit/s, 2 passes au quart, UHQ, lookahead, AQ temporelle")
     parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc", "hevc_nvenc"),
                         default=["libx265", "nvencc_hevc"])
     args = parser.parse_args()
@@ -232,6 +243,8 @@ def main() -> None:
                 "source_mtime_ns": source_stat.st_mtime_ns, "excerpt_start_s": key,
                 "frames": int(stream["nb_read_frames"]), "frame_rate": stream["avg_frame_rate"],
                 "threads": args.threads, "runs": args.runs, "fel_device": args.device, "fast_pipe_probe": args.fast_pipe_probe,
+                "fel_precision": args.fel_precision, "nvencc_preset": args.nvencc_preset, "nvencc_hq": args.nvencc_hq,
+                "gpu_workers": __import__("os").environ.get("MVO_FEL_GPU_WORKERS"),
                 "engine_capabilities": json.loads(engine.lib.mvo_fel_capabilities()),
                 "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(),
                 "direct_ffmpeg_sha256": hashlib.sha256(args.direct_ffmpeg.read_bytes()).hexdigest() if args.direct_ffmpeg else None,
@@ -240,6 +253,8 @@ def main() -> None:
                                 bit_depth="10", source_bit_depth=10, source_pix_fmt="yuv420p10le",
                                 source_codec="hevc", source_color_transfer="smpte2084",
                                 input_frame_rate=stream["avg_frame_rate"], crf=18, cq=26, fel_device=args.device)
+    if args.fel_precision:
+        common = replace(common, fel_precision=args.fel_precision)
     report = root / "results.json"
     normal_run = ToolRunner._run_cmd
 
@@ -264,8 +279,12 @@ def main() -> None:
                     variants.append((True, engine, ""))
                 # Alterner l'ordre limite les biais de cache et de montée en température.
                 for enabled, selected, suffix in (variants if repeat % 2 else variants[::-1]):
-                    video = replace(common, codec=codec, preset="medium" if codec == "libx265" else "p5" if codec == "hevc_nvenc" else "default",
+                    video = replace(common, codec=codec,
+                                    preset="medium" if codec == "libx265" else "p5" if codec == "hevc_nvenc" else args.nvencc_preset,
                                     bake_dovi_fel=enabled)
+                    if args.nvencc_hq and codec == "nvencc_hevc":
+                        video = replace(video, quality_mode=QualityMode.BITRATE, rate_control="vbr", bitrate_kbps=34000,
+                                        extra_params=NVENCC_HQ)
                     with patch.object(FelEngine, "installed", return_value=selected):
                         document["cases"].append(run_case(root, source, stream, video, args.threads, repeat,
                                                           label_suffix=suffix))
