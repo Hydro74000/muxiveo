@@ -820,8 +820,8 @@ class SyncRewriteService:
             "-c:a", codec_key,
             "-b:a", f"{bitrate}k",
         ])
-        if codec_key in {"ac3", "eac3", "flac"}:
-            cmd.extend(["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"])
+        # Le PCM est déjà recalé par asetpts ; préserver le pré-roll encodeur
+        # pour que le CodecDelay Matroska ne crée pas un retard supplémentaire.
         cmd.extend([
             "-f", "matroska",
             str(destination),
@@ -924,8 +924,6 @@ class SyncRewriteService:
                 experimental=experimental,
             ),
         ])
-        if codec_key in {"ac3", "eac3", "flac"}:
-            cmd.extend(["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"])
         cmd.extend([
             "-f", "matroska",
             str(destination),
