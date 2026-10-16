@@ -11,19 +11,20 @@ from core.i18n import translate_text
 # (valeur, libellé, infobulle) ; textes traduits à l'affichage.
 PRECISIONS = (
     ("exact", "Lent (recommandé)",
-     "Double précision sur toute la chaîne : couleurs identiques au bit près à la référence CPU, "
-     "y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double précision "
-     "(NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. "
-     "Environ 2,5 fois plus lent que le mode Standard sur GPU dédié."),
+     "Résultat certifié : chaque couleur est l’arrondi exact démontré du calcul, identique au bit près à "
+     "la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double "
+     "précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. "
+     "Environ 25 % plus lent que le mode Standard sur GPU NVIDIA récent, environ 3 fois plus lent sur GPU "
+     "intégré."),
     ("standard", "Standard (rapide, moins précis)",
      "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. "
      "Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à "
      "la 11e génération) ; sinon la reconstruction bascule automatiquement sur le CPU, plus lent mais exact. "
      "Sur GPU intégré, le gain face au CPU peut être faible."),
     ("fast", "Rapide (non recommandé)",
-     "⚠ Dérive colorimétrique forte possible sur les scènes aux couleurs extrêmes et vives, comme les "
-     "films d’animation. Calcul en simple précision, compatible avec tous les GPU. Sur CPU, le calcul "
-     "reste exact."),
+     "Calcul en simple précision, compatible avec tous les GPU. Écart d’au plus 1/64e de code couleur sur "
+     "les films mesurés ; jusqu’à 2 codes couleur possibles sur des couleurs saturées très lumineuses "
+     "(tests synthétiques). Sur CPU, le calcul reste exact."),
 )
 
 

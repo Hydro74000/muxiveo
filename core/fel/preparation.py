@@ -62,8 +62,11 @@ def prepare_fel(
             log("WARN", prefix + "GPU FEL mémorisé indisponible : choix automatique pour cette exécution.")
             choice = "auto"
         plan = FelDevicePlan(choice, devices, video, log, precision_supported=precision_supported(engine))
+        # Interpolation RIFE : elle limite le débit et partage le GPU ; une seule image FEL en vol
+        # suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
+        workers = 1 if video.interpolation.enabled else None
         context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan,
-                                         precision=video.fel_precision),
+                                         precision=video.fel_precision, render_workers=workers),
                                rpu, video.max_cll, video.static_hdr_light_level_source,
                                source_chroma_location(ffprobe, source, video.stream_index, capture))
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")

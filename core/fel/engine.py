@@ -34,6 +34,16 @@ def precision_supported(engine: object) -> bool:
     return isinstance(capabilities, dict) and {"exact", "standard", "fast"} <= set(capabilities.get("precision") or [])
 
 
+def render_workers_range(engine: object) -> tuple[int, int] | None:
+    """Bornes du nombre d'images en vol du rendu GPU (capacité render_workers), sinon None."""
+    capabilities = getattr(engine, "capabilities", None)
+    bounds = capabilities.get("render_workers") if isinstance(capabilities, dict) else None
+    if (isinstance(bounds, list) and len(bounds) == 2 and all(type(v) is int for v in bounds)
+            and 1 <= bounds[0] <= bounds[1]):
+        return bounds[0], bounds[1]
+    return None
+
+
 class FelEngine:
     """Bibliothèque privée du plugin, conservée en mémoire pendant le job."""
 
@@ -71,6 +81,9 @@ class FelEngine:
             if precision_supported(self):
                 self.lib.mvo_fel_set_precision.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
                 self.lib.mvo_fel_set_precision.restype = ctypes.c_int
+            if render_workers_range(self) is not None:
+                self.lib.mvo_fel_set_render_workers.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                self.lib.mvo_fel_set_render_workers.restype = ctypes.c_int
             if capabilities.get("fd_output") == 1:
                 self.lib.mvo_fel_run_fd.argtypes = [ctypes.c_void_p, ctypes.c_ssize_t, _Progress, ctypes.c_void_p]
                 self.lib.mvo_fel_run_fd.restype = ctypes.c_int
@@ -193,6 +206,8 @@ class FelSource:
     crop: tuple[int, int, int, int] = (0, 0, 0, 0)
     # Précision du rendu GPU (exact, standard, fast) ; transmise si le plugin la connaît.
     precision: str = "exact"
+    # Images en vol du rendu GPU ; None : défaut du plugin. Transmis si le plugin l'accepte.
+    render_workers: int | None = None
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
@@ -233,6 +248,10 @@ class FelProducer:
         elif precision_supported(source.engine) and source.engine.lib.mvo_fel_set_precision(
                 self._handle, source.precision.encode("ascii")) != 0:
             refused = "Précision FEL refusée par le plugin"
+        elif (source.render_workers is not None and (bounds := render_workers_range(source.engine)) is not None
+              and source.engine.lib.mvo_fel_set_render_workers(
+                  self._handle, min(max(source.render_workers, bounds[0]), bounds[1])) != 0):
+            refused = "Nombre d'images en vol FEL refusé par le plugin"
         if refused:
             source.engine.lib.mvo_fel_destroy(self._handle)
             self._handle = None

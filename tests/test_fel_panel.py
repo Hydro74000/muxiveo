@@ -120,7 +120,8 @@ def test_precision_combo_modes_tooltips_and_track_state(qt_app, monkeypatch):
         assert [combo.itemData(i) for i in range(combo.count())] == ["exact", "standard", "fast"]
         assert combo.choice() == "exact" and translate_text("Lent (recommandé)") == combo.currentText()
         assert "1/64" in combo.itemData(1, Qt.ItemDataRole.ToolTipRole)
-        assert "⚠" in combo.itemData(2, Qt.ItemDataRole.ToolTipRole)
+        assert "certifié" in combo.itemData(0, Qt.ItemDataRole.ToolTipRole)
+        assert "synthétiques" in combo.itemData(2, Qt.ItemDataRole.ToolTipRole)
         assert combo.itemData(2, Qt.ItemDataRole.ForegroundRole) is not None
         panel._set_combo_data(panel._codec_combo, "libx265")
         panel._bake_fel_cb.click()

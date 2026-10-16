@@ -1,7 +1,7 @@
 """Contrat FEL, décision indépendante du RPU, transport et repli par piste."""
 from types import SimpleNamespace
 import threading
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -513,6 +513,45 @@ def test_producer_sends_precision_when_supported(tmp_path, capabilities, expecte
         source.start(Mock(), threading.Event())
     lib.mvo_fel_set_precision.assert_called_once_with(7, expected)
     lib.mvo_fel_destroy.assert_called_once_with(7)
+
+
+@pytest.mark.parametrize("capabilities,workers,expected", [
+    ({**FINAL_CAPABILITIES, "render_workers": [1, 4]}, 1, 1),
+    ({**FINAL_CAPABILITIES, "render_workers": [2, 4]}, 1, 2),
+    ({**FINAL_CAPABILITIES, "render_workers": [1, 4]}, None, None),
+    (FINAL_CAPABILITIES, 1, None),
+])
+def test_producer_sends_render_workers_when_supported(tmp_path, capabilities, workers, expected):
+    lib = Mock()
+    lib.mvo_fel_create.return_value = 7
+    lib.mvo_fel_set_render_workers.return_value = -1
+    source = FelSource(SimpleNamespace(lib=lib, capabilities=capabilities), tmp_path / "s.mkv", 0,
+                       render_workers=workers)
+    if expected is None:
+        # Plugin antérieur ou défaut du plugin : rien à transmettre.
+        with patch("core.fel.engine.threading.Thread"):
+            source.start(Mock(), threading.Event())
+        lib.mvo_fel_set_render_workers.assert_not_called()
+        return
+    with pytest.raises(FelError, match="images en vol"):
+        source.start(Mock(), threading.Event())
+    lib.mvo_fel_set_render_workers.assert_called_once_with(7, expected)
+    lib.mvo_fel_destroy.assert_called_once_with(7)
+
+
+@pytest.mark.parametrize("interpolation,expected", [(True, 1), (False, None)])
+def test_preparation_uses_one_frame_in_flight_with_interpolation(tmp_path, monkeypatch, interpolation, expected):
+    import core.fel.preparation as preparation
+    from core.workflows.encode.models import FrameInterpolationSettings
+    monkeypatch.setattr(preparation, "extract_dovi_rpu", Mock())
+    engine = Mock()
+    engine.classify.return_value = "fel"
+    engine.devices.return_value = ()
+    video = VideoEncodeSettings(bake_dovi_fel=True, interpolation=FrameInterpolationSettings(enabled=interpolation))
+    result = prepare_fel(video, source=tmp_path / "original.mkv", work_dir=tmp_path, index=1,
+                         ffmpeg="ffmpeg", dovi="dovi_tool", threads=2, run=Mock(), capture=Mock(return_value="{}"),
+                         cancelled=lambda: False, log=Mock(), engine_loader=lambda: engine)
+    assert result.fel_context.source.render_workers == expected
 
 
 def test_device_list_uses_features_and_ignores_unknown_keys():
