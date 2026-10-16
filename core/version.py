@@ -17,7 +17,7 @@ APP_WEBSITE_URL = "https://muxiveo.fr/"
 APP_SCHEMA_BASE_URL = "https://muxiveo.local/schema"
 APP_MACOS_BUNDLE_ID = "com.hydro74000.muxiveo"
 APP_APPSTREAM_ID = "fr.aotr.muxiveo"
-APP_VERSION = "4.3.0"
+APP_VERSION = "5.0.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 
 # Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »). Version épinglée de
