@@ -145,6 +145,7 @@ class EncodePanel(QWidget):
 
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
+    operation_changed = Signal()
     audio_track_meta_changed = Signal(int, object, str, str, object)  # (stream_index, source_path, lang, title, entry_id)
     audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
@@ -337,7 +338,7 @@ class EncodePanel(QWidget):
 
         # --- Titre ---
         title = QLabel("Encodage Vidéo / Audio")
-        title.setStyleSheet(f"font-size:20px;font-weight:800;color:{_C.TEXT_PRI};"
+        title.setStyleSheet(f"font-size:22px;font-weight:700;color:{_C.TEXT_PRI};"
                             f"background:transparent;letter-spacing:-0.3px;")
         subtitle = QLabel("x265 · x264 · SVT-AV1 · NVENC/AMF/QSV — HDR10 · Tone mapping · Audio multicanal")
         subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;background:transparent;")
@@ -3468,6 +3469,7 @@ class EncodePanel(QWidget):
                     "INFO", "Redimensionnement NVENC : copie Dolby Vision désactivée. "
                     "La conservation Dolby Vision requiert une image à l'échelle 1:1.",
                 )
+        self.operation_changed.emit()
         self._save_current_video_state()
         self._command_generation += 1
         self._command_dirty = True

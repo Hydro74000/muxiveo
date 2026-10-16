@@ -8,6 +8,7 @@ from core.workflows.remux_models import RemuxError, SourceInput
 from core.workflows.remux_mapping import resolve_mapped_tracks
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.common.sync_rewrite import (
+    SYNC_AUDIO_ORIGIN_FILTER,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
     sync_rewrite_forced_offset,
@@ -94,7 +95,8 @@ def preparation_commands(config, root, ffmpeg):
         if track.track_type == "subtitle" and config.sync_subtitles == "none" and not track.time_shift_ms:
             continue
         calibration = SyncCalibration.linear(mirror_offset) if mirror_offset else track_calibration(config, mapped)
-        base = [str(ffmpeg), "-y", "-nostdin", "-v", "error", "-i", str(mapped.source_path),
+        timestamp_args = ["-copyts"] if track.track_type == "audio" else []
+        base = [str(ffmpeg), "-y", "-nostdin", "-v", "error", *timestamp_args, "-i", str(mapped.source_path),
                 "-map", f"0:{mapped.stream_index}"]
         output = root / f"sync_{index}.mka"
         if track.track_type == "audio":
@@ -117,7 +119,9 @@ def preparation_commands(config, root, ffmpeg):
                 if codec not in {"aac", "ac3", "eac3", "flac"} or track_has_object_audio_metadata(
                         codec=track.codec, title=track.title, display_info=track.display_info):
                     raise RemuxError("Synchronisation physique : codec immersif/non encodable ; choisir explicitement une variante AAC, AC3, EAC3 ou FLAC.")
-                graph = audio_filter(calibration, config.crossfade_ms).replace("[0:a:0]", f"[0:{mapped.stream_index}]")
+                graph = audio_filter(calibration, config.crossfade_ms).replace(
+                    "[0:a:0]", f"[0:{mapped.stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},",
+                )
                 command = base[:-2] + ["-filter_complex", graph, "-map", "[out]", "-c:a", codec]
                 bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
                 if codec != "flac" and bitrate:

@@ -28,15 +28,8 @@ def _section_label(text: str) -> QLabel:
 
 
 def _card(parent: QWidget | None = None) -> QWidget:
-    w = QWidget(parent)
-    w.setStyleSheet(f"""
-        QWidget {{
-            background: {_C.BG_CARD};
-            border: 1px solid {_C.BORDER};
-            border-radius: 6px;
-        }}
-    """)
-    return w
+    from ui.styles import _card as surface_card
+    return surface_card(parent)
 
 
 def _primary_button(text: str) -> QPushButton:

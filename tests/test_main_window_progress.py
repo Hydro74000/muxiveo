@@ -460,7 +460,7 @@ def test_dovi_edit_config_block_goes_to_debug_only(tmp_path) -> None:
         dummy._on_op_progress(line)
     dummy.log_requested.emit.assert_not_called()
     dummy._on_op_progress("Parsing RPU file...")
-    dummy.log_requested.emit.assert_called_once_with("INFO", "Parsing RPU file...")
+    dummy.log_requested.emit.assert_called_once_with("INFO", "[MEDIA] Parsing RPU file...")
 
 
 def test_truncated_edit_config_block_released_by_next_command(tmp_path) -> None:
@@ -473,7 +473,7 @@ def test_truncated_edit_config_block_released_by_next_command(tmp_path) -> None:
         dummy._on_op_progress(line)
     dummy._on_op_progress("$ ffmpeg -i in.mkv out.mkv")
     dummy._on_op_progress("Parsing RPU file...")
-    dummy.log_requested.emit.assert_any_call("INFO", "Parsing RPU file...")
+    dummy.log_requested.emit.assert_any_call("INFO", "[MEDIA] Parsing RPU file...")
     assert not dummy._is_debug_tool_line("$ dovi_tool info")
 
 

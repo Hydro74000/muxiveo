@@ -40,6 +40,8 @@ from core.workflows.merge_dovi import (
 from ui.confirm import confirm_overwrite, ValidationOverridePrompt
 from ui.shutdown import defer_close
 from ui.desktop import open_external
+from ui.operation_bar import OperationState
+from ui.widgets.surface import CollapsibleCard
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
@@ -54,7 +56,7 @@ class _StringSignal(Protocol):
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"""
-        color: {_C.TEXT_DIM};
+        color: {_C.TEXT_SEC};
         font-size: {_font_px(9)}px;
         font-weight: 700;
         letter-spacing: {_scale(2)}px;
@@ -64,15 +66,8 @@ def _section_label(text: str) -> QLabel:
 
 
 def _card(parent: QWidget | None = None) -> QWidget:
-    w = QWidget(parent)
-    w.setStyleSheet(f"""
-        QWidget {{
-            background: {_C.BG_CARD};
-            border: 1px solid {_C.BORDER};
-            border-radius: {_scale(6)}px;
-        }}
-    """)
-    return w
+    from ui.styles import _card as surface_card
+    return surface_card(parent)
 
 
 def _primary_button(text: str) -> QPushButton:
@@ -911,6 +906,7 @@ class MergeDoviPanel(QWidget):
     """
 
     log_message = Signal(str, str)   # (level, message)
+    ready_changed = Signal(bool)
     # Pilote la barre de progression globale (MainWindow) :
     #   state ∈ {"started", "step", "finished", "failed", "cancelled"}
     #   label = libellé court à afficher (étape en cours, message d'état…)
@@ -918,6 +914,7 @@ class MergeDoviPanel(QWidget):
     # Pourcentage 0..100 pour la barre globale (revient à 0 à chaque step).
     op_progress_pct = Signal(int)
     op_progress = Signal(str)
+    tool_output = Signal(str, str)
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -927,6 +924,10 @@ class MergeDoviPanel(QWidget):
         self._build_ui()
         apply_translations(self)
         self._init_workflow()
+        for combo in self.findChildren(QComboBox):
+            combo.currentIndexChanged.connect(self._notify_ready)
+        for edit in self.findChildren(QLineEdit):
+            edit.textChanged.connect(self._notify_ready)
 
     # ------------------------------------------------------------------
     # Construction UI
@@ -959,10 +960,10 @@ class MergeDoviPanel(QWidget):
         content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         # Titre
-        title = QLabel("Injection DoVi RPU + HDR10+")
+        title = QLabel("Merge DoVi / HDR10+")
         title.setStyleSheet(f"""
             font-size: {_font_px(22)}px;
-            font-weight: 800;
+            font-weight: 700;
             color: {_C.TEXT_PRI};
             background: transparent;
             letter-spacing: -{_scale(1)}px;
@@ -994,7 +995,12 @@ class MergeDoviPanel(QWidget):
         content_layout.addWidget(self._config_section)
 
         self._step_progress   = _StepProgressWidget()
-        content_layout.addWidget(self._step_progress)
+        step_details = CollapsibleCard(translate_text("DÉTAIL DES ÉTAPES"))
+        step_details.body_layout.addWidget(self._step_progress)
+        self._stage_summary = QLabel(translate_text("Vérification · Extraction · Injection · Assemblage"))
+        self._stage_summary.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(10)}px;background:transparent;border:none;")
+        step_details.header_layout.addWidget(self._stage_summary)
+        content_layout.addWidget(step_details)
 
         self._result_section  = _ResultSection()
         content_layout.addWidget(self._result_section)
@@ -1009,6 +1015,7 @@ class MergeDoviPanel(QWidget):
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(_scale(10))
 
+        self._local_actions = btn_row
         self._run_btn    = _primary_button("▶  Lancer le workflow")
         self._cancel_btn = _secondary_button("⏹  Annuler")
         self._cancel_btn.setEnabled(False)
@@ -1055,6 +1062,8 @@ class MergeDoviPanel(QWidget):
         wf.workflow_finished.connect(self._on_workflow_finished, Qt.ConnectionType.QueuedConnection)
         wf.workflow_failed.connect(self._on_workflow_failed,     Qt.ConnectionType.QueuedConnection)
         wf.workflow_cancelled.connect(self._on_workflow_cancelled, Qt.ConnectionType.QueuedConnection)
+        if hasattr(wf, "tool_output"):
+            wf.tool_output.connect(self.tool_output, Qt.ConnectionType.QueuedConnection)
 
     def _on_run(self) -> None:
         if self._running:
@@ -1078,6 +1087,8 @@ class MergeDoviPanel(QWidget):
         self._error_section.hide_error()
         self._step_progress.reset()
         self._running = True
+        self._file_section.setEnabled(False)
+        self._config_section.setEnabled(False)
         self._run_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
 
@@ -1140,6 +1151,7 @@ class MergeDoviPanel(QWidget):
     def _on_step_started(self, step: WorkflowStep) -> None:
         self._step_progress.set_running(step)
         step_label = translate_text(_STEP_LABELS[step])
+        self._stage_summary.setText(step_label)
         self.log_message.emit("INFO", translate_text("[{step}] Démarrage…", step=step_label))
         self.op_state_changed.emit("step", step_label)
 
@@ -1150,6 +1162,9 @@ class MergeDoviPanel(QWidget):
         self.op_progress_pct.emit(pct)
 
     def _on_step_progress(self, step: WorkflowStep, message: str) -> None:
+        if message.startswith(("frame=", "out_time=", "speed=")):
+            self.op_progress.emit(message)
+            return
         native_label = native_mux_progress_label(message)
         if native_label is not None:
             self._step_progress.set_progress(step, native_label)
@@ -1194,8 +1209,8 @@ class MergeDoviPanel(QWidget):
     def _on_workflow_cancelled(self) -> None:
         self._error_section.hide_error()
         self.log_message.emit("WARN", translate_text("Workflow annulé par l'utilisateur."))
-        self.op_state_changed.emit("cancelled", translate_text("Annulé."))
         self._set_idle_state()
+        self.op_state_changed.emit("cancelled", translate_text("Annulé."))
 
     def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
         step_label = translate_text(_STEP_LABELS[step])
@@ -1210,8 +1225,8 @@ class MergeDoviPanel(QWidget):
                 message=local_message,
             ),
         )
-        self.op_state_changed.emit("failed", translate_text("Échec."))
         self._set_idle_state()
+        self.op_state_changed.emit("failed", translate_text("Échec."))
 
     # ------------------------------------------------------------------
     # Utilitaires
@@ -1220,10 +1235,36 @@ class MergeDoviPanel(QWidget):
     def set_operation_start_guard(self, guard) -> None:
         self._operation_start_guard = guard
 
+    def use_global_controls(self) -> None:
+        self._local_actions.hide()
+
+    def operation_state(self) -> OperationState:
+        film1, film2 = self._file_section.film1, self._file_section.film2
+        ready = bool(film1 and film2)
+        profile = self._config_section.dovi_profile
+        states = self._config_section._hdr_states
+        if states is not None:
+            donor = states[1]
+            if donor.has_dovi and profile != DoviProfile.DISABLED:
+                label = translate_text("Fusionner DoVi / HDR10+" if donor.has_hdr10plus else "Fusionner Dolby Vision")
+            else:
+                label = translate_text("Fusionner HDR10+" if donor.has_hdr10plus else "Fusionner les métadonnées HDR")
+        else:
+            label = translate_text("Fusionner les métadonnées HDR" if profile == DoviProfile.DISABLED else "Fusionner DoVi / HDR10+")
+        summary = f"{film1.name} ← {film2.name}" if film1 and film2 else translate_text("Fusion de métadonnées dynamiques")
+        return OperationState("merge_dovi", 1, label, summary, ready,
+                              translate_text("Choisissez la vidéo cible et une source donneuse."))
+
+    def _notify_ready(self, *_args) -> None:
+        self.ready_changed.emit(self.operation_state().ready and not self._running)
+
     def _set_idle_state(self) -> None:
         self._running = False
+        self._file_section.setEnabled(True)
+        self._config_section.setEnabled(True)
         self._run_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
+        self._notify_ready()
 
     def _on_files_changed(self, _: str) -> None:
         """Réinitialise l'affichage dès que les fichiers changent."""
@@ -1232,6 +1273,7 @@ class MergeDoviPanel(QWidget):
         self._step_progress.reset()
         self._framecount_bar.reset()
         self._config_section.set_hdr_states(None, None)
+        self._notify_ready()
 
         # Déclenche la lecture des frame counts après un court délai
         # (évite plusieurs appels rapides lors d'un drag-and-drop)
@@ -1283,3 +1325,4 @@ class MergeDoviPanel(QWidget):
     def _apply_probe(self, result: FrameCountResult, hdr1: HdrState, hdr2: HdrState) -> None:
         self._framecount_bar.set_result(result)
         self._config_section.set_hdr_states(hdr1, hdr2)
+        self._notify_ready()

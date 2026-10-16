@@ -15,7 +15,7 @@ from core.workflows.hybrid_matrix import (
     prepare_matrix_episode,
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
-from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+from core.workflows.sync_calibration import SyncCalibration
 from cli.logging import Logger
 from cli.options import CommonOptions
 
@@ -245,8 +245,11 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
         )
 
     scanned = []
+    import threading
+    cancel_event = threading.Event()
 
     def scan(self, reference, target, **kwargs):
+        assert self.cancel_event is cancel_event
         scanned.append((reference.stream_index, target.stream_index))
         return SyncCalibration.linear(0)
 
@@ -255,7 +258,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
     result, calibration = prepare_matrix_episode(
         episode, HybridRecipe(), tmp_path / "out",
         SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
-        CommonOptions(), Logger(), detect_cuts=True,
+        SimpleNamespace(**vars(CommonOptions()), cancel_event=cancel_event), Logger(), detect_cuts=True,
     )
 
     assert scanned == [(1, 2)]

@@ -11,22 +11,26 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import platform
+import re
 import shutil
 import statistics
 import subprocess
 import tempfile
+import threading
 import time
-from dataclasses import replace
-from contextlib import nullcontext
+from collections.abc import Iterator
+from dataclasses import fields, replace
+from contextlib import contextmanager, nullcontext
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, Qt
 
-from core.fel.engine import FelEngine
+from core.fel.engine import FelEngine, FelSource
 from core.pipeline_command import PipelineCommand
 from core.runner import ToolRunner
 from core.subprocess_utils import subprocess_text_kwargs
@@ -83,6 +87,146 @@ def excerpt(source: Path, root: Path, start: float, duration: float) -> tuple[Pa
     return output, stream, key
 
 
+@contextmanager
+def capture_feed(feed: dict, directory: Path) -> Iterator[None]:
+    """Consigne les réglages du producteur FEL et la commande qui lit son pipe (mesures isolées).
+
+    Les fichiers lus par cette commande (RPU…) sont copiés : le workflow les supprime en fin de job.
+    """
+    original_start = FelSource.start
+    snapshots = directory / "feed-files"
+
+    def start(self: FelSource, output: Any, cancelled: threading.Event) -> Any:
+        feed["source"] = {field.name: (str(value) if isinstance(value, Path) else
+                                       list(value) if isinstance(value, tuple) else value)
+                          for field in fields(self) if field.name not in {"engine", "device_plan"}
+                          for value in [getattr(self, field.name)]}
+        return original_start(self, output, cancelled)
+
+    class RecordingPopen(subprocess.Popen):
+        def __init__(self, args: Any, *values: Any, **keywords: Any) -> None:
+            argv = [str(arg) for arg in args] if isinstance(args, (list, tuple)) else []
+            reads_pipe = any(a == "-i" and b in {"-", "pipe:0"} for a, b in zip(argv, argv[1:]))
+            if keywords.get("stdin") is subprocess.PIPE and reads_pipe:
+                files = {}
+                for arg in argv[1:]:
+                    path = Path(arg)
+                    if path.is_absolute() and path.is_file() and arg not in files:
+                        snapshots.mkdir(exist_ok=True)
+                        copy = snapshots / f"{len(files)}-{path.name}"
+                        shutil.copy2(path, copy)
+                        files[arg] = str(copy)
+                feed["consumers"].append({"argv": argv, "files": files})
+            super().__init__(args, *values, **keywords)
+
+    with patch.object(FelSource, "start", start), patch.object(subprocess, "Popen", RecordingPopen):
+        yield
+
+
+class _FixedDevice:
+    """Plan de périphérique figé (mesures isolées) ; les journaux du producteur sont conservés."""
+
+    def __init__(self, device: str) -> None:
+        self.device, self.messages = device, []
+
+    def acquire(self) -> tuple[str, Any]:
+        return self.device, lambda: None
+
+    def log(self, level: str, message: str) -> None:
+        self.messages.append(message)
+
+
+def fel_alone(engine: FelEngine, spec: dict, device: str, output: Path | None) -> dict:
+    """A : producteur FEL seul, mêmes réglages que le workflow, vers /dev/null (ou un fichier NUT).
+
+    Le plugin écrit lui-même sur le descripteur : aucun lecteur ne peut limiter la mesure."""
+    plan = _FixedDevice(device)
+    values = {key: Path(value) if key == "path" else tuple(value) if key == "crop" else value
+              for key, value in spec.items()}
+    source = FelSource(engine=engine, device_plan=plan, **values)
+    target = (output or Path(os.devnull)).open("wb")
+    started = time.perf_counter()
+    producer = source.start(target, threading.Event())
+    producer.finish()
+    seconds = time.perf_counter()-started
+    producer.check_error()
+    timings = next(json.loads(message.split("mesures internes : ", 1)[1])
+                   for message in plan.messages if "mesures internes : " in message)
+    return {"seconds": seconds, "frames": producer.frames, "fps": producer.frames/seconds,
+            "steady_fps": producer.frames/max(1e-9, timings["wall_s"]-timings["open_s"]),
+            "bytes": output.stat().st_size if output else None, "timings": timings}
+
+
+NVENCC_ENCODED = re.compile(r"encoded (\d+) frames, ([0-9.]+) fps")
+
+
+def consumer_alone(consumer: dict, nut: Path, case: Path, directory: Path) -> dict:
+    """B : même commande que le workflow, nourrie par le même NUT via un pipe, sans calcul FEL."""
+    argv = []
+    for arg in consumer["argv"]:
+        if arg in consumer["files"]:
+            arg = consumer["files"][arg]
+        elif arg.startswith(str(case) + os.sep):
+            # Sorties du workflow : redirigées dans le dossier de la mesure isolée.
+            target = directory / Path(arg).relative_to(case)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            arg = str(target)
+        argv.append(arg)
+    with nut.open("rb") as stream:
+        while stream.read(1 << 24):
+            pass                                                   # NUT en cache : le disque n'entre pas en jeu
+    started = time.perf_counter()
+    cat = subprocess.Popen(["cat", str(nut)], stdout=subprocess.PIPE)
+    process = subprocess.Popen(argv, stdin=cat.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert cat.stdout is not None
+    cat.stdout.close()
+    output, _ = process.communicate()
+    cat.wait()
+    seconds = time.perf_counter()-started
+    text = output.decode("utf-8", errors="replace")
+    if process.returncode:
+        raise RuntimeError(f"Consommateur isolé en échec : {text[-2000:]}")
+    encoded = NVENCC_ENCODED.findall(text)
+    return {"seconds": seconds, "encoder_fps": float(encoded[-1][1]) if encoded else None,
+            "encoder": Path(argv[0]).name}
+
+
+def isolate(root: Path, case: dict, engine: FelEngine, device: str, runs: int) -> dict:
+    """Mesures A (FEL seul) et B (encodeur seul) du cas FEL ``case`` (C : le workflow mesuré)."""
+    directory = root / f"{case['label']}-isolated"
+    directory.mkdir()
+    feed = json.loads((root / case["label"] / "feed.json").read_text(encoding="utf-8"))
+    if not feed["source"] or len(feed["consumers"]) != 1:
+        raise RuntimeError(f"Flux FEL non capturé pour {case['label']}")
+    nut = directory / "fel.nut"
+    fel_alone(engine, feed["source"], device, nut)
+    alone = [fel_alone(engine, feed["source"], device, None) for _ in range(runs)]
+    consumer = [consumer_alone(feed["consumers"][0], nut, root / case["label"], directory / f"b{index}")
+                for index in range(runs)]
+    nut.unlink()
+    workflow = json.loads((root / case["label"] / "workflow.json").read_text(encoding="utf-8"))
+    encoded = [NVENCC_ENCODED.search(line) for line in workflow["progress"]]
+    timings = case["fel_timings"][0] if case["fel_timings"] else {}
+    result = {
+        "label": case["label"],
+        "A_fel_alone": {"fps": max(item["fps"] for item in alone),
+                        "steady_fps": max(item["steady_fps"] for item in alone), "runs": alone},
+        "B_encoder_alone": {"seconds": min(item["seconds"] for item in consumer),
+                            "encoder_fps": max((item["encoder_fps"] or 0) for item in consumer) or None,
+                            "runs": consumer},
+        "C_workflow": {"seconds": case["seconds"], "fel_fps": timings.get("fps"),
+                       "fel_steady_fps": (timings["frames"]/(timings["wall_s"]-timings["open_s"])
+                                          if timings else None),
+                       "pipe_s": timings.get("pipe_s"), "output_starved_s": timings.get("output_starved_s"),
+                       "encoder_fps": next((float(m.group(2)) for m in reversed(encoded) if m), None)},
+    }
+    print(f"ISOLÉ {case['label']} : A (FEL seul) {result['A_fel_alone']['steady_fps']:.1f} i/s, "
+          f"B (encodeur seul) {result['B_encoder_alone']['encoder_fps']} i/s, "
+          f"C (workflow) FEL {result['C_workflow']['fel_steady_fps']} i/s, encodeur "
+          f"{result['C_workflow']['encoder_fps']} i/s", flush=True)
+    return result
+
+
 def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
              threads: int, repeat: int, *, rife_bin: str | None = None,
              label_suffix: str = "", monitor: Monitor | None = None) -> dict:
@@ -99,13 +243,22 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
                           duration_s=source_duration)
     messages = []
     workflow.log_message.connect(lambda level, message: messages.append((level, message)))
+    # Chronologie : messages et lignes d'outils horodatés à l'émission (durée de chaque étape).
+    timeline: list[tuple[float, str]] = []
+    clock = {"start": time.perf_counter()}
+    workflow.log_message.connect(lambda _level, message: timeline.append((time.perf_counter()-clock["start"], message)),
+                                 Qt.ConnectionType.DirectConnection)
     print(f"DÉBUT {label}", flush=True)
     if monitor:
         monitor.start()
-    started = time.perf_counter()
+    feed: dict = {"source": None, "consumers": []}
+    started = clock["start"] = time.perf_counter()
     try:
-        signals = workflow.run(config)
-        state = wait_task(signals, timeout=1800)
+        with capture_feed(feed, directory) if enabled else nullcontext():
+            signals = workflow.run(config)
+            signals.progress.connect(lambda line: timeline.append((time.perf_counter()-clock["start"], line)),
+                                     Qt.ConnectionType.DirectConnection)
+            state = wait_task(signals, timeout=1800)
         seconds = time.perf_counter()-started
         if state["finished"] is None and not state["failed"] and not state["cancelled"]:
             raise TimeoutError(f"Délai du workflow dépassé : {label}")
@@ -115,8 +268,10 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
         raise
     finally:
         telemetry = monitor.stop() if monitor else {}
+    if enabled:
+        (directory / "feed.json").write_text(json.dumps(feed, ensure_ascii=False, indent=2), encoding="utf-8")
     (directory / "workflow.json").write_text(json.dumps({
-        "seconds": seconds, "messages": messages, "progress": state["progress"],
+        "seconds": seconds, "messages": messages, "progress": state["progress"], "timeline": timeline,
         "failed": str(state["failed"]) if state["failed"] else None,
         "telemetry": telemetry,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -160,7 +315,7 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
     if (len(pts) != expected_frames or any(a >= b for a, b in zip(pts, pts[1:]))
             or pts_error_ms > 1.01):
         raise RuntimeError(f"Horodatages inattendus pour {label} : {pts_error_ms:.6f} ms")
-    measured = {"codec": video.codec, "preset": video.preset, "fel": enabled,
+    measured = {"label": label, "codec": video.codec, "preset": video.preset, "fel": enabled,
                 "repeat": repeat, "seconds": seconds, "frames": int(result["nb_read_frames"]),
                 "fps": int(result["nb_read_frames"])/seconds, "width": result["width"],
                 "height": result["height"], "bytes": output.stat().st_size,
@@ -226,6 +381,9 @@ def main() -> None:
     parser.add_argument("--rife-bin", help="Binaire muxiveo-rife (avec --rife)")
     parser.add_argument("--nvencc-hq", action="store_true",
                         help="NVEncC « standard HQ » : VBR 34 Mbit/s, 2 passes au quart, UHQ, lookahead, AQ temporelle")
+    parser.add_argument("--isolate", action="store_true",
+                        help="Après le premier passage FEL de chaque encodeur : FEL seul (A) et encodeur seul "
+                             "nourri par le même NUT (B), face au workflow (C)")
     parser.add_argument("--codecs", nargs="+", choices=("libx265", "nvencc_hevc", "hevc_nvenc"),
                         default=["libx265", "nvencc_hevc"])
     args = parser.parse_args()
@@ -235,6 +393,8 @@ def main() -> None:
         parser.error("NVEncC absent ; choisir --codecs libx265.")
     if args.compare_direct and not args.direct_ffmpeg:
         parser.error("--compare-direct exige --direct-ffmpeg.")
+    if args.isolate and (args.device in {"auto", "cpu"} or args.rife or args.compare_direct):
+        parser.error("--isolate exige un UUID de GPU, sans RIFE ni transport direct.")
     app = QCoreApplication.instance() or QCoreApplication([])
     args.work_dir.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="fel-benchmark-", dir=args.work_dir))
@@ -251,11 +411,10 @@ def main() -> None:
                 "threads": args.threads, "runs": args.runs, "fel_device": args.device, "fast_pipe_probe": args.fast_pipe_probe,
                 "fel_precision": args.fel_precision, "nvencc_preset": args.nvencc_preset, "nvencc_hq": args.nvencc_hq,
                 "rife": args.rife, "rife_bin": args.rife_bin,
-                "gpu_workers": __import__("os").environ.get("MVO_FEL_GPU_WORKERS"),
                 "engine_capabilities": json.loads(engine.lib.mvo_fel_capabilities()),
                 "plugin_sha256": hashlib.sha256(args.library.read_bytes()).hexdigest(),
                 "direct_ffmpeg_sha256": hashlib.sha256(args.direct_ffmpeg.read_bytes()).hexdigest() if args.direct_ffmpeg else None,
-                "cases": []}
+                "cases": [], "isolated": []}
     common = VideoEncodeSettings(source_path=source, copy_dv=True, dovi_source_profile="p7_fel",
                                 bit_depth="10", source_bit_depth=10, source_pix_fmt="yuv420p10le",
                                 source_codec="hevc", source_color_transfer="smpte2084",
@@ -299,6 +458,8 @@ def main() -> None:
                         document["cases"].append(run_case(root, source, stream, video, args.threads, repeat,
                                                           rife_bin=args.rife_bin if args.rife else None,
                                                           label_suffix=suffix))
+                    if args.isolate and enabled and repeat == 1:
+                        document["isolated"].append(isolate(root, document["cases"][-1], selected, args.device, 2))
                     report.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     document["summary"] = summaries(document["cases"])
     final_stat = args.source.stat()

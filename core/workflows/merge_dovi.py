@@ -678,6 +678,7 @@ class MergeDoviWorkflow(QObject):
     step_started    = Signal(object)          # WorkflowStep
     step_progress   = Signal(object, str)     # WorkflowStep, message
     step_progress_pct = Signal(object, int)   # WorkflowStep, pourcentage 0..100
+    tool_output = Signal(str, str)           # outil, sortie complète pour le journal détaillé
     step_finished   = Signal(object, object)  # WorkflowStep, StepResult
     workflow_finished = Signal(str)           # chemin du fichier de sortie
     workflow_failed   = Signal(object, str)   # WorkflowStep, message d'erreur
@@ -2885,7 +2886,8 @@ class MergeDoviWorkflow(QObject):
         ):
             return self._run_cmd_pty(cmd, step)
 
-        # Popen (et non run) : le processus doit rester tuable par cancel().
+        # Drainer les deux pipes en parallèle : communicate() masquait tous
+        # les messages jusqu'à la fin, et une seule pipe peut bloquer l'autre.
         with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -2893,13 +2895,40 @@ class MergeDoviWorkflow(QObject):
             **subprocess_text_kwargs(),
         ) as proc:
             self._track_proc(proc)
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+
+            def consume(stream, lines: list[str]) -> None:
+                if stream is None:
+                    return
+                for raw in stream:
+                    lines.append(raw)
+                    line = _ANSI_RE.sub("", raw).strip()
+                    if not line:
+                        continue
+                    self.tool_output.emit(binary, line)
+                    if step is None:
+                        continue
+                    percent = _PERCENT_RE.search(line)
+                    if percent:
+                        self.step_progress_pct.emit(step, max(0, min(100, int(percent[1]))))
+                    elif line.startswith(("frame=", "out_time=", "speed=")):
+                        self.step_progress.emit(step, line)
+                    elif "ffmpeg" not in binary.lower() or any(word in line.lower() for word in ("error", "warning", "failed")):
+                        self.step_progress.emit(step, line)
+
+            reader = threading.Thread(target=consume, args=(proc.stdout, stdout_lines), daemon=True)
+            reader.start()
             try:
-                stdout, stderr = proc.communicate()
+                consume(proc.stderr, stderr_lines)
+                proc.wait()
             except BaseException:
                 kill_process_tree(proc, timeout=0.2)
                 raise
             finally:
+                reader.join()
                 self._untrack_proc(proc)
+            stdout, stderr = "".join(stdout_lines), "".join(stderr_lines)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"Commande échouée (code {format_returncode(proc.returncode)}) : {' '.join(cmd[:2])}\n"

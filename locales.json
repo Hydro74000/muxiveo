@@ -5898,5 +5898,301 @@
   "sans double précision : CPU en Lent et Standard": {
     "fra": "sans double précision : CPU en Lent et Standard",
     "eng": "no double precision: CPU in Slow and Standard"
+  },
+  "+ Ajouter un donneur": {
+    "fra": "+ Ajouter un donneur",
+    "eng": "+ Add donor"
+  },
+  "1 opération prête": {
+    "fra": "1 opération prête",
+    "eng": "1 operation ready"
+  },
+  "Ajoutez une source et renseignez le fichier de sortie.": {
+    "fra": "Ajoutez une source et renseignez le fichier de sortie.",
+    "eng": "Add a source and set an output file."
+  },
+  "Analyse annulée": {
+    "fra": "Analyse annulée",
+    "eng": "Analysis cancelled"
+  },
+  "Analyse de {name}": {
+    "fra": "Analyse de {name}",
+    "eng": "Analysing {name}"
+  },
+  "Analyse des sources": {
+    "fra": "Analyse des sources",
+    "eng": "Analysing sources"
+  },
+  "Analyse terminée": {
+    "fra": "Analyse terminée",
+    "eng": "Analysis completed"
+  },
+  "Annuler l’opération": {
+    "fra": "Annuler l’opération",
+    "eng": "Cancel operation"
+  },
+  "Assembler la vidéo de référence avec l’audio et les sous-titres des donneurs.": {
+    "fra": "Assembler la vidéo de référence avec l’audio et les sous-titres des donneurs.",
+    "eng": "Combine the reference video with audio and subtitles from donor sources."
+  },
+  "Attendez la fin de la préparation audio.": {
+    "fra": "Attendez la fin de la préparation audio.",
+    "eng": "Wait for audio preparation to finish."
+  },
+  "Aucun plan d’hybridation prêt.": {
+    "fra": "Aucun plan d’hybridation prêt.",
+    "eng": "No hybridization plan is ready."
+  },
+  "Autres opérations prêtes": {
+    "fra": "Autres opérations prêtes",
+    "eng": "Other ready operations"
+  },
+  "Choisir une opération": {
+    "fra": "Choisir une opération",
+    "eng": "Choose an operation"
+  },
+  "Choisir une opération prête": {
+    "fra": "Choisir une opération prête",
+    "eng": "Choose a ready operation"
+  },
+  "Choisissez la vidéo cible et une source donneuse.": {
+    "fra": "Choisissez la vidéo cible et une source donneuse.",
+    "eng": "Select the target video and a donor source."
+  },
+  "Choisissez un dossier de sortie.": {
+    "fra": "Choisissez un dossier de sortie.",
+    "eng": "Select an output folder."
+  },
+  "Choisissez une référence et au moins une source donneuse.": {
+    "fra": "Choisissez une référence et au moins une source donneuse.",
+    "eng": "Select a reference and at least one donor source."
+  },
+  "Conversion PAL ↔ Cinéma automatique": {
+    "fra": "Conversion PAL ↔ Cinéma automatique",
+    "eng": "Automatic PAL ↔ Cinema conversion"
+  },
+  "ESPACE DE TRAVAIL": {
+    "fra": "ESPACE DE TRAVAIL",
+    "eng": "WORKSPACE"
+  },
+  "Espace de travail": {
+    "fra": "Espace de travail",
+    "eng": "Workspace"
+  },
+  "Filtrer le journal": {
+    "fra": "Filtrer le journal",
+    "eng": "Filter log"
+  },
+  "Fusion de métadonnées dynamiques": {
+    "fra": "Fusion de métadonnées dynamiques",
+    "eng": "Dynamic metadata merge"
+  },
+  "Hybridation annulée": {
+    "fra": "Hybridation annulée",
+    "eng": "Hybridization cancelled"
+  },
+  "Hybridation multi-sources": {
+    "fra": "Hybridation multi-sources",
+    "eng": "Multi-source hybridization"
+  },
+  "Hybrider le fichier": {
+    "fra": "Hybrider le fichier",
+    "eng": "Hybridize file"
+  },
+  "Hybrider {count} épisodes": {
+    "fra": "Hybrider {count} épisodes",
+    "eng": "Hybridize {count} episodes"
+  },
+  "JOURNAL D’EXÉCUTION": {
+    "fra": "JOURNAL D’EXÉCUTION",
+    "eng": "EXECUTION LOG"
+  },
+  "LANCER UNE OPÉRATION": {
+    "fra": "LANCER UNE OPÉRATION",
+    "eng": "RUN AN OPERATION"
+  },
+  "Lancer l’hybridation": {
+    "fra": "Lancer l’hybridation",
+    "eng": "Start hybridization"
+  },
+  "MODÈLE D’ASSEMBLAGE · ÉPISODE TÉMOIN": {
+    "fra": "MODÈLE D’ASSEMBLAGE · ÉPISODE TÉMOIN",
+    "eng": "ASSEMBLY TEMPLATE · SAMPLE EPISODE"
+  },
+  "Projet média partagé entre remux et encodage": {
+    "fra": "Projet média partagé entre remux et encodage",
+    "eng": "Shared media project for remuxing and encoding"
+  },
+  "Préparation de l’aperçu audio": {
+    "fra": "Préparation de l’aperçu audio",
+    "eng": "Preparing audio preview"
+  },
+  "Préparation de l’hybridation": {
+    "fra": "Préparation de l’hybridation",
+    "eng": "Preparing hybridization"
+  },
+  "RECALAGE ET PRÉ-ÉCOUTE": {
+    "fra": "RECALAGE ET PRÉ-ÉCOUTE",
+    "eng": "ALIGNMENT AND AUDIO PREVIEW"
+  },
+  "Replier le journal": {
+    "fra": "Replier le journal",
+    "eng": "Collapse log"
+  },
+  "SOURCES ET SORTIE": {
+    "fra": "SOURCES ET SORTIE",
+    "eng": "SOURCES AND OUTPUT"
+  },
+  "STUDIOS": {
+    "fra": "STUDIOS",
+    "eng": "STUDIOS"
+  },
+  "SYNCHRONISATION": {
+    "fra": "SYNCHRONISATION",
+    "eng": "SYNCHRONIZATION"
+  },
+  "TRAITEMENT MÉDIA": {
+    "fra": "TRAITEMENT MÉDIA",
+    "eng": "MEDIA PROCESSING"
+  },
+  "Traitement en cours": {
+    "fra": "Traitement en cours",
+    "eng": "Processing"
+  },
+  "{count} opérations prêtes": {
+    "fra": "{count} opérations prêtes",
+    "eng": "{count} operations ready"
+  },
+  "À configurer": {
+    "fra": "À configurer",
+    "eng": "Configuration required"
+  },
+  "Épisode {current}/{total} · {name}": {
+    "fra": "Épisode {current}/{total} · {name}",
+    "eng": "Episode {current}/{total} · {name}"
+  },
+  "↓ Reprendre le défilement": {
+    "fra": "↓ Reprendre le défilement",
+    "eng": "↓ Resume scrolling"
+  },
+  "● Suivi actif": {
+    "fra": "● Suivi actif",
+    "eng": "● Following"
+  },
+  "Encoder la vidéo": {
+    "fra": "Encoder la vidéo",
+    "eng": "Encode video"
+  },
+  "Remuxer le fichier": {
+    "fra": "Remuxer le fichier",
+    "eng": "Remux file"
+  },
+  "Fusionner HDR10+": {
+    "fra": "Fusionner HDR10+",
+    "eng": "Merge HDR10+"
+  },
+  "Fusionner DoVi / HDR10+": {
+    "fra": "Fusionner DoVi / HDR10+",
+    "eng": "Merge DoVi / HDR10+"
+  },
+  "Fusion DoVi en cours…": {
+    "fra": "Fusion DoVi en cours…",
+    "eng": "Merging DoVi…"
+  },
+  "Hybridation en cours…": {
+    "fra": "Hybridation en cours…",
+    "eng": "Hybridizing…"
+  },
+  "Relancer l’hybridation": {
+    "fra": "Relancer l’hybridation",
+    "eng": "Retry hybridization"
+  },
+  "Relancer la fusion": {
+    "fra": "Relancer la fusion",
+    "eng": "Retry merge"
+  },
+  "Relancer l’opération": {
+    "fra": "Relancer l’opération",
+    "eng": "Retry operation"
+  },
+  "OPÉRATIONS CONFIGURÉES": {
+    "fra": "OPÉRATIONS CONFIGURÉES",
+    "eng": "CONFIGURED OPERATIONS"
+  },
+  "REMUX / ENCODAGE": {
+    "fra": "REMUX / ENCODAGE",
+    "eng": "REMUX / ENCODING"
+  },
+  "HYBRID STUDIO": {
+    "fra": "HYBRID STUDIO",
+    "eng": "HYBRID STUDIO"
+  },
+  "MERGE DOVI / HDR10+": {
+    "fra": "MERGE DOVI / HDR10+",
+    "eng": "MERGE DOVI / HDR10+"
+  },
+  "Toutes les opérations": {
+    "fra": "Toutes les opérations",
+    "eng": "All operations"
+  },
+  "Application": {
+    "fra": "Application",
+    "eng": "Application"
+  },
+  "Hybridation terminée": {
+    "fra": "Hybridation terminée",
+    "eng": "Hybridization completed"
+  },
+  "Opération en cours…": {
+    "fra": "Opération en cours…",
+    "eng": "Operation running…"
+  },
+  "Aperçu annulé": {
+    "fra": "Aperçu annulé",
+    "eng": "Preview cancelled"
+  },
+  "Aperçu audio prêt": {
+    "fra": "Aperçu audio prêt",
+    "eng": "Audio preview ready"
+  },
+  "Fusion annulée": {
+    "fra": "Fusion annulée",
+    "eng": "Merge cancelled"
+  },
+  "Préparation terminée": {
+    "fra": "Préparation terminée",
+    "eng": "Preparation completed"
+  },
+  "DÉTAIL DES ÉTAPES": {
+    "fra": "DÉTAIL DES ÉTAPES",
+    "eng": "STEP DETAILS"
+  },
+  "Vérification · Extraction · Injection · Assemblage": {
+    "fra": "Vérification · Extraction · Injection · Assemblage",
+    "eng": "Validation · Extraction · Injection · Assembly"
+  },
+  "Merge DoVi / HDR10+": {
+    "fra": "Merge DoVi / HDR10+",
+    "eng": "Merge DoVi / HDR10+"
+  },
+  "Hybrider {count} fichiers": {
+    "fra": "Hybrider {count} fichiers",
+    "eng": "Hybridize {count} files"
+  },
+  "Fusionner Dolby Vision": {
+    "fra": "Fusionner Dolby Vision",
+    "eng": "Merge Dolby Vision"
+  },
+  "Fusionner les métadonnées HDR": {
+    "fra": "Fusionner les métadonnées HDR",
+    "eng": "Merge HDR metadata"
+  },
+  "Aucune piste audio donneuse disponible pour la pré-écoute.": {
+    "fra": "Aucune piste audio donneuse disponible pour la pré-écoute.",
+    "eng": "No donor audio track is available for preview."
+  },
+  "Remux & Encode": {
+    "fra": "Remux & Encode",
+    "eng": "Remux & Encode"
   }
 }

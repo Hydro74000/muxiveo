@@ -46,7 +46,7 @@ Cette documentation correspond à **Muxiveo v4.2.1**.
 | **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
 
-![Studio d'Hybridation Muxiveo v4](docs/assets/img/Muxiveo-fr-11.png)
+![Studio d'Hybridation Muxiveo](docs/assets/img/Muxiveo-fr-11.png)
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
 
@@ -250,7 +250,7 @@ force MKVToolNix et, sans option, la sélection est Muxiveo puis `mkvmerge` puis
 FFmpeg. Cette compatibilité standalone n'ajoute aucune dépendance MKVToolNix au
 runtime ou au packaging de Muxiveo. Voir [le contrat détaillé](docs/remux-native.md).
 
-![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-07.png)
+![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-08.png)
 
 Les options HDR disponibles côté encodage sont :
 
@@ -664,7 +664,7 @@ Profils Dolby Vision proposés :
 
 ### Paramètres
 
-![Paramètres et configuration](docs/assets/img/Muxiveo-fr-10.png)
+![Paramètres et configuration](docs/assets/img/Muxiveo-fr-settings.png)
 
 Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
 

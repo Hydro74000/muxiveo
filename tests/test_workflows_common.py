@@ -374,7 +374,7 @@ class TestCommonSyncRewrite:
         assert prepared.codec == "aac"
         assert prepared.bitrate_kbps == 384
         cmd = cast(list[str], seen["cmd"])
-        assert "atrim=start=0.500,asetpts=PTS-STARTPTS" in cmd
+        assert "aresample=async=1:first_pts=0,atrim=start=0.500,asetpts=PTS-STARTPTS" in cmd
         assert cmd[cmd.index("-c:a") + 1] == "aac"
         assert cmd[cmd.index("-b:a") + 1] == "384k"
         assert cmd[cmd.index("-f") + 1] == "matroska"

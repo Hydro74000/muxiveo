@@ -97,6 +97,10 @@ def build_remux_command(
     cmd: list[str] = [ffmpeg_bin, "-hide_banner", "-y"]
     cmd.extend(ffmpeg_progress_args)
     cmd.extend(ffmpeg_thread_args)
+    if config.sync_mode == "physical":
+        # Ne pas rebaser chaque entrée sur son start_time : FFmpeg 6 peut
+        # l'annoncer négatif pour le pré-roll audio (CodecDelay Matroska).
+        cmd.append("-copyts")
 
     for source in config.sources:
         append_ffmpeg_input_args(cmd, source.path, cli_path=cli_path)

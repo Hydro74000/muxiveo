@@ -16,6 +16,7 @@ from core.matroska.reader import MatroskaReader
 from core.matroska.writer import MatroskaWriter
 from core.workflows.common.sync_rewrite import SyncRewriteService
 from core.workflows.physical_sync import prepare_physical
+from core.workflows.remux_command import build_remux_command
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration
 
@@ -32,9 +33,18 @@ def _run(command, _label=""):
 
 def _streams(path):
     return json.loads(_run([
-        "ffprobe", "-v", "error", "-show_entries", "stream=start_time,initial_padding",
+        "ffprobe", "-v", "error", "-show_entries", "stream=start_time,initial_padding,sample_rate",
         "-of", "json", str(path),
     ]))["streams"]
+
+
+def _assert_audio_origin(stream):
+    # FFprobe 6 annonce le PTS du paquet de pré-roll (-5/-21 ms), FFprobe 8
+    # l'origine présentée (0). Le CodecDelay doit rester présent dans les
+    # deux cas ; c'est le premier Block qui prouve l'absence de délai ajouté.
+    start = float(stream["start_time"])
+    padding = stream.get("initial_padding", 0) / int(stream["sample_rate"])
+    assert abs(start) < 0.001 or abs(start + padding) < 0.001
 
 
 @pytest.mark.parametrize("codec", ["ac3", "eac3", "aac", "flac"])
@@ -76,7 +86,7 @@ def test_rewritten_audio_keeps_video_origin(tmp_path, codec, mode, backend, offs
     # s'ajouter, et le premier Block Matroska doit rester à zéro.
     audio_index = 1 if artifact == source else 0
     artifact_stream = _streams(artifact)[audio_index]
-    assert float(artifact_stream["start_time"]) == 0
+    _assert_audio_origin(artifact_stream)
     reader = MatroskaReader(artifact)
     track_number = reader.tracks()[audio_index].number
     assert next(reader.blocks(track_numbers={track_number})).timestamp_ms == 0
@@ -93,18 +103,26 @@ def test_rewritten_audio_keeps_video_origin(tmp_path, codec, mode, backend, offs
             plan, expected_output_contract=assembly_output_contract(plan),
         )))
     else:
-        _run([
-            "ffmpeg", "-v", "error", "-i", str(source), "-i", str(artifact),
-            "-map", "0:v", "-map", "1:a", "-c", "copy", str(output),
-        ])
+        config = RemuxConfig(
+            [SourceInput(source, 0, [video]),
+             SourceInput(artifact, 1, [replace(audio, mkv_tid=audio_index, time_shift_ms=0)])],
+            output, [(0, 0), (1, audio_index)], sync_mode="physical",
+        )
+        _run(build_remux_command(
+            config, ffmpeg_bin="ffmpeg", ffmpeg_progress_args=[],
+            ffmpeg_thread_args=[], cli_path=str,
+        ))
     streams = _streams(output)
-    assert float(streams[0]["start_time"]) == float(streams[1]["start_time"]) == 0
+    assert float(streams[0]["start_time"]) == 0
+    _assert_audio_origin(streams[1])
+    reader = MatroskaReader(output)
+    assert all(next(reader.blocks(track_numbers={track.number})).timestamp_ms == 0 for track in reader.tracks())
     assert streams[1].get("initial_padding", 0) == artifact_stream.get("initial_padding", 0)
 
     # Vérifier aussi le son décodé : supprimer CodecDelay pour masquer le
     # retard déplacerait le repère de 256 échantillons (AC-3/E-AC-3).
     decoded = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-i", str(output), "-map", "0:a",
+        "ffmpeg", "-v", "error", "-copyts", "-i", str(output), "-map", "0:a",
         "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
     ]), dtype="<f4")
     expected_start = (500 + offset) * 48

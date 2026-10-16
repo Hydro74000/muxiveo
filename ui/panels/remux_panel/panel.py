@@ -165,6 +165,7 @@ class RemuxPanel(QWidget):
     video_tracks_changed = Signal(object)
     audio_tracks_changed = Signal(object)
     ready_changed = Signal(bool)
+    operation_changed = Signal()
     mux_backend_changed = Signal(str)
     sources_reset = Signal()
 
@@ -328,8 +329,8 @@ class RemuxPanel(QWidget):
 
         title = QLabel("Manipulation Conteneur")
         title.setStyleSheet(f"""
-            font-size: {_font_px(20)}px;
-            font-weight: 800;
+            font-size: {_font_px(22)}px;
+            font-weight: 700;
             color: {_C.TEXT_PRI};
             background: transparent;
             letter-spacing: -{_scale(1)}px;
@@ -745,6 +746,7 @@ class RemuxPanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing:
             return
+        self.operation_changed.emit()
         if hasattr(self, "_autosave_timer"):
             from ui.panels.remux_panel.functions.workflow import mark_dirty
             mark_dirty(self)

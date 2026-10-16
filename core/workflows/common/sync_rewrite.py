@@ -36,6 +36,9 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
 SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
+# Avec -copyts, élimine le pré-roll négatif avant toute coupe/remise à zéro
+# du PCM, y compris avec les décodeurs FFmpeg 6 qui ne le retirent pas seuls.
+SYNC_AUDIO_ORIGIN_FILTER = "aresample=async=1:first_pts=0"
 SYNC_REWRITE_MODE_AUTO = ""
 SYNC_REWRITE_MODE_OFFSET = "offset"
 SYNC_REWRITE_OFFSET_LABEL = "Sync offset"
@@ -799,11 +802,14 @@ class SyncRewriteService:
             self._ffmpeg,
             "-hide_banner", "-y",
             *self._progress_args,
+            "-copyts",
         ]
         append_ffmpeg_input_args(cmd, source)
         if calibration is not None:
             from core.workflows.physical_sync import audio_filter as calibrated_audio_filter
-            graph = calibrated_audio_filter(calibration, crossfade_ms).replace("[0:a:0]", f"[0:{stream_index}]")
+            graph = calibrated_audio_filter(calibration, crossfade_ms).replace(
+                "[0:a:0]", f"[0:{stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},",
+            )
             cmd.extend(["-filter_complex", graph, "-map", "[out]", *self._thread_args])
         else:
             if offset_ms > 0:
@@ -814,7 +820,7 @@ class SyncRewriteService:
                 "-map", f"0:{stream_index}",
                 "-vn", "-sn", "-dn",
                 *self._thread_args,
-                "-af", audio_filter,
+                "-af", f"{SYNC_AUDIO_ORIGIN_FILTER},{audio_filter}",
             ])
         cmd.extend([
             "-c:a", codec_key,
@@ -911,13 +917,14 @@ class SyncRewriteService:
             self._ffmpeg,
             "-hide_banner", "-y",
             *self._progress_args,
+            "-copyts",
         ]
         append_ffmpeg_input_args(cmd, source)
         cmd.extend([
             "-map", f"0:{stream_index}",
             "-vn", "-sn", "-dn",
             *self._thread_args,
-            "-af", audio_filter,
+            "-af", f"{SYNC_AUDIO_ORIGIN_FILTER},{audio_filter}",
             *self._advanced_audio_encoder_args(
                 codec_key,
                 bitrate_kbps=bitrate_kbps,

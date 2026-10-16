@@ -1,0 +1,212 @@
+{
+  "source": "Native PySide6 widgets; isolated demonstration data; no media workflow executed",
+  "scenes": {
+    "fr": {
+      "01": "dashboard",
+      "02": "container-empty",
+      "03": "tracks",
+      "04": "search",
+      "05": "tags",
+      "06": "chapters",
+      "07": "audio",
+      "08": "encoding",
+      "09": "merge",
+      "10": "running",
+      "11": "hybrid",
+      "12": "waveform",
+      "13": "cuts",
+      "14": "profile"
+    },
+    "en": {
+      "01": "container-light",
+      "02": "track-edit",
+      "03": "tags",
+      "04": "chapters",
+      "05": "audio",
+      "06": "encoding",
+      "07": "merge",
+      "08": "dashboard",
+      "09": "hybrid",
+      "10": "waveform",
+      "11": "cuts",
+      "12": "profile"
+    }
+  },
+  "extra_scenes": [
+    "settings",
+    "plugins",
+    "operations"
+  ],
+  "images": [
+    {
+      "locale": "fr",
+      "file": "Muxiveo-cli-terminal.png",
+      "sha256": "5ce342b59cded190739a47356415297f1208b64fc8b1caf2976fcd7e2da3312b"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-01.png",
+      "sha256": "a88247d9b2599cef0cfe0832fab727ce5935a6f6c6ef5a3aa0d3daf43b33691c"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-02.png",
+      "sha256": "f4f189812c9fcce24fa3b1c59ab1a51653e965eb11bc412c89c02c02ebe77c73"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-03.png",
+      "sha256": "80a7fb003864e7cbc7516eb81917668ed756e407feab43f0ad282f51c0ab06c9"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-04.png",
+      "sha256": "6458ceb922122c5acb90f31b4a4f71ece8f34d90a353f78274c2a7d6619095df"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-05.png",
+      "sha256": "2eca0846d04e0e9c95b93bd9e58ba5bb26a216b4f90cd15e9295ea04f2fc4e32"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-06.png",
+      "sha256": "668b3b89541e1edb958177168b465ebdc4827f4a57a5825fdc80ce5cb5b1be40"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-07.png",
+      "sha256": "252dda88ec561043392694becd0d0964ef97450cd80184904875c195237c1894"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-08.png",
+      "sha256": "978e560ea53fc8f8baa1554ceb49792531d588becea782931e655686da0c4a61"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-09.png",
+      "sha256": "0858abd3c4a1d3f66a5db269caa2e9537e3537c79be4970e29e7bdfeb08d1bb4"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-10.png",
+      "sha256": "011a4fb49a54f7c6f1fc59a9cfb83cad814a45a60d0237ce55be178e86f510dc"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-11.png",
+      "sha256": "02af79d510a197767181518e1ee32b3d540b3889f945d951151f42830deb723c"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-12.png",
+      "sha256": "39370a3822af1d8f6c87ad18f9b2b8fa37130455189110bc124a593203f5d179"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-13.png",
+      "sha256": "02836fb5610c5736705ff9cc653db34fb5282d59a97f70d2e73fe32cb5a88ad1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-14.png",
+      "sha256": "52ffca390d6bb3a381db1281a3a1707ccdd997a5d698b59d240fba23bcb10b01"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-operations.png",
+      "sha256": "f2a7c585792a4e47526087119f597bdfa90cf2e4cd143ff749177ad3ea7ded86"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-plugins.png",
+      "sha256": "5b1ac64b68e81a926df90da1e8490806cfa833036312d202e6bf0644890e2d98"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-settings.png",
+      "sha256": "5eb8c90c283076f2eb47c107c2ba69bc65f7efd42f656398114a5aec3e89cd73"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-cli-terminal.png",
+      "sha256": "3d8918392f1135ac5981a55fc850c5c372856ef7946d31b26d8036099ad729c5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-01.png",
+      "sha256": "ea1949192328dbda27c82c060622d485165a113cb44e8f9a4768dbc8e5cef2a5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-02.png",
+      "sha256": "e6cf80b4fe7c0c917277d3f9ee1fb8e0bf9f164fc686a903acaa8a09ea3ff592"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-03.png",
+      "sha256": "0e98c83efb03fd8d56b7eb08545022e7bbe5cfa6739eeab598850ffedc4d8e8c"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-04.png",
+      "sha256": "fbfa1c1bb041f2f0213cc2b676c5c664876b51d22e90959701d9d7927b5e93ea"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-05.png",
+      "sha256": "51d53caaf5e860ccb294176856c324b9e4f8ee07658c930092d4f5bbab04dfb8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-06.png",
+      "sha256": "5a2ca9ec8ca96731e342c0e21e4ca3e44ed925acc39bce5285f71dc3908b5cb9"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-07.png",
+      "sha256": "a7a5886d29c8374f9b156c2b92227ec1d091a390e94d88c8536b5fc59831c1da"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-08.png",
+      "sha256": "adf4d76e38b796a3f5cb462765f1cf2fb332f31aea91d2c40c6b0026066931c1"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-09.png",
+      "sha256": "4309669d1560583f719651a39fb54a69bd83b5fd0b6472d789702878ab8cf909"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-10.png",
+      "sha256": "44b741bcb03ddda843ebec2376186b32c0d13a92fa42f6ea36db807cb6b4d341"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-11.png",
+      "sha256": "899b749d24654e8988d871687cb96e3c6013af55f6ff8c706372f31206359dd8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-12.png",
+      "sha256": "04d600aa0a03561be50e53ef00408dbf50408907761ee87f150cd8443780785b"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-operations.png",
+      "sha256": "3f7e8a157bb50c29e4d5485c3361683ea99128ed004bc67fc1a1c4cd6ba600da"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-plugins.png",
+      "sha256": "9b37e3d7332e6c293ad1993617a6d18eb0d4833aa79076316454b1a9f28bacd9"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-settings.png",
+      "sha256": "ce07d1846c0242a38e41180c63177a4e922d34d92a033d88a5c1affe82dcb46c"
+    }
+  ]
+}

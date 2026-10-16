@@ -96,9 +96,11 @@ def plugin_crop(chain: str) -> tuple[str, tuple[int, int, int, int]] | None:
     """Recadrage pair d'une chaîne finale confié au plugin : (chaîne sans le crop, marges)."""
     items = chain.split(",") if chain else []
     crops = [(index, _PASSTHROUGH.fullmatch(item)) for index, item in enumerate(items) if item.startswith("crop=")]
-    if len(crops) != 1 or crops[0][1] is None:
+    if len(crops) != 1:
         return None
     index, match = crops[0]
+    if match is None:
+        return None
     left, right, top, bottom, x, y = map(int, match.groups()[:6])
     if (x, y) != (left, top) or any(value % 2 for value in (left, right, top, bottom)):
         return None

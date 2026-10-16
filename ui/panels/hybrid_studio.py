@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import uuid
 
 from typing import Any, Callable
@@ -39,6 +42,7 @@ from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.sync_calibration import SyncSegment
 from ui.widgets.waveform_view import WaveformView
+from ui.widgets.surface import CollapsibleCard
 from core.workflows.hybrid_matrix import (
     HybridMatrix,
     HybridRecipe,
@@ -49,6 +53,7 @@ from core.workflows.hybrid_matrix import (
     prepare_matrix_episode,
 )
 from ui.shutdown import Shutdown, defer_close
+from ui.operation_bar import OperationState
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 from ui.styles import _bolt_icon, _checkbox_style, _groupbox_checkable_style
 
@@ -60,7 +65,7 @@ from ui.styles import _bolt_icon, _checkbox_style, _groupbox_checkable_style
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setStyleSheet(f"""
-        color: {_C.TEXT_DIM};
+        color: {_C.TEXT_SEC};
         font-size: {_font_px(9)}px;
         font-weight: 700;
         letter-spacing: {_scale(2)}px;
@@ -70,15 +75,8 @@ def _section_label(text: str) -> QLabel:
 
 
 def _card(parent: QWidget | None = None) -> QWidget:
-    w = QWidget(parent)
-    w.setStyleSheet(f"""
-        QWidget {{
-            background: {_C.BG_CARD};
-            border: 1px solid {_C.BORDER};
-            border-radius: {_scale(6)}px;
-        }}
-    """)
-    return w
+    from ui.styles import _card as surface_card
+    return surface_card(parent)
 
 
 def _primary_button(text: str) -> QPushButton:
@@ -418,11 +416,28 @@ class DonorSelectCombo(QComboBox):
 # Panneau Studio Hybridation
 # =============================================================================
 
+class _GuiLogger:
+    def __init__(self, signal, episode: str):
+        self.signal, self.episode = signal, episode
+
+    def emit(self, level: str, message: str, **_fields):
+        prefix = f"[{self.episode}]"
+        self.signal.emit(level.upper(), message if message.startswith(prefix) else f"{prefix} {message}")
+
+    def workflow_log(self, level: str, message: str):
+        self.emit(level, message)
+
+
 class HybridStudio(QWidget):
     prepared = Signal(object, object)
     failed = Signal(str)
     waveform_ready = Signal(object)
+    waveform_failed = Signal(str)
     preview_ready = Signal(str)
+    ready_changed = Signal(bool)
+    op_state_changed = Signal(str, str)
+    op_progress = Signal(str)
+    op_progress_pct = Signal(int)
     log_message = Signal(str, str)
     open_in_remux = Signal(object)
     witness_inspected = Signal(object)
@@ -452,26 +467,39 @@ class HybridStudio(QWidget):
         self.signals = None
         self.busy = False
         self.aux_running = False
+        self._operation_active = False
+        self._global_controls = False
+        self._operation_start_guard = None
         self.preview_temp = tempfile.TemporaryDirectory(prefix="Muxiveo_listen_")
         self._build_ui()
+        for combo in self.findChildren(QComboBox):
+            combo.currentIndexChanged.connect(self._update_run_button)
+        self._update_run_button()
 
     def _build_ui(self) -> None:
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
+        outer_layout.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(20))
         outer_layout.setSpacing(_scale(12))
 
         # En-tête de section
         header_row = QHBoxLayout()
-        title_lbl = QLabel(translate_text("Studio Hybridation & Mixage Multi-Sources"))
+        title_lbl = QLabel(translate_text("Studio Hybridation"))
         title_lbl.setStyleSheet(f"""
             color: {_C.TEXT_PRI};
-            font-size: {_font_px(15)}px;
+            font-size: {_font_px(22)}px;
             font-weight: 700;
             background: transparent;
         """)
         header_row.addWidget(title_lbl)
         header_row.addStretch()
+        self._readiness_badge = QLabel()
+        self._readiness_badge.setStyleSheet(f"color:{_C.OK};background:{_C.BADGE_OK_BG};border:1px solid {_C.BADGE_OK_BORDER};border-radius:5px;padding:5px 8px;font-size:{_font_px(10)}px;")
+        header_row.addWidget(self._readiness_badge)
         outer_layout.addLayout(header_row)
+        subtitle = QLabel(translate_text("Assembler la vidéo de référence avec l’audio et les sous-titres des donneurs."))
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
+        outer_layout.addWidget(subtitle)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -486,10 +514,14 @@ class HybridStudio(QWidget):
 
         # ── Carte 1 : Dossiers sources et profils ──────────────────────────────
         card_dirs = _card(self)
+        self._sources_card = card_dirs
         cd_layout = QVBoxLayout(card_dirs)
         cd_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
         cd_layout.setSpacing(_scale(8))
-        cd_layout.addWidget(_section_label(translate_text("DOSSIERS SOURCES ET SORTIE")))
+        source_header = QHBoxLayout()
+        source_header.addWidget(_section_label(translate_text("SOURCES ET SORTIE")))
+        source_header.addStretch()
+        cd_layout.addLayout(source_header)
 
         form = QFormLayout()
         form.setSpacing(_scale(8))
@@ -517,7 +549,8 @@ class HybridStudio(QWidget):
 
         self.add_source_btn = _secondary_button(translate_text("+ Ajouter une source donneuse supplémentaire…"))
         self.add_source_btn.clicked.connect(lambda: self._add_extra_source_row())
-        cd_layout.addWidget(self.add_source_btn)
+        self.add_source_btn.setText(translate_text("+ Ajouter un donneur"))
+        source_header.addWidget(self.add_source_btn)
 
         matching_row = QHBoxLayout()
         lbl_matching = QLabel(translate_text("Mode de correspondance :"))
@@ -529,22 +562,23 @@ class HybridStudio(QWidget):
         self.matching_mode_combo.addItem(translate_text("Ordre naturel (Tri alphabétique 1 à 1)"), MatchingMode.ORDER)
         matching_row.addWidget(lbl_matching)
         matching_row.addWidget(self.matching_mode_combo, stretch=1)
-        cd_layout.addLayout(matching_row)
 
-        profile_row = QHBoxLayout()
+
+        profile_row = QVBoxLayout()
         self.profile = ProfileSelector(self.config.profiles_dir, self)
         lbl_prof = QLabel(translate_text("Profil décisionnel (optionnel) :"))
         lbl_prof.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         profile_row.addWidget(lbl_prof)
         profile_row.addWidget(self.profile, stretch=1)
-        cd_layout.addLayout(profile_row)
+
 
         self.detect_cuts = QCheckBox(
             translate_text("Détecter les coupures et variations de cadences (cuts multi-segments)")
         )
         self.detect_cuts.setChecked(True)
         self.detect_cuts.setStyleSheet(_checkbox_style())
-        cd_layout.addWidget(self.detect_cuts)
+        self.detect_cuts.setToolTip(self.detect_cuts.text())
+        self.detect_cuts.setText(translate_text("Détecter les coupures"))
 
         cadence_row = QHBoxLayout()
         self.cadence_auto_apply = QCheckBox(
@@ -553,6 +587,10 @@ class HybridStudio(QWidget):
         auto_cadence_default = getattr(self.config, "sync_cadence_auto_apply", True)
         self.cadence_auto_apply.setChecked(bool(auto_cadence_default))
         self.cadence_auto_apply.setStyleSheet(_checkbox_style())
+        self.cadence_auto_apply.setToolTip(self.cadence_auto_apply.text())
+        self.cadence_auto_apply.setText(translate_text("Conversion PAL ↔ Cinéma automatique"))
+        cadence_row.addWidget(self.detect_cuts)
+        cadence_row.addSpacing(_scale(18))
         cadence_row.addWidget(self.cadence_auto_apply)
 
         cadence_row.addSpacing(_scale(16))
@@ -571,9 +609,9 @@ class HybridStudio(QWidget):
         self.cadence_method_combo.setStyleSheet(_input_style())
         cadence_row.addWidget(self.cadence_method_combo)
         cadence_row.addStretch()
-        cd_layout.addLayout(cadence_row)
 
-        sync_row = QHBoxLayout()
+
+        sync_row = QVBoxLayout()
         sync_row.addWidget(QLabel(translate_text("Analyse synchro :")))
         self.sync_strategy = QComboBox()
         self.sync_strategy.setStyleSheet(_input_style())
@@ -594,23 +632,31 @@ class HybridStudio(QWidget):
         self.manual_shift_label.setVisible(False)
         self.manual_shift.setVisible(False)
         self.sync_strategy.currentIndexChanged.connect(self._on_sync_strategy_changed)
-        cd_layout.addLayout(sync_row)
-
+        options_row = QHBoxLayout()
+        options_row.setSpacing(_scale(16))
+        options_row.addLayout(profile_row, 1)
+        mode_row = QVBoxLayout()
+        mode_row.addWidget(_section_label(translate_text("SYNCHRONISATION")))
+        self.mode = QComboBox()
+        self.mode.setStyleSheet(_input_style())
+        self.mode.addItem(translate_text("Synchronisation physique"), "physical")
+        self.mode.addItem(translate_text("Décalage conteneur"), "container")
+        mode_row.addWidget(self.mode)
+        options_row.addLayout(mode_row, 1)
+        options_row.addLayout(sync_row, 1)
+        cd_layout.addLayout(options_row)
+        cd_layout.addLayout(cadence_row)
         layout.addWidget(card_dirs)
 
         # ── Carte 1 bis : Plan d'assemblage type (Épisode témoin) ─────────────
-        card_witness = _card(self)
-        cwit_layout = QVBoxLayout(card_witness)
-        cwit_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
-        cwit_layout.setSpacing(_scale(8))
-
-        wit_header = QHBoxLayout()
-        wit_header.addWidget(_section_label(translate_text("PLAN D'ASSEMBLAGE TYPE (ÉPISODE TÉMOIN)")))
-        wit_header.addStretch()
+        card_witness = CollapsibleCard(translate_text("MODÈLE D’ASSEMBLAGE · ÉPISODE TÉMOIN"), self)
+        self._witness_section = card_witness
+        cwit_layout = card_witness.body_layout
+        wit_header = card_witness.header_layout
         self.inspect_witness_btn = _secondary_button(translate_text("🔍 Inspecter l'épisode témoin"))
         self.inspect_witness_btn.clicked.connect(self.inspect_witness)
         wit_header.addWidget(self.inspect_witness_btn)
-        cwit_layout.addLayout(wit_header)
+
 
         self.witness_info = QLabel(translate_text("Choisissez vos dossiers sources ci-dessus, puis inspectez l'épisode témoin pour choisir les pistes à mixer."))
         self.witness_info.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
@@ -692,13 +738,7 @@ class HybridStudio(QWidget):
             settings.addRow(lbl_txt, line_edit)
             self.controls[option] = line_edit
 
-        self.mode = QComboBox()
-        self.mode.setStyleSheet(_input_style())
-        self.mode.addItem(translate_text("Synchronisation physique"), "physical")
-        self.mode.addItem(translate_text("Décalage conteneur"), "container")
-        lbl_mode = QLabel(translate_text("Mode de synchro"))
-        lbl_mode.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
-        settings.addRow(lbl_mode, self.mode)
+        settings.addRow(matching_row)
 
         self.mirror = QCheckBox(translate_text("Recaler les sous-titres"))
         self.mirror.setChecked(True)
@@ -713,6 +753,8 @@ class HybridStudio(QWidget):
                 widget = item.widget() if item is not None else None
                 if widget is not None:
                     widget.setVisible(checked)
+            lbl_matching.setVisible(checked)
+            self.matching_mode_combo.setVisible(checked)
 
         advanced.toggled.connect(_toggle_advanced)
         advanced.toggled.emit(False)
@@ -753,12 +795,15 @@ class HybridStudio(QWidget):
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_remux_row(row))
         ct_layout.addWidget(self.table)
         layout.addWidget(card_table)
+        layout.removeWidget(card_witness)
+        layout.removeWidget(advanced)
+        layout.addWidget(card_witness)
+        layout.addWidget(advanced)
 
         # ── Carte 4 : Forme d'onde et micro-ajustement ─────────────────────────
-        card_wave = _card(self)
-        cw_layout = QVBoxLayout(card_wave)
-        cw_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
-        cw_layout.setSpacing(_scale(8))
+        card_wave = CollapsibleCard(translate_text("RECALAGE ET PRÉ-ÉCOUTE"), self)
+        self._wave_section = card_wave
+        cw_layout = card_wave.body_layout
 
         wave_header = QHBoxLayout()
         wave_header.addWidget(_section_label(translate_text("ANALYSE ACOUSTIQUE ET CALIBRATION")))
@@ -823,6 +868,7 @@ class HybridStudio(QWidget):
         self.prepared.connect(self.on_prepared)
         self.failed.connect(self.on_failed)
         self.waveform_ready.connect(self.on_waveform)
+        self.waveform_failed.connect(self._on_waveform_failed)
         self.preview_ready.connect(self.play_preview)
         self.witness_inspected.connect(self._populate_witness_table)
         self.single_calibration_done.connect(self._on_single_calibration_done)
@@ -938,6 +984,7 @@ class HybridStudio(QWidget):
         fut.add_done_callback(on_done)
 
     def _populate_witness_table(self, res):
+        self._witness_section.set_expanded(True)
         if isinstance(res, Exception):
             self.witness_info.setText(translate_text("Erreur d'inspection : {err}", err=str(res)))
             return
@@ -997,11 +1044,11 @@ class HybridStudio(QWidget):
                 })
                 row += 1
 
-        self.apply_recipe_btn.setEnabled(True)
+        self.apply_recipe_btn.setEnabled(not self.busy)
         self.witness_info.setText(translate_text("Pistes détectées sur l'épisode témoin. Cochez celles à conserver puis appliquez le modèle."))
 
     def apply_witness_recipe(self):
-        if not self.witness_track_items:
+        if self.busy or not self.witness_track_items:
             return
 
         recipe = HybridRecipe()
@@ -1051,6 +1098,8 @@ class HybridStudio(QWidget):
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))
 
     def browse(self, field: QLineEdit):
+        if self.busy:
+            return
         menu = QMenu(self)
         act_dir = menu.addAction(translate_text("Choisir un dossier…"))
         act_file = menu.addAction(translate_text("Choisir un fichier média…"))
@@ -1070,13 +1119,19 @@ class HybridStudio(QWidget):
                 field.setText(path)
 
     def browse_dir(self, field: QLineEdit):
+        if self.busy:
+            return
         path = QFileDialog.getExistingDirectory(self, translate_text("Choisir un dossier de sortie"), field.text())
         if path:
             field.setText(path)
 
     def set_busy(self, busy: bool):
         self.busy = busy
+        self._sources_card.setEnabled(not busy)
+        self._witness_section.body.setEnabled(not busy)
         self.scan_button.setEnabled(not busy)
+        self.listen_button.setEnabled(not busy)
+        self.export_button.setEnabled(not busy)
         self._update_run_button()
         for field in (
             self.reference,
@@ -1091,16 +1146,72 @@ class HybridStudio(QWidget):
             self.cadence_method_combo,
             self.mode,
             self.mirror,
+            self.inspect_witness_btn,
+            self.add_source_btn,
+            self.add_manual_pair_btn,
+            self.table,
             *self.controls.values(),
         ):
             field.setEnabled(not busy)
         self._on_sync_strategy_changed()
+        self.apply_recipe_btn.setEnabled(not busy and bool(self.witness_track_items))
+
+    def operation_state(self) -> OperationState:
+        count = sum(ep.is_complete for ep in self.matrix_episodes)
+        output = self.output.text().strip()
+        sources = bool(self.reference.text().strip() and (
+            self.donor.text().strip() or any(source["edit"].text().strip() for source in self.extra_sources)
+        ))
+        ready = bool(output and (sources or count) and not self.aux_running)
+        if self.aux_running:
+            reason = translate_text("Attendez la fin de la préparation audio.")
+        elif not output:
+            reason = translate_text("Choisissez un dossier de sortie.")
+        elif not sources and not count:
+            reason = translate_text("Choisissez une référence et au moins une source donneuse.")
+        else:
+            reason = ""
+        batch_label = "Hybrider {count} épisodes" if self.matching_mode_combo.currentData() == MatchingMode.EPISODE else "Hybrider {count} fichiers"
+        label = (translate_text(batch_label, count=count) if count > 1 else
+                 translate_text("Hybrider le fichier") if count == 1 else translate_text("Lancer l’hybridation"))
+        return OperationState("hybrid", 4, label, output or translate_text("Hybridation multi-sources"), ready, reason)
+
+    def set_operation_start_guard(self, guard) -> None:
+        self._operation_start_guard = guard
+
+    def use_global_controls(self) -> None:
+        self._global_controls = True
+        self.run_button.hide()
+        self.cancel_button.hide()
+
+    def _begin_operation(self, label: str) -> bool:
+        if self._operation_active:
+            return True  # continuation analyse → exécution du même lot
+        if self.aux_running:
+            self.status.setText(translate_text("Attendez la fin de la préparation audio."))
+            return False
+        if self._operation_start_guard is not None and not self._operation_start_guard():
+            return False
+        self._operation_active = True
+        self.stopped = False
+        self.signals = None
+        self.cancel_event.clear()
+        self.op_state_changed.emit("started", label)
+        return True
+
+    def _finish_operation(self, state: str, label: str) -> None:
+        self.signals = None
+        self.set_busy(False)
+        if self._operation_active:
+            self._operation_active = False
+            self.op_state_changed.emit(state, label)
 
     def _update_run_button(self, *_):
-        ready = bool(self.reference.text().strip() and self.output.text().strip() and
-                     (self.donor.text().strip() or any(s["edit"].text().strip() for s in self.extra_sources)))
-        ready = ready or bool(self.output.text().strip() and any(ep.is_complete for ep in self.matrix_episodes))
-        self.run_button.setEnabled(not self.busy and (ready or bool(self.jobs)))
+        state = self.operation_state()
+        self.run_button.setEnabled(not self.busy and state.ready)
+        self._readiness_badge.setText(translate_text("Traitement en cours") if self.busy else
+                                     translate_text("Prêt") if state.ready else translate_text("À configurer"))
+        self.ready_changed.emit(state.ready and not self.busy)
 
     def _on_sync_strategy_changed(self, *_):
         manual = self.sync_strategy.currentData() == "manual"
@@ -1137,6 +1248,8 @@ class HybridStudio(QWidget):
     def scan(self, auto_run: bool = False, reuse_matrix: bool = False):
         from cli.parser import build_parser
 
+        if not self._begin_operation(translate_text("Analyse des sources")):
+            return
         arguments = [
             "hybrid",
             "--ref-dir", self.reference.text(),
@@ -1172,7 +1285,13 @@ class HybridStudio(QWidget):
         try:
             if not self.output.text().strip():
                 raise ValueError(translate_text("Choisir un dossier de sortie."))
-            self.args = build_parser().parse_args(arguments)
+            with redirect_stderr(StringIO()) as errors:
+                try:
+                    self.args = build_parser().parse_args(arguments)
+                except SystemExit as exc:
+                    # argparse ne doit ni quitter l'application ni laisser
+                    # le verrou d'exécution actif après une option invalide.
+                    raise ValueError(errors.getvalue().strip().splitlines()[-1]) from exc
             self.cancel_event.clear()
             self.args.cancel_event = self.cancel_event
 
@@ -1348,6 +1467,9 @@ class HybridStudio(QWidget):
             self.on_failed(translate_text("Impossible de calibrer : Master ou Donneur manquant pour cet élément."))
             return
 
+        if not self._begin_operation(translate_text("Analyse de {name}", name=ep.display_name)):
+            return
+        self.set_busy(True)
         item = self.table.item(row, 3)
         if item is not None:
             item.setText(translate_text("Analyse en cours…") if self.sync_strategy.currentData() == "auto"
@@ -1374,8 +1496,9 @@ class HybridStudio(QWidget):
             from cli.options import CommonOptions
             args = CommonOptions(sync_mode=recipe.sync_mode, sync_subtitles=recipe.sync_subtitles)
 
+        args = SimpleNamespace(**{**vars(args), "cancel_event": self.cancel_event})
+
         def task():
-            from cli.logging import Logger
             try:
                 config, calibration = prepare_matrix_episode(
                     ep,
@@ -1383,7 +1506,7 @@ class HybridStudio(QWidget):
                     output_dir,
                     self.config,
                     args,
-                    Logger(),
+                    _GuiLogger(self.log_message, ep.display_name),
                     detect_cuts=detect_cuts,
                     drift_threshold_ms=25,
                 )
@@ -1407,6 +1530,9 @@ class HybridStudio(QWidget):
         fut.add_done_callback(on_done)
 
     def _on_single_calibration_done(self, row: int, config, calibration):
+        if self.stopped:
+            self._finish_operation("cancelled", translate_text("Analyse annulée"))
+            return
         self.jobs[row] = (config, calibration)
         item = self.table.item(row, 3)
         if item is not None:
@@ -1428,6 +1554,7 @@ class HybridStudio(QWidget):
         self._update_run_button()
         self.status.setText(translate_text("Préparation terminée pour : {name}", name=self.matrix_episodes[row].display_name))
         self.table.selectRow(row)
+        self._finish_operation("finished", translate_text("Analyse terminée"))
 
     def _on_single_calibration_failed(self, row: int, err: str):
         item = self.table.item(row, 3)
@@ -1435,6 +1562,8 @@ class HybridStudio(QWidget):
             item.setText(translate_text("Échec"))
             item.setForeground(QColor(_C.ERROR))
         self.status.setText(translate_text("Erreur calibration : {err}", err=err))
+        self.log_message.emit("WARN" if self.stopped else "ERROR", err)
+        self._finish_operation("cancelled" if self.stopped else "failed", err)
 
     def listen_row(self, row: int):
         self.table.selectRow(row)
@@ -1453,9 +1582,16 @@ class HybridStudio(QWidget):
     def prepare_next(self):
         if self.stopped or self.index >= len(self.matrix_episodes):
             self.set_busy(False)
-            if not self.stopped and self._run_after_prepare and self.jobs:
+            if self.stopped:
+                self._finish_operation("cancelled", translate_text("Hybridation annulée"))
+            elif self._run_after_prepare:
                 self._run_after_prepare = False
-                self.run()
+                if self.jobs:
+                    self.run()
+                else:
+                    self._finish_operation("failed", translate_text("Aucun plan d’hybridation prêt."))
+            else:
+                self._finish_operation("finished", translate_text("Analyse terminée"))
             return
 
         episode = self.matrix_episodes[self.index]
@@ -1485,13 +1621,13 @@ class HybridStudio(QWidget):
             name=episode.display_name,
         ))
 
+        self.op_state_changed.emit("step", self.status.text())
         recipe = replace(self.recipe)
         output_dir = self.output.text().strip()
         detect_cuts = self.detect_cuts.isChecked()
         args = self.args
 
         def task():
-            from cli.logging import Logger
             try:
                 config, calibration = prepare_matrix_episode(
                     episode,
@@ -1499,7 +1635,7 @@ class HybridStudio(QWidget):
                     output_dir,
                     self.config,
                     args,
-                    Logger(),
+                    _GuiLogger(self.log_message, episode.display_name),
                     detect_cuts=detect_cuts,
                     drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
                 )
@@ -1511,7 +1647,7 @@ class HybridStudio(QWidget):
 
     def on_prepared(self, config, calibration):
         if self.stopped:
-            self.set_busy(False)
+            self._finish_operation("cancelled", translate_text("Hybridation annulée"))
             return
         self.jobs[self.index] = (config, calibration)
         item = self.table.item(self.index, 3)
@@ -1546,11 +1682,12 @@ class HybridStudio(QWidget):
                 item.setText(translate_text("Échec"))
         self.listen_button.setEnabled(True)
         self.aux_running = False
-        self.set_busy(False)
+        self.log_message.emit("WARN" if self.stopped else "ERROR", message)
+        self._finish_operation("cancelled" if self.stopped else "failed", message)
 
     def select_waveform(self):
         row = self.table.currentRow()
-        if self.busy or row not in self.jobs:
+        if self.busy or self.aux_running or row not in self.jobs:
             return
         config, calibration = self.jobs[row]
         if not calibration or not calibration.segments:
@@ -1572,17 +1709,28 @@ class HybridStudio(QWidget):
                     series.append(np.max(np.abs(samples[:len(samples) // size * size].reshape(-1, size)), axis=1).tolist())
                 self.waveform_ready.emit((row, series))
             except Exception as exc:
-                self.failed.emit(str(exc))
+                self.waveform_failed.emit(str(exc))
 
         self.aux_running = True
+        self._update_run_button()
         self.executor.submit(task)
 
     def on_waveform(self, result):
+        self._wave_section.set_expanded(True)
         self.aux_running = False
         row, series = result
         if row == self.table.currentRow():
             self.waveform.series = series
             self.waveform.update()
+        else:
+            self.select_waveform()
+        self._update_run_button()
+
+    def _on_waveform_failed(self, message: str):
+        # Une prévisualisation en retard ne peut pas terminer le lot courant.
+        self.aux_running = False
+        self.log_message.emit("WARN", message)
+        self._update_run_button()
 
     def adjust_offset(self, value: float):
         row = self.table.currentRow()
@@ -1618,7 +1766,7 @@ class HybridStudio(QWidget):
 
     def listen(self):
         row = self.table.currentRow()
-        if self.busy:
+        if self.busy or self.aux_running:
             return
         if row not in self.jobs:
             self.status.setText(translate_text("Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡)."))
@@ -1636,24 +1784,31 @@ class HybridStudio(QWidget):
                 self.player = None
 
         config, calibration = self.jobs[row]
+        if not self._begin_operation(translate_text("Préparation de l’aperçu audio")):
+            return
+        self.set_busy(True)
         self.listen_button.setEnabled(False)
 
         def task():
             from core.subprocess_utils import subprocess_text_kwargs
+            from core.workflows.common.sync_rewrite import SYNC_AUDIO_ORIGIN_FILTER
             from core.workflows.physical_sync import audio_filter
             from core.workflows.sync_calibration import SyncCalibration
 
-            source = config.sources[1]
-            track = next(t for t in source.tracks if t.track_type == "audio" and t.enabled)
-            path = Path(self.preview_temp.name) / (uuid.uuid4().hex + ".wav")
-            graph = audio_filter(calibration or SyncCalibration.linear(0), config.crossfade_ms).replace(
-                "[0:a:0]", f"[0:{track.mkv_tid}]"
-            )
             try:
+                candidate = next(((source, track) for source in config.sources[1:]
+                                  for track in source.tracks if track.track_type == "audio" and track.enabled), None)
+                if candidate is None:
+                    raise ValueError(translate_text("Aucune piste audio donneuse disponible pour la pré-écoute."))
+                source, track = candidate
+                path = Path(self.preview_temp.name) / (uuid.uuid4().hex + ".wav")
+                graph = audio_filter(calibration or SyncCalibration.linear(0), config.crossfade_ms).replace(
+                    "[0:a:0]", f"[0:{track.mkv_tid}]{SYNC_AUDIO_ORIGIN_FILTER},",
+                )
                 scan = AudioSyncScanner(self.config.tool_ffmpeg, self.config.tool_ffprobe, cancel_event=self.cancel_event)
                 result = scan._run(
                     [
-                        str(self.config.tool_ffmpeg), "-nostdin", "-v", "error", "-i", str(source.path),
+                        str(self.config.tool_ffmpeg), "-nostdin", "-v", "error", "-copyts", "-i", str(source.path),
                         "-filter_complex", graph, "-map", "[out]", "-t", "20", "-ac", "2",
                         "-c:a", "pcm_s16le", str(path),
                     ],
@@ -1672,6 +1827,10 @@ class HybridStudio(QWidget):
     def play_preview(self, path: str):
         self.aux_running = False
         self.listen_button.setEnabled(True)
+        self._finish_operation("cancelled" if self.stopped else "finished",
+                               translate_text("Aperçu annulé" if self.stopped else "Aperçu audio prêt"))
+        if self.stopped:
+            return
         if hasattr(self, "player") and self.player is not None:
             self.player.setSource(QUrl.fromLocalFile(path))
             self.player.play()
@@ -1705,6 +1864,8 @@ class HybridStudio(QWidget):
     def run(self):
         if self.busy:
             return
+        if not self._begin_operation(translate_text("Préparation de l’hybridation")):
+            return
         if self._prepared_signature != self._settings_signature():
             self.scan(auto_run=True, reuse_matrix=bool(
                 self.matrix_episodes and self._matrix_signature == self._source_signature()
@@ -1717,6 +1878,7 @@ class HybridStudio(QWidget):
             self.prepare_next()
             return
         if not self.jobs:
+            self._finish_operation("failed", translate_text("Aucun plan d’hybridation prêt."))
             return
         self.execution_rows = sorted(self.jobs.keys())
         self.exec_index = 0
@@ -1728,7 +1890,8 @@ class HybridStudio(QWidget):
         from core.workflows.remux import RemuxWorkflow
 
         if self.stopped or self.exec_index >= len(self.execution_rows):
-            self.set_busy(False)
+            self._finish_operation("cancelled" if self.stopped else "finished",
+                                   translate_text("Hybridation annulée" if self.stopped else "Hybridation terminée"))
             return
 
         row = self.execution_rows[self.exec_index]
@@ -1736,20 +1899,33 @@ class HybridStudio(QWidget):
         if config.output.exists():
             self.on_failed(translate_text("La sortie existe déjà : {path}", path=str(config.output)))
             return
-        config.output.parent.mkdir(parents=True, exist_ok=True)
-        self.workflow = RemuxWorkflow(
-            ffmpeg_bin=str(self.config.tool_ffmpeg),
-            ffprobe_bin=str(self.config.tool_ffprobe),
-            mediainfo_bin=str(self.config.tool_mediainfo),
+        try:
+            config.output.parent.mkdir(parents=True, exist_ok=True)
+            self.workflow = RemuxWorkflow(
+                ffmpeg_bin=str(self.config.tool_ffmpeg),
+                ffprobe_bin=str(self.config.tool_ffprobe),
+                mediainfo_bin=str(self.config.tool_mediainfo),
+            )
+        except Exception as exc:
+            self.on_failed(str(exc))
+            return
+        episode = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else config.output.stem
+        self._active_episode = episode
+        self.op_state_changed.emit("step", translate_text("Épisode {current}/{total} · {name}",
+                                   current=self.exec_index + 1, total=len(self.execution_rows), name=episode))
+        self.workflow.log_message.connect(
+            lambda level, message, name=episode: self.log_message.emit(level, f"[{name}] {message}"),
+            Qt.ConnectionType.QueuedConnection,
         )
         try:
             self.signals = self.workflow.run(replace(config, allow_missing_output_dir=False))
             self.signals.connect_terminal(
                 finished=self.on_finished,
                 failed=lambda message, exc: self.on_failed(message),
-                cancelled=lambda: self.set_busy(False),
+                cancelled=lambda: self._finish_operation("cancelled", translate_text("Hybridation annulée")),
             )
-            self.signals.progress.connect(self.status.setText)
+            self.signals.progress.connect(self.op_progress, Qt.ConnectionType.QueuedConnection)
+            self.signals.progress_pct.connect(self.op_progress_pct, Qt.ConnectionType.QueuedConnection)
         except Exception as exc:
             self.on_failed(str(exc))
 
@@ -1760,11 +1936,14 @@ class HybridStudio(QWidget):
             if item is not None:
                 item.setText(translate_text("Terminé"))
                 item.setForeground(QColor(_C.OK))
+        self.log_message.emit("OK", f"[{getattr(self, '_active_episode', '')}] {message}")
+        self.signals = None
         self.exec_index += 1
         self.run_next()
 
     def cancel(self):
         self.stopped = True
+        self._run_after_prepare = False
         self.cancel_event.set()
         if self.signals is not None:
             self.signals.cancel()
