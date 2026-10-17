@@ -158,6 +158,10 @@ jobs:
     name: Unit tests (gate)
     uses: ./.github/workflows/ci-unit-all.yml
 
+  media-regressions:
+    name: Media regressions (gate)
+    uses: ./.github/workflows/ci-media-regressions.yml
+
   build-linux:
     name: Build Linux AppImage
     runs-on: ubuntu-latest
@@ -509,11 +513,12 @@ jobs:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
     # Canal build (branche quelconque, lancement manuel) : aucun tag ni release.
-    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
+    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.media-regressions.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
       - release-metadata
       - plugins-state
       - unit-tests
+      - media-regressions
       - build-linux
       - build-windows
       - build-macos

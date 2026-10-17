@@ -10,6 +10,7 @@ from typing import Callable
 
 from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.common.audio_timestamps import preroll_input_offset, probe_timestamp_payload
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 from core.workdir import (
     download_tmdb_cover,
@@ -148,6 +149,8 @@ class RemuxRuntimeRunner:
                         cb.ffmpeg_bin,
                         lambda command, label: cb.run_cmd(command, cwd, label, signals.progress.emit, signals),
                         log=cb.log,
+                        ffprobe=cb.ffprobe_bin,
+                        cancel_cb=signals._cancel_event.is_set,
                     )
                     plan = plan_remux(run_config, ffmpeg_bin=cb.ffmpeg_bin)
                     output_contract = plan.output_contract
@@ -320,9 +323,27 @@ class RemuxRuntimeRunner:
                             input_idx=prepared.input_idx,
                             container_format="matroska",
                         ))
+                        timestamp_offsets = {
+                            **run_config.input_timestamp_offsets,
+                            prepared.path: prepared.ffmpeg_timestamp_offset_s,
+                        }
+                        if mapped_track.track.track_type == "audio":
+                            timestamp_offsets.setdefault(Path(mapped_track.source_path), prepared.source_timestamp_offset_s)
+                        run_config = replace(run_config, input_timestamp_offsets=timestamp_offsets)
                     if rewritten_inputs:
                         mapped_tracks = rewritten_tracks
                         sync_prepared.extend(rewritten_inputs)
+                    if any(item.key[2] == "audio" for item in rewritten_inputs):
+                        # La source vidéo peut avoir son propre CodecDelay
+                        # audio, même si ces pistes audio ne sont pas retenues.
+                        timestamp_offsets = dict(run_config.input_timestamp_offsets)
+                        for source in run_config.sources:
+                            if source.path not in timestamp_offsets:
+                                payload = probe_timestamp_payload(
+                                    source.path, cb.ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
+                                )
+                                timestamp_offsets[source.path] = preroll_input_offset(payload)
+                        run_config = replace(run_config, input_timestamp_offsets=timestamp_offsets)
                 else:
                     cb.log_step(5, "Réécriture réelle des décalages désactivée")
 

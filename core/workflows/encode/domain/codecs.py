@@ -1236,7 +1236,7 @@ def build_vf(video: VideoEncodeSettings) -> str:
     # puis marquées (zscale ne le fait pas : un filtre aval rééchantillonnerait depuis « left »).
     fel = video.fel_context
     dither = f":dither=error_diffusion:chromal={fel.chroma_location}" if fel is not None else ""
-    mark = f"setparams=chroma_location={fel.chroma_location}," if fel is not None else ""
+    mark = f"setparams=chroma_location={fel.chroma_location}," if fel is not None and fel.chroma_setparams else ""
     chain.append(
         "zscale=transfer=linear:npl=100,"
         "format=gbrpf32le,"

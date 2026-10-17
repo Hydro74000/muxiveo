@@ -1,38 +1,30 @@
-"""Origine démuxée des pistes réécrites, y compris le pré-roll AC3."""
-
-import json
-import subprocess
-from pathlib import Path
-from types import SimpleNamespace
-
+"""L'assemblage natif conserve CodecDelay sans le compenser une seconde fois."""
 import pytest
 
-from core.workflows.encode.models import EncodeError
+from core.matroska.ebml import ascii_element, element, uint_element
+from core.matroska.reader import MatroskaReader
 from core.workflows.encode.runtime.native_mux import _rewritten_audio_time_shift
+from tests.test_matroska_mux_unification import _write_mkv
 
 
-@pytest.mark.parametrize("start_time, expected", [("-0.005000", 5), ("0.005000", -5), ("0.000000", 0)])
-def test_rewritten_audio_uses_demuxed_origin(monkeypatch, start_time, expected):
-    calls = []
+@pytest.mark.parametrize("delay_ns", [0, 5_333_333, 21_333_333])
+@pytest.mark.parametrize("block_ms", [0, 5, 125])
+def test_native_origin_uses_blocks_and_preserves_codec_delay(tmp_path, block_ms, delay_ns):
+    # Les ffprobe 6/8 présentent CodecDelay différemment ; les blocs de cet
+    # artefact déjà recalé restent identiques et suffisent au mux natif.
+    payload = b"".join((
+        uint_element(b"\xd7", 1), uint_element(b"\x73\xc5", 1),
+        uint_element(b"\x83", 2), ascii_element(b"\x86", "A_AC3"),
+        uint_element(b"\x56\xaa", delay_ns),
+    ))
+    entry = element(b"\xae", payload)
+    cluster = element(b"\x1f\x43\xb6\x75", uint_element(b"\xe7", block_ms)
+                      + element(b"\xa3", b"\x81\x00\x00\x80" + b"\0" * 16))
+    artifact = _write_mkv(tmp_path / "rewritten.mka", [entry], clusters=cluster)
+    assert _rewritten_audio_time_shift(artifact) == -block_ms
+    assert MatroskaReader(artifact).tracks()[0].raw_entry == payload
 
-    def probe(args, **kwargs):
-        calls.append((args, kwargs))
-        return SimpleNamespace(stdout=json.dumps({"streams": [{"start_time": start_time}]}))
 
-    monkeypatch.setattr(subprocess, "run", probe)
-    assert _rewritten_audio_time_shift(Path("rewritten.mka"), "/custom/ffprobe") == expected
-    args, kwargs = calls[0]
-    assert args[0] == "/custom/ffprobe"
-    assert args[-1] == "rewritten.mka"
-    assert "stream=start_time" in args
-    assert kwargs["timeout"] == 20
-
-
-@pytest.mark.parametrize("stdout", [
-    '{"streams": []}', '{"streams": [{}]}',
-    '{"streams": [{"start_time": "N/A"}]}', "invalid",
-])
-def test_unreadable_origin_fails_instead_of_shifting_silently(monkeypatch, stdout):
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=stdout))
-    with pytest.raises(EncodeError, match="Origine audio"):
-        _rewritten_audio_time_shift(Path("rewritten.mka"), "ffprobe")
+def test_empty_rewritten_audio_has_no_extra_offset(tmp_path):
+    artifact = _write_mkv(tmp_path / "empty.mka", [])
+    assert _rewritten_audio_time_shift(artifact) == 0

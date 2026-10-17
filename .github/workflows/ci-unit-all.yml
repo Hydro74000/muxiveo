@@ -121,6 +121,9 @@ jobs:
           tests/test_json_documents.py
           tests/test_probe_lifecycle.py
           tests/test_optional_capability_detection.py
+          tests/test_unified_operations.py
+          tests/test_encode_native_audio_origin.py
+          tests/test_audio_timestamps.py
           tests/test_windows_pytest_bootstrap.py
           tests/test_python_requirements.py
           tests/test_qt_binding_sanity.py

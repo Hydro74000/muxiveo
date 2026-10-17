@@ -183,6 +183,10 @@ def append_offset_inputs(
 
         remap[spec.map_key] = (int(input_idx), int(spec.input_stream_index))
 
+    if any(spec.offset_ms < 0 for spec in specs):
+        # Les paquets audio en copie peuvent précéder la coupe demandée.
+        # Ne pas déplacer la vidéo pour rendre ces PTS de pré-roll positifs.
+        cmd.extend(["-avoid_negative_ts", "disabled"])
     return next_input_index, remap
 
 

@@ -106,6 +106,7 @@ from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 # Taille > 0 ; débit selon le mode (VBR NVENC / NVEncC : 0 = illimité).
 # Pas de borne haute applicative (limite technique de QIntValidator).
 _INT_INPUT_MAX = 2**31 - 1
+_INTERPOLATION_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 # Préréglages d'interpolation : libellé et infobulle (entrée de la liste et préréglage choisi).
 _INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
@@ -132,6 +133,14 @@ _INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
 def _format_fps(value: float) -> str:
     """Cadence lisible à la française (ex. 59,94)."""
     return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _interpolation_target_label(value: str) -> str:
+    """Une cadence invalide reste lisible jusqu'à sa validation au lancement."""
+    try:
+        return _format_fps(float(Fraction(value)))
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return value
 
 
 class EncodePanel(QWidget):
@@ -2034,7 +2043,7 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_interp_cb"):
             return FrameInterpolationSettings()
         choice = str(self._interp_factor_combo.currentData() or "2")
-        is_target = "/" in choice
+        is_target = bool(self._interp_factor_combo.currentData(_INTERPOLATION_TARGET_ROLE)) or "/" in choice
         return FrameInterpolationSettings(
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
             factor=2 if is_target else float(choice),
@@ -2052,11 +2061,18 @@ class EncodePanel(QWidget):
         self._interp_last_quality = None   # réglages chargés : aucun choix antérieur à rétablir
         self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
         # Conserver une cadence cible explicite des anciens projets sans la convertir en facteur.
-        if settings.target_fps and self._interp_factor_combo.findData(settings.target_fps) < 0:
-            self._interp_factor_combo.addItem(
-                f"{_format_fps(float(Fraction(settings.target_fps)))} i/s", settings.target_fps,
-            )
-        self._set_combo_data(self._interp_factor_combo, settings.target_fps or f"{settings.factor:g}")
+        target_fps = str(settings.target_fps or "")
+        if target_fps:
+            index = next((i for i in range(self._interp_factor_combo.count())
+                          if self._interp_factor_combo.itemData(i) == target_fps
+                          and self._interp_factor_combo.itemData(i, _INTERPOLATION_TARGET_ROLE)), -1)
+            if index < 0:
+                self._interp_factor_combo.addItem(f"{_interpolation_target_label(target_fps)} i/s", target_fps)
+                index = self._interp_factor_combo.count() - 1
+                self._interp_factor_combo.setItemData(index, True, _INTERPOLATION_TARGET_ROLE)
+            self._interp_factor_combo.setCurrentIndex(index)
+        else:
+            self._set_combo_data(self._interp_factor_combo, f"{settings.factor:g}")
         quality = settings.quality if settings.quality in INTERPOLATION_PRESETS else INTERPOLATION_DEFAULT_QUALITY
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
@@ -4977,7 +4993,7 @@ class EncodePanel(QWidget):
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
             badge = (
-                f"MVO-RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
+                f"MVO-RIFE {_interpolation_target_label(interpolation.target_fps)}"
                 if interpolation.target_fps
                 else "MVO-RIFE x" + f"{interpolation.factor:g}".replace(".", ",")
             )

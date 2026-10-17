@@ -68,6 +68,10 @@ def append_offset_aux_inputs(
 
         remap[spec.map_key] = (int(input_idx), int(spec.input_stream_index))
 
+    if any(spec.offset_ms < 0 for spec in specs):
+        # Une copie audio après seek peut conserver des paquets de pré-roll
+        # négatifs ; leur présence ne doit pas décaler les autres pistes.
+        cmd.extend(["-avoid_negative_ts", "disabled"])
     return next_input_index, remap
 
 

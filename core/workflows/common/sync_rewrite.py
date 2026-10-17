@@ -13,6 +13,7 @@ from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.subprocess_utils import (
     decode_subprocess_output,
     kill_process_tree,
+    run_cancellable_capture,
     watch_process_cancellation,
     subprocess_text_kwargs,
     subprocess_windows_no_window_kwargs,
@@ -20,6 +21,9 @@ from core.subprocess_utils import (
 from core.runner import TaskCancelledError
 from core.subtitle_codec import CONVERT_TO_SRT
 from core.workflows.remux_models import RemuxError
+from core.workflows.common.audio_timestamps import (
+    common_timestamp_origin, input_timestamp_offset_args, preroll_input_offset, probe_timestamp_payload, timestamp_seconds,
+)
 
 if TYPE_CHECKING:
     from core.workflows.sync_calibration import SyncCalibration
@@ -91,6 +95,13 @@ class SyncRewritePreparedInput:
     is_advanced: bool = False
     precision_label: str = ""
     residual_label: str = ""
+    ffmpeg_timestamp_offset_s: float = 0.0
+    source_timestamp_offset_s: float = 0.0
+
+    def ffmpeg_input_args(self) -> list[str]:
+        """Conserve l'origine de l'artefact, y compris son pré-roll, au mux FFmpeg."""
+        return [*input_timestamp_offset_args(self.ffmpeg_timestamp_offset_s),
+                "-f", "matroska", "-i", str(self.path)]
 
 
 class EmptySubtitleRewrite(RemuxError):
@@ -512,7 +523,7 @@ class SyncRewriteService:
             )
 
         if track_type == "audio":
-            probe = self._probe_stream(source, int(stream_index))
+            probe = self._probe_stream(source, int(stream_index), cancel_cb=cancel_cb)
             source_codec_key = normalized_rewrite_codec(str(probe.get("codec_name") or codec_key))
             object_audio = self._audio_probe_has_object_metadata(
                 codec_key=source_codec_key,
@@ -581,6 +592,7 @@ class SyncRewriteService:
                     cancel_cb=cancel_cb,
                     calibration=calib,
                     crossfade_ms=crossfade_ms,
+                    source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
                 )
                 bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
@@ -595,6 +607,8 @@ class SyncRewriteService:
                     codec=rewrite_codec_key,
                     mode_label="Sync réelle · audio réencodé",
                     bitrate_kbps=rewrite_bitrate_kbps,
+                    ffmpeg_timestamp_offset_s=self._output_timestamp_offset(out, cancel_cb),
+                    source_timestamp_offset_s=timestamp_seconds(probe.get("_preroll_input_offset_s")),
                 )
 
             if calib is not None:
@@ -655,6 +669,8 @@ class SyncRewriteService:
                     is_advanced=True,
                     precision_label=precision,
                     residual_label=residual,
+                    ffmpeg_timestamp_offset_s=self._output_timestamp_offset(out, cancel_cb),
+                    source_timestamp_offset_s=timestamp_seconds(probe.get("_preroll_input_offset_s")),
                 )
 
             rewrite_codec_key = self._advanced_audio_output_codec(source_codec_key, kind)
@@ -683,6 +699,7 @@ class SyncRewriteService:
                 bitrate_kbps=rewrite_bitrate_kbps,
                 experimental=kind == "truehd",
                 cancel_cb=cancel_cb,
+                source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
             )
             bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
             self._log(
@@ -701,6 +718,8 @@ class SyncRewriteService:
                 is_advanced=True,
                 precision_label=precision,
                 residual_label=residual,
+                ffmpeg_timestamp_offset_s=self._output_timestamp_offset(out, cancel_cb),
+                source_timestamp_offset_s=timestamp_seconds(probe.get("_preroll_input_offset_s")),
             )
 
         return None
@@ -712,22 +731,22 @@ class SyncRewriteService:
             return f"calibration {len(segments)} segment(s), départ {segments[0].shift_ms:+.0f} ms"
         return f"offset={int(offset_ms)} ms"
 
-    def _probe_stream(self, source: Path, stream_index: int) -> dict[str, object]:
+    def _probe_stream(self, source: Path, stream_index: int, *,
+                      cancel_cb: Callable[[], bool] | None = None) -> dict[str, object]:
         cmd = [
             self._ffprobe,
             "-v", "error",
             "-show_entries",
-            "stream=index,codec_name,codec_long_name,profile,channels,channel_layout,bit_rate,sample_rate:stream_tags=title",
+            "format=start_time:stream=index,codec_name,codec_long_name,profile,channels,channel_layout,bit_rate,sample_rate,initial_padding:stream_tags=title",
             "-of", "json",
         ]
         cmd.extend(ffprobe_input_args(source))
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            check=False,
-            timeout=30,
-            **subprocess_text_kwargs(),
-        )
+        def check_cancelled() -> None:
+            if cancel_cb is not None and cancel_cb():
+                raise TaskCancelledError()
+
+        result = run_cancellable_capture(cmd, cancel_cb=cancel_cb, check_cancelled=check_cancelled,
+                                         timeout=30, **subprocess_text_kwargs())
         if result.returncode != 0:
             return {}
         try:
@@ -737,10 +756,16 @@ class SyncRewriteService:
         for stream in payload.get("streams") or []:
             try:
                 if int(stream.get("index", -1)) == int(stream_index):
-                    return dict(stream)
+                    return {**stream, "_timestamp_origin_s": common_timestamp_origin(payload),
+                            "_preroll_input_offset_s": preroll_input_offset(payload)}
             except (TypeError, ValueError):
                 continue
         return {}
+
+    def _output_timestamp_offset(self, path: Path, cancel_cb: Callable[[], bool] | None) -> float:
+        payload = probe_timestamp_payload(path, self._ffprobe, cancel_cb=cancel_cb)
+        fmt = payload.get("format")
+        return timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0
 
     def _audio_probe_has_object_metadata(
         self,
@@ -795,6 +820,7 @@ class SyncRewriteService:
         cancel_cb: Callable[[], bool] | None = None,
         calibration: SyncCalibration | None = None,
         crossfade_ms: int = 80,
+        source_origin_s: float = 0.0,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(codec_key, channels)
@@ -804,6 +830,7 @@ class SyncRewriteService:
             *self._progress_args,
             "-copyts",
         ]
+        cmd.extend(input_timestamp_offset_args(-source_origin_s))
         append_ffmpeg_input_args(cmd, source)
         if calibration is not None:
             from core.workflows.physical_sync import audio_filter as calibrated_audio_filter
@@ -907,6 +934,7 @@ class SyncRewriteService:
         bitrate_kbps: int | None = None,
         experimental: bool = False,
         cancel_cb: Callable[[], bool] | None = None,
+        source_origin_s: float = 0.0,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         if offset_ms > 0:
@@ -919,6 +947,7 @@ class SyncRewriteService:
             *self._progress_args,
             "-copyts",
         ]
+        cmd.extend(input_timestamp_offset_args(-source_origin_s))
         append_ffmpeg_input_args(cmd, source)
         cmd.extend([
             "-map", f"0:{stream_index}",

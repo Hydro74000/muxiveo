@@ -16,3 +16,5 @@ class FelExecution:
     original_light_source: str
     # Position chroma du BL : la conversion 4:2:0 des images reconstruites la reprend.
     chroma_location: str = "left"
+    # Capacité réellement sondée dans le worker de préparation (FFmpeg 7.1+).
+    chroma_setparams: bool = False

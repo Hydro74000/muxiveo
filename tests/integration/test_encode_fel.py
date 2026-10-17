@@ -13,12 +13,15 @@ import pytest
 from core.fel.engine import FelEngine, FelSource
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.hevc.access_units import iter_hevc_nal_units
-from core.workflows.encode import EncodeConfig, EncodeWorkflow, FrameInterpolationSettings, QualityMode, VideoEncodeSettings
+from core.workflows.encode import (
+    EncodeConfig, EncodeWorkflow, FrameInterpolationSettings, QualityMode, VideoCropSettings, VideoEncodeSettings,
+)
 from tests.integration._synth import wait_task
 
 _LIBRARY = os.environ.get("MUXIVEO_TEST_FEL_LIBRARY", "")
 _FIXTURE = os.environ.get("MUXIVEO_TEST_FEL_FIXTURE", "")
 _DIRECT = os.environ.get("MUXIVEO_TEST_FEL_DIRECT_FFMPEG", "")
+_FFMPEG = os.environ.get("MUXIVEO_TEST_FEL_FFMPEG", "ffmpeg")
 pytestmark = pytest.mark.skipif(
     not (_LIBRARY and _FIXTURE and all(shutil.which(t) for t in ("ffmpeg", "ffprobe", "dovi_tool"))),
     reason="Plugin et séquence synthétique FEL requis (MUXIVEO_TEST_FEL_LIBRARY/FIXTURE)",
@@ -38,7 +41,7 @@ def _mkv_fixture(tmp_path: Path, *, variable: bool = False) -> Path:
     return source
 
 
-@pytest.mark.parametrize("mode", ["hdr10", "dv", "sdr", "two_pass", "ffmpeg_nvenc", "direct_nvenc", "nvencc", "rife"])
+@pytest.mark.parametrize("mode", ["hdr10", "dv", "crop_dv", "sdr", "two_pass", "ffmpeg_nvenc", "direct_nvenc", "nvencc", "rife"])
 def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     if mode == "direct_nvenc" and not _DIRECT:
         pytest.skip("Prototype FFmpeg direct requis")
@@ -60,16 +63,19 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
         quality_mode=QualityMode.SIZE if mode == "two_pass" else QualityMode.CRF,
         crf=24, preset="p1" if mode in {"ffmpeg_nvenc", "direct_nvenc"} else "default" if mode == "nvencc" else "ultrafast",
         target_size_mb=1,
-        bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=mode in {"dv", "direct_nvenc", "nvencc", "rife"},
+        bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=mode in {"dv", "crop_dv", "direct_nvenc", "nvencc", "rife"},
+        crop=VideoCropSettings(enabled=True, top=8, bottom=8) if mode == "crop_dv" else VideoCropSettings(),
         source_path=source, source_bit_depth=10, force_10bit=mode != "sdr",
         bit_depth="8" if mode == "sdr" else "10",
         input_frame_rate="24000/1001", source_color_transfer="smpte2084",
         tonemap_to_sdr=mode == "sdr",
         interpolation=FrameInterpolationSettings(enabled=mode == "rife", factor=2, quality="fast"),
+        # Le transport reste testable avec l'ancien plugin, dont le GPU est float32.
+        fel_precision="fast" if mode == "direct_nvenc" and not engine.supports_precision else "exact",
     )
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"), rife_bin=shutil.which("muxiveo-rife"))
     messages: list[str] = []
     workflow.log_message.connect(lambda _level, message: messages.append(message))
@@ -85,12 +91,13 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     assert int(stream["nb_read_frames"]) == (24 if mode == "rife" else 12)
     assert stream["color_transfer"] == ("bt709" if mode == "sdr" else "smpte2084")
     assert stream["pix_fmt"] == ("yuv420p" if mode == "sdr" else "yuv420p10le")
-    if mode == "direct_nvenc":
+    assert (stream["width"], stream["height"]) == (256, 128 if mode == "crop_dv" else 144)
+    if mode in {"direct_nvenc", "rife"}:
         # Squelette MKV en chromaloc=2 : position du BL conservée par le transport direct.
         assert stream.get("chroma_location") == "topleft"
     record = next((s for s in stream.get("side_data_list", [])
         if s.get("side_data_type") == "DOVI configuration record"), None)
-    if mode in {"dv", "direct_nvenc", "nvencc", "rife"}:
+    if mode in {"dv", "crop_dv", "direct_nvenc", "nvencc", "rife"}:
         assert record is not None
         assert record["dv_profile"] == 8 and record["dv_bl_signal_compatibility_id"] == 1
         assert record["rpu_present_flag"] == 1 and record["el_present_flag"] == 0
@@ -120,7 +127,7 @@ def test_fel_chroma_location_matches_bl(qt_app, tmp_path, monkeypatch, codec, lo
     target = tmp_path / "out.mkv"
     config = EncodeConfig(source=source, output=target, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     state = wait_task(workflow.run(config), timeout=120)
     assert state["failed"] is None, state["failed"]
@@ -173,10 +180,11 @@ def test_fel_variable_timestamps_survive_encoding(qt_app, tmp_path, monkeypatch,
     video = VideoEncodeSettings(codec="hevc_nvenc" if codec == "direct_nvenc" else codec,
         preset="p1" if codec == "direct_nvenc" else "default" if codec == "nvencc_hevc" else "ultrafast",
         source_path=source, bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=True,
-        bit_depth="10", input_frame_rate="24000/1001", source_color_transfer="smpte2084")
+        bit_depth="10", input_frame_rate="24000/1001", source_color_transfer="smpte2084",
+        fel_precision="fast" if codec == "direct_nvenc" and not engine.supports_precision else "exact")
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=15*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     state = wait_task(workflow.run(config), timeout=120)
     assert state["failed"] is None, state["failed"]
@@ -217,7 +225,7 @@ def test_missing_enhancement_frame_restarts_whole_track_on_bl(qt_app, tmp_path, 
         quality_mode=QualityMode.SIZE if two_pass else QualityMode.CRF, target_size_mb=1)
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False)
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False)
     messages: list[str] = []
     workflow.log_message.connect(lambda _level, message: messages.append(message))
     state = wait_task(workflow.run(config), timeout=120)

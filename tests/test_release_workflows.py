@@ -266,3 +266,13 @@ def test_pinned_extensions_checked_first_and_gate_every_build():
     assert needs == [] and condition == ""
     for name in ("build-linux", "build-windows", "build-macos"):
         assert "plugins-state" in jobs[name][0], name
+
+
+def test_real_media_regressions_are_required_before_publication():
+    """Un gate média rouge ou sauté interdit la publication même si le build réussit."""
+    jobs = _jobs("release.yml")
+    needs, condition = jobs["release"]
+    assert "media-regressions" in needs
+    assert "needs.media-regressions.result == 'success'" in condition
+    body = (_WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "uses: ./.github/workflows/ci-media-regressions.yml" in body

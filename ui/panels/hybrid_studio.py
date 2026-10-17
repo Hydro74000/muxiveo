@@ -1,6 +1,7 @@
 """Studio d'hybridation : appariement par lot, calibration acoustique et synchronisation physique."""
 from __future__ import annotations
 
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from dataclasses import replace
@@ -8,7 +9,6 @@ from io import StringIO
 from pathlib import Path
 import tempfile
 import threading
-from types import SimpleNamespace
 import uuid
 
 from typing import Any, Callable
@@ -451,6 +451,9 @@ class HybridStudio(QWidget):
         self.executor = ThreadPoolExecutor(max_workers=1)
         self._executor = self.executor
         self.jobs: dict[int, tuple[Any, Any]] = {}
+        # Seules les sorties confirmées de cette session peuvent être sautées
+        # à la relance ; une sortie préexistante ou remplacée reste une collision.
+        self._completed_jobs: dict[int, tuple[Any, tuple[int, int, int, int]]] = {}
         self._prepared_signature = None
         self._matrix_signature = None
         self._run_after_prepare = False
@@ -1245,16 +1248,14 @@ class HybridStudio(QWidget):
                 tuple((s["edit"].text(), s["role"].currentData()) for s in self.extra_sources),
                 self.matching_mode_combo.currentData())
 
-    def scan(self, auto_run: bool = False, reuse_matrix: bool = False):
+    def _parse_preparation_args(self, output_dir: str | None = None):
+        """Capture les options actuelles pour le lot comme pour une calibration individuelle."""
         from cli.parser import build_parser
-
-        if not self._begin_operation(translate_text("Analyse des sources")):
-            return
         arguments = [
             "hybrid",
             "--ref-dir", self.reference.text(),
             "--donor-dir", self.donor.text(),
-            "--output-dir", self.output.text(),
+            "--output-dir", output_dir if output_dir is not None else self.output.text(),
             "--dry-run",
         ]
         if self.profile.text().strip():
@@ -1269,13 +1270,25 @@ class HybridStudio(QWidget):
                 arguments += ["--" + option, str(control.value())]
             elif isinstance(control, QLineEdit) and control.text().strip():
                 if option == "auto-tmdb" and not control.text().strip().isdigit():
-                    self.on_failed(translate_text("ID TMDB invalide."))
-                    return
+                    raise ValueError(translate_text("ID TMDB invalide."))
                 arguments += ["--" + option, control.text().strip()]
         arguments += [
             "--sync-mode", self.mode.currentData(),
             "--sync-subtitles", "mirror" if self.mirror.isChecked() else "none",
         ]
+        with redirect_stderr(StringIO()) as errors:
+            try:
+                args = build_parser().parse_args(arguments)
+            except SystemExit as exc:
+                # Une option invalide ne doit ni quitter l'application ni
+                # laisser son verrou d'exécution actif.
+                raise ValueError(errors.getvalue().strip().splitlines()[-1]) from exc
+        args.cancel_event = self.cancel_event
+        return args
+
+    def scan(self, auto_run: bool = False, reuse_matrix: bool = False):
+        if not self._begin_operation(translate_text("Analyse des sources")):
+            return
         self.recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
         self.recipe.cadence_audio_method = self.cadence_method_combo.currentData() or "auto"
         self.recipe.sync_mode = self.mode.currentData() or "physical"
@@ -1285,13 +1298,7 @@ class HybridStudio(QWidget):
         try:
             if not self.output.text().strip():
                 raise ValueError(translate_text("Choisir un dossier de sortie."))
-            with redirect_stderr(StringIO()) as errors:
-                try:
-                    self.args = build_parser().parse_args(arguments)
-                except SystemExit as exc:
-                    # argparse ne doit ni quitter l'application ni laisser
-                    # le verrou d'exécution actif après une option invalide.
-                    raise ValueError(errors.getvalue().strip().splitlines()[-1]) from exc
+            self.args = self._parse_preparation_args()
             self.cancel_event.clear()
             self.args.cancel_event = self.cancel_event
 
@@ -1306,6 +1313,7 @@ class HybridStudio(QWidget):
             return
 
         self.jobs.clear()
+        self._completed_jobs.clear()
         self._matrix_signature = self._source_signature()
         self._prepared_signature = self._settings_signature()
         self._run_after_prepare = auto_run
@@ -1467,8 +1475,22 @@ class HybridStudio(QWidget):
             self.on_failed(translate_text("Impossible de calibrer : Master ou Donneur manquant pour cet élément."))
             return
 
+        if self._matrix_signature is not None and self._matrix_signature != self._source_signature():
+            # Le tableau décrit encore les anciennes sources : régénérer ses
+            # plans avant de mémoriser une nouvelle signature de préparation.
+            self.scan()
+            return
+
         if not self._begin_operation(translate_text("Analyse de {name}", name=ep.display_name)):
             return
+        signature = self._settings_signature()
+        if self._prepared_signature != signature:
+            self.jobs.clear()
+            self._completed_jobs.clear()
+        self.jobs.pop(row, None)
+        self._completed_jobs.pop(row, None)
+        self._prepared_signature = signature
+        self._matrix_signature = self._source_signature()
         self.set_busy(True)
         item = self.table.item(row, 3)
         if item is not None:
@@ -1489,14 +1511,11 @@ class HybridStudio(QWidget):
         # Widgets lus dans le thread GUI : le worker ne doit pas y toucher.
         output_dir = self.output.text().strip() or tempfile.gettempdir()
         detect_cuts = self.detect_cuts.isChecked()
-        args: Any
-        if hasattr(self, "args"):
-            args = self.args
-        else:
-            from cli.options import CommonOptions
-            args = CommonOptions(sync_mode=recipe.sync_mode, sync_subtitles=recipe.sync_subtitles)
-
-        args = SimpleNamespace(**{**vars(args), "cancel_event": self.cancel_event})
+        try:
+            args = self._parse_preparation_args(output_dir)
+        except Exception as exc:
+            self._on_single_calibration_failed(row, str(exc))
+            return
 
         def task():
             try:
@@ -1508,7 +1527,7 @@ class HybridStudio(QWidget):
                     args,
                     _GuiLogger(self.log_message, ep.display_name),
                     detect_cuts=detect_cuts,
-                    drift_threshold_ms=25,
+                    drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
                 )
                 return config, calibration
             except Exception as exc:
@@ -1553,8 +1572,15 @@ class HybridStudio(QWidget):
                 item.setForeground(QColor(_C.OK))
         self._update_run_button()
         self.status.setText(translate_text("Préparation terminée pour : {name}", name=self.matrix_episodes[row].display_name))
-        self.table.selectRow(row)
         self._finish_operation("finished", translate_text("Analyse terminée"))
+        previously_blocked = self.table.blockSignals(True)
+        try:
+            self.table.selectRow(row)
+        finally:
+            self.table.blockSignals(previously_blocked)
+        # Une ligne déjà sélectionnée n'émet pas itemSelectionChanged. Son
+        # offset doit néanmoins suivre la nouvelle calibration, sans l'écraser.
+        self.select_waveform()
 
     def _on_single_calibration_failed(self, row: int, err: str):
         item = self.table.item(row, 3)
@@ -1880,11 +1906,39 @@ class HybridStudio(QWidget):
         if not self.jobs:
             self._finish_operation("failed", translate_text("Aucun plan d’hybridation prêt."))
             return
-        self.execution_rows = sorted(self.jobs.keys())
+        self.execution_rows = [row for row in sorted(self.jobs) if not self._job_already_completed(row)]
+        try:
+            from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+            assert_unique_batch_outputs([
+                PlannedBatchJob(row, str(config.sources[0].path), str(config.output), remux_config=config)
+                for row, (config, _calibration) in sorted(self.jobs.items())
+            ])
+            for row in self.execution_rows:
+                output = self.jobs[row][0].output
+                if output.exists():
+                    raise ValueError(translate_text("La sortie existe déjà : {path}", path=str(output)))
+        except Exception as exc:
+            self.on_failed(str(exc))
+            return
         self.exec_index = 0
         self.stopped = False
         self.set_busy(True)
         self.run_next()
+
+    @staticmethod
+    def _output_identity(path: Path) -> tuple[int, int, int, int] | None:
+        try:
+            if not path.is_file():
+                return None
+            stat = path.stat()
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+        except OSError:
+            return None
+
+    def _job_already_completed(self, row: int) -> bool:
+        previous = self._completed_jobs.get(row)
+        return bool(previous is not None and previous[0] == self.jobs[row]
+                    and previous[1] == self._output_identity(self.jobs[row][0].output))
 
     def run_next(self):
         from core.workflows.remux import RemuxWorkflow
@@ -1932,6 +1986,9 @@ class HybridStudio(QWidget):
     def on_finished(self, message: str):
         if self.exec_index < len(self.execution_rows):
             row = self.execution_rows[self.exec_index]
+            identity = self._output_identity(self.jobs[row][0].output)
+            if identity is not None:
+                self._completed_jobs[row] = (copy.deepcopy(self.jobs[row]), identity)
             item = self.table.item(row, 3)
             if item is not None:
                 item.setText(translate_text("Terminé"))

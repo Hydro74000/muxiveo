@@ -2634,3 +2634,46 @@ def test_interpolation_fractional_factor_and_legacy_target(qt_app, monkeypatch):
         assert panel._current_interpolation_settings().target_fps == "60000/1001"
     finally:
         panel.close()
+
+
+@pytest.mark.parametrize("target", ["60", "59.94", "60000/1001", "2", "invalide", "0/0"])
+def test_interpolation_target_restoration_keeps_fps_distinct_from_multiplier(qt_app, monkeypatch, target):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._codec_combo.setCurrentIndex(panel._codec_combo.findData("libx265"))
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, target_fps=target))
+        restored = panel._current_interpolation_settings()
+        assert restored.target_fps == target
+        assert restored.factor == 2
+        assert panel._interp_factor_combo.currentText().endswith(" i/s")
+        # Le badge doit aussi accepter un profil invalide, que la validation
+        # du workflow refusera ensuite sans interrompre le chargement de l'UI.
+        assert panel._video_filter_badges_from_state({"interpolation": restored})
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2))
+        assert panel._current_interpolation_settings().target_fps == ""
+        assert panel._interp_factor_combo.currentText() == "x2"
+    finally:
+        panel.close()
+
+
+def test_legacy_integer_target_fps_survives_profile_loading(qt_app, tmp_path, monkeypatch):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        panel._profiles = ProfileManager(tmp_path / "profiles")
+        panel._profiles.save(EncodePreset(name="60 fps", interpolation=FrameInterpolationSettings(enabled=True, target_fps="60")))
+        panel._refresh_profiles(select="60 fps")
+        panel._load_profile()
+        restored = panel._current_interpolation_settings()
+        assert restored.enabled
+        assert restored.target_fps == "60"
+        assert restored.factor == 2
+    finally:
+        panel.close()

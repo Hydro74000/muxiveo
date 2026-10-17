@@ -89,7 +89,9 @@ def test_rewritten_ac3_timestamps_match_ffmpeg(source, tmp_path, offset):
         offset_ms=offset, tmp_dir=tmp_path, input_idx=1,
     )
     reference = tmp_path / "reference.mkv"
-    run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-i", str(rewritten.path),
+    from core.workflows.common.audio_timestamps import input_timestamp_offset_args
+    run(["ffmpeg", "-v", "error", "-y", *input_timestamp_offset_args(rewritten.source_timestamp_offset_s),
+         "-i", str(source), *rewritten.ffmpeg_input_args(),
          "-map", "0:v", "-map", "1:a", "-c", "copy", str(reference)])
 
     def packets(path):

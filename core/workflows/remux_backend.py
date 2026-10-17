@@ -295,7 +295,8 @@ def run_native_remux(
             if config.sync_mode == "physical":
                 from core.workflows.physical_sync import prepare_physical
                 prepared_config = prepare_physical(
-                    runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log
+                    runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log,
+                    ffprobe=ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
                 )
             execution_plan = (plan if prepared_config is runtime_config else None) or plan_remux(
                 prepared_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,

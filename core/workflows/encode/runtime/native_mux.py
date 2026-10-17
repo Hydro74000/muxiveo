@@ -607,7 +607,7 @@ def build_encode_assembly_plan(
                 artifact_track_index=0,
                 source_identity=_identity(source),
                 time_shift_ms=(
-                    _rewritten_audio_time_shift(audio_artifact, ffprobe_bin) if audio_index in sync_rewrites.audio
+                    _rewritten_audio_time_shift(audio_artifact) if audio_index in sync_rewrites.audio
                     else _offset_ms(config, "audio", source, audio.stream_index)
                 ),
                 provenance=f"audio:{audio.stream_index}:{audio.codec}",
@@ -729,28 +729,20 @@ def build_encode_assembly_plan(
     )
 
 
-def _rewritten_audio_time_shift(artifact: Path, ffprobe_bin: str) -> int:
-    """Recale le mono-flux sur son origine démuxée, comme le mux FFmpeg.
+def _rewritten_audio_time_shift(artifact: Path) -> int:
+    """Le PCM réécrit part de zéro ; CodecDelay appartient au TrackEntry.
 
-    Le premier bloc ne suffit pas : selon la version de FFmpeg, CodecDelay
-    est soustrait des PTS AC3 au démuxage. La sonde configurée fournit la
-    même origine que le mux de référence, sans modifier le TrackEntry.
+    Le start_time de ffprobe 6 inclut le pré-roll et ne décrit pas l'origine
+    des blocs. Le soustraire une seconde fois ajouterait un retard encodeur.
     """
+    blocks = iter(MatroskaReader(artifact).blocks())
     try:
-        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [ffprobe_bin, "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=start_time", "-of", "json",
-             *ffprobe_input_args(artifact)],
-            capture_output=True, check=True, timeout=20,
-            **subprocess_text_kwargs(),
-        )
-        start_time = json.loads(result.stdout)["streams"][0]["start_time"]
-        return -round(float(start_time) * 1000)
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError,
-            TypeError, OverflowError) as exc:
-        raise EncodeError(f"Origine audio réécrite illisible : {artifact.name}") from exc
+        first = next(blocks, None)
+        return -first.timestamp_ms if first is not None else 0
+    finally:
+        close = getattr(blocks, "close", None)
+        if close is not None:
+            close()
 
 
 def materialize_audio_artifacts(

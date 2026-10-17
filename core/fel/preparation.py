@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -17,6 +18,16 @@ from core.workflows.encode.runtime.dovi_static_hdr import estimate_static_hdr_fr
 
 
 CHROMA_LOCATIONS = frozenset({"left", "center", "topleft", "top", "bottomleft", "bottom"})
+
+
+def supports_chroma_setparams(ffmpeg: str, capture: Callable[[list[str]], str]) -> bool:
+    """Sonde l'option réelle, y compris les builds anciens avec rétroportage.
+
+    Appelé seulement pendant la préparation du worker : les constructeurs de
+    commandes et les aperçus synchrones de l'interface n'exécutent aucune sonde.
+    """
+    help_text = str(capture([ffmpeg, "-hide_banner", "-h", "filter=setparams"]) or "")
+    return re.search(r"(?m)^\s+chroma_location\s+<", help_text) is not None
 
 
 def source_chroma_location(ffprobe: str, source: Path, stream: int, capture: Callable[[list[str]], str]) -> str:
@@ -68,7 +79,8 @@ def prepare_fel(
         context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan,
                                          precision=video.fel_precision, render_workers=workers),
                                rpu, video.max_cll, video.static_hdr_light_level_source,
-                               source_chroma_location(ffprobe, source, video.stream_index, capture))
+                               source_chroma_location(ffprobe, source, video.stream_index, capture),
+                               supports_chroma_setparams(ffmpeg, capture))
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")
         if video.inject_hdr_meta and not video.tonemap_to_sdr:
             provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source

@@ -135,6 +135,19 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         stages = [*command.upstream, list(command)] if isinstance(command, PipelineCommand) else [command]
         context.source.device_plan.commands = tuple(tuple(s) for s in stages)
     upstream = [list(s) for s in command.upstream] if isinstance(command, PipelineCommand) else []
+    output = list(command)
+    if upstream and video.interpolates() and "-i" in output:
+        # RIFE transporte du y4m : la position chroma doit aussi parvenir au
+        # dernier encodeur, après le pipe qui a perdu le marquage des images.
+        pos = output.index("-i") + 2
+        output[pos:pos] = ["-chroma_sample_location", context.chroma_location]
+        if context.chroma_setparams:
+            mark = f"setparams=chroma_location={context.chroma_location}"
+            if "-vf" in output:
+                index_vf = output.index("-vf") + 1
+                output[index_vf] = mark + "," + output[index_vf]
+            else:
+                output[pos:pos] = ["-vf", mark]
     first = upstream[0] if upstream else list(command)
     index = first.index("-i")
     # Le décodage appartient au moteur natif, pas à l'accélérateur de FFmpeg.
@@ -163,8 +176,9 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
              if "yuv420p10le" in listed_capability(source.engine, "output_formats") else None)
     if final is not None:
         # Images déjà finales (Y'CbCr 4:2:0 tramé par le plugin) : ni conversion ni second tramage.
-        tags = ("setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:"
-                f"chroma_location={context.chroma_location}")
+        tags = "setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"
+        if context.chroma_setparams:
+            tags += f":chroma_location={context.chroma_location}"
         moved = plugin_crop(chain) if source.engine.capabilities.get("crop") == 1 else None
         if moved is not None:
             # Recadrage dans le plugin : images plus petites et étage FFmpeg réduit au marquage.
@@ -178,7 +192,7 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
             first[position:position] = ["-vf", tags]
         source = replace(source, pixel_format=final, chroma_location=context.chroma_location, dither=FINAL_DITHER)
         source = replace(source, threads=max(1, threads)) if threads else source
-        result = PipelineCommand(command if upstream else first, upstream, producer=source)
+        result = PipelineCommand(output if upstream else first, upstream, producer=source)
         from core.fel.direct import direct_command
         return direct_command(result, original, video, threads)
     if "-vf" in first:
@@ -193,15 +207,20 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
     # Sous-échantillonnage à la position chroma du BL : celle que signalent les encodeurs.
     # zscale ne marque pas les images : sans setparams, l'encodeur signalerait « left ».
     reduce = (f"zscale=dither=error_diffusion:chromal={context.chroma_location},"
-              f"format=yuv420p{'10le' if depth == 10 else ''},"
-              f"setparams=chroma_location={context.chroma_location}")
+              f"format=yuv420p{'10le' if depth == 10 else ''}")
+    if context.chroma_setparams:
+        reduce += f",setparams=chroma_location={context.chroma_location}"
     # Avant l'upload matériel ; sinon à la fin du traitement logiciel/RIFE.
     chain = first[pos]
     hardware = next((marker for marker in (",format=p010,hwupload", ",format=nv12,hwupload") if marker in chain), "")
     # Tone mapping FEL (build_vf) : images déjà en 4:2:0 à la position du BL, et marquées.
-    if f"setparams=chroma_location={context.chroma_location}" not in chain:
+    # La réduction SDR ne dépend pas de la disponibilité du marquage : FFmpeg 6
+    # doit également éviter une seconde conversion, depuis sa position implicite.
+    tonemapped = (video.tonemap_to_sdr and "format=yuv420p" in chain.split(",")
+                  and any(item.startswith("tonemap=") for item in chain.split(",")))
+    if not tonemapped:
         first[pos] = chain.replace(hardware, "," + reduce + hardware) if hardware else chain + "," + reduce
     source = replace(source, threads=max(1, threads)) if threads else source
-    result = PipelineCommand(command if upstream else first, upstream, producer=source)
+    result = PipelineCommand(output if upstream else first, upstream, producer=source)
     from core.fel.direct import direct_command
     return direct_command(result, original, video, threads)

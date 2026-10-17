@@ -24,6 +24,7 @@ on:
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
+      - "tests/test_unified_operations.py"
       - "tests/test_package.py"
       - "tests/test_launcher.py"
       - "tests/conftest.py"
@@ -51,6 +52,7 @@ on:
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
+      - "tests/test_unified_operations.py"
       - "tests/test_package.py"
       - "tests/test_launcher.py"
       - "tests/conftest.py"
@@ -144,6 +146,7 @@ jobs:
             tests/test_i18n.py \
             tests/test_encode_audio_bitrate_ui.py \
             tests/test_encode_panel_widgets.py \
+            tests/test_unified_operations.py \
             tests/test_package.py \
             tests/test_launcher.py \
             -v

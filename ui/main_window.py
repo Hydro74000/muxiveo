@@ -35,6 +35,7 @@ Signal exposé :
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
@@ -1470,6 +1471,7 @@ class MainWindow(QMainWindow):
         self._running   = False
         self._update_info: UpdateInfo | None = None
         self._last_operation_result: tuple[str, str, str] | None = None
+        self._last_operation_signature: object = None
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux", "encode", "extract", "audio_sync" ou "merge_dovi"
@@ -2113,8 +2115,31 @@ class MainWindow(QMainWindow):
     def _request_operation_refresh(self, *_args) -> None:
         if hasattr(self, "_shutdown"):
             return
-        self._last_operation_result = None
-        self._operation_refresh_timer.start()
+        if not self._operation_refresh_timer.isActive():
+            self._operation_refresh_timer.start()
+
+    def _operation_signature(self, owner: str) -> object:
+        """Configuration effective, indépendante des sondes et de l'état occupé."""
+        if owner == "hybrid":
+            panel = self._hybrid_panel
+            return (
+                panel._settings_signature(),
+                tuple((episode.master_file, tuple((source.path if source else None, path)
+                       for source, path in episode.donor_files)) for episode in panel.matrix_episodes),
+                tuple(sorted(panel.jobs.items())),
+            )
+        if owner == "merge_dovi":
+            dovi_panel = self._dovi_panel
+            section = dovi_panel._config_section
+            return (dovi_panel._file_section.film1, dovi_panel._file_section.film2, section.dovi_profile,
+                    section.metadata_adjustment, section.work_dir, section.output_dir)
+        return (self._encode_panel.collect_config(), self._remux_panel.collect_config())
+
+    def _remember_operation_result(self, owner: str, status: str, message: str) -> None:
+        self._last_operation_result = (owner, status, message)
+        # Les pistes et calibrations sont mutables : une copie permet de
+        # distinguer une édition réelle d'une simple notification de readiness.
+        self._last_operation_signature = copy.deepcopy(self._operation_signature(owner))
 
     def _on_ready_changed(self, _ready: bool) -> None:
         self._request_operation_refresh()
@@ -2154,6 +2179,9 @@ class MainWindow(QMainWindow):
         current = next((op for op in operations if op.key == active and op.ready), None)
         project = Path(current.summary.split(" ← ", 1)[0]).name if current else ""
         result = self._last_operation_result
+        if result is not None and not self._running:
+            if self._operation_signature(result[0]) != self._last_operation_signature:
+                self._last_operation_result = result = None
         if not self._running and result is not None:
             key, status, message = result
             if key == active:
@@ -2931,7 +2959,7 @@ class MainWindow(QMainWindow):
             if state == "failed":
                 self._expand_log_panel()
             self._op_mode = ""
-            self._last_operation_result = (owner, state, label)
+            self._remember_operation_result(owner, state, label)
         if owner == "merge_dovi":
             self._dovi_step_label = label
         self._refresh_operation_bar()
@@ -3004,6 +3032,7 @@ class MainWindow(QMainWindow):
         self._status_lbl.setText(translate_text("Annulé."))
         self.log_requested.emit("WARN", "[MEDIA] Opération annulée.")
         self._cancel_btn.setEnabled(True)
+        self._last_operation_result = None
         self._request_operation_refresh()
 
     def _on_op_finished(self, success: bool, error: str = "") -> None:
@@ -3017,7 +3046,7 @@ class MainWindow(QMainWindow):
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setEnabled(True)
-        self._last_operation_result = ("media", "finished" if success else "failed", translate_text("Terminé.") if success else error)
+        self._remember_operation_result("media", "finished" if success else "failed", translate_text("Terminé.") if success else error)
         self._prog_bar.setRange(0, 100)
         if success:
             self._prog_bar.setValue(100)

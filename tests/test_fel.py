@@ -1,4 +1,5 @@
 """Contrat FEL, décision indépendante du RPU, transport et repli par piste."""
+from dataclasses import replace
 from types import SimpleNamespace
 import threading
 from unittest.mock import Mock, patch
@@ -41,7 +42,7 @@ def test_policy_without_copy_rpu():
 
 def context(tmp_path):
     source = FelSource(Mock(), tmp_path / "original.mkv", 3, 2, "24000/1001")
-    return FelExecution(source, tmp_path / "rpu.bin", "1000,400", "source")
+    return FelExecution(source, tmp_path / "rpu.bin", "1000,400", "source", chroma_setparams=True)
 
 
 def test_pipe_preserves_source_filters_and_identity(tmp_path):
@@ -314,7 +315,7 @@ def test_whole_track_retry_not_other_errors(tmp_path):
 def seek_context(tmp_path, capabilities, chroma="left"):
     engine = SimpleNamespace(capabilities=capabilities)
     source = FelSource(engine, tmp_path / "original.mkv", 3, 2, "24000/1001")
-    return FelExecution(source, tmp_path / "rpu.bin", "", "", chroma)
+    return FelExecution(source, tmp_path / "rpu.bin", "", "", chroma, chroma_setparams=True)
 
 
 def test_input_seek_is_performed_by_the_plugin(tmp_path):
@@ -387,8 +388,69 @@ def test_preparation_reads_bl_chroma_location(tmp_path, monkeypatch):
                          ffmpeg="ffmpeg", ffprobe="ffprobe-x", dovi="dovi_tool", threads=2, run=Mock(),
                          capture=capture, cancelled=lambda: False, log=Mock(), engine_loader=lambda: engine)
     assert result.fel_context.chroma_location == "topleft"
-    probe = capture.call_args.args[0]
+    probe = next(call.args[0] for call in capture.call_args_list if call.args[0][0] == "ffprobe-x")
     assert probe[0] == "ffprobe-x" and probe[probe.index("-select_streams")+1] == "4"
+
+
+@pytest.mark.parametrize("help_text,expected", [
+    ("setparams AVOptions:\n   chroma_location <int> ..FV....... select chroma sample location", True),
+    ("setparams AVOptions:\n   colorspace <int> ..FV....... select colorspace", False),
+    ("Unknown filter 'setparams'", False),
+    ("chroma_location is mentioned outside the options", False),
+])
+def test_chroma_marking_uses_the_available_option_not_a_version(help_text, expected):
+    from core.fel.preparation import supports_chroma_setparams
+    capture = Mock(return_value=help_text)
+    assert supports_chroma_setparams("ffmpeg-custom", capture) is expected
+    capture.assert_called_once_with(["ffmpeg-custom", "-hide_banner", "-h", "filter=setparams"])
+
+
+@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("location", ["left", "topleft"])
+def test_older_ffmpeg_keeps_chroma_conversion_and_hardware_upload(tmp_path, final, location):
+    ctx = replace(seek_context(tmp_path, FINAL_CAPABILITIES if final else {}, location), chroma_setparams=False)
+    video = VideoEncodeSettings(codec="hevc_vaapi", bit_depth="10", fel_context=ctx)
+    command = ["ffmpeg", "-i", "original.mkv", "-vf", "format=p010,hwupload", "out.mkv"]
+    result = with_fel_input(command, video)
+    vf = result[result.index("-vf")+1]
+    assert "chroma_location=" not in vf
+    assert result[result.index("-chroma_sample_location")+1] == location
+    assert vf.endswith("format=p010,hwupload")
+    if final:
+        assert result.producer.pixel_format == "yuv420p10le"
+    else:
+        assert vf.index(f"chromal={location}") < vf.index("hwupload")
+
+
+@pytest.mark.parametrize("supported", [False, True])
+@pytest.mark.parametrize("location", ["left", "topleft"])
+def test_sdr_is_reduced_once_with_or_without_chroma_marking(tmp_path, supported, location):
+    from core.workflows.encode.domain.codecs import build_vf
+    ctx = replace(seek_context(tmp_path, {}, location), chroma_setparams=supported)
+    video = VideoEncodeSettings(fel_context=ctx, tonemap_to_sdr=True, bit_depth="8",
+                                source_color_transfer="smpte2084")
+    result = with_fel_input(["ffmpeg", "-i", "original.mkv", "-vf", build_vf(video), "out.mkv"], video)
+    vf = result[result.index("-vf")+1]
+    assert vf.count("chromal=") == 1
+    assert f"chromal={location},format=yuv420p" in vf
+    assert (f"setparams=chroma_location={location}" in vf) is supported
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_interpolated_frames_mark_the_final_encoder_without_breaking_old_ffmpeg(tmp_path, supported):
+    from core.pipeline_command import PipelineCommand
+    from core.workflows.encode.models import FrameInterpolationSettings
+    ctx = replace(seek_context(tmp_path, {}, "topleft"), chroma_setparams=supported)
+    video = VideoEncodeSettings(fel_context=ctx, interpolation=FrameInterpolationSettings(enabled=True))
+    stages = [["ffmpeg", "-i", "original.mkv", "-f", "yuv4mpegpipe", "-"], ["muxiveo-rife", "--factor", "2"]]
+    command = PipelineCommand(["ffmpeg", "-f", "yuv4mpegpipe", "-i", "pipe:0",
+                               "-vf", "format=p010,hwupload", "out.mkv"], stages)
+    result = with_fel_input(command, video)
+    assert result[result.index("-chroma_sample_location")+1] == "topleft"
+    vf = result[result.index("-vf")+1]
+    assert ("setparams=chroma_location=topleft" in vf) is supported
+    assert vf.endswith("format=p010,hwupload")
+    assert "-chroma_sample_location" not in command  # Les aperçus d'origine restent réutilisables.
 
 
 def test_producer_applies_start_or_releases_context(tmp_path):

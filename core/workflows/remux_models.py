@@ -291,6 +291,8 @@ class RemuxConfig:
     sync_mode: str = "container"
     sync_subtitles: str = "mirror"
     sync_calibrations: dict[str, dict] = field(default_factory=dict)
+    #: Compensation des seules entrées matérialisées (état runtime, absent du contrat JSON).
+    input_timestamp_offsets: dict[Path, float] = field(default_factory=dict, repr=False)
     crossfade_ms: int = 80
     clean_nfo: bool = True
 

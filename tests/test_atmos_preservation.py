@@ -39,7 +39,8 @@ def test_sync_rewrite_never_reencodes_atmos_detected_from_profile(
 ):
     service = SyncRewriteService(ffmpeg_bin="ffmpeg", advanced_audio_enabled=advanced)
     # Aucun indice dans le titre : la décision doit utiliser le profil sondé.
-    monkeypatch.setattr(service, "_probe_stream", lambda *_args: {
+    monkeypatch.setattr(service, "_output_timestamp_offset", lambda *_args: 0.0)
+    monkeypatch.setattr(service, "_probe_stream", lambda *_args, **_kwargs: {
         "codec_name": codec, "profile": profile, "channels": 8, "tags": {},
     })
     commands = []
@@ -71,7 +72,7 @@ def test_sync_rewrite_never_reencodes_atmos_detected_from_profile(
 ])
 def test_segment_calibration_cannot_reencode_atmos(tmp_path, monkeypatch, codec, profile):
     service = SyncRewriteService(ffmpeg_bin="ffmpeg", advanced_audio_enabled=True)
-    monkeypatch.setattr(service, "_probe_stream", lambda *_args: {
+    monkeypatch.setattr(service, "_probe_stream", lambda *_args, **_kwargs: {
         "codec_name": codec, "profile": profile, "channels": 8,
     })
 

@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 from fractions import Fraction
+from math import ceil
 from pathlib import Path
 
 import pytest
@@ -72,9 +73,11 @@ def _frame_count(path: Path) -> int:
 
 
 @pytest.mark.parametrize("mux_backend", ["ffmpeg", "native"])
-def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: str) -> None:
+@pytest.mark.parametrize("factor", [2, 2.5])
+def test_encode_interpolation_multiplies_frame_rate(tmp_path: Path, mux_backend: str, factor: float) -> None:
     src = tmp_path / "src.mkv"
-    make_av_container(src, duration=1.0)
+    duration = 0.44 if factor == 2.5 else 1.0  # 11 images : le facteur fractionnaire exige ceil(27,5).
+    make_av_container(src, duration=duration)
     src_frames = _frame_count(src)
 
     out = tmp_path / f"out-{mux_backend}.mkv"
@@ -86,12 +89,12 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
             quality_mode=QualityMode.CRF,
             crf=30,
             preset="ultrafast",
-            interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast"),
+            interpolation=FrameInterpolationSettings(enabled=True, factor=factor, quality="fast"),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
         copy_subtitles=False,
         keep_chapters=False,
-        duration_s=1.0,
+        duration_s=duration,
         mux_backend=mux_backend,
     )
     wf = EncodeWorkflow(
@@ -108,11 +111,13 @@ def test_encode_interpolation_doubles_frame_rate(tmp_path: Path, mux_backend: st
     probe = ffprobe_json(out)
     video = streams_of_type(probe, "video")
     assert len(video) == 1
-    assert video[0].get("avg_frame_rate") in {"50/1", "50"}
-    assert _frame_count(out) == 2 * src_frames
+    assert Fraction(video[0]["avg_frame_rate"]) == 25 * Fraction(str(factor))
+    assert _frame_count(out) == ceil(factor * src_frames)
     assert len(streams_of_type(probe, "audio")) == 1
-    assert abs(float(probe["format"]["duration"]) - 1.0) < 0.15
+    assert abs(float(probe["format"]["duration"]) - duration) < 0.15
     assert any("muxiveo-rife" in str(line) for line in state["progress"])
+    subprocess.run(["ffmpeg", "-v", "error", "-xerror", "-i", str(out), "-map", "0:v:0", "-f", "null", "-"],
+                   check=True, capture_output=True, timeout=30)
 
 
 @pytest.mark.skipif(

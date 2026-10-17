@@ -79,7 +79,10 @@ def test_effective_calibration_ignores_linear():
 
 def _service(monkeypatch, probe=_EAC3_PROBE):
     service = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
-    monkeypatch.setattr(service, "_probe_stream", lambda _source, _stream_index: dict(probe))
+    monkeypatch.setattr(service, "_probe_stream", lambda _source, _stream_index, **_kwargs: dict(probe))
+    # Ce service écrit des octets factices : sa sonde de sortie est simulée
+    # comme sa sonde d'entrée. Les horodatages réels sont testés en intégration.
+    monkeypatch.setattr(service, "_output_timestamp_offset", lambda *_args: 0.0)
     seen: dict[str, object] = {}
 
     def fake_run(cmd, destination, _error_prefix, **_kwargs):
@@ -166,7 +169,7 @@ def test_bridge_carries_calibration_to_encode(tmp_path):
     assert not any("multi-segments" in r for r in encode_native_mux_blockers(merged, pipeline=PIPELINE_FFMPEG_DIRECT))
 
 
-def test_physical_applies_track_calibration_once(tmp_path):
+def test_physical_applies_track_calibration_once(tmp_path, monkeypatch):
     from core.workflows.physical_sync import prepare_physical, preparation_commands
     from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
@@ -177,6 +180,7 @@ def test_physical_applies_track_calibration_once(tmp_path):
         [(0, 0, track.entry_id)], sync_mode="physical",
     )
     commands = []
+    monkeypatch.setattr("core.workflows.physical_sync.probe_timestamp_payload", lambda *_a, **_kw: {})
     prepared = prepare_physical(config, tmp_path, "ffmpeg", lambda cmd, _label: commands.append(cmd))
     assert len(commands) == 1
     assert "concat=n=2" in commands[0][commands[0].index("-filter_complex") + 1]

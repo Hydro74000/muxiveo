@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -18,6 +19,7 @@ from core.workflows.merge_dovi import DoviProfile, HdrState, WorkflowStep
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from ui.main_window import DashboardPage, MainWindow
 from ui.operation_bar import OperationBar, OperationState
+from ui.panels.encode_panel.panel import EncodePanel
 from ui.widgets.log_panel import LogPanel
 
 
@@ -26,6 +28,7 @@ def window(qt_app, monkeypatch):
     monkeypatch.setattr(DashboardPage, "_start_hw_detection", lambda self: None)
     monkeypatch.setattr(DashboardPage, "start_accel_detection", lambda self: None)
     monkeypatch.setattr(MainWindow, "_wire_extensions", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
     config = AppConfig()
     config.check_updates = False
     config.language = "fra"
@@ -56,6 +59,215 @@ def ready_hybrid(win, tmp_path):
     win._stack.setCurrentIndex(4)
     win._refresh_operation_bar()
     return panel
+
+
+def _wait_until(qt_app, predicate, timeout=5):
+    """Attend un état observable, sans supposer la ponctualité d'un QTimer."""
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        qt_app.processEvents()
+        QTest.qWait(10)
+    assert predicate()
+
+
+@pytest.mark.parametrize("terminal", ["failed", "cancelled"])
+@pytest.mark.parametrize("change", ["none", "foreign", "replaced", "removed", "edited"])
+def test_hybrid_retry_preserves_successful_outputs_and_refuses_collisions(
+    window, tmp_path, monkeypatch, qt_app, terminal, change,
+):
+    panel = ready_hybrid(window, tmp_path)
+    launched, tasks = [], []
+
+    class Workflow(QObject):
+        log_message = Signal(str, str)
+
+        def __init__(self, **_kwargs):
+            super().__init__()
+
+        def run(self, config):
+            launched.append(config.output)
+            task = TaskSignals()
+            tasks.append(task)
+            return task
+
+    monkeypatch.setattr("core.workflows.remux.RemuxWorkflow", Workflow)
+    for row in range(2):
+        source = tmp_path / f"source{row}.mkv"
+        panel.jobs[row] = (RemuxConfig(
+            [SourceInput(source, 0, [TrackEntry(0, "audio", "EAC3", "", "fra", "")])],
+            tmp_path / f"out{row}.mkv", [(0, 0)],
+        ), None)
+        panel.matrix_episodes.append(MatrixEpisode(
+            season=1, episode=row + 1, master_file=source, donor_files=[(None, source)],
+        ))
+    panel._prepared_signature = panel._settings_signature()
+    window._run_btn.click()
+    assert len(tasks) == 1
+    first = panel.jobs[0][0].output
+    first.write_bytes(b"completed")
+    tasks[0].finished.emit("Terminé")
+    _wait_until(qt_app, lambda: len(tasks) == 2)
+    if terminal == "failed":
+        tasks[1].failed.emit("Erreur temporaire", RuntimeError("Erreur temporaire"))
+    else:
+        panel.cancel()
+        tasks[1].cancelled.emit()
+    _wait_until(qt_app, lambda: not window._running)
+    if change == "foreign":
+        panel.jobs[1][0].output.write_bytes(b"foreign")
+    elif change == "replaced":
+        first.write_bytes(b"replacement from another operation")
+    elif change == "removed":
+        first.unlink()
+    elif change == "edited":
+        panel.jobs[0][0].file_title = "Projet modifié"
+    panel.run()
+    if change in {"foreign", "replaced", "edited"}:
+        _wait_until(qt_app, lambda: not window._running)
+        assert len(tasks) == 2
+        assert "La sortie existe déjà" in panel.status.text()
+    else:
+        assert len(tasks) == 3
+        expected = panel.jobs[1][0].output if change == "none" else first
+        assert launched[-1] == expected
+        if change == "none":
+            expected.write_bytes(b"completed second")
+            tasks[-1].finished.emit("Terminé")
+            _wait_until(qt_app, lambda: not window._running)
+            panel.run()
+            assert not window._running
+            assert len(tasks) == 3  # Tous les résultats confirmés sont conservés.
+        else:
+            tasks[-1].cancelled.emit()
+            _wait_until(qt_app, lambda: not window._running)
+
+
+@pytest.mark.parametrize("collision", ["existing_second", "duplicate"])
+def test_hybrid_checks_all_destinations_before_starting_a_job(window, tmp_path, monkeypatch, collision):
+    panel = ready_hybrid(window, tmp_path)
+    for row in range(2):
+        source = tmp_path / f"source-{row}.mkv"
+        output = tmp_path / f"output-{row}.mkv"
+        panel.matrix_episodes.append(MatrixEpisode(
+            item_key=str(row), master_file=source, donor_files=[(None, source)],
+        ))
+        panel.jobs[row] = (RemuxConfig([SourceInput(source, 0, [])], output, []), None)
+    if collision == "duplicate":
+        panel.jobs[1][0].output = panel.jobs[0][0].output
+    else:
+        panel.jobs[1][0].output.write_bytes(b"foreign output")
+    panel._prepared_signature = panel._settings_signature()
+    monkeypatch.setattr("core.workflows.remux.RemuxWorkflow", lambda **_kwargs: pytest.fail("Job lancé avant préflight"))
+    panel.run()
+    assert not window._running and not panel.busy
+    assert not panel.jobs[0][0].output.exists()
+    assert ("Sortie générée en double" if collision == "duplicate" else "La sortie existe déjà") in panel.status.text()
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_single_calibration_refreshes_offset_and_waveform(window, tmp_path, monkeypatch, qt_app, selected):
+    import numpy as np
+    from core.workflows.sync_calibration import SyncCalibration
+
+    panel = ready_hybrid(window, tmp_path)
+    reference, donor = tmp_path / "reference.mkv", tmp_path / "donneur.mkv"
+    panel.table.setRowCount(1)
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=1, master_file=reference, donor_files=[(None, donor)])]
+    if selected:
+        panel.table.selectRow(0)
+    config = RemuxConfig([
+        SourceInput(reference, 0, [TrackEntry(0, "audio", "EAC3", "", "eng", "")]),
+        SourceInput(donor, 1, [TrackEntry(0, "audio", "EAC3", "", "fra", "")]),
+    ], tmp_path / "out.mkv", [(0, 0), (1, 0)], sync_mode="physical")
+    calibration = SyncCalibration.linear(125)
+    started, release = threading.Event(), threading.Event()
+    panel.args = SimpleNamespace(tag="ancien")
+    panel.controls["tag"].setText("nouveau")
+
+    def prepare(*_args, **_kwargs):
+        assert _args[4].tag == "nouveau"  # Les options d'un ancien scan ne doivent pas survivre.
+        started.set()
+        assert release.wait(5)
+        return config, calibration
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
+    monkeypatch.setattr("ui.panels.hybrid_studio.AudioSyncScanner.samples", lambda *_a, **_k: np.ones(1000))
+    try:
+        panel.calibrate_single_row(0)
+        _wait_until(qt_app, started.is_set)
+        assert window._running and panel.busy
+        assert not panel.adjust.isEnabled()
+    finally:
+        release.set()
+    _wait_until(qt_app, lambda: not panel.busy and not panel.aux_running and bool(panel.waveform.series))
+    assert not window._running
+    assert panel.adjust.value() == 125
+    assert panel.waveform.shift_ms == 125
+    assert panel.jobs[0][1].segments[0].shift_ms == 125
+    assert panel._wave_section.toggle.isChecked()
+    panel.adjust.stepUp()
+    assert panel.jobs[0][1].segments[0].shift_ms == 126
+    executions = []
+
+    def run_next():
+        executions.append(panel.jobs[0][1].segments[0].shift_ms)
+        panel._finish_operation("finished", "Terminé")
+
+    monkeypatch.setattr(panel, "run_next", run_next)
+    panel.run()
+    assert executions == [126]  # Le lancement réutilise la calibration éditée.
+
+
+def test_merge_result_survives_late_hardware_and_readiness_notifications(window, tmp_path, qt_app):
+    panel = window._dovi_panel
+    panel._file_section._film1 = tmp_path / "film.mkv"
+    panel._file_section._film2 = tmp_path / "donneur.mkv"
+    window._stack.setCurrentIndex(1)
+    panel._running = True
+    panel.op_state_changed.emit("started", "Fusion")
+    panel._on_workflow_failed(WorkflowStep.VALIDATION, "Métadonnées absentes")
+    result = window._last_operation_result
+    window._encode_panel._on_hw_detected(set(), set(), str(window._config.tool_ffmpeg))
+    panel._notify_ready()
+    _wait_until(qt_app, lambda: not window._operation_refresh_timer.isActive())
+    assert window._last_operation_result == result
+    assert window._run_btn.text() == "Relancer la fusion"
+    panel._config_section._output_input.setText(str(tmp_path / "autre-sortie"))
+    _wait_until(qt_app, lambda: window._last_operation_result is None)
+    assert window._run_btn.text() != "Relancer la fusion"
+
+
+def test_single_calibration_does_not_certify_a_matrix_from_old_sources(window, tmp_path, monkeypatch):
+    panel = ready_hybrid(window, tmp_path)
+    source = tmp_path / "old.mkv"
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=1, master_file=source, donor_files=[(None, source)])]
+    panel._matrix_signature = panel._source_signature()
+    panel.reference.setText(str(tmp_path / "new-reference"))
+    scan = Mock()
+    monkeypatch.setattr(panel, "scan", scan)
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", lambda *_a, **_k: pytest.fail("Anciennes sources"))
+    panel.calibrate_single_row(0)
+    scan.assert_called_once()
+
+
+def test_failed_individual_recalibration_discards_the_previous_plan(window, tmp_path, monkeypatch, qt_app):
+    panel = ready_hybrid(window, tmp_path)
+    source = tmp_path / "source.mkv"
+    panel.table.setRowCount(1)
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=1, master_file=source, donor_files=[(None, source)])]
+    track = TrackEntry(0, "audio", "EAC3", "", "fra", "")
+    panel.jobs[0] = (RemuxConfig([SourceInput(source, 0, [track])], tmp_path / "out.mkv", [(0, 0)]), None)
+    panel._prepared_signature = panel._settings_signature()
+
+    def failure(*_args, **_kwargs):
+        raise RuntimeError("Recalibration impossible")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", failure)
+    panel.calibrate_single_row(0)
+    _wait_until(qt_app, lambda: not panel.busy)
+    assert not window._running
+    assert 0 not in panel.jobs
+    assert "Recalibration impossible" in panel.status.text()
 
 
 def test_context_and_media_settings_share_one_operation(window, tmp_path, monkeypatch):

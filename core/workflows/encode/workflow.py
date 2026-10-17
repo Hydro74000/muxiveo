@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from core.bluray import append_ffmpeg_input_args
+from core.workflows.common.audio_timestamps import adjust_input_timestamp, preroll_input_offset, probe_timestamp_payload
 from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
     subprocess_text_kwargs,
@@ -1524,6 +1525,7 @@ class EncodeWorkflow(QObject):
         offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
         calibration_lookup = _track_time_offset_calibration_lookup_plan(config)
         rewrite_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+        timestamp_offsets: dict[Path, float] = {}
         if calibration_lookup and allow_sync_rewrite and not self._sync_rewrite_enabled:
             raise EncodeError(
                 "Synchronisation multi-segments : la réécriture sync réelle est requise "
@@ -1536,6 +1538,7 @@ class EncodeWorkflow(QObject):
                 for audio in config.audio_tracks
             }
             rewrite_service = self._sync_rewrite_service(signals)
+            adjusted_sources: set[Path] = set()
             work_dir = sync_rewrite_work_dir or config.work_dir or config.source.parent
             for map_key, input_path, input_stream_index in track_assembly.track_mappings:
                 source_path, source_stream_index, track_type = map_key
@@ -1594,19 +1597,47 @@ class EncodeWorkflow(QObject):
                             f"({track_type} #{int(source_stream_index)}) : synchronisation interrompue.",
                         )
                     continue
-                cmd.extend(["-f", "matroska", "-i", str(prepared.path)])
+                if prepared.source_timestamp_offset_s and input_path_obj not in adjusted_sources:
+                    index = next((i for i, path in enumerate(track_input_paths) if path == input_path),
+                                 source_idx.get(input_path_obj))
+                    if index is not None:
+                        adjust_input_timestamp(cmd, index, prepared.source_timestamp_offset_s)
+                if track_type == "audio":
+                    adjusted_sources.add(input_path_obj)
+                    timestamp_offsets[input_path_obj] = prepared.source_timestamp_offset_s
+                cmd.extend(prepared.ffmpeg_input_args())
                 rewrite_remap[map_key] = (next_input_index, 0)
                 offset_lookup.pop((track_type, Path(source_path), int(source_stream_index)), None)
                 next_input_index += 1
+            if any(key[2] == "audio" for key in rewrite_remap):
+                # La vidéo peut venir d'une autre source qui porte son propre
+                # pré-roll audio, même si cet audio n'est pas sélectionné.
+                for source, index in source_idx.items():
+                    if source not in adjusted_sources:
+                        payload = probe_timestamp_payload(
+                            source, self._ffprobe_path(),
+                            cancel_cb=signals._cancel_event.is_set if signals is not None else None,
+                        )
+                        timestamp_offsets[source] = preroll_input_offset(payload)
+                        adjust_input_timestamp(cmd, index, timestamp_offsets[source])
+        offset_specs = _build_offset_specs_plan(
+            config,
+            track_mappings=list(track_assembly.track_mappings),
+            offset_lookup=offset_lookup,
+        )
         _next_input_index, offset_remap = self._append_offset_aux_inputs(
             cmd,
-            _build_offset_specs_plan(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=offset_lookup,
-            ),
+            offset_specs,
             start_input_index=next_input_index,
         )
+        # Une piste en mode offset rouvre sa source ; elle doit recevoir la
+        # même compensation de pré-roll que l'entrée originale, une seule fois.
+        adjusted_inputs: set[int] = set()
+        for spec in offset_specs:
+            index = offset_remap[spec.map_key][0]
+            if index not in adjusted_inputs:
+                adjust_input_timestamp(cmd, index, timestamp_offsets.get(Path(spec.input_path), 0.0))
+                adjusted_inputs.add(index)
         _ = _next_input_index
         return track_assembly, {**rewrite_remap, **offset_remap}
 

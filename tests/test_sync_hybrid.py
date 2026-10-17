@@ -17,6 +17,12 @@ from core.workflows.physical_sync import audio_filter, prepare_physical, prepara
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 
 
+@pytest.fixture(autouse=True)
+def _simulated_preparation_timestamp_probes(monkeypatch):
+    """Les préparations de ce module enregistrent les commandes sans produire de média."""
+    monkeypatch.setattr("core.workflows.physical_sync.probe_timestamp_payload", lambda *_a, **_kw: {})
+
+
 def calibration(*segments):
     return SyncCalibration(tuple(SyncSegment(*s) for s in segments))
 
