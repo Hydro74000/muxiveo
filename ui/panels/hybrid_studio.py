@@ -40,6 +40,7 @@ from core.i18n import translate_text
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.remux_models import tracks_from_file_info
 from ui.widgets.content_table import ContentTableWidget
+from ui.widgets.output_template_edit import OutputTemplateLineEdit
 from ui.widgets.surface import CollapsibleCard
 from ui.panels.tmdb_search_modal import TmdbSearchModal
 from core.workflows.hybrid_matrix import (
@@ -736,7 +737,7 @@ class HybridStudio(QWidget):
             ("output-template", "Template de sortie"),
             ("calibration", "Fichier de calibration"),
         ):
-            line_edit = QLineEdit("MVO" if option == "tag" else "")
+            line_edit = OutputTemplateLineEdit(hybrid=True) if option == "output-template" else QLineEdit("MVO" if option == "tag" else "")
             line_edit.setStyleSheet(_input_style())
             lbl_txt = QLabel(translate_text(label))
             lbl_txt.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")

@@ -53,6 +53,7 @@ from core.profiles.keywords import KEYWORD_CATEGORIES, is_none_keyword, keyword_
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import _C
+from ui.widgets.token_line_edit import TokenChoice, TokenLineEdit, add_token_submenu, populate_token_menu
 
 KEYWORD_CATEGORIES_FLAT = {
     keyword
@@ -61,7 +62,12 @@ KEYWORD_CATEGORIES_FLAT = {
 }
 
 
-class KeywordLineEdit(QLineEdit):
+def _decision_keyword_choices():
+    return (TokenChoice((category,), "{" + keyword + "}", "{" + keyword + "}")
+            for category, keywords in KEYWORD_CATEGORIES for keyword in keywords)
+
+
+class KeywordLineEdit(TokenLineEdit):
     """Line edit that displays ``{keyword}`` tokens as badges when not editing."""
 
     _TOKEN_RE = re.compile(r"\{([^{}]+)\}")
@@ -70,21 +76,14 @@ class KeywordLineEdit(QLineEdit):
         super().__init__(parent)
         self.textChanged.connect(lambda _text: self.update())
 
-    def contextMenuEvent(self, event) -> None:
-        menu = self.createStandardContextMenu()
-        menu.addSeparator()
-        keyword_menu = menu.addMenu(translate_text("Insérer keyword"))
+    def _populate_context_menu(self, menu: QMenu) -> None:
+        keyword_menu = add_token_submenu(menu, "Insérer keyword")
         self._populate_keyword_menu(keyword_menu)
-        operands_menu = menu.addMenu(translate_text("Operands"))
+        operands_menu = add_token_submenu(menu, "Operands")
         self._populate_operands_menu(operands_menu)
-        menu.exec(event.globalPos())
 
     def _populate_keyword_menu(self, menu: QMenu) -> None:
-        for category, keywords in KEYWORD_CATEGORIES:
-            submenu = menu.addMenu(translate_text(category))
-            for keyword in keywords:
-                action = submenu.addAction("{" + keyword + "}")
-                action.triggered.connect(lambda _checked=False, k=keyword: self.insert("{" + k + "}"))
+        populate_token_menu(menu, _decision_keyword_choices(), self.insert)
 
     def _populate_operands_menu(self, menu: QMenu) -> None:
         and_action = menu.addAction("AND")
@@ -1033,11 +1032,7 @@ class DecisionProfileEditorDialog(QDialog):
 
     def _build_keyword_menu(self) -> QMenu:
         menu = QMenu(self)
-        for category, keywords in KEYWORD_CATEGORIES:
-            submenu = menu.addMenu(translate_text(category))
-            for keyword in keywords:
-                action = submenu.addAction("{" + keyword + "}")
-                action.triggered.connect(lambda _checked=False, k=keyword: self._insert_keyword_token(k))
+        populate_token_menu(menu, _decision_keyword_choices(), lambda text: self._insert_keyword_token(text[1:-1]))
         return menu
 
     def _keyword_conditions_if_field_is_tokens(self, text: str, *, required: bool = True) -> list[dict[str, Any]]:

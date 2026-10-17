@@ -1,4 +1,16 @@
 {
+  "Valeur la mieux classée pour ce champ, sinon première valeur non vide.": {
+    "fra": "Valeur la mieux classée pour ce champ, sinon première valeur non vide.",
+    "eng": "The highest-ranked value for this field, otherwise the first nonempty value."
+  },
+  "Première valeur non vide, selon l'ordre final des pistes.": {
+    "fra": "Première valeur non vide, selon l'ordre final des pistes.",
+    "eng": "The first nonempty value in final track order."
+  },
+  "Valeurs distinctes des pistes finales, séparées par +.": {
+    "fra": "Valeurs distinctes des pistes finales, séparées par +.",
+    "eng": "Distinct values from the final tracks, separated by +."
+  },
   "Rechercher…": {
     "fra": "Rechercher…",
     "eng": "Search…"
@@ -6262,5 +6274,353 @@
   "Remux & Encode": {
     "fra": "Remux & Encode",
     "eng": "Remux & Encode"
+  },
+  "Clic droit pour insérer un champ de nommage ou du texte fixe.": {
+    "fra": "Clic droit pour insérer un champ de nommage ou du texte fixe.",
+    "eng": "Right-click to insert a filename field or fixed text."
+  },
+  "Insérer un champ ou du texte": {
+    "fra": "Insérer un champ ou du texte",
+    "eng": "Insert a field or text"
+  },
+  "Identité": {
+    "fra": "Identité",
+    "eng": "Identity"
+  },
+  "Sous-titres": {
+    "fra": "Sous-titres",
+    "eng": "Subtitles"
+  },
+  "Texte fixe": {
+    "fra": "Texte fixe",
+    "eng": "Fixed text"
+  },
+  "Titre normalisé": {
+    "fra": "Titre normalisé",
+    "eng": "Release title"
+  },
+  "Titre TMDB": {
+    "fra": "Titre TMDB",
+    "eng": "TMDB title"
+  },
+  "Année": {
+    "fra": "Année",
+    "eng": "Year"
+  },
+  "Nom du fichier source": {
+    "fra": "Nom du fichier source",
+    "eng": "Source filename"
+  },
+  "Groupe du nom source": {
+    "fra": "Groupe du nom source",
+    "eng": "Group from source name"
+  },
+  "Assemblage multi-sources": {
+    "fra": "Assemblage multi-sources",
+    "eng": "Multiple source assembly"
+  },
+  "Saison et épisode (S01E02)": {
+    "fra": "Saison et épisode (S01E02)",
+    "eng": "Season and episode (S01E02)"
+  },
+  "Titre d'épisode normalisé": {
+    "fra": "Titre d'épisode normalisé",
+    "eng": "Release episode title"
+  },
+  "Titre d'épisode TMDB": {
+    "fra": "Titre d'épisode TMDB",
+    "eng": "TMDB episode title"
+  },
+  "Saison (01)": {
+    "fra": "Saison (01)",
+    "eng": "Season (01)"
+  },
+  "Épisode (02)": {
+    "fra": "Épisode (02)",
+    "eng": "Episode (02)"
+  },
+  "Saison numérique (01)": {
+    "fra": "Saison numérique (01)",
+    "eng": "Numeric season (01)"
+  },
+  "Épisode numérique (02)": {
+    "fra": "Épisode numérique (02)",
+    "eng": "Numeric episode (02)"
+  },
+  "Plusieurs langues (MULTi)": {
+    "fra": "Plusieurs langues (MULTi)",
+    "eng": "Multiple languages (MULTi)"
+  },
+  "Variante française (VFF, VFQ…)": {
+    "fra": "Variante française (VFF, VFQ…)",
+    "eng": "French variant (VFF, VFQ…)"
+  },
+  "Audio immersif (Atmos, DTS-X)": {
+    "fra": "Audio immersif (Atmos, DTS-X)",
+    "eng": "Immersive audio (Atmos, DTS-X)"
+  },
+  "Source détectée (WEB, BluRay…)": {
+    "fra": "Source détectée (WEB, BluRay…)",
+    "eng": "Detected source (WEB, BluRay…)"
+  },
+  "Profondeur 10 bits": {
+    "fra": "Profondeur 10 bits",
+    "eng": "10-bit depth"
+  },
+  "Dolby Vision (DV)": {
+    "fra": "Dolby Vision (DV)",
+    "eng": "Dolby Vision (DV)"
+  },
+  "Version originale sous-titrée FR": {
+    "fra": "Version originale sous-titrée FR",
+    "eng": "Original audio with French subtitles"
+  },
+  "MULTI en majuscules": {
+    "fra": "MULTI en majuscules",
+    "eng": "Uppercase MULTI"
+  },
+  "ATMOS en majuscules": {
+    "fra": "ATMOS en majuscules",
+    "eng": "Uppercase ATMOS"
+  },
+  "Point": {
+    "fra": "Point",
+    "eng": "Dot"
+  },
+  "Tiret": {
+    "fra": "Tiret",
+    "eng": "Hyphen"
+  },
+  "Titre d'épisode du fichier source": {
+    "fra": "Titre d'épisode du fichier source",
+    "eng": "Episode title from source filename"
+  },
+  "Codec audio release (DDP…)": {
+    "fra": "Codec audio release (DDP…)",
+    "eng": "Release audio codec (DDP…)"
+  },
+  "Codec audio brut": {
+    "fra": "Codec audio brut",
+    "eng": "Raw audio codec"
+  },
+  "Canaux audio (5.1, 7.1…)": {
+    "fra": "Canaux audio (5.1, 7.1…)",
+    "eng": "Audio channels (5.1, 7.1…)"
+  },
+  "Langues audio": {
+    "fra": "Langues audio",
+    "eng": "Audio languages"
+  },
+  "Noms des langues audio": {
+    "fra": "Noms des langues audio",
+    "eng": "Audio language names"
+  },
+  "Codec vidéo brut (HEVC…)": {
+    "fra": "Codec vidéo brut (HEVC…)",
+    "eng": "Raw video codec (HEVC…)"
+  },
+  "Codec vidéo release (x265…)": {
+    "fra": "Codec vidéo release (x265…)",
+    "eng": "Release video codec (x265…)"
+  },
+  "Résolution (2160p…)": {
+    "fra": "Résolution (2160p…)",
+    "eng": "Resolution (2160p…)"
+  },
+  "HDR (HDR, HDR10P…)": {
+    "fra": "HDR (HDR, HDR10P…)",
+    "eng": "HDR (HDR, HDR10P…)"
+  },
+  "Langues des sous-titres": {
+    "fra": "Langues des sous-titres",
+    "eng": "Subtitle languages"
+  },
+  "Noms des langues des sous-titres": {
+    "fra": "Noms des langues des sous-titres",
+    "eng": "Subtitle language names"
+  },
+  "Codec des sous-titres": {
+    "fra": "Codec des sous-titres",
+    "eng": "Subtitle codec"
+  },
+  "Automatique (best)": {
+    "fra": "Automatique (best)",
+    "eng": "Automatic (best)"
+  },
+  "Première valeur (first)": {
+    "fra": "Première valeur (first)",
+    "eng": "First value (first)"
+  },
+  "Toutes les valeurs (all)": {
+    "fra": "Toutes les valeurs (all)",
+    "eng": "All values (all)"
+  },
+  "Titre TMDB normalisé en ASCII avec des points.": {
+    "fra": "Titre TMDB normalisé en ASCII avec des points.",
+    "eng": "TMDB title normalized to ASCII with dots."
+  },
+  "Titre du film ou de la série, avec ses espaces et accents.": {
+    "fra": "Titre du film ou de la série, avec ses espaces et accents.",
+    "eng": "Movie or series title, retaining spaces and accents."
+  },
+  "Année de sortie fournie par TMDB.": {
+    "fra": "Année de sortie fournie par TMDB.",
+    "eng": "Release year provided by TMDB."
+  },
+  "Nom du fichier de référence sans son extension.": {
+    "fra": "Nom du fichier de référence sans son extension.",
+    "eng": "Reference filename without its extension."
+  },
+  "Groupe de release configuré, sinon extrait du nom source.": {
+    "fra": "Groupe de release configuré, sinon extrait du nom source.",
+    "eng": "Configured release group, otherwise extracted from the source name."
+  },
+  "Groupe extrait du nom source, remplacé par le groupe configuré dans Hybrid.": {
+    "fra": "Groupe extrait du nom source, remplacé par le groupe configuré dans Hybrid.",
+    "eng": "Group extracted from the source name, replaced by the configured group in Hybrid."
+  },
+  "Insère Hybrid si les pistes finales viennent de plusieurs sources.": {
+    "fra": "Insère Hybrid si les pistes finales viennent de plusieurs sources.",
+    "eng": "Inserts Hybrid if the final tracks come from multiple sources."
+  },
+  "Code saison/épisode TMDB au format scène, par exemple S01E02.": {
+    "fra": "Code saison/épisode TMDB au format scène, par exemple S01E02.",
+    "eng": "TMDB season/episode code in release format, such as S01E02."
+  },
+  "Titre d'épisode TMDB normalisé en ASCII avec des points.": {
+    "fra": "Titre d'épisode TMDB normalisé en ASCII avec des points.",
+    "eng": "TMDB episode title normalized to ASCII with dots."
+  },
+  "Titre d'épisode TMDB, avec ses espaces et accents.": {
+    "fra": "Titre d'épisode TMDB, avec ses espaces et accents.",
+    "eng": "TMDB episode title, retaining spaces and accents."
+  },
+  "Numéro de saison TMDB sur deux chiffres, sans le préfixe S.": {
+    "fra": "Numéro de saison TMDB sur deux chiffres, sans le préfixe S.",
+    "eng": "Two-digit TMDB season number without the S prefix."
+  },
+  "Numéro d'épisode TMDB sur deux chiffres, sans le préfixe E.": {
+    "fra": "Numéro d'épisode TMDB sur deux chiffres, sans le préfixe E.",
+    "eng": "Two-digit TMDB episode number without the E prefix."
+  },
+  "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.": {
+    "fra": "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.",
+    "eng": "Season number from the Hybrid plan or TMDB, supporting :02d or :03d formatting."
+  },
+  "Numéro d'épisode du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.": {
+    "fra": "Numéro d'épisode du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.",
+    "eng": "Episode number from the Hybrid plan or TMDB, supporting :02d or :03d formatting."
+  },
+  "Insère MULTi si plusieurs familles de langues audio sont conservées. Pour MULTI en majuscules, utilisez le texte fixe.": {
+    "fra": "Insère MULTi si plusieurs familles de langues audio sont conservées. Pour MULTI en majuscules, utilisez le texte fixe.",
+    "eng": "Inserts MULTi if multiple audio language families are retained. Use fixed text for uppercase MULTI."
+  },
+  "Détecte la variante française des pistes audio finales : VFF, VFQ, VF2…": {
+    "fra": "Détecte la variante française des pistes audio finales : VFF, VFQ, VF2…",
+    "eng": "Detects the French variant of the final audio tracks: VFF, VFQ, VF2…"
+  },
+  "Insère Atmos ou DTS-X si détecté. Pour ATMOS en majuscules, utilisez le texte fixe.": {
+    "fra": "Insère Atmos ou DTS-X si détecté. Pour ATMOS en majuscules, utilisez le texte fixe.",
+    "eng": "Inserts Atmos or DTS-X when detected. Use fixed text for uppercase ATMOS."
+  },
+  "Source déduite du nom de référence : WEB, BluRay, HDTV… WEB-DL doit être ajouté en texte fixe.": {
+    "fra": "Source déduite du nom de référence : WEB, BluRay, HDTV… WEB-DL doit être ajouté en texte fixe.",
+    "eng": "Source inferred from the reference filename: WEB, BluRay, HDTV… Add WEB-DL as fixed text."
+  },
+  "Insère 10Bits si détecté, ou implicite avec HDR10+ ou Dolby Vision.": {
+    "fra": "Insère 10Bits si détecté, ou implicite avec HDR10+ ou Dolby Vision.",
+    "eng": "Inserts 10Bits when detected or implied by HDR10+ or Dolby Vision."
+  },
+  "Insère DV si Dolby Vision est présent sur une piste vidéo finale.": {
+    "fra": "Insère DV si Dolby Vision est présent sur une piste vidéo finale.",
+    "eng": "Inserts DV if a final video track contains Dolby Vision."
+  },
+  "Insère VOSTFR si des sous-titres français sont présents sans audio français.": {
+    "fra": "Insère VOSTFR si des sous-titres français sont présents sans audio français.",
+    "eng": "Inserts VOSTFR if French subtitles are present without French audio."
+  },
+  "Texte toujours ajouté, sans détection de la source.": {
+    "fra": "Texte toujours ajouté, sans détection de la source.",
+    "eng": "Always adds this text, without detecting the source."
+  },
+  "Texte toujours ajouté, même si une seule source fournit les pistes finales.": {
+    "fra": "Texte toujours ajouté, même si une seule source fournit les pistes finales.",
+    "eng": "Always adds this text, even if a single source provides the final tracks."
+  },
+  "Texte toujours ajouté, sans détection du nombre de langues.": {
+    "fra": "Texte toujours ajouté, sans détection du nombre de langues.",
+    "eng": "Always adds this text, without detecting the number of languages."
+  },
+  "Texte toujours ajouté, sans détection de l'audio immersif.": {
+    "fra": "Texte toujours ajouté, sans détection de l'audio immersif.",
+    "eng": "Always adds this text, without detecting immersive audio."
+  },
+  "Sépare deux éléments du nom avec un point.": {
+    "fra": "Sépare deux éléments du nom avec un point.",
+    "eng": "Separates two filename elements with a dot."
+  },
+  "Sépare deux éléments du nom avec un tiret.": {
+    "fra": "Sépare deux éléments du nom avec un tiret.",
+    "eng": "Separates two filename elements with a hyphen."
+  },
+  "Titre d'épisode extrait du nom de référence, sans requête TMDB.": {
+    "fra": "Titre d'épisode extrait du nom de référence, sans requête TMDB.",
+    "eng": "Episode title extracted from the reference filename, without a TMDB request."
+  },
+  "Codec audio normalisé release : DDP pour E-AC-3, TrueHD, DTSHD-MA… best retient le codec le mieux classé.": {
+    "fra": "Codec audio normalisé release : DDP pour E-AC-3, TrueHD, DTSHD-MA… best retient le codec le mieux classé.",
+    "eng": "Release audio codec: DDP for E-AC-3, TrueHD, DTSHD-MA… best selects the highest-ranked codec."
+  },
+  "Codec audio brut en majuscules, par exemple EAC3. Les alias du profil restent applicables.": {
+    "fra": "Codec audio brut en majuscules, par exemple EAC3. Les alias du profil restent applicables.",
+    "eng": "Raw uppercase audio codec, such as EAC3. Profile aliases still apply."
+  },
+  "Canaux des pistes audio finales. best retient le plus grand nombre de canaux.": {
+    "fra": "Canaux des pistes audio finales. best retient le plus grand nombre de canaux.",
+    "eng": "Final audio track channels. best selects the largest channel count."
+  },
+  "Langues audio finales au format régionalisé, par exemple fr-FR et en-US.": {
+    "fra": "Langues audio finales au format régionalisé, par exemple fr-FR et en-US.",
+    "eng": "Final audio languages in regional format, such as fr-FR and en-US."
+  },
+  "Noms lisibles des langues audio finales, avec leur variante régionale.": {
+    "fra": "Noms lisibles des langues audio finales, avec leur variante régionale.",
+    "eng": "Readable names of final audio languages, including regional variants."
+  },
+  "Codec vidéo brut en majuscules, par exemple HEVC. Les alias du profil restent applicables.": {
+    "fra": "Codec vidéo brut en majuscules, par exemple HEVC. Les alias du profil restent applicables.",
+    "eng": "Raw uppercase video codec, such as HEVC. Profile aliases still apply."
+  },
+  "Codec vidéo normalisé release : x265 pour HEVC, x264 pour AVC.": {
+    "fra": "Codec vidéo normalisé release : x265 pour HEVC, x264 pour AVC.",
+    "eng": "Release video codec: x265 for HEVC, x264 for AVC."
+  },
+  "Résolution vidéo au format release. best retient la meilleure résolution.": {
+    "fra": "Résolution vidéo au format release. best retient la meilleure résolution.",
+    "eng": "Video resolution in release format. best selects the highest resolution."
+  },
+  "Insère HDR10P, HDR ou HLG selon les pistes vidéo finales ; reste vide pour une vidéo SDR.": {
+    "fra": "Insère HDR10P, HDR ou HLG selon les pistes vidéo finales ; reste vide pour une vidéo SDR.",
+    "eng": "Inserts HDR10P, HDR or HLG based on the final video tracks; stays empty for SDR video."
+  },
+  "Langues des sous-titres conservés, par exemple fr-FR et en-US.": {
+    "fra": "Langues des sous-titres conservés, par exemple fr-FR et en-US.",
+    "eng": "Languages of retained subtitles, such as fr-FR and en-US."
+  },
+  "Noms lisibles des langues des sous-titres conservés.": {
+    "fra": "Noms lisibles des langues des sous-titres conservés.",
+    "eng": "Readable language names of retained subtitles."
+  },
+  "Codecs des sous-titres conservés, par exemple SUBRIP ou PGS.": {
+    "fra": "Codecs des sous-titres conservés, par exemple SUBRIP ou PGS.",
+    "eng": "Codecs of retained subtitles, such as SUBRIP or PGS."
+  },
+  "WEB-DL": {
+    "fra": "WEB-DL",
+    "eng": "WEB-DL"
+  },
+  "Hybrid": {
+    "fra": "Hybrid",
+    "eng": "Hybrid"
   }
 }
