@@ -19,9 +19,25 @@
     "fra": "Donneur :",
     "eng": "Donor:"
   },
-  "Sélectionnez un élément analysé pour inspecter sa synchronisation.": {
-    "fra": "Sélectionnez un élément analysé pour inspecter sa synchronisation.",
-    "eng": "Select an analyzed item to inspect its synchronization."
+  "Élément :": {
+    "fra": "Élément :",
+    "eng": "Item:"
+  },
+  "Aucun élément analysé": {
+    "fra": "Aucun élément analysé",
+    "eng": "No analyzed items"
+  },
+  "Analysez la saison ou un élément du plan pour ouvrir le Sync Studio.": {
+    "fra": "Analysez la saison ou un élément du plan pour ouvrir le Sync Studio.",
+    "eng": "Analyze the season or an item in the plan to open Sync Studio."
+  },
+  "Choisissez un élément analysé ci-dessus ou analysez cet élément dans le plan.": {
+    "fra": "Choisissez un élément analysé ci-dessus ou analysez cet élément dans le plan.",
+    "eng": "Select an analyzed item above or analyze this item in the plan."
+  },
+  "Aucune piste audio ou sous-titre donneuse disponible pour cet élément.": {
+    "fra": "Aucune piste audio ou sous-titre donneuse disponible pour cet élément.",
+    "eng": "No donor audio or subtitle tracks are available for this item."
   },
   "Naviguer dans toute la piste": {
     "fra": "Naviguer dans toute la piste",

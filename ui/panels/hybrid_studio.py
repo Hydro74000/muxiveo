@@ -792,7 +792,7 @@ class HybridStudio(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.itemSelectionChanged.connect(self.select_waveform)
+        self.table.currentCellChanged.connect(lambda *_args: self.select_waveform())
         self.table.cellDoubleClicked.connect(lambda row, col: self.open_remux_row(row))
         ct_layout.addWidget(self.table)
         layout.addWidget(card_table)
@@ -806,23 +806,37 @@ class HybridStudio(QWidget):
         self._wave_section = card_wave
         cw_layout = card_wave.body_layout
 
+        episode_row = QHBoxLayout()
+        episode_row.addWidget(QLabel(translate_text("Élément :")))
+        self.sync_episode = QComboBox()
+        self.sync_episode.setStyleSheet(_input_style())
+        self.sync_episode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.sync_episode.setMinimumContentsLength(20)
+        self.sync_episode.setPlaceholderText(translate_text("Aucun élément analysé"))
+        self.sync_episode.setEnabled(False)
+        self.sync_episode.currentIndexChanged.connect(self._select_sync_episode)
+        episode_row.addWidget(self.sync_episode, 1)
+        cw_layout.addLayout(episode_row)
+
         wave_header = QHBoxLayout()
         self.sync_target = QComboBox()
         self.sync_target.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.sync_target.setMinimumContentsLength(20)
         self.sync_target.setStyleSheet(_input_style())
         self.sync_target.setToolTip(translate_text("Piste donneuse à inspecter"))
+        self.sync_target.setEnabled(False)
         self.sync_reference = QComboBox()
         self.sync_reference.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.sync_reference.setMinimumContentsLength(15)
         self.sync_reference.setStyleSheet(_input_style())
         self.sync_reference.setToolTip(translate_text("Piste de référence"))
+        self.sync_reference.setEnabled(False)
         wave_header.addWidget(QLabel(translate_text("Donneur :")))
         wave_header.addWidget(self.sync_target, 1)
         wave_header.addWidget(QLabel(translate_text("Référence :")))
         wave_header.addWidget(self.sync_reference, 1)
         cw_layout.addLayout(wave_header)
-        self.sync_hint = QLabel(translate_text("Sélectionnez un élément analysé pour inspecter sa synchronisation."))
+        self.sync_hint = QLabel(translate_text("Analysez la saison ou un élément du plan pour ouvrir le Sync Studio."))
         self.sync_hint.setWordWrap(True)
         cw_layout.addWidget(self.sync_hint)
         self._sync_content = QVBoxLayout()
@@ -1418,6 +1432,7 @@ class HybridStudio(QWidget):
                 item_status.setForeground(QColor(_C.WARN))
         self._update_run_button()
         self.status.setText(translate_text("Donneur mis à jour pour : {name}", name=ep.display_name))
+        self.select_waveform()
 
     def _choose_master_row(self, row: int):
         if not 0 <= row < len(self.matrix_episodes):
@@ -1754,10 +1769,43 @@ class HybridStudio(QWidget):
     def _sync_track_label(track):
         return f"#{track.mkv_tid} · {track.language or 'und'} · {track.codec} {track.title}".strip()
 
+    def _select_sync_episode(self, _index):
+        row = self.sync_episode.currentData()
+        if self.busy or row is None:
+            return
+        previously_blocked = self.table.blockSignals(True)
+        try:
+            self.table.selectRow(row)
+        finally:
+            self.table.blockSignals(previously_blocked)
+        self.select_waveform()
+
     def select_waveform(self):
-        row = self.table.currentRow()
         if self.busy:
             return
+        row = self.table.currentRow()
+        ready_rows = [r for r in sorted(self.jobs) if 0 <= r < self.table.rowCount()]
+        # Une analyse de saison ne sélectionne aucune ligne dans le tableau.
+        # Ouvrir le premier plan prêt plutôt que laisser les pistes vides.
+        if row < 0 and ready_rows:
+            row = ready_rows[0]
+            previously_blocked = self.table.blockSignals(True)
+            try:
+                self.table.selectRow(row)
+            finally:
+                self.table.blockSignals(previously_blocked)
+        previously_blocked = self.sync_episode.blockSignals(True)
+        try:
+            self.sync_episode.clear()
+            for ready_row in ready_rows:
+                config, _ = self.jobs[ready_row]
+                name = (self.matrix_episodes[ready_row].display_name if ready_row < len(self.matrix_episodes)
+                        else config.sources[0].path.stem)
+                self.sync_episode.addItem(name, ready_row)
+            self.sync_episode.setCurrentIndex(self.sync_episode.findData(row))
+            self.sync_episode.setEnabled(bool(ready_rows))
+        finally:
+            self.sync_episode.blockSignals(previously_blocked)
         job = self.jobs.get(row)
         key = (row, id(job[0])) if job else None
         if key == self._sync_job_key and self._sync_editor is not None:
@@ -1792,6 +1840,8 @@ class HybridStudio(QWidget):
                         preferred = self.sync_target.count() - 1
             if preferred is not None:
                 self.sync_target.setCurrentIndex(preferred)
+        self.sync_target.setEnabled(self.sync_target.count() > 0)
+        self.sync_reference.setEnabled(self.sync_reference.count() > 0)
         self.sync_target.blockSignals(False)
         self.sync_reference.blockSignals(False)
         self._show_sync_editor()
@@ -1803,6 +1853,11 @@ class HybridStudio(QWidget):
         row = self.table.currentRow()
         target = self.sync_target.currentData()
         if row not in self.jobs or target is None:
+            self.sync_hint.setText(translate_text(
+                "Analysez la saison ou un élément du plan pour ouvrir le Sync Studio." if not self.jobs else
+                "Choisissez un élément analysé ci-dessus ou analysez cet élément dans le plan." if row not in self.jobs else
+                "Aucune piste audio ou sous-titre donneuse disponible pour cet élément."
+            ))
             self.sync_hint.show()
             return
         from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
@@ -1869,10 +1924,10 @@ class HybridStudio(QWidget):
     def listen(self):
         if self.busy:
             return
+        self.select_waveform()
         if self.table.currentRow() not in self.jobs:
             self.status.setText(translate_text("Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡)."))
             return
-        self.select_waveform()
         if self._sync_editor is not None:
             self._sync_editor._toggle_listen()
         else:

@@ -44,6 +44,11 @@ def test_global_action_executes_a_complete_hybrid_batch(window, tmp_path):
     assert states[-1][0] == "finished", states
     assert sum(state == "started" for state, _ in states) == 1  # pas de déverrouillage entre préparation et lot
     assert len(panel.jobs) == 2
+    assert panel.sync_episode.count() == 2
+    assert panel.sync_episode.currentData() == 0
+    assert panel.sync_target.count() > 0 and panel.sync_reference.count() > 0
+    panel.sync_episode.setCurrentIndex(1)
+    assert panel._sync_editor.target_source_path.name == "Show.S01E02.mkv"
     for config, _ in panel.jobs.values():
         assert config.output.exists()
         reader = MatroskaReader(config.output)

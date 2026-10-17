@@ -115,6 +115,76 @@ def test_embedded_studio_navigates_cuts_and_the_complete_track(panel, tmp_path):
     assert "01:00:00" in editor.timeline_label.text()
 
 
+def test_season_preparation_opens_the_first_ready_studio_without_a_table_selection(panel, tmp_path):
+    panel.table.setRowCount(3)
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=i + 1) for i in range(3)]
+    panel.jobs = {1: _job(tmp_path), 2: copy.deepcopy(_job(tmp_path))}
+    panel.index = 3
+    panel.set_busy(True)
+    assert panel.table.currentRow() == -1
+    panel.prepare_next()
+    assert panel.table.currentRow() == 1
+    assert panel.sync_episode.currentData() == 1
+    assert panel.sync_episode.count() == 2
+    assert panel.sync_target.count() == 5 and panel.sync_reference.count() == 1
+    assert isinstance(panel._sync_editor, SyncStudioDialog)
+    assert panel.sync_hint.isHidden()
+
+
+def test_episode_selector_and_correspondence_selection_open_the_same_studio(panel, tmp_path, qt_app):
+    panel.table.setRowCount(2)
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=i + 1) for i in range(2)]
+    panel.jobs = {0: _job(tmp_path), 1: copy.deepcopy(_job(tmp_path))}
+    panel.set_busy(False)
+    first = panel._sync_editor
+    panel.sync_episode.setCurrentIndex(1)
+    assert panel.table.currentRow() == 1
+    assert first._closing
+    assert panel._sync_editor.target_entry is panel.jobs[1][0].sources[1].tracks[1]
+    panel._sync_editor.spin_shift.setValue(125)
+    assert panel.jobs[1][0].sync_calibrations["1"]["segments"][0]["shift_ms"] == 125
+    assert panel.jobs[0][0].sync_calibrations["1"]["segments"][0]["shift_ms"] == -67
+    # Un vrai clic doit aussi mettre à jour le sélecteur et les pistes.
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    panel._wave_section.set_expanded(False)
+    panel.resize(1200, 900)
+    panel.show()
+    panel.table.setItem(0, 0, QTableWidgetItem("S01E01"))
+    qt_app.processEvents()
+    QTest.mouseClick(panel.table.viewport(), Qt.MouseButton.LeftButton,
+                     pos=panel.table.visualItemRect(panel.table.item(0, 0)).center())
+    assert panel.table.currentRow() == 0
+    assert panel.sync_episode.currentData() == 0
+    assert panel._sync_editor.target_entry is panel.jobs[0][0].sources[1].tracks[1]
+    panel.findChild(QScrollArea).ensureWidgetVisible(panel.sync_episode)
+    qt_app.processEvents()
+    QTest.mouseClick(panel.sync_episode, Qt.MouseButton.LeftButton)
+    qt_app.processEvents()
+    view = panel.sync_episode.view()
+    QTest.mouseMove(view.viewport(), view.visualRect(view.model().index(1, 0)).center())
+    QTest.qWait(250)
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=view.visualRect(view.model().index(1, 0)).center())
+    qt_app.processEvents()
+    assert panel.table.currentRow() == 1
+    assert panel.sync_episode.currentData() == 1
+    assert panel._sync_editor.target_entry is panel.jobs[1][0].sources[1].tracks[1]
+    assert panel._sync_editor.spin_shift.value() == 125
+
+
+def test_reassigning_the_selected_donor_clears_stale_studio_and_lists(panel, tmp_path):
+    _select_job(panel, _job(tmp_path))
+    previous = panel._sync_editor
+    panel._on_donor_reassigned(0, panel.matrix_episodes[0])
+    assert previous._closing
+    assert panel._sync_editor is None
+    assert panel.sync_episode.count() == 0
+    assert not panel.sync_episode.isEnabled()
+    assert not panel.sync_target.isEnabled() and not panel.sync_reference.isEnabled()
+    assert panel.sync_hint.text()
+
+
 def test_editing_one_donor_keeps_other_donors_and_exported_cuts(panel, tmp_path):
     config, primary = _job(tmp_path)
     _select_job(panel, (config, primary))
