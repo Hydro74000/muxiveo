@@ -1,9 +1,14 @@
 """Champs compatibles avec le moteur de nommage des fichiers de sortie."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMenu, QWidget
+from typing import Any
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSizePolicy, QVBoxLayout, QWidget
+
+from cli.output_template import render_output_filename
 from core.i18n import translate_text
+from ui.design_system import colors as C, font_px, scale
 from ui.widgets.token_line_edit import TokenChoice, TokenLineEdit, add_token_submenu, populate_token_menu
 
 
@@ -17,11 +22,11 @@ def output_template_choices(*, hybrid: bool = False) -> list[TokenChoice]:
         ("Identité", "Groupe de release", "{release_group}", "Groupe de release configuré, sinon extrait du nom source."),
         ("Identité", "Groupe du nom source", "{group}", "Groupe extrait du nom source, remplacé par le groupe configuré dans Hybrid."),
         ("Identité", "Assemblage multi-sources", "{hybrid_tag}", "Insère Hybrid si les pistes finales viennent de plusieurs sources."),
-        ("Épisode", "Saison et épisode (S01E02)", "{season_episode}", "Code saison/épisode TMDB au format scène, par exemple S01E02."),
+        ("Épisode", "Saison et épisode (S01E02)", "{season_episode}", "Code saison/épisode du plan Hybrid ou de TMDB, par exemple S01E02."),
         ("Épisode", "Titre d'épisode normalisé", "{episode_title:release}", "Titre d'épisode TMDB normalisé en ASCII avec des points."),
         ("Épisode", "Titre d'épisode TMDB", "{episode_title}", "Titre d'épisode TMDB, avec ses espaces et accents."),
-        ("Épisode", "Saison (01)", "{season}", "Numéro de saison TMDB sur deux chiffres, sans le préfixe S."),
-        ("Épisode", "Épisode (02)", "{episode}", "Numéro d'épisode TMDB sur deux chiffres, sans le préfixe E."),
+        ("Épisode", "Saison (01)", "{season}", "Numéro de saison du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe S."),
+        ("Épisode", "Épisode (02)", "{episode}", "Numéro d'épisode du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe E."),
         ("Épisode", "Saison numérique (01)", "{season_num:02d}", "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d."),
         ("Épisode", "Épisode numérique (02)", "{episode_num:02d}", "Numéro d'épisode du plan Hybrid ou de TMDB, formatable avec :02d ou :03d."),
         ("Audio", "Plusieurs langues (MULTi)", "{audio-multi}", "Insère MULTi si plusieurs familles de langues audio sont conservées. Pour MULTI en majuscules, utilisez le texte fixe."),
@@ -74,3 +79,55 @@ class OutputTemplateLineEdit(TokenLineEdit):
     def _populate_context_menu(self, menu: QMenu) -> None:
         fields = add_token_submenu(menu, "Insérer un champ ou du texte")
         populate_token_menu(fields, output_template_choices(hybrid=self._hybrid), self.insert)
+
+
+class OutputTemplatePreview(QWidget):
+    """Rendu immédiat et copiable, sans lecture de média ni requête réseau."""
+
+    def __init__(self, field: QLineEdit, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._field = field
+        self._context: dict[str, Any] | None = None
+        self._default_name = ""
+        self._note = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(scale(3))
+        self.caption = QLabel(translate_text("Aperçu du nom final"))
+        self.caption.setStyleSheet(f"color:{C.TEXT_SEC};font-size:{font_px(10)}px;")
+        self.name = QLabel()
+        self.name.setTextFormat(Qt.TextFormat.PlainText)
+        self.name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.name.setWordWrap(True)
+        self.name.setMinimumWidth(0)
+        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.note = QLabel()
+        self.note.setTextFormat(Qt.TextFormat.PlainText)
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(f"color:{C.TEXT_SEC};font-size:{font_px(10)}px;")
+        for widget in (self.caption, self.name, self.note):
+            layout.addWidget(widget)
+        field.textChanged.connect(self._refresh)
+
+    def set_context(self, context: dict[str, Any] | None, *, default_name: str = "", episode: str = "", note: str = "") -> None:
+        self._context, self._default_name, self._note = context, default_name, note
+        self.caption.setText(translate_text("Aperçu du nom final") + (f" · {episode}" if episode else ""))
+        self._refresh()
+
+    def _refresh(self, *_args) -> None:
+        template = self._field.text().strip()
+        try:
+            # Une saisie incomplète ne doit pas faire planter la page.
+            rendered = render_output_filename(template, self._context or {}) if template else self._default_name
+        except (ValueError, KeyError, IndexError, AttributeError) as exc:
+            self.name.setText(translate_text("Template invalide : {error}", error=translate_text(str(exc))))
+            self.name.setStyleSheet(f"color:{C.WARN};")
+            self.name.setToolTip(self.name.text())
+            self.note.setText("")
+            return
+        if self._context is None and "{" in template:
+            rendered = ""
+        self.name.setStyleSheet(f"color:{C.ACCENT};")
+        self.name.setText(rendered or "—")
+        self.name.setToolTip(rendered)
+        self.note.setText(self._note)

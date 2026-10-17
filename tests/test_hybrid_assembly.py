@@ -163,6 +163,110 @@ def test_metadata_template_and_advanced_options_use_final_tracks(assembly, tmp_p
     assert bool(job.get("tmdb_cover")) is cover
 
 
+def test_live_name_preview_matches_prepared_jobs_and_preserves_metadata_and_aliases(assembly, tmp_path, monkeypatch, qt_app):
+    from ui.panels.hybrid_studio import HybridStudio
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+
+    episode, recipe, sources = assembly
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Aliases", "rules": [],
+                                   "variables": {"release_group": "PROFILE", "aliases": {"codec": {"EAC3": "DDP"}}}}))
+    calls = []
+
+    def metadata(job, *_a, **_k):
+        if not job.get("tmdb"):
+            return "", None, None, None
+        calls.append(job["tmdb"])
+        number = job["tmdb"]["episode"]
+        details = MediaDetails(title="Crystal Lake", year="2026", season="1", episode=number, episode_title=f"Épisode {number}")
+        return details.formatted_container_title(), details.to_mkv_tags(), None, details
+
+    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr(SyncStudioDialog, "_load_segment_audio_async", lambda *_a: None)
+    template = "{title:release}.{season_episode}.{episode_title:release}.{audio-multi}.{audio-codec:best}.{release_group}"
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile), auto_tmdb=213562,
+                              output_template=template, tag="MVO")
+    episodes, jobs = [], {}
+    for row in range(2):
+        current = copy.deepcopy(episode)
+        current.episode = row + 1
+        sources[0].path = tmp_path / f"Crystal.Lake.S01E{row+1:02d}.2160p.WEB.mkv"
+        current.master_file = sources[0].path
+        jobs[row] = prepare_matrix_episode(current, recipe, tmp_path, AppConfig(), options, Logger())
+        episodes.append(current)
+    panel = HybridStudio(AppConfig())
+    try:
+        panel.reference.setText(str(tmp_path))
+        panel.profile.setText(str(profile))
+        panel.controls["auto-tmdb"].setText("213562")
+        panel.controls["output-template"].setText(template)
+        panel.matrix_episodes, panel.jobs = episodes, jobs
+        panel.table.setRowCount(2)
+        panel.set_busy(False)
+        assert panel.output_preview.name.text() == jobs[0][0].output.name
+        original = remux_config_to_exact_job(jobs[0][0])
+        panel.controls["tag"].setText("NEW")
+        assert panel.output_preview.name.text().endswith(".DDP.NEW.mkv")
+        panel.controls["tag"].clear()
+        assert panel.output_preview.name.text().endswith(".DDP.PROFILE.mkv")
+        panel.controls["tag"].setText("MVO")
+        panel.sync_episode.setCurrentIndex(1)
+        assert panel.output_preview.name.text() == jobs[1][0].output.name
+        assert "S01E02.Episode.2" in panel.output_preview.name.text()
+        assert "S01E02" in panel.output_preview.caption.text()
+        panel.controls["output-template"].setText("{title:release}.{episode_title:release}-{video-codec:best}")
+        assert panel.output_preview.name.text() == "Crystal.Lake.Episode.2-HEVC.mkv"
+        panel.controls["auto-tmdb"].setText("999")
+        assert "Crystal.Lake" not in panel.output_preview.name.text()
+        panel.controls["auto-tmdb"].setText("213562")
+        assert panel.output_preview.name.text() == "Crystal.Lake.Episode.2-HEVC.mkv"
+        assert len(calls) == 2  # Aucun TMDB pendant les éditions ou changements d'épisode.
+        assert remux_config_to_exact_job(jobs[0][0]) == original
+    finally:
+        panel.close()
+
+
+def test_witness_name_preview_follows_checkboxes_before_analysis(assembly, qt_app):
+    from core.inspector import AudioTrack
+    from ui.panels.hybrid_studio import HybridStudio
+
+    _, _, sources = assembly
+    panel = HybridStudio(AppConfig())
+    try:
+        source = sources[0].path
+        panel.reference.setText(str(source))
+        panel.controls["output-template"].setText("{season_episode}.{audio-multi}.{audio-fr-tag}.{audio-codec-release:best}")
+        master = FileInfo(source, "matroska", 1, 100, None,
+                          audio_tracks=[AudioTrack(0, "EAC3", "", 6, "5.1", 48000, None, "en-US", "VO")])
+        donor = FileInfo(sources[1].path, "matroska", 1, 100, None,
+                         audio_tracks=[AudioTrack(0, "EAC3", "", 6, "5.1", 48000, None, "fr-FR", "VF")])
+        panel._populate_witness_table([("Master", "master", master), ("Donneur", "donor", donor)])
+        assert panel.output_preview.name.text() == "S01E01.MULTi.VFF.DDP.mkv"
+        assert panel.output_preview.note.text()
+        panel.witness_track_items[1]["checkbox"].setChecked(False)
+        assert panel.output_preview.name.text() == "S01E01.DDP.mkv"
+        panel.reference.setText(str(source.with_name("other.mkv")))
+        assert "DDP" not in panel.output_preview.name.text()  # Pas de données d'anciennes sources.
+    finally:
+        panel.close()
+
+
+def test_scene_numbers_and_default_name_are_available_without_tmdb(assembly, tmp_path):
+    from cli.output_template import render_output_filename
+    from core.workflows.hybrid_matrix import default_matrix_output_name
+
+    episode, recipe, _ = assembly
+    template = "{season_episode}.S{season}E{episode}.{audio-codec-release:best}"
+    options = SimpleNamespace(**vars(CommonOptions()), output_template=template)
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == "S01E01.S01E01.DDP.mkv"
+    assert render_output_filename(template, episode.naming_context) == result.output.name
+    options.output_template = ""
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == default_matrix_output_name(episode.master_file)
+    assert render_output_filename(template, episode.naming_context) == "S01E01.S01E01.DDP.mkv"
+
+
 @pytest.mark.parametrize("mode", ["physical", "container"])
 def test_supplied_calibration_is_not_replaced_by_an_acoustic_scan(assembly, tmp_path, monkeypatch, mode):
     episode, recipe, _ = assembly

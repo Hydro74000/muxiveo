@@ -38,9 +38,9 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.remux_models import tracks_from_file_info
+from core.workflows.remux_models import SourceInput, tracks_from_file_info
 from ui.widgets.content_table import ContentTableWidget
-from ui.widgets.output_template_edit import OutputTemplateLineEdit
+from ui.widgets.output_template_edit import OutputTemplateLineEdit, OutputTemplatePreview
 from ui.widgets.surface import CollapsibleCard
 from ui.panels.tmdb_search_modal import TmdbSearchModal
 from core.workflows.hybrid_matrix import (
@@ -51,6 +51,8 @@ from core.workflows.hybrid_matrix import (
     MatrixSource,
     SourceRole,
     _language_selected,
+    default_matrix_output_name,
+    matrix_output_context,
     parse_episode_key,
     prepare_matrix_episode,
     witness_track_choices,
@@ -468,6 +470,9 @@ class HybridStudio(QWidget):
         self._sync_editors: list = []
         self._sync_job_key = None
         self.witness_track_items: list[dict] = []
+        self._witness_sources: list[SourceInput] = []
+        self._witness_signature = None
+        self._tmdb_preview = None
         self.index = 0
         self.stopped = False
         self.cancel_event = threading.Event()
@@ -480,6 +485,9 @@ class HybridStudio(QWidget):
         self._build_ui()
         for combo in self.findChildren(QComboBox):
             combo.currentIndexChanged.connect(self._update_run_button)
+        for control in (*self.controls.values(), self.profile):
+            if isinstance(control, QLineEdit):
+                control.textChanged.connect(self._update_output_preview)
         self._update_run_button()
 
     def _build_ui(self) -> None:
@@ -753,6 +761,9 @@ class HybridStudio(QWidget):
             else:
                 settings.addRow(lbl_txt, line_edit)
             self.controls[option] = line_edit
+            if option == "output-template":
+                self.output_preview = OutputTemplatePreview(line_edit)
+                settings.addRow(self.output_preview)
 
         settings.addRow(matching_row)
 
@@ -1021,6 +1032,8 @@ class HybridStudio(QWidget):
 
         self.witness_table.setRowCount(0)
         self.witness_track_items = []
+        self._witness_sources = []
+        self._witness_signature = self._source_signature()
         row = 0
         for source_index, source_info in enumerate(res):
             src_label, role, file_info = source_info[:3]
@@ -1031,8 +1044,11 @@ class HybridStudio(QWidget):
                 *(("subtitle", track) for track in file_info.subtitle_tracks),
             ]
             entries = tracks_from_file_info(file_info)
-            choices = witness_track_choices(source_id, entries)
-            for (st_type, stream), choice in zip(typed_tracks, choices):
+            for entry in entries:
+                entry.file_id = f"src{source_index}"
+            self._witness_sources.append(SourceInput(file_info.path, source_index, entries))
+            choices = witness_track_choices(source_id, [replace(entry, enabled=True) for entry in entries])
+            for (st_type, stream), entry, choice in zip(typed_tracks, entries, choices):
                 self.witness_table.insertRow(row)
 
                 chk = QCheckBox()
@@ -1076,11 +1092,14 @@ class HybridStudio(QWidget):
                     "lang": stream.language or "",
                     "codec": stream.codec or "",
                     "choice": choice,
+                    "track": entry,
                 })
+                chk.toggled.connect(self._update_output_preview)
                 row += 1
 
         self.apply_recipe_btn.setEnabled(not self.busy)
         self.witness_info.setText(translate_text("Pistes détectées sur l'épisode témoin. Cochez celles à conserver puis appliquez le modèle."))
+        self._update_output_preview()
 
     def apply_witness_recipe(self):
         if self.busy or not self.witness_track_items:
@@ -1139,6 +1158,7 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setText(summary)
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))
+        self._update_output_preview()
 
     def browse(self, field: QLineEdit):
         if self.busy:
@@ -1190,7 +1210,69 @@ class HybridStudio(QWidget):
             suggested_episode=number, parent=self,
         )
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_result is not None:
+            self._tmdb_preview = (str(dialog.selected_result.tmdb_id), dialog.fetched_details)
             self.controls["auto-tmdb"].setText(str(dialog.selected_result.tmdb_id))
+            self._update_output_preview()
+
+    def _update_output_preview(self, *_args):
+        """Réutilise le contexte réel, ou les pistes témoins avant la préparation."""
+        if not hasattr(self, "output_preview") or not hasattr(self, "table"):
+            return
+        source_signature = self._source_signature()
+        sources_current = self._matrix_signature is None or self._matrix_signature == source_signature
+        row = self.table.currentRow()
+        if row < 0 and self.jobs:
+            row = min(self.jobs)
+        episode = (self.matrix_episodes[row] if sources_current and 0 <= row < len(self.matrix_episodes)
+                   else None)
+        job = self.jobs.get(row) if sources_current else None
+        snapshot = (episode.naming_context or {}) if episode and job else {}
+        profile = self.profile.text().strip()
+        note = translate_text("Pistes et métadonnées du dernier plan analysé.")
+        tracks = []
+        order = None
+        if job and job[0].sources:
+            plan = job[0]
+            source = plan.sources[0].path
+            tracks = [track for src in plan.sources for track in src.tracks]
+            order = plan.track_order
+        elif self._witness_sources and self._witness_signature == source_signature and (
+            episode is None or episode.master_file == self._witness_sources[0].path
+        ):
+            source = self._witness_sources[0].path
+            tracks = [replace(item["track"], enabled=item["checkbox"].isChecked()) for item in self.witness_track_items]
+            note = translate_text("Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.")
+        else:
+            raw_source = self.reference.text().strip()
+            source = episode.master_file if episode else Path(raw_source) if raw_source else None
+            note = translate_text("Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.")
+        if source is None:
+            self.output_preview.set_context(None, note=note)
+            return
+        if episode is None:
+            season, number = parse_episode_key(source) or (0, 0)
+            episode = MatrixEpisode(master_file=source, season=season, episode=number)
+        tmdb_id = self.controls["auto-tmdb"].text().strip()
+        details = snapshot.get("__details__") if snapshot.get("__tmdb_id__", "") == tmdb_id else None
+        if details is None and self._tmdb_preview and self._tmdb_preview[0] == tmdb_id:
+            details = self._tmdb_preview[1]
+            if details and episode.season and episode.episode and (
+                str(episode.season) != details.season or str(episode.episode) != details.episode
+            ):
+                # Le titre de série vaut pour tout le lot ; pas celui d'un autre épisode.
+                details = replace(details, season=str(episode.season), episode=str(episode.episode), episode_title="")
+                note = translate_text("Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.")
+        if tmdb_id and details is None:
+            note = translate_text("Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.")
+        variables = snapshot.get("__profile_variables__", {}) if snapshot.get("__profile__", "") == profile else {}
+        if job and snapshot.get("__profile__", "") != profile:
+            note = translate_text("Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.")
+        context = matrix_output_context(
+            episode, source, details=details, tracks=tracks, track_order=order, variables=variables,
+            group=self.controls["tag"].text().strip(),
+        )
+        self.output_preview.set_context(context, default_name=default_matrix_output_name(source, self.recipe.output_tag),
+                                        episode=episode.display_name, note=note)
 
     def set_busy(self, busy: bool):
         self.busy = busy
@@ -1286,6 +1368,7 @@ class HybridStudio(QWidget):
         self._readiness_badge.setText(translate_text("Traitement en cours") if self.busy else
                                      translate_text("Prêt") if state.ready else translate_text("À configurer"))
         self.ready_changed.emit(state.ready and not self.busy)
+        self._update_output_preview()
 
     def _on_sync_strategy_changed(self, *_):
         manual = self.sync_strategy.currentData() == "manual"
@@ -1845,6 +1928,7 @@ class HybridStudio(QWidget):
             self.sync_episode.setEnabled(bool(ready_rows))
         finally:
             self.sync_episode.blockSignals(previously_blocked)
+        self._update_output_preview()
         job = self.jobs.get(row)
         key = (row, id(job[0])) if job else None
         if key == self._sync_job_key and self._sync_editor is not None:

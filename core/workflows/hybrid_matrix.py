@@ -10,11 +10,14 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration
+
+if TYPE_CHECKING:
+    from core.media_info_fetcher import MediaDetails
 
 # Extensions multimédia prises en charge
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
@@ -211,6 +214,8 @@ class MatrixEpisode:
     cadence_mismatch: Any = None
     status: str = "pending"  # "ready", "partial", "error", "done"
     status_message: str = ""
+    # Contexte de nommage déjà résolu : aperçu local sans nouvel appel TMDB.
+    naming_context: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
     @property
     def key(self) -> tuple[int, int] | str:
@@ -722,7 +727,7 @@ def prepare_matrix_episode(
 
     outdir = Path(output_dir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    out_name = f"{episode.master_file.stem}.{recipe.output_tag}.mkv"
+    out_name = default_matrix_output_name(episode.master_file, recipe.output_tag)
     output_path = outdir / out_name
 
     source_paths = [str(episode.master_file)] + [str(path) for _, path in episode.donor_files]
@@ -951,13 +956,42 @@ def prepare_matrix_episode(
     return remux_config, primary_calibration
 
 
+def default_matrix_output_name(source: Path, output_tag: str = "Hybrid") -> str:
+    return f"{source.stem}.{output_tag}.mkv"
+
+
+def matrix_output_context(
+    episode: MatrixEpisode, source: Path, *, details: MediaDetails | None = None,
+    tracks: list[TrackEntry] | None = None, track_order: list[tuple[int, int, str]] | None = None,
+    variables: dict[str, Any] | None = None, group: str = "",
+) -> dict[str, Any]:
+    """Même contexte pour l'aperçu UI et le nom réel du fichier assemblé."""
+    from cli.output_template import build_output_context
+
+    output_variables = dict(variables or {})
+    if group:
+        output_variables["release_group"] = group
+    context = build_output_context(source, details, tracks=tracks, track_order=track_order, variables=output_variables)
+    title_match = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", source.name, re.I)
+    reference_title = re.sub(r"\.(?:REPACK|PROPER)$", "", title_match.group(1), flags=re.I) if title_match else ""
+    context.update(season_num=episode.season, episode_num=episode.episode, ref_episode_title=reference_title)
+    # Les numéros du plan sont disponibles même sans recherche TMDB.
+    if episode.season > 0 and episode.episode > 0:
+        context.update(season=f"{episode.season:02d}", episode=f"{episode.episode:02d}",
+                       season_episode=f"S{episode.season:02d}E{episode.episode:02d}")
+    if group:
+        context.update(group=group, release_group=group)
+    context.update(__details__=details, __profile_variables__=variables or {})
+    return context
+
+
 def _finalize_matrix_metadata(
     episode: MatrixEpisode, result: RemuxConfig, outdir: Path,
     config: Any, options: Any, logger: Any, profile: dict[str, Any] | None,
     final_order: list[tuple[int, int, str]],
 ) -> None:
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
-    from cli.output_template import build_output_context, render_output_template
+    from cli.output_template import render_output_filename
     from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
 
     details = None
@@ -978,24 +1012,15 @@ def _finalize_matrix_metadata(
         result.tag_overrides = merge_tmdb_tag_overrides(tags, result.tag_overrides, tmdb_wins=True)
         result.tmdb_cover = cover
 
-    template = getattr(options, "output_template", None)
-    if not template:
-        return
     tracks = [track for source in result.sources for track in source.tracks]
     variables = dict((profile or {}).get("variables") or {})
     group = getattr(options, "tag", "") or ""
-    if group:
-        variables["release_group"] = group
-    context = build_output_context(
-        result.sources[0].path, details, tracks=tracks,
-        track_order=final_order, variables=variables,
+    context = matrix_output_context(
+        episode, result.sources[0].path, details=details, tracks=tracks,
+        track_order=final_order, variables=variables, group=group,
     )
-    title_match = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", result.sources[0].path.name, re.I)
-    reference_title = re.sub(r"\.(?:REPACK|PROPER)$", "", title_match.group(1), flags=re.I) if title_match else ""
-    context.update(season_num=episode.season, episode_num=episode.episode, ref_episode_title=reference_title)
-    if group:
-        context.update(group=group, release_group=group)
-    name = render_output_template(template, context)
-    if Path(name).is_absolute() or ".." in Path(name).parts:
-        raise ValueError("Le template doit rester dans le dossier de sortie.")
-    result.output = outdir / name
+    context.update(__tmdb_id__=str(tmdb_id or ""), __profile__=getattr(options, "profile", "") or "")
+    episode.naming_context = context
+    template = getattr(options, "output_template", None)
+    if template:
+        result.output = outdir / render_output_filename(template, context)

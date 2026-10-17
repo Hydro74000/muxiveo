@@ -261,6 +261,7 @@ def test_tmdb_search_reuses_remux_dialog_and_reports_the_selected_id(panel, tmp_
     panel.output.setText(str(tmp_path / "output"))
     panel.matrix_episodes = [MatrixEpisode(season=1, episode=3, master_file=reference)]
     panel.controls["auto-tmdb"].setText("777")
+    panel.controls["output-template"].setText("{title:release}.{season_episode}")
     for group in panel.findChildren(QGroupBox):
         if group.isCheckable():
             group.setChecked(True)
@@ -285,6 +286,8 @@ def test_tmdb_search_reuses_remux_dialog_and_reports_the_selected_id(panel, tmp_
     assert panel.controls["auto-tmdb"].text() == ("213562" if accepted else "777")
     assert (panel._settings_signature() != signature) is accepted
     assert panel._parse_preparation_args().auto_tmdb == (213562 if accepted else 777)
+    if accepted:
+        assert panel.output_preview.name.text() == "Crystal.Lake.S01E03.mkv"
 
 
 def test_hybrid_nfo_paths_require_an_explicit_opt_out(panel, tmp_path):

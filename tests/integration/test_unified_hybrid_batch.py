@@ -147,6 +147,7 @@ def test_witness_profile_template_and_export_match_the_real_mkv(window, tmp_path
     config, _ = panel.jobs[0]
     assert config.output.name == "Crystal.Lake.S01E01.MULTi.VFF.DDP.Hybrid.MVO.mkv"
     assert config.output.is_file(), panel.status.text()
+    assert panel.output_preview.name.text() == config.output.name
     assert config.crossfade_ms == 0 and not config.clean_nfo
     assert tmdb_calls == [{"enabled": True, "kind": "tv", "cover": True, "season": "1", "episode": "1", "id": 213562}]
     tracks = MatroskaReader(config.output).tracks()

@@ -11,7 +11,7 @@ from cli.output_template import build_output_context, render_output_template
 from core.media_info_fetcher import MediaDetails
 from core.workflows.remux_models import TrackEntry
 from ui.panels.remux_panel.profile_editor import KeywordLineEdit
-from ui.widgets.output_template_edit import OutputTemplateLineEdit, output_template_choices
+from ui.widgets.output_template_edit import OutputTemplateLineEdit, OutputTemplatePreview, output_template_choices
 
 
 def _token_actions(menu):
@@ -148,3 +148,24 @@ def test_hybrid_template_uses_the_shared_widget_and_updates_its_plan(qt_app):
         menu.deleteLater()
     finally:
         panel.close()
+
+
+def test_live_preview_handles_incomplete_templates_and_is_selectable(field):
+    preview = OutputTemplatePreview(field)
+    try:
+        preview.set_context({"title": "Été", "season_num": 1}, default_name="source.Hybrid.mkv", episode="S01E01")
+        assert preview.name.text() == "source.Hybrid.mkv"
+        assert preview.name.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+        assert preview.name.textFormat() == Qt.TextFormat.PlainText
+        field.setText("{title:release}.S{season_num:02d}")
+        assert preview.name.text() == "Ete.S01.mkv"
+        for invalid in ("{title", "../{title}", "/absolute/{title}"):
+            field.setText(invalid)
+            assert "mkv" not in preview.name.text()
+            assert preview.name.text() != "Ete.S01.mkv"
+        field.setText("{title:release}")
+        assert preview.name.text() == "Ete.mkv"
+        field.clear()
+        assert preview.name.text() == "source.Hybrid.mkv"
+    finally:
+        preview.close()

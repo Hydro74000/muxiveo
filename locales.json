@@ -1,4 +1,40 @@
 {
+  "Aperçu du nom final": {
+    "fra": "Aperçu du nom final",
+    "eng": "Final filename preview"
+  },
+  "Template invalide : {error}": {
+    "fra": "Template invalide : {error}",
+    "eng": "Invalid template: {error}"
+  },
+  "Le template doit rester dans le dossier de sortie.": {
+    "fra": "Le template doit rester dans le dossier de sortie.",
+    "eng": "The template must stay within the output directory."
+  },
+  "Pistes et métadonnées du dernier plan analysé.": {
+    "fra": "Pistes et métadonnées du dernier plan analysé.",
+    "eng": "Tracks and metadata from the last analyzed plan."
+  },
+  "Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.": {
+    "fra": "Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.",
+    "eng": "Witness preview: analyze to apply the profile and options to the final tracks."
+  },
+  "Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.": {
+    "fra": "Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.",
+    "eng": "Partial preview: inspect the witness or analyze this item to identify its tracks."
+  },
+  "Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.": {
+    "fra": "Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.",
+    "eng": "Partial preview: this episode's TMDB title will be loaded during analysis."
+  },
+  "Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.": {
+    "fra": "Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.",
+    "eng": "Partial preview: search TMDB or analyze to load its metadata."
+  },
+  "Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.": {
+    "fra": "Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.",
+    "eng": "Profile changed: analyze again to update tracks and naming aliases."
+  },
   "Valeur la mieux classée pour ce champ, sinon première valeur non vide.": {
     "fra": "Valeur la mieux classée pour ce champ, sinon première valeur non vide.",
     "eng": "The highest-ranked value for this field, otherwise the first nonempty value."
@@ -6483,9 +6519,9 @@
     "fra": "Insère Hybrid si les pistes finales viennent de plusieurs sources.",
     "eng": "Inserts Hybrid if the final tracks come from multiple sources."
   },
-  "Code saison/épisode TMDB au format scène, par exemple S01E02.": {
-    "fra": "Code saison/épisode TMDB au format scène, par exemple S01E02.",
-    "eng": "TMDB season/episode code in release format, such as S01E02."
+  "Code saison/épisode du plan Hybrid ou de TMDB, par exemple S01E02.": {
+    "fra": "Code saison/épisode du plan Hybrid ou de TMDB, par exemple S01E02.",
+    "eng": "Season/episode code from the Hybrid plan or TMDB, such as S01E02."
   },
   "Titre d'épisode TMDB normalisé en ASCII avec des points.": {
     "fra": "Titre d'épisode TMDB normalisé en ASCII avec des points.",
@@ -6495,13 +6531,13 @@
     "fra": "Titre d'épisode TMDB, avec ses espaces et accents.",
     "eng": "TMDB episode title, retaining spaces and accents."
   },
-  "Numéro de saison TMDB sur deux chiffres, sans le préfixe S.": {
-    "fra": "Numéro de saison TMDB sur deux chiffres, sans le préfixe S.",
-    "eng": "Two-digit TMDB season number without the S prefix."
+  "Numéro de saison du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe S.": {
+    "fra": "Numéro de saison du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe S.",
+    "eng": "Two-digit season number from the Hybrid plan or TMDB, without the S prefix."
   },
-  "Numéro d'épisode TMDB sur deux chiffres, sans le préfixe E.": {
-    "fra": "Numéro d'épisode TMDB sur deux chiffres, sans le préfixe E.",
-    "eng": "Two-digit TMDB episode number without the E prefix."
+  "Numéro d'épisode du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe E.": {
+    "fra": "Numéro d'épisode du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe E.",
+    "eng": "Two-digit episode number from the Hybrid plan or TMDB, without the E prefix."
   },
   "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.": {
     "fra": "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.",

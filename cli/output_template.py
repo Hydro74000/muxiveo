@@ -169,6 +169,14 @@ def render_output_template(
     return rendered
 
 
+def render_output_filename(template: str, context: dict[str, Any]) -> str:
+    """Rendu d'un nom relatif au dossier de sortie, commun au plan et à son aperçu."""
+    name = render_output_template(template, context)
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        raise ValueError("Le template doit rester dans le dossier de sortie.")
+    return name
+
+
 def _render_field(field_name: str, format_spec: str, conversion: str | None, context: dict[str, Any]) -> str:
     key = str(field_name or "").strip()
     if not key:
