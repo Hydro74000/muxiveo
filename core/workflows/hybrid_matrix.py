@@ -681,6 +681,8 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
             )
         elif track.track_type == "subtitle" and not has_profile:
             track.enabled = not _language_selected(track.language, recipe.donor_sub_langs)
+        elif has_profile and track.track_type in {"audio", "subtitle"}:
+            track.enabled = True
 
     for donor_source in sources[1:]:
         donor_has_preferred_audio = any(
@@ -697,6 +699,8 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
                 )
             elif track.track_type == "subtitle" and not has_profile:
                 track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
+            elif has_profile and track.track_type in {"audio", "subtitle"}:
+                track.enabled = True
 
 
 def prepare_matrix_episode(
@@ -762,11 +766,14 @@ def prepare_matrix_episode(
         profile = dict(load_decision_profile(profile_name, config))
         profile.pop("auto_sync", None)
         profile.pop("sync", None)
-        remux_config, _ = build_profile_remux_config(
+        remux_config, report = build_profile_remux_config(
             profile, cli_inputs=source_paths, cli_output=str(output_path),
             config=config, options=build_options, logger=logger, preview=True,
             metadata_job=job_payload, select_tracks=select_tracks,
         )
+        logger.emit("info", f"{episode.display_name} : profil {profile.get('name') or profile_name} appliqué "
+                    f"sur les pistes candidates ({report.get('applied_rules', 0)} règles, "
+                    f"{len(remux_config.track_order)} pistes finales).")
     else:
         remux_config = build_remux_config(job_payload, config, build_options, logger, select_tracks=select_tracks)
     remux_config.keep_chapters = recipe.keep_master_chapters
@@ -931,12 +938,11 @@ def prepare_matrix_episode(
             final_order.append((0, t.mkv_tid, t.entry_id))
 
     if profile:
-        # L'ordre du profil reste prioritaire ; ajouter les pistes explicitement
-        # cochées que ce profil avait écartées de son ordre initial.
+        # Les variantes et les pistes du modèle suivent l'ordre final du profil.
         allowed = set(final_order)
         profile_order = [item for item in remux_config.track_order if item in allowed]
         final_order = profile_order + [item for item in final_order if item not in profile_order]
-    if getattr(options, "auto_forced_subs", False):
+    if not profile and getattr(options, "auto_forced_subs", False):
         from core.workflows.subtitle_heuristics import forced_first
         final_order = forced_first(final_order, remux_config.sources)
     remux_config.track_order = final_order

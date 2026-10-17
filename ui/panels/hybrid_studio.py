@@ -580,6 +580,10 @@ class HybridStudio(QWidget):
 
         profile_row = QVBoxLayout()
         self.profile = ProfileSelector(self.config.profiles_dir, self)
+        self.profile.setToolTip(translate_text(
+            "Le profil s’applique après la détection forcés/SDH, sur les pistes du modèle d’assemblage "
+            "s’il est défini : sélection finale, noms, flags, ordre et variantes audio."
+        ))
         lbl_prof = QLabel(translate_text("Profil décisionnel (optionnel) :"))
         lbl_prof.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         profile_row.addWidget(lbl_prof)

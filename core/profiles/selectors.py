@@ -675,6 +675,13 @@ def remux_config_to_exact_job(
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
         if track.is_new:
+            # Une variante a sa propre identité ; les métadonnées au moment
+            # du clonage peuvent déjà avoir été modifiées par un profil.
+            payload["selector"] = {
+                "source": source_index_by_file_id.get(track.file_id),
+                "type": track.track_type,
+                "entry_id": track.entry_id,
+            }
             payload["entry_id"] = track.entry_id
             payload["codec"] = track.codec
             bitrate = audio_bitrate_kbps_from_display_info(track.display_info)

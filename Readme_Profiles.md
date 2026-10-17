@@ -291,6 +291,18 @@ Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegard�
 dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll`
 cherchera aussi `BestOfAll.json` dans `<dossier de config muxiveo>/profiles/decision/`.
 
+Dans **Hybrid Studio**, le modèle d'assemblage borne les pistes candidates du
+profil. Le profil s'applique ensuite : il peut filtrer ces pistes, les renommer,
+modifier leurs flags et leur ordre, ou créer des variantes audio. Il ne réactive
+pas les pistes décochées du modèle. Sans modèle, il décide de la sélection sur
+les sources, avec la vidéo réservée au master. La détection automatique
+forcés/SDH précède les règles du profil ; les noms et flags du profil sont
+prioritaires. Les workflows exportés contiennent ce résultat final.
+
+Les sous-titres de diffusion EIA-608/708 intégrés au flux vidéo ne sont pas des
+pistes Matroska indépendantes : un lecteur peut les afficher sous `eia_608` même
+s'ils ne figurent pas dans le modèle. La copie de la vidéo les conserve.
+
 En batch dossier :
 
 ```bash

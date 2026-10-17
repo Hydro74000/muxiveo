@@ -156,6 +156,9 @@ def test_witness_profile_template_and_export_match_the_real_mkv(window, tmp_path
     assert not any(track.language in {"spa", "es"} for track in tracks)
     assert any(track.flag_forced for track in tracks)
     assert any(track.flag_hearing_impaired for track in tracks)
+    # Les heuristiques ont enrichi les flags, puis le profil a nommé toutes
+    # les pistes : leurs libellés de repli ne doivent pas réapparaître au mux.
+    assert all(track.name.startswith("Plan") for track in tracks)
     workflows = tmp_path / "WF"
     workflows.mkdir()
     panel._save_jobs(workflows)

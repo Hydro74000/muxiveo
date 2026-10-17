@@ -82,6 +82,24 @@ def test_title_pattern_keywords_and_empty_cleanup():
     assert render_title_pattern("{lang_name} - {codec} - {channels} - {audio_object} - {flag_forced}", track) == "French - EAC3 - 5.1 - Atmos"
 
 
+def test_rules_and_title_keywords_use_current_flags_without_changing_source_identity():
+    track = _audio(1)
+    track.flag_visual_impaired = True  # Détecté ou édité depuis l'inspection.
+    assert not track.orig_flag_visual_impaired
+    profile = {"version": 1, "kind": "decision-profile", "name": "Flags courants", "rules": [{
+        "id": "description", "priority": 10, "scope": "all", "match": {"all": [
+            {"field": "flag_visual_impaired", "op": "is", "value": True},
+        ]}, "actions": [{"type": "set_flags", "value": {"commentary": True}}],
+    }, {
+        "id": "rename", "scope": "all", "match": {"all": [
+            {"field": "flag_commentary", "op": "is", "value": True},
+        ]}, "actions": [{"type": "set_title", "pattern": "{flag_visual_impaired} {flag_commentary}"}],
+    }]}
+    apply_decision_profile(profile, [track])
+    assert track.title == "Visual Impaired Commentary"
+    assert not track.orig_flag_visual_impaired and not track.orig_flag_commentary
+
+
 def test_lang_name_keeps_region_only_for_non_default_variants():
     assert lang_name("fr-FR") == "French"
     assert lang_name("fr-CA") == "French (Canada)"

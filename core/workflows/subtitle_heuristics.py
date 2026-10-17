@@ -8,7 +8,7 @@ from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.subtitle_sync import subtitle_hints
 
 
-def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, threshold=50):
+def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, threshold=50, all_audio_languages=False):
     if not (forced or sdh):
         return
     if threshold <= 0:
@@ -17,6 +17,9 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
     default = next((t for t in audios if t.flag_default), audios[0] if audios else None)
     if default is None:
         return
+    # Avant un profil, la langue audio par défaut n'est pas encore décidée.
+    # Détecter les forcés de chaque langue candidate ; le profil tranchera.
+    languages = list(dict.fromkeys(t.language for t in audios)) if all_audio_languages else [default.language]
     for source, info in zip(sources, infos):
         subtitles = {t.index: t for t in info.subtitle_tracks}
         for track in source.tracks:
@@ -36,7 +39,11 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
                 count = text.count(" --> ")
             hints = subtitle_hints(text, count=count, language=track.language,
                 audio_language=default.language, threshold=threshold, title=track.title)
-            if forced and hints["forced"]:
+            forced_hint = forced and (hints["forced"] or (all_audio_languages and any(
+                subtitle_hints(text, count=count, language=track.language,
+                    audio_language=language, threshold=threshold)["forced"] for language in languages
+            )))
+            if forced_hint:
                 track.flag_forced = track.flag_default = True
                 track.title = f"{track.language} ({translate_text('Forcé')})"
             if sdh and hints["hearing_impaired"]:

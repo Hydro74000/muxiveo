@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -80,7 +81,7 @@ def test_witness_selection_survives_profile_and_exact_job_roundtrip(assembly, tm
     if use_profile:
         profile = {"version": 1, "kind": "decision-profile", "name": "Test", "rules": [{
             "id": "rename", "scope": "all", "match": {"all": []}, "actions": [
-                {"type": "set_title", "value": "Profil"}, {"type": "set_enabled", "value": False},
+                {"type": "set_title", "value": "Profil"},
             ],
         }, {
             "id": "video-language", "scope": "all",
@@ -106,6 +107,114 @@ def test_witness_selection_survives_profile_and_exact_job_roundtrip(assembly, tm
         assert result.track_order[0][0] == 1  # Ordre du profil, distinct de l'ordre source.
     assert result.crossfade_ms == 0
     path = tmp_path / "export.exact-job.json"
+    save_workflow(path, remux_config_to_exact_job(result))
+    restored = build_remux_config(load_workflow(path), AppConfig(), CommonOptions(), Logger())
+    assert remux_config_to_exact_job(restored) == remux_config_to_exact_job(result)
+
+
+def test_profile_filters_model_candidates_and_keeps_audio_variants(assembly, tmp_path):
+    episode, recipe, _ = assembly
+    profile = {"version": 1, "kind": "decision-profile", "name": "Après témoin", "rules": [{
+        "id": "enable", "scope": "all", "match": {"all": []},
+        "actions": [{"type": "set_enabled", "value": True}],
+    }, {
+        # Le deuxième donneur a la même piste FR : il ne doit ni gagner ni
+        # provoquer une ambiguïté après avoir été décoché dans le témoin.
+        "id": "best-fr", "scope": "best", "tie_break": "ambiguous",
+        "match": {"all": [{"field": "type", "op": "is", "value": "audio"},
+                            {"field": "language", "op": "is", "value": "fr-FR"}]},
+        "actions": [{"type": "set_title", "value": "French DDP 5.1"},
+                    {"type": "create_audio_variant", "codec": "ac3", "bitrate_kbps": 640,
+                     "title_pattern": "French AC3"}],
+    }, {
+        "id": "remove-full-fr", "scope": "all", "write_mode": "override",
+        "match": {"all": [{"field": "type", "op": "is", "value": "subtitle"},
+                            {"field": "language", "op": "is", "value": "fr-FR"},
+                            {"field": "source_title", "op": "is", "value": "Complets"}]},
+        "actions": [{"type": "set_enabled", "value": False}],
+    }]}
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    active = [t for s in result.sources for t in s.tracks if t.enabled]
+    assert not any(t.enabled for t in result.sources[2].tracks)
+    assert not any(t.language == "es-ES" or t.orig_title in {"Commentary", "VO"} for t in active)
+    assert not any(t.is_subtitle and t.language == "fr-FR" and t.orig_title == "Complets" for t in active)
+    assert next(t for t in active if t.is_audio and t.language == "fr-FR" and not t.is_new).title == "French DDP 5.1"
+    variant = next(t for t in active if t.is_new)
+    assert variant.codec == "AC3" and variant.title == "French AC3"
+    assert any(item[2] == variant.entry_id for item in result.track_order)
+    path = tmp_path / "model-profile.exact-job.json"
+    save_workflow(path, remux_config_to_exact_job(result))
+    restored = build_remux_config(load_workflow(path), AppConfig(), CommonOptions(), Logger())
+    assert remux_config_to_exact_job(restored) == remux_config_to_exact_job(result)
+
+
+def test_profile_alone_selects_tracks_without_language_recipe_fallback(assembly, tmp_path):
+    episode, recipe, _ = assembly
+    recipe.track_choices = None
+    recipe.keep_master_audio_langs = recipe.donor_audio_langs = recipe.donor_sub_langs = []
+    profile = {"version": 1, "kind": "decision-profile", "name": "Profil seul",
+               "selection_policy": {"disable_unmatched_types": ["video", "audio", "subtitle"]},
+               "rules": [{"id": "donor-en", "scope": "all", "match": {"all": [
+                   {"field": "type", "op": "is", "value": "audio"},
+                   {"field": "source_title", "op": "is", "value": "VO"},
+               ]}, "actions": [{"type": "set_enabled", "value": True},
+                               {"type": "set_title", "value": "English from profile"}]}]}
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(),
+                                      SimpleNamespace(**vars(CommonOptions()), profile=str(path)), Logger())
+    assert [(s.file_index, t.title) for s in result.sources for t in s.tracks if t.enabled] == [(1, "English from profile")]
+
+
+def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monkeypatch):
+    episode, recipe, sources = assembly
+    # Forcés FR non taggés, audio par défaut EN dans la source : le profil
+    # pourra choisir le français après la détection, puis renommer les ST.
+    sources[0].tracks[1].flag_default = True
+    sources[1].tracks[3].flag_forced = sources[1].tracks[3].orig_flag_forced = False
+    from core.workflows.hybrid_matrix import witness_track_choices
+    recipe.track_choices = tuple(
+        choice for index, source in enumerate(sources)
+        for choice in witness_track_choices("master" if index == 0 else f"src_{index + 1}", source.tracks)
+    )
+    extracts = []
+
+    def extract(command, **kwargs):
+        extracts.append((Path(command[command.index("-i") + 1]).name, command[command.index("-map") + 1]))
+        # L'inspecteur simulé inverse les pistes : ID 12 = forcés du donneur.
+        forced = "source1" in command[command.index("-i") + 1] and "0:12" in command
+        content = "Hello" if forced else "[Music]" + " --> " * 60
+        return SimpleNamespace(returncode=0, stdout="1\n00:00:01,000 --> 00:00:02,000\n" + content, stderr="")
+
+    monkeypatch.setattr("core.workflows.subtitle_heuristics.subprocess.run", extract)
+    profile = {"version": 1, "kind": "decision-profile", "name": "Flags détectés", "rules": [{
+        "id": "subtitles", "scope": "all", "match": {"all": [
+            {"field": "type", "op": "is", "value": "subtitle"},
+        ]}, "actions": [{"type": "set_title", "pattern": "{lang_name} {flag_forced} {flag_hearing_impaired}"},
+                        {"type": "set_flags", "value": {"default": False}}],
+    }, {
+        "id": "sdh-first", "scope": "all", "match": {"all": [
+            {"field": "type", "op": "is", "value": "subtitle"},
+            {"field": "flag_hearing_impaired", "op": "is", "value": True},
+        ]}, "actions": [{"type": "set_order_priority", "value": 1}],
+    }], "variables": {"aliases": {"*": {"Hearing Impaired": "SDH"}}}}
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    options = SimpleNamespace(**vars(CommonOptions(auto_forced_subs=True, auto_sdh=True)), profile=str(path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    active_subs = [t for s in result.sources for t in s.tracks if t.enabled and t.is_subtitle]
+    assert len(extracts) == len(active_subs) == 3
+    forced = next(t for t in active_subs if t.orig_title == "Forcés")
+    assert forced.flag_forced and forced.title == "French Forced"
+    assert not any(t.flag_default for t in active_subs)  # La détection ne réécrit pas le profil.
+    assert all(t.flag_hearing_impaired and "SDH" in t.title for t in active_subs if t is not forced)
+    subtitle_ids = {t.entry_id for t in active_subs}
+    subtitle_order = [item[2] for item in result.track_order if item[2] in subtitle_ids]
+    assert subtitle_order[-1] == forced.entry_id  # L'ordre du profil prime sur forced_first.
+    path = tmp_path / "detected.exact-job.json"
     save_workflow(path, remux_config_to_exact_job(result))
     restored = build_remux_config(load_workflow(path), AppConfig(), CommonOptions(), Logger())
     assert remux_config_to_exact_job(restored) == remux_config_to_exact_job(result)
