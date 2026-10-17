@@ -44,6 +44,15 @@ def render_workers_range(engine: object) -> tuple[int, int] | None:
     return None
 
 
+def _base_only_frames(statistics: str) -> int:
+    """Images sans RPU ni EL recomposées sans résiduel (plugin ≥ 0.2.1), 0 si absent ou illisible."""
+    try:
+        value = json.loads(statistics).get("bl_only_frames", 0)
+    except (ValueError, AttributeError):
+        return 0
+    return value if type(value) is int and value > 0 else 0
+
+
 class FelEngine:
     """Bibliothèque privée du plugin, conservée en mémoire pendant le job."""
 
@@ -342,6 +351,13 @@ class FelProducer:
                     if self.source.engine.capabilities.get("statistics") == 1:
                         timings = self.source.engine.lib.mvo_fel_statistics(self._handle).decode("utf-8")
                         self.source.device_plan.log("INFO", f"FEL — mesures internes : {timings}")
+                        base_only = _base_only_frames(timings)
+                        if base_only:
+                            self.source.device_plan.log(
+                                "WARN",
+                                f"FEL — {base_only} image(s) source sans RPU ni couche EL : recomposée(s) sans "
+                                "résiduel, avec la courbe du RPU précédent.",
+                            )
             except RuntimeError:
                 # L'émetteur Qt peut déjà être fermé pendant l'annulation.
                 pass

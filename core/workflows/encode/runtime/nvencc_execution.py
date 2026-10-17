@@ -103,8 +103,21 @@ class NvenccDoviRpuMonitor:
         if match is not None:
             self.encoded_frames = int(match.group(1))
 
-    def raise_if_failed(self, *, expected_frames: int | None = None) -> None:
-        if self.missing:
+    def raise_if_failed(
+        self,
+        *,
+        expected_frames: int | None = None,
+        accepted_missing: int = 0,
+        warn: Callable[[str], None] | None = None,
+    ) -> None:
+        """``accepted_missing`` : RPU manquants déjà acceptés explicitement par l'utilisateur (audit forcé)."""
+        if self.missing and self.missing <= accepted_missing:
+            if warn is not None:
+                warn(
+                    f"NVEncC : {self.missing} trame(s) encodée(s) sans RPU Dolby Vision, "
+                    "conformément au manque accepté explicitement."
+                )
+        elif self.missing:
             raise EncodeError(
                 f"NVEncC : {self.missing} trame(s) encodée(s) sans RPU Dolby Vision "
                 "(« Failed to get dovi rpu ») ; sortie refusée."
@@ -594,6 +607,8 @@ class NvenccDirectOutputRunner:
                 ):
                     dovi_rpu_path = source_rpu(cwd / "source_rpu.bin")
                 expected_frames: int | None = None
+                # RPU plus court que la vidéo accepté explicitement : trames tolérées sans RPU.
+                accepted_missing_rpu = 0
                 if runtime_video.copy_dv and dovi_rpu_path is not None and cb.check_external_rpu is not None:
                     try:
                         source_frames = cb.check_external_rpu(routing.input_path, routing.stream_index, dovi_rpu_path)
@@ -606,6 +621,7 @@ class NvenccDirectOutputRunner:
                             cb.check_cancelled(signals)
                             raise EncodeError(f"Audit trames : {exc}") from exc
                         source_frames = 0
+                        accepted_missing_rpu = exc.missing.get("rpu", 0)
                     if source_frames:
                         expected_frames = math.ceil(source_frames * frame_ratio)
                 hdr10plus_json_path: Path | None = None
@@ -737,7 +753,9 @@ class NvenccDirectOutputRunner:
                     ):
                         cb.check_cancelled(signals)
                         raise EncodeError(message)
-                monitor.raise_if_failed(expected_frames=expected_frames)
+                monitor.raise_if_failed(
+                    expected_frames=expected_frames, accepted_missing=accepted_missing_rpu, warn=cb.log_info,
+                )
                 if runtime_video.fel_context is not None:
                     cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
                 effective_fps = output_fps or routing.source_fps or routing.input_fps

@@ -430,6 +430,19 @@ def test_l5_07_missing_rpu_line_fails_even_with_exit_zero(tmp_path, qt_app):
     clean.raise_if_failed(expected_frames=47)
 
 
+def test_missing_rpu_tolerated_only_up_to_explicitly_accepted_shortfall():
+    """Audit forcé (RPU plus court de 2) : 2 trames NVEncC sans RPU acceptées et signalées, pas 3."""
+    warnings: list[str] = []
+    monitor = NvenccDoviRpuMonitor()
+    for frame in (2876, 2877):
+        monitor.feed(f"avout: Failed to get dovi rpu for {frame}.")
+    monitor.raise_if_failed(accepted_missing=2, warn=warnings.append)
+    assert warnings and "2 trame(s)" in warnings[0]
+    monitor.feed("avout: Failed to get dovi rpu for 2878.")
+    with pytest.raises(EncodeError, match="sans RPU"):
+        monitor.raise_if_failed(accepted_missing=2, warn=warnings.append)
+
+
 def _guard(source: int | None, exact: int | None, rpu: int | None) -> FrameCountGuard:
     guard = FrameCountGuard(mediainfo_bin="mediainfo", ffprobe_bin="ffprobe", dovi_tool_bin="dovi_tool")
     counts = {"rpu": rpu}
@@ -450,8 +463,9 @@ def test_l5_06_external_rpu_strict_guard(tmp_path):
     assert _guard(1817, 312, 312).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu) == 312
     # Surplus final ≤ 4 retiré (même source, début aligné).
     assert _guard(312, 312, 314).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu) == 312
-    with pytest.raises(FrameCountAuditError, match="plus court"):
+    with pytest.raises(FrameCountAuditError, match="plus court") as shorter:
         _guard(312, 312, 300).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu)
+    assert shorter.value.missing == {"rpu": 12}
     with pytest.raises(FrameCountAuditError, match="illisible"):
         _guard(None, None, 312).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu)
 

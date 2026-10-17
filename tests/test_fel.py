@@ -649,3 +649,14 @@ def test_device_list_uses_features_and_ignores_unknown_keys():
     engine.lib = SimpleNamespace(mvo_fel_devices_features=listing, mvo_fel_devices=Mock(side_effect=AssertionError))
     (device,) = engine.devices()
     assert device.float64 and device.name == "RTX"
+
+
+def test_base_only_frames_read_from_plugin_statistics():
+    """Images sans RPU ni EL (plugin ≥ 0.2.1) : compte lu ; absent, illisible ou invalide → 0."""
+    from core.fel.engine import _base_only_frames
+
+    assert _base_only_frames('{"frames":2878,"bl_only_frames":2}') == 2
+    assert _base_only_frames('{"frames":12}') == 0
+    assert _base_only_frames('{"bl_only_frames":"2"}') == 0
+    assert _base_only_frames("pas du json") == 0
+    assert _base_only_frames("[]") == 0
