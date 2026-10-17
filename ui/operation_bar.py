@@ -39,7 +39,7 @@ class OperationBar(QWidget):
         self.setMinimumHeight(scale(78))
         self.setStyleSheet(f"""
             QWidget#operationBar {{background:{C.BG_PANEL};border-top:1px solid {C.BORDER_LT};}}
-            QLabel {{background:transparent;border:none;}}
+            QLabel, QWidget#operationProgress {{background:transparent;border:none;}}
         """)
         row = QHBoxLayout(self)
         row.setContentsMargins(scale(24), scale(12), scale(24), scale(12))
@@ -55,6 +55,7 @@ class OperationBar(QWidget):
         info.addWidget(self.heading)
         info.addWidget(self.status_label)
         self.progress_widget = QWidget()
+        self.progress_widget.setObjectName("operationProgress")
         progress = QVBoxLayout(self.progress_widget)
         progress.setContentsMargins(0, 0, 0, 0)
         progress.setSpacing(scale(6))
