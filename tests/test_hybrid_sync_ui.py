@@ -63,6 +63,50 @@ def _select_job(panel, job):
     panel.table.selectRow(0)
 
 
+def test_standard_options_are_visible_and_advanced_options_are_hidden(panel, qt_app):
+    panel.show()
+    qt_app.processEvents()
+    assert not panel._advanced_options.isChecked()
+    for key in ("auto-forced-subs", "auto-sdh", "auto-tmdb", "output-template"):
+        assert panel.controls[key].isVisible() and panel.controls[key].isEnabled()
+        assert panel._standard_options.isAncestorOf(panel.controls[key])
+    assert panel.controls["auto-forced-subs"].isChecked()
+    assert panel.controls["auto-sdh"].isChecked()
+    assert panel.output_preview.isVisible()
+    assert panel._sources_card.isAncestorOf(panel.matching_mode_combo)
+    assert panel.matching_mode_combo.isVisible()
+    for key in ("no-clean-nfo", "no-cover", "tag", "calibration", "forced-threshold"):
+        assert not panel.controls[key].isVisible()
+    panel._advanced_options.setChecked(True)
+    qt_app.processEvents()
+    assert panel.controls["calibration"].isVisible()
+    assert panel.controls["tag"].isVisible()
+    panel._advanced_options.setChecked(False)
+    args = panel._parse_preparation_args()
+    assert args.auto_forced_subs and args.auto_sdh and args.remove_closed_captions
+
+
+def test_caption_option_requires_detection_and_keeps_user_choice(panel, qt_app, tmp_path):
+    from core.inspector import VideoTrack
+    checkbox = panel.controls["remove-closed-captions"]
+    panel._advanced_options.setChecked(True)
+    assert checkbox.isChecked() and not checkbox.isEnabled()
+    video = VideoTrack(0, "hevc", "HEVC", 1920, 1080, "24", 10, None, None, None, None,
+                       has_closed_captions=True)
+    info = FileInfo(tmp_path / "witness.mkv", "matroska", 1, 100, None, video_tracks=[video])
+    panel._populate_witness_table([("Master", "master", info)])
+    assert checkbox.isEnabled() and checkbox.isChecked()
+    checkbox.setChecked(False)
+    assert panel._parse_preparation_args().remove_closed_captions is False
+    panel.set_busy(True)
+    assert not checkbox.isEnabled()
+    panel.set_busy(False)
+    assert checkbox.isEnabled() and not checkbox.isChecked()
+    panel.reference.setText(str(tmp_path / "another"))
+    panel._update_output_preview()
+    assert not checkbox.isEnabled()
+
+
 def test_correspondence_and_witness_tables_fit_all_rows_and_shrink(panel, qt_app, tmp_path):
     panel.table.setRowCount(8)
     info = FileInfo(tmp_path / "witness.mkv", "matroska", 1, 100, None,

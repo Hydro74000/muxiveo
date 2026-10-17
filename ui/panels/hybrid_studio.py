@@ -576,6 +576,7 @@ class HybridStudio(QWidget):
         self.matching_mode_combo.addItem(translate_text("Ordre naturel (Tri alphabétique 1 à 1)"), MatchingMode.ORDER)
         matching_row.addWidget(lbl_matching)
         matching_row.addWidget(self.matching_mode_combo, stretch=1)
+        cd_layout.addLayout(matching_row)
 
 
         profile_row = QVBoxLayout()
@@ -711,23 +712,40 @@ class HybridStudio(QWidget):
 
         layout.addWidget(card_witness)
 
-        # ── Carte 2 : Options d'hybridation (dépliables) ───────────────────────
+        # Les réglages usuels restent visibles ; seuls les réglages experts
+        # appartiennent au groupe repliable.
+        standard = _card(self)
+        self._standard_options = standard
+        standard_layout = QVBoxLayout(standard)
+        standard_layout.setContentsMargins(_scale(12), _scale(10), _scale(12), _scale(10))
+        standard_layout.addWidget(_section_label(translate_text("OPTIONS D’HYBRIDATION")))
+        standard_settings = QFormLayout()
+        standard_settings.setSpacing(_scale(6))
+        standard_layout.addLayout(standard_settings)
+        layout.addWidget(standard)
+
         advanced = QGroupBox(translate_text("Options d'hybridation avancées"))
+        self._advanced_options = advanced
         advanced.setStyleSheet(_groupbox_checkable_style())
         settings = QFormLayout(advanced)
         settings.setSpacing(_scale(6))
         self.controls: dict[str, QWidget] = {}
         for option, label, default in (
-            ("auto-forced-subs", "Détecter les sous-titres forcés", False),
-            ("auto-sdh", "Détecter les sous-titres SDH", False),
+            ("auto-forced-subs", "Détecter les sous-titres forcés", True),
+            ("auto-sdh", "Détecter les sous-titres SDH", True),
+            ("remove-closed-captions", "Supprimer les sous-titres embarqués EIA-608/708", True),
             ("no-clean-nfo", "Conserver le chemin complet dans le NFO", False),
             ("no-cover", "Sans jaquette TMDB", False),
         ):
             control = QCheckBox(translate_text(label))
             control.setChecked(default)
             control.setStyleSheet(_checkbox_style())
-            settings.addRow(control)
+            target_settings = standard_settings if option in {"auto-forced-subs", "auto-sdh"} else settings
+            target_settings.addRow(control)
             self.controls[option] = control
+            if option == "remove-closed-captions":
+                control.setEnabled(False)
+                control.setToolTip(translate_text("Disponible après détection sur une vidéo retenue. Préserve l’image et les métadonnées HDR/Dolby Vision."))
 
         for option, label, value, maximum in (
             ("forced-threshold", "Seuil forcés", 50, 10000),
@@ -750,6 +768,7 @@ class HybridStudio(QWidget):
             ("calibration", "Fichier de calibration"),
         ):
             line_edit = OutputTemplateLineEdit(hybrid=True) if option == "output-template" else QLineEdit("MVO" if option == "tag" else "")
+            target_settings = standard_settings if option in {"auto-tmdb", "output-template"} else settings
             line_edit.setStyleSheet(_input_style())
             lbl_txt = QLabel(translate_text(label))
             lbl_txt.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
@@ -761,15 +780,13 @@ class HybridStudio(QWidget):
                 self.tmdb_search_button = _secondary_button(translate_text("Rechercher…"))
                 self.tmdb_search_button.clicked.connect(self._search_tmdb)
                 tmdb_layout.addWidget(self.tmdb_search_button)
-                settings.addRow(lbl_txt, tmdb_row)
+                target_settings.addRow(lbl_txt, tmdb_row)
             else:
-                settings.addRow(lbl_txt, line_edit)
+                target_settings.addRow(lbl_txt, line_edit)
             self.controls[option] = line_edit
             if option == "output-template":
                 self.output_preview = OutputTemplatePreview(line_edit)
-                settings.addRow(self.output_preview)
-
-        settings.addRow(matching_row)
+                target_settings.addRow(self.output_preview)
 
         self.mirror = QCheckBox(translate_text("Recaler les sous-titres"))
         self.mirror.setChecked(True)
@@ -784,8 +801,7 @@ class HybridStudio(QWidget):
                 widget = item.widget() if item is not None else None
                 if widget is not None:
                     widget.setVisible(checked)
-            lbl_matching.setVisible(checked)
-            self.matching_mode_combo.setVisible(checked)
+            self._update_caption_option()
 
         advanced.toggled.connect(_toggle_advanced)
         advanced.toggled.emit(False)
@@ -826,9 +842,7 @@ class HybridStudio(QWidget):
         ct_layout.addWidget(self.table)
         layout.addWidget(card_table)
         layout.removeWidget(card_witness)
-        layout.removeWidget(advanced)
         layout.addWidget(card_witness)
-        layout.addWidget(advanced)
 
         # ── Carte 4 : Forme d'onde et micro-ajustement ─────────────────────────
         card_wave = CollapsibleCard(translate_text("RECALAGE ET PRÉ-ÉCOUTE"), self)
@@ -1222,6 +1236,7 @@ class HybridStudio(QWidget):
         """Réutilise le contexte réel, ou les pistes témoins avant la préparation."""
         if not hasattr(self, "output_preview") or not hasattr(self, "table"):
             return
+        self._update_caption_option()
         source_signature = self._source_signature()
         sources_current = self._matrix_signature is None or self._matrix_signature == source_signature
         row = self.table.currentRow()
@@ -1278,6 +1293,18 @@ class HybridStudio(QWidget):
         self.output_preview.set_context(context, default_name=default_matrix_output_name(source, self.recipe.output_tag),
                                         episode=episode.display_name, note=note)
 
+    def _update_caption_option(self):
+        """La disponibilité suit les vidéos détectées, sans modifier le choix utilisateur."""
+        signature = self._source_signature()
+        detected = (self._witness_signature == signature and any(
+            item["track"].is_video and item["track"].has_closed_captions and item["checkbox"].isChecked()
+            for item in self.witness_track_items
+        )) or (self._matrix_signature == signature and any(
+            track.enabled and track.is_video and track.has_closed_captions
+            for config, _ in self.jobs.values() for source in config.sources for track in source.tracks
+        ))
+        self.controls["remove-closed-captions"].setEnabled(bool(detected) and not self.busy)
+
     def set_busy(self, busy: bool):
         self.busy = busy
         self._sources_card.setEnabled(not busy)
@@ -1312,6 +1339,7 @@ class HybridStudio(QWidget):
         ):
             field.setEnabled(not busy)
         self._on_sync_strategy_changed()
+        self._update_caption_option()
         self.apply_recipe_btn.setEnabled(not busy and bool(self.witness_track_items))
         if not busy:
             self.select_waveform()
@@ -1421,6 +1449,9 @@ class HybridStudio(QWidget):
             arguments += ["--detect-cuts"]
         for option, control in self.controls.items():
             if isinstance(control, QCheckBox):
+                if option == "remove-closed-captions":
+                    arguments.append("--remove-closed-captions" if control.isChecked() else "--no-remove-closed-captions")
+                    continue
                 if control.isChecked():
                     arguments.append("--" + option)
             elif isinstance(control, QSpinBox):

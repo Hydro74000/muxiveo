@@ -105,7 +105,7 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
     }
     video = VideoTrack(0, "hevc", "H.265 / HEVC", 3840, 2160, "24000/1001", 10,
                        "yuv420p10le", "bt2020", "smpte2084", "bt2020nc", HDRType.HDR10,
-                       duration_s=2700)
+                       duration_s=2700, has_closed_captions=True)
     reference_info = FileInfo(
         reference, "matroska,webm", 2700, 8_100_000_000, 24_000_000,
         video_tracks=[video],

@@ -326,15 +326,27 @@ class _TrackTable(QTableWidget):
         """)
 
     def append_tracks(self, source_color: str, tracks: list[TrackEntry]) -> None:
+        rows = []
+        for track in tracks:
+            rows.append(track)
+            if track.is_video and track.has_closed_captions:
+                if track.remove_closed_captions is None:
+                    track.remove_closed_captions = True
+                rows.append(TrackEntry(
+                    track.mkv_tid, "subtitle", "EIA-608/708",
+                    translate_text("Sous-titre embarqué EIA-608/708"), "", "",
+                    enabled=not track.remove_closed_captions, file_id=track.file_id,
+                    entry_id=track.entry_id + ":cc", embedded_caption_parent_id=track.entry_id,
+                ))
         existing_ids = {
             entry.entry_id
-            for entry in self.current_tracks()
+            for entry in self.current_tracks(include_embedded=True)
         }
         updates_enabled = self.updatesEnabled()
         self.setUpdatesEnabled(False)
         self.blockSignals(True)
         try:
-            for entry in tracks:
+            for entry in rows:
                 if entry.entry_id in existing_ids:
                     continue
                 existing_ids.add(entry.entry_id)
@@ -406,21 +418,22 @@ class _TrackTable(QTableWidget):
         if not entry_id:
             return False
         self.blockSignals(True)
+        removed = False
         try:
             for row in range(self.rowCount() - 1, -1, -1):
                 item = self.item(row, self.COL_CHECK)
                 if item is None:
                     continue
                 entry = item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(entry, TrackEntry) and entry.entry_id == entry_id:
+                if isinstance(entry, TrackEntry) and (entry.entry_id == entry_id or entry.embedded_caption_parent_id == entry_id):
                     self._auto_sync_cancelable_entry_ids.discard(entry.entry_id)
                     self.removeRow(row)
-                    return True
+                    removed = True
         finally:
             self.blockSignals(False)
             self._rebuild_prev_lang()
             self._adjust_height()
-        return False
+        return removed
 
     def clear_all(self) -> None:
         self.setRowCount(0)
@@ -475,7 +488,7 @@ class _TrackTable(QTableWidget):
         self.setItem(row, self.COL_CODEC, codec_item)
 
         lang_item = QTableWidgetItem(entry.language)
-        lang_item.setFlags(self._FLAG_RW)
+        lang_item.setFlags(self._FLAG_RO if entry.embedded_caption_parent_id else self._FLAG_RW)
         self._prev_lang[row] = entry.language
         self.setItem(row, self.COL_LANG, lang_item)
 
@@ -495,7 +508,7 @@ class _TrackTable(QTableWidget):
         self._update_info_tooltip(row, entry)
 
         title_item = QTableWidgetItem(entry.title)
-        title_item.setFlags(self._FLAG_RW)
+        title_item.setFlags(self._FLAG_RO if entry.embedded_caption_parent_id else self._FLAG_RW)
         self.setItem(row, self.COL_TITLE, title_item)
 
         if entry.is_new:
@@ -503,11 +516,15 @@ class _TrackTable(QTableWidget):
         self._apply_video_encode_style(row, entry)
 
         self._set_action_cell(row, entry)
+        if entry.embedded_caption_parent_id:
+            tooltip = translate_text("Cocher pour conserver les sous-titres dans la vidéo ; décocher pour les retirer sans réencodage.")
+            chk.setToolTip(tooltip)
+            info_item.setToolTip(tooltip)
 
     @staticmethod
     def _apply_subtitle_conversion_hint(item: QTableWidgetItem, entry: TrackEntry) -> None:
         """Picto + infobulle si le sous-titre sera converti pour Matroska (ex. MOV_TEXT → SRT)."""
-        if entry.track_type != "subtitle":
+        if entry.track_type != "subtitle" or entry.embedded_caption_parent_id:
             return
         try:
             target, _warning = plan_subtitle_codec(entry.orig_codec or entry.codec)
@@ -551,6 +568,8 @@ class _TrackTable(QTableWidget):
         return btn
 
     def _set_action_cell(self, row: int, entry: TrackEntry) -> None:
+        if entry.embedded_caption_parent_id:
+            return
         container = QWidget()
         container.setAutoFillBackground(False)
         container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -828,7 +847,7 @@ class _TrackTable(QTableWidget):
                 else:
                     item.setForeground(color)
 
-    def current_tracks(self) -> list[TrackEntry]:
+    def current_tracks(self, *, include_embedded: bool = False) -> list[TrackEntry]:
         tracks: list[TrackEntry] = []
         for row in range(self.rowCount()):
             item0 = self.item(row, self.COL_CHECK)
@@ -846,9 +865,15 @@ class _TrackTable(QTableWidget):
             if title_item:
                 entry.title = title_item.text().strip()
             tracks.append(entry)
-        return tracks
+        by_id = {track.entry_id: track for track in tracks}
+        for track in tracks:
+            if track.embedded_caption_parent_id and track.embedded_caption_parent_id in by_id:
+                by_id[track.embedded_caption_parent_id].remove_closed_captions = not track.enabled
+        return tracks if include_embedded else [track for track in tracks if not track.embedded_caption_parent_id]
 
     def _open_edit_dialog(self, entry: TrackEntry) -> None:
+        if entry.embedded_caption_parent_id:
+            return
         dlg = TrackEditDialog(entry, parent=self)
         if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
             row = self._find_row_for_entry(entry)
@@ -1114,7 +1139,7 @@ class _TrackTable(QTableWidget):
         if chk is None:
             return
         entry = chk.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(entry, TrackEntry):
+        if not isinstance(entry, TrackEntry) or entry.embedded_caption_parent_id:
             return
 
         if entry.track_type == "subtitle":
@@ -1216,7 +1241,7 @@ class _TrackTable(QTableWidget):
         # lignes préserve les widgets d'action des autres pistes et évite un
         # coût proportionnel au nombre total de pistes à chaque drop.
         source_row = src_rows[0]
-        all_entries = self.current_tracks()
+        all_entries = self.current_tracks(include_embedded=True)
         drop_row = self._drop_target_row(event)
         adjusted = drop_row - (1 if source_row < drop_row else 0)
         adjusted = max(0, min(adjusted, self.rowCount() - 1))
@@ -1257,7 +1282,7 @@ class _TrackTable(QTableWidget):
         event.accept()
         current_type_order = [
             entry.entry_id
-            for entry in self.current_tracks()
+            for entry in self.current_tracks(include_embedded=True)
             if entry.track_type == source_entry.track_type
         ]
         self._last_order_changed_track_types = frozenset(

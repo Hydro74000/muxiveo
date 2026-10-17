@@ -178,6 +178,10 @@ def build_profile_remux_config(
     if not result.report.get("valid", True):
         raise CliError(json.dumps(result.report, ensure_ascii=False, default=json_default), EXIT_VALIDATION)
     _refresh_sources_tracks(sources, [*excluded, *result.tracks])
+    if options.remove_closed_captions is not None:
+        for track in result.tracks:
+            if track.is_video and track.has_closed_captions:
+                track.remove_closed_captions = options.remove_closed_captions
     metadata = metadata_job or {}
     tmdb_title = ""
     tmdb_tags = None

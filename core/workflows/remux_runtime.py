@@ -32,6 +32,7 @@ from core.workflows.common.sync_rewrite import (
 )
 from core.matroska.contract import MatroskaOutputContract, without_expected_attachment
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
+from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.remux_plan import passthrough_source_refs
 from core.workflows.common.attachments import canonical_attachment_output_name
@@ -398,6 +399,14 @@ class RemuxRuntimeRunner:
                     signals,
                 )
                 cb.log_step(9, "Post-actions sur le candidat (patchs conteneur)")
+                caption_indexes = {index for index, item in enumerate(mapped_tracks)
+                                   if item.track.is_video and item.track.remove_closed_captions}
+                if caption_indexes:
+                    from core.matroska.closed_captions import strip_candidate_captions
+                    from core.matroska.progress import native_mux_progress_callback
+                    cb.log("INFO", "Retrait ciblé des sous-titres embarqués EIA-608/708 (sans réencodage)")
+                    strip_candidate_captions(candidate, caption_indexes, cancel_cb=signals._cancel_event.is_set,
+                        progress_cb=native_mux_progress_callback(signals.progress.emit, label="Retrait EIA-608/708"))
                 cb.apply_muxing_post_action(candidate)
                 cb.apply_language_post_action(candidate)
                 # FlagEnabled : aucune disposition FFmpeg ne l'exprime, il est
@@ -407,7 +416,7 @@ class RemuxRuntimeRunner:
                 # pistes sources, déjà publiés par leurs tags. Les mesurer sur
                 # la sortie relirait le fichier entier pour rien.
                 derived_statistics = None
-                if not any(p for p in sync_cleanup_paths if any(m.source_path == p for m in mapped_tracks)):
+                if not caption_indexes and not any(p for p in sync_cleanup_paths if any(m.source_path == p for m in mapped_tracks)):
                     passthrough_refs = passthrough_source_refs(mapped_tracks)
                     if passthrough_refs is not None:
                         derived_statistics = derive_output_statistics(passthrough_refs)
@@ -455,7 +464,7 @@ class RemuxRuntimeRunner:
                 # Même contrat que le backend natif : le chemin produit (le
                 # journal ffmpeg est déjà diffusé via `progress`).
                 signals.finished.emit(str(run_config.output))
-            except TaskCancelledError:
+            except (TaskCancelledError, MatroskaWriteCancelled):
                 # Nettoyage tolérant : une OSError ici (fichier verrouillé, nom
                 # invalide sous Windows) priverait l'appelant du signal terminal.
                 if candidate is not None:

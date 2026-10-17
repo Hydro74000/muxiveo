@@ -4,6 +4,12 @@ import mmap
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.h26x_sei import (
+    remove_emulation_prevention_bytes as _remove_emulation_prevention_bytes,
+    iter_sei_messages as _iter_sei_messages,
+    build_sei_rbsp as _build_sei_rbsp,
+)
+
 
 _SEI_PREFIX_NAL_TYPES = {39, 40}
 _SEI_PIC_TIMING_PAYLOAD_TYPE = 1
@@ -25,92 +31,6 @@ def _find_start_code(mm: mmap.mmap, offset: int, size: int) -> tuple[int, int] |
             return pos - 1, 4
         return pos, 3
     return None
-
-
-def _remove_emulation_prevention_bytes(data: bytes) -> bytes:
-    out = bytearray()
-    zero_count = 0
-    for byte in data:
-        if zero_count >= 2 and byte == 0x03:
-            zero_count = 0
-            continue
-        out.append(byte)
-        if byte == 0:
-            zero_count += 1
-        else:
-            zero_count = 0
-    return bytes(out)
-
-
-def _add_emulation_prevention_bytes(data: bytes) -> bytes:
-    out = bytearray()
-    zero_count = 0
-    for byte in data:
-        if zero_count >= 2 and byte <= 0x03:
-            out.append(0x03)
-            zero_count = 0
-        out.append(byte)
-        if byte == 0:
-            zero_count += 1
-        else:
-            zero_count = 0
-    return bytes(out)
-
-
-def _iter_sei_messages(rbsp: bytes) -> list[tuple[int, bytes]]:
-    pos = 0
-    length = len(rbsp)
-    messages: list[tuple[int, bytes]] = []
-    while pos + 1 < length:
-        payload_type = 0
-        while pos < length and rbsp[pos] == 0xFF:
-            payload_type += 0xFF
-            pos += 1
-        if pos >= length:
-            break
-        payload_type += rbsp[pos]
-        pos += 1
-
-        payload_size = 0
-        while pos < length and rbsp[pos] == 0xFF:
-            payload_size += 0xFF
-            pos += 1
-        if pos >= length:
-            break
-        payload_size += rbsp[pos]
-        pos += 1
-
-        if pos + payload_size > length:
-            break
-        payload = rbsp[pos:pos + payload_size]
-        pos += payload_size
-        messages.append((payload_type, payload))
-
-        # Standard rbsp_trailing_bits: stop once the last remaining byte is 0x80.
-        if pos < length and rbsp[pos] == 0x80 and pos == length - 1:
-            break
-    return messages
-
-
-def _encode_sei_value(value: int) -> bytes:
-    if value < 0:
-        raise ValueError("SEI value must be non-negative")
-    out = bytearray()
-    while value >= 0xFF:
-        out.append(0xFF)
-        value -= 0xFF
-    out.append(value)
-    return bytes(out)
-
-
-def _build_sei_rbsp(messages: list[tuple[int, bytes]]) -> bytes:
-    rbsp = bytearray()
-    for payload_type, payload in messages:
-        rbsp.extend(_encode_sei_value(payload_type))
-        rbsp.extend(_encode_sei_value(len(payload)))
-        rbsp.extend(payload)
-    rbsp.append(0x80)
-    return _add_emulation_prevention_bytes(bytes(rbsp))
 
 
 def strip_pic_timing_from_sei_nal(nal_payload: bytes) -> tuple[bytes | None, int]:

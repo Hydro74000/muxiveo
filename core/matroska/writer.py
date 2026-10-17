@@ -507,6 +507,9 @@ class MatroskaWriter:
         cancel_cb: Callable[[], bool] | None = None,
         progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
     ) -> Path:
+        if any(track.remove_closed_captions for track in plan.tracks):
+            from .closed_captions import filter_caption_plan
+            plan = filter_caption_plan(plan)
         destination = Path(plan.output)
         if cancel_cb is not None and cancel_cb():
             raise MatroskaWriteCancelled("Écriture Matroska annulée (avant écriture)")

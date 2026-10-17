@@ -26,6 +26,7 @@ class CommonOptions:
     export_directory: bool = False
     auto_forced_subs: bool = False
     auto_sdh: bool = False
+    remove_closed_captions: bool | None = None
     forced_threshold: int = 50
     sync_mode: str | None = None
     sync_subtitles: str | None = None
@@ -53,6 +54,7 @@ class CommonOptions:
             export_workflow=getattr(args, "export_workflow", None),
             auto_forced_subs=bool(getattr(args, "auto_forced_subs", False)),
             auto_sdh=bool(getattr(args, "auto_sdh", False)),
+            remove_closed_captions=getattr(args, "remove_closed_captions", None),
             forced_threshold=getattr(args, "forced_threshold", 50),
             export_directory=getattr(args, "command", "") == "batch" or getattr(args, "profile_command", "") == "batch",
             sync_mode=getattr(args, "sync_mode", None),

@@ -301,7 +301,18 @@ prioritaires. Les workflows exportés contiennent ce résultat final.
 
 Les sous-titres de diffusion EIA-608/708 intégrés au flux vidéo ne sont pas des
 pistes Matroska indépendantes : un lecteur peut les afficher sous `eia_608` même
-s'ils ne figurent pas dans le modèle. La copie de la vidéo les conserve.
+s'ils ne figurent pas dans le modèle. Dans **Conteneur / Remux**, ils apparaissent
+comme une ligne « Sous-titre embarqué EIA-608/708 », décochée par défaut ; la
+cocher les conserve avec la vidéo. Ce choix ne crée pas une piste Matroska
+séparée. Dans **Hybrid Studio**, l'option avancée de suppression est cochée par
+défaut et disponible uniquement après détection. Le filtrage ciblé ne réencode
+pas les images et préserve les autres messages SEI, le HDR et Dolby Vision.
+Les workflows exact-job enregistrent ce choix sur la piste vidéo concernée.
+
+Hybrid affiche en permanence la détection forcés/SDH (activée par défaut),
+la recherche TMDB et le template de sortie avec son aperçu. Le mode de
+correspondance se règle dans **Sources et sortie** ; les autres réglages sont
+masqués jusqu'à l'ouverture des options avancées.
 
 En batch dossier :
 

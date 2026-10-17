@@ -57,6 +57,7 @@ class MatroskaMuxTrack:
     patch_language: bool = True
     patch_name: bool = True
     patch_flags: bool = True
+    remove_closed_captions: bool = False
 
 
 @dataclass(frozen=True)

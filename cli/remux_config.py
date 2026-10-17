@@ -446,6 +446,10 @@ def build_remux_config(
     )
     if select_tracks is not None:
         select_tracks(sources)
+    if options.remove_closed_captions is not None:
+        for track in tracks:
+            if track.is_video and track.has_closed_captions:
+                track.remove_closed_captions = options.remove_closed_captions
 
     # Synchronisation explicite via calibration ou dynamique via auto_sync
     calib_file = job.get("calibration") or getattr(options, "calibration", None)

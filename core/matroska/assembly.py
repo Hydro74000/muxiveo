@@ -98,6 +98,7 @@ class MatroskaAssemblyTrack:
     #: (audio réencodé, sync réelle) : langue, nom et flags non fixés en
     #: sont repris, et ses tags ciblés suivent la piste de sortie.
     origin: tuple[Path, int] | None = None
+    remove_closed_captions: bool = False
 
 
 def _origin_track(track: MatroskaAssemblyTrack, tracks_of) -> MatroskaTrack | None:
@@ -386,6 +387,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             patch_language=patch_language,
             patch_name=track.name is not None,
             patch_flags=track.flags is not None,
+            remove_closed_captions=track.remove_closed_captions,
         ))
         offset = int(track.time_shift_ms or 0)
         packet_routes.setdefault(track.artifact, {}).setdefault(

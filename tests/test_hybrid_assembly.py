@@ -490,6 +490,10 @@ def test_export_reprepares_changed_settings_before_writing(assembly, tmp_path, m
     directory = tmp_path / "WF"
     directory.mkdir()
     try:
+        # Les sources sont des fichiers vides : ce test porte sur la
+        # régénération des plans, pas sur l'extraction des sous-titres.
+        panel.controls["auto-forced-subs"].setChecked(False)
+        panel.controls["auto-sdh"].setChecked(False)
         panel.reference.setText(str(sources[0].path))
         panel.donor.setText(str(sources[1].path))
         panel.output.setText(str(tmp_path / "output"))

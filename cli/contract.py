@@ -108,6 +108,8 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
     for key in ("source", "source_index", "id", "mkv_tid", "stream", "time_shift_ms"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
+    if "remove_closed_captions" in value:
+        _expect(errors, f"{path}.remove_closed_captions", value["remove_closed_captions"], "bool", _is_bool)
     if "enabled" in value:
         _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
     for key in ("language", "title"):

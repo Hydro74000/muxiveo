@@ -92,6 +92,11 @@ class TrackEntry:
     orig_flag_visual_impaired:  bool = field(default=False, repr=False)
     orig_flag_original:         bool = field(default=False, repr=False)
     orig_flag_commentary:       bool = field(default=False, repr=False)
+    has_closed_captions: bool = False
+    #: None : copie historique CLI ; l'UI choisit le retrait par défaut après détection.
+    remove_closed_captions: bool | None = None
+    #: Ligne virtuelle UI, liée à une vidéo ; jamais une piste muxable.
+    embedded_caption_parent_id: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         if not self.orig_codec:
@@ -389,6 +394,7 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
             language=v.language or "",
             title=v.title or "",
             orig_language=v.language or "",
+            has_closed_captions=v.has_closed_captions,
             orig_title=v.title or "",
             file_id=file_id,
             frame_rate=v.frame_rate or "",

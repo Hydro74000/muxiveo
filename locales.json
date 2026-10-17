@@ -1,4 +1,28 @@
 {
+  "Le profil s’applique après la détection forcés/SDH, sur les pistes du modèle d’assemblage s’il est défini : sélection finale, noms, flags, ordre et variantes audio.": {
+    "fra": "Le profil s’applique après la détection forcés/SDH, sur les pistes du modèle d’assemblage s’il est défini : sélection finale, noms, flags, ordre et variantes audio.",
+    "eng": "The profile runs after forced/SDH detection, on assembly-model tracks when defined: final selection, names, flags, order and audio variants."
+  },
+  "Cocher pour conserver les sous-titres dans la vidéo ; décocher pour les retirer sans réencodage.": {
+    "fra": "Cocher pour conserver les sous-titres dans la vidéo ; décocher pour les retirer sans réencodage.",
+    "eng": "Check to keep captions inside the video; uncheck to remove them without re-encoding."
+  },
+  "Sous-titre embarqué EIA-608/708": {
+    "fra": "Sous-titre embarqué EIA-608/708",
+    "eng": "Embedded EIA-608/708 subtitle"
+  },
+  "Supprimer les sous-titres embarqués EIA-608/708": {
+    "fra": "Supprimer les sous-titres embarqués EIA-608/708",
+    "eng": "Remove embedded EIA-608/708 subtitles"
+  },
+  "Disponible après détection sur une vidéo retenue. Préserve l’image et les métadonnées HDR/Dolby Vision.": {
+    "fra": "Disponible après détection sur une vidéo retenue. Préserve l’image et les métadonnées HDR/Dolby Vision.",
+    "eng": "Available after detection in a selected video. Preserves the picture and HDR/Dolby Vision metadata."
+  },
+  "OPTIONS D’HYBRIDATION": {
+    "fra": "OPTIONS D’HYBRIDATION",
+    "eng": "HYBRID OPTIONS"
+  },
   "Aperçu du nom final": {
     "fra": "Aperçu du nom final",
     "eng": "Final filename preview"

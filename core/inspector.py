@@ -130,6 +130,7 @@ class VideoTrack:
     duration_s:      float | None = None
     bit_rate:        int | None   = None   # bps
     raw:             dict[str, Any] = field(default_factory=dict, repr=False)
+    has_closed_captions: bool = False
 
     @property
     def resolution(self) -> str:
@@ -590,6 +591,8 @@ class FileInspector:
             info.hdr_type = self._detect_hdr_from_raw(path, raw, mi_video=mi_video)
             info.primary_video.hdr_type = info.hdr_type
 
+        self._detect_closed_captions(info)
+
         chapter_count = info.chapters.count if info.chapters is not None else 0
         hdr_label = info.hdr_type.label() if info.primary_video else "Aucune piste vidéo"
         frame_count = info.frame_count if info.frame_count is not None else "?"
@@ -600,6 +603,28 @@ class FileInspector:
             f"Chap={chapter_count} HDR={hdr_label} Frames={frame_count}"
         )
         return info
+
+    def _detect_closed_captions(self, info: FileInfo) -> None:
+        """Détecte les CC sur les paquets compressés, dans le worker d'inspection."""
+        from core.closed_captions import caption_codec, detect_matroska_captions, detect_probed_captions
+
+        videos = [track for track in info.video_tracks if caption_codec(track.codec)]
+        if not videos:
+            return
+        try:
+            if "matroska" in info.format or "webm" in info.format:
+                found = detect_matroska_captions(info.path, cancel_cb=self._cancel_event.is_set if self._cancel_event else None)
+            else:
+                cmd = [self._ffprobe, "-v", "error", "-select_streams", "v", "-read_intervals", "%+#32",
+                       "-show_packets", "-show_streams", "-show_data", "-show_entries",
+                       "packet=stream_index,data:stream=index,codec_name,extradata", "-of", "json"]
+                cmd.extend(ffprobe_input_args(info.path))
+                result = self._probe(cmd)
+                found = detect_probed_captions(json.loads(result.stdout)) if not result.returncode else set()
+            for track in videos:
+                track.has_closed_captions = track.index in found
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            self._emit_verbose(f"Détection des sous-titres embarqués indisponible : {exc}")
 
     @staticmethod
     def _stream_pid_from_raw(raw: dict[str, Any]) -> int | None:

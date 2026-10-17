@@ -13,6 +13,8 @@ def _add_sync_options(parser):
     parser.add_argument("--sync-mode", choices=("physical", "container"), default=None)
     parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None)
     parser.add_argument("--clean-nfo", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--remove-closed-captions", action=argparse.BooleanOptionalAction, default=None,
+                        help="Retirer les sous-titres embarqués EIA-608/708 détectés, sans réencodage")
     parser.add_argument("--crossfade-ms", type=int, default=None)
     parser.add_argument("--auto-forced-subs", action="store_true")
     parser.add_argument("--forced-threshold", type=int, default=50)
