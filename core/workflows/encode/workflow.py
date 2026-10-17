@@ -3845,6 +3845,7 @@ class EncodeWorkflow(QObject):
                 self._check_cancelled(signals)
                 if commands:
                     self._log_step(5, "Encodage de l'artefact vidéo Matroska natif")
+                    signals.progress.emit("Encodage vidéo…")
                     for index, command in enumerate(commands, start=1):
                         self._runner._run_cmd(
                             command,

@@ -728,6 +728,7 @@ class NvenccDirectOutputRunner:
 
                 cb.check_cancelled(signals)
                 cb.log_step(6, "Encodage NVEncC")
+                signals.progress.emit("Encodage NVEncC…")
                 monitor = NvenccDoviRpuMonitor()
                 if decode_cmd is not None:
                     NvenccPipeExecutor().run(
