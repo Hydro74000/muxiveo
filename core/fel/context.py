@@ -18,3 +18,6 @@ class FelExecution:
     chroma_location: str = "left"
     # Capacité réellement sondée dans le worker de préparation (FFmpeg 7.1+).
     chroma_setparams: bool = False
+    # Statistiques de l'image produite (plugin ≥ 0.3.0) : HDR10+ et MaxCLL/MaxFALL recalculés après
+    # l'encodage ; None : HDR10+ de la source conservé.
+    statistics: Path | None = None

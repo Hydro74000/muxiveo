@@ -9,7 +9,7 @@ from typing import Callable
 
 from core.fel.context import FelExecution
 from core.fel.devices import FelDevicePlan
-from core.fel.engine import FelCancelled, FelEngine, FelError, FelSource, precision_supported
+from core.fel.engine import FelCancelled, FelEngine, FelError, FelSource, frame_statistics_supported, precision_supported
 from core.runner import TaskCancelledError
 from core.workflows.encode.dovi_policy import sub_profile_from_value, wants_fel_bake
 from core.workflows.encode.models import VideoEncodeSettings
@@ -47,6 +47,13 @@ def requested(video: VideoEncodeSettings) -> bool:
     return wants_fel_bake(video.bake_dovi_fel, sub_profile_from_value(video.dovi_source_profile), video.codec)
 
 
+def recomputes_hdr10plus(video: VideoEncodeSettings) -> bool:
+    """HDR10+ recalculé demandé : copie HDR10+ active, sortie HEVC (hdr10plus_tool), choix « recompute »."""
+    codec = str(video.codec or "").lower()
+    return bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute"
+                and (codec == "libx265" or "hevc" in codec) and not video.tonemap_to_sdr)
+
+
 def prepare_fel(
     video: VideoEncodeSettings, *, source: Path, work_dir: Path, index: int,
     ffmpeg: str, dovi: str, threads: int, run: Callable[[list[str]], object],
@@ -76,20 +83,35 @@ def prepare_fel(
         # Interpolation RIFE : elle limite le débit et partage le GPU ; une seule image FEL en vol
         # suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
         workers = 1 if video.interpolation.enabled else None
+        statistics: Path | None = None
+        if recomputes_hdr10plus(video):
+            if frame_statistics_supported(engine):
+                statistics = work_dir / f"fel_statistics_{index}.jsonl"
+            else:
+                log("WARN", prefix + "Extension mvo-fel antérieure à 0.3.0 : HDR10+ de la source conservé "
+                    "(mettre à jour l'extension pour le recalculer).")
         context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan,
-                                         precision=video.fel_precision, render_workers=workers),
+                                         precision=video.fel_precision, render_workers=workers,
+                                         statistics_path=statistics),
                                rpu, video.max_cll, video.static_hdr_light_level_source,
                                source_chroma_location(ffprobe, source, video.stream_index, capture),
-                               supports_chroma_setparams(ffmpeg, capture))
+                               supports_chroma_setparams(ffmpeg, capture), statistics)
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")
-        if video.inject_hdr_meta and not video.tonemap_to_sdr:
+        if statistics is not None:
+            # MaxCLL/MaxFALL exacts mesurés pendant l'encodage, insérés ensuite : rien de provisoire
+            # n'est transmis à l'encodeur.
+            provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source
+            if video.inject_hdr_meta and (not video.max_cll or provenance in {"source", "rpu_estimate", "source_metadata"}):
+                result = replace(result, max_cll="", static_hdr_light_level_source="fel_frame_statistics")
+            log("INFO", prefix + "HDR10+ et MaxCLL/MaxFALL recalculés sur l'image reconstruite (statistiques du plugin).")
+        elif video.inject_hdr_meta and not video.tonemap_to_sdr:
             provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source
             if not video.max_cll or provenance in {"source", "rpu_estimate", "source_metadata"}:
                 estimate = estimate_static_hdr_from_rpu(dovi, rpu, capture, prefer_l1=True)
                 result = replace(result, max_cll=estimate.max_cll, static_hdr_light_level_source="fel_rpu_l1_estimate")
                 log("WARN", prefix + f"MaxCLL/MaxFALL estimés depuis L1 : {estimate.max_cll or 'indisponibles'}.")
-        if video.copy_hdr10plus:
-            log("WARN", prefix + "HDR10+ conservé depuis la source : les images reconstruites peuvent nécessiter une nouvelle analyse.")
+        if video.copy_hdr10plus and statistics is None:
+            log("WARN", prefix + "HDR10+ conservé depuis la source : il décrit la BL, pas l'image reconstruite.")
         log("INFO", prefix + "FEL confirmé : reconstruction active avant les filtres et l'encodage.")
         return result
     except FelCancelled as exc:

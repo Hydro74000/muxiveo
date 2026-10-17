@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +65,14 @@ from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_ext
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
+from core.fel.hdr10plus import (
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    write_hdr10plus_json,
+)
+from core.matroska.hevc.access_units import HevcStreamCancelled
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.writer import MatroskaWriteCancelled
+from core.workflows.hevc_static_hdr_metadata import replace_content_light_level_sei_file
 
 
 def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSettings | None = None) -> bool:
@@ -79,6 +90,88 @@ def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSett
         or (video.p5_to_hdr10 and not routing.p5_native)
         or (video.tonemap_to_sdr and not routing.native_tonemap)
     )
+
+
+def _apply_fel_hdr10plus(
+    *,
+    video: VideoEncodeSettings,
+    intermediate: Path,
+    statistics_path: Path,
+    cwd: Path,
+    frame_ratio: Fraction,
+    encoded_frames: int | None,
+    ffmpeg_bin: str,
+    hdr10plus_bin: str,
+    dovi_bin: str,
+    run: Callable[[list[str], str], object],
+    cancelled: Callable[[], bool],
+    log: Callable[[str], None],
+    progress: Callable[[str], None],
+) -> None:
+    """HDR10+ et MaxCLL/MaxFALL de l'image reconstruite (statistiques du plugin) injectés dans la sortie NVEncC.
+
+    Flux extrait en annexB, HDR10+ puis SEI CLL injectés, payloads réécrits dans le MKV de NVEncC
+    (horodatages et TrackEntry conservés, MaxCLL/MaxFALL posés dans Colour).
+    """
+    try:
+        statistics = read_frame_statistics(statistics_path)
+    except FrameStatisticsError as exc:
+        raise EncodeError(str(exc)) from exc
+    json_path = cwd / "fel_hdr10plus.json"
+    annexb, injected, with_cll, rewritten = (
+        cwd / name for name in ("fel_annexb.hevc", "fel_hdr10plus.hevc", "fel_cll.hevc", "nvencc_hdr10plus.mkv")
+    )
+    try:
+        if video.copy_hdr10plus:
+            write_hdr10plus_json(statistics, json_path)
+            _expand_dynamic_hdr_metadata(
+                ratio=frame_ratio, rpu_bin=None, hdr10p_json=json_path, dovi_tool_bin=dovi_bin,
+                run_cmd=lambda cmd: run(cmd, "hdr10plus-expand"), log=log,
+            )
+            count = len(json.loads(json_path.read_text(encoding="utf-8"))["SceneInfo"])
+            if encoded_frames is not None and count != encoded_frames:
+                raise EncodeError(
+                    f"HDR10+ recalculé : {count} trames pour {encoded_frames} encodées ; injection refusée."
+                )
+        # Flux annexB puis flux injecté coexistent avec l'artefact NVEncC.
+        needed = 2.2 * intermediate.stat().st_size
+        if shutil.disk_usage(cwd).free < needed:
+            raise EncodeError(
+                f"HDR10+ recalculé : espace insuffisant dans le dossier de travail ({needed / 1e9:.1f} Go nécessaires)."
+            )
+        progress("Extraction du flux NVEncC pour l'injection HDR10+…")
+        run([ffmpeg_bin, "-nostdin", "-y", "-v", "error", "-i", str(intermediate), "-map", "0:v:0", "-c", "copy",
+             "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(annexb)], "hdr10plus-extract")
+        if video.copy_hdr10plus:
+            progress("Injection du HDR10+ recalculé…")
+            run([hdr10plus_bin, "inject", "-i", str(annexb), "-j", str(json_path), "-o", str(injected)],
+                "hdr10plus-inject")
+            annexb.unlink(missing_ok=True)
+        else:
+            annexb.replace(injected)
+        final, levels = injected, None
+        if deferred_light_levels(video):
+            exact = statistics.static_light_levels()
+            if replace_content_light_level_sei_file(injected, with_cll, max_cll=exact).applied:
+                injected.unlink(missing_ok=True)
+                final = with_cll
+            max_cll, max_fall = (int(value) for value in exact.split(","))
+            levels = (max_cll, max_fall)
+            log(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+        progress("Réécriture du flux NVEncC avec le HDR10+ recalculé…")
+        try:
+            MatroskaHevcPayloadRewriter().rewrite(
+                encoded_mkv=intermediate, injected_hevc=final, output=rewritten,
+                cancel_cb=cancelled, light_levels=levels,
+            )
+        except (HevcStreamCancelled, MatroskaWriteCancelled) as exc:
+            raise TaskCancelledError() from exc
+        os.replace(rewritten, intermediate)
+    finally:
+        for path in (annexb, injected, with_cll, rewritten, json_path):
+            path.unlink(missing_ok=True)
+    if video.copy_hdr10plus:
+        log(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
 
 
 _MISSING_RPU_MARKER = "failed to get dovi rpu"
@@ -631,7 +724,8 @@ class NvenccDirectOutputRunner:
                         return cb.run_cmd(cmd, cwd, "interpolation-metadata",
                                           lambda line: signals.progress.emit(line), signals)
 
-                    if runtime_video.copy_hdr10plus:
+                    # HDR10+ recalculé (FEL intégré) : injecté après l'encodage, rien depuis la source.
+                    if runtime_video.copy_hdr10plus and fel_statistics_path(runtime_video) is None:
                         hdr10plus_json_path = cwd / "source_hdr10plus.json"
                         cleanup_paths.append(hdr10plus_json_path)
                         signals.progress.emit("Extraction métadonnées HDR10+…")
@@ -759,6 +853,18 @@ class NvenccDirectOutputRunner:
                 )
                 if runtime_video.fel_context is not None:
                     cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
+                statistics_path = fel_statistics_path(runtime_video)
+                if statistics_path is not None and intermediate.is_file() and (
+                        runtime_video.copy_hdr10plus or deferred_light_levels(runtime_video)):
+                    cb.check_cancelled(signals)
+                    _apply_fel_hdr10plus(
+                        video=runtime_video, intermediate=intermediate, statistics_path=statistics_path, cwd=cwd,
+                        frame_ratio=frame_ratio, encoded_frames=monitor.encoded_frames, ffmpeg_bin=cb.ffmpeg_bin,
+                        hdr10plus_bin=hdr10plus_bin, dovi_bin=dovi_bin,
+                        run=lambda cmd, label: cb.run_cmd(cmd, cwd, label, lambda line: signals.progress.emit(line), signals),
+                        cancelled=signals._cancel_event.is_set, log=cb.log_info, progress=signals.progress.emit,
+                    )
+                    cb.check_cancelled(signals)
                 effective_fps = output_fps or routing.source_fps or routing.input_fps
                 # Record DOVI reconstruit (perdu au muxage) : compatibilité de la matrice V30.
                 dovi_compat = dovi_output_compat_id_for(runtime_video)

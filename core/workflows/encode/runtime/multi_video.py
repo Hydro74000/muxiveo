@@ -21,7 +21,13 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode,
 from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
-from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.hevc_static_hdr_metadata import (
+    inject_static_hdr_sei_file, replace_content_light_level_sei_file,
+)
+from core.fel.hdr10plus import (
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    write_hdr10plus_json,
+)
 from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata,
     ffprobe_beside,
@@ -233,7 +239,9 @@ class MultiVideoPipelineRunner:
                     log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
                 )
                 local_cleanup.extend([rpu_bin, dovi_geometry_edit_json(rpu_bin)])
-            if video.copy_hdr10plus:
+            # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
+            fel_statistics = fel_statistics_path(video)
+            if video.copy_hdr10plus and fel_statistics is None:
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",
                     str(meta_input), "-o", str(hdr10p_json),
@@ -246,7 +254,7 @@ class MultiVideoPipelineRunner:
             expand_dynamic_hdr_metadata(
                 ratio=frame_ratio,
                 rpu_bin=rpu_bin if video.copy_dv else None,
-                hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                hdr10p_json=hdr10p_json if (video.copy_hdr10plus and fel_statistics is None) else None,
                 dovi_tool_bin=cb.bins.get("dovi_tool"),
                 run_cmd=lambda cmd: run_cmd(cmd, f"dovi-scenes-{index}"),
                 log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
@@ -319,6 +327,39 @@ class MultiVideoPipelineRunner:
             ], f"annexb-from-encoded-{index}")
             local_cleanup.append(current_hevc)
             remove_path(enc_video_mkv)
+
+            light_levels: tuple[int, int] | None = None
+            if fel_statistics is not None and (video.copy_hdr10plus or deferred_light_levels(video)):
+                # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+                try:
+                    statistics = read_frame_statistics(fel_statistics)
+                except FrameStatisticsError as exc:
+                    raise EncodeError(str(exc)) from exc
+                if video.copy_hdr10plus:
+                    write_hdr10plus_json(statistics, hdr10p_json)
+                    local_cleanup.append(hdr10p_json)
+                    expand_dynamic_hdr_metadata(
+                        ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,
+                        dovi_tool_bin=cb.bins.get("dovi_tool"),
+                        run_cmd=lambda cmd: run_cmd(cmd, f"hdr10plus-expand-{index}"),
+                        log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
+                    )
+                    cb.log_info(f"Piste vidéo {index}: HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
+                if deferred_light_levels(video):
+                    exact = statistics.static_light_levels()
+                    video = replace(video, max_cll=exact)
+                    max_cll, max_fall = (int(value) for value in exact.split(","))
+                    light_levels = (max_cll, max_fall)
+                    # SEI CLL remplacé (x265 écrit 0,0 avec master-display) ; MDCV de l'encodeur intact.
+                    cll_out = work_dir / f"video_{index}.cll.hevc"
+                    if replace_content_light_level_sei_file(current_hevc, cll_out, max_cll=exact).applied:
+                        remove_path(current_hevc)
+                        local_cleanup.append(cll_out)
+                        current_hevc = cll_out
+                    else:
+                        cll_out.unlink(missing_ok=True)
+                    cb.log_info(f"Piste vidéo {index}: MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                cb.check_cancelled(signals)
 
             if video.copy_dv or video.copy_hdr10plus:
                 guard = FrameCountGuard(
@@ -424,6 +465,7 @@ class MultiVideoPipelineRunner:
                     output=wrapped,
                     dovi_record=record_for_rewriter,
                     cancel_cb=signals._cancel_event.is_set,
+                    light_levels=light_levels,
                 )
             except (HevcStreamCancelled, MatroskaWriteCancelled) as exc:
                 raise TaskCancelledError() from exc

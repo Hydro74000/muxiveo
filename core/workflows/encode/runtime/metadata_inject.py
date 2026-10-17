@@ -37,7 +37,13 @@ from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountGuard,
     MetadataAdjustment,
 )
-from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.hevc_static_hdr_metadata import (
+    inject_static_hdr_sei_file, replace_content_light_level_sei_file,
+)
+from core.fel.hdr10plus import (
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    write_hdr10plus_json,
+)
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
 from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu
@@ -428,7 +434,9 @@ class MetadataInjectRunner:
                     _check()
 
                 hdr10p_json = tmp / "hdr10p.json"
-                if video.copy_hdr10plus:
+                # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
+                fel_statistics = fel_statistics_path(video)
+                if video.copy_hdr10plus and fel_statistics is None:
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
@@ -451,7 +459,7 @@ class MetadataInjectRunner:
                 expand_dynamic_hdr_metadata(
                     ratio=frame_ratio,
                     rpu_bin=rpu_bin if video.copy_dv else None,
-                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    hdr10p_json=hdr10p_json if (video.copy_hdr10plus and fel_statistics is None) else None,
                     dovi_tool_bin=cb.bins.get("dovi_tool"),
                     run_cmd=_run,
                     log=cb.log_info,
@@ -627,6 +635,44 @@ class MetadataInjectRunner:
                         f"final (mode {estimate_obj.mode}, confiance "
                         f"{estimate_obj.confidence}) : {estimate_obj.max_cll}."
                     )
+
+                light_levels: tuple[int, int] | None = None
+                if fel_statistics is not None and (video.copy_hdr10plus or deferred_light_levels(video)):
+                    # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+                    try:
+                        statistics = read_frame_statistics(fel_statistics)
+                    except FrameStatisticsError as exc:
+                        raise EncodeError(str(exc)) from exc
+                    if video.copy_hdr10plus:
+                        write_hdr10plus_json(statistics, hdr10p_json)
+                        expand_dynamic_hdr_metadata(
+                            ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,
+                            dovi_tool_bin=cb.bins.get("dovi_tool"), run_cmd=_run, log=cb.log_info,
+                        )
+                        cb.log_info(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
+                    if deferred_light_levels(video):
+                        exact = statistics.static_light_levels()
+                        video = dataclasses.replace(video, max_cll=exact)
+                        max_cll, max_fall = (int(value) for value in exact.split(","))
+                        light_levels = (max_cll, max_fall)
+                        updated_tracks = []
+                        for track_index, track in enumerate(effective_config.video_tracks):
+                            same_track = bool(video.track_entry_id and track.track_entry_id == video.track_entry_id)
+                            if same_track or (not video.track_entry_id and track_index == 0):
+                                track = dataclasses.replace(track, max_cll=exact)
+                            updated_tracks.append(track)
+                        effective_config = dataclasses.replace(
+                            effective_config, video=video, video_tracks=updated_tracks or [video],
+                        )
+                        # SEI CLL remplacé (x265 écrit 0,0 avec master-display) ; MDCV de l'encodeur intact.
+                        out_cll = _alloc("enc_cll.hevc", current_hevc.stat().st_size)
+                        if replace_content_light_level_sei_file(current_hevc, out_cll, max_cll=exact).applied:
+                            _free(current_hevc)
+                            current_hevc = out_cll
+                        else:
+                            _free(out_cll)
+                        cb.log_info(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                    _check()
 
                 # Audit frame count : empêche l'injection sur un stream qui
                 # aurait dérapé en frame count (NVENC drop, NVDEC dup, filtre
@@ -814,6 +860,7 @@ class MetadataInjectRunner:
                         output=wrapped_video,
                         dovi_record=record_for_muxer,
                         cancel_cb=signals._cancel_event.is_set,
+                        light_levels=light_levels,
                     )
                 except (HevcStreamCancelled, MatroskaWriteCancelled) as exc:
                     raise TaskCancelledError() from exc

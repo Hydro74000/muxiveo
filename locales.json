@@ -6682,5 +6682,21 @@
   "Hybrid": {
     "fra": "Hybrid",
     "eng": "Hybrid"
+  },
+  "HDR10+ avec FEL intégré": {
+    "fra": "HDR10+ avec FEL intégré",
+    "eng": "HDR10+ with baked FEL"
+  },
+  "Recalculé sur l’image reconstruite (recommandé)": {
+    "fra": "Recalculé sur l’image reconstruite (recommandé)",
+    "eng": "Recomputed on the reconstructed image (recommended)"
+  },
+  "Conservé depuis la source (décrit la BL)": {
+    "fra": "Conservé depuis la source (décrit la BL)",
+    "eng": "Kept from the source (describes the BL)"
+  },
+  "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.": {
+    "fra": "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.",
+    "eng": "Recomputed: HDR10+ statistics (profile A) and MaxCLL/MaxFALL measured on the reconstructed image per Dolby Vision shot, then injected after encoding (HEVC, mvo-fel extension 0.3.0 or later). Kept: the source HDR10+, computed on the BL without the FEL contribution."
   }
 }

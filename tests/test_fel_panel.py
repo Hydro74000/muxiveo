@@ -142,3 +142,36 @@ def test_precision_combo_modes_tooltips_and_track_state(qt_app, monkeypatch):
         assert "double" not in labels[RTX64.uuid]
     finally:
         panel.close()
+
+
+def test_hdr10plus_choice_shown_with_fel_and_hdr10plus_copy(qt_app, monkeypatch):
+    """HDR10+ recalculé par défaut ; choix visible seulement avec FEL intégré et copie HDR10+, état par piste."""
+    from core.inspector import HDRType
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_rebuild_preview", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_schedule_static_hdr_estimate", lambda *a, **k: None)
+    panel = EncodePanel(AppConfig())
+    try:
+        info = _file_info(_PATH_A)
+        info.video_tracks[0].hdr_type = info.hdr_type = HDRType.DOLBY_VISION_HDR10PLUS
+        info.video_tracks[0].dovi_profile = 7
+        panel.set_video_tracks([(info, _video_entry(), _COLOR)])
+        panel._set_combo_data(panel._codec_combo, "libx265")
+        widget, combo = panel._fel_hdr10plus_widget, panel._fel_hdr10plus_combo
+        panel._copy_hdr10plus_cb.setChecked(True)
+        assert widget.isHidden()
+        panel._bake_fel_cb.click()
+        assert not widget.isHidden() and combo.currentData() == "recompute"
+        assert panel._current_video_settings().fel_hdr10plus == "recompute"
+        combo.setCurrentIndex(combo.findData("source"))
+        combo.activated.emit(combo.currentIndex())
+        state = panel._current_video_state()
+        assert state["fel_hdr10plus"] == "source"
+        panel._apply_video_state({**state, "fel_hdr10plus": "recompute"})
+        assert panel._current_video_settings().fel_hdr10plus == "recompute"
+        panel._apply_video_state(state)
+        assert combo.currentData() == "source" and panel._current_video_settings().fel_hdr10plus == "source"
+        panel._copy_hdr10plus_cb.setChecked(False)
+        assert widget.isHidden()
+    finally:
+        panel.close()

@@ -189,12 +189,39 @@ def inject_static_hdr_sei_file(
     return result
 
 
+def replace_content_light_level_sei_file(
+    input_path: Path,
+    output_path: Path,
+    *,
+    max_cll: str,
+) -> StaticHdrSeiInjectionResult:
+    """Remplace le SEI CLL d'un fichier HEVC annexB (MaxCLL/MaxFALL connus après l'encodage).
+
+    Les messages CLL existants (ex. 0,0 « inconnu » écrit par x265 avec master-display) sont
+    retirés des SEI préfixes, les autres messages conservés ; le CLL exact est inséré sur la
+    première image et chaque image IRAP.
+    """
+    sei_nal, requested_types = _build_static_hdr_sei_nal(master_display="", max_cll=max_cll)
+    if input_path.stat().st_size == 0:
+        return StaticHdrSeiInjectionResult(0, 0, 0, 0)
+    with input_path.open("rb") as src:
+        with mmap.mmap(src.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("wb") as dst:
+                result = _rewrite_stream(mm, dst, sei_nal=sei_nal, requested_types=requested_types,
+                                         strip_types=requested_types)
+    if not result.applied:
+        output_path.unlink(missing_ok=True)
+    return result
+
+
 def _rewrite_stream(
     data: bytes | mmap.mmap,
     writer,
     *,
     sei_nal: bytes,
     requested_types: frozenset[int],
+    strip_types: frozenset[int] = frozenset(),
 ) -> StaticHdrSeiInjectionResult:
     current_au: list[_NalRef] = []
     access_units = 0
@@ -221,6 +248,7 @@ def _rewrite_stream(
             sei_nal=sei_nal,
             requested_types=requested_types,
             inject_into_au=is_target,
+            strip_types=strip_types,
         )
         if injected:
             injected_access_units += 1
@@ -260,8 +288,10 @@ def _write_access_unit(
     sei_nal: bytes,
     requested_types: frozenset[int],
     inject_into_au: bool,
+    strip_types: frozenset[int] = frozenset(),
 ) -> tuple[bool, bool]:
-    present_types = _collect_prefix_sei_payload_types(data, nal_refs)
+    # Types retirés : jamais considérés présents (le message est remplacé).
+    present_types = _collect_prefix_sei_payload_types(data, nal_refs) - strip_types
     missing_types = [ptype for ptype in requested_types if ptype not in present_types]
     should_inject = inject_into_au and bool(missing_types)
     first_slice_index = next(
@@ -277,6 +307,15 @@ def _write_access_unit(
         if should_inject and first_slice_index is not None and index == first_slice_index:
             writer.write(_START_CODE_4)
             writer.write(sei_nal)
+        if strip_types and nal.nal_type == _PREFIX_SEI_NAL_TYPE:
+            raw = bytes(data[nal.payload_offset:nal.end_offset])
+            messages = _sei_messages(raw)
+            if messages is not None and any(ptype in strip_types for ptype, _ in messages):
+                kept = [(ptype, payload) for ptype, payload in messages if ptype not in strip_types]
+                if kept:
+                    writer.write(_START_CODE_4)
+                    writer.write(_build_sei_nal(raw[:2], kept))
+                continue
         writer.write(_START_CODE_4)
         writer.write(data[nal.payload_offset:nal.end_offset])
 
@@ -411,6 +450,45 @@ def _escape_rbsp(rbsp: bytes) -> bytes:
     return bytes(out)
 
 
+def _sei_messages(nal_payload: bytes) -> list[tuple[int, bytes]] | None:
+    """Messages (type, contenu) d'un NAL SEI ; None si le NAL est illisible (conservé tel quel)."""
+    if len(nal_payload) <= 2:
+        return None
+    rbsp = _unescape_rbsp(nal_payload[2:])
+    messages: list[tuple[int, bytes]] = []
+    offset = 0
+    while offset < len(rbsp):
+        if offset == len(rbsp) - 1 and rbsp[offset] == 0x80:
+            return messages
+        values = []
+        for _ in range(2):  # type puis taille, codés par octets 0xFF cumulés
+            value = 0
+            while offset < len(rbsp) and rbsp[offset] == 0xFF:
+                value += 0xFF
+                offset += 1
+            if offset >= len(rbsp):
+                return None
+            values.append(value + rbsp[offset])
+            offset += 1
+        payload_type, payload_size = values
+        if offset + payload_size > len(rbsp):
+            return None
+        messages.append((payload_type, rbsp[offset:offset + payload_size]))
+        offset += payload_size
+    return None
+
+
+def _build_sei_nal(header: bytes, messages: list[tuple[int, bytes]]) -> bytes:
+    """NAL SEI reconstruit (en-tête conservé) à partir de ses messages."""
+    rbsp = bytearray()
+    for payload_type, payload in messages:
+        _append_payload_type_or_size(rbsp, payload_type)
+        _append_payload_type_or_size(rbsp, len(payload))
+        rbsp.extend(payload)
+    rbsp.append(0x80)
+    return header + _escape_rbsp(bytes(rbsp))
+
+
 def _parse_prefix_sei_payload_types(nal_payload: bytes) -> set[int]:
     if len(nal_payload) <= 2:
         return set()
@@ -465,4 +543,5 @@ __all__ = [
     "StaticHdrSeiInjectionResult",
     "inject_static_hdr_sei",
     "inject_static_hdr_sei_file",
+    "replace_content_light_level_sei_file",
 ]

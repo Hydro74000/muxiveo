@@ -44,6 +44,12 @@ def render_workers_range(engine: object) -> tuple[int, int] | None:
     return None
 
 
+def frame_statistics_supported(engine: object) -> bool:
+    """Statistiques de l'image produite (plugin ≥ 0.3.0) : HDR10+ et MaxCLL/MaxFALL recalculés."""
+    capabilities = getattr(engine, "capabilities", None)
+    return isinstance(capabilities, dict) and capabilities.get("frame_statistics") == 1
+
+
 def _base_only_frames(statistics: str) -> int:
     """Images sans RPU ni EL recomposées sans résiduel (plugin ≥ 0.2.1), 0 si absent ou illisible."""
     try:
@@ -108,6 +114,9 @@ class FelEngine:
             if capabilities.get("seek") == 1:
                 self.lib.mvo_fel_set_start.argtypes = [ctypes.c_void_p, ctypes.c_int64]
                 self.lib.mvo_fel_set_start.restype = ctypes.c_int
+            if capabilities.get("frame_statistics") == 1:
+                self.lib.mvo_fel_set_frame_statistics.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_frame_statistics.restype = ctypes.c_int
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -217,6 +226,8 @@ class FelSource:
     precision: str = "exact"
     # Images en vol du rendu GPU ; None : défaut du plugin. Transmis si le plugin l'accepte.
     render_workers: int | None = None
+    # Statistiques de chaque image produite (JSON Lines, capacité frame_statistics) ; None : aucune.
+    statistics_path: Path | None = None
 
     def start(self, output: IO[Any], cancelled: threading.Event) -> FelProducer:
         return FelProducer(self, output, cancelled)
@@ -261,6 +272,11 @@ class FelProducer:
               and source.engine.lib.mvo_fel_set_render_workers(
                   self._handle, min(max(source.render_workers, bounds[0]), bounds[1])) != 0):
             refused = "Nombre d'images en vol FEL refusé par le plugin"
+        elif source.statistics_path is not None and (
+                not frame_statistics_supported(source.engine)
+                or source.engine.lib.mvo_fel_set_frame_statistics(
+                    self._handle, str(source.statistics_path).encode("utf-8")) != 0):
+            refused = "Statistiques de l'image refusées par le plugin"
         if refused:
             source.engine.lib.mvo_fel_destroy(self._handle)
             self._handle = None

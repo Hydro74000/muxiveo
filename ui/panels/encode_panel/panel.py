@@ -1373,8 +1373,28 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
         self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
         self._copy_hdr10plus_cb.setEnabled(False)
-        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._rebuild_preview())
+        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._on_hdr10plus_toggled())
         cl.addWidget(self._copy_hdr10plus_cb)
+        # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
+        self._fel_hdr10plus_choice = "recompute"
+        self._fel_hdr10plus_widget = QWidget()
+        self._fel_hdr10plus_widget.setStyleSheet("background:transparent;")
+        fel_hdr10plus_row = QHBoxLayout(self._fel_hdr10plus_widget)
+        fel_hdr10plus_row.setContentsMargins(20, 0, 0, 0)
+        fel_hdr10plus_row.addWidget(QLabel(translate_text("HDR10+ avec FEL intégré")))
+        self._fel_hdr10plus_combo = QComboBox()
+        self._fel_hdr10plus_combo.setStyleSheet(_combo_style())
+        self._fel_hdr10plus_combo.addItem(translate_text("Recalculé sur l’image reconstruite (recommandé)"), "recompute")
+        self._fel_hdr10plus_combo.addItem(translate_text("Conservé depuis la source (décrit la BL)"), "source")
+        self._fel_hdr10plus_combo.setToolTip(translate_text(
+            "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite "
+            "par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). "
+            "Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL."
+        ))
+        self._fel_hdr10plus_combo.activated.connect(self._on_fel_hdr10plus_changed)
+        fel_hdr10plus_row.addWidget(self._fel_hdr10plus_combo, 1)
+        self._fel_hdr10plus_widget.setVisible(False)
+        cl.addWidget(self._fel_hdr10plus_widget)
 
         cl.addWidget(_separator())
 
@@ -3163,6 +3183,7 @@ class EncodePanel(QWidget):
             if hasattr(self, "_dovi_warning_widget"):
                 self._dovi_warning_widget.setVisible(False)
             self._sync_hdr_controls_for_codec()
+            self._sync_fel_hdr10plus_option()
             return
 
         codec = self._codec_combo.currentData() or "libx265"
@@ -3935,6 +3956,7 @@ class EncodePanel(QWidget):
         self._fel_device_combo.set_choice(vs.fel_device)
         self._fel_precision_choice = vs.fel_precision
         self._fel_precision_combo.set_choice(vs.fel_precision)
+        self._fel_hdr10plus_choice = vs.fel_hdr10plus
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -4053,6 +4075,7 @@ class EncodePanel(QWidget):
             bake_dovi_fel=vs.bake_dovi_fel,
             fel_device=vs.fel_device,
             fel_precision=vs.fel_precision,
+            fel_hdr10plus=vs.fel_hdr10plus,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4633,6 +4656,28 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         self._rebuild_preview()
 
+    def _on_fel_hdr10plus_changed(self, _index: int) -> None:
+        self._fel_hdr10plus_choice = str(self._fel_hdr10plus_combo.currentData() or "recompute")
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _on_hdr10plus_toggled(self) -> None:
+        self._sync_fel_hdr10plus_option()
+        self._rebuild_preview()
+
+    def _sync_fel_hdr10plus_option(self) -> None:
+        """Choix HDR10+ visible quand le FEL est intégré et la copie HDR10+ cochée."""
+        if not hasattr(self, "_fel_hdr10plus_widget"):
+            return
+        codec = str(self._codec_combo.currentData() or "").lower()
+        self._fel_hdr10plus_widget.setVisible(
+            self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
+            and self._copy_hdr10plus_cb.isChecked() and self._copy_hdr10plus_cb.isEnabled()
+            # Injection hdr10plus_tool : sorties HEVC seulement (recomputes_hdr10plus).
+            and (codec == "libx265" or "hevc" in codec)
+        )
+        self._set_combo_data(self._fel_hdr10plus_combo, self._fel_hdr10plus_choice)
+
     def _sync_dovi_profile_options(self) -> None:
         """Option « Normaliser » grisée selon la matrice V30 ; bandeau du traitement prévu."""
         if not hasattr(self, "_dovi_plan_label"):
@@ -4647,6 +4692,7 @@ class EncodePanel(QWidget):
         self._bake_fel_cb.setEnabled(codec != "copy")
         self._fel_device_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
         self._fel_precision_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
+        self._sync_fel_hdr10plus_option()
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
@@ -4852,6 +4898,7 @@ class EncodePanel(QWidget):
             "bake_dovi_fel": self._bake_fel_choice,
             "fel_device": self._fel_device_choice,
             "fel_precision": self._fel_precision_choice,
+            "fel_hdr10plus": self._fel_hdr10plus_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
@@ -5118,6 +5165,9 @@ class EncodePanel(QWidget):
         self._fel_device_combo.set_choice(self._fel_device_choice)
         self._fel_precision_choice = precision_choice(state.get("fel_precision"))
         self._fel_precision_combo.set_choice(self._fel_precision_choice)
+        from core.workflows.encode.models import fel_hdr10plus_choice
+        self._fel_hdr10plus_choice = fel_hdr10plus_choice(state.get("fel_hdr10plus"))
+        self._set_combo_data(self._fel_hdr10plus_combo, self._fel_hdr10plus_choice)
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
         self._tonemap_enabled_by_codec = False
@@ -5568,6 +5618,7 @@ class EncodePanel(QWidget):
             bake_dovi_fel=self._bake_fel_choice,
             fel_device=self._fel_device_choice,
             fel_precision=self._fel_precision_choice,
+            fel_hdr10plus=self._fel_hdr10plus_choice,
             static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
@@ -5638,6 +5689,7 @@ class EncodePanel(QWidget):
             bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
             fel_device=str(state.get("fel_device") or "auto"),
             fel_precision=str(state.get("fel_precision") or "exact"),
+            fel_hdr10plus=str(state.get("fel_hdr10plus") or "recompute"),
             static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),

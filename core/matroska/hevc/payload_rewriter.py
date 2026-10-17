@@ -28,6 +28,10 @@ from ..ids import (
     BLOCK_ADDITION_MAPPING_ID,
     CODEC_PRIVATE_ID,
     MAX_BLOCK_ADDITION_ID_ID,
+    COLOUR_ID,
+    MAX_CLL_ID,
+    MAX_FALL_ID,
+    VIDEO_ID,
 )
 from ..ebml import binary_element, element, uint_element
 from .access_units import (
@@ -151,16 +155,38 @@ def _first_access_unit(injected_hevc: Path, chunk_size: int) -> HevcAccessUnit |
     return None
 
 
+def _with_light_levels(video_payload: bytes, light_levels: tuple[int, int]) -> bytes:
+    """Video → Colour : MaxCLL et MaxFALL remplacés (ou ajoutés), autres éléments inchangés."""
+    levels = uint_element(MAX_CLL_ID, light_levels[0]) + uint_element(MAX_FALL_ID, light_levels[1])
+    children: list[bytes] = []
+    found = False
+    for element_id, payload in payload_children(video_payload):
+        if element_id == COLOUR_ID:
+            colour = b"".join(element(child_id, child) for child_id, child in payload_children(payload)
+                              if child_id not in (MAX_CLL_ID, MAX_FALL_ID))
+            children.append(element(COLOUR_ID, colour + levels))
+            found = True
+            continue
+        children.append(element(element_id, payload))
+    if not found:
+        children.append(element(COLOUR_ID, levels))
+    return b"".join(children)
+
+
 def _patched_raw_entry(
     raw_entry: bytes,
     *,
     codec_private: bytes | None,
     dovi_mapping: bytes | None,
+    light_levels: tuple[int, int] | None = None,
 ) -> bytes:
-    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté."""
+    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté, MaxCLL/MaxFALL posés."""
     children: list[bytes] = []
     has_max_block_add_id = False
     for element_id, payload in payload_children(raw_entry):
+        if element_id == VIDEO_ID and light_levels is not None:
+            children.append(element(VIDEO_ID, _with_light_levels(payload, light_levels)))
+            continue
         if element_id == CODEC_PRIVATE_ID and codec_private is not None:
             children.append(binary_element(CODEC_PRIVATE_ID, codec_private))
             continue
@@ -196,8 +222,11 @@ class MatroskaHevcPayloadRewriter:
         cancel_cb: Callable[[], bool] | None = None,
         progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
         external_validator: Callable[[Path, MatroskaPacketValidation], None] | None = None,
+        light_levels: tuple[int, int] | None = None,
     ) -> HevcPayloadRewriteResult:
         """Écrit ``output`` : blocs du MKV encodé, payloads du flux injecté.
+
+        ``light_levels`` : MaxCLL/MaxFALL posés dans l'élément Colour de la piste.
 
         L'ordre de décodage, les PTS, durées, keyframes et références des
         blocs encodés sont conservés à l'identique ; seul le payload change.
@@ -236,6 +265,7 @@ class MatroskaHevcPayloadRewriter:
             video.raw_entry,
             codec_private=updated_codec_private,
             dovi_mapping=dovi_mapping,
+            light_levels=light_levels,
         )
         rewritten_track = replace(
             video,

@@ -308,6 +308,11 @@ class FrameInterpolationSettings:
         return _dataclass_from_value(cls, value)
 
 
+def fel_hdr10plus_choice(value: object) -> str:
+    """HDR10+ d'une sortie FEL : « recompute » (défaut) ou « source » ; valeur inconnue → défaut."""
+    return value if isinstance(value, str) and value in {"recompute", "source"} else "recompute"
+
+
 def migrate_bit_depth(value: str | None, force_8bit: bool = False, force_10bit: bool = False) -> str:
     """Migre les anciens flags ; un choix canonique, même Auto, reste prioritaire."""
     if value is None:
@@ -365,6 +370,9 @@ class VideoEncodeSettings:
     bake_dovi_fel:    bool | None  = None  # None/absent : désactivé ; True : demande explicite.
     fel_device: str = "auto"  # auto | cpu | UUID Vulkan stable.
     fel_precision: str = "exact"  # exact (Lent, recommandé) | standard | fast.
+    # HDR10+ d'une sortie FEL intégré (copie HDR10+ active, HEVC) : « recompute » mesuré sur l'image
+    # reconstruite (plugin ≥ 0.3.0, MaxCLL/MaxFALL exacts) ; « source » : celui de la source (BL).
+    fel_hdr10plus: str = "recompute"
     fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
@@ -407,6 +415,7 @@ class VideoEncodeSettings:
         from core.fel.devices import device_choice, precision_choice
         self.fel_device = device_choice(self.fel_device)
         self.fel_precision = precision_choice(self.fel_precision)
+        self.fel_hdr10plus = fel_hdr10plus_choice(self.fel_hdr10plus)
         if not isinstance(self.quality_mode, QualityMode):
             self.quality_mode = QualityMode(str(self.quality_mode))
         if self.rate_control:
@@ -632,6 +641,7 @@ class EncodePreset:
     inject_hdr_meta:            bool = False
     fel_device: str = "auto"
     fel_precision: str = "exact"  # Profils antérieurs : Lent (recommandé).
+    fel_hdr10plus: str = "recompute"  # Profils antérieurs : HDR10+ recalculé (recommandé).
     bake_dovi_fel:              bool | None = None  # Même défaut désactivé pour les anciens profils.
     master_display:             str  = ""
     max_cll:                    str  = ""
@@ -649,6 +659,7 @@ class EncodePreset:
         from core.fel.devices import device_choice, precision_choice
         self.fel_device = device_choice(self.fel_device)
         self.fel_precision = precision_choice(self.fel_precision)
+        self.fel_hdr10plus = fel_hdr10plus_choice(self.fel_hdr10plus)
         # Ancien preset logique NVENC « safe » (retiré de l'interface) → p5, son équivalent.
         if self.preset == "safe" and self.codec.endswith("_nvenc"):
             self.preset = "p5"
@@ -673,6 +684,7 @@ class EncodePreset:
             bake_dovi_fel=self.bake_dovi_fel,
             fel_device=self.fel_device,
             fel_precision=self.fel_precision,
+            fel_hdr10plus=self.fel_hdr10plus,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,
