@@ -1,4 +1,44 @@
 {
+  "Ouvrir le journal au démarrage": {
+    "fra": "Ouvrir le journal au démarrage",
+    "eng": "Expand the log panel at startup"
+  },
+  "Impossible d'enregistrer les paramètres : {error}": {
+    "fra": "Impossible d'enregistrer les paramètres : {error}",
+    "eng": "Unable to save settings: {error}"
+  },
+  "Piste donneuse à inspecter": {
+    "fra": "Piste donneuse à inspecter",
+    "eng": "Donor track to inspect"
+  },
+  "Piste de référence": {
+    "fra": "Piste de référence",
+    "eng": "Reference track"
+  },
+  "Donneur :": {
+    "fra": "Donneur :",
+    "eng": "Donor:"
+  },
+  "Sélectionnez un élément analysé pour inspecter sa synchronisation.": {
+    "fra": "Sélectionnez un élément analysé pour inspecter sa synchronisation.",
+    "eng": "Select an analyzed item to inspect its synchronization."
+  },
+  "Naviguer dans toute la piste": {
+    "fra": "Naviguer dans toute la piste",
+    "eng": "Navigate the complete track"
+  },
+  "Chargement de la durée…": {
+    "fra": "Chargement de la durée…",
+    "eng": "Loading duration…"
+  },
+  "Durée indisponible": {
+    "fra": "Durée indisponible",
+    "eng": "Duration unavailable"
+  },
+  "Synchronisation mise à jour : {source} ({count} segments).": {
+    "fra": "Synchronisation mise à jour : {source} ({count} segments).",
+    "eng": "Synchronization updated: {source} ({count} segments)."
+  },
   "Cache des caractéristiques": {
     "fra": "Cache des caractéristiques",
     "eng": "Feature cache"
@@ -4851,9 +4891,17 @@
     "fra": "Pré-version de développement (canal unstable) : moins testée qu'une release stable.",
     "eng": "Development pre-release (unstable channel): less tested than a stable release."
   },
-  "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]": {
-    "fra": "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]",
-    "eng": "Active template: master video ({video}), donor audio: [{donor_audio}], master audio: [{master_audio}], donor subtitles: [{donor_subs}]"
+  "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}], ST Master : [{master_subs}]": {
+    "fra": "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}], ST Master : [{master_subs}]",
+    "eng": "Active template: master video ({video}), donor audio: [{donor_audio}], master audio: [{master_audio}], donor subtitles: [{donor_subs}], master subtitles: [{master_subs}]"
+  },
+  "Workflows sauvegardés : {count}": {
+    "fra": "Workflows sauvegardés : {count}",
+    "eng": "Workflows saved: {count}"
+  },
+  "Plusieurs workflows portent le même nom.": {
+    "fra": "Plusieurs workflows portent le même nom.",
+    "eng": "Several workflows have the same filename."
   },
   "Non": {
     "fra": "Non",

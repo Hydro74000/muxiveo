@@ -341,6 +341,7 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
             envelope = sum(np.exp(-((samples-position)/0.11)**2) for position in (0.5, 1.2, 2.1, 3.7, 4.2, 5.6, 6.5, 7.2))
             audio = (envelope * (0.45*np.sin(2*np.pi*180*samples) + rng.normal(0, 0.12, len(samples)))).astype(np.float32)
             dialog._apply_audio_to_waveform(0, audio, np.roll(audio, 2000), 0, None)
+            dialog._on_duration_ready(2400)
             dialog_capture(dialog, scene, basename, (1100, 790))
         elif scene == "profile":
             page(3)

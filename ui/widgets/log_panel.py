@@ -5,20 +5,66 @@ import re
 from collections import deque
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QTextBlockFormat, QTextCharFormat, QTextCursor, QTextFormat
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QMenu, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from core.i18n import translate_text
 from core.logging import LogLevel
 from ui.design_system import colors as C, font_px, scale
 
-_SOURCE = re.compile(r"^\[(HYBRID|DOVI|MEDIA)\]\s*")
+_SOURCE = re.compile(r"^\[(HYBRID|DOVI|MEDIA|ENCODE|REMUX|EXTRACT)\]\s*")
 _Entry = tuple[str, LogLevel, str, str]
+_BADGE_SOURCE = int(QTextFormat.Property.UserProperty) + 1
+
+
+def split_log_source(message: str) -> tuple[str, str]:
+    """Reconnaît les origines du journal sans dépendre du panneau actif."""
+    match = _SOURCE.match(message)
+    return (match[1], message[match.end():]) if match else ("APP", message)
+
+
+class _LogTextEdit(QTextEdit):
+    """Dessine les badges arrondis en conservant le texte copiable du journal."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setFont(self.font())
+        block = self.cursorForPosition(QPoint(0, 0)).block()
+        cursor = QTextCursor(self.document())
+        while block.isValid():
+            cursor.setPosition(block.position())
+            if self.cursorRect(cursor).top() > self.viewport().height():
+                break
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                source = fragment.charFormat().property(_BADGE_SOURCE)
+                if source:
+                    cursor.setPosition(fragment.position())
+                    left = self.cursorRect(cursor)
+                    cursor.setPosition(fragment.position() + fragment.length())
+                    right = self.cursorRect(cursor)
+                    rect = QRectF(left.x(), left.y() + 1, right.x() - left.x(), left.height() - 2)
+                    color = QColor(C.PURPLE if source == "DOVI" else C.INFO if source in {"ENCODE", "REMUX", "MEDIA", "EXTRACT"} else C.ACCENT if source == "HYBRID" else C.TEXT_SEC)
+                    background = QColor(color)
+                    background.setAlpha(40)
+                    painter.fillRect(rect, QColor(C.LOG_BG))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(background)
+                    painter.drawRoundedRect(rect, scale(3), scale(3))
+                    painter.setPen(color)
+                    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(source))
+                iterator += 1
+            block = block.next()
+        painter.end()
 
 
 class LogPanel(QWidget):
     collapse_toggled = Signal(bool)
+    startup_expanded_changed = Signal(bool)
 
     def __init__(self, max_lines: int = 2000, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -29,10 +75,14 @@ class LogPanel(QWidget):
         self._unread = 0
         self._entries: deque[_Entry] = deque()
         self._pending: list[_Entry] = []
+        self._startup_expanded = False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         header = QWidget()
+        self._header = header
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_context_menu)
         header.setFixedHeight(scale(38))
         header.setStyleSheet(f"background:{C.BG_PANEL};border-top:1px solid {C.BORDER};")
         row = QHBoxLayout(header)
@@ -62,7 +112,7 @@ class LogPanel(QWidget):
                 self._collapse_btn = button
                 button.setAccessibleName(translate_text("Replier le journal"))
         root.addWidget(header)
-        self._text = QTextEdit()
+        self._text = _LogTextEdit()
         self._text.setReadOnly(True)
         self._text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         font = QFont("JetBrains Mono", font_px(9))
@@ -78,10 +128,12 @@ class LogPanel(QWidget):
         self._flush_timer.timeout.connect(self._flush_pending)
         self._update_follow_button()
 
+    @staticmethod
+    def _matches_filter(source: str, selected: str) -> bool:
+        return not selected or source == selected or (selected == "MEDIA" and source in {"ENCODE", "REMUX", "EXTRACT"})
+
     def log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
-        match = _SOURCE.match(message)
-        source = match[1] if match else "APP"
-        message = message[match.end():] if match else message
+        source, message = split_log_source(message)
         # Un événement multi-lignes garde son origine sur chacune des lignes.
         for line in translate_text(message).splitlines() or [""]:
             self._pending.append((datetime.now().strftime("%H:%M:%S"), level, source, line))
@@ -92,9 +144,12 @@ class LogPanel(QWidget):
         selected = self._filter.currentData()
         cursor = QTextCursor(self._text.document())
         cursor.movePosition(QTextCursor.MoveOperation.End)
+        block_format = QTextBlockFormat()
+        block_format.setLineHeight(scale(22), QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+        cursor.setBlockFormat(block_format)
         fmt = QTextCharFormat()
         for timestamp, level, source, message in entries:
-            if selected and source != selected:
+            if not self._matches_filter(source, selected):
                 continue
             color = getattr(C, "LOG_" + level.value)
             fmt.setFontWeight(QFont.Weight.Normal)
@@ -103,11 +158,14 @@ class LogPanel(QWidget):
             fmt.setForeground(QColor(color))
             fmt.setFontWeight(QFont.Weight.Bold)
             cursor.insertText(f"{level.value:<5} ", fmt)
-            fmt.setForeground(QColor(C.PURPLE if source == "DOVI" else C.INFO))
-            cursor.insertText(f" {source:<6}  ", fmt)
             fmt.setFontWeight(QFont.Weight.Normal)
-            fmt.setForeground(QColor(color if level != LogLevel.INFO else C.TEXT_PRI))
-            cursor.insertText(message + "\n", fmt)
+            fmt.setProperty(_BADGE_SOURCE, source)
+            fmt.setForeground(QColor(C.PURPLE if source == "DOVI" else C.INFO))
+            cursor.insertText(f" {source:^7} ", fmt)
+            fmt.clearProperty(_BADGE_SOURCE)
+            fmt.setFontWeight(QFont.Weight.Normal)
+            fmt.setForeground(QColor(C.TEXT_PRI if level in {LogLevel.INFO, LogLevel.OK} else color))
+            cursor.insertText("  " + message + "\n", fmt)
 
     def _flush_pending(self) -> None:
         if not self._pending:
@@ -135,7 +193,7 @@ class LogPanel(QWidget):
             else:
                 scroll.setValue(position)
                 selected = self._filter.currentData()
-                self._unread += sum(1 for entry in batch if not selected or entry[2] == selected)
+                self._unread += sum(1 for entry in batch if self._matches_filter(entry[2], selected))
         finally:
             self._updating = False
         self._update_follow_button()
@@ -183,6 +241,22 @@ class LogPanel(QWidget):
 
     def is_collapsed(self) -> bool:
         return self._collapsed
+
+    def set_startup_expanded(self, expanded: bool) -> None:
+        self._startup_expanded = bool(expanded)
+
+    def _context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        startup = menu.addAction(translate_text("Ouvrir le journal au démarrage"))
+        startup.setCheckable(True)
+        startup.setChecked(self._startup_expanded)
+        startup.triggered.connect(lambda checked: self.startup_expanded_changed.emit(checked))
+        return menu
+
+    def _show_context_menu(self, position: QPoint) -> None:
+        menu = self._context_menu()
+        menu.exec(self._header.mapToGlobal(position))
+        menu.deleteLater()
 
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = bool(collapsed)

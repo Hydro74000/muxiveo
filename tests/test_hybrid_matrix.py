@@ -175,17 +175,19 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
     options = CommonOptions(sync_mode="physical", calibration="ignored.json", auto_sync=True)
     seen = []
 
-    def build(job, config, build_options, logger):
+    def build(job, config, build_options, logger, *, select_tracks):
         seen.append(build_options)
         master_tracks = [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
                          TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]
         donor_tracks = [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1", time_shift_ms=99),
                         TrackEntry(1, "subtitle", "SUBRIP", "", "fra", "", file_id="src1", time_shift_ms=99)]
-        return RemuxConfig(
+        result = RemuxConfig(
             sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
             output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
             sync_subtitles=job["sync_subtitles"],
         )
+        select_tracks(result.sources)
+        return result
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Scanner appelé en mode sans analyse")
@@ -226,7 +228,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
         donor_files=[(MatrixSource("donor", donor, SourceRole.DONOR), donor)],
     )
 
-    def build(job, config, options, logger):
+    def build(job, config, options, logger, *, select_tracks):
         master_tracks = [
             TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
             TrackEntry(1, "audio", "EAC3", "", "en-US", "", file_id="src0"),
@@ -239,10 +241,12 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
             TrackEntry(3, "subtitle", "SUBRIP", "", "fr-FR", "", file_id="src1"),
             TrackEntry(4, "subtitle", "SUBRIP", "", "en-US", "", file_id="src1"),
         ]
-        return RemuxConfig(
+        result = RemuxConfig(
             sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
             output=Path(job["output"]), track_order=[], sync_mode="physical",
         )
+        select_tracks(result.sources)
+        return result
 
     scanned = []
     import threading

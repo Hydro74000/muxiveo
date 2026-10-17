@@ -202,44 +202,44 @@ def test_main_window_close_event_lifecycle(qt_app) -> None:
         window.close()
 
 
-def test_hybrid_close_keeps_temp_files_until_worker_finishes(qt_app, tmp_path) -> None:
-    from concurrent.futures import ThreadPoolExecutor
-    import tempfile
-    from PySide6.QtWidgets import QWidget
+def test_hybrid_close_keeps_temp_files_until_worker_finishes(qt_app, tmp_path, monkeypatch) -> None:
     from PySide6.QtGui import QCloseEvent
+    from core.config import AppConfig
     from ui.panels.hybrid_studio import HybridStudio
+    from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+    from tests.test_hybrid_sync_ui import _job, _select_job
 
-    class Panel(HybridStudio):
-        def __init__(self):
-            QWidget.__init__(self)
-            self.executor = ThreadPoolExecutor(max_workers=1)
-            self.cancel_event = threading.Event()
-            self.signals = None
-            self.preview_temp = tempfile.TemporaryDirectory(dir=tmp_path)
-
-    panel = Panel()
-    root = Path(panel.preview_temp.name)
+    monkeypatch.setattr(SyncStudioDialog, "_load_segment_audio_async", lambda *_a: None)
+    panel = HybridStudio(AppConfig())
+    _select_job(panel, _job(tmp_path))
+    editor = panel._sync_editor
+    root = Path(editor._temp_dir.name)
     started, release = threading.Event(), threading.Event()
+
     def work():
         started.set()
         assert release.wait(5)
         (root / 'last-write').write_bytes(b'data')
-    future = panel.executor.submit(work)
+
+    future = editor._executor.submit(work)
     assert started.wait(5)
     try:
         event = QCloseEvent()
         panel.closeEvent(event)
         assert not event.isAccepted()
         assert root.exists()
-        assert panel.cancel_event.is_set()
+        assert panel.cancel_event.is_set() and editor._cancel_event.is_set()
         release.set()
         assert panel._shutdown.done.wait(5)
         future.result()
         assert (root / 'last-write').read_bytes() == b'data'
+        assert editor._shutdown.done.wait(5)
+        event = QCloseEvent()
+        editor.closeEvent(event)
+        assert event.isAccepted() and not root.exists()
         event = QCloseEvent()
         panel.closeEvent(event)
         assert event.isAccepted()
-        assert not root.exists()
     finally:
         release.set()
         panel.executor.shutdown()

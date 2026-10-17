@@ -191,22 +191,22 @@ def test_single_calibration_refreshes_offset_and_waveform(window, tmp_path, monk
         return config, calibration
 
     monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
-    monkeypatch.setattr("ui.panels.hybrid_studio.AudioSyncScanner.samples", lambda *_a, **_k: np.ones(1000))
+    monkeypatch.setattr("core.workflows.audio_sync_scan.AudioSyncScanner.samples", lambda *_a, **_k: np.ones(1000))
     try:
         panel.calibrate_single_row(0)
         _wait_until(qt_app, started.is_set)
         assert window._running and panel.busy
-        assert not panel.adjust.isEnabled()
+        assert not panel._wave_section.body.isEnabled()
     finally:
         release.set()
-    _wait_until(qt_app, lambda: not panel.busy and not panel.aux_running and bool(panel.waveform.series))
+    _wait_until(qt_app, lambda: not panel.busy and panel._sync_editor is not None and len(panel._sync_editor.waveform._tgt_samples) > 0)
     assert not window._running
-    assert panel.adjust.value() == 125
-    assert panel.waveform.shift_ms == 125
+    assert panel._sync_editor.spin_shift.value() == 125
+    assert panel._sync_editor.waveform.shift_ms == 125
     assert panel.jobs[0][1].segments[0].shift_ms == 125
     assert panel._wave_section.toggle.isChecked()
-    panel.adjust.stepUp()
-    assert panel.jobs[0][1].segments[0].shift_ms == 126
+    panel._sync_editor.spin_shift.stepUp()
+    assert panel.jobs[0][1].segments[0].shift_ms == 135
     executions = []
 
     def run_next():
@@ -215,7 +215,7 @@ def test_single_calibration_refreshes_offset_and_waveform(window, tmp_path, monk
 
     monkeypatch.setattr(panel, "run_next", run_next)
     panel.run()
-    assert executions == [126]  # Le lancement réutilise la calibration éditée.
+    assert executions == [135]  # Le lancement réutilise la calibration éditée.
 
 
 def test_merge_result_survives_late_hardware_and_readiness_notifications(window, tmp_path, qt_app):
@@ -330,7 +330,7 @@ def test_menu_keyboard_and_single_ready(qt_app):
 def test_failure_retry_and_stale_auxiliary_messages(window, tmp_path):
     panel = ready_hybrid(window, tmp_path)
     window._on_studio_op_state("hybrid", "started", "Analyse")
-    panel._on_waveform_failed("Ancien aperçu indisponible")
+    panel.log_message.emit("WARN", "Ancien aperçu indisponible")
     assert window._running
     window._on_studio_op_state("hybrid", "failed", "Espace disque insuffisant")
     assert not window._running
@@ -403,6 +403,7 @@ def test_hybrid_cancel_prevents_the_next_episode_and_relays_logs(window, tmp_pat
 
 
 def test_journal_preserves_scroll_filter_history_and_bounds(qt_app):
+    from core.i18n import translate_text
     panel = LogPanel(max_lines=100)
     panel.resize(900, 230)
     panel.show()
@@ -416,7 +417,7 @@ def test_journal_preserves_scroll_filter_history_and_bounds(qt_app):
     panel.log("[DOVI] Injection RPU", LogLevel.OK)
     panel._flush_pending()
     assert scroll.value() == 0
-    assert "Reprendre" in panel._follow_btn.text()
+    assert translate_text("↓ Reprendre le défilement") in panel._follow_btn.text()
     panel._filter.setCurrentIndex(panel._filter.findData("DOVI"))
     assert "Injection RPU" in panel._text.toPlainText()
     assert "S01E01" not in panel._text.toPlainText()
@@ -430,6 +431,61 @@ def test_journal_preserves_scroll_filter_history_and_bounds(qt_app):
     assert len(panel._entries) == 100
     assert panel._text.document().blockCount() <= 101
     panel.close()
+
+
+def test_journal_badges_preserve_copy_and_filter_media_variants(qt_app):
+    from PySide6.QtGui import QTextCursor
+    from ui.widgets.log_panel import _BADGE_SOURCE
+
+    panel = LogPanel()
+    panel.resize(900, 240)
+    panel.show()
+    for source in ("DOVI", "ENCODE", "HYBRID", "REMUX"):
+        panel.log(f"[{source}] Message {source}")
+    panel._flush_pending()
+    qt_app.processEvents()
+    block = panel._text.document().firstBlock()
+    sources = []
+    while block.isValid():
+        iterator = block.begin()
+        while not iterator.atEnd():
+            value = iterator.fragment().charFormat().property(_BADGE_SOURCE)
+            if value:
+                sources.append(value)
+            iterator += 1
+        block = block.next()
+    assert sources == ["DOVI", "ENCODE", "HYBRID", "REMUX"]
+    cursor = panel._text.textCursor()
+    cursor.select(QTextCursor.SelectionType.Document)
+    panel._text.setTextCursor(cursor)
+    panel._text.copy()
+    assert qt_app.clipboard().text() == panel._text.toPlainText()
+    panel._filter.setCurrentIndex(panel._filter.findData("MEDIA"))
+    text = panel._text.toPlainText()
+    assert "Message ENCODE" in text and "Message REMUX" in text
+    assert "HYBRID" not in text and "DOVI" not in text
+    panel.close()
+
+
+def test_journal_context_menu_persists_existing_startup_setting(window, tmp_path, monkeypatch):
+    import core.config as config_module
+
+    monkeypatch.setattr(config_module, "_INI_PATH", tmp_path / "config.ini")
+    previous = window._config.startup_logs_expanded
+    try:
+        window._log_panel.set_startup_expanded(False)
+        menu = window._log_panel._context_menu()
+        action = menu.actions()[0]
+        assert action.isCheckable() and not action.isChecked()
+        action.trigger()
+        assert window._config.startup_logs_expanded
+        assert config_module.AppConfig().startup_logs_expanded
+        assert window._settings_panel.widget_for("ui", "startup_logs_expanded").isChecked()
+        window._apply_startup_log_panel_state()
+        assert not window._log_panel.is_collapsed()
+        menu.deleteLater()
+    finally:
+        window._config.startup_logs_expanded = previous
 
 
 def test_merge_button_describes_detected_metadata(window):

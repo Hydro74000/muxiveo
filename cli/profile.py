@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -96,7 +97,12 @@ def _refresh_sources_tracks(sources: list[SourceInput], tracks: list[TrackEntry]
     for track in tracks:
         by_file_id.setdefault(track.file_id, []).append(track)
     for source in sources:
-        source.tracks = by_file_id.get(f"src{source.file_index}", source.tracks)
+        # L'ordre de sortie est porté par track_order. Les sélecteurs exact-job
+        # comptent les pistes dans leur ordre d'origine dans le fichier source.
+        source.tracks = sorted(
+            by_file_id.get(f"src{source.file_index}", source.tracks),
+            key=lambda track: (track.mkv_tid, track.is_new),
+        )
 
 
 def _track_order(tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
@@ -136,6 +142,7 @@ def build_profile_remux_config(
     logger: Logger,
     preview: bool = False,
     metadata_job: dict[str, Any] | None = None,
+    select_tracks: Callable[[list[SourceInput]], None] | None = None,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
     if not cli_inputs:
         raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
@@ -150,6 +157,8 @@ def build_profile_remux_config(
     if not result.report.get("valid", True):
         raise CliError(json.dumps(result.report, ensure_ascii=False, default=json_default), EXIT_VALIDATION)
     _refresh_sources_tracks(sources, result.tracks)
+    if select_tracks is not None:
+        select_tracks(sources)
     from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
     classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
         forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)

@@ -51,13 +51,13 @@ from PySide6.QtGui import (
     QGuiApplication,
 )
 from PySide6.QtWidgets import (
-    QApplication,
+    QApplication, QCheckBox,
     QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from core.config import AppConfig
+from core.config import AppConfig, write_ini_settings
 from core.matroska.progress import native_mux_progress_label
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
@@ -105,7 +105,7 @@ from ui.panels.extensions_panel import ExtensionsPanel
 from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
 from ui.operation_bar import OperationBar, OperationState
 from ui.styles import workflow_icon
-from ui.widgets.log_panel import LogPanel
+from ui.widgets.log_panel import LogPanel, split_log_source
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -1764,7 +1764,7 @@ class MainWindow(QMainWindow):
     def _sync_prep_progress_from_log(self, message: str) -> None:
         if not self._running:
             return
-        message = re.sub(r"^\[(?:HYBRID|DOVI|MEDIA)\]\s*", "", message)
+        message = split_log_source(message)[1]
         if self._op_mode == "hybrid":
             message = re.sub(r"^\[[^]]+\]\s*", "", message)
         match = _STEP_PROGRESS_RE.match(message.strip())
@@ -1796,6 +1796,7 @@ class MainWindow(QMainWindow):
 
     def _apply_startup_log_panel_state(self) -> None:
         logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
+        self._log_panel.set_startup_expanded(logs_expanded)
         self._log_panel.set_collapsed(not logs_expanded)
         if logs_expanded:
             self._vsplit.setSizes([620, 180])
@@ -1932,6 +1933,7 @@ class MainWindow(QMainWindow):
         self._remux_panel.operation_changed.connect(self._request_operation_refresh)
         self.log_requested.connect(self._on_log_requested)
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
+        self._log_panel.startup_expanded_changed.connect(self._on_log_startup_changed)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
         self._dovi_panel.log_message.connect(
             lambda level, message: self.log_requested.emit(level, "[DOVI] " + message),
@@ -1949,12 +1951,12 @@ class MainWindow(QMainWindow):
         self._dovi_panel.tool_output.connect(self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection)
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
-            lambda level, message: self.log_requested.emit(level, "[MEDIA] " + message),
+            lambda level, message: self.log_requested.emit(level, "[ENCODE] " + message),
             Qt.ConnectionType.QueuedConnection,
         )
         # RemuxPanel → LogPanel global
         self._remux_panel.log_message.connect(
-            lambda level, message: self.log_requested.emit(level, "[MEDIA] " + message),
+            lambda level, message: self.log_requested.emit(level, "[REMUX] " + message),
             Qt.ConnectionType.QueuedConnection,
         )
         # HybridStudio → LogPanel global
@@ -3091,6 +3093,7 @@ class MainWindow(QMainWindow):
             app.setFont(current_font)
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
+        self._log_panel.set_startup_expanded(self._config.startup_logs_expanded)
         self._encode_panel.refresh_runtime_settings()
         self._remux_panel.refresh_runtime_settings()
         self._sidebar.set_compact(self._config.startup_menu_compact)
@@ -3171,6 +3174,18 @@ class MainWindow(QMainWindow):
         else:
             log_h = max(total // 5, _scale(150))
             self._vsplit.setSizes([total - log_h, log_h])
+
+    def _on_log_startup_changed(self, expanded: bool) -> None:
+        try:
+            write_ini_settings({"ui": {"startup_logs_expanded": "true" if expanded else "false"}})
+        except OSError as exc:
+            self.log_error(translate_text("Impossible d'enregistrer les paramètres : {error}", error=str(exc)))
+            return
+        self._config.startup_logs_expanded = expanded
+        self._log_panel.set_startup_expanded(expanded)
+        checkbox = self._settings_panel.widget_for("ui", "startup_logs_expanded")
+        if isinstance(checkbox, QCheckBox):
+            checkbox.setChecked(expanded)
 
     # ------------------------------------------------------------------
     # Logging
@@ -3283,6 +3298,8 @@ class MainWindow(QMainWindow):
 
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
+        if message.startswith("[MEDIA]") and self._op_mode in {"encode", "remux", "extract"}:
+            message = f"[{self._op_mode.upper()}]" + message[len("[MEDIA]"):]
         self._sync_prep_progress_from_log(message)
         if self._op_mode == "hybrid" and "STEP " in message:
             stage = _STEP_PROGRESS_RE.search(re.sub(r"^\[HYBRID\]\s*\[[^]]+\]\s*", "", message))

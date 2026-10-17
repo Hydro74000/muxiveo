@@ -6,15 +6,14 @@ changent d'un épisode à l'autre (relais DVD/HDTV, épisodes manquants toléré
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 import re
-from types import SimpleNamespace
 from typing import Any
 
 from core.lang_tags import Rfc5646LanguageTags
-from core.workflows.remux_models import RemuxConfig, SourceInput
+from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration
 
 # Extensions multimédia prises en charge
@@ -244,6 +243,52 @@ class MatrixEpisode:
         return paths
 
 
+@dataclass(frozen=True)
+class HybridTrackChoice:
+    """Identité d'une piste témoin, indépendante de son index dans les autres épisodes."""
+
+    source_id: str
+    track_type: str
+    language: str
+    codec: str
+    title: str
+    forced: bool
+    hearing_impaired: bool
+    commentary: bool
+    visual_impaired: bool
+    original: bool
+    audio_channels: str
+    audio_object: str
+    occurrence: int = 0
+
+    @classmethod
+    def from_track(cls, source_id: str, track: TrackEntry) -> HybridTrackChoice:
+        from core.profiles.selectors import track_selector_for_entry
+        selector = track_selector_for_entry(track)
+        return cls(
+            source_id, track.track_type,
+            Rfc5646LanguageTags.normalize(track.orig_language) or "",
+            (track.orig_codec or track.codec).casefold(),
+            track.orig_title.strip().casefold(),
+            track.orig_flag_forced, track.orig_flag_hearing_impaired, track.orig_flag_commentary,
+            track.orig_flag_visual_impaired, track.orig_flag_original,
+            str(selector.get("channels", "")), str(selector.get("audio_object", "")),
+        )
+
+
+def witness_track_choices(source_id: str, tracks: list[TrackEntry]) -> list[HybridTrackChoice]:
+    """Conserve aussi la distinction entre pistes identiques d'une même source."""
+    counts: dict[HybridTrackChoice, int] = {}
+    selected = []
+    for track in tracks:
+        choice = HybridTrackChoice.from_track(source_id, track)
+        occurrence = counts.get(choice, 0)
+        counts[choice] = occurrence + 1
+        if track.enabled:
+            selected.append(replace(choice, occurrence=occurrence))
+    return selected
+
+
 @dataclass
 class HybridRecipe:
     """Recette d'assemblage déterminant quelles pistes conserver, synchroniser et ordonner."""
@@ -253,6 +298,8 @@ class HybridRecipe:
     donor_audio_langs: list[str] = field(default_factory=lambda: ["fre", "fra"])
     donor_sub_langs: list[str] = field(default_factory=lambda: ["fre", "fra"])
     exclude_languages: list[str] = field(default_factory=list)
+    # None : sélection par profil/langues ; () : toutes les pistes décochées.
+    track_choices: tuple[HybridTrackChoice, ...] | None = None
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     sync_strategy: str = "auto"  # "auto", "manual" ou "none"
@@ -274,7 +321,13 @@ class HybridRecipe:
 
         recipe.sync_mode = getattr(remux_config, "sync_mode", "physical") or "physical"
         recipe.sync_subtitles = getattr(remux_config, "sync_subtitles", "mirror") or "mirror"
-        recipe.crossfade_ms = getattr(remux_config, "crossfade_ms", 80) or 80
+        recipe.crossfade_ms = remux_config.crossfade_ms
+        recipe.keep_master_chapters = remux_config.keep_chapters
+        recipe.track_choices = tuple(
+            choice
+            for index, source in enumerate(remux_config.sources)
+            for choice in witness_track_choices("master" if index == master_index else f"src_{index + 1}", source.tracks)
+        )
         recipe.cadence_auto_apply = getattr(remux_config, "cadence_auto_apply", True)
         recipe.cadence_audio_method = getattr(remux_config, "cadence_audio_method", "auto") or "auto"
 
@@ -591,6 +644,56 @@ def _language_selected(language: str | None, expected: list[str]) -> bool:
     return False
 
 
+def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, recipe: HybridRecipe, *, has_profile: bool) -> None:
+    if recipe.track_choices is not None:
+        remaining = set(recipe.track_choices)
+        source_ids = ["master", *(source.source_id for source, _ in episode.donor_files)]
+        for source_id, source in zip(source_ids, sources):
+            # Utiliser les métadonnées d'origine : un profil peut renommer une piste.
+            all_choices = witness_track_choices(source_id, [replace(t, enabled=True) for t in source.tracks if not t.is_new])
+            originals = iter(all_choices)
+            for track in source.tracks:
+                choice = next(originals) if not track.is_new else None
+                track.enabled = choice in remaining
+                if choice is not None and track.enabled:
+                    remaining.remove(choice)
+        if remaining:
+            descriptions = ", ".join(f"{c.source_id}/{c.track_type}/{c.language}/{c.title}" for c in sorted(remaining, key=repr))
+            raise ValueError(f"Pistes du modèle témoin introuvables pour {episode.display_name} : {descriptions}")
+        return
+
+    master_source = sources[0]
+    master_has_preferred_audio = any(
+        t.track_type == "audio" and _language_selected(t.language, recipe.keep_master_audio_langs)
+        for t in master_source.tracks
+    )
+    for track in master_source.tracks:
+        if track.track_type == "video":
+            track.enabled = recipe.keep_master_video
+        elif track.track_type == "audio" and not has_profile:
+            track.enabled = bool(recipe.keep_master_audio_langs) and (
+                _language_selected(track.language, recipe.keep_master_audio_langs) or not master_has_preferred_audio
+            )
+        elif track.track_type == "subtitle" and not has_profile:
+            track.enabled = not _language_selected(track.language, recipe.donor_sub_langs)
+
+    for donor_source in sources[1:]:
+        donor_has_preferred_audio = any(
+            t.track_type == "audio" and _language_selected(t.language, recipe.donor_audio_langs)
+            for t in donor_source.tracks
+        )
+
+        for track in donor_source.tracks:
+            if track.track_type == "video":
+                track.enabled = False
+            elif track.track_type == "audio" and not has_profile:
+                track.enabled = bool(recipe.donor_audio_langs) and (
+                    _language_selected(track.language, recipe.donor_audio_langs) or not donor_has_preferred_audio
+                )
+            elif track.track_type == "subtitle" and not has_profile:
+                track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
+
+
 def prepare_matrix_episode(
     episode: MatrixEpisode,
     recipe: HybridRecipe,
@@ -603,6 +706,7 @@ def prepare_matrix_episode(
 ) -> tuple[RemuxConfig, SyncCalibration | None]:
     """Construit la configuration remux et effectue la calibration synchro pour un épisode multi-sources."""
     from cli.remux_config import build_remux_config
+    from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
     from core.workflows.audio_sync_scan import AudioSyncScanner
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
@@ -613,6 +717,8 @@ def prepare_matrix_episode(
         raise ValueError(f"Épisode {episode.display_name} sans donneur.")
     if recipe.sync_strategy not in {"auto", "manual", "none"}:
         raise ValueError(f"Stratégie de synchro invalide : {recipe.sync_strategy}")
+    if getattr(options, "crossfade_ms", None) is not None:
+        recipe = replace(recipe, crossfade_ms=options.crossfade_ms)
 
     outdir = Path(output_dir).expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
@@ -627,48 +733,60 @@ def prepare_matrix_episode(
         "sync_mode": recipe.sync_mode,
         "sync_subtitles": recipe.sync_subtitles,
         "crossfade_ms": recipe.crossfade_ms,
-        "clean_nfo": True,
-        "chapters": {"source_index": 0},
+        "clean_nfo": options.clean_nfo if getattr(options, "clean_nfo", None) is not None else True,
+        "chapters": {"source_index": 0} if recipe.keep_master_chapters else False,
         "_allow_missing_output_dir": True,
     }
 
-    build_options: Any = options
-    if recipe.sync_strategy != "auto":
-        # Le fichier de calibration et l'auto-sync de la CLI ne doivent pas
-        # réintroduire une analyse dans les deux modes sans analyse.
-        values = vars(options).copy()
-        values.update(calibration=None, auto_sync=False)
-        if recipe.sync_strategy == "none":
-            values.update(sync_mode="container", sync_subtitles="none")
-        build_options = SimpleNamespace(**values)
-    remux_config = build_remux_config(job_payload, config, build_options, logger)
+    # La matrice réalise elle-même la synchro, après la sélection du témoin.
+    # Éviter une première analyse implicite dans le constructeur CLI/profil.
+    build_options = replace(
+        CommonOptions.from_namespace(options), calibration=None, auto_sync=False,
+        sync_mode="container" if recipe.sync_strategy == "none" else recipe.sync_mode,
+        sync_subtitles="none" if recipe.sync_strategy == "none" else recipe.sync_subtitles,
+        crossfade_ms=recipe.crossfade_ms,
+    )
+    profile_name = getattr(options, "profile", None)
+
+    def select_tracks(sources):
+        _select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name))
+
+    profile = None
+    if profile_name:
+        from cli.profile import build_profile_remux_config, load_decision_profile
+        profile = dict(load_decision_profile(profile_name, config))
+        profile.pop("auto_sync", None)
+        profile.pop("sync", None)
+        remux_config, _ = build_profile_remux_config(
+            profile, cli_inputs=source_paths, cli_output=str(output_path),
+            config=config, options=build_options, logger=logger, preview=True,
+            metadata_job=job_payload, select_tracks=select_tracks,
+        )
+    else:
+        remux_config = build_remux_config(job_payload, config, build_options, logger, select_tracks=select_tracks)
+    remux_config.keep_chapters = recipe.keep_master_chapters
+    remux_config.chapter_source_index = 0
     if recipe.sync_strategy == "none":
         remux_config.sync_mode = "container"
         remux_config.sync_subtitles = "none"
 
-    # 1. Source 0 : Master (Vidéo, VO, Chapitres)
     master_source = remux_config.sources[0]
-    master_has_preferred_audio = any(
-        t.track_type == "audio" and _language_selected(t.language, recipe.keep_master_audio_langs)
-        for t in master_source.tracks
-    )
-    for track in master_source.tracks:
-        if track.track_type == "video":
-            track.enabled = recipe.keep_master_video
-        elif track.track_type == "audio":
-            if recipe.keep_master_audio_langs:
-                track.enabled = _language_selected(track.language, recipe.keep_master_audio_langs) or not master_has_preferred_audio
-        elif track.track_type == "subtitle":
-            track.enabled = not _language_selected(track.language, recipe.donor_sub_langs)
-
     ref_audio = next((t for t in master_source.tracks if t.track_type == "audio" and t.enabled), None)
     if ref_audio is None:
         ref_audio = next((t for t in master_source.tracks if t.track_type == "audio"), None)
     ref_sub = next((t for t in master_source.tracks if t.track_type == "subtitle"), None)
 
     # 2. Sources 1..N : Donneurs (Audio VF, Sous-titres)
-    calibrations: dict[str, dict] = {}
+    calibrations: dict[str, SyncCalibration] = {}
     primary_calibration: SyncCalibration | None = None
+    supplied_calibration = None
+    if recipe.sync_strategy == "auto" and getattr(options, "calibration", None):
+        import json
+        if len(episode.donor_files) != 1:
+            raise ValueError("Un fichier de calibration unique nécessite un seul donneur par épisode.")
+        supplied_calibration = SyncCalibration.from_dict(
+            json.loads(Path(options.calibration).read_text(encoding="utf-8-sig"))
+        )
 
     ffmpeg_bin = getattr(options, "ffmpeg", None) or config.tool_ffmpeg
     ffprobe_bin = getattr(options, "ffprobe", None) or config.tool_ffprobe
@@ -678,25 +796,6 @@ def prepare_matrix_episode(
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
-        donor_has_preferred_audio = any(
-            t.track_type == "audio" and _language_selected(t.language, recipe.donor_audio_langs)
-            for t in donor_source.tracks
-        )
-
-        for track in donor_source.tracks:
-            if track.track_type == "video":
-                track.enabled = False
-            elif track.track_type == "audio":
-                if recipe.donor_audio_langs:
-                    track.enabled = _language_selected(track.language, recipe.donor_audio_langs) or not donor_has_preferred_audio
-                else:
-                    track.enabled = True
-            elif track.track_type == "subtitle":
-                if recipe.donor_sub_langs:
-                    track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
-                else:
-                    track.enabled = True
-
         # Détection de cadence A (métadonnées vidéo entre master et donneur)
         cadence_mismatch = None
         cadence_auto_apply = getattr(recipe, "cadence_auto_apply", True)
@@ -735,6 +834,10 @@ def prepare_matrix_episode(
             for track in donor_source.tracks:
                 track.time_shift_ms = 0
                 track.sync_calibration = None
+        elif supplied_calibration is not None:
+            donor_calib = supplied_calibration
+        elif not (target_audio or target_sub):
+            continue
         elif sync_audio and ref_audio and audio_scanner is not None:
             logger.emit(
                 "info",
@@ -774,16 +877,24 @@ def prepare_matrix_episode(
             if primary_calibration is None:
                 primary_calibration = donor_calib
             if recipe.sync_strategy == "auto":
-                calibrations[str(donor_idx)] = donor_calib.to_dict()
+                calibrations[str(donor_idx)] = donor_calib
                 has_cadence = bool(donor_calib.cadence_mismatch and getattr(donor_calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
                 if has_cadence and cadence_auto_apply:
                     remux_config.sync_mode = "physical"
-                elif recipe.sync_mode != "physical" and len(donor_calib.segments) == 1:
-                    for t in donor_source.tracks:
-                        if t.enabled:
-                            t.time_shift_ms = round(donor_calib.segments[0].shift_ms)
 
-    remux_config.sync_calibrations = calibrations
+    # Décider après tous les donneurs : une conversion de cadence peut imposer
+    # le mode physique à l'ensemble du plan. En mode conteneur, seuls les
+    # décalages des pistes sont exportés, comme dans le constructeur CLI.
+    if remux_config.sync_mode == "physical":
+        remux_config.sync_calibrations = {key: calibration.to_dict() for key, calibration in calibrations.items()}
+    else:
+        remux_config.sync_calibrations = {}
+        for source_index, calibration in calibrations.items():
+            if len(calibration.segments) != 1:
+                raise ValueError("Le mode container ne prend pas en charge les coupures multi-segments.")
+            for track in remux_config.sources[int(source_index)].tracks:
+                if track.enabled and (track.is_audio or (track.is_subtitle and recipe.sync_subtitles == "mirror")):
+                    track.time_shift_ms = round(calibration.segments[0].shift_ms)
 
     # 3. Établir l'ordre des pistes harmonisé
     final_order: list[tuple[int, int, str]] = []
@@ -814,7 +925,17 @@ def prepare_matrix_episode(
         if t.track_type == "subtitle" and t.enabled:
             final_order.append((0, t.mkv_tid, t.entry_id))
 
+    if profile:
+        # L'ordre du profil reste prioritaire ; ajouter les pistes explicitement
+        # cochées que ce profil avait écartées de son ordre initial.
+        allowed = set(final_order)
+        profile_order = [item for item in remux_config.track_order if item in allowed]
+        final_order = profile_order + [item for item in final_order if item not in profile_order]
+    if getattr(options, "auto_forced_subs", False):
+        from core.workflows.subtitle_heuristics import forced_first
+        final_order = forced_first(final_order, remux_config.sources)
     remux_config.track_order = final_order
+    _finalize_matrix_metadata(episode, remux_config, outdir, config, options, logger, profile, final_order)
     episode.calibration = primary_calibration
     if primary_calibration:
         episode.shift_ms = primary_calibration.segments[0].shift_ms
@@ -828,3 +949,53 @@ def prepare_matrix_episode(
         episode.cadence_mismatch = None
 
     return remux_config, primary_calibration
+
+
+def _finalize_matrix_metadata(
+    episode: MatrixEpisode, result: RemuxConfig, outdir: Path,
+    config: Any, options: Any, logger: Any, profile: dict[str, Any] | None,
+    final_order: list[tuple[int, int, str]],
+) -> None:
+    """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
+    from cli.output_template import build_output_context, render_output_template
+    from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
+
+    details = None
+    tmdb_id = getattr(options, "auto_tmdb", None)
+    if tmdb_id is not None:
+        tmdb: dict[str, Any] = {
+            "enabled": True, "kind": "tv" if episode.season and episode.episode else "movie",
+            "cover": not getattr(options, "no_cover", False),
+        }
+        if episode.season and episode.episode:
+            tmdb.update(season=str(episode.season), episode=str(episode.episode))
+        if tmdb_id:
+            tmdb["id"] = tmdb_id
+        if getattr(options, "tmdb_apikey", None):
+            tmdb["api_key"] = options.tmdb_apikey
+        title, tags, cover, details = resolve_tmdb_metadata({"tmdb": tmdb}, config, result.sources[0].path, logger)
+        result.file_title = title
+        result.tag_overrides = merge_tmdb_tag_overrides(tags, result.tag_overrides, tmdb_wins=True)
+        result.tmdb_cover = cover
+
+    template = getattr(options, "output_template", None)
+    if not template:
+        return
+    tracks = [track for source in result.sources for track in source.tracks]
+    variables = dict((profile or {}).get("variables") or {})
+    group = getattr(options, "tag", "") or ""
+    if group:
+        variables["release_group"] = group
+    context = build_output_context(
+        result.sources[0].path, details, tracks=tracks,
+        track_order=final_order, variables=variables,
+    )
+    title_match = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", result.sources[0].path.name, re.I)
+    reference_title = re.sub(r"\.(?:REPACK|PROPER)$", "", title_match.group(1), flags=re.I) if title_match else ""
+    context.update(season_num=episode.season, episode_num=episode.episode, ref_episode_title=reference_title)
+    if group:
+        context.update(group=group, release_group=group)
+    name = render_output_template(template, context)
+    if Path(name).is_absolute() or ".." in Path(name).parts:
+        raise ValueError("Le template doit rester dans le dossier de sortie.")
+    result.output = outdir / name

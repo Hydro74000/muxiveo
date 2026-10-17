@@ -147,6 +147,22 @@ def _input_style() -> str:
             f"border-color:{_C.BORDER};}}")
 
 
+def _slider_style() -> str:
+    handle = _scale(16)
+    groove_h = _scale(6)
+    radius = _scale(3)
+    margin = _scale(6)
+    return (
+        f"QSlider::groove:horizontal{{background:{_C.BG_CARD};height:{groove_h}px;"
+        f"border:1px solid {_C.BORDER};border-radius:{radius}px;}}"
+        f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:{radius}px;}}"
+        f"QSlider::add-page:horizontal{{background:{_C.BG_ACTIVE};border-radius:{radius}px;}}"
+        f"QSlider::handle:horizontal{{background:{_C.TEXT_PRI};width:{handle}px;height:{handle}px;"
+        f"margin:-{margin}px 0;border-radius:{_scale(8)}px;border:1px solid {_C.BORDER_LT};}}"
+        f"QSlider::handle:horizontal:hover{{border-color:{_C.ACCENT};}}"
+    )
+
+
 def _combo_style() -> str:
     return (f"QComboBox{{background:{_C.BG_CARD};color:{_C.TEXT_PRI};"
             f"border:1px solid {_C.BORDER};border-radius:5px;"

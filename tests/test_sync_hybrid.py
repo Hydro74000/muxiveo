@@ -249,17 +249,20 @@ def test_studio_manual_offset_can_be_changed_per_episode(qt_app, tmp_path, monke
     dialog = HybridStudio(AppConfig())
     dialog.sync_strategy.setCurrentIndex(dialog.sync_strategy.findData("manual"))
     first, second = make_config("first"), make_config("second")
+    monkeypatch.setattr("ui.panels.remux_panel.widgets.sync_studio_dialog.SyncStudioDialog._load_segment_audio_async", lambda *_a: None)
     dialog.jobs = {0: (first, SyncCalibration.linear(0)), 1: (second, SyncCalibration.linear(0))}
     dialog.table.setRowCount(2)
     dialog.table.setItem(1, 3, QTableWidgetItem("+0 ms"))
     dialog.table.blockSignals(True)
     dialog.table.selectRow(1)
     dialog.table.blockSignals(False)
-    dialog.adjust.setValue(325)
+    dialog.select_waveform()
+    dialog._sync_editor.spin_shift.setValue(325)
 
     assert all(track.time_shift_ms == 0 for source in first.sources[1:] for track in source.tracks)
-    assert all(track.time_shift_ms == 325 for source in second.sources[1:] for track in source.tracks)
-    assert second.sync_calibrations == {}
+    assert second.sync_calibrations["1"]["segments"][0]["shift_ms"] == 325
+    assert "2" not in second.sync_calibrations
+    assert all(track.time_shift_ms == 0 for source in second.sources[1:] for track in source.tracks)
     assert dialog.jobs[1][1].segments[0].shift_ms == 325
     shift_item = dialog.table.item(1, 3)
     assert shift_item is not None
@@ -270,23 +273,23 @@ def test_studio_manual_offset_can_be_changed_per_episode(qt_app, tmp_path, monke
     dialog._prepared_signature = dialog._settings_signature()
     dialog.run()
     assert launched == [first, second]
-    assert all(track.time_shift_ms == 325 for source in launched[1].sources[1:] for track in source.tracks)
+    assert launched[1].sync_calibrations["1"]["segments"][0]["shift_ms"] == 325
     dialog.set_busy(False)
     dialog.close()
 
 
-def test_studio_witness_table_lists_typed_tracks(qt_app):
+def test_studio_witness_table_lists_typed_tracks(qt_app, tmp_path):
     """Le tableau témoin lit video/audio/subtitle_tracks de FileInfo (pas d'attribut `streams`)."""
-    from types import SimpleNamespace
-
     from core.config import AppConfig
+    from core.inspector import AudioTrack, FileInfo, SubtitleTrack, VideoTrack
     from ui.panels.hybrid_studio import HybridStudio
 
-    def track(codec, lang, title=""):
-        return SimpleNamespace(codec=codec, language=lang, title=title)
-
-    master = SimpleNamespace(video_tracks=[track("hevc", "und")], audio_tracks=[track("truehd", "eng")], subtitle_tracks=[])
-    donor = SimpleNamespace(video_tracks=[], audio_tracks=[track("ac3", "fre", "VFF")], subtitle_tracks=[track("subrip", "fre")])
+    master = FileInfo(tmp_path / "master.mkv", "matroska", 1, 100, None,
+                      video_tracks=[VideoTrack(0, "hevc", "", 64, 64, None, None, None, None, None, None)],
+                      audio_tracks=[AudioTrack(1, "truehd", "", 6, "5.1", 48000, None, "eng", "")])
+    donor = FileInfo(tmp_path / "donor.mkv", "matroska", 1, 100, None,
+                     audio_tracks=[AudioTrack(0, "ac3", "", 6, "5.1", 48000, None, "fre", "VFF")],
+                     subtitle_tracks=[SubtitleTrack(1, "subrip", "fre", "")])
     dialog = HybridStudio(AppConfig())
     dialog._populate_witness_table([("Master", "master", master), ("Donneur", "donor", donor)])
 
