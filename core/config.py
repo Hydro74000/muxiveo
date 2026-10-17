@@ -1021,7 +1021,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
             {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": f"Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via {APP_ENV_PREFIX}_TMDB_BEARER_TOKEN."},
-            {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi."},
+            {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver."},
         ),
     },
 )

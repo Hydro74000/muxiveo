@@ -68,7 +68,7 @@ def write_mediainfo_nfo(
     mediainfo_bin: str = "mediainfo",
     *, clean_nfo: bool = True,
 ) -> None:
-    """Génère un fichier .nfo (même nom que le MKV) avec la sortie brute de mediainfo."""
+    """Génère le NFO MediaInfo, avec les seuls noms de fichiers par défaut."""
     _write_mediainfo_nfo_helper(
         output_path,
         log_cb=log_cb,

@@ -6,7 +6,7 @@ import json
 import time
 
 import pytest
-from PySide6.QtWidgets import QScrollArea, QTableWidgetItem
+from PySide6.QtWidgets import QDialog, QGroupBox, QScrollArea, QTableWidgetItem
 
 from core.config import AppConfig
 from core.inspector import FileInfo, SubtitleTrack
@@ -248,3 +248,51 @@ def test_reset_restores_navigation_after_the_calibration_structure_changed(panel
     assert editor.cuts_table.rowCount() == 3
     assert editor.spin_shift.value() == -180
     assert editor.btn_next_seg.isEnabled()
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_tmdb_search_reuses_remux_dialog_and_reports_the_selected_id(panel, tmp_path, monkeypatch, accepted):
+    from core.media_info_fetcher import MediaDetails, MediaSearchResult
+    from ui.panels.tmdb_search_modal import TmdbSearchModal
+
+    reference = tmp_path / "Crystal.Lake.S01E03.2160p.WEB-DL.mkv"
+    panel.reference.setText(str(reference))
+    panel.donor.setText(str(tmp_path / "donor"))
+    panel.output.setText(str(tmp_path / "output"))
+    panel.matrix_episodes = [MatrixEpisode(season=1, episode=3, master_file=reference)]
+    panel.controls["auto-tmdb"].setText("777")
+    for group in panel.findChildren(QGroupBox):
+        if group.isCheckable():
+            group.setChecked(True)
+    signature = panel._settings_signature()
+    opened = []
+
+    def choose(dialog):
+        opened.append(dialog)
+        assert dialog._search_edit.text() == "Crystal Lake"
+        assert dialog._season_spin.value() == 1 and dialog._episode_spin.value() == 3
+        assert dialog._kind_combo.currentIndex() == 2
+        if not accepted:
+            return QDialog.DialogCode.Rejected
+        dialog._on_results([MediaSearchResult(213562, "Crystal Lake", "2026", "tv")])
+        # L'URL renvoyée peut être IMDb : l'identifiant doit venir du résultat TMDB.
+        dialog._on_details(MediaDetails(title="Crystal Lake", url="https://www.imdb.com/title/tt1234567/"))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(TmdbSearchModal, "exec", choose)
+    panel.tmdb_search_button.click()
+    assert len(opened) == 1
+    assert panel.controls["auto-tmdb"].text() == ("213562" if accepted else "777")
+    assert (panel._settings_signature() != signature) is accepted
+    assert panel._parse_preparation_args().auto_tmdb == (213562 if accepted else 777)
+
+
+def test_hybrid_nfo_paths_require_an_explicit_opt_out(panel, tmp_path):
+    panel.reference.setText(str(tmp_path / "reference"))
+    panel.donor.setText(str(tmp_path / "donor"))
+    panel.output.setText(str(tmp_path / "output"))
+    assert panel._parse_preparation_args().clean_nfo is True
+    panel.controls["no-clean-nfo"].setChecked(True)
+    assert panel._parse_preparation_args().clean_nfo is False
+    panel.controls["no-clean-nfo"].setChecked(False)
+    assert panel._parse_preparation_args().clean_nfo is True

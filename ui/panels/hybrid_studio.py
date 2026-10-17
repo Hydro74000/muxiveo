@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -40,6 +41,7 @@ from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.remux_models import tracks_from_file_info
 from ui.widgets.content_table import ContentTableWidget
 from ui.widgets.surface import CollapsibleCard
+from ui.panels.tmdb_search_modal import TmdbSearchModal
 from core.workflows.hybrid_matrix import (
     HybridMatrix,
     HybridRecipe,
@@ -48,6 +50,7 @@ from core.workflows.hybrid_matrix import (
     MatrixSource,
     SourceRole,
     _language_selected,
+    parse_episode_key,
     prepare_matrix_episode,
     witness_track_choices,
 )
@@ -737,7 +740,17 @@ class HybridStudio(QWidget):
             line_edit.setStyleSheet(_input_style())
             lbl_txt = QLabel(translate_text(label))
             lbl_txt.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
-            settings.addRow(lbl_txt, line_edit)
+            if option == "auto-tmdb":
+                tmdb_row = QWidget()
+                tmdb_layout = QHBoxLayout(tmdb_row)
+                tmdb_layout.setContentsMargins(0, 0, 0, 0)
+                tmdb_layout.addWidget(line_edit, 1)
+                self.tmdb_search_button = _secondary_button(translate_text("Rechercher…"))
+                self.tmdb_search_button.clicked.connect(self._search_tmdb)
+                tmdb_layout.addWidget(self.tmdb_search_button)
+                settings.addRow(lbl_txt, tmdb_row)
+            else:
+                settings.addRow(lbl_txt, line_edit)
             self.controls[option] = line_edit
 
         settings.addRow(matching_row)
@@ -1154,6 +1167,30 @@ class HybridStudio(QWidget):
         if path:
             field.setText(path)
 
+    def _search_tmdb(self):
+        """Réutilise la recherche Remux et reporte l'identifiant sur tout le lot."""
+        if self.busy:
+            return
+        from core.media_info_fetcher import clean_filename_for_search, extract_year_from_filename
+
+        row = self.table.currentRow()
+        episode = self.matrix_episodes[row] if 0 <= row < len(self.matrix_episodes) else next(
+            (ep for ep in self.matrix_episodes if ep.master_file), None,
+        )
+        path = episode.master_file if episode and episode.master_file else Path(self.reference.text().strip()).expanduser()
+        suggested = clean_filename_for_search(path)
+        year = extract_year_from_filename(path)
+        if year:
+            suggested = f"{suggested} {year}".strip()
+        season, number = ((episode.season, episode.episode) if episode and episode.season and episode.episode
+                          else (parse_episode_key(path) or (0, 0)))
+        dialog = TmdbSearchModal(
+            self.config, suggested_title=suggested, suggested_season=season,
+            suggested_episode=number, parent=self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.selected_result is not None:
+            self.controls["auto-tmdb"].setText(str(dialog.selected_result.tmdb_id))
+
     def set_busy(self, busy: bool):
         self.busy = busy
         self._sources_card.setEnabled(not busy)
@@ -1182,6 +1219,7 @@ class HybridStudio(QWidget):
             self.inspect_witness_btn,
             self.add_source_btn,
             self.add_manual_pair_btn,
+            self.tmdb_search_button,
             self.table,
             *self.controls.values(),
         ):

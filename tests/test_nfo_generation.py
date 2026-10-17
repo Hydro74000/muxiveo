@@ -282,6 +282,34 @@ class TestWriteMediainfoNfo:
         nfo_text = (tmp_path / "film.nfo").read_text(encoding="utf-8")
         assert nfo_text == fake_result.stdout
 
+    @pytest.mark.parametrize("clean", [True, False])
+    def test_paths_are_cleaned_independently_of_mediainfo_language(self, tmp_path, clean):
+        from core.workflows.remux import write_mediainfo_nfo
+
+        mkv = tmp_path / "Épisode final.mkv"
+        text = (
+            f"Nom complet                             : {mkv}\r\n"
+            "Source                                  : /media/Sources/Original avec espaces.mkv\r\n"
+            "Source originale                        : C:\\Users\\Alice\\Vidéos\\source.mkv\r\n"
+            "Source réseau                           : \\\\serveur\\partage\\source réseau.mkv\r\n"
+            f"Commentaire                             : Fichier produit : {mkv}\r\n"
+            "URL                                     : https://www.themoviedb.org/tv/213562\r\n"
+            "Format                                  : Matroska\r\n"
+        )
+        result = MagicMock(returncode=0, stdout=text)
+        with patch("core.workflows.remux.subprocess.run", return_value=result):
+            write_mediainfo_nfo(mkv, MagicMock(), clean_nfo=clean)
+        actual = mkv.with_suffix(".nfo").read_bytes().decode("utf-8")
+        if not clean:
+            assert actual == text
+            return
+        assert str(tmp_path) not in actual
+        assert "/media/Sources/" not in actual and "C:\\Users\\" not in actual and "\\\\serveur\\" not in actual
+        for filename in (mkv.name, "Original avec espaces.mkv", "source.mkv", "source réseau.mkv"):
+            assert filename in actual
+        assert "https://www.themoviedb.org/tv/213562" in actual
+        assert actual.count("\r\n") == text.count("\r\n")
+
     def test_uses_custom_mediainfo_bin(self, tmp_path):
         """mediainfo_bin personnalisé est passé à subprocess.run."""
         from core.workflows.remux import write_mediainfo_nfo

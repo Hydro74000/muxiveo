@@ -1,4 +1,8 @@
 {
+  "Rechercher…": {
+    "fra": "Rechercher…",
+    "eng": "Search…"
+  },
   "Ouvrir le journal au démarrage": {
     "fra": "Ouvrir le journal au démarrage",
     "eng": "Expand the log panel at startup"
@@ -2139,9 +2143,9 @@
     "fra": "Générer un fichier .nfo après remux/encodage",
     "eng": "Generate a .nfo file after remux/encode"
   },
-  "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.": {
-    "fra": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.",
-    "eng": "Automatically creates a .nfo file (same name as the MKV) containing the raw mediainfo output after each successful workflow."
+  "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver.": {
+    "fra": "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver.",
+    "eng": "Automatically creates a .nfo file after each successful workflow. Paths are reduced to filenames unless explicitly requested otherwise."
   },
   "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.": {
     "fra": "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.",
