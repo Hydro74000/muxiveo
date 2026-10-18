@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QProgressBar,
     QScrollArea,
     QTableWidget,
@@ -42,9 +41,11 @@ from core.hdr_inspection import (
     build_snapshot,
 )
 from core.hdr_inspection import summary
+from core.hdr_inspection.compare import Side
 from core.hdr_inspection.fel_analyzer import CaptureLayer
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
 from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
+from core.hdr_inspection.report import write_report
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import translate_text
 from core.inspector import FileInfo, FileInspector
@@ -52,6 +53,7 @@ from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
 from ui.design_system import colors as C, font_px, scale
 from ui.operation_bar import OperationState
+from ui.panels.hdr_studio.compare_tab import CompareTab, DropLineEdit
 from ui.panels.hdr_studio.editor import EditionTab
 from ui.panels.hdr_studio.fel_tab import FelTab
 from ui.panels.hdr_studio.luminance import LuminanceTab
@@ -146,24 +148,6 @@ def _finding_row(finding: Finding) -> QWidget:
     return row
 
 
-class _DropLineEdit(QLineEdit):
-    dropped = Signal(object)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:  # noqa: N802
-        for url in event.mimeData().urls():
-            if url.isLocalFile():
-                self.dropped.emit(Path(url.toLocalFile()))
-                break
-
-
 class HdrStudio(QWidget):
     """Page « HDR Studio » : chargement d'une source, analyse à la demande, onglets de résultats."""
 
@@ -184,6 +168,8 @@ class HdrStudio(QWidget):
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
     _fel_done = Signal(int, object, str)
+    _compare_inspected = Signal(int, object, int, object, str)
+    _compare_analyzed = Signal(int, object, str)
 
     def __init__(self, config, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -199,6 +185,9 @@ class HdrStudio(QWidget):
         self._pending_analyze = False
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
+        # Piste B de l'onglet Comparer.
+        self._compare_info: FileInfo | None = None
+        self._compare_token = 0
         self._patch_token: int | None = None
         self._last_step = ""
         # Moteur de mesure (plugin mvo-fel), remplaçable par les tests.
@@ -213,6 +202,8 @@ class HdrStudio(QWidget):
         self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
         self._patched.connect(self._on_patched, Qt.ConnectionType.QueuedConnection)
         self._fel_done.connect(self._on_fel_done, Qt.ConnectionType.QueuedConnection)
+        self._compare_inspected.connect(self._on_compare_inspected, Qt.ConnectionType.QueuedConnection)
+        self._compare_analyzed.connect(self._on_compare_analyzed, Qt.ConnectionType.QueuedConnection)
         self._render(None)
 
     # ── Construction ────────────────────────────────────────────────────
@@ -236,7 +227,7 @@ class HdrStudio(QWidget):
         source_layout.addWidget(_section_label(translate_text("SOURCE")))
         row = QHBoxLayout()
         row.setSpacing(scale(6))
-        self._path_edit = _DropLineEdit()
+        self._path_edit = DropLineEdit()
         self._path_edit.setPlaceholderText(translate_text("Déposer une vidéo ici ou choisir un fichier…"))
         self._path_edit.setStyleSheet(_input_style())
         self._path_edit.returnPressed.connect(lambda: self.load_source(Path(self._path_edit.text().strip())))
@@ -270,6 +261,11 @@ class HdrStudio(QWidget):
         self._open_output_btn.clicked.connect(self._open_output)
         self._open_output_btn.setVisible(False)
         actions.addWidget(self._open_output_btn)
+        self._export_btn = _secondary_button(translate_text("Exporter le rapport…"))
+        self._export_btn.setToolTip(translate_text(
+            "Page HTML autonome ou JSON : contrôles, métadonnées, courbes, FEL Analyzer et comparaison."))
+        self._export_btn.clicked.connect(lambda: self.export_report())
+        actions.addWidget(self._export_btn)
         self._status = _label("", color=C.TEXT_SEC)
         actions.addWidget(self._status, 1)
         source_layout.addLayout(actions)
@@ -310,6 +306,17 @@ class HdrStudio(QWidget):
         fel_scroll.setWidget(self._fel_tab)
         self._fel_scroll = fel_scroll
         self._tabs.addTab(fel_scroll, translate_text("FEL"))
+        self._compare_tab = CompareTab()
+        self._compare_tab.source_requested.connect(self.load_compare)
+        self._compare_tab.track_requested.connect(self.compare_track_changed)
+        self._compare_tab.analyze_requested.connect(self.analyze_compare)
+        compare_scroll = QScrollArea()
+        compare_scroll.setWidgetResizable(True)
+        compare_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        compare_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        compare_scroll.setWidget(self._compare_tab)
+        self._compare_scroll = compare_scroll
+        self._tabs.addTab(compare_scroll, translate_text("Comparer"))
         self._editor = EditionTab()
         self._luminance.values_changed.connect(self._editor.set_static_values)
         self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
@@ -455,6 +462,40 @@ class HdrStudio(QWidget):
         self._update_actions()
 
     # ── Analyse dynamique ───────────────────────────────────────────────
+    def _dynamic_task(self, info: FileInfo, stream: int | None, refresh: bool, token: int,
+                      cancel: threading.Event, signals: TaskSignals) -> InspectionReport | None:
+        """Niveau 2 dans le thread de travail (progression sur ``token``) ; None si annulé."""
+        runner = ToolRunner(max_workers=1)
+        span = [0.0, 1.0]
+
+        def on_step(label: str, start: float, part: float) -> None:
+            span[:] = [start, part]
+            self._progress.emit(token, label, int(start * 100))
+
+        def on_pct(pct: int) -> None:
+            self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
+
+        def run(cmd: object) -> object:
+            return runner._run_cmd(cmd, label="hdr-inspection", progress_cb=self._tool_line(cmd),  # type: ignore[arg-type]
+                                   progress_pct_cb=on_pct, signals=signals)
+
+        owned = None
+        try:
+            owned = create_process_work_dir(self._config.ensure_work_dir(), process_name="hdr-inspection")
+            inspector = DynamicInspector(
+                ffmpeg_bin=str(self._config.tool_ffmpeg), dovi_tool_bin=str(self._config.tool_dovi_tool),
+                hdr10plus_bin=str(self._config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
+                cache=self._cache, on_step=on_step, cancelled=cancel.is_set)
+            return inspector.analyze(info, stream, refresh=refresh)
+        except InspectionCancelled:
+            return None
+        finally:
+            if owned is not None:
+                try:
+                    owned.remove()
+                except OSError:
+                    pass  # repris par le nettoyage de démarrage (marqueur conservé)
+
     def analyze(self, *, refresh: bool = False) -> None:
         if self._info is None or self._busy:
             return
@@ -470,40 +511,12 @@ class HdrStudio(QWidget):
         self._cancel = cancel
         signals = TaskSignals()
         self._signals = signals
-        runner = ToolRunner(max_workers=1)
-        config = self._config
-        span = [0.0, 1.0]
-
-        def on_step(label: str, start: float, part: float) -> None:
-            span[:] = [start, part]
-            self._progress.emit(token, label, int(start * 100))
-
-        def on_pct(pct: int) -> None:
-            self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
-
-        def run(cmd: object) -> object:
-            return runner._run_cmd(cmd, label="hdr-inspection", progress_cb=self._tool_line(cmd),  # type: ignore[arg-type]
-                                   progress_pct_cb=on_pct, signals=signals)
 
         def task() -> None:
-            owned = None
             try:
-                owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-inspection")
-                inspector = DynamicInspector(
-                    ffmpeg_bin=str(config.tool_ffmpeg), dovi_tool_bin=str(config.tool_dovi_tool),
-                    hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
-                    cache=self._cache, on_step=on_step, cancelled=cancel.is_set)
-                self._analyzed.emit(token, inspector.analyze(info, stream, refresh=refresh), "")
-            except InspectionCancelled:
-                self._analyzed.emit(token, None, "")
+                self._analyzed.emit(token, self._dynamic_task(info, stream, refresh, token, cancel, signals), "")
             except Exception as exc:  # échec d'outil : affiché, l'instantané reste visible
                 self._analyzed.emit(token, None, str(exc) or exc.__class__.__name__)
-            finally:
-                if owned is not None:
-                    try:
-                        owned.remove()
-                    except OSError:
-                        pass  # repris par le nettoyage de démarrage (marqueur conservé)
 
         self._set_busy(True, translate_text("Analyse des métadonnées dynamiques…"))
         self._progress_bar.setRange(0, 100)
@@ -808,6 +821,151 @@ class HdrStudio(QWidget):
         self.log_message.emit("OK", f"{verdict} — {detail}")
         self.show_fel_tab()
 
+    # ── Comparaison (piste B) ───────────────────────────────────────────
+    def show_compare_tab(self) -> None:
+        self._tabs.setCurrentWidget(self._compare_scroll)
+
+    def load_compare(self, path: Path, stream_index: int | None = None) -> None:
+        """Piste B : inspection rapide, puis métadonnées dynamiques et mesure reprises du cache."""
+        path = Path(path)
+        if not path.is_file() or not is_accepted(path):
+            self._compare_notify("ERROR", translate_text("Fichier vidéo introuvable ou non pris en charge : {name}",
+                                                         name=path.name))
+            return
+        if self._busy:
+            self._compare_notify("WARN", translate_text("Opération en cours : réessayer ensuite."))
+            return
+        self._compare_token += 1
+        token = self._compare_token
+        self._compare_tab.set_status(translate_text("Inspection de {name}…", name=path.name))
+        ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
+
+        def task() -> None:
+            try:
+                info = FileInspector(ffprobe, mediainfo).inspect(path)
+                video = info.video_tracks
+                index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
+                self._compare_inspected.emit(token, info, index, self._cached(path, index) if video else None, "")
+            except Exception as exc:  # inspection impossible : message à l'utilisateur
+                self._compare_inspected.emit(token, None, 0, None, str(exc))
+
+        self._executor.submit(task)
+
+    def compare_track_changed(self, stream_index: int) -> None:
+        info = self._compare_info
+        if info is None:
+            return
+        self._compare_token += 1
+        token = self._compare_token
+
+        def task() -> None:
+            self._compare_inspected.emit(token, info, stream_index, self._cached(Path(info.path), stream_index), "")
+
+        self._executor.submit(task)
+
+    def _on_compare_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
+        if token != self._compare_token:
+            return
+        if info is None or not info.video_tracks:
+            self._compare_notify("ERROR", error or translate_text("Aucune piste vidéo."))
+            return
+        self._compare_info = info
+        self._compare_tab.set_tracks(Path(info.path), [
+            (track.index, f"#{track.index} · {track.codec.upper()} {track.resolution} · {track.hdr_label}")
+            for track in info.video_tracks], index)
+        snapshot = build_snapshot(info, index)
+        dynamic = cached.get("dynamic") if isinstance(cached, dict) else None
+        measurement = cached.get("measure") if isinstance(cached, dict) else None
+        measurement = measurement if isinstance(measurement, ImageMeasurement) else None
+        if isinstance(dynamic, tuple):
+            dovi, hdr10plus = dynamic
+            report = InspectionReport(snapshot, dovi, hdr10plus, audit(snapshot, dovi, hdr10plus, measurement),
+                                      dynamic=True, from_cache=True)
+        else:
+            report = InspectionReport(snapshot, findings=audit(snapshot, measurement=measurement))
+        self._compare_tab.set_side_b(Side(report, measurement))
+        needs_dynamic = not report.dynamic and (snapshot.dovi is not None or snapshot.hdr10plus)
+        self._compare_tab.set_status(translate_text(
+            "B : en-têtes seulement ; lire les métadonnées dynamiques de B pour comparer les courbes.")
+            if needs_dynamic else translate_text("B : {name}", name=info.path.name))
+
+    def analyze_compare(self) -> None:
+        """Niveau 2 de la piste B (même progression et annulation que la piste A)."""
+        info = self._compare_info
+        side = self._compare_tab.side_b()
+        if info is None or side is None or self._busy:
+            return
+        stream = side.report.snapshot.stream_index
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        signals = TaskSignals()
+        self._signals = signals
+
+        def task() -> None:
+            try:
+                self._compare_analyzed.emit(token, self._dynamic_task(info, stream, False, token, cancel, signals), "")
+            except Exception as exc:
+                self._compare_analyzed.emit(token, None, str(exc) or exc.__class__.__name__)
+
+        self._set_busy(True, translate_text("Analyse des métadonnées dynamiques de B…"))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self.log_message.emit("INFO", translate_text("Lecture des métadonnées dynamiques : {name}", name=info.path.name))
+        self._executor.submit(task)
+
+    def _on_compare_analyzed(self, token: int, report: InspectionReport | None, error: str) -> None:
+        if token != self._token:
+            return
+        self._signals = None
+        self._set_busy(False)
+        if report is None:
+            self._compare_notify("ERROR" if error else "WARN",
+                                 translate_text("Analyse HDR impossible : {error}", error=error) if error
+                                 else translate_text("Analyse annulée."))
+            return
+        side = self._compare_tab.side_b()
+        measurement = side.measurement if side is not None else None
+        if measurement is not None:
+            report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
+                                                                 measurement))
+        self._compare_tab.set_side_b(Side(report, measurement))
+        self._compare_tab.set_status(translate_text("B : {name}", name=Path(report.snapshot.path).name))
+        for message in report.errors:
+            self.log_message.emit("WARN", message)
+
+    def _compare_notify(self, level: str, text: str) -> None:
+        """Message de la piste B : ligne d'état de l'onglet Comparer et journal d'exécution."""
+        self._compare_tab.set_status(text, error=level == "ERROR")
+        self.log_message.emit(level, text)
+
+    # ── Rapport ─────────────────────────────────────────────────────────
+    def export_report(self, path: Path | None = None) -> Path | None:
+        """Rapport HTML (autonome) ou JSON de la piste inspectée, FEL Analyzer et comparaison compris."""
+        report = self._report
+        if report is None:
+            return None
+        if path is None:
+            source = Path(report.snapshot.path)
+            chosen, selected = QFileDialog.getSaveFileName(
+                self, translate_text("Exporter le rapport HDR"), str(source.with_name(f"{source.stem}.hdr.html")),
+                translate_text("Page HTML (*.html);;JSON (*.json)"))
+            if not chosen:
+                return None
+            path = Path(chosen)
+            if path.suffix.lower() not in (".html", ".htm", ".json"):
+                path = path.with_name(path.name + (".json" if "json" in selected.lower() else ".html"))
+        try:
+            written = write_report(path, report, measurement=self._measurement, fel=self._fel_tab.fel_report(),
+                                   comparison=self._compare_tab.comparison(), other=self._compare_tab.other_report())
+        except (OSError, ValueError) as exc:
+            self._notify("ERROR", translate_text("Export du rapport impossible : {error}", error=str(exc)))
+            return None
+        self._set_status(translate_text("Rapport exporté : {name}", name=written.name))
+        self.log_message.emit("OK", translate_text("Rapport HDR exporté : {path}", path=str(written)))
+        return written
+
     # ── Correction du fichier ───────────────────────────────────────────
     def _prepare_patch(self, max_cll: int, max_fall: int) -> None:
         self._editor.set_static_values(max_cll, max_fall)
@@ -964,6 +1122,8 @@ class HdrStudio(QWidget):
         self._luminance.set_busy(self._busy)
         self._fel_tab.set_busy(self._busy)
         self._editor.set_busy(self._busy)
+        self._compare_tab.set_busy(self._busy)
+        self._export_btn.setEnabled(report is not None and not self._busy)
         if report is not None and not self._busy:
             if report.from_cache:
                 self._set_status(translate_text("Métadonnées dynamiques : résultat en cache."))
@@ -994,6 +1154,7 @@ class HdrStudio(QWidget):
             self._clear(layout)
         self._luminance.set_report(report, self._measurement)
         self._fel_tab.set_report(report)
+        self._compare_tab.set_side_a(Side(report, self._measurement) if report is not None else None)
         self._editor.set_report(report, self._measurement)
         if report is None:
             self._overview.addWidget(_label(translate_text(

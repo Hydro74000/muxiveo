@@ -95,6 +95,10 @@ def _metadata_job_from_args(args: argparse.Namespace) -> dict:
 
 
 def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    if getattr(args, "hdr", None):
+        from cli.hdr import cmd_inspect_hdr
+
+        return cmd_inspect_hdr(args, config, logger)
     options = common_options(args)
     ffprobe = options.ffprobe or config.tool_ffprobe
     mediainfo = options.mediainfo or config.tool_mediainfo

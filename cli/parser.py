@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from cli.hdr import add_hdr_options
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from cli.plugins import add_plugins_parser
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("input", nargs="+")
     inspect.add_argument("--config-template", action="store_true")
     inspect.add_argument("--output")
+    add_hdr_options(inspect)
     inspect.set_defaults(func=cmd_inspect)
 
     schema = sub.add_parser("schema", help="Afficher le schéma JSON du contrat CLI.")

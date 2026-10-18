@@ -51,7 +51,7 @@ def track_rows(snapshot: HdrSnapshot) -> Rows:
     return [
         (translate_text("Codec"), snapshot.codec.upper()),
         (translate_text("Résolution"), f"{snapshot.width or '?'}×{snapshot.height or '?'}"),
-        (translate_text("Cadence"), f"{snapshot.fps:.3f} i/s" if snapshot.fps else "?"),
+        (translate_text("Cadence"), translate_text("{fps} i/s", fps=f"{snapshot.fps:.3f}") if snapshot.fps else "?"),
         (translate_text("Images"), frames),
         (translate_text("Profondeur"), f"{snapshot.bit_depth} bits" if snapshot.bit_depth else "?"),
         (translate_text("Transfert"), snapshot.transfer or "?"),

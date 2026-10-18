@@ -7,6 +7,7 @@ import sys
 from PySide6.QtCore import QCoreApplication
 
 from core.config import AppConfig
+from core.version import APP_NAME
 from core.runner import ToolNotFoundError
 
 from cli.constants import EXIT_TOOL, EXIT_WORKFLOW
@@ -20,7 +21,11 @@ def _ensure_qcore_app(argv: list[str] | None = None) -> QCoreApplication:
     app = QCoreApplication.instance()
     if isinstance(app, QCoreApplication):
         return app
-    return QCoreApplication(argv or [sys.argv[0]])
+    app = QCoreApplication(argv or [sys.argv[0]])
+    # Mêmes noms que l'interface : dossiers de données partagés (caches HDR Studio, journaux).
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
+    return app
 
 
 def _configure_io_encoding() -> None:

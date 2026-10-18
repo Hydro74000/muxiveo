@@ -8162,5 +8162,281 @@
   "HDR STUDIO": {
     "fra": "HDR STUDIO",
     "eng": "HDR STUDIO"
+  },
+  "plans du RPU": {
+    "fra": "plans du RPU",
+    "eng": "RPU shots"
+  },
+  "plans HDR10+": {
+    "fra": "plans HDR10+",
+    "eng": "HDR10+ shots"
+  },
+  "plans mesurés": {
+    "fra": "plans mesurés",
+    "eng": "measured shots"
+  },
+  "courbes de luminance": {
+    "fra": "courbes de luminance",
+    "eng": "luminance curves"
+  },
+  "décalage saisi": {
+    "fra": "décalage saisi",
+    "eng": "entered offset"
+  },
+  "aucun repère commun": {
+    "fra": "aucun repère commun",
+    "eng": "no common reference"
+  },
+  "Pic": {
+    "fra": "Pic",
+    "eng": "Peak"
+  },
+  "Moyenne": {
+    "fra": "Moyenne",
+    "eng": "Average"
+  },
+  "Contrôles": {
+    "fra": "Contrôles",
+    "eng": "Checks"
+  },
+  "HDR10 statique": {
+    "fra": "HDR10 statique",
+    "eng": "Static HDR10"
+  },
+  "Champ": {
+    "fra": "Champ",
+    "eng": "Field"
+  },
+  "Dolby Vision (conteneur)": {
+    "fra": "Dolby Vision (conteneur)",
+    "eng": "Dolby Vision (container)"
+  },
+  "Mesure de l'image": {
+    "fra": "Mesure de l'image",
+    "eng": "Picture measurement"
+  },
+  "Dolby Vision (RPU)": {
+    "fra": "Dolby Vision (RPU)",
+    "eng": "Dolby Vision (RPU)"
+  },
+  "FEL Analyzer": {
+    "fra": "FEL Analyzer",
+    "eng": "FEL Analyzer"
+  },
+  "Comparaison": {
+    "fra": "Comparaison",
+    "eng": "Comparison"
+  },
+  "Rapport HDR": {
+    "fra": "Rapport HDR",
+    "eng": "HDR report"
+  },
+  "Décalage : {frames} images ({seconds} s), d'après : {basis}.": {
+    "fra": "Décalage : {frames} images ({seconds} s), d'après : {basis}.",
+    "eng": "Offset: {frames} frames ({seconds} s), from: {basis}."
+  },
+  "Courbe": {
+    "fra": "Courbe",
+    "eng": "Curve"
+  },
+  "Sources": {
+    "fra": "Sources",
+    "eng": "Sources"
+  },
+  "B face à A (médiane)": {
+    "fra": "B face à A (médiane)",
+    "eng": "B vs A (median)"
+  },
+  "Écart PQ médian / 99 % (codes)": {
+    "fra": "Écart PQ médian / 99 % (codes)",
+    "eng": "Median / 99% PQ difference (codes)"
+  },
+  "Corrélation": {
+    "fra": "Corrélation",
+    "eng": "Correlation"
+  },
+  "Écarts les plus forts": {
+    "fra": "Écarts les plus forts",
+    "eng": "Largest differences"
+  },
+  "B : {name}": {
+    "fra": "B : {name}",
+    "eng": "B: {name}"
+  },
+  "L6 (HDR10 du RPU)": {
+    "fra": "L6 (HDR10 du RPU)",
+    "eng": "L6 (RPU HDR10)"
+  },
+  "Zones actives L5": {
+    "fra": "Zones actives L5",
+    "eng": "L5 active areas"
+  },
+  "COURBES": {
+    "fra": "COURBES",
+    "eng": "CURVES"
+  },
+  "PISTE B": {
+    "fra": "PISTE B",
+    "eng": "TRACK B"
+  },
+  "Déposer la vidéo à comparer ou choisir un fichier…": {
+    "fra": "Déposer la vidéo à comparer ou choisir un fichier…",
+    "eng": "Drop the video to compare or choose a file…"
+  },
+  "Lire les métadonnées dynamiques de B": {
+    "fra": "Lire les métadonnées dynamiques de B",
+    "eng": "Read B's dynamic metadata"
+  },
+  "ALIGNEMENT": {
+    "fra": "ALIGNEMENT",
+    "eng": "ALIGNMENT"
+  },
+  " images": {
+    "fra": " images",
+    "eng": " frames"
+  },
+  "Automatique": {
+    "fra": "Automatique",
+    "eng": "Automatic"
+  },
+  "Vidéo à comparer": {
+    "fra": "Vidéo à comparer",
+    "eng": "Video to compare"
+  },
+  "{share} % des plans appariés": {
+    "fra": "{share} % des plans appariés",
+    "eng": "{share}% of shots matched"
+  },
+  "Compare la piste inspectée (A) à une autre (B) : autre édition, encodage, source d'un remux. Les deux pistes sont alignées sur leurs plans (RPU, HDR10+, mesure) ou leurs courbes ; le décalage reste modifiable.": {
+    "fra": "Compare la piste inspectée (A) à une autre (B) : autre édition, encodage, source d'un remux. Les deux pistes sont alignées sur leurs plans (RPU, HDR10+, mesure) ou leurs courbes ; le décalage reste modifiable.",
+    "eng": "Compares the inspected track (A) with another one (B): another release, an encode, the source of a remux. Both tracks are aligned on their shots (RPU, HDR10+, measurement) or their curves; the offset can still be changed."
+  },
+  "Décalage de B": {
+    "fra": "Décalage de B",
+    "eng": "B offset"
+  },
+  "corrélation {value}": {
+    "fra": "corrélation {value}",
+    "eng": "correlation {value}"
+  },
+  "{seconds} s, d'après : {basis}": {
+    "fra": "{seconds} s, d'après : {basis}",
+    "eng": "{seconds} s, from: {basis}"
+  },
+  "Choisir la piste B : une vidéo déposée ici, ou une autre piste du même fichier.": {
+    "fra": "Choisir la piste B : une vidéo déposée ici, ou une autre piste du même fichier.",
+    "eng": "Choose track B: a video dropped here, or another track of the same file."
+  },
+  "{count} différence(s).": {
+    "fra": "{count} différence(s).",
+    "eng": "{count} difference(s)."
+  },
+  "Métadonnées identiques.": {
+    "fra": "Métadonnées identiques.",
+    "eng": "Identical metadata."
+  },
+  "{kind} : B {ratio} en médiane, écart PQ médian {median} codes (99 % : {p99}), corrélation {corr} ; écarts les plus forts : {worst}.": {
+    "fra": "{kind} : B {ratio} en médiane, écart PQ médian {median} codes (99 % : {p99}), corrélation {corr} ; écarts les plus forts : {worst}.",
+    "eng": "{kind}: B {ratio} in median, median PQ difference {median} codes (99%: {p99}), correlation {corr}; largest differences: {worst}."
+  },
+  "Sources différentes ({a} face à {b}) : écart indicatif.": {
+    "fra": "Sources différentes ({a} face à {b}) : écart indicatif.",
+    "eng": "Different sources ({a} vs {b}): indicative difference."
+  },
+  "Exporter le rapport…": {
+    "fra": "Exporter le rapport…",
+    "eng": "Export the report…"
+  },
+  "Page HTML autonome ou JSON : contrôles, métadonnées, courbes, FEL Analyzer et comparaison.": {
+    "fra": "Page HTML autonome ou JSON : contrôles, métadonnées, courbes, FEL Analyzer et comparaison.",
+    "eng": "Standalone HTML page or JSON: checks, metadata, curves, FEL Analyzer and comparison."
+  },
+  "Comparer": {
+    "fra": "Comparer",
+    "eng": "Compare"
+  },
+  "Analyse des métadonnées dynamiques de B…": {
+    "fra": "Analyse des métadonnées dynamiques de B…",
+    "eng": "Analysing B's dynamic metadata…"
+  },
+  "Rapport exporté : {name}": {
+    "fra": "Rapport exporté : {name}",
+    "eng": "Report exported: {name}"
+  },
+  "Rapport HDR exporté : {path}": {
+    "fra": "Rapport HDR exporté : {path}",
+    "eng": "HDR report exported: {path}"
+  },
+  "Opération en cours : réessayer ensuite.": {
+    "fra": "Opération en cours : réessayer ensuite.",
+    "eng": "Operation in progress: try again afterwards."
+  },
+  "B : en-têtes seulement ; lire les métadonnées dynamiques de B pour comparer les courbes.": {
+    "fra": "B : en-têtes seulement ; lire les métadonnées dynamiques de B pour comparer les courbes.",
+    "eng": "B: headers only; read B's dynamic metadata to compare the curves."
+  },
+  "Exporter le rapport HDR": {
+    "fra": "Exporter le rapport HDR",
+    "eng": "Export the HDR report"
+  },
+  "Page HTML (*.html);;JSON (*.json)": {
+    "fra": "Page HTML (*.html);;JSON (*.json)",
+    "eng": "HTML page (*.html);;JSON (*.json)"
+  },
+  "Export du rapport impossible : {error}": {
+    "fra": "Export du rapport impossible : {error}",
+    "eng": "Report export failed: {error}"
+  },
+  "mesure": {
+    "fra": "mesure",
+    "eng": "measurement"
+  },
+  "L1": {
+    "fra": "L1",
+    "eng": "L1"
+  },
+  "Formats": {
+    "fra": "Formats",
+    "eng": "Formats"
+  },
+  "Définition": {
+    "fra": "Définition",
+    "eng": "Resolution"
+  },
+  "Écran de mastering": {
+    "fra": "Écran de mastering",
+    "eng": "Mastering display"
+  },
+  "Couche d'amélioration": {
+    "fra": "Couche d'amélioration",
+    "eng": "Enhancement layer"
+  },
+  "Plans (RPU)": {
+    "fra": "Plans (RPU)",
+    "eng": "Shots (RPU)"
+  },
+  "Pic L1": {
+    "fra": "Pic L1",
+    "eng": "L1 peak"
+  },
+  "L6 MaxCLL / MaxFALL": {
+    "fra": "L6 MaxCLL / MaxFALL",
+    "eng": "L6 MaxCLL / MaxFALL"
+  },
+  "Profil HDR10+": {
+    "fra": "Profil HDR10+",
+    "eng": "HDR10+ profile"
+  },
+  "Plans (HDR10+)": {
+    "fra": "Plans (HDR10+)",
+    "eng": "Shots (HDR10+)"
+  },
+  "{fps} i/s": {
+    "fra": "{fps} i/s",
+    "eng": "{fps} fps"
+  },
+  "Courbes": {
+    "fra": "Courbes",
+    "eng": "Curves"
   }
 }
