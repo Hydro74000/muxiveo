@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from core.hdr_inspection.patch import MetadataPatcher, PatchPlan, StaticEdit
+from core.hdr_inspection.patch import MasteringEdit, MetadataPatcher, PatchPlan, StaticEdit
 
 
 def _has_libx265() -> bool:
@@ -49,6 +49,12 @@ def _probe(path: Path, *args: str) -> dict:
     result = subprocess.run(["ffprobe", "-v", "error", "-of", "json", *args, str(path)],
                             capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
+
+
+def _first_frame_side_data(path: Path, kind: str) -> dict:
+    frames = _probe(path, "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_frames",
+                    "-show_entries", "frame=side_data_list")["frames"]
+    return next(d for d in frames[0].get("side_data_list") or () if d.get("side_data_type") == kind)
 
 
 def _first_frame_cll(path: Path) -> tuple[int, int]:
@@ -89,3 +95,30 @@ def test_static_light_levels_rewritten_without_reencoding(tmp_path):
                                       "-show_entries", "packet=pts")["packets"])
     assert packets(output) == packets(source) == 24
     assert not list(work.iterdir()) and not list(tmp_path.glob("*.partial"))
+
+
+def test_mastering_display_rewritten_without_reencoding(tmp_path):
+    source = _source(tmp_path / "source.mkv")
+    output = tmp_path / "mdcv.mkv"
+    work = tmp_path / "work"
+    work.mkdir()
+
+    def run(cmd):
+        subprocess.run(list(cmd), check=True, capture_output=True)
+
+    patcher = MetadataPatcher(ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool", hdr10plus_bin="hdr10plus_tool",
+                              run_cmd=run, work_dir=work)
+    edit = MasteringEdit("BT.2020", 0.005, 4000)
+    assert patcher.run(PatchPlan(source, 0, output, static=StaticEdit(mastering=edit))) == output
+    frame = _first_frame_side_data(output, "Mastering display metadata")
+    assert frame["max_luminance"] == "40000000/10000" and frame["min_luminance"] == "50/10000"
+    assert frame["red_x"] == "35400/50000" and frame["green_y"] == "39850/50000"
+    assert _first_frame_cll(output) == (1000, 400)  # CLL non demandé : conservé
+    streams = _probe(output, "-show_streams")["streams"]
+    container = {d["side_data_type"]: d for d in streams[0].get("side_data_list") or ()}
+    mastering = container["Mastering display metadata"]
+    assert mastering["max_luminance"].split("/")[0] in ("4000", "40000000") and mastering["red_x"].startswith("177")
+    source_container = {d["side_data_type"] for d in _probe(source, "-show_streams")["streams"][0].get("side_data_list") or ()}
+    assert ("Content light level metadata" in container) == ("Content light level metadata" in source_container)
+    assert _md5(output, "0:a:0") == _md5(source, "0:a:0")
+    assert not list(work.iterdir())

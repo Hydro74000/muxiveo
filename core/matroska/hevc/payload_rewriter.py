@@ -32,11 +32,22 @@ from ..ids import (
     CODEC_PRIVATE_ID,
     MAX_BLOCK_ADDITION_ID_ID,
     COLOUR_ID,
+    LUMINANCE_MAX_ID,
+    LUMINANCE_MIN_ID,
+    MASTERING_METADATA_ID,
     MAX_CLL_ID,
     MAX_FALL_ID,
+    PRIMARY_B_CHROMATICITY_X_ID,
+    PRIMARY_B_CHROMATICITY_Y_ID,
+    PRIMARY_G_CHROMATICITY_X_ID,
+    PRIMARY_G_CHROMATICITY_Y_ID,
+    PRIMARY_R_CHROMATICITY_X_ID,
+    PRIMARY_R_CHROMATICITY_Y_ID,
     VIDEO_ID,
+    WHITE_POINT_CHROMATICITY_X_ID,
+    WHITE_POINT_CHROMATICITY_Y_ID,
 )
-from ..ebml import binary_element, element, uint_element
+from ..ebml import binary_element, element, float_element, uint_element
 from .access_units import (
     DEFAULT_HEVC_CHUNK_SIZE,
     HevcAccessUnit,
@@ -158,21 +169,37 @@ def _first_access_unit(injected_hevc: Path, chunk_size: int) -> HevcAccessUnit |
     return None
 
 
-def _with_light_levels(video_payload: bytes, light_levels: tuple[int, int]) -> bytes:
-    """Video → Colour : MaxCLL et MaxFALL remplacés (ou ajoutés), autres éléments inchangés."""
-    levels = uint_element(MAX_CLL_ID, light_levels[0]) + uint_element(MAX_FALL_ID, light_levels[1])
+#: MasteringMetadata : chromaticités R, G, B, point blanc (x, y) puis luminances max. et min. (nits).
+MasteringColour = tuple[float, float, float, float, float, float, float, float, float, float]
+_MASTERING_IDS = (PRIMARY_R_CHROMATICITY_X_ID, PRIMARY_R_CHROMATICITY_Y_ID, PRIMARY_G_CHROMATICITY_X_ID,
+                  PRIMARY_G_CHROMATICITY_Y_ID, PRIMARY_B_CHROMATICITY_X_ID, PRIMARY_B_CHROMATICITY_Y_ID,
+                  WHITE_POINT_CHROMATICITY_X_ID, WHITE_POINT_CHROMATICITY_Y_ID, LUMINANCE_MAX_ID, LUMINANCE_MIN_ID)
+
+
+def _with_light_levels(video_payload: bytes, light_levels: tuple[int, int] | None,
+                       mastering: MasteringColour | None = None) -> bytes:
+    """Video → Colour : MaxCLL/MaxFALL et MasteringMetadata remplacés (ou ajoutés), autres éléments inchangés."""
+    replaced: set[bytes] = set()
+    added = b""
+    if light_levels is not None:
+        replaced |= {MAX_CLL_ID, MAX_FALL_ID}
+        added += uint_element(MAX_CLL_ID, light_levels[0]) + uint_element(MAX_FALL_ID, light_levels[1])
+    if mastering is not None:
+        replaced.add(MASTERING_METADATA_ID)
+        added += element(MASTERING_METADATA_ID, b"".join(
+            float_element(element_id, float(value)) for element_id, value in zip(_MASTERING_IDS, mastering)))
     children: list[bytes] = []
     found = False
     for element_id, payload in payload_children(video_payload):
         if element_id == COLOUR_ID:
             colour = b"".join(element(child_id, child) for child_id, child in payload_children(payload)
-                              if child_id not in (MAX_CLL_ID, MAX_FALL_ID))
-            children.append(element(COLOUR_ID, colour + levels))
+                              if child_id not in replaced)
+            children.append(element(COLOUR_ID, colour + added))
             found = True
             continue
         children.append(element(element_id, payload))
     if not found:
-        children.append(element(COLOUR_ID, levels))
+        children.append(element(COLOUR_ID, added))
     return b"".join(children)
 
 
@@ -182,13 +209,15 @@ def _patched_raw_entry(
     codec_private: bytes | None,
     dovi_mapping: bytes | None,
     light_levels: tuple[int, int] | None = None,
+    mastering: MasteringColour | None = None,
 ) -> bytes:
-    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté, MaxCLL/MaxFALL posés."""
+    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté, Colour (MaxCLL/MaxFALL,
+    écran de mastering) posé."""
     children: list[bytes] = []
     has_max_block_add_id = False
     for element_id, payload in payload_children(raw_entry):
-        if element_id == VIDEO_ID and light_levels is not None:
-            children.append(element(VIDEO_ID, _with_light_levels(payload, light_levels)))
+        if element_id == VIDEO_ID and (light_levels is not None or mastering is not None):
+            children.append(element(VIDEO_ID, _with_light_levels(payload, light_levels, mastering)))
             continue
         if element_id == CODEC_PRIVATE_ID and codec_private is not None:
             children.append(binary_element(CODEC_PRIVATE_ID, codec_private))
@@ -357,6 +386,7 @@ def rewrite_file_video_payloads(
     injected_hevc: Path,
     output: Path,
     light_levels: tuple[int, int] | None = None,
+    mastering: MasteringColour | None = None,
     cancel_cb: Callable[[], bool] | None = None,
     progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
     chunk_size: int = DEFAULT_HEVC_CHUNK_SIZE,
@@ -366,7 +396,7 @@ def rewrite_file_video_payloads(
     Les access units du flux injecté remplacent les blocs vidéo un pour un (ordre de décodage,
     PTS, durées, keyframes conservés) ; autres pistes, chapitres, pièces jointes et tags recopiés.
     Correction de métadonnées sans réencodage (RPU, HDR10+, SEI statiques). ``light_levels`` :
-    MaxCLL/MaxFALL posés dans l'élément Colour de la piste.
+    MaxCLL/MaxFALL, ``mastering`` : MasteringMetadata, posés dans l'élément Colour de la piste.
     """
     reader = MatroskaReader(source)
     reader.segment()
@@ -388,7 +418,7 @@ def rewrite_file_video_payloads(
     rewritten_video = replace(
         video,
         raw_entry=_patched_raw_entry(video.raw_entry, codec_private=codec_private, dovi_mapping=None,
-                                     light_levels=light_levels),
+                                     light_levels=light_levels, mastering=mastering),
         codec_private=codec_private or video.codec_private,
     )
     mux_tracks = tuple(

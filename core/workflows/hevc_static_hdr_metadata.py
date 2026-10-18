@@ -201,7 +201,22 @@ def replace_content_light_level_sei_file(
     retirés des SEI préfixes, les autres messages conservés ; le CLL exact est inséré sur la
     première image et chaque image IRAP.
     """
-    sei_nal, requested_types = _build_static_hdr_sei_nal(master_display="", max_cll=max_cll)
+    return replace_static_hdr_sei_file(input_path, output_path, max_cll=max_cll)
+
+
+def replace_static_hdr_sei_file(
+    input_path: Path,
+    output_path: Path,
+    *,
+    master_display: str = "",
+    max_cll: str = "",
+) -> StaticHdrSeiInjectionResult:
+    """Remplace les SEI HDR statiques demandés (MDCV ``master_display``, CLL ``max_cll``) d'un flux annexB.
+
+    Seuls les types fournis sont retirés des SEI préfixes puis réinsérés sur la première image et
+    chaque image IRAP ; les autres messages SEI sont conservés.
+    """
+    sei_nal, requested_types = _build_static_hdr_sei_nal(master_display=master_display, max_cll=max_cll)
     if input_path.stat().st_size == 0:
         return StaticHdrSeiInjectionResult(0, 0, 0, 0)
     with input_path.open("rb") as src:
@@ -544,4 +559,5 @@ __all__ = [
     "inject_static_hdr_sei",
     "inject_static_hdr_sei_file",
     "replace_content_light_level_sei_file",
+    "replace_static_hdr_sei_file",
 ]

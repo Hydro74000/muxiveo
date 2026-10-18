@@ -95,6 +95,7 @@ class LuminanceTab(QWidget):
 
     def __init__(self, display_peak: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._mdcv_choice: float | None = None
         self.setStyleSheet("background:transparent;")
         self._report: InspectionReport | None = None
         self._measurement: ImageMeasurement | None = None
@@ -311,14 +312,25 @@ class LuminanceTab(QWidget):
         markers.append(ChartMarker(translate_text("Écran"), float(self.display_peak.value()), C.TEXT_SEC))
         if snapshot.mastering is not None and snapshot.mastering.max_nits:
             markers.append(ChartMarker(translate_text("MDCV"), float(snapshot.mastering.max_nits), C.TEXT_DIM))
+        if self._mdcv_choice is not None and self._mdcv_choice != self._file_mdcv():
+            markers.append(ChartMarker(translate_text("MDCV choisi"), self._mdcv_choice, C.PURPLE))
         return markers
 
-    def _risk(self, max_cll: int | None) -> ToneMapRisk | None:
+    def set_mastering_choice(self, max_nits: float | None) -> None:
+        """MDCV choisi dans l'onglet Édition : modèle de TV « suit le MDCV » et bilan mis à jour."""
+        if max_nits != self._mdcv_choice:
+            self._mdcv_choice = max_nits
+            self._update_preview()
+
+    def _file_mdcv(self) -> float | None:
+        mastering = self._report.snapshot.mastering if self._report is not None else None
+        return mastering.max_nits if mastering is not None else None
+
+    def _risk(self, max_cll: int | None, *, original: bool = False) -> ToneMapRisk | None:
         if self._levels is None or self._report is None:
             return None
-        mastering = self._report.snapshot.mastering
-        return analyse(self._levels, model=TvModel(self.model.currentData()), max_cll=max_cll,
-                       mdcv_max=mastering.max_nits if mastering is not None else None,
+        mdcv = self._file_mdcv() if original or self._mdcv_choice is None else self._mdcv_choice
+        return analyse(self._levels, model=TvModel(self.model.currentData()), max_cll=max_cll, mdcv_max=mdcv,
                        display_peak=float(self.display_peak.value()))
 
     def current_risk(self) -> ToneMapRisk | None:
@@ -353,8 +365,9 @@ class LuminanceTab(QWidget):
             line.setText(text)
         self._risk_lines[0].setStyleSheet(f"color:{color};font-size:{font_px(11)}px;font-weight:700;background:transparent;")
         original_cll, original_fall = self._original
-        if (original_cll, original_fall) != self.values():
-            original = self._risk(original_cll)
+        mdcv_changed = self._mdcv_choice is not None and self._mdcv_choice != self._file_mdcv()
+        if (original_cll, original_fall) != self.values() or mdcv_changed:
+            original = self._risk(original_cll, original=True)
             if original is not None:
                 clip, dark, _knee = describe_risk(original)
                 self._original_line.setText(translate_text(

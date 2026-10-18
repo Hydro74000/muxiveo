@@ -18,7 +18,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.hdr_inspection import InspectionReport
-from core.hdr_inspection.patch import Hdr10PlusEdit, PatchPlan, RpuEdit, StaticEdit
+from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.patch import Hdr10PlusEdit, MasteringEdit, PatchPlan, RpuEdit, StaticEdit, suggested_mastering
+from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
 from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
@@ -28,6 +30,8 @@ _SPIN_STYLE = (
     "padding:{pad}px {padh}px;font-size:{size}px;}}"
 )
 _L11_LABELS = ("Défaut", "Cinéma", "Jeu", "Sport", "Contenu utilisateur")
+_MASTERING_SOURCES = {"l6": "L6 du RPU", "source_display": "écran de mastering du RPU",
+                      "standard": "écran usuel couvrant le pic du contenu"}
 
 
 def _style(widget: QWidget) -> QWidget:
@@ -83,6 +87,8 @@ class EditionTab(QWidget):
 
     write_requested = Signal(object)
     luminance_requested = Signal()
+    #: Luminance max. du MDCV choisi (nits), None s'il n'est pas modifié : aperçu de l'onglet Luminance.
+    mastering_changed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -90,6 +96,10 @@ class EditionTab(QWidget):
         self._report: InspectionReport | None = None
         self._static_values = (0, 0)
         self._busy = False
+        self._syncing = False
+        self._suggested: tuple[MasteringEdit, str] | None = None
+        self._prefilled: tuple[str, int, bool] | None = None
+        self._emitted_mastering: float | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, scale(10), 0, 0)
         layout.setSpacing(scale(10))
@@ -106,6 +116,11 @@ class EditionTab(QWidget):
         layout.addStretch()
         for box in self.findChildren(QCheckBox):
             box.toggled.connect(self._sync)
+        # Écran de mastering : MDCV, L6 et écran du RPU tenus identiques si demandé.
+        for origin, spins in (("mdcv", (self.mdcv_min, self.mdcv_max)), ("l6", (self.l6_min_mastering, self.l6_max_mastering)),
+                              ("source", (self.source_min, self.source_max))):
+            for spin in spins:
+                spin.valueChanged.connect(lambda _v, origin=origin: self._mastering_edited(origin))
         self._sync()
 
     # ── Cartes ──────────────────────────────────────────────────────────
@@ -127,6 +142,26 @@ class EditionTab(QWidget):
         go.clicked.connect(self.luminance_requested.emit)
         row = _row(self._static_label, go)
         layout.addLayout(row)
+        self.mdcv_box = _check(translate_text("Écrire l'écran de mastering (MDCV)"))
+        layout.addWidget(self.mdcv_box)
+        self.mdcv_primaries = QComboBox()
+        self.mdcv_primaries.setStyleSheet(_combo_style())
+        for name in PRIMARY_SETS:
+            self.mdcv_primaries.addItem(name, name)
+        self.mdcv_primaries.currentIndexChanged.connect(lambda _i: self._sync())
+        self.mdcv_min = _float_spin(50.0, 4, " nits")
+        self.mdcv_max = _int_spin(10000, " nits")
+        self.mdcv_max.setMinimum(1)
+        self.suggest_mdcv = _secondary_button(translate_text("Valeurs proposées"))
+        self.suggest_mdcv.clicked.connect(self.apply_suggested_mastering)
+        layout.addLayout(_row(self.mdcv_primaries, "min.", self.mdcv_min, "max.", self.mdcv_max, self.suggest_mdcv))
+        self._mdcv_hint = _label("", color=C.TEXT_DIM, size=10)
+        self._mdcv_hint.setContentsMargins(scale(22), 0, 0, 0)
+        layout.addWidget(self._mdcv_hint)
+        self.mastering_sync = _check(translate_text(
+            "Garder identiques le MDCV, le mastering du L6 et l'écran de mastering du RPU"))
+        self.mastering_sync.setChecked(True)
+        layout.addWidget(self.mastering_sync)
         return card
 
     def _build_dovi(self) -> QWidget:
@@ -206,53 +241,74 @@ class EditionTab(QWidget):
         return card
 
     # ── Données ─────────────────────────────────────────────────────────
-    def set_report(self, report: InspectionReport | None) -> None:
+    def set_report(self, report: InspectionReport | None, measurement: ImageMeasurement | None = None) -> None:
         """Préremplit avec les valeurs actuelles du fichier (RPU et HDR10+ si lus)."""
         previous = self._report.snapshot.path if self._report is not None else None
         self._report = report
         if report is None:
+            self._suggested = None
+            self._prefilled = None
             self._sync()
             return
         snapshot = report.snapshot
-        if snapshot.path != previous:
-            path = Path(snapshot.path)
-            self.output.setText(str(path.with_name(f"{path.stem}.hdrfix{path.suffix}")))
-            for box in self.findChildren(QCheckBox):
-                box.setChecked(False)
-        dovi = report.dovi
-        mastering = snapshot.mastering
-        if dovi is not None and dovi.l6:
-            l6 = dovi.l6[0]
-            values = (l6.max_mastering, l6.min_mastering, l6.max_cll, l6.max_fall)
-        else:
-            values = (int(mastering.max_nits or 1000) if mastering else 1000,
-                      float(mastering.min_nits or 0.0001) if mastering else 0.0001,
-                      snapshot.max_cll or 0, snapshot.max_fall or 0)
-        self.l6_max_mastering.setValue(int(values[0]))
-        self.l6_min_mastering.setValue(float(values[1]))
-        self.l6_cll.setValue(int(values[2]))
-        self.l6_fall.setValue(int(values[3]))
-        if dovi is not None and dovi.active_areas:
-            area = dovi.active_areas[0]
-            for spin, value in zip(self.l5, (area.left, area.right, area.top, area.bottom)):
-                spin.setValue(value)
-        if dovi is not None and dovi.l11_content:
-            self.l11_content.setCurrentIndex(max(0, min(4, dovi.l11_content[0])))
-        if dovi is not None and dovi.source_display:
-            low, high = dovi.source_display[0]
-            self.source_min.setValue(low)
-            self.source_max.setValue(high)
-        hdr10plus = report.hdr10plus
-        targets = [t for t in hdr10plus.targeted_display if t] if hdr10plus is not None else []
-        self.h10_target.setValue(targets[0] if targets else 1000)
-        if hdr10plus is not None and hdr10plus.frames:
-            self.h10_cap.setValue(max(100, int(round(hdr10plus.credible_peak_nits() or 1000))))
+        self._suggested = suggested_mastering(report, measurement)
+        # Valeurs du fichier reprises seulement pour une autre piste ou à l'arrivée du RPU / HDR10+ :
+        # un nouveau rendu (mesure, cache) ne remplace pas les valeurs saisies.
+        key = (snapshot.path, snapshot.stream_index, report.dynamic)
+        prefill = key != self._prefilled
+        self._prefilled = key
+        self._syncing = True  # valeurs du fichier : aucune propagation
+        try:
+            if prefill and snapshot.path != previous:
+                path = Path(snapshot.path)
+                self.output.setText(str(path.with_name(f"{path.stem}.hdrfix{path.suffix}")))
+                for box in self.findChildren(QCheckBox):
+                    box.setChecked(box is self.mastering_sync)
+            if prefill:
+                dovi = report.dovi
+                mastering = snapshot.mastering
+                if dovi is not None and dovi.l6:
+                    l6 = dovi.l6[0]
+                    values = (l6.max_mastering, l6.min_mastering, l6.max_cll, l6.max_fall)
+                else:
+                    values = (int(mastering.max_nits or 1000) if mastering else 1000,
+                              float(mastering.min_nits or 0.0001) if mastering else 0.0001,
+                              snapshot.max_cll or 0, snapshot.max_fall or 0)
+                self.l6_max_mastering.setValue(int(values[0]))
+                self.l6_min_mastering.setValue(float(values[1]))
+                self.l6_cll.setValue(int(values[2]))
+                self.l6_fall.setValue(int(values[3]))
+                if dovi is not None and dovi.active_areas:
+                    area = dovi.active_areas[0]
+                    for spin, value in zip(self.l5, (area.left, area.right, area.top, area.bottom)):
+                        spin.setValue(value)
+                if dovi is not None and dovi.l11_content:
+                    self.l11_content.setCurrentIndex(max(0, min(4, dovi.l11_content[0])))
+                if dovi is not None and dovi.source_display:
+                    low, high = dovi.source_display[0]
+                    self.source_min.setValue(low)
+                    self.source_max.setValue(high)
+                hdr10plus = report.hdr10plus
+                targets = [t for t in hdr10plus.targeted_display if t] if hdr10plus is not None else []
+                self.h10_target.setValue(targets[0] if targets else 1000)
+                if hdr10plus is not None and hdr10plus.frames:
+                    self.h10_cap.setValue(max(100, int(round(hdr10plus.credible_peak_nits() or 1000))))
+                current = (mastering is not None and mastering.primaries in PRIMARY_SETS and mastering.max_nits
+                           and mastering.min_nits is not None)
+                if current:
+                    assert mastering is not None
+                    self._set_mdcv(mastering.primaries, float(mastering.min_nits or 0), float(mastering.max_nits or 0))
+                else:
+                    edit = self._suggested[0]
+                    self._set_mdcv(edit.primaries, edit.min_nits, edit.max_nits)
+        finally:
+            self._syncing = False
         self._dovi_card.setVisible(snapshot.dovi is not None)
         self._hdr10plus_card.setVisible(snapshot.hdr10plus)
         self._dovi_hint.setText(translate_text(
             "Lire les métadonnées dynamiques pour préremplir les valeurs actuelles du RPU."))
-        self._dovi_hint.setVisible(dovi is None)
-        self.cmv4_box.setEnabled(dovi is not None and dovi.cm_version == "4.0")
+        self._dovi_hint.setVisible(report.dovi is None)
+        self.cmv4_box.setEnabled(report.dovi is not None and report.dovi.cm_version == "4.0")
         self._sync()
 
     def set_static_values(self, max_cll: int, max_fall: int) -> None:
@@ -264,6 +320,47 @@ class EditionTab(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self._sync()
+
+    def _set_mdcv(self, primaries: str, min_nits: float, max_nits: float) -> None:
+        self.mdcv_primaries.setCurrentIndex(max(0, self.mdcv_primaries.findData(primaries)))
+        self.mdcv_min.setValue(min_nits)
+        self.mdcv_max.setValue(int(round(max_nits)))
+
+    def apply_suggested_mastering(self) -> None:
+        """Écran de mastering proposé (L6, écran du RPU ou standard selon le pic) écrit dans le MDCV."""
+        if self._suggested is None:
+            return
+        edit = self._suggested[0]
+        self._set_mdcv(edit.primaries, edit.min_nits, edit.max_nits)
+        self.mdcv_box.setChecked(True)
+        self._mastering_edited("mdcv")
+
+    def _mastering_groups(self) -> dict[str, tuple[QCheckBox, QDoubleSpinBox, QSpinBox]]:
+        groups = {"mdcv": (self.mdcv_box, self.mdcv_min, self.mdcv_max)}
+        if self._report is not None and self._report.snapshot.dovi is not None:
+            groups["l6"] = (self.l6_box, self.l6_min_mastering, self.l6_max_mastering)
+            groups["source"] = (self.source_box, self.source_min, self.source_max)
+        return groups
+
+    def _mastering_edited(self, origin: str) -> None:
+        """Valeur de mastering modifiée : recopiée dans les autres groupes (et leur case) si synchronisés."""
+        groups = self._mastering_groups()
+        if self._syncing or origin not in groups or not self.mastering_sync.isChecked():
+            self._sync()
+            return
+        box, low, high = groups[origin]
+        self._syncing = True
+        try:
+            for name, (other_box, other_low, other_high) in groups.items():
+                if name == origin:
+                    continue
+                other_low.setValue(low.value())
+                other_high.setValue(high.value())
+                if box.isChecked():
+                    other_box.setChecked(True)
+        finally:
+            self._syncing = False
         self._sync()
 
     def _copy_static_to_l6(self) -> None:
@@ -283,7 +380,10 @@ class EditionTab(QWidget):
         report = self._report
         if report is None:
             return None
-        static = StaticEdit(*self._static_values) if self.static_box.isChecked() else None
+        levels = self._static_values if self.static_box.isChecked() else (None, None)
+        mastering = self._mastering_edit() if self.mdcv_box.isChecked() else None
+        static = (StaticEdit(max_cll=levels[0], max_fall=levels[1], mastering=mastering)
+                  if levels[0] is not None or mastering is not None else None)
         rpu = RpuEdit(
             l6=(self.l6_max_mastering.value(), self.l6_min_mastering.value(), self.l6_cll.value(), self.l6_fall.value())
             if self.l6_box.isChecked() else None,
@@ -302,11 +402,17 @@ class EditionTab(QWidget):
         return PatchPlan(Path(report.snapshot.path), report.snapshot.stream_index, Path(self.output.text().strip()),
                          static=static, rpu=rpu, hdr10plus=hdr10plus)
 
+    def _mastering_edit(self) -> MasteringEdit:
+        return MasteringEdit(str(self.mdcv_primaries.currentData()), self.mdcv_min.value(), float(self.mdcv_max.value()))
+
     def _changes(self) -> list[str]:
         changes: list[str] = []
         if self.static_box.isChecked():
             changes.append(translate_text("MaxCLL/MaxFALL {cll}/{fall}", cll=self._static_values[0],
                                           fall=self._static_values[1]))
+        if self.mdcv_box.isChecked():
+            changes.append(translate_text("MDCV {primaries} {min}–{max} nits", primaries=self.mdcv_primaries.currentText(),
+                                          min=f"{self.mdcv_min.value():g}", max=self.mdcv_max.value()))
         snapshot = self._report.snapshot if self._report is not None else None
         if snapshot is not None and snapshot.dovi is not None:
             rpu_labels: tuple[tuple[QCheckBox, str], ...] = (
@@ -331,17 +437,33 @@ class EditionTab(QWidget):
             widget.setEnabled(not removing)
         self.h10_target.setEnabled(not removing and self.h10_target_box.isChecked() and not self.h10_bezier.isChecked())
         self.h10_cap.setEnabled(not removing and self.h10_cap_box.isChecked())
+        dovi = self._report is not None and self._report.snapshot.dovi is not None
+        self.mastering_sync.setVisible(dovi)
+        self._update_mdcv_hint()
         groups: tuple[tuple[QCheckBox, tuple[QWidget, ...]], ...] = (
+            (self.mdcv_box, (self.mdcv_primaries, self.mdcv_min, self.mdcv_max)),
             (self.l6_box, (self.l6_max_mastering, self.l6_min_mastering, self.l6_cll, self.l6_fall)),
             (self.l5_box, tuple(self.l5)), (self.l11_box, (self.l11_content, self.l11_whitepoint, self.l11_reference)),
             (self.source_box, (self.source_min, self.source_max)))
         for box, members in groups:
             for member in members:
                 member.setEnabled(box.isChecked())
+        chosen = float(self.mdcv_max.value()) if self.mdcv_box.isChecked() and self._report is not None else None
+        if chosen != self._emitted_mastering:
+            self._emitted_mastering = chosen
+            self.mastering_changed.emit(chosen)
         changes = self._changes()
+        invalid = ""
+        if self.mdcv_box.isChecked():
+            try:
+                self._mastering_edit()
+            except ValueError as exc:
+                invalid = str(exc)
         output = self.output.text().strip()
         source = self._report.snapshot.path if self._report is not None else ""
-        if not changes:
+        if invalid:
+            summary = invalid
+        elif not changes:
             summary = translate_text("Aucune modification cochée.")
         elif not output:
             summary = translate_text("Choisir le fichier de sortie.")
@@ -350,8 +472,26 @@ class EditionTab(QWidget):
         else:
             summary = translate_text("Modifications : {changes}.", changes=", ".join(changes))
         self._summary.setText(summary)
-        self.write_btn.setEnabled(bool(changes and output and Path(output) != Path(source))
+        self.write_btn.setEnabled(bool(changes and not invalid and output and Path(output) != Path(source))
                                   and self._report is not None and not self._busy)
+
+    def _update_mdcv_hint(self) -> None:
+        report = self._report
+        if report is None:
+            self._mdcv_hint.setText("")
+            return
+        mastering = report.snapshot.mastering
+        current = translate_text("absent") if mastering is None else translate_text(
+            "{primaries}, {min} – {max} nits", primaries=mastering.primaries,
+            min=f"{mastering.min_nits:g}" if mastering.min_nits is not None else "?",
+            max=f"{mastering.max_nits:g}" if mastering.max_nits is not None else "?")
+        text = translate_text("Actuel : {current}.", current=current)
+        if self._suggested is not None:
+            edit, source = self._suggested
+            text += " " + translate_text("Proposé : {primaries}, {min} – {max} nits d'après {source}.",
+                                         primaries=edit.primaries, min=f"{edit.min_nits:g}", max=f"{edit.max_nits:g}",
+                                         source=translate_text(_MASTERING_SOURCES[source]))
+        self._mdcv_hint.setText(text)
 
     def _write(self) -> None:
         plan = self.plan()

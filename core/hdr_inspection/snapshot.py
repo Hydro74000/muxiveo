@@ -8,8 +8,8 @@ from fractions import Fraction
 from core.inspector import FileInfo, HDRType, VideoTrack
 from core.workflows.encode.runtime.hdr_metadata import select_mediainfo_video_track
 
-# Primaires de référence (x, y) : R, G, B, point blanc.
-_PRIMARY_SETS = {
+#: Primaires de référence (x, y) : R, G, B, point blanc.
+PRIMARY_SETS = {
     "Display P3": ((0.680, 0.320), (0.265, 0.690), (0.150, 0.060), (0.3127, 0.3290)),
     "BT.2020": ((0.708, 0.292), (0.170, 0.797), (0.131, 0.046), (0.3127, 0.3290)),
     "BT.709": ((0.640, 0.330), (0.300, 0.600), (0.150, 0.060), (0.3127, 0.3290)),
@@ -101,7 +101,7 @@ def _number(value: object) -> float | None:
 
 def primaries_name(points: tuple[tuple[float, float], ...]) -> str:
     """Nom des primaires (R, G, B, blanc) reconnues à 0,005 près, sinon coordonnées."""
-    for name, reference in _PRIMARY_SETS.items():
+    for name, reference in PRIMARY_SETS.items():
         if all(abs(a - b) <= 0.005 for point, ref in zip(points, reference) for a, b in zip(point, ref)):
             return name
     return " ".join(f"{x:.3f},{y:.3f}" for x, y in points)

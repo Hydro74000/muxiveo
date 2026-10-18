@@ -1,6 +1,6 @@
 """Correction des métadonnées HDR d'un fichier sans réencodage (HDR Studio).
 
-HDR10 statique (MaxCLL/MaxFALL : SEI du flux et élément Colour du conteneur), RPU Dolby Vision
+HDR10 statique (MaxCLL/MaxFALL et écran de mastering : SEI du flux et élément Colour du conteneur), RPU Dolby Vision
 (``dovi_tool editor`` : L6, zone active L5, L11, écran de mastering du RPU, retrait CM v4.0) et
 HDR10+ (retrait, écran ciblé, profil A, plafond). Flux vidéo extrait en Annex B, corrigé par les
 outils, puis replacé bloc pour bloc dans une copie du MKV (autres pistes, chapitres, pièces
@@ -14,13 +14,19 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from core.bluray import append_ffmpeg_input_args
 from core.hdr_inspection.json_stream import iter_json_array, read_json_head
 from core.hdr_inspection.pq import nits_to_pq
+from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
 from core.output_commit import OutputReservation, reserve_candidate
 from core.runner import TaskCancelledError
+
+if TYPE_CHECKING:
+    from core.hdr_inspection.inspector import InspectionReport
+    from core.hdr_inspection.measure import ImageMeasurement
 
 #: Lance une commande (liste), lève en cas d'échec ou d'annulation.
 RunCommand = Callable[[list[str]], object]
@@ -39,13 +45,104 @@ class PatchCancelled(Exception):
 
 
 @dataclass(frozen=True)
-class StaticEdit:
-    max_cll: int
-    max_fall: int
+class MasteringEdit:
+    """Écran de mastering (SMPTE ST 2086) : primaires nommées (``PRIMARY_SETS``), luminances en nits."""
+
+    primaries: str
+    min_nits: float
+    max_nits: float
 
     def __post_init__(self) -> None:
-        if not (0 <= self.max_cll <= 65535 and 0 <= self.max_fall <= 65535) or self.max_fall > max(self.max_cll, 0) > 0:
+        if self.primaries not in PRIMARY_SETS:
+            raise ValueError(translate_text("Primaires inconnues : {name}", name=self.primaries))
+        if not (0 < self.max_nits <= 10000 and 0 <= self.min_nits < self.max_nits and self.min_nits <= 50):
+            raise ValueError(translate_text(
+                "Écran de mastering invalide : luminance max. de 1 à 10 000 nits, min. inférieure à la max."))
+
+    def master_display(self) -> str:
+        """Chaîne x265 ``G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)`` (unités SEI : 0,00002 et 0,0001 nit)."""
+        red, green, blue, white = PRIMARY_SETS[self.primaries]
+
+        def point(xy: tuple[float, float]) -> str:
+            return f"({round(xy[0] * 50000)},{round(xy[1] * 50000)})"
+
+        return (f"G{point(green)}B{point(blue)}R{point(red)}WP{point(white)}"
+                f"L({round(self.max_nits * 10000)},{round(self.min_nits * 10000)})")
+
+    def colour(self) -> tuple[float, float, float, float, float, float, float, float, float, float]:
+        """Élément Matroska MasteringMetadata : R, G, B, blanc (x, y), luminances max. et min."""
+        red, green, blue, white = PRIMARY_SETS[self.primaries]
+        return (*red, *green, *blue, *white, float(self.max_nits), float(self.min_nits))
+
+
+@dataclass(frozen=True)
+class StaticEdit:
+    """HDR10 statique écrit dans le flux (SEI) et le conteneur (Colour) ; ``None`` : conservé."""
+
+    max_cll: int | None = None
+    max_fall: int | None = None
+    mastering: MasteringEdit | None = None
+
+    def __post_init__(self) -> None:
+        if (self.max_cll is None) != (self.max_fall is None):
+            raise ValueError(translate_text("MaxCLL et MaxFALL se modifient ensemble."))
+        if self.max_cll is not None and self.max_fall is not None and (
+                not (0 <= self.max_cll <= 65535 and 0 <= self.max_fall <= 65535)
+                or self.max_fall > max(self.max_cll, 0) > 0):
             raise ValueError(translate_text("MaxCLL/MaxFALL invalides : MaxFALL doit rester sous MaxCLL."))
+
+    @property
+    def light_levels(self) -> tuple[int, int] | None:
+        return None if self.max_cll is None or self.max_fall is None else (self.max_cll, self.max_fall)
+
+    def is_empty(self) -> bool:
+        return self.light_levels is None and self.mastering is None
+
+
+#: Primaires L9 (index Dolby Vision) → primaires nommées de l'écran de mastering.
+_L9_PRIMARIES = {0: "Display P3", 1: "BT.709", 2: "BT.2020"}
+
+
+def standard_mastering(peak_nits: float | None, primaries: str = "Display P3") -> MasteringEdit:
+    """Écran de mastering usuel couvrant ``peak_nits`` : 1000 nits (0,0001), sinon 4000 (0,005), sinon 10 000."""
+    if peak_nits is None or peak_nits <= 1000:
+        return MasteringEdit(primaries, 0.0001, 1000)
+    if peak_nits <= 4000:
+        return MasteringEdit(primaries, 0.005, 4000)
+    return MasteringEdit(primaries, 0.0001, 10000)
+
+
+def suggested_mastering(report: InspectionReport,
+                        measurement: ImageMeasurement | None = None) -> tuple[MasteringEdit, str]:
+    """Écran de mastering proposé et sa provenance : L6 du RPU, écran du RPU (L0), sinon standard selon le pic.
+
+    Primaires : celles du MDCV du fichier si reconnues, sinon L9 du RPU, sinon Display P3.
+    """
+    dovi = report.dovi
+    current = report.snapshot.mastering
+    primaries = current.primaries if current is not None and current.primaries in PRIMARY_SETS else None
+    if primaries is None and dovi is not None and dovi.l9_primaries:
+        primaries = _L9_PRIMARIES.get(dovi.l9_primaries[0])
+    primaries = primaries or "Display P3"
+    if dovi is not None:
+        sets = [item for item in dovi.l6 if item.max_mastering > 0]
+        if sets:
+            l6 = max(sets, key=lambda item: item.frames)
+            if l6.min_mastering < l6.max_mastering:
+                return MasteringEdit(primaries, float(l6.min_mastering), float(l6.max_mastering)), "l6"
+        if dovi.source_display:
+            low, high = dovi.source_display[0]
+            if 0 <= low < high:
+                return MasteringEdit(primaries, float(low), float(high)), "source_display"
+    peaks: list[float] = []
+    if measurement is not None and measurement.frames:
+        peaks.append(float(measurement.max_cll()))
+    hdr10plus = report.hdr10plus
+    if not peaks and hdr10plus is not None and hdr10plus.frames:
+        peaks.append(hdr10plus.credible_peak_nits())
+    if not peaks and dovi is not None and dovi.frames:
+        peaks.append(dovi.l1_peak_nits())
+    return standard_mastering(max(peaks) if peaks else None, primaries), "standard"
 
 
 @dataclass(frozen=True)
@@ -118,7 +215,7 @@ class PatchPlan:
     notes: tuple[str, ...] = field(default=())
 
     def is_empty(self) -> bool:
-        return (self.static is None and (self.rpu is None or self.rpu.is_empty())
+        return ((self.static is None or self.static.is_empty()) and (self.rpu is None or self.rpu.is_empty())
                 and (self.hdr10plus is None or self.hdr10plus.is_empty()))
 
 
@@ -231,7 +328,7 @@ class MetadataPatcher:
             steps.append("rpu")
         if plan.hdr10plus is not None and not plan.hdr10plus.is_empty():
             steps.append("hdr10plus")
-        if plan.static is not None:
+        if plan.static is not None and not plan.static.is_empty():
             steps.append("static")
         steps.append("write")
         span = 1.0 / len(steps)
@@ -291,14 +388,16 @@ class MetadataPatcher:
                     position += span
                 if "static" in steps:
                     assert plan.static is not None
-                    self._step(translate_text("MaxCLL/MaxFALL du flux…"), position, span)
-                    from core.workflows.hevc_static_hdr_metadata import replace_content_light_level_sei_file
+                    self._step(translate_text("HDR10 statique du flux…"), position, span)
+                    from core.workflows.hevc_static_hdr_metadata import replace_static_hdr_sei_file
 
-                    target = self._work / "video_cll.hevc"
-                    result = replace_content_light_level_sei_file(
-                        current, target, max_cll=f"{plan.static.max_cll},{plan.static.max_fall}")
+                    target = self._work / "video_static.hevc"
+                    levels, mastering = plan.static.light_levels, plan.static.mastering
+                    result = replace_static_hdr_sei_file(
+                        current, target, master_display=mastering.master_display() if mastering else "",
+                        max_cll=f"{levels[0]},{levels[1]}" if levels else "")
                     if not result.applied:
-                        raise PatchError(translate_text("SEI MaxCLL/MaxFALL non écrit dans le flux."))
+                        raise PatchError(translate_text("SEI HDR10 statiques non écrits dans le flux."))
                     advance(target)
                     position += span
                 if self._cancelled():
@@ -314,7 +413,8 @@ class MetadataPatcher:
 
                         rewrite_file_video_payloads(
                             source=source, track_index=plan.stream_index, injected_hevc=current, output=candidate,
-                            light_levels=(plan.static.max_cll, plan.static.max_fall) if plan.static else None,
+                            light_levels=plan.static.light_levels if plan.static else None,
+                            mastering=plan.static.mastering.colour() if plan.static and plan.static.mastering else None,
                             cancel_cb=self._cancelled,
                             progress_cb=(lambda p: report(start + span * _write_fraction(p, total)))
                             if report is not None else None)

@@ -1,8 +1,10 @@
 """HDR Studio, lot 2 : mesure de l'image, simulation du tone mapping, correction des métadonnées."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import shutil
+import struct
 import threading
 from pathlib import Path
 
@@ -13,12 +15,14 @@ from core.hdr_inspection import InspectionCache, InspectionReport, Severity, aud
 from core.hdr_inspection.measure import MeasurementError, histogram_share_above, read_measurement
 from core.hdr_inspection.patch import (
     Hdr10PlusEdit,
+    MasteringEdit,
     MetadataPatcher,
     PatchCancelled,
     PatchError,
     PatchPlan,
     RpuEdit,
     StaticEdit,
+    suggested_mastering,
     transform_hdr10plus,
 )
 from core.hdr_inspection.pq import nits_to_pq
@@ -193,6 +197,64 @@ def test_edits_validation_and_editor_config():
     assert config["active_area"]["presets"] == [{"id": 0, "left": 0, "right": 0, "top": 140, "bottom": 140}]
     assert config["level11"] == {"content_type": 1, "whitepoint": 0, "reference_mode_flag": True}
     assert config["max_pq"] == 3079 and config["min_pq"] == 62 and config["remove_cmv4"] is True
+
+
+def test_mastering_edit_and_suggestion(tmp_path):
+    from types import SimpleNamespace
+
+    edit = MasteringEdit("Display P3", 0.0001, 1000)
+    assert edit.master_display() == "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+    assert edit.colour() == (0.68, 0.32, 0.265, 0.69, 0.15, 0.06, 0.3127, 0.329, 1000.0, 0.0001)
+    assert MasteringEdit("BT.2020", 0.005, 4000).master_display().startswith("G(8500,39850)B(6550,2300)R(35400,14600)")
+    for bad in (("sRGB", 0.0001, 1000), ("BT.2020", 1000, 1000), ("BT.2020", 0.0001, 20000)):
+        with pytest.raises(ValueError):
+            MasteringEdit(*bad)
+    static = StaticEdit(mastering=edit)
+    assert static.light_levels is None and not static.is_empty() and StaticEdit().is_empty()
+    with pytest.raises(ValueError):
+        StaticEdit(100, None)
+    dovi, hdr10plus = _analyses(tmp_path)
+    snapshot = SimpleNamespace(mastering=None)
+    assert suggested_mastering(SimpleNamespace(snapshot=snapshot, dovi=dovi, hdr10plus=None)) == (
+        MasteringEdit("Display P3", 0.005, 1000), "l6")
+    without_l6 = dataclasses.replace(dovi, l6=(), l9_primaries=(2,))
+    edit, source = suggested_mastering(SimpleNamespace(snapshot=snapshot, dovi=without_l6, hdr10plus=None))
+    assert source == "source_display" and edit.primaries == "BT.2020" and edit.max_nits == dovi.source_display[0][1]
+    measured = SimpleNamespace(frames=10, max_cll=lambda: 1500)
+    assert suggested_mastering(SimpleNamespace(snapshot=snapshot, dovi=None, hdr10plus=hdr10plus), measured) == (
+        MasteringEdit("Display P3", 0.005, 4000), "standard")
+    current = SimpleNamespace(mastering=SimpleNamespace(primaries="BT.2020"))
+    assert suggested_mastering(SimpleNamespace(snapshot=current, dovi=None, hdr10plus=None)) == (
+        MasteringEdit("BT.2020", 0.0001, 1000), "standard")
+
+
+def test_static_sei_mastering_replaced_and_colour_written(tmp_path):
+    from core.matroska.ebml import element, uint_element
+    from core.matroska.hevc.payload_rewriter import _with_light_levels
+    from core.matroska.ids import COLOUR_ID, LUMINANCE_MAX_ID, MASTERING_METADATA_ID, MAX_CLL_ID
+    from core.matroska.reader import payload_children
+    from core.workflows.hevc_static_hdr_metadata import (
+        _build_static_hdr_sei_nal, _sei_messages, replace_static_hdr_sei_file,
+    )
+    mdcv_cll, _ = _build_static_hdr_sei_nal(
+        master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)", max_cll="900,300")
+    start = b"\x00\x00\x00\x01"
+    idr = bytes([19 << 1, 1, 0x80, 0x11])
+    source, output = tmp_path / "in.hevc", tmp_path / "out.hevc"
+    source.write_bytes(start + mdcv_cll + start + idr)
+    edit = MasteringEdit("BT.2020", 0.005, 4000)
+    assert replace_static_hdr_sei_file(source, output, master_display=edit.master_display()).applied
+    messages = [m for n in output.read_bytes().split(start) if n and (n[0] >> 1) & 0x3F == 39 for m in _sei_messages(n)]
+    assert sorted(t for t, _ in messages) == [137, 144]
+    mdcv = next(p for t, p in messages if t == 137)
+    assert int.from_bytes(mdcv[:2], "big") == 8500 and int.from_bytes(mdcv[16:20], "big") == 40000000
+    cll = next(p for t, p in messages if t == 144)
+    assert int.from_bytes(cll[:2], "big") == 900  # CLL conservé
+    video = element(COLOUR_ID, uint_element(MAX_CLL_ID, 1000) + element(MASTERING_METADATA_ID, b""))
+    colour = dict(payload_children(dict(payload_children(_with_light_levels(video, None, edit.colour())))[COLOUR_ID]))
+    assert int.from_bytes(colour[MAX_CLL_ID], "big") == 1000
+    mastering = dict(payload_children(colour[MASTERING_METADATA_ID]))
+    assert struct.unpack(">d", mastering[LUMINANCE_MAX_ID])[0] == 4000.0
 
 
 def test_transform_hdr10plus(tmp_path):

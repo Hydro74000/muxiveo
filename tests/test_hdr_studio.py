@@ -382,6 +382,50 @@ def test_edition_plan_and_write(studio, qt_app, tmp_path, monkeypatch):
     assert not editor.write_btn.isEnabled() and "autre fichier" in editor._summary.text()
 
 
+def test_edition_mastering_display_sync(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    report = _dynamic_report(tmp_path)
+    report = dataclasses.replace(report, snapshot=dataclasses.replace(report.snapshot, path=str(media)))
+    studio._render(report)
+    editor = studio._editor
+    assert editor.mastering_sync.isChecked() and editor.mastering_sync.isVisibleTo(editor)
+    assert editor._suggested is not None and editor._suggested[1] == "l6"
+    assert "d'après L6 du RPU" in editor._mdcv_hint.text()
+    # Mastering modifié dans le MDCV : L6 et écran du RPU suivent, cases cochées.
+    editor.mdcv_box.setChecked(True)
+    editor.mdcv_max.setValue(4000)
+    editor.mdcv_min.setValue(0.005)
+    assert editor.l6_box.isChecked() and editor.source_box.isChecked()
+    assert editor.l6_max_mastering.value() == 4000 and editor.source_max.value() == 4000
+    assert editor.l6_min_mastering.value() == pytest.approx(0.005)
+    # Aperçu Luminance : modèle « suit le MDCV » sur la valeur choisie.
+    assert studio._luminance._mdcv_choice == 4000
+    assert "MDCV choisi" in [m.label for m in studio._luminance._markers()]
+    plan = editor.plan()
+    assert plan.static.mastering.max_nits == 4000 and plan.static.light_levels is None
+    assert plan.rpu.l6[:2] == (4000, pytest.approx(0.005)) and plan.rpu.source_display == (pytest.approx(0.005), 4000.0)
+    assert "MDCV" in editor._summary.text()
+    # Et dans l'autre sens, depuis le L6.
+    editor.l6_max_mastering.setValue(1000)
+    assert editor.mdcv_max.value() == 1000 and editor.source_max.value() == 1000
+    # Nouveau rendu du même fichier (mesure, cache) : valeurs saisies conservées.
+    studio._render(report)
+    assert editor.mdcv_max.value() == 1000 and editor.mdcv_box.isChecked()
+    # Sans synchronisation : rien n'est recopié.
+    editor.mastering_sync.setChecked(False)
+    editor.mdcv_max.setValue(2000)
+    assert editor.l6_max_mastering.value() == 1000
+    editor.apply_suggested_mastering()
+    assert editor.mdcv_max.value() == 1000 and editor.mdcv_min.value() == pytest.approx(0.005)
+    # Écran invalide : écriture refusée avec le motif.
+    editor.mdcv_min.setValue(20)
+    editor.mdcv_max.setValue(10)
+    assert not editor.write_btn.isEnabled() and "Écran de mastering invalide" in editor._summary.text()
+
+
 def test_encode_panel_applies_light_levels(qt_app, monkeypatch):
     from tests.test_encode_panel_dovi_geometry import _COLOR, _PATH_A, _file_info, _video_entry
     from ui.panels.encode_panel.panel import EncodePanel

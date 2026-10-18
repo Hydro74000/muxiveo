@@ -8074,5 +8074,61 @@
   "Zone mesurée": {
     "fra": "Zone mesurée",
     "eng": "Measured area"
+  },
+  "Actuel : {current}.": {
+    "fra": "Actuel : {current}.",
+    "eng": "Current: {current}."
+  },
+  "Écrire l'écran de mastering (MDCV)": {
+    "fra": "Écrire l'écran de mastering (MDCV)",
+    "eng": "Write the mastering display (MDCV)"
+  },
+  "Garder identiques le MDCV, le mastering du L6 et l'écran de mastering du RPU": {
+    "fra": "Garder identiques le MDCV, le mastering du L6 et l'écran de mastering du RPU",
+    "eng": "Keep the MDCV, the L6 mastering and the RPU mastering display identical"
+  },
+  "{primaries}, {min} – {max} nits": {
+    "fra": "{primaries}, {min} – {max} nits",
+    "eng": "{primaries}, {min} – {max} nits"
+  },
+  "MDCV {primaries} {min}–{max} nits": {
+    "fra": "MDCV {primaries} {min}–{max} nits",
+    "eng": "MDCV {primaries} {min}–{max} nits"
+  },
+  "Proposé : {primaries}, {min} – {max} nits d'après {source}.": {
+    "fra": "Proposé : {primaries}, {min} – {max} nits d'après {source}.",
+    "eng": "Suggested: {primaries}, {min} – {max} nits from {source}."
+  },
+  "MDCV choisi": {
+    "fra": "MDCV choisi",
+    "eng": "Chosen MDCV"
+  },
+  "Primaires inconnues : {name}": {
+    "fra": "Primaires inconnues : {name}",
+    "eng": "Unknown primaries: {name}"
+  },
+  "Écran de mastering invalide : luminance max. de 1 à 10 000 nits, min. inférieure à la max.": {
+    "fra": "Écran de mastering invalide : luminance max. de 1 à 10 000 nits, min. inférieure à la max.",
+    "eng": "Invalid mastering display: max. luminance from 1 to 10,000 nits, min. below max."
+  },
+  "MaxCLL et MaxFALL se modifient ensemble.": {
+    "fra": "MaxCLL et MaxFALL se modifient ensemble.",
+    "eng": "MaxCLL and MaxFALL are changed together."
+  },
+  "HDR10 statique du flux…": {
+    "fra": "HDR10 statique du flux…",
+    "eng": "Stream static HDR10…"
+  },
+  "SEI HDR10 statiques non écrits dans le flux.": {
+    "fra": "SEI HDR10 statiques non écrits dans le flux.",
+    "eng": "Static HDR10 SEI not written to the stream."
+  },
+  "L6 du RPU": {
+    "fra": "L6 du RPU",
+    "eng": "the RPU L6"
+  },
+  "écran usuel couvrant le pic du contenu": {
+    "fra": "écran usuel couvrant le pic du contenu",
+    "eng": "a common display covering the content peak"
   }
 }

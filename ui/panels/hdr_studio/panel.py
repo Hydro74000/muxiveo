@@ -305,6 +305,7 @@ class HdrStudio(QWidget):
         self._luminance.values_changed.connect(self._editor.set_static_values)
         self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
         self._editor.write_requested.connect(self.write_patch)
+        self._editor.mastering_changed.connect(self._luminance.set_mastering_choice)
         editor_scroll = QScrollArea()
         editor_scroll.setWidgetResizable(True)
         editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -942,7 +943,7 @@ class HdrStudio(QWidget):
             self._clear(layout)
         self._luminance.set_report(report, self._measurement)
         self._fel_tab.set_report(report)
-        self._editor.set_report(report)
+        self._editor.set_report(report, self._measurement)
         if report is None:
             self._overview.addWidget(_label(translate_text(
                 "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo "
