@@ -151,9 +151,12 @@ def test_abi_manifest_rejects_incompatible():
 
 def test_unpublished_plugin_does_not_offer_a_development_release():
     assert plugins.target_version(plugins.FEL, None, "linux-x86_64") == ""
-    feed = [{"version": "0.1.0", "abi": 1, "platforms": [{"platform": "linux-x86_64"}]}]
-    assert plugins.target_version(plugins.FEL, feed, "linux-x86_64") == "0.1.0"
+    feed = [{"version": "0.5.0", "abi": 1, "platforms": [{"platform": "linux-x86_64"}]}]
+    assert plugins.target_version(plugins.FEL, feed, "linux-x86_64") == "0.5.0"
     assert plugins.target_version(plugins.FEL, feed, "macos-arm64") == ""
+    # Versions sous le plancher MVO_FEL_VERSION ignorées.
+    older = [{"version": "0.4.0", "abi": 1, "platforms": [{"platform": "linux-x86_64"}]}]
+    assert plugins.target_version(plugins.FEL, older, "linux-x86_64") == ""
 
 
 def test_loaded_version_survives_removal_until_released(tmp_path):
