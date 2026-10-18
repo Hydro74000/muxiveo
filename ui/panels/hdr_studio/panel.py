@@ -5,6 +5,7 @@ RPU Dolby Vision et HDR10+ extraits et analysés, sans décoder l'image ; résul
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,7 +13,6 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -31,10 +31,8 @@ from PySide6.QtWidgets import (
 
 from core.file_types import is_accepted
 from core.hdr_inspection import (
-    DoviAnalysis,
     DynamicInspector,
     Finding,
-    Hdr10PlusAnalysis,
     InspectionCache,
     InspectionCancelled,
     InspectionReport,
@@ -43,16 +41,19 @@ from core.hdr_inspection import (
     build_snapshot,
 )
 from core.hdr_inspection.dovi import L9_PRIMARY_NAMES
-from core.hdr_inspection.pq import pq12_to_nits
+from core.hdr_inspection.measure import ImageMeasurement, read_measurement
+from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import translate_text
 from core.inspector import FileInfo, FileInspector
 from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
 from ui.design_system import colors as C, font_px, scale
-from ui.panels.hdr_studio.chart import ChartMarker, ChartSeries, LuminanceChart, format_time
+from ui.panels.hdr_studio.chart import format_time
+from ui.panels.hdr_studio.editor import EditionTab
+from ui.panels.hdr_studio.luminance import LuminanceTab
 from ui.shutdown import Shutdown, defer_close
-from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
+from ui.styles import _card, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
 
 _SEVERITY_COLORS = {Severity.OK: "OK", Severity.INFO: "INFO", Severity.WARN: "WARN", Severity.ERROR: "ERROR"}
 _SEVERITY_ICONS = {Severity.OK: "✓", Severity.INFO: "i", Severity.WARN: "!", Severity.ERROR: "✕"}
@@ -172,10 +173,14 @@ class HdrStudio(QWidget):
 
     log_message = Signal(str, str)
     busy_changed = Signal(bool)
+    #: Chemin, index ffprobe de la piste, MaxCLL, MaxFALL.
+    apply_to_encode_requested = Signal(object, int, int, int)
     _inspected = Signal(int, object, int, object, str)
     _cache_ready = Signal(int, object)
     _progress = Signal(int, str, int)
     _analyzed = Signal(int, object, str)
+    _measured = Signal(int, object, str)
+    _patched = Signal(int, object, str)
 
     def __init__(self, config, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -189,12 +194,19 @@ class HdrStudio(QWidget):
         self._cancel = threading.Event()
         self._signals: TaskSignals | None = None
         self._pending_analyze = False
+        self._measurement: ImageMeasurement | None = None
+        self._last_output: Path | None = None
+        # Moteur de mesure (plugin mvo-fel), remplaçable par les tests.
+        from core.fel.engine import FelEngine
+        self._engine_factory = FelEngine.installed
         self.setAcceptDrops(True)
         self._build_ui()
         self._inspected.connect(self._on_inspected, Qt.ConnectionType.QueuedConnection)
         self._cache_ready.connect(self._on_cache_ready, Qt.ConnectionType.QueuedConnection)
         self._progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._analyzed.connect(self._on_analyzed, Qt.ConnectionType.QueuedConnection)
+        self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
+        self._patched.connect(self._on_patched, Qt.ConnectionType.QueuedConnection)
         self._render(None)
 
     # ── Construction ────────────────────────────────────────────────────
@@ -248,6 +260,10 @@ class HdrStudio(QWidget):
         self._cancel_btn = _secondary_button(translate_text("Annuler"))
         self._cancel_btn.clicked.connect(self.cancel)
         actions.addWidget(self._cancel_btn)
+        self._open_output_btn = _secondary_button(translate_text("Inspecter le fichier corrigé"))
+        self._open_output_btn.clicked.connect(self._open_output)
+        self._open_output_btn.setVisible(False)
+        actions.addWidget(self._open_output_btn)
         self._status = _label("", color=C.TEXT_SEC)
         actions.addWidget(self._status, 1)
         source_layout.addLayout(actions)
@@ -270,12 +286,24 @@ class HdrStudio(QWidget):
             f"QTabBar::tab:selected{{color:{C.TEXT_PRI};border-bottom:2px solid {C.ACCENT};}}"
             f"QTabBar::tab:hover{{color:{C.TEXT_PRI};}}")
         self._overview = self._scroll_tab(translate_text("Vue d'ensemble"))
-        self._luminance_tab = QWidget()
-        self._luminance_tab.setStyleSheet("background:transparent;")
-        self._build_luminance_tab()
-        self._tabs.addTab(self._luminance_tab, translate_text("Luminance"))
+        self._luminance = LuminanceTab(int(getattr(self._config, "display_peak_nits", 1000) or 1000))
+        self._luminance.measure_requested.connect(self.measure)
+        self._luminance.display_peak_changed.connect(self._display_peak_changed)
+        self._luminance.apply_to_encode_requested.connect(self._apply_to_encode)
+        self._luminance.prepare_patch_requested.connect(self._prepare_patch)
+        self._tabs.addTab(self._luminance, translate_text("Luminance"))
         self._dovi_tab = self._scroll_tab(translate_text("Dolby Vision"))
         self._hdr10plus_tab = self._scroll_tab(translate_text("HDR10+"))
+        self._editor = EditionTab()
+        self._luminance.values_changed.connect(self._editor.set_static_values)
+        self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
+        self._editor.write_requested.connect(self.write_patch)
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        editor_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        editor_scroll.setWidget(self._editor)
+        self._tabs.addTab(editor_scroll, translate_text("Édition"))
         outer.addWidget(self._tabs, 1)
 
     def _scroll_tab(self, title: str) -> QVBoxLayout:
@@ -291,24 +319,6 @@ class HdrStudio(QWidget):
         scroll.setWidget(body)
         self._tabs.addTab(scroll, title)
         return layout
-
-    def _build_luminance_tab(self) -> None:
-        layout = QVBoxLayout(self._luminance_tab)
-        layout.setContentsMargins(0, scale(10), 0, 0)
-        layout.setSpacing(scale(8))
-        self._legend = QHBoxLayout()
-        self._legend.setSpacing(scale(14))
-        layout.addLayout(self._legend)
-        self._chart = LuminanceChart()
-        layout.addWidget(self._chart, 1)
-        self._hover_label = _label("", color=C.TEXT_SEC, size=10)
-        self._chart.hover_changed.connect(self._hover_label.setText)
-        layout.addWidget(self._hover_label)
-        self._luminance_hint = _label(translate_text(
-            "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. "
-            "Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict."),
-            color=C.TEXT_DIM, size=10, wrap=True)
-        layout.addWidget(self._luminance_hint)
 
     # ── Source ──────────────────────────────────────────────────────────
     def _browse(self) -> None:
@@ -339,6 +349,7 @@ class HdrStudio(QWidget):
         token = self._token
         self._info = None
         self._report = None
+        self._measurement = None
         self._pending_analyze = analyze
         self._path_edit.setText(str(path))
         self._track_combo.blockSignals(True)
@@ -354,7 +365,7 @@ class HdrStudio(QWidget):
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
                 index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                cached = self._cache.load(path, index) if video else None
+                cached = self._cached(path, index) if video else None
                 self._inspected.emit(token, info, index, cached, "")
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
@@ -395,8 +406,10 @@ class HdrStudio(QWidget):
         snapshot = build_snapshot(info, stream)
         self._render(InspectionReport(snapshot, findings=audit(snapshot)))
 
+        self._measurement = None
+
         def task() -> None:
-            self._cache_ready.emit(token, self._cache.load(Path(info.path), snapshot.stream_index))
+            self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index))
 
         self._executor.submit(task)
 
@@ -404,15 +417,23 @@ class HdrStudio(QWidget):
         if token == self._token and self._info is not None:
             self._show_snapshot(cached)
 
+    def _cached(self, path: Path, stream_index: int) -> dict:
+        """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image."""
+        return {"dynamic": self._cache.load(path, stream_index),
+                "measure": self._cache.load_measurement(path, stream_index)}
+
     def _show_snapshot(self, cached: object) -> None:
         assert self._info is not None
         snapshot = build_snapshot(self._info, self._current_stream())
-        if isinstance(cached, tuple):
-            dovi, hdr10plus = cached
-            report = InspectionReport(snapshot, dovi, hdr10plus, audit(snapshot, dovi, hdr10plus),
+        dynamic = cached.get("dynamic") if isinstance(cached, dict) else None
+        if isinstance(cached, dict) and isinstance(cached.get("measure"), ImageMeasurement):
+            self._measurement = cached["measure"]
+        if isinstance(dynamic, tuple):
+            dovi, hdr10plus = dynamic
+            report = InspectionReport(snapshot, dovi, hdr10plus, audit(snapshot, dovi, hdr10plus, self._measurement),
                                       dynamic=True, from_cache=True)
         else:
-            report = InspectionReport(snapshot, findings=audit(snapshot))
+            report = InspectionReport(snapshot, findings=audit(snapshot, measurement=self._measurement))
         self._render(report)
         self._update_actions()
 
@@ -484,6 +505,9 @@ class HdrStudio(QWidget):
             return
         self._signals = None
         self._set_busy(False)
+        if report is not None and self._measurement is not None:
+            report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
+                                                                 self._measurement))
         if report is None:
             if error:
                 self._set_status(translate_text("Analyse impossible : {error}", error=error), error=True)
@@ -498,6 +522,179 @@ class HdrStudio(QWidget):
         self.log_message.emit("OK" if not warnings else "WARN", translate_text(
             "Analyse HDR terminée : {count} point(s) à vérifier", count=warnings))
         self._update_actions()
+
+    # ── Mesure de l'image ───────────────────────────────────────────────
+    def measure(self) -> None:
+        """Niveau 3 : mesure de chaque image (BL lue comme HDR10) par le plugin mvo-fel."""
+        if self._info is None or self._busy:
+            return
+        info, stream = self._info, self._current_stream()
+        snapshot = build_snapshot(info, stream)
+        if snapshot.codec.lower() != "hevc" or not snapshot.is_pq:
+            self._set_status(translate_text("Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+)."),
+                             error=True)
+            return
+        if snapshot.dovi is not None and snapshot.dovi.profile == 5:
+            self._set_status(translate_text("Profil 5 : aucune couche HDR10 à mesurer."), error=True)
+            return
+        try:
+            engine = self._engine_factory()
+        except Exception as exc:  # extension absente ou incompatible : message à l'utilisateur
+            self._set_status(translate_text("Mesure impossible : {error}", error=str(exc)), error=True)
+            return
+        from core.fel.engine import measure_supported
+        if not measure_supported(engine, "base"):
+            self._set_status(translate_text(
+                "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."), error=True)
+            return
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        self._signals = None
+        config = self._config
+        total = max(1, snapshot.frames or 1)
+
+        def task() -> None:
+            owned = None
+            try:
+                owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-mesure")
+                statistics = owned.path / "mesure.jsonl"
+                backend = engine.measure(
+                    Path(info.path), snapshot.stream_index, statistics, layer="base",
+                    threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)),
+                    progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
+                    cancelled=cancel)
+                measurement = read_measurement(statistics, "base", cancelled=cancel.is_set)
+                self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
+                self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
+                self._measured.emit(token, measurement, "")
+            except Exception as exc:
+                self._measured.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                if owned is not None:
+                    try:
+                        owned.remove()
+                    except OSError:
+                        pass
+
+        self._set_busy(True, translate_text("Mesure de chaque image…"))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self.log_message.emit("INFO", translate_text("Mesure de l'image : {name}", name=info.path.name))
+        self._executor.submit(task)
+
+    def _on_measured(self, token: int, measurement: ImageMeasurement | None, error: str) -> None:
+        if token != self._token:
+            return
+        self._set_busy(False)
+        if measurement is None:
+            self._set_status(translate_text("Mesure impossible : {error}", error=error) if error
+                             else translate_text("Mesure annulée."), error=bool(error))
+            if error:
+                self.log_message.emit("ERROR", translate_text("Mesure de l'image impossible : {error}", error=error))
+            return
+        self._measurement = measurement
+        report = self._report
+        if report is not None:
+            report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
+                                                                 measurement))
+        self._render(report)
+        self._set_status(translate_text("Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.",
+                                        cll=measurement.max_cll(), fall=measurement.max_fall()))
+        self.log_message.emit("OK", translate_text("Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
+                                                   frames=measurement.frames, cll=measurement.max_cll(),
+                                                   fall=measurement.max_fall()))
+        self._tabs.setCurrentWidget(self._luminance)
+
+    # ── Correction du fichier ───────────────────────────────────────────
+    def _prepare_patch(self, max_cll: int, max_fall: int) -> None:
+        self._editor.set_static_values(max_cll, max_fall)
+        self._editor.enable_static()
+        self._tabs.setCurrentIndex(self._tabs.count() - 1)
+
+    def _display_peak_changed(self, value: int) -> None:
+        # Enregistré avec la configuration (fermeture de l'application ou page Paramètres).
+        self._config.display_peak_nits = int(value)
+
+    def _apply_to_encode(self, max_cll: int, max_fall: int) -> None:
+        report = self._report
+        if report is not None:
+            self.apply_to_encode_requested.emit(Path(report.snapshot.path), report.snapshot.stream_index,
+                                                max_cll, max_fall)
+
+    def write_patch(self, plan: PatchPlan) -> None:
+        """Écrit le fichier corrigé (thread de travail, annulable)."""
+        if self._busy:
+            return
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        signals = TaskSignals()
+        self._signals = signals
+        runner = ToolRunner(max_workers=1)
+        config = self._config
+        span = [0.0, 1.0]
+
+        def on_step(label: str, start: float, part: float) -> None:
+            span[:] = [start, part]
+            self._progress.emit(token, label, int(start * 100))
+
+        def on_pct(pct: int) -> None:
+            self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
+
+        def run(cmd: list[str]) -> object:
+            return runner._run_cmd(cmd, label="hdr-patch", progress_pct_cb=on_pct, signals=signals)
+
+        def task() -> None:
+            owned = None
+            try:
+                owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-correction")
+                patcher = MetadataPatcher(
+                    ffmpeg_bin=str(config.tool_ffmpeg), dovi_tool_bin=str(config.tool_dovi_tool),
+                    hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
+                    on_step=on_step, cancelled=cancel.is_set,
+                    progress=lambda fraction: self._progress.emit(token, "", int(fraction * 100)))
+                self._patched.emit(token, patcher.run(plan), "")
+            except PatchCancelled:
+                self._patched.emit(token, None, "")
+            except Exception as exc:
+                self._patched.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                if owned is not None:
+                    try:
+                        owned.remove()
+                    except OSError:
+                        pass
+
+        self._set_busy(True, translate_text("Correction du fichier…"))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self.log_message.emit("INFO", translate_text("Correction des métadonnées : {source} → {output}",
+                                                     source=plan.source.name, output=plan.output.name))
+        self._executor.submit(task)
+
+    def _on_patched(self, token: int, output: Path | None, error: str) -> None:
+        if token != self._token:
+            return
+        self._signals = None
+        self._set_busy(False)
+        if output is None:
+            self._set_status(translate_text("Correction impossible : {error}", error=error) if error
+                             else translate_text("Correction annulée."), error=bool(error))
+            if error:
+                self.log_message.emit("ERROR", translate_text("Correction impossible : {error}", error=error))
+            return
+        self._last_output = Path(output)
+        self._open_output_btn.setVisible(True)
+        self._set_status(translate_text("Fichier corrigé écrit : {name}", name=Path(output).name))
+        self.log_message.emit("OK", translate_text("Fichier corrigé écrit : {path}", path=str(output)))
+
+    def _open_output(self) -> None:
+        if self._last_output is not None:
+            self._open_output_btn.setVisible(False)
+            self.load_source(self._last_output)
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -537,6 +734,8 @@ class HdrStudio(QWidget):
         self._refresh_btn.setEnabled(not self._busy)
         self._cancel_btn.setVisible(self._busy)
         self._track_combo.setEnabled(not self._busy and self._track_combo.count() > 1)
+        self._luminance.set_busy(self._busy)
+        self._editor.set_busy(self._busy)
         if report is not None and not self._busy:
             if report.from_cache:
                 self._set_status(translate_text("Métadonnées dynamiques : résultat en cache."))
@@ -565,17 +764,17 @@ class HdrStudio(QWidget):
         self._report = report
         for layout in (self._overview, self._dovi_tab, self._hdr10plus_tab):
             self._clear(layout)
+        self._luminance.set_report(report, self._measurement)
+        self._editor.set_report(report)
         if report is None:
             self._overview.addWidget(_label(translate_text(
                 "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo "
                 "(Conteneur, Encodage) puis « Inspecter le HDR… »."), color=C.TEXT_DIM, wrap=True))
             self._overview.addStretch()
-            self._render_luminance(None)
             return
         self._render_overview(report)
         self._render_dovi(report)
         self._render_hdr10plus(report)
-        self._render_luminance(report)
         for layout in (self._overview, self._dovi_tab, self._hdr10plus_tab):
             layout.addStretch()
 
@@ -592,7 +791,11 @@ class HdrStudio(QWidget):
         holder.setLayout(badges)
         self._overview.addWidget(holder)
         self._overview.addWidget(_section(translate_text("PISTE"), _kv_grid(self._track_rows(snapshot))))
-        self._overview.addWidget(_section(translate_text("HDR10 STATIQUE"), _kv_grid(self._static_rows(snapshot))))
+        static_rows = self._static_rows(snapshot)
+        if self._measurement is not None:
+            static_rows.append((translate_text("Mesurés sur l'image"),
+                                f"{self._measurement.max_cll()} / {self._measurement.max_fall()}"))
+        self._overview.addWidget(_section(translate_text("HDR10 STATIQUE"), _kv_grid(static_rows)))
         if snapshot.dovi is not None:
             record = snapshot.dovi
             layers = "+".join(name for name, present in (("BL", record.bl), ("EL", record.el), ("RPU", record.rpu)) if present)
@@ -712,44 +915,6 @@ class HdrStudio(QWidget):
             (translate_text("Percentile 99,98 % max."), f"{round(float(hdr10plus.p99.max()))} nits" if hdr10plus.frames else "?"),
         ]
         self._hdr10plus_tab.addWidget(_section(translate_text("HDR10+"), _kv_grid(rows)))
-
-    def _render_luminance(self, report: InspectionReport | None) -> None:
-        self._clear(self._legend)
-        series: list[ChartSeries] = []
-        frames = 0
-        if report is not None and report.dovi is not None and report.dovi.frames:
-            dovi: DoviAnalysis = report.dovi
-            series.append(ChartSeries("l1_max", translate_text("L1 max"), C.PURPLE,
-                                      pq12_to_nits(dovi.l1_max).astype(np.float32), "max", fill=True))
-            series.append(ChartSeries("l1_avg", translate_text("L1 moyenne"), C.ACCENT,
-                                      pq12_to_nits(dovi.l1_avg).astype(np.float32), "mean"))
-            frames = dovi.frames
-        if report is not None and report.hdr10plus is not None and report.hdr10plus.frames:
-            hdr10plus: Hdr10PlusAnalysis = report.hdr10plus
-            series.append(ChartSeries("maxscl", translate_text("MaxScl HDR10+"), C.WARN, hdr10plus.max_scl, "max",
-                                      visible=report.dovi is None, fill=report.dovi is None))
-            series.append(ChartSeries("avgrgb", translate_text("AverageRGB HDR10+"), C.TRACK_TAGS, hdr10plus.average_rgb,
-                                      "mean", visible=report.dovi is None))
-            frames = max(frames, hdr10plus.frames)
-        markers: list[ChartMarker] = []
-        if report is not None and series:
-            snapshot = report.snapshot
-            if snapshot.max_cll:
-                markers.append(ChartMarker(translate_text("MaxCLL"), float(snapshot.max_cll), C.OK))
-            if snapshot.mastering is not None and snapshot.mastering.max_nits:
-                markers.append(ChartMarker(translate_text("MDCV"), float(snapshot.mastering.max_nits), C.TEXT_DIM))
-        self._chart.set_data(frames=frames, fps=report.snapshot.fps if report is not None else None,
-                             series=series, markers=markers,
-                             scenes=report.dovi.scene_starts if report is not None and report.dovi is not None else None)
-        for entry in series:
-            box = QCheckBox(entry.label)
-            box.setChecked(entry.visible)
-            box.setStyleSheet(_checkbox_style() + f"QCheckBox{{color:{entry.color};}}")
-            box.toggled.connect(lambda checked, key=entry.key: self._chart.set_series_visible(key, checked))
-            self._legend.addWidget(box)
-        self._legend.addStretch()
-        self._hover_label.setText("" if series else translate_text(
-            "Lire les métadonnées dynamiques pour afficher les courbes (Dolby Vision L1, HDR10+)."))
 
     # ── Fermeture ───────────────────────────────────────────────────────
     def closeEvent(self, event) -> None:  # noqa: N802

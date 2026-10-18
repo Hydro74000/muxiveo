@@ -44,17 +44,19 @@ def format_time(seconds: float) -> str:
 
 
 def bucket(values: np.ndarray, start: int, end: int, count: int, mode: str) -> np.ndarray:
-    """Agrège ``values[start:end]`` en ``count`` colonnes (maximum ou moyenne)."""
+    """Agrège ``values[start:end]`` en ``count`` colonnes (maximum ou moyenne, NaN ignorés)."""
     window = np.asarray(values[start:end], dtype=np.float64)
     if window.size == 0 or count <= 0:
         return np.zeros(0)
     count = min(count, window.size)
     edges = np.linspace(0, window.size, count + 1).astype(np.int64)[:-1]
     if mode == "mean":
-        sums = np.add.reduceat(window, edges)
-        sizes = np.diff(np.append(edges, window.size))
-        return sums / sizes
-    return np.maximum.reduceat(window, edges)
+        valid = np.isfinite(window)
+        sums = np.add.reduceat(np.where(valid, window, 0.0), edges)
+        sizes = np.add.reduceat(valid.astype(np.float64), edges)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(sizes > 0, sums / np.maximum(sizes, 1), np.nan)
+    return np.fmax.reduceat(window, edges)
 
 
 class LuminanceChart(QWidget):
@@ -78,22 +80,37 @@ class LuminanceChart(QWidget):
         self._top_nits = 1000.0
         self._drag: tuple[float, tuple[int, int]] | None = None
         self._dragged = False
+        self._bands: np.ndarray | None = None
+        self._band_color = C.ERROR
 
     # ── Données ─────────────────────────────────────────────────────────
     def set_data(self, *, frames: int, fps: float | None, series: list[ChartSeries],
-                 markers: list[ChartMarker] | None = None, scenes: np.ndarray | None = None) -> None:
-        self._frames = max(0, int(frames))
+                 markers: list[ChartMarker] | None = None, scenes: np.ndarray | None = None,
+                 keep_view: bool = False) -> None:
+        """Remplace séries et repères ; ``keep_view`` garde le zoom si la durée est inchangée."""
+        frames = max(0, int(frames))
+        keep = keep_view and frames == self._frames
+        self._frames = frames
         self._fps = fps if fps and fps > 0 else 24000 / 1001
+        # La visibilité appartient aux séries (cases de la légende de l'appelant).
         self._series = list(series)
         self._markers = list(markers or ())
         self._scenes = scenes
-        self._view = (0, self._frames)
+        if not keep:
+            self._view = (0, self._frames)
+            self._bands = None
         self._drag = None
-        peaks = [float(s.values.max()) for s in self._series if s.values.size]
+        peaks = [float(np.nanmax(s.values)) for s in self._series if s.values.size and np.isfinite(s.values).any()]
         peaks += [m.nits for m in self._markers]
         peak = max(peaks, default=1000.0)
         self._top_nits = next((t for t in _NITS_TICKS if t >= peak * 1.05), 10000)
         self._hover_x = None
+        self.update()
+
+    def set_bands(self, mask: np.ndarray | None, color: str | None = None) -> None:
+        """Images signalées (ex. écrêtées) : bandes verticales translucides."""
+        self._bands = mask if mask is not None and mask.size == self._frames and mask.any() else None
+        self._band_color = color or C.ERROR
         self.update()
 
     def clear(self) -> None:
@@ -146,6 +163,13 @@ class LuminanceChart(QWidget):
         self._draw_grid(painter, rect)
         start, end = self._view
         columns = max(1, int(rect.width()))
+        if self._bands is not None:
+            marked = bucket(self._bands.astype(np.float32), start, end, columns, "max")
+            band = QColor(self._band_color)
+            band.setAlpha(40)
+            step = rect.width() / max(1, marked.size)
+            for index in np.nonzero(marked > 0)[0]:
+                painter.fillRect(QRectF(rect.left() + index * step, rect.top(), max(1.0, step), rect.height()), band)
         for item in self._series:
             if not item.visible or not item.values.size:
                 continue
@@ -154,21 +178,27 @@ class LuminanceChart(QWidget):
                 continue
             span = min(end, item.values.size) - start
             xs = rect.left() + np.arange(values.size) * (span / values.size) / max(1, end - start) * rect.width()
-            ys = self._y(rect, values)
-            path = QPainterPath(QPointF(float(xs[0]), float(ys[0])))
-            for x, y in zip(xs[1:], ys[1:]):
-                path.lineTo(float(x), float(y))
+            ys = self._y(rect, np.nan_to_num(values, nan=0.0))
+            finite = np.isfinite(values)
             color = QColor(item.color)
-            if item.fill:
-                area = QPainterPath(path)
-                area.lineTo(float(xs[-1]), rect.bottom())
-                area.lineTo(float(xs[0]), rect.bottom())
-                area.closeSubpath()
-                fill = QColor(color)
-                fill.setAlpha(32)
-                painter.fillPath(area, fill)
-            painter.setPen(QPen(color, 1.2))
-            painter.drawPath(path)
+            # Tronçons continus : une image sans valeur (NaN) coupe la courbe.
+            breaks = np.flatnonzero(np.diff(finite.astype(np.int8))) + 1
+            for segment in np.split(np.arange(values.size), breaks):
+                if not segment.size or not finite[segment[0]]:
+                    continue
+                path = QPainterPath(QPointF(float(xs[segment[0]]), float(ys[segment[0]])))
+                for index in segment[1:]:
+                    path.lineTo(float(xs[index]), float(ys[index]))
+                if item.fill:
+                    area = QPainterPath(path)
+                    area.lineTo(float(xs[segment[-1]]), rect.bottom())
+                    area.lineTo(float(xs[segment[0]]), rect.bottom())
+                    area.closeSubpath()
+                    fill = QColor(color)
+                    fill.setAlpha(32)
+                    painter.fillPath(area, fill)
+                painter.setPen(QPen(color, 1.2))
+                painter.drawPath(path)
         label_h = scale(13)
         last_label: float | None = None
         for marker in sorted(self._markers, key=lambda m: -m.nits):
@@ -238,7 +268,7 @@ class LuminanceChart(QWidget):
     def hover_text(self, frame: int) -> str:
         parts = [f"{format_time(frame / self._fps)} · {translate_text('image')} {frame}"]
         for item in self._series:
-            if item.visible and 0 <= frame < item.values.size:
+            if item.visible and 0 <= frame < item.values.size and np.isfinite(item.values[frame]):
                 parts.append(f"{item.label} {round(float(item.values[frame]))}")
         return "   ".join(parts)
 

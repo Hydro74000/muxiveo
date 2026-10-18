@@ -8,6 +8,7 @@ import numpy as np
 
 from core.hdr_inspection.dovi import DoviAnalysis
 from core.hdr_inspection.hdr10p import Hdr10PlusAnalysis
+from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import translate_text
 from core.matroska.editors.dovi import minimum_dovi_level
@@ -88,7 +89,7 @@ def scene_alignment(first: np.ndarray, second: np.ndarray) -> tuple[int, float]:
 
 
 def _static_checks(snapshot: HdrSnapshot, dovi: DoviAnalysis | None,
-                   hdr10plus: Hdr10PlusAnalysis | None) -> list[Finding]:
+                   hdr10plus: Hdr10PlusAnalysis | None, measurement: ImageMeasurement | None = None) -> list[Finding]:
     findings: list[Finding] = []
     # Profil 5 et P8.0 : aucune couche HDR10, les métadonnées statiques ne servent pas.
     hdr10_layer = snapshot.is_pq and not (snapshot.dovi is not None and (
@@ -110,6 +111,26 @@ def _static_checks(snapshot: HdrSnapshot, dovi: DoviAnalysis | None,
     if (cll, fall) == (1000, 400):
         findings.append(Finding(Severity.INFO, "hdr10", translate_text("MaxCLL/MaxFALL 1000/400 : valeurs par défaut probables"),
                                 translate_text("Valeurs souvent écrites par les encodeurs sans mesure du contenu.")))
+    if measurement is not None and measurement.frames:
+        # Mesure exacte de l'image : référence, préférée aux métadonnées dynamiques.
+        measured_cll, measured_fall = measurement.max_cll(), measurement.max_fall()
+        if cll < measured_cll * 0.95:
+            findings.append(Finding(Severity.WARN, "hdr10", translate_text(
+                "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)", cll=cll, measured=measured_cll),
+                translate_text("Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà.")))
+        elif cll > measured_cll * 1.5 and cll - measured_cll > 200:
+            findings.append(Finding(Severity.INFO, "hdr10", translate_text(
+                "MaxCLL déclarée ({cll}) très au-dessus de la valeur mesurée ({measured} nits)", cll=cll,
+                measured=measured_cll),
+                translate_text("Une TV HDR10 qui suit la MaxCLL compresse les hautes lumières sans nécessité.")))
+        else:
+            findings.append(Finding(Severity.OK, "hdr10", translate_text(
+                "MaxCLL déclarée ({cll}) cohérente avec la mesure ({measured} nits)", cll=cll, measured=measured_cll)))
+        if fall and abs(fall - measured_fall) > max(20, 0.25 * measured_fall):
+            findings.append(Finding(Severity.INFO, "hdr10", translate_text(
+                "MaxFALL déclarée ({fall}) différente de la mesure ({measured} nits)", fall=fall,
+                measured=measured_fall)))
+        return findings
     # Pic des métadonnées dynamiques : le plus haut (MaxScl HDR10+ strict, L1 robuste donc plus bas).
     peaks: list[tuple[float, str]] = []
     if dovi is not None and dovi.frames:
@@ -136,6 +157,10 @@ def _l6_checks(snapshot: HdrSnapshot, dovi: DoviAnalysis) -> list[Finding]:
         return findings
     main = dovi.l6[0]
     static = f"{snapshot.max_cll}/{snapshot.max_fall}" if snapshot.max_cll is not None else translate_text("absents")
+    if not main.max_cll and snapshot.max_cll:
+        findings.append(Finding(Severity.INFO, "coherence", translate_text(
+            "L6 sans MaxCLL/MaxFALL (0) ; HDR10 statique {hdr10}", hdr10=static),
+            translate_text("Valeurs reportables dans le L6 depuis l'onglet Édition.")))
     if main.max_cll and (main.max_cll, main.max_fall) != (snapshot.max_cll, snapshot.max_fall):
         findings.append(Finding(Severity.INFO, "coherence", translate_text(
             "L6 Dolby Vision ({l6}) différent du HDR10 ({hdr10})",
@@ -230,7 +255,8 @@ def _coherence(dovi: DoviAnalysis, hdr10plus: Hdr10PlusAnalysis) -> list[Finding
 
 
 def audit(snapshot: HdrSnapshot, dovi: DoviAnalysis | None = None,
-          hdr10plus: Hdr10PlusAnalysis | None = None) -> tuple[Finding, ...]:
+          hdr10plus: Hdr10PlusAnalysis | None = None,
+          measurement: ImageMeasurement | None = None) -> tuple[Finding, ...]:
     """Contrôles par format puis entre formats ; sans analyse dynamique, en-têtes seuls."""
     findings: list[Finding] = []
     if snapshot.formats == ("SDR",):
@@ -240,7 +266,7 @@ def audit(snapshot: HdrSnapshot, dovi: DoviAnalysis | None = None,
     if snapshot.is_pq and (snapshot.bit_depth or 10) < 10:
         findings.append(Finding(Severity.WARN, "format", translate_text("PQ en {bits} bits : postérisation probable",
                                                                        bits=snapshot.bit_depth)))
-    findings.extend(_static_checks(snapshot, dovi, hdr10plus))
+    findings.extend(_static_checks(snapshot, dovi, hdr10plus, measurement))
     if dovi is not None:
         findings.extend(_l6_checks(snapshot, dovi))
         findings.extend(_dovi_checks(snapshot, dovi))

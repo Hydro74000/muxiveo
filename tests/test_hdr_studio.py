@@ -1,8 +1,11 @@
 """HDR Studio : rendu, chargement asynchrone, analyse, menus « Inspecter le HDR… », navigation."""
 from __future__ import annotations
 
+import dataclasses
 import time
 from pathlib import Path
+
+import numpy as np
 
 import pytest
 from PySide6.QtWidgets import QCheckBox
@@ -91,13 +94,14 @@ def test_render_report_tabs(studio, tmp_path):
     report = InspectionReport(snapshot, dovi, hdr10plus, audit(snapshot, dovi, hdr10plus), dynamic=True)
     studio._render(report)
     assert studio.report() is report
-    assert [s.key for s in studio._chart.series()] == ["l1_max", "l1_avg", "maxscl", "avgrgb"]
+    chart = studio._luminance.chart
+    assert [s.key for s in chart.series()] == ["l1_max", "l1_avg", "maxscl", "avgrgb", "displayed"]
     # Avec Dolby Vision, les courbes HDR10+ sont masquées par défaut.
-    assert [s.visible for s in studio._chart.series()] == [True, True, False, False]
-    assert len(studio._luminance_tab.findChildren(QCheckBox)) == 4
+    assert [s.visible for s in chart.series()] == [True, True, False, False, True]
+    assert len(studio._luminance.findChildren(QCheckBox)) == 5
     assert studio._overview.count() > 3 and studio._dovi_tab.count() > 2 and studio._hdr10plus_tab.count() > 1
     studio._render(None)
-    assert studio._chart.series() == []
+    assert chart.series() == []
 
 
 def test_load_source_then_analyze(studio, qt_app, tmp_path, monkeypatch):
@@ -255,3 +259,142 @@ def test_chart_drag_pans_zoomed_view(qt_app):
     chart.mousePressEvent(mouse(QEvent.Type.MouseButtonPress, 300, Qt.MouseButton.LeftButton))
     chart.mouseReleaseEvent(mouse(QEvent.Type.MouseButtonRelease, 300, Qt.MouseButton.NoButton))
     assert len(clicked) == 1
+
+
+
+# ── Lot 2 : aperçu, mesure, édition ──────────────────────────────────────────
+def _dynamic_report(tmp_path):
+    dovi, hdr10plus = _analyses(tmp_path, max_pq=3300)
+    snapshot = build_snapshot(_info(tmp_path / "a.mkv"))
+    return InspectionReport(snapshot, dovi, hdr10plus, audit(snapshot, dovi, hdr10plus), dynamic=True)
+
+
+def test_luminance_preview_follows_values(studio, qt_app, tmp_path):
+    report = _dynamic_report(tmp_path)
+    studio._render(report)
+    tab = studio._luminance
+    assert tab.values() == (1000, 400)
+    tab.display_peak.setValue(300)
+    tab.set_values(200, 100)
+    tab._update_preview()
+    labels = [m.label for m in tab.chart._markers]
+    assert "MaxCLL choisie" in labels and "MaxCLL du fichier" in labels and "Écran" in labels
+    assert tab._risk_lines[0].text().startswith("Écrêtage")
+    assert "Valeurs du fichier (1000/400)" in tab._original_line.text()
+    displayed = next(s for s in tab.chart.series() if s.key == "displayed")
+    assert np.nanmax(displayed.values) <= 300 + 1e-3
+    assert tab.chart._bands is not None and tab.chart._bands.any()
+    assert studio._config.display_peak_nits == 300
+    tab.reset_values()
+    assert tab.values() == (1000, 400)
+    tab.apply_suggestion()
+    assert tab.values()[0] == 400  # pic HDR10+ (hors saturation)
+    emitted: list[tuple] = []
+    studio.apply_to_encode_requested.connect(lambda *args: emitted.append(args))
+    tab.encode_btn.click()
+    assert emitted and emitted[0][1:] == (0, 400, 38)
+
+
+class _FakeEngine:
+    capabilities = {"measure": ["base", "reconstructed"]}
+
+    def __init__(self, peaks):
+        self.peaks = peaks
+
+    def measure(self, path, stream, statistics, *, layer, progress=None, cancelled=None, **_kwargs):
+        from tests.test_hdr_edit import write_statistics
+
+        write_statistics(statistics, self.peaks, scenes=[0, 5])
+        if progress:
+            progress(len(self.peaks))
+        return "fake"
+
+
+def test_measure_flow_updates_report(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    studio._engine_factory = lambda: _FakeEngine([100.0] * 5 + [2500.0] * 5)
+    studio.measure()
+    assert _wait(qt_app, lambda: studio._measurement is not None and not studio.is_busy())
+    assert studio._measurement.max_cll() == 2500
+    assert [s.key for s in studio._luminance.chart.series()][:2] == ["peak", "average"]
+    assert any("sous la valeur mesurée (2500 nits)" in f.title for f in studio.report().findings)
+    assert studio._cache.load_measurement(media, 0) is not None
+    # Extension trop ancienne : message, aucune tâche.
+    class Old:
+        capabilities: dict = {}
+    studio._engine_factory = Old
+    studio.measure()
+    assert "0.4.0" in studio._status.text()
+
+
+def test_measure_refuses_profile_5(studio, qt_app, tmp_path, monkeypatch):
+    from tests.test_hdr_inspection import _DOVI_RECORD
+
+    class P5Inspector(_FakeInspector):
+        def inspect(self, path):
+            return _info(Path(path), side_data=[dict(_DOVI_RECORD, dv_profile=5, dv_bl_signal_compatibility_id=0)])
+
+    monkeypatch.setattr(panel_module, "FileInspector", P5Inspector)
+    studio.load_source(_media(tmp_path), 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    studio.measure()
+    assert "Profil 5" in studio._status.text() and not studio.is_busy()
+
+
+def test_edition_plan_and_write(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    report = _dynamic_report(tmp_path)
+    studio._render(dataclasses.replace(report, snapshot=dataclasses.replace(report.snapshot, path=str(media))))
+    studio._luminance.set_values(700, 200)
+    studio._luminance.prepare_patch_requested.emit(700, 200)
+    editor = studio._editor
+    assert editor.static_box.isChecked() and editor.output.text().endswith("film.hdrfix.mkv")
+    assert studio._tabs.currentIndex() == studio._tabs.count() - 1
+    editor._copy_static_to_l6()
+    editor.l5_box.setChecked(True)
+    editor.h10_remove.setChecked(True)
+    assert not editor.h10_target_box.isEnabled()
+    plan = editor.plan()
+    assert plan.static.max_cll == 700 and plan.rpu.l6[2:] == (700, 200) and plan.rpu.active_area == (0, 0, 280, 280)
+    assert plan.hdr10plus.remove and "HDR10+ retiré" in editor._summary.text()
+    written: list = []
+
+    class FakePatcher:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self, plan):
+            written.append(plan)
+            plan.output.write_bytes(b"ok")
+            return plan.output
+
+    monkeypatch.setattr(panel_module, "MetadataPatcher", FakePatcher)
+    editor.write_btn.click()
+    assert _wait(qt_app, lambda: not studio.is_busy() and studio._last_output is not None)
+    assert written and studio._open_output_btn.isVisibleTo(studio)
+    editor.output.setText(str(media))
+    assert not editor.write_btn.isEnabled() and "autre fichier" in editor._summary.text()
+
+
+def test_encode_panel_applies_light_levels(qt_app, monkeypatch):
+    from tests.test_encode_panel_dovi_geometry import _COLOR, _PATH_A, _file_info, _video_entry
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_rebuild_preview", lambda self: None)
+    monkeypatch.setattr(EncodePanel, "_schedule_static_hdr_estimate", lambda *a, **k: None)
+    panel = EncodePanel(AppConfig())
+    try:
+        panel.set_video_tracks([(_file_info(_PATH_A), _video_entry(), _COLOR)])
+        panel._set_combo_data(panel._codec_combo, "libx265")
+        assert not panel.apply_static_light_levels(Path("/autre.mkv"), 0, 700, 200)
+        assert panel.apply_static_light_levels(_PATH_A, 0, 700, 200)
+        assert panel._inject_hdr_cb.isChecked() and panel._max_cll.text() == "700,200"
+    finally:
+        panel.close()

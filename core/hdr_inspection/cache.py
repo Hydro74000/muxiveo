@@ -13,6 +13,7 @@ import numpy as np
 from core.atomic_io import atomic_write_bytes
 from core.hdr_inspection.dovi import ActiveArea, DoviAnalysis, L6Set
 from core.hdr_inspection.hdr10p import Hdr10PlusAnalysis
+from core.hdr_inspection.measure import ImageMeasurement
 
 #: À incrémenter à chaque changement des analyses : les anciennes entrées sont ignorées.
 CACHE_VERSION = 1
@@ -98,6 +99,43 @@ class InspectionCache:
         try:
             self._root.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(self._root / f"{key}.npz", buffer.getvalue())
+            self._prune()
+        except OSError:
+            pass
+
+    def load_measurement(self, path: Path, stream_index: int, layer: str = "base") -> ImageMeasurement | None:
+        """Mesure de l'image en cache (fichier distinct des métadonnées dynamiques)."""
+        key = self.key(path, stream_index)
+        entry = self._root / f"{key}.{layer}.npz" if key else None
+        if entry is None or not entry.is_file():
+            return None
+        try:
+            with np.load(entry, allow_pickle=False) as data:
+                meta = json.loads(bytes(data["meta"]).decode("utf-8"))
+                if meta.get("version") != CACHE_VERSION or meta.get("layer") != layer:
+                    return None
+                measurement = ImageMeasurement(
+                    layer=layer, window=tuple(meta["window"]),
+                    **{name: data[name] for name in ("max_rgb", "average", "y9999", "y100", "percentiles",
+                                                     "scene_starts", "histogram")})
+            os.utime(entry)
+            return measurement
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def store_measurement(self, path: Path, stream_index: int, measurement: ImageMeasurement) -> None:
+        key = self.key(path, stream_index)
+        if key is None:
+            return
+        meta = {"version": CACHE_VERSION, "layer": measurement.layer, "window": list(measurement.window)}
+        buffer = io.BytesIO()
+        np.savez_compressed(buffer, meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8),
+                            max_rgb=measurement.max_rgb, average=measurement.average, y9999=measurement.y9999,
+                            y100=measurement.y100, percentiles=measurement.percentiles,
+                            scene_starts=measurement.scene_starts, histogram=measurement.histogram)
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(self._root / f"{key}.{measurement.layer}.npz", buffer.getvalue())
             self._prune()
         except OSError:
             pass

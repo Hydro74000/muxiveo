@@ -50,6 +50,12 @@ def frame_statistics_supported(engine: object) -> bool:
     return isinstance(capabilities, dict) and capabilities.get("frame_statistics") == 1
 
 
+def measure_supported(engine: object, layer: str = "base") -> bool:
+    """Mesure seule (plugin ≥ 0.4.0) : « base » (BL lue comme HDR10) ou « reconstructed »."""
+    capabilities = getattr(engine, "capabilities", None)
+    return isinstance(capabilities, dict) and layer in (capabilities.get("measure") or [])
+
+
 def _base_only_frames(statistics: str) -> int:
     """Images sans RPU ni EL recomposées sans résiduel (plugin ≥ 0.2.1), 0 si absent ou illisible."""
     try:
@@ -117,6 +123,9 @@ class FelEngine:
             if capabilities.get("frame_statistics") == 1:
                 self.lib.mvo_fel_set_frame_statistics.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
                 self.lib.mvo_fel_set_frame_statistics.restype = ctypes.c_int
+            if capabilities.get("measure"):
+                self.lib.mvo_fel_set_measure.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_measure.restype = ctypes.c_int
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -146,6 +155,66 @@ class FelEngine:
     @property
     def supports_precision(self) -> bool:
         return precision_supported(self)
+
+    def measure(
+        self,
+        path: Path,
+        stream: int,
+        statistics_path: Path,
+        *,
+        layer: str = "base",
+        device: str = "auto",
+        precision: str = "fast",
+        threads: int = 8,
+        progress: Callable[[int], None] | None = None,
+        cancelled: threading.Event | None = None,
+    ) -> str:
+        """Mesure seule (aucune image produite) : statistiques de chaque image dans ``statistics_path``.
+
+        Bloquant ; ``cancelled`` interrompt le plugin. Renvoie le moteur exécuté (backend).
+        """
+        if not measure_supported(self, layer):
+            raise FelError("Mesure de l'image indisponible : extension mvo-fel 0.4.0 ou plus récente requise")
+        lib = self.lib
+        handle = lib.mvo_fel_create(str(path).encode("utf-8"), stream, max(1, min(16, threads)), 0, 0)
+        if not handle:
+            raise FelError("Création du contexte FEL impossible")
+        stop = threading.Event()
+
+        def watch() -> None:
+            while not stop.wait(.05):
+                if cancelled is not None and cancelled.is_set():
+                    lib.mvo_fel_cancel(handle)
+                    return
+
+        watcher = threading.Thread(target=watch, name="mvo-fel-measure-cancel", daemon=True)
+        try:
+            if lib.mvo_fel_set_frame_statistics(handle, str(statistics_path).encode("utf-8")) != 0:
+                raise FelError("Statistiques de l'image refusées par le plugin")
+            if lib.mvo_fel_set_measure(handle, layer.encode("ascii")) != 0:
+                raise FelError("Mesure refusée par le plugin")
+            if self.capabilities.get("device_selection") == 1 and lib.mvo_fel_set_device(
+                    handle, device.encode("ascii")) != 0:
+                raise FelError("Le plugin refuse le moteur FEL sélectionné")
+            if precision_supported(self) and lib.mvo_fel_set_precision(handle, precision.encode("ascii")) != 0:
+                raise FelError("Précision FEL refusée par le plugin")
+            watcher.start()
+            # Pointeur d'écriture nul (mesure seule) : instance vide du type de callback.
+            status = lib.mvo_fel_run(handle, _Write(), _Progress(lambda _o, frames: progress(frames) if progress else None),
+                                     None)
+            if (cancelled is not None and cancelled.is_set()) or status == 3:
+                raise FelCancelled()
+            if status == 4:
+                raise OSError(lib.mvo_fel_error(handle).decode("utf-8", errors="replace"))
+            if status != 0:
+                raise FelError(lib.mvo_fel_error(handle).decode("utf-8", errors="replace"))
+            backend = lib.mvo_fel_backend(handle) if self.capabilities.get("device_selection") == 1 else b"cpu"
+            return (backend or b"").decode("utf-8", errors="replace")
+        finally:
+            stop.set()
+            if watcher.ident is not None:
+                watcher.join()
+            lib.mvo_fel_destroy(handle)
 
     def devices(self) -> tuple[FelDevice, ...]:
         """Énumération dynamique sans démarrer de décodeur ni d'encodeur."""

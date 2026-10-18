@@ -7290,5 +7290,477 @@
   "Images à 10 000 nits": {
     "fra": "Images à 10 000 nits",
     "eng": "Frames at 10,000 nits"
+  },
+  "MaxCLL/MaxFALL invalides : MaxFALL doit rester sous MaxCLL.": {
+    "fra": "MaxCLL/MaxFALL invalides : MaxFALL doit rester sous MaxCLL.",
+    "eng": "Invalid MaxCLL/MaxFALL: MaxFALL must stay below MaxCLL."
+  },
+  "Espace insuffisant dans le dossier de travail : {needed} Go nécessaires.": {
+    "fra": "Espace insuffisant dans le dossier de travail : {needed} Go nécessaires.",
+    "eng": "Not enough space in the work folder: {needed} GB needed."
+  },
+  "Espace insuffisant à côté de la sortie : {needed} Go nécessaires.": {
+    "fra": "Espace insuffisant à côté de la sortie : {needed} Go nécessaires.",
+    "eng": "Not enough space next to the output: {needed} GB needed."
+  },
+  "Aucune modification demandée.": {
+    "fra": "Aucune modification demandée.",
+    "eng": "No change requested."
+  },
+  "La sortie doit être un autre fichier que la source.": {
+    "fra": "La sortie doit être un autre fichier que la source.",
+    "eng": "The output must be a different file from the source."
+  },
+  "Correction réservée aux fichiers MKV et HEVC bruts.": {
+    "fra": "Correction réservée aux fichiers MKV et HEVC bruts.",
+    "eng": "Correction is limited to MKV files and raw HEVC."
+  },
+  "JSON HDR10+ invalide (image {frame}).": {
+    "fra": "JSON HDR10+ invalide (image {frame}).",
+    "eng": "Invalid HDR10+ JSON (frame {frame})."
+  },
+  "Écriture du fichier corrigé…": {
+    "fra": "Écriture du fichier corrigé…",
+    "eng": "Writing the corrected file…"
+  },
+  "Extraction du flux vidéo…": {
+    "fra": "Extraction du flux vidéo…",
+    "eng": "Extracting the video stream…"
+  },
+  "Édition du RPU Dolby Vision…": {
+    "fra": "Édition du RPU Dolby Vision…",
+    "eng": "Editing the Dolby Vision RPU…"
+  },
+  "Édition du HDR10+…": {
+    "fra": "Édition du HDR10+…",
+    "eng": "Editing HDR10+…"
+  },
+  "MaxCLL/MaxFALL du flux…": {
+    "fra": "MaxCLL/MaxFALL du flux…",
+    "eng": "Stream MaxCLL/MaxFALL…"
+  },
+  "SEI MaxCLL/MaxFALL non écrit dans le flux.": {
+    "fra": "SEI MaxCLL/MaxFALL non écrit dans le flux.",
+    "eng": "MaxCLL/MaxFALL SEI not written to the stream."
+  },
+  "Écrêtage : {time} % du temps ({scenes} plan(s)), jusqu'à +{ev} EV au-delà de {level} nits": {
+    "fra": "Écrêtage : {time} % du temps ({scenes} plan(s)), jusqu'à +{ev} EV au-delà de {level} nits",
+    "eng": "Clipping: {time}% of the time ({scenes} scene(s)), up to +{ev} EV above {level} nits"
+  },
+  "Aucun écrêtage": {
+    "fra": "Aucun écrêtage",
+    "eng": "No clipping"
+  },
+  "Hautes lumières assombries de {median} EV (médiane, p90 {p90} EV) sur {time} % du temps": {
+    "fra": "Hautes lumières assombries de {median} EV (médiane, p90 {p90} EV) sur {time} % du temps",
+    "eng": "Highlights darkened by {median} EV (median, p90 {p90} EV) for {time}% of the time"
+  },
+  "Pas d'assombrissement notable des hautes lumières": {
+    "fra": "Pas d'assombrissement notable des hautes lumières",
+    "eng": "No noticeable highlight darkening"
+  },
+  "Courbe adaptée à chaque image": {
+    "fra": "Courbe adaptée à chaque image",
+    "eng": "Curve adapted to each frame"
+  },
+  " ; {pixels} % des pixels du film": {
+    "fra": " ; {pixels} % des pixels du film",
+    "eng": "; {pixels}% of the film pixels"
+  },
+  "Aucune compression : écran au moins aussi lumineux que le pic annoncé": {
+    "fra": "Aucune compression : écran au moins aussi lumineux que le pic annoncé",
+    "eng": "No compression: display at least as bright as the declared peak"
+  },
+  "Compression des hautes lumières à partir de {knee} nits (pic supposé {peak} nits)": {
+    "fra": "Compression des hautes lumières à partir de {knee} nits (pic supposé {peak} nits)",
+    "eng": "Highlight compression from {knee} nits (assumed peak {peak} nits)"
+  },
+  "Valeurs du fichier": {
+    "fra": "Valeurs du fichier",
+    "eng": "File values"
+  },
+  "Valeurs proposées": {
+    "fra": "Valeurs proposées",
+    "eng": "Suggested values"
+  },
+  "Mesurer l'image": {
+    "fra": "Mesurer l'image",
+    "eng": "Measure the picture"
+  },
+  "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte.": {
+    "fra": "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte.",
+    "eng": "Exact measurement of every frame on the GPU (mvo-fel extension 0.4.0 or later): real MaxCLL/MaxFALL, histograms, exact simulation."
+  },
+  "Appliquer au panneau Encodage": {
+    "fra": "Appliquer au panneau Encodage",
+    "eng": "Apply to the Encoding panel"
+  },
+  "Préparer la correction du fichier…": {
+    "fra": "Préparer la correction du fichier…",
+    "eng": "Prepare the file correction…"
+  },
+  "Niveaux : {source}.": {
+    "fra": "Niveaux : {source}.",
+    "eng": "Levels: {source}."
+  },
+  "Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. La MaxFALL est rarement utilisée par les téléviseurs.": {
+    "fra": "Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. La MaxFALL est rarement utilisée par les téléviseurs.",
+    "eng": "Reference model (BT.2390), not the exact behaviour of a given TV. MaxFALL is rarely used by TVs."
+  },
+  "MÉTADONNÉES STATIQUES ET TONE MAPPING HDR10": {
+    "fra": "MÉTADONNÉES STATIQUES ET TONE MAPPING HDR10",
+    "eng": "STATIC METADATA AND HDR10 TONE MAPPING"
+  },
+  "Pic de l'écran": {
+    "fra": "Pic de l'écran",
+    "eng": "Display peak"
+  },
+  "Téléviseur": {
+    "fra": "Téléviseur",
+    "eng": "TV"
+  },
+  "{cll} / {fall} d'après : {source}": {
+    "fra": "{cll} / {fall} d'après : {source}",
+    "eng": "{cll} / {fall} from: {source}"
+  },
+  "Mesurer à nouveau": {
+    "fra": "Mesurer à nouveau",
+    "eng": "Measure again"
+  },
+  "Lire les métadonnées dynamiques ou mesurer l'image pour afficher les courbes.": {
+    "fra": "Lire les métadonnées dynamiques ou mesurer l'image pour afficher les courbes.",
+    "eng": "Read dynamic metadata or measure the picture to display the curves."
+  },
+  "Écran": {
+    "fra": "Écran",
+    "eng": "Display"
+  },
+  "Valeurs du fichier affichées.": {
+    "fra": "Valeurs du fichier affichées.",
+    "eng": "File values shown."
+  },
+  "En lecture Dolby Vision ou HDR10+, la TV suit les métadonnées dynamiques : MaxCLL/MaxFALL ne servent qu'en lecture HDR10.": {
+    "fra": "En lecture Dolby Vision ou HDR10+, la TV suit les métadonnées dynamiques : MaxCLL/MaxFALL ne servent qu'en lecture HDR10.",
+    "eng": "In Dolby Vision or HDR10+ playback the TV follows the dynamic metadata: MaxCLL/MaxFALL only matter in HDR10 playback."
+  },
+  "Pic mesuré": {
+    "fra": "Pic mesuré",
+    "eng": "Measured peak"
+  },
+  "Moyenne mesurée": {
+    "fra": "Moyenne mesurée",
+    "eng": "Measured average"
+  },
+  "Affiché par la TV": {
+    "fra": "Affiché par la TV",
+    "eng": "Shown by the TV"
+  },
+  "MaxCLL du fichier": {
+    "fra": "MaxCLL du fichier",
+    "eng": "File MaxCLL"
+  },
+  "MaxCLL choisie": {
+    "fra": "MaxCLL choisie",
+    "eng": "Chosen MaxCLL"
+  },
+  "Valeurs du fichier ({cll}/{fall}) : {clip} ; {dark}.": {
+    "fra": "Valeurs du fichier ({cll}/{fall}) : {clip} ; {dark}.",
+    "eng": "File values ({cll}/{fall}): {clip}; {dark}."
+  },
+  "HDR10 STATIQUE (SEI ET CONTENEUR)": {
+    "fra": "HDR10 STATIQUE (SEI ET CONTENEUR)",
+    "eng": "STATIC HDR10 (SEI AND CONTAINER)"
+  },
+  "Écrire MaxCLL/MaxFALL": {
+    "fra": "Écrire MaxCLL/MaxFALL",
+    "eng": "Write MaxCLL/MaxFALL"
+  },
+  "Modifier dans Luminance": {
+    "fra": "Modifier dans Luminance",
+    "eng": "Edit in Luminance"
+  },
+  "DOLBY VISION (RPU)": {
+    "fra": "DOLBY VISION (RPU)",
+    "eng": "DOLBY VISION (RPU)"
+  },
+  "L6 : HDR10 porté par le RPU": {
+    "fra": "L6 : HDR10 porté par le RPU",
+    "eng": "L6: HDR10 carried by the RPU"
+  },
+  "Reprendre MaxCLL/MaxFALL choisis": {
+    "fra": "Reprendre MaxCLL/MaxFALL choisis",
+    "eng": "Use the chosen MaxCLL/MaxFALL"
+  },
+  "L5 : zone active de toutes les images": {
+    "fra": "L5 : zone active de toutes les images",
+    "eng": "L5: active area of every frame"
+  },
+  "L11 : type de contenu": {
+    "fra": "L11 : type de contenu",
+    "eng": "L11: content type"
+  },
+  "Mode de référence": {
+    "fra": "Mode de référence",
+    "eng": "Reference mode"
+  },
+  "Écran de mastering du RPU": {
+    "fra": "Écran de mastering du RPU",
+    "eng": "RPU mastering display"
+  },
+  "Retirer les métadonnées CM v4.0 (RPU en CM v2.9)": {
+    "fra": "Retirer les métadonnées CM v4.0 (RPU en CM v2.9)",
+    "eng": "Remove CM v4.0 metadata (CM v2.9 RPU)"
+  },
+  "Retirer le HDR10+": {
+    "fra": "Retirer le HDR10+",
+    "eng": "Remove HDR10+"
+  },
+  "Retirer la courbe de Bézier (profil A)": {
+    "fra": "Retirer la courbe de Bézier (profil A)",
+    "eng": "Remove the Bézier curve (profile A)"
+  },
+  "Plafonner MaxScl, AverageRGB et percentiles": {
+    "fra": "Plafonner MaxScl, AverageRGB et percentiles",
+    "eng": "Cap MaxScl, AverageRGB and percentiles"
+  },
+  "SORTIE": {
+    "fra": "SORTIE",
+    "eng": "OUTPUT"
+  },
+  "Choisir le fichier de sortie": {
+    "fra": "Choisir le fichier de sortie",
+    "eng": "Choose the output file"
+  },
+  "Écrire le fichier corrigé": {
+    "fra": "Écrire le fichier corrigé",
+    "eng": "Write the corrected file"
+  },
+  "Fichier corrigé": {
+    "fra": "Fichier corrigé",
+    "eng": "Corrected file"
+  },
+  "Matroska (*.mkv);;HEVC (*.hevc *.h265)": {
+    "fra": "Matroska (*.mkv);;HEVC (*.hevc *.h265)",
+    "eng": "Matroska (*.mkv);;HEVC (*.hevc *.h265)"
+  },
+  "Valeurs choisies dans l'onglet Luminance : {cll} / {fall} nits": {
+    "fra": "Valeurs choisies dans l'onglet Luminance : {cll} / {fall} nits",
+    "eng": "Values chosen in the Luminance tab: {cll} / {fall} nits"
+  },
+  "Aucune modification cochée.": {
+    "fra": "Aucune modification cochée.",
+    "eng": "No change selected."
+  },
+  "Les corrections réécrivent le fichier sans réencoder l'image : flux vidéo extrait, métadonnées corrigées par dovi_tool et hdr10plus_tool, puis replacé dans une copie du MKV (autres pistes, chapitres et pièces jointes conservés). La source n'est jamais modifiée.": {
+    "fra": "Les corrections réécrivent le fichier sans réencoder l'image : flux vidéo extrait, métadonnées corrigées par dovi_tool et hdr10plus_tool, puis replacé dans une copie du MKV (autres pistes, chapitres et pièces jointes conservés). La source n'est jamais modifiée.",
+    "eng": "Corrections rewrite the file without re-encoding the picture: the video stream is extracted, its metadata corrected by dovi_tool and hdr10plus_tool, then put back into a copy of the MKV (other tracks, chapters and attachments kept). The source is never modified."
+  },
+  "Lire les métadonnées dynamiques pour préremplir les valeurs actuelles du RPU.": {
+    "fra": "Lire les métadonnées dynamiques pour préremplir les valeurs actuelles du RPU.",
+    "eng": "Read dynamic metadata to prefill the current RPU values."
+  },
+  "MaxCLL/MaxFALL {cll}/{fall}": {
+    "fra": "MaxCLL/MaxFALL {cll}/{fall}",
+    "eng": "MaxCLL/MaxFALL {cll}/{fall}"
+  },
+  "Choisir le fichier de sortie.": {
+    "fra": "Choisir le fichier de sortie.",
+    "eng": "Choose the output file."
+  },
+  "écran de mastering du RPU": {
+    "fra": "écran de mastering du RPU",
+    "eng": "RPU mastering display"
+  },
+  "HDR10+ retiré": {
+    "fra": "HDR10+ retiré",
+    "eng": "HDR10+ removed"
+  },
+  "Modifications : {changes}.": {
+    "fra": "Modifications : {changes}.",
+    "eng": "Changes: {changes}."
+  },
+  "profil A": {
+    "fra": "profil A",
+    "eng": "profile A"
+  },
+  "plafond HDR10+": {
+    "fra": "plafond HDR10+",
+    "eng": "HDR10+ cap"
+  },
+  "Inspecter le fichier corrigé": {
+    "fra": "Inspecter le fichier corrigé",
+    "eng": "Inspect the corrected file"
+  },
+  "Édition": {
+    "fra": "Édition",
+    "eng": "Editing"
+  },
+  "Mesure de chaque image…": {
+    "fra": "Mesure de chaque image…",
+    "eng": "Measuring every frame…"
+  },
+  "Mesure de l'image : {name}": {
+    "fra": "Mesure de l'image : {name}",
+    "eng": "Picture measurement: {name}"
+  },
+  "Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.": {
+    "fra": "Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.",
+    "eng": "Picture measured: MaxCLL {cll}, MaxFALL {fall} nits."
+  },
+  "Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.": {
+    "fra": "Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
+    "eng": "Measurement finished: {frames} frames, MaxCLL/MaxFALL {cll}/{fall}."
+  },
+  "Correction du fichier…": {
+    "fra": "Correction du fichier…",
+    "eng": "Correcting the file…"
+  },
+  "Correction des métadonnées : {source} → {output}": {
+    "fra": "Correction des métadonnées : {source} → {output}",
+    "eng": "Metadata correction: {source} → {output}"
+  },
+  "Fichier corrigé écrit : {name}": {
+    "fra": "Fichier corrigé écrit : {name}",
+    "eng": "Corrected file written: {name}"
+  },
+  "Fichier corrigé écrit : {path}": {
+    "fra": "Fichier corrigé écrit : {path}",
+    "eng": "Corrected file written: {path}"
+  },
+  "Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+).": {
+    "fra": "Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+).",
+    "eng": "Measurement is limited to HEVC PQ tracks (HDR10, Dolby Vision, HDR10+)."
+  },
+  "Profil 5 : aucune couche HDR10 à mesurer.": {
+    "fra": "Profil 5 : aucune couche HDR10 à mesurer.",
+    "eng": "Profile 5: no HDR10 layer to measure."
+  },
+  "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).": {
+    "fra": "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).",
+    "eng": "Picture measurement: mvo-fel extension 0.4.0 or later required (Extensions page)."
+  },
+  "Mesure impossible : {error}": {
+    "fra": "Mesure impossible : {error}",
+    "eng": "Measurement failed: {error}"
+  },
+  "Mesure de l'image : {backend}": {
+    "fra": "Mesure de l'image : {backend}",
+    "eng": "Picture measurement: {backend}"
+  },
+  "Mesure annulée.": {
+    "fra": "Mesure annulée.",
+    "eng": "Measurement cancelled."
+  },
+  "Mesure de l'image impossible : {error}": {
+    "fra": "Mesure de l'image impossible : {error}",
+    "eng": "Picture measurement failed: {error}"
+  },
+  "Correction impossible : {error}": {
+    "fra": "Correction impossible : {error}",
+    "eng": "Correction failed: {error}"
+  },
+  "Correction annulée.": {
+    "fra": "Correction annulée.",
+    "eng": "Correction cancelled."
+  },
+  "Piste absente du panneau Encodage (ajouter la source dans Conteneur) ou codec sans métadonnées HDR10 modifiables.": {
+    "fra": "Piste absente du panneau Encodage (ajouter la source dans Conteneur) ou codec sans métadonnées HDR10 modifiables.",
+    "eng": "Track not in the Encoding panel (add the source in Container) or codec without editable HDR10 metadata."
+  },
+  "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.": {
+    "fra": "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.",
+    "eng": "MaxCLL/MaxFALL {cll}/{fall} applied to the Encoding panel."
+  },
+  "mesure de l'image (exacte)": {
+    "fra": "mesure de l'image (exacte)",
+    "eng": "picture measurement (exact)"
+  },
+  "MaxScl HDR10+ (valeurs saturées écartées)": {
+    "fra": "MaxScl HDR10+ (valeurs saturées écartées)",
+    "eng": "HDR10+ MaxScl (saturated values left out)"
+  },
+  "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact": {
+    "fra": "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact",
+    "eng": "Dolby Vision L1: robust peak, clipping underestimated; measure the picture for an exact result"
+  },
+  "TV suivant la MaxCLL (BT.2390)": {
+    "fra": "TV suivant la MaxCLL (BT.2390)",
+    "eng": "TV following MaxCLL (BT.2390)"
+  },
+  "TV suivant le MDCV seul": {
+    "fra": "TV suivant le MDCV seul",
+    "eng": "TV following the MDCV only"
+  },
+  "TV à analyse dynamique (référence)": {
+    "fra": "TV à analyse dynamique (référence)",
+    "eng": "TV with dynamic analysis (reference)"
+  },
+  "Mastering max.": {
+    "fra": "Mastering max.",
+    "eng": "Mastering max."
+  },
+  "min.": {
+    "fra": "min.",
+    "eng": "min."
+  },
+  "max.": {
+    "fra": "max.",
+    "eng": "max."
+  },
+  "Gauche": {
+    "fra": "Gauche",
+    "eng": "Left"
+  },
+  "Droite": {
+    "fra": "Droite",
+    "eng": "Right"
+  },
+  "Haut": {
+    "fra": "Haut",
+    "eng": "Top"
+  },
+  "Bas": {
+    "fra": "Bas",
+    "eng": "Bottom"
+  },
+  "Point blanc": {
+    "fra": "Point blanc",
+    "eng": "White point"
+  },
+  "Luminosité maximale de mon écran (nits)": {
+    "fra": "Luminosité maximale de mon écran (nits)",
+    "eng": "Peak brightness of my display (nits)"
+  },
+  "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.": {
+    "fra": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.",
+    "eng": "Peak luminance of the HDR TV or monitor: HDR Studio simulates its tone mapping (clipping, highlight compression) for the chosen MaxCLL/MaxFALL."
+  },
+  "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) below the measured value ({measured} nits)"
+  },
+  "MaxCLL déclarée ({cll}) très au-dessus de la valeur mesurée ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) très au-dessus de la valeur mesurée ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) far above the measured value ({measured} nits)"
+  },
+  "MaxCLL déclarée ({cll}) cohérente avec la mesure ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) cohérente avec la mesure ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) consistent with the measurement ({measured} nits)"
+  },
+  "MaxFALL déclarée ({fall}) différente de la mesure ({measured} nits)": {
+    "fra": "MaxFALL déclarée ({fall}) différente de la mesure ({measured} nits)",
+    "eng": "Declared MaxFALL ({fall}) differs from the measurement ({measured} nits)"
+  },
+  "L6 sans MaxCLL/MaxFALL (0) ; HDR10 statique {hdr10}": {
+    "fra": "L6 sans MaxCLL/MaxFALL (0) ; HDR10 statique {hdr10}",
+    "eng": "L6 without MaxCLL/MaxFALL (0); static HDR10 {hdr10}"
+  },
+  "Valeurs reportables dans le L6 depuis l'onglet Édition.": {
+    "fra": "Valeurs reportables dans le L6 depuis l'onglet Édition.",
+    "eng": "Values can be copied into L6 from the Editing tab."
+  },
+  "Mesurés sur l'image": {
+    "fra": "Mesurés sur l'image",
+    "eng": "Measured on the picture"
   }
 }

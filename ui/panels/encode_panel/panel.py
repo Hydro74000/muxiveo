@@ -713,6 +713,21 @@ class EncodePanel(QWidget):
         self._video_placeholder.setVisible(True)
         return card
 
+    def apply_static_light_levels(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> bool:
+        """MaxCLL/MaxFALL choisis dans HDR Studio, posés sur la piste vidéo correspondante.
+
+        False si la piste n'est pas chargée ou si le codec courant ne permet pas de les modifier.
+        """
+        for row, (info, track, _color) in enumerate(self._video_tracks):
+            if Path(info.path) == Path(path) and track.mkv_tid == stream_index:
+                self._video_list.setCurrentRow(row)
+                if not self._inject_hdr_cb.isEnabled() or self._max_cll.isReadOnly():
+                    return False
+                self._inject_hdr_cb.setChecked(True)
+                self._max_cll.setText(f"{int(max_cll)},{int(max_fall)}")
+                return True
+        return False
+
     def _on_video_list_menu(self, pos) -> None:
         item = self._video_list.itemAt(pos)
         data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None

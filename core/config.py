@@ -816,6 +816,13 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("settings", "Paramètres"),
 )
 
+def normalize_display_peak_nits(value: int | None) -> int:
+    """Pic de l'écran borné à une plage plausible (100 à 10 000 nits), 1000 par défaut."""
+    if value is None or value <= 0:
+        return 1000
+    return max(100, min(10000, int(value)))
+
+
 def _normalize_startup_panel(value: str | None) -> str:
     if not value:
         return "dashboard"
@@ -923,6 +930,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
             {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
             {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
+            {"key": "display_peak_nits", "attr": "display_peak_nits", "kind": "int", "label": "Luminosité maximale de mon écran (nits)", "description": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis."},
         ),
     },
     {
@@ -1283,6 +1291,8 @@ class AppConfig:
         )
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
+        self.display_peak_nits = normalize_display_peak_nits(
+            self._resolve_int("hdr", "display_peak_nits", "hdr/display_peak_nits", 1000))
 
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
@@ -1458,6 +1468,7 @@ class AppConfig:
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
+        s.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
@@ -1688,6 +1699,7 @@ class AppConfig:
             "hdr": {
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
+                "display_peak_nits": self.display_peak_nits,
             },
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,
