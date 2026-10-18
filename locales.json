@@ -8578,5 +8578,73 @@
   "Linéaire dynamique": {
     "fra": "Linéaire dynamique",
     "eng": "Dynamic linear"
+  },
+  "MaxCLL déclarée ({cll}) sous l'estimation de la mesure rapide ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) sous l'estimation de la mesure rapide ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) below the fast measurement estimate ({measured} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà. Mesure complète conseillée avant correction.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà. Mesure complète conseillée avant correction.",
+    "eng": "An HDR10 TV following MaxCLL may clip highlights above it. A full measurement is advised before correcting."
+  },
+  "estimation de la mesure rapide (images clés) : mesure complète conseillée avant d'écrire": {
+    "fra": "estimation de la mesure rapide (images clés) : mesure complète conseillée avant d'écrire",
+    "eng": "fast measurement estimate (keyframes): a full measurement is advised before writing"
+  },
+  "{sampled} images clés sur {frames} (mesure rapide, estimation)": {
+    "fra": "{sampled} images clés sur {frames} (mesure rapide, estimation)",
+    "eng": "{sampled} keyframes out of {frames} (fast measurement, estimate)"
+  },
+  "estimation": {
+    "fra": "estimation",
+    "eng": "estimate"
+  },
+  "Mesure rapide": {
+    "fra": "Mesure rapide",
+    "eng": "Fast measurement"
+  },
+  "Images clés seulement (environ une toutes les 2 à 3 s, moins d'une minute pour un film ; extension mvo-fel 0.5.0 ou plus récente) : estimation, MaxCLL et pics fidèles, MaxFALL souvent sous-estimée.": {
+    "fra": "Images clés seulement (environ une toutes les 2 à 3 s, moins d'une minute pour un film ; extension mvo-fel 0.5.0 ou plus récente) : estimation, MaxCLL et pics fidèles, MaxFALL souvent sous-estimée.",
+    "eng": "Keyframes only (about one every 2 to 3 s, under a minute for a film; mvo-fel extension 0.5.0 or later): estimate, MaxCLL and peaks accurate, MaxFALL often underestimated."
+  },
+  "Mesure complète": {
+    "fra": "Mesure complète",
+    "eng": "Full measurement"
+  },
+  "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte, HDR10+ recalculable.": {
+    "fra": "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte, HDR10+ recalculable.",
+    "eng": "Exact measurement of every frame on the GPU (mvo-fel extension 0.4.0 or later): actual MaxCLL/MaxFALL, histograms, exact simulation, HDR10+ can be recomputed."
+  },
+  "Mesure rapide : {count} images clés, valeurs tenues entre elles (estimation).": {
+    "fra": "Mesure rapide : {count} images clés, valeurs tenues entre elles (estimation).",
+    "eng": "Fast measurement: {count} keyframes, values held in between (estimate)."
+  },
+  "images clés": {
+    "fra": "images clés",
+    "eng": "keyframes"
+  },
+  "Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise (page Extensions).": {
+    "fra": "Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise (page Extensions).",
+    "eng": "Fast measurement: mvo-fel extension 0.5.0 or later required (Extensions page)."
+  },
+  "Mesure rapide : flux HEVC brut sans horodatages, mesure complète nécessaire.": {
+    "fra": "Mesure rapide : flux HEVC brut sans horodatages, mesure complète nécessaire.",
+    "eng": "Fast measurement: raw HEVC stream without timestamps, a full measurement is required."
+  },
+  "Mesure rapide (images clés)…": {
+    "fra": "Mesure rapide (images clés)…",
+    "eng": "Fast measurement (keyframes)…"
+  },
+  "Mesure rapide : MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimation).": {
+    "fra": "Mesure rapide : MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimation).",
+    "eng": "Fast measurement: MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimate)."
+  },
+  "Mesure rapide terminée : {sampled} images clés sur {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimation ; mesure complète pour des valeurs exactes).": {
+    "fra": "Mesure rapide terminée : {sampled} images clés sur {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimation ; mesure complète pour des valeurs exactes).",
+    "eng": "Fast measurement done: {sampled} keyframes out of {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimate; full measurement for exact values)."
+  },
+  "mesure rapide de l'image (images clés, estimation)": {
+    "fra": "mesure rapide de l'image (images clés, estimation)",
+    "eng": "fast picture measurement (keyframes, estimate)"
   }
 }

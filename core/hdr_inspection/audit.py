@@ -114,6 +114,15 @@ def _static_checks(snapshot: HdrSnapshot, dovi: DoviAnalysis | None,
     if measurement is not None and measurement.frames:
         # Mesure exacte de l'image : référence, préférée aux métadonnées dynamiques.
         measured_cll, measured_fall = measurement.max_cll(), measurement.max_fall()
+        if measurement.is_estimate:
+            # Mesure rapide (images clés) : borne basse ; seule une valeur déclarée trop basse est certaine.
+            if cll < measured_cll * 0.95:
+                findings.append(Finding(Severity.WARN, "hdr10", translate_text(
+                    "MaxCLL déclarée ({cll}) sous l'estimation de la mesure rapide ({measured} nits)", cll=cll,
+                    measured=measured_cll),
+                    translate_text("Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà. "
+                                   "Mesure complète conseillée avant correction.")))
+            return findings
         if cll < measured_cll * 0.95:
             findings.append(Finding(Severity.WARN, "hdr10", translate_text(
                 "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)", cll=cll, measured=measured_cll),

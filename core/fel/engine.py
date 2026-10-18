@@ -56,6 +56,12 @@ def measure_supported(engine: object, layer: str = "base") -> bool:
     return isinstance(capabilities, dict) and layer in (capabilities.get("measure") or [])
 
 
+def measure_sampling_supported(engine: object, mode: str = "keyframes") -> bool:
+    """Échantillonnage de la mesure (plugin ≥ 0.5.0) : « keyframes » = mesure rapide (images clés)."""
+    capabilities = getattr(engine, "capabilities", None)
+    return isinstance(capabilities, dict) and mode in (capabilities.get("measure_sampling") or [])
+
+
 def layers_supported(engine: object, layer: str) -> bool:
     """Couche produite choisie (plugin ≥ 0.4.0) : « base », « mapped » ou « reconstructed »."""
     capabilities = getattr(engine, "capabilities", None)
@@ -135,6 +141,9 @@ class FelEngine:
             if capabilities.get("layers"):
                 self.lib.mvo_fel_set_layer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
                 self.lib.mvo_fel_set_layer.restype = ctypes.c_int
+            if capabilities.get("measure_sampling"):
+                self.lib.mvo_fel_set_measure_sampling.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                self.lib.mvo_fel_set_measure_sampling.restype = ctypes.c_int
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
@@ -177,13 +186,18 @@ class FelEngine:
         threads: int = 8,
         progress: Callable[[int], None] | None = None,
         cancelled: threading.Event | None = None,
+        sampling: str = "all",
     ) -> str:
         """Mesure seule (aucune image produite) : statistiques de chaque image dans ``statistics_path``.
 
-        Bloquant ; ``cancelled`` interrompt le plugin. Renvoie le moteur exécuté (backend).
+        ``sampling`` : ``all`` (chaque image) ou ``keyframes`` (images clés seules, mesure rapide ; la
+        progression reçoit alors la position dans le flux). Bloquant ; ``cancelled`` interrompt le plugin.
+        Renvoie le moteur exécuté (backend).
         """
         if not measure_supported(self, layer):
             raise FelError("Mesure de l'image indisponible : extension mvo-fel 0.4.0 ou plus récente requise")
+        if sampling != "all" and not measure_sampling_supported(self, sampling):
+            raise FelError("Mesure rapide indisponible : extension mvo-fel 0.5.0 ou plus récente requise")
         lib = self.lib
         handle = lib.mvo_fel_create(str(path).encode("utf-8"), stream, max(1, min(16, threads)), 0, 0)
         if not handle:
@@ -202,6 +216,8 @@ class FelEngine:
                 raise FelError("Statistiques de l'image refusées par le plugin")
             if lib.mvo_fel_set_measure(handle, layer.encode("ascii")) != 0:
                 raise FelError("Mesure refusée par le plugin")
+            if sampling != "all" and lib.mvo_fel_set_measure_sampling(handle, sampling.encode("ascii")) != 0:
+                raise FelError("Mesure rapide refusée par le plugin")
             if self.capabilities.get("device_selection") == 1 and lib.mvo_fel_set_device(
                     handle, device.encode("ascii")) != 0:
                 raise FelError("Le plugin refuse le moteur FEL sélectionné")

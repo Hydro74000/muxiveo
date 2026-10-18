@@ -542,7 +542,9 @@ class EditionTab(QWidget):
         removing = self.h10_remove.isChecked()
         for widget in (self.h10_target_box, self.h10_target, self.h10_bezier, self.h10_cap_box, self.h10_cap):
             widget.setEnabled(not removing)
-        self.h10_recompute.setEnabled(not removing and self._measurement is not None)
+        # HDR10+ recalculé : mesure complète exigée (chaque image ; la mesure rapide n'en voit que les clés).
+        complete = self._measurement is not None and not self._measurement.is_estimate
+        self.h10_recompute.setEnabled(not removing and complete)
         if self.h10_recompute.isChecked() and self.h10_recompute.isEnabled():
             self.h10_bezier.setEnabled(False)  # profil A d'office
         self.h10_target.setEnabled(not removing and self.h10_target_box.isChecked() and not self.h10_bezier.isChecked())

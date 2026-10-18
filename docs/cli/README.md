@@ -888,5 +888,6 @@ Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "
 | `--hdr-compare` | compare la seconde source à la première (alignement automatique sur les plans) |
 | `--hdr-offset N` | décalage imposé de B, en images |
 | `--hdr-fail-on warn\|error` | code de sortie 3 si un contrôle atteint ce niveau (contrôle qualité en lot) |
+| `--hdr-fast` | avec `measure` : mesure rapide (images clés, mvo-fel ≥ 0.5.0) ; estimation, MaxFALL souvent sous-estimée |
 | `--hdr-no-cache` | relit les fichiers au lieu des résultats en cache |
 

@@ -6,6 +6,7 @@ statistiques : ``docs/statistiques-image.md`` du dépôt des extensions.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from array import array
 from collections.abc import Callable
@@ -38,6 +39,13 @@ class ImageMeasurement:
     histogram: np.ndarray
     #: Fenêtre mesurée de la première image (x, y, largeur, hauteur).
     window: tuple[int, int, int, int]
+    #: Mesure rapide (images clés) : nombre d'images réellement mesurées, valeurs tenues jusqu'à l'image
+    #: clé suivante ; 0 : mesure complète.
+    sampled: int = 0
+
+    @property
+    def is_estimate(self) -> bool:
+        return self.sampled > 0
 
     @property
     def frames(self) -> int:
@@ -54,10 +62,16 @@ class ImageMeasurement:
         return min(10000, int(round(float(self.average.max())))) if self.frames else 0
 
 
-def read_measurement(path: Path, layer: str = "base", *,
+def read_measurement(path: Path, layer: str = "base", *, total_frames: int | None = None, fps: float | None = None,
                      cancelled: Callable[[], bool] | None = None) -> ImageMeasurement:
-    """Lit le fichier JSON Lines du plugin (images contiguës, plans couvrant toutes les images)."""
+    """Lit le fichier JSON Lines du plugin (images contiguës, plans couvrant toutes les images).
+
+    Mesure par images clés (en-tête ``"sampling":"keyframes"``) : chaque image mesurée est placée à son
+    horodatage (``time_s`` × ``fps``) et ses valeurs tenues jusqu'à la suivante, sur ``total_frames`` images.
+    """
     max_rgb, average, y9999, y100 = array("f"), array("f"), array("f"), array("f")
+    times = array("d")
+    sampled = False
     percentiles = array("f")
     starts = array("i")
     histogram = np.zeros(_BINS, dtype=np.uint64)
@@ -69,6 +83,7 @@ def read_measurement(path: Path, layer: str = "base", *,
             header = json.loads(handle.readline() or "{}")
             if header.get("format") != "mvo-fel-frame-statistics" or header.get("bins") != _BINS:
                 raise MeasurementError("Statistiques de l'image : format inconnu.")
+            sampled = header.get("sampling") == "keyframes"
             for number, line in enumerate(handle):
                 if cancelled is not None and number % 8192 == 0 and cancelled():
                     raise InterruptedError
@@ -86,6 +101,8 @@ def read_measurement(path: Path, layer: str = "base", *,
                     y9999.append(float(item["y9999_nits"]))
                     y100.append(float(item["y100"]))
                     percentiles.extend(float(v) for v in values)
+                    if sampled:
+                        times.append(float(item["time_s"]))
                     if frame == 0:
                         window = tuple(int(v) for v in item.get("window") or (0, 0, 0, 0))[:4]  # type: ignore[assignment]
                     frame += 1
@@ -104,7 +121,7 @@ def read_measurement(path: Path, layer: str = "base", *,
         raise MeasurementError("Statistiques de l'image : aucune image.")
     if covered != frame:
         raise MeasurementError(f"Statistiques de l'image : {covered} images en plans pour {frame} mesurées.")
-    return ImageMeasurement(
+    measurement = ImageMeasurement(
         layer=layer,
         max_rgb=np.frombuffer(max_rgb, dtype=np.float32).reshape(-1, 3).copy(),
         average=np.frombuffer(average, dtype=np.float32).copy(),
@@ -115,6 +132,27 @@ def read_measurement(path: Path, layer: str = "base", *,
         histogram=histogram,
         window=window,
     )
+    if not sampled:
+        return measurement
+    if not fps or fps <= 0:
+        raise MeasurementError("Statistiques de l'image : cadence requise pour une mesure par images clés.")
+    return _expand(measurement, np.frombuffer(times, dtype=np.float64), fps, total_frames)
+
+
+def _expand(measurement: ImageMeasurement, times: np.ndarray, fps: float, total_frames: int | None) -> ImageMeasurement:
+    """Mesure par images clés étendue à toutes les images : valeurs tenues jusqu'à l'image clé suivante."""
+    positions = np.rint((times - times[0]) * fps).astype(np.int64)
+    if np.any(np.diff(positions) <= 0):
+        raise MeasurementError("Statistiques de l'image : horodatages des images clés non croissants.")
+    total = max(int(total_frames or 0), int(positions[-1]) + 1)
+    # Image i : dernière image clé mesurée à sa position ou avant.
+    owner = np.searchsorted(positions, np.arange(total), side="right") - 1
+    starts = np.unique(positions[measurement.scene_starts.astype(np.int64)]).astype(np.int32)
+    return dataclasses.replace(
+        measurement,
+        max_rgb=measurement.max_rgb[owner], average=measurement.average[owner], y9999=measurement.y9999[owner],
+        y100=measurement.y100[owner], percentiles=measurement.percentiles[owner], scene_starts=starts,
+        sampled=int(positions.size))
 
 
 def histogram_share_above(histogram: np.ndarray, nits: float) -> float:

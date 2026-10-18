@@ -104,9 +104,17 @@ class InspectionCache:
             pass
 
     def load_measurement(self, path: Path, stream_index: int, layer: str = "base") -> ImageMeasurement | None:
-        """Mesure de l'image en cache (fichier distinct des métadonnées dynamiques)."""
+        """Mesure de l'image en cache (fichier distinct des métadonnées dynamiques) : complète de préférence,
+        sinon mesure rapide (images clés)."""
+        for suffix in ("", "-keyframes"):
+            measurement = self._load_measurement(path, stream_index, layer, suffix)
+            if measurement is not None:
+                return measurement
+        return None
+
+    def _load_measurement(self, path: Path, stream_index: int, layer: str, suffix: str) -> ImageMeasurement | None:
         key = self.key(path, stream_index)
-        entry = self._root / f"{key}.{layer}.npz" if key else None
+        entry = self._root / f"{key}.{layer}{suffix}.npz" if key else None
         if entry is None or not entry.is_file():
             return None
         try:
@@ -115,7 +123,7 @@ class InspectionCache:
                 if meta.get("version") != CACHE_VERSION or meta.get("layer") != layer:
                     return None
                 measurement = ImageMeasurement(
-                    layer=layer, window=tuple(meta["window"]),
+                    layer=layer, window=tuple(meta["window"]), sampled=int(meta.get("sampled", 0)),
                     **{name: data[name] for name in ("max_rgb", "average", "y9999", "y100", "percentiles",
                                                      "scene_starts", "histogram")})
             os.utime(entry)
@@ -127,7 +135,8 @@ class InspectionCache:
         key = self.key(path, stream_index)
         if key is None:
             return
-        meta = {"version": CACHE_VERSION, "layer": measurement.layer, "window": list(measurement.window)}
+        meta = {"version": CACHE_VERSION, "layer": measurement.layer, "window": list(measurement.window),
+                "sampled": measurement.sampled}
         buffer = io.BytesIO()
         np.savez_compressed(buffer, meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8),
                             max_rgb=measurement.max_rgb, average=measurement.average, y9999=measurement.y9999,
@@ -135,7 +144,8 @@ class InspectionCache:
                             scene_starts=measurement.scene_starts, histogram=measurement.histogram)
         try:
             self._root.mkdir(parents=True, exist_ok=True)
-            atomic_write_bytes(self._root / f"{key}.{measurement.layer}.npz", buffer.getvalue())
+            suffix = "-keyframes" if measurement.is_estimate else ""
+            atomic_write_bytes(self._root / f"{key}.{measurement.layer}{suffix}.npz", buffer.getvalue())
             self._prune()
         except OSError:
             pass

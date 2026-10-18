@@ -365,6 +365,41 @@ def test_measure_flow_updates_report(studio, qt_app, tmp_path, monkeypatch):
     assert "0.4.0" in studio._status.text()
 
 
+class _FastEngine(_FakeEngine):
+    capabilities = {"measure": ["base", "reconstructed"], "measure_sampling": ["all", "keyframes"]}
+
+    def measure(self, path, stream, statistics, *, layer, progress=None, cancelled=None, sampling="all", **_kwargs):
+        from tests.test_hdr_edit import write_statistics
+
+        self.sampling = sampling
+        write_statistics(statistics, self.peaks, scenes=[0], times=[0.0, 0.2])
+        if progress:
+            progress(10)
+        return "fake"
+
+
+def test_fast_measure_flow(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    # Extension 0.4.0 : mesure rapide refusée avec le motif.
+    studio._engine_factory = lambda: _FakeEngine([100.0] * 10)
+    studio.measure(fast=True)
+    assert "0.5.0" in studio._status.text() and not studio.is_busy()
+    engine = _FastEngine([300.0, 2500.0])
+    studio._engine_factory = lambda: engine
+    studio._luminance.measure_fast_btn.click()
+    assert _wait(qt_app, lambda: studio._measurement is not None and not studio.is_busy())
+    measurement = studio._measurement
+    assert engine.sampling == "keyframes" and measurement.is_estimate and measurement.frames == 10
+    assert measurement.max_cll() == 2500 and "estimation" in studio._status.text()
+    assert "images clés" in studio._luminance.chart.series()[0].label
+    assert not studio._editor.h10_recompute.isEnabled()  # HDR10+ recalculé : mesure complète exigée
+    assert any("estimation de la mesure rapide" in f.title for f in studio.report().findings) or any(
+        "sous l'estimation" in f.title for f in studio.report().findings)
+
+
 def test_measure_refuses_profile_5(studio, qt_app, tmp_path, monkeypatch):
     from tests.test_hdr_inspection import _DOVI_RECORD
 

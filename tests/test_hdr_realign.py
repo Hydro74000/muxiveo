@@ -61,6 +61,16 @@ def test_realign_proposes_only_visible_deviations(tmp_path):
     assert [p.key for p in result.applicable()] == [k for k in keys if k != "l1"]
 
 
+def test_realign_estimate_never_lowers_values_nor_recomputes_hdr10plus(tmp_path):
+    report = _report(tmp_path, max_pq=3079)
+    estimate = dataclasses.replace(_measurement(1600, 100), sampled=3)
+    result = realign(report, estimate, 1000)
+    keys = [p.key for p in result.proposals]
+    assert result.light_levels == (1600, 400)  # MaxFALL du fichier (400) conservée : estimation plus basse
+    assert "hdr10plus" not in keys and result.hdr10plus_scenes is None
+    assert all("mesure rapide" in p.impact for p in result.proposals)
+
+
 def test_realign_silent_when_metadata_fits_the_picture(tmp_path):
     # Image à 950 nits : MaxCLL 1000/400, MDCV 1000, L6 1000/400, MaxScl et L1 ≈ image : rien à proposer.
     report = _report(tmp_path, max_pq=int(round(float(nits_to_pq(950)) * 4095)), maxscl=(9500, 9000, 8500))

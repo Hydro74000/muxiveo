@@ -293,7 +293,7 @@ class HdrStudio(QWidget):
             f"QTabBar::tab:hover{{color:{C.TEXT_PRI};}}")
         self._overview = self._scroll_tab(translate_text("Vue d'ensemble"))
         self._luminance = LuminanceTab(int(getattr(self._config, "display_peak_nits", 1000) or 1000))
-        self._luminance.measure_requested.connect(self.measure)
+        self._luminance.measure_requested.connect(lambda fast: self.measure(fast=fast))
         self._luminance.display_peak_changed.connect(self._display_peak_changed)
         self._luminance.apply_to_encode_requested.connect(self._apply_to_encode)
         self._luminance.prepare_patch_requested.connect(self._prepare_patch)
@@ -585,8 +585,11 @@ class HdrStudio(QWidget):
         self._update_actions()
 
     # ── Mesure de l'image ───────────────────────────────────────────────
-    def measure(self) -> None:
-        """Niveau 3 : mesure de chaque image (BL lue comme HDR10) par le plugin mvo-fel."""
+    def measure(self, fast: bool = False) -> None:
+        """Niveau 3 : mesure de l'image (BL lue comme HDR10) par le plugin mvo-fel.
+
+        ``fast`` : images clés seulement (plugin ≥ 0.5.0), estimation en moins d'une minute pour un film.
+        """
         if self._info is None or self._busy:
             return
         info, stream = self._info, self._current_stream()
@@ -602,10 +605,18 @@ class HdrStudio(QWidget):
         except Exception as exc:  # extension absente ou incompatible : message à l'utilisateur
             self._notify("ERROR", translate_text("Mesure impossible : {error}", error=str(exc)))
             return
-        from core.fel.engine import measure_supported
+        from core.fel.engine import measure_sampling_supported, measure_supported
         if not measure_supported(engine, "base"):
             self._notify("ERROR", translate_text(
                 "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."))
+            return
+        if fast and not measure_sampling_supported(engine, "keyframes"):
+            self._notify("ERROR", translate_text(
+                "Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise (page Extensions)."))
+            return
+        if fast and Path(info.path).suffix.lower() in (".hevc", ".h265", ".265", ".x265"):
+            self._notify("WARN", translate_text("Mesure rapide : flux HEVC brut sans horodatages, mesure complète "
+                                                "nécessaire."))
             return
         self._token += 1
         token = self._token
@@ -613,19 +624,23 @@ class HdrStudio(QWidget):
         self._cancel = cancel
         self._signals = None
         config = self._config
-        total = max(1, snapshot.frames or 1)
+        fps = snapshot.fps or 24000 / 1001
+        frames = snapshot.frames or (int(round(snapshot.duration_s * fps)) if snapshot.duration_s else None)
+        total = max(1, frames or 1)
 
         def task() -> None:
             owned = None
             try:
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-mesure")
                 statistics = owned.path / "mesure.jsonl"
+                # Mesure rapide : la progression reçoit la position dans le flux (images).
                 backend = engine.measure(
                     Path(info.path), snapshot.stream_index, statistics, layer="base",
                     threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)),
                     progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
-                    cancelled=cancel)
-                measurement = read_measurement(statistics, "base", cancelled=cancel.is_set)
+                    cancelled=cancel, sampling="keyframes" if fast else "all")
+                measurement = read_measurement(statistics, "base", total_frames=frames, fps=fps,
+                                               cancelled=cancel.is_set)
                 self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
                 self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
                 self._measured.emit(token, measurement, "")
@@ -638,7 +653,8 @@ class HdrStudio(QWidget):
                     except OSError:
                         pass
 
-        self._set_busy(True, translate_text("Mesure de chaque image…"))
+        self._set_busy(True, translate_text("Mesure rapide (images clés)…") if fast
+                       else translate_text("Mesure de chaque image…"))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Mesure de l'image : {name}", name=info.path.name))
@@ -659,11 +675,19 @@ class HdrStudio(QWidget):
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
                                                                  measurement))
         self._render(report)
-        self._set_status(translate_text("Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.",
-                                        cll=measurement.max_cll(), fall=measurement.max_fall()))
-        self.log_message.emit("OK", translate_text("Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
-                                                   frames=measurement.frames, cll=measurement.max_cll(),
-                                                   fall=measurement.max_fall()))
+        if measurement.is_estimate:
+            self._set_status(translate_text("Mesure rapide : MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimation).",
+                                            cll=measurement.max_cll(), fall=measurement.max_fall()))
+            self.log_message.emit("OK", translate_text(
+                "Mesure rapide terminée : {sampled} images clés sur {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} "
+                "(estimation ; mesure complète pour des valeurs exactes).", sampled=measurement.sampled,
+                frames=measurement.frames, cll=measurement.max_cll(), fall=measurement.max_fall()))
+        else:
+            self._set_status(translate_text("Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.",
+                                            cll=measurement.max_cll(), fall=measurement.max_fall()))
+            self.log_message.emit("OK", translate_text(
+                "Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.", frames=measurement.frames,
+                cll=measurement.max_cll(), fall=measurement.max_fall()))
         realignment = self._realignment(report)
         for proposal in getattr(realignment, "proposals", ()):
             self.log_message.emit("WARN" if proposal.applicable else "INFO", translate_text(

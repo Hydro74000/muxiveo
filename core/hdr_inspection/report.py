@@ -164,7 +164,8 @@ def report_data(report: InspectionReport, *, measurement: ImageMeasurement | Non
         "dolby_vision": _dovi_data(report), "hdr10plus": _hdr10plus_data(report),
         "measurement": None if measurement is None else {
             "layer": measurement.layer, "frames": measurement.frames, "max_cll": measurement.max_cll(),
-            "max_fall": measurement.max_fall(), "window": list(measurement.window)},
+            "max_fall": measurement.max_fall(), "window": list(measurement.window),
+            "sampled_frames": measurement.sampled or None},
         "findings": [{"severity": f.severity.value, "category": f.category, "title": f.title, "detail": f.detail}
                      for f in report.findings],
         "errors": list(report.errors),

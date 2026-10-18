@@ -146,9 +146,13 @@ def hdr10plus_rows(hdr10plus: Hdr10PlusAnalysis) -> Rows:
 
 def measurement_rows(measurement: ImageMeasurement, fps: float) -> Rows:
     x, y, width, height = measurement.window
+    measured = (translate_text("{sampled} images clés sur {frames} (mesure rapide, estimation)",
+                               sampled=measurement.sampled, frames=measurement.frames)
+                if measurement.is_estimate else str(measurement.frames))
     return [
-        (translate_text("Images mesurées"), str(measurement.frames)),
-        (translate_text("MaxCLL / MaxFALL mesurés"), f"{measurement.max_cll()} / {measurement.max_fall()}"),
+        (translate_text("Images mesurées"), measured),
+        (translate_text("MaxCLL / MaxFALL mesurés"), f"{measurement.max_cll()} / {measurement.max_fall()}"
+         + (" (" + translate_text("estimation") + ")" if measurement.is_estimate else "")),
         (translate_text("Durée"), format_time(measurement.frames / fps)),
         (translate_text("Zone mesurée"), f"{width}×{height} (x {x}, y {y})"),
     ]

@@ -8,6 +8,7 @@ diagnostic seulement.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -95,6 +96,11 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     frames = levels.frames
     proposals: list[Proposal] = []
     cll, fall = measurement.max_cll(), measurement.max_fall()
+    estimate = measurement.is_estimate
+    if estimate:
+        # Mesure rapide : borne basse (MaxFALL souvent sous-estimée) ; jamais de valeur abaissée.
+        cll = max(cll, snapshot.max_cll or 0)
+        fall = max(fall, snapshot.max_fall or 0)
     light_levels: tuple[int, int] | None = None
     mastering_edit: MasteringEdit | None = None
     mdcv_max = snapshot.mastering.max_nits if snapshot.mastering is not None else None
@@ -104,7 +110,7 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     file_risk = analyse(levels, model=TvModel.MAXCLL, max_cll=current_cll or None, mdcv_max=mdcv_max,
                         display_peak=display_peak)
     measured_risk = analyse(levels, model=TvModel.MAXCLL, max_cll=cll, mdcv_max=mdcv_max, display_peak=display_peak)
-    if not current_cll or _score(measured_risk) < _score(file_risk):
+    if (not current_cll or _score(measured_risk) < _score(file_risk)) and (cll, fall) != (current_cll, current_fall):
         light_levels = (cll, fall)
         impact = (translate_text("absents : les TV prennent une valeur par défaut") if not current_cll
                   else translate_text("TV suivant la MaxCLL, écran {peak} nits : {now} ; mesurés : {after}",
@@ -173,7 +179,7 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     # HDR10+ : MaxScl face au pic mesuré, image par image.
     hdr10plus = report.hdr10plus
     scenes: np.ndarray | None = None
-    if hdr10plus is not None and hdr10plus.frames:
+    if hdr10plus is not None and hdr10plus.frames and not estimate:
         count = min(hdr10plus.frames, measurement.frames)
         # Par plan du HDR10+ (MaxScl constant sur le plan = maximum du plan).
         measured = _per_scene(measurement.peaks()[:count], hdr10plus.scene_starts, np.fmax)
@@ -234,6 +240,10 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
                 "; ".join(reasons) + ". " + translate_text(
                     "dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source "
                     "Dolby Vision avec l'outil d'origine."), applicable=False))
+    if estimate:
+        note = translate_text("estimation de la mesure rapide (images clés) : mesure complète conseillée avant "
+                              "d'écrire")
+        proposals = [dataclasses.replace(p, impact=f"{p.impact} — {note}") for p in proposals]
     return Realignment(tuple(proposals), light_levels, mastering_edit, l6_target, scenes)
 
 

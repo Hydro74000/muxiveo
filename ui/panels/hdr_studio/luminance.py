@@ -24,6 +24,7 @@ from ui.styles import _card, _checkbox_style, _combo_style, _primary_button, _se
 
 _SOURCE_LABELS = {
     "measure": "mesure de l'image (exacte)",
+    "measure_fast": "mesure rapide de l'image (images clés, estimation)",
     "hdr10plus": "MaxScl HDR10+ (valeurs saturées écartées)",
     "l1": "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact",
 }
@@ -87,7 +88,8 @@ def describe_risk(risk: ToneMapRisk) -> tuple[str, str, str]:
 class LuminanceTab(QWidget):
     """Courbes et simulation ; émet les demandes de mesure, d'application et de correction."""
 
-    measure_requested = Signal()
+    #: Mesure demandée : True = rapide (images clés), False = complète.
+    measure_requested = Signal(bool)
     apply_to_encode_requested = Signal(int, int)
     prepare_patch_requested = Signal(int, int)
     display_peak_changed = Signal(int)
@@ -165,16 +167,22 @@ class LuminanceTab(QWidget):
         self.reset_btn.clicked.connect(self.reset_values)
         self.suggest_btn = _secondary_button(translate_text("Valeurs proposées"))
         self.suggest_btn.clicked.connect(self.apply_suggestion)
-        self.measure_btn = _primary_button(translate_text("Mesurer l'image"))
+        self.measure_fast_btn = _primary_button(translate_text("Mesure rapide"))
+        self.measure_fast_btn.setToolTip(translate_text(
+            "Images clés seulement (environ une toutes les 2 à 3 s, moins d'une minute pour un film ; extension "
+            "mvo-fel 0.5.0 ou plus récente) : estimation, MaxCLL et pics fidèles, MaxFALL souvent sous-estimée."))
+        self.measure_fast_btn.clicked.connect(lambda: self.measure_requested.emit(True))
+        self.measure_btn = _secondary_button(translate_text("Mesure complète"))
         self.measure_btn.setToolTip(translate_text(
             "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : "
-            "MaxCLL/MaxFALL réels, histogrammes, simulation exacte."))
-        self.measure_btn.clicked.connect(self.measure_requested.emit)
+            "MaxCLL/MaxFALL réels, histogrammes, simulation exacte, HDR10+ recalculable."))
+        self.measure_btn.clicked.connect(lambda: self.measure_requested.emit(False))
         self.encode_btn = _secondary_button(translate_text("Appliquer au panneau Encodage"))
         self.encode_btn.clicked.connect(lambda: self.apply_to_encode_requested.emit(*self.values()))
         self.patch_btn = _secondary_button(translate_text("Préparer la correction du fichier…"))
         self.patch_btn.clicked.connect(lambda: self.prepare_patch_requested.emit(*self.values()))
-        for button in (self.reset_btn, self.suggest_btn, self.measure_btn, self.encode_btn, self.patch_btn):
+        for button in (self.reset_btn, self.suggest_btn, self.measure_fast_btn, self.measure_btn, self.encode_btn,
+                       self.patch_btn):
             buttons.addWidget(button)
         buttons.addStretch()
         grid.addLayout(buttons)
@@ -224,6 +232,7 @@ class LuminanceTab(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         self.measure_btn.setEnabled(not busy and self._report is not None)
+        self.measure_fast_btn.setEnabled(not busy and self._report is not None)
 
     def set_report(self, report: InspectionReport | None, measurement: ImageMeasurement | None) -> None:
         """Nouveau rapport : séries, valeurs d'origine (fichier) et proposition."""
@@ -247,8 +256,7 @@ class LuminanceTab(QWidget):
         for widget in (self.max_cll, self.max_fall, self.reset_btn, self.encode_btn, self.patch_btn):
             widget.setEnabled(bool(enabled))
         self.measure_btn.setEnabled(report is not None)
-        self.measure_btn.setText(translate_text("Mesurer à nouveau") if measurement is not None
-                                 else translate_text("Mesurer l'image"))
+        self.measure_fast_btn.setEnabled(report is not None)
         self._build_series(keep_view=same_file)
         self._update_preview()
 
@@ -264,9 +272,10 @@ class LuminanceTab(QWidget):
         series: list[ChartSeries] = []
         frames = 0
         if measurement is not None and measurement.frames:
-            series.append(ChartSeries("peak", translate_text("Pic mesuré"), C.TRACK_VIDEO,
+            sampled = f" ({translate_text('images clés')})" if measurement.is_estimate else ""
+            series.append(ChartSeries("peak", translate_text("Pic mesuré") + sampled, C.TRACK_VIDEO,
                                       measurement.peaks().astype(np.float32), "max", fill=True))
-            series.append(ChartSeries("average", translate_text("Moyenne mesurée"), C.OK,
+            series.append(ChartSeries("average", translate_text("Moyenne mesurée") + sampled, C.OK,
                                       measurement.average, "mean"))
             frames = measurement.frames
         dovi = report.dovi if report is not None else None
@@ -380,10 +389,16 @@ class LuminanceTab(QWidget):
                     fall=original_fall if original_fall is not None else "—", clip=clip, dark=dark.lower()))
         else:
             self._original_line.setText(translate_text("Valeurs du fichier affichées."))
-        self._source_line.setText(translate_text("Niveaux : {source}.", source=translate_text(
-            _SOURCE_LABELS[self._levels.source])))
+        source = self._levels.source
+        if source == "measure" and self._measurement is not None and self._measurement.is_estimate:
+            source = "measure_fast"
+        self._source_line.setText(translate_text("Niveaux : {source}.", source=translate_text(_SOURCE_LABELS[source])))
         snapshot = self._report.snapshot if self._report is not None else None
-        notes = [translate_text("Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. "
+        notes = []
+        if self._measurement is not None and self._measurement.is_estimate:
+            notes.append(translate_text("Mesure rapide : {count} images clés, valeurs tenues entre elles (estimation).",
+                                        count=self._measurement.sampled))
+        notes += [translate_text("Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. "
                                 "La MaxFALL est rarement utilisée par les téléviseurs.")]
         if snapshot is not None and (snapshot.dovi is not None or snapshot.hdr10plus):
             notes.append(translate_text("En lecture Dolby Vision ou HDR10+, la TV suit les métadonnées dynamiques : "

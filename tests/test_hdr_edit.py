@@ -52,12 +52,17 @@ def _code_bin(nits: float) -> int:
 
 
 def write_statistics(path: Path, peaks: list[float], *, averages: list[float] | None = None,
-                     scenes: list[int] | None = None, pixels: int = 1000) -> Path:
-    """Statistiques au format du plugin : une ligne par image, puis histogramme par plan."""
+                     scenes: list[int] | None = None, pixels: int = 1000, times: list[float] | None = None) -> Path:
+    """Statistiques au format du plugin : une ligne par image, puis histogramme par plan.
+
+    ``times`` : mesure par images clés (horodatage de chaque image mesurée).
+    """
     averages = averages or [p / 20 for p in peaks]
     scenes = scenes or [0]
-    lines = [json.dumps({"format": "mvo-fel-frame-statistics", "version": 1, "bins": 1024,
-                         "width": 64, "height": 32})]
+    header = {"format": "mvo-fel-frame-statistics", "version": 1, "bins": 1024, "width": 64, "height": 32}
+    if times is not None:
+        header["sampling"] = "keyframes"
+    lines = [json.dumps(header)]
     bounds = [*scenes, len(peaks)]
     frame = 0
     for first, end in zip(bounds, bounds[1:]):
@@ -67,7 +72,8 @@ def write_statistics(path: Path, peaks: list[float], *, averages: list[float] | 
             lines.append(json.dumps({
                 "frame": frame, "scene_start": frame == first and frame > 0,
                 "max_nits": [peak, peak * 0.8, peak * 0.5], "avg_nits": averages[frame], "y9999_nits": peak * 0.9,
-                "y100": 0.9, "maxrgb_percentiles": [0, 1, 5, 20, 50, 80, peak * 0.95], "window": [0, 0, 64, 32]}))
+                "y100": 0.9, "maxrgb_percentiles": [0, 1, 5, 20, 50, 80, peak * 0.95], "window": [0, 0, 64, 32],
+                **({"time_s": times[frame]} if times is not None else {})}))
             # 999 pixels à 10 nits, 1 au pic.
             for nits, count in ((10.0, pixels - 1), (peak, 1)):
                 hist[_code_bin(nits)] = hist.get(_code_bin(nits), 0) + count
@@ -100,6 +106,25 @@ def test_read_measurement_rejects_gaps(tmp_path):
     path.write_text('{"format": "autre"}\n', encoding="utf-8")
     with pytest.raises(MeasurementError):
         read_measurement(path)
+
+
+def test_keyframe_measurement_holds_values_and_cache_prefers_complete(tmp_path):
+    path = write_statistics(tmp_path / "kf.jsonl", [100.0, 900.0, 300.0], scenes=[0, 2], times=[0.0, 2.0, 4.0])
+    measurement = read_measurement(path, total_frames=120, fps=24)
+    assert measurement.is_estimate and measurement.sampled == 3 and measurement.frames == 120
+    peaks = measurement.peaks()
+    assert (peaks[0], peaks[47], peaks[48], peaks[95], peaks[96], peaks[119]) == (100, 100, 900, 900, 300, 300)
+    assert measurement.scene_starts.tolist() == [0, 96] and measurement.max_cll() == 900
+    with pytest.raises(MeasurementError):
+        read_measurement(path)  # cadence requise
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    cache = InspectionCache(tmp_path / "cache")
+    cache.store_measurement(media, 0, measurement)
+    cached = cache.load_measurement(media, 0)
+    assert cached is not None and cached.is_estimate and cached.sampled == 3 and cached.frames == 120
+    cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "all.jsonl", [100.0] * 120)))
+    assert not cache.load_measurement(media, 0).is_estimate  # mesure complète préférée
 
 
 def test_measurement_cache_round_trip(tmp_path):

@@ -39,6 +39,8 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Décalage imposé de B en images (défaut : alignement automatique).")
     group.add_argument("--hdr-fail-on", choices=tuple(_FAIL_ON), default=None,
                        help="Code de sortie 3 si un contrôle atteint ce niveau.")
+    group.add_argument("--hdr-fast", action="store_true",
+                       help="Avec --hdr measure : mesure rapide (images clés, extension mvo-fel ≥ 0.5.0) ; estimation.")
     group.add_argument("--hdr-no-cache", action="store_true",
                        help="Relit le fichier au lieu du résultat en cache (RPU, HDR10+, mesure).")
 
@@ -62,8 +64,8 @@ def _dynamic(config: AppConfig, info, stream: int | None, cache: InspectionCache
 
 
 def _measure(config: AppConfig, report: InspectionReport, threads: int, work_root: Path,
-             logger: Logger) -> ImageMeasurement:
-    from core.fel.engine import FelEngine, measure_supported
+             logger: Logger, fast: bool = False) -> ImageMeasurement:
+    from core.fel.engine import FelEngine, measure_sampling_supported, measure_supported
 
     snapshot = report.snapshot
     if snapshot.codec.lower() != "hevc" or not snapshot.is_pq:
@@ -73,7 +75,11 @@ def _measure(config: AppConfig, report: InspectionReport, threads: int, work_roo
     engine = FelEngine.installed()
     if not measure_supported(engine, "base"):
         raise CliError("Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise.", EXIT_TOOL)
-    total = max(1, snapshot.frames or 1)
+    if fast and not measure_sampling_supported(engine, "keyframes"):
+        raise CliError("Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise.", EXIT_TOOL)
+    fps = snapshot.fps or 24000 / 1001
+    frames = snapshot.frames or (int(round(snapshot.duration_s * fps)) if snapshot.duration_s else None)
+    total = max(1, frames or 1)
     step = max(1, total // 20)
     owned = create_process_work_dir(work_root, process_name="hdr-mesure")
     try:
@@ -84,9 +90,10 @@ def _measure(config: AppConfig, report: InspectionReport, threads: int, work_roo
                 logger.emit("info", f"Mesure : {frames}/{total} images")
 
         backend = engine.measure(Path(snapshot.path), snapshot.stream_index, statistics, layer="base",
-                                 threads=threads, progress=progress, cancelled=threading.Event())
+                                 threads=threads, progress=progress, cancelled=threading.Event(),
+                                 sampling="keyframes" if fast else "all")
         logger.emit("info", f"Mesure de l'image : {backend}")
-        return read_measurement(statistics, "base")
+        return read_measurement(statistics, "base", total_frames=frames, fps=fps)
     finally:
         owned.remove()
 
@@ -121,8 +128,8 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
             report = _dynamic(config, info, snapshot.stream_index, cache, args.hdr_no_cache, ffmpeg, work_root, logger)
             for message in report.errors:
                 logger.emit("warning", message)
-        if level == "measure" and measurement is None:
-            measurement = _measure(config, report, threads, work_root, logger)
+        if level == "measure" and (measurement is None or (measurement.is_estimate and not args.hdr_fast)):
+            measurement = _measure(config, report, threads, work_root, logger, fast=args.hdr_fast)
             cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
         if measurement is not None:
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
