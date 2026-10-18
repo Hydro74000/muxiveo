@@ -1283,16 +1283,11 @@ class EncodePanel(QWidget):
         from ui.panels.encode_panel.fel_device_combo import FelDeviceCombo
         from ui.panels.encode_panel.fel_precision_combo import FelPrecisionCombo
         self._fel_precision_choice = "exact"
-        fel_precision_row = QHBoxLayout()
-        fel_precision_row.addWidget(QLabel(translate_text("Précision de la reconstruction FEL")))
         self._fel_precision_combo = FelPrecisionCombo(_C.WARN)
         self._fel_precision_combo.setStyleSheet(_combo_style())
         self._fel_precision_combo.activated.connect(self._on_fel_precision_changed)
-        fel_precision_row.addWidget(self._fel_precision_combo, 1)
-        cl.addLayout(fel_precision_row)
+        cl.addWidget(self._sub_setting_row(translate_text("Précision de la reconstruction FEL"), self._fel_precision_combo))
         self._fel_device_choice = "auto"
-        fel_device_row = QHBoxLayout()
-        fel_device_row.addWidget(QLabel(translate_text("Moteur de reconstruction FEL")))
         self._fel_device_combo = FelDeviceCombo()
         self._fel_device_combo.setStyleSheet(_combo_style())
         self._fel_device_combo.setToolTip(translate_text(
@@ -1302,8 +1297,7 @@ class EncodePanel(QWidget):
             "Un GPU sans double précision passe sur CPU en Lent et en Standard."
         ))
         self._fel_device_combo.activated.connect(self._on_fel_device_changed)
-        fel_device_row.addWidget(self._fel_device_combo, 1)
-        cl.addLayout(fel_device_row)
+        cl.addWidget(self._sub_setting_row(translate_text("Moteur de reconstruction FEL"), self._fel_device_combo))
         self._fel_extensions_link = QLabel(
             "<a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
         )
@@ -1377,11 +1371,6 @@ class EncodePanel(QWidget):
         cl.addWidget(self._copy_hdr10plus_cb)
         # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
         self._fel_hdr10plus_choice = "recompute"
-        self._fel_hdr10plus_widget = QWidget()
-        self._fel_hdr10plus_widget.setStyleSheet("background:transparent;")
-        fel_hdr10plus_row = QHBoxLayout(self._fel_hdr10plus_widget)
-        fel_hdr10plus_row.setContentsMargins(20, 0, 0, 0)
-        fel_hdr10plus_row.addWidget(QLabel(translate_text("HDR10+ avec FEL intégré")))
         self._fel_hdr10plus_combo = QComboBox()
         self._fel_hdr10plus_combo.setStyleSheet(_combo_style())
         self._fel_hdr10plus_combo.addItem(translate_text("Recalculé sur l’image reconstruite (recommandé)"), "recompute")
@@ -1392,7 +1381,7 @@ class EncodePanel(QWidget):
             "Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL."
         ))
         self._fel_hdr10plus_combo.activated.connect(self._on_fel_hdr10plus_changed)
-        fel_hdr10plus_row.addWidget(self._fel_hdr10plus_combo, 1)
+        self._fel_hdr10plus_widget = self._sub_setting_row(translate_text("HDR10+ avec FEL intégré"), self._fel_hdr10plus_combo)
         self._fel_hdr10plus_widget.setVisible(False)
         cl.addWidget(self._fel_hdr10plus_widget)
 
@@ -4655,6 +4644,21 @@ class EncodePanel(QWidget):
         self._sync_dovi_profile_options()
         self._save_current_video_state()
         self._rebuild_preview()
+
+    @staticmethod
+    def _sub_setting_row(label: str, field: QWidget) -> QWidget:
+        """Ligne de réglage secondaire de la carte HDR (style de « Profil dovi_tool ») : libellé puis champ."""
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(20, 0, 0, 0)
+        layout.setSpacing(8)
+        text = QLabel(label)
+        text.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        layout.addWidget(text)
+        layout.addWidget(field)
+        layout.addStretch()
+        return row
 
     def _on_fel_hdr10plus_changed(self, _index: int) -> None:
         self._fel_hdr10plus_choice = str(self._fel_hdr10plus_combo.currentData() or "recompute")
