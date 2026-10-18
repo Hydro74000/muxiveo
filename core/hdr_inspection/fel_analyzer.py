@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import IO
 
@@ -259,6 +260,20 @@ def _downscale(plane: np.ndarray, factor: int) -> np.ndarray:
     return plane[:h, :w].reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
 
 
+def _rgb_pq(y: np.ndarray, cb: np.ndarray, cr: np.ndarray) -> np.ndarray:
+    """Y'CbCr BT.2020 (codes 10 bits plage limitée) → R'G'B' PQ normalisé (0 – 1)."""
+    yn, cbn, crn = (y - _BLACK) / _RANGE, (cb - 512) / 896, (cr - 512) / 896
+    rgb = np.stack([yn + 1.4746 * crn, yn - 0.16455 * cbn - 0.57135 * crn, yn + 1.8814 * cbn], axis=-1)
+    return np.clip(rgb, 0, 1)
+
+
+def _display(nits: np.ndarray, exposure_ev: float = 0.0) -> np.ndarray:
+    """Aperçu SDR : exposition, compression douce des hautes lumières vers 100 nits, gamma 2,4 (RGB 8 bits)."""
+    lifted = nits * 2.0 ** exposure_ev
+    sdr = lifted / (1.0 + lifted / 300.0) / 75.0
+    return (np.clip(sdr, 0, 1) ** (1 / 2.4) * 255).astype(np.uint8)
+
+
 def thumbnail(frame: Frame, rows: slice, width: int = 480) -> np.ndarray:
     """Vignette SDR (RGB 8 bits) d'une image PQ : BT.2020 → luminance compressée vers 100 nits, gamma 2,4."""
     factor = max(2, frame.y.shape[1] // width)
@@ -267,21 +282,90 @@ def thumbnail(frame: Frame, rows: slice, width: int = 480) -> np.ndarray:
     chroma_rows = slice(rows.start // 2, (rows.stop + 1) // 2)
     cb = _downscale(frame.cb[chroma_rows].astype(np.float64), factor // 2)[:y.shape[0], :y.shape[1]]
     cr = _downscale(frame.cr[chroma_rows].astype(np.float64), factor // 2)[:y.shape[0], :y.shape[1]]
-    yn, cbn, crn = (y - _BLACK) / _RANGE, (cb - 512) / 896, (cr - 512) / 896
-    rgb_pq = np.stack([yn + 1.4746 * crn, yn - 0.16455 * cbn - 0.57135 * crn, yn + 1.8814 * cbn], axis=-1)
-    nits = pq_to_nits(np.clip(rgb_pq, 0, 1))
-    sdr = nits / (1.0 + nits / 300.0) / 75.0  # compression douce des hautes lumières (aperçu)
-    return (np.clip(sdr, 0, 1) ** (1 / 2.4) * 255).astype(np.uint8)
+    return _display(pq_to_nits(_rgb_pq(y, cb, cr)))
+
+
+#: Palette de l'écart absolu : noir → violet → jaune sur 0 – 16 codes, par pas de 1/16 de code.
+_DIFFERENCE_STEPS = 16
+_t = np.linspace(0.0, 1.0, 16 * _DIFFERENCE_STEPS + 1)
+_DIFFERENCE_LUT = (np.stack([np.clip(2 * _t, 0, 1), np.clip(2 * _t - 1, 0, 1) * 0.9,
+                             np.clip(1.2 * _t, 0, 1) * (1 - _t)], axis=-1) * 255).astype(np.uint8)
+del _t
+
+
+def _difference_colours(d: np.ndarray) -> np.ndarray:
+    """Écart absolu (codes) → noir → violet → jaune, 16 codes au maximum."""
+    index = np.minimum(np.abs(np.asarray(d, dtype=np.float32)) * _DIFFERENCE_STEPS, len(_DIFFERENCE_LUT) - 1)
+    return _DIFFERENCE_LUT[index.astype(np.intp)]
 
 
 def difference_map(reconstructed: Frame, mapped: Frame, rows: slice, width: int = 480) -> np.ndarray:
     """Carte de l'écart (basses fréquences, valeur absolue) : noir → violet → jaune, 16 codes au maximum."""
     factor = max(2, reconstructed.y.shape[1] // width)
     factor -= factor % 2
-    d = np.abs(_downscale(reconstructed.y[rows].astype(np.float64) - mapped.y[rows].astype(np.float64), factor))
-    t = np.clip(d / 16.0, 0, 1)
-    rgb = np.stack([np.clip(2 * t, 0, 1), np.clip(2 * t - 1, 0, 1) * 0.9, np.clip(1.2 * t, 0, 1) * (1 - t)], axis=-1)
-    return (rgb * 255).astype(np.uint8)
+    return _difference_colours(_downscale(reconstructed.y[rows].astype(np.float64)
+                                          - mapped.y[rows].astype(np.float64), factor))
+
+
+# ── Comparateur pleine définition ────────────────────────────────────────────
+@dataclass(frozen=True, eq=False)
+class MomentImages:
+    """Images pleine définition d'un moment : R'G'B' PQ sur 16 bits (H × W × 3) et carte de l'écart."""
+
+    time_s: float
+    mapped: np.ndarray
+    reconstructed: np.ndarray
+    difference: np.ndarray
+
+
+def pq_codes(frame: Frame, rows: slice) -> np.ndarray:
+    """R'G'B' PQ 16 bits pleine définition (chroma 4:2:0 étendue sur 2 × 2 pixels) des lignes actives."""
+    start, stop = rows.start - rows.start % 2, min(frame.y.shape[0], rows.stop + rows.stop % 2)
+    y = frame.y[start:stop].astype(np.float32)
+    y -= _BLACK
+    y /= _RANGE
+    height, width = y.shape
+    cb = (frame.cb[start // 2:stop // 2].astype(np.float32) - 512) / 896
+    cr = (frame.cr[start // 2:stop // 2].astype(np.float32) - 512) / 896
+    # Termes de chroma calculés en demi-définition, ajoutés par diffusion sur les blocs 2 × 2.
+    blocks = np.empty((height // 2, 2, width // 2, 2, 3), np.float32)
+    luma = y.reshape(height // 2, 2, width // 2, 2)
+    for channel, term in enumerate((1.4746 * cr, -0.16455 * cb - 0.57135 * cr, 1.8814 * cb)):
+        np.add(luma, term[:, None, :, None], out=blocks[..., channel])
+    rgb = blocks.reshape(height, width, 3)[rows.start - start:rows.stop - start]
+    np.clip(rgb, 0, 1, out=rgb)
+    rgb *= 65535
+    np.rint(rgb, out=rgb)
+    return rgb.astype(np.uint16)
+
+
+def _box3(image: np.ndarray) -> np.ndarray:
+    """Moyenne 3 × 3 (float32, bords répliqués)."""
+    padded = np.pad(image, 1, mode="edge")
+    rows = padded[:-2] + padded[1:-1] + padded[2:]
+    return (rows[:, :-2] + rows[:, 1:-1] + rows[:, 2:]) / 9
+
+
+def moment_images(reconstructed: Frame, mapped: Frame, rows: slice, time_s: float) -> MomentImages:
+    """Paire pleine définition du comparateur ; écart de luma lissé sur 3 × 3 pixels."""
+    d = reconstructed.y[rows].astype(np.float32) - mapped.y[rows].astype(np.float32)
+    return MomentImages(time_s, pq_codes(mapped, rows), pq_codes(reconstructed, rows), _difference_colours(_box3(d)))
+
+
+@lru_cache(maxsize=16)
+def _display_lut(exposure_ev: float) -> np.ndarray:
+    return _display(pq_to_nits(np.arange(65536, dtype=np.float64) / 65535), exposure_ev)
+
+
+def render_sdr(codes: np.ndarray, exposure_ev: float = 0.0) -> np.ndarray:
+    """Aperçu SDR (RGB 8 bits) de codes R'G'B' PQ 16 bits, par table de correspondance (exposition en EV)."""
+    return _display_lut(float(exposure_ev))[codes]
+
+
+def luminance_nits(codes: np.ndarray) -> float:
+    """Luminance BT.2020 (nits) d'un pixel R'G'B' PQ 16 bits."""
+    rgb = pq_to_nits(np.asarray(codes, dtype=np.float64) / 65535)
+    return float(0.2627 * rgb[0] + 0.6780 * rgb[1] + 0.0593 * rgb[2])
 
 
 # ── Capture par le plugin ────────────────────────────────────────────────────

@@ -344,6 +344,11 @@ def test_fel_tab_renders_report(qt_app, tmp_path):
         labels = [label.text() for label in tab.findChildren(QLabel)]
         assert any(text.startswith("Intégrer le FEL") for text in labels)
         assert any("1920×1080" in text for text in labels) and any("0:12" in text for text in labels)
+        moments: list[float] = []
+        tab.moment_requested.connect(moments.append)
+        from PySide6.QtWidgets import QPushButton
+        next(b for b in tab.findChildren(QPushButton) if b.text().startswith("Comparer en pleine")).click()
+        assert moments == [12.0]
     finally:
         tab.close()
 
@@ -398,8 +403,98 @@ def test_panel_fel_analysis_flow(qt_app, tmp_path, monkeypatch):
             qt_app.processEvents()
         assert studio._fel_tab.fel_report() is report
         assert studio._tabs.currentWidget() is studio._fel_scroll
+        m = _base(h=64, w=96)
+        monkeypatch.setattr(analyzer_module, "plugin_capture", lambda *a, **k: (
+            lambda layer, t, n: [_frame(m + (8 if layer == "reconstructed" else 0))] * n))
+        studio.open_fel_moment(12.0)
+        end = time.monotonic() + 5
+        while (studio.is_busy() or studio._moment_dialog is None) and time.monotonic() < end:
+            qt_app.processEvents()
+        from ui.panels.hdr_studio.before_after import MomentCompareDialog
+        dialog = studio._moment_dialog
+        assert isinstance(dialog, MomentCompareDialog) and dialog.isVisible()
+        assert "0:12" in dialog.windowTitle()
+        dialog.close()
+        qt_app.processEvents()
         studio._engine_factory = lambda: type("E", (), {"capabilities": {}})()
         studio.analyse_fel(30)
         assert "0.4.0" in studio._status.text()
     finally:
         studio.close()
+
+
+# ── Comparateur pleine définition ────────────────────────────────────────────
+def test_pq_codes_moment_images_and_display():
+    from core.hdr_inspection.fel_analyzer import _rgb_pq, luminance_nits, moment_images, pq_codes, render_sdr
+
+    rng = np.random.default_rng(3)
+    frame = Frame(rng.integers(64, 940, (40, 64), dtype=np.uint16), rng.integers(64, 960, (20, 32), dtype=np.uint16),
+                  rng.integers(64, 960, (20, 32), dtype=np.uint16))
+
+    def up(c):
+        return np.repeat(np.repeat(c.astype(np.float64), 2, 0), 2, 1)
+
+    reference = np.round(_rgb_pq(frame.y.astype(np.float64), up(frame.cb), up(frame.cr)) * 65535)
+    for rows in (slice(0, 40), slice(3, 37), slice(1, 40)):
+        codes = pq_codes(frame, rows)
+        assert codes.dtype == np.uint16 and codes.shape == (rows.stop - rows.start, 64, 3)
+        assert np.abs(codes.astype(np.int64) - reference[rows]).max() <= 1
+    images = moment_images(frame, frame, slice(3, 37), 5.0)
+    assert images.mapped.shape == (34, 64, 3) and not images.difference.any()
+    shifted = moment_images(Frame(frame.y + 16, frame.cb, frame.cr), frame, slice(0, 40), 5.0)
+    assert shifted.difference.max() > 200
+    dark, bright = render_sdr(images.mapped, 0.0), render_sdr(images.mapped, 2.0)
+    assert dark.dtype == np.uint8 and dark.shape == images.mapped.shape and (bright >= dark).all()
+    assert luminance_nits(np.array([65535, 65535, 65535])) == pytest.approx(10000, rel=1e-3)
+
+
+def test_before_after_view_zoom_pan_split_and_dialog(qt_app):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtTest import QTest
+
+    from core.hdr_inspection.fel_analyzer import moment_images
+    from ui.panels.hdr_studio.before_after import BeforeAfterView, MomentCompareDialog, to_qimage
+
+    view = BeforeAfterView()
+    try:
+        left = to_qimage(np.zeros((100, 200, 3), np.uint8))
+        right = to_qimage(np.full((100, 200, 3), 255, np.uint8))
+        view.resize(400, 200)
+        view.set_images(left, right, ("Avant", "Après"))
+        assert view.zoom() == pytest.approx(2.0)
+        assert view.image_point(QPointF(200, 100)) == QPointF(100, 50)
+        view.zoom_to(8.0, QPointF(300, 50))  # le point visé reste sous le curseur
+        assert view.image_point(QPointF(300, 50)) == QPointF(150, 25) and view.zoom() == 8.0
+        view.zoom_to(100.0)
+        assert view.zoom() == 16.0
+        view.fit()
+        assert view.zoom() == pytest.approx(2.0)
+        # Trait déplacé à la souris, déplacement de l'image ailleurs.
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=QPoint(200, 100))
+        QTest.mouseMove(view, QPoint(100, 100))
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=QPoint(100, 100))
+        assert view.split() == pytest.approx(0.25, abs=0.01)
+        view.zoom_to(4.0)
+        before = view.image_point(QPointF(300, 100))
+        QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=QPoint(300, 100))
+        QTest.mouseMove(view, QPoint(340, 100))
+        QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=QPoint(340, 100))
+        assert view.image_point(QPointF(340, 100)).x() == pytest.approx(before.x())
+        assert not view.grab().isNull()
+    finally:
+        view.close()
+    m = _base(h=64, w=96)
+    dialog = MomentCompareDialog(moment_images(_frame(m + 8), _frame(m), slice(0, 64), 12.0))
+    try:
+        dialog.resize(800, 500)
+        dialog.show()
+        qt_app.processEvents()
+        dialog.right.setCurrentIndex(1)
+        dialog.exposure.setValue(1.5)
+        dialog._render()
+        dialog._show_pixel(10, 10)
+        assert "nits" in dialog.readout.text() and "%" in dialog.readout.text()
+        dialog._show_pixel(-1, -1)
+        assert dialog.readout.text() == ""
+    finally:
+        dialog.close()

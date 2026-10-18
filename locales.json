@@ -8670,5 +8670,49 @@
   "Apport global moyen ({jnd} JND) par cumul : {categories}.": {
     "fra": "Apport global moyen ({jnd} JND) par cumul : {categories}.",
     "eng": "Medium overall contribution ({jnd} JND) by pooling: {categories}."
+  },
+  "Comparer en pleine définition…": {
+    "fra": "Comparer en pleine définition…",
+    "eng": "Compare at full resolution…"
+  },
+  "Image avant / après zoomable, trait de séparation à glisser.": {
+    "fra": "Image avant / après zoomable, trait de séparation à glisser.",
+    "eng": "Zoomable before / after picture with a draggable divider."
+  },
+  "Capture du moment {time} en pleine définition…": {
+    "fra": "Capture du moment {time} en pleine définition…",
+    "eng": "Capturing moment {time} at full resolution…"
+  },
+  "FEL — moment {time}": {
+    "fra": "FEL — moment {time}",
+    "eng": "FEL — moment {time}"
+  },
+  "Exposition": {
+    "fra": "Exposition",
+    "eng": "Exposure"
+  },
+  "Éclaircit ou assombrit l'aperçu (les deux côtés) pour examiner ombres ou hautes lumières.": {
+    "fra": "Éclaircit ou assombrit l'aperçu (les deux côtés) pour examiner ombres ou hautes lumières.",
+    "eng": "Brightens or darkens the preview (both sides) to examine shadows or highlights."
+  },
+  "Carte de l'écart (16 codes = jaune)": {
+    "fra": "Carte de l'écart (16 codes = jaune)",
+    "eng": "Difference map (16 codes = yellow)"
+  },
+  "Image entière": {
+    "fra": "Image entière",
+    "eng": "Whole picture"
+  },
+  "Molette : zoom · glisser : déplacer · trait : comparer · double-clic : 100 % / image entière": {
+    "fra": "Molette : zoom · glisser : déplacer · trait : comparer · double-clic : 100 % / image entière",
+    "eng": "Wheel: zoom · drag: pan · divider: compare · double-click: 100% / whole picture"
+  },
+  "Écart": {
+    "fra": "Écart",
+    "eng": "Difference"
+  },
+  "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}": {
+    "fra": "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}",
+    "eng": "Pixel {x}, {y}: without FEL {before} nits · with FEL {after} nits{change}"
   }
 }

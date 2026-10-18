@@ -54,6 +54,7 @@ from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
 from ui.design_system import colors as C, font_px, scale
 from ui.operation_bar import OperationState
+from ui.panels.hdr_studio.chart import format_time
 from ui.panels.hdr_studio.compare_tab import CompareTab, DropLineEdit
 from ui.panels.hdr_studio.editor import EditionTab
 from ui.panels.hdr_studio.fel_tab import FelTab
@@ -169,6 +170,7 @@ class HdrStudio(QWidget):
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
     _fel_done = Signal(int, object, str)
+    _moment_ready = Signal(int, object, str)
     _compare_inspected = Signal(int, object, int, object, str)
     _compare_analyzed = Signal(int, object, str)
 
@@ -183,6 +185,7 @@ class HdrStudio(QWidget):
         self._busy = False
         self._cancel = threading.Event()
         self._signals: TaskSignals | None = None
+        self._moment_dialog: QWidget | None = None
         self._pending_analyze = False
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
@@ -206,6 +209,7 @@ class HdrStudio(QWidget):
         self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
         self._patched.connect(self._on_patched, Qt.ConnectionType.QueuedConnection)
         self._fel_done.connect(self._on_fel_done, Qt.ConnectionType.QueuedConnection)
+        self._moment_ready.connect(self._on_moment_ready, Qt.ConnectionType.QueuedConnection)
         self._compare_inspected.connect(self._on_compare_inspected, Qt.ConnectionType.QueuedConnection)
         self._compare_analyzed.connect(self._on_compare_analyzed, Qt.ConnectionType.QueuedConnection)
         self._render(None)
@@ -305,6 +309,7 @@ class HdrStudio(QWidget):
         self._fel_tab = FelTab()
         self._fel_tab.analysis_requested.connect(self.analyse_fel)
         self._fel_tab.survival_requested.connect(self.test_fel_survival)
+        self._fel_tab.moment_requested.connect(self.open_fel_moment)
         self._fel_scroll = self._scroll_area(self._fel_tab)
         self._tabs.addTab(self._fel_scroll, translate_text("FEL"))
         self._compare_tab = CompareTab()
@@ -380,6 +385,8 @@ class HdrStudio(QWidget):
                                                  name=path.name))
             return
         self._stop_running()
+        if self._moment_dialog is not None:
+            self._moment_dialog.close()  # moment de l'ancienne source
         self._token += 1
         token = self._token
         self._info = None
@@ -861,6 +868,64 @@ class HdrStudio(QWidget):
         self.log_message.emit("OK", f"{verdict} — {detail}")
         self.show_fel_tab()
 
+    def open_fel_moment(self, time_s: float) -> None:
+        """Capture pleine définition des couches sans / avec FEL à un instant, puis comparateur avant / après."""
+        if self._busy or self._report is None:
+            return
+        snapshot = self._report.snapshot
+        engine = self._fel_engine()
+        if engine is None:
+            return
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        capture = self._fel_capture(engine, snapshot, cancel)
+        area = self._fel_area()
+
+        def task() -> None:
+            from core.hdr_inspection.fel_analyzer import active_rows, moment_images
+
+            try:
+                reconstructed = capture("reconstructed", time_s, 1)[0]
+                self._progress.emit(token, "", 50)
+                mapped = capture("mapped", time_s, 1)[0]
+                images = moment_images(reconstructed, mapped, active_rows(mapped, area(time_s)), time_s)
+                self._moment_ready.emit(token, images, "")
+            except Exception as exc:
+                self._moment_ready.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+
+        self._set_busy(True, translate_text("Capture du moment {time} en pleine définition…",
+                                            time=format_time(time_s)))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._executor.submit(task)
+
+    def _on_moment_ready(self, token: int, images: object, error: str) -> None:
+        if token != self._token:
+            return
+        self._set_busy(False)
+        from core.hdr_inspection.fel_analyzer import MomentImages
+        if not isinstance(images, MomentImages):
+            self._notify("ERROR" if error else "WARN", translate_text("FEL Analyzer : {error}", error=error) if error
+                         else translate_text("Analyse annulée."))
+            return
+        from ui.panels.hdr_studio.before_after import MomentCompareDialog
+        if self._moment_dialog is not None:
+            self._moment_dialog.close()
+        dialog = MomentCompareDialog(images, self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda _obj=None, d=dialog: self._forget_moment_dialog(d))
+        screen = self.screen().availableGeometry() if self.screen() is not None else None
+        if screen is not None:
+            dialog.resize(int(screen.width() * 0.85), int(screen.height() * 0.85))
+        self._moment_dialog = dialog
+        dialog.show()
+
+    def _forget_moment_dialog(self, dialog: object) -> None:
+        if self._moment_dialog is dialog:
+            self._moment_dialog = None
+
     # ── Comparaison (piste B) ───────────────────────────────────────────
     def show_compare_tab(self) -> None:
         self._tabs.setCurrentWidget(self._compare_scroll)
@@ -1055,13 +1120,20 @@ class HdrStudio(QWidget):
         runner = ToolRunner(max_workers=1)
         config = self._config
         span = [0.0, 1.0]
+        last_pct = [-1]
 
         def on_step(label: str, start: float, part: float) -> None:
             span[:] = [start, part]
+            last_pct[0] = -1
             self._progress.emit(token, label, int(start * 100))
 
         def on_pct(pct: int) -> None:
-            self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
+            pct = max(0, min(100, pct))
+            if pct < last_pct[0]:
+                # Second balayage d'un outil (inject-rpu, hdr10plus_tool inject) : fenêtre suivante.
+                span[0] += span[1]
+            last_pct[0] = pct
+            self._progress.emit(token, "", int((span[0] + span[1] * pct / 100) * 100))
 
         def run(cmd: list[str]) -> object:
             return runner._run_cmd(cmd, label="hdr-patch", progress_cb=self._tool_line(cmd), progress_pct_cb=on_pct,
