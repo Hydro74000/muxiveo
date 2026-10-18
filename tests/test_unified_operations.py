@@ -286,14 +286,13 @@ def test_context_and_media_settings_share_one_operation(window, tmp_path, monkey
     assert window._run_btn.text() == "Remux & Encode"
 
 
-def test_incomplete_context_keeps_other_operations_accessible(window, tmp_path, monkeypatch):
+def test_incomplete_context_keeps_other_operations_accessible(window, tmp_path, monkeypatch, qt_app):
     hybrid = ready_hybrid(window, tmp_path)
     monkeypatch.setattr(window._dovi_panel, "operation_state", lambda: OperationState("merge_dovi", 1, "Fusionner DoVi", "film.mkv", True))
     window._refresh_operation_bar()
     assert not window._action_bar.arrow_button.isHidden()
     hybrid.output.clear()
-    QTest.qWait(90)
-    assert not window._run_btn.isEnabled()
+    _wait_until(qt_app, lambda: not window._run_btn.isEnabled())
     assert not window._action_bar.arrow_button.isHidden()
     assert "sortie" in window._status_lbl.text()
     launch = Mock()
@@ -327,7 +326,7 @@ def test_menu_keyboard_and_single_ready(qt_app):
     bar.close()
 
 
-def test_failure_retry_and_stale_auxiliary_messages(window, tmp_path):
+def test_failure_retry_and_stale_auxiliary_messages(window, tmp_path, qt_app):
     panel = ready_hybrid(window, tmp_path)
     window._on_studio_op_state("hybrid", "started", "Analyse")
     panel.log_message.emit("WARN", "Ancien aperçu indisponible")
@@ -338,8 +337,7 @@ def test_failure_retry_and_stale_auxiliary_messages(window, tmp_path):
     assert "Espace disque" in window._status_lbl.text()
     assert window._run_btn.isEnabled()
     panel.output.setText(str(tmp_path / "autre-sortie"))
-    QTest.qWait(90)
-    assert window._run_btn.text() == "Lancer l’hybridation"
+    _wait_until(qt_app, lambda: window._run_btn.text() == "Lancer l’hybridation")
 
 
 def test_hdr_studio_correction_uses_the_global_operation(window, tmp_path, monkeypatch, qt_app):
@@ -655,6 +653,23 @@ def test_hybrid_run_without_a_complete_pair_reports_failure(window, tmp_path):
     assert not window._running
     assert not panel.busy
     assert window._run_btn.text() == "Relancer l’hybridation"
+
+
+def test_hdr_studio_tabs_scroll_instead_of_compressing(window, qt_app):
+    """Journal agrandi : chaque onglet du HDR Studio défile, aucun contenu sous sa taille minimale."""
+    window.resize(1280, 720)
+    window._stack.setCurrentIndex(7)
+    studio = window._hdr_panel
+    window._log_panel.setMinimumHeight(420)
+    qt_app.processEvents()
+    for index in range(studio._tabs.count()):
+        studio._tabs.setCurrentIndex(index)
+        qt_app.processEvents()
+        page = studio._tabs.currentWidget()
+        assert isinstance(page, QScrollArea), studio._tabs.tabText(index)
+        content = page.widget()
+        assert content.height() >= content.minimumSizeHint().height(), studio._tabs.tabText(index)
+    window._log_panel.setMinimumHeight(0)
 
 
 def test_pages_have_one_scroll_owner_and_keep_global_controls_visible(window, qt_app):

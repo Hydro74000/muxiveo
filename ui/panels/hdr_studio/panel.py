@@ -293,55 +293,50 @@ class HdrStudio(QWidget):
         self._luminance.display_peak_changed.connect(self._display_peak_changed)
         self._luminance.apply_to_encode_requested.connect(self._apply_to_encode)
         self._luminance.prepare_patch_requested.connect(self._prepare_patch)
-        self._tabs.addTab(self._luminance, translate_text("Luminance"))
+        # Défilement propre à l'onglet : un journal agrandi ne comprime jamais la courbe ni les réglages.
+        self._luminance_scroll = self._scroll_area(self._luminance)
+        self._tabs.addTab(self._luminance_scroll, translate_text("Luminance"))
         self._dovi_tab = self._scroll_tab(translate_text("Dolby Vision"))
         self._hdr10plus_tab = self._scroll_tab(translate_text("HDR10+"))
         self._fel_tab = FelTab()
         self._fel_tab.analysis_requested.connect(self.analyse_fel)
         self._fel_tab.survival_requested.connect(self.test_fel_survival)
-        fel_scroll = QScrollArea()
-        fel_scroll.setWidgetResizable(True)
-        fel_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        fel_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
-        fel_scroll.setWidget(self._fel_tab)
-        self._fel_scroll = fel_scroll
-        self._tabs.addTab(fel_scroll, translate_text("FEL"))
+        self._fel_scroll = self._scroll_area(self._fel_tab)
+        self._tabs.addTab(self._fel_scroll, translate_text("FEL"))
         self._compare_tab = CompareTab()
         self._compare_tab.source_requested.connect(self.load_compare)
         self._compare_tab.track_requested.connect(self.compare_track_changed)
         self._compare_tab.analyze_requested.connect(self.analyze_compare)
-        compare_scroll = QScrollArea()
-        compare_scroll.setWidgetResizable(True)
-        compare_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        compare_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
-        compare_scroll.setWidget(self._compare_tab)
-        self._compare_scroll = compare_scroll
-        self._tabs.addTab(compare_scroll, translate_text("Comparer"))
+        self._compare_scroll = self._scroll_area(self._compare_tab)
+        self._tabs.addTab(self._compare_scroll, translate_text("Comparer"))
         self._editor = EditionTab()
         self._luminance.values_changed.connect(self._editor.set_static_values)
-        self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
+        self._editor.luminance_requested.connect(self.show_luminance_tab)
         self._editor.changed.connect(lambda: self.ready_changed.emit(self.operation_state().ready))
         self._editor.mastering_changed.connect(self._luminance.set_mastering_choice)
-        editor_scroll = QScrollArea()
-        editor_scroll.setWidgetResizable(True)
-        editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        editor_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
-        editor_scroll.setWidget(self._editor)
-        self._tabs.addTab(editor_scroll, translate_text("Édition"))
+        self._tabs.addTab(self._scroll_area(self._editor), translate_text("Édition"))
         outer.addWidget(self._tabs, 1)
 
-    def _scroll_tab(self, title: str) -> QVBoxLayout:
+    @staticmethod
+    def _scroll_area(widget: QWidget) -> QScrollArea:
+        """Onglet dans sa propre zone de défilement (contenu jamais comprimé sous sa taille minimale)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        scroll.setWidget(widget)
+        return scroll
+
+    def show_luminance_tab(self) -> None:
+        self._tabs.setCurrentWidget(self._luminance_scroll)
+
+    def _scroll_tab(self, title: str) -> QVBoxLayout:
         body = QWidget()
         body.setStyleSheet("background:transparent;")
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, scale(10), 0, 0)
         layout.setSpacing(scale(10))
-        scroll.setWidget(body)
-        self._tabs.addTab(scroll, title)
+        self._tabs.addTab(self._scroll_area(body), title)
         return layout
 
     # ── Source ──────────────────────────────────────────────────────────
@@ -653,7 +648,7 @@ class HdrStudio(QWidget):
         self.log_message.emit("OK", translate_text("Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
                                                    frames=measurement.frames, cll=measurement.max_cll(),
                                                    fall=measurement.max_fall()))
-        self._tabs.setCurrentWidget(self._luminance)
+        self.show_luminance_tab()
 
     # ── FEL Analyzer ────────────────────────────────────────────────────
     def show_fel_tab(self) -> None:
