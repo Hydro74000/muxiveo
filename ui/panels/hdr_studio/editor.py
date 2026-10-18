@@ -23,7 +23,7 @@ from core.hdr_inspection.patch import Hdr10PlusEdit, MasteringEdit, PatchPlan, R
 from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
-from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
+from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _secondary_button, _section_label
 
 _SPIN_STYLE = (
     "QSpinBox, QDoubleSpinBox{{background:{bg};color:{fg};border:1px solid {border};border-radius:5px;"
@@ -83,9 +83,10 @@ def _row(*items: QWidget | str) -> QHBoxLayout:
 
 
 class EditionTab(QWidget):
-    """Choix des corrections et de la sortie ; ``write_requested`` porte le plan complet."""
+    """Choix des corrections et de la sortie ; le plan prêt (``readiness``) est écrit depuis la barre d'exécution."""
 
-    write_requested = Signal(object)
+    #: Préparation modifiée (cases, valeurs, sortie) : l'état de la barre d'exécution est recalculé.
+    changed = Signal()
     luminance_requested = Signal()
     #: Luminance max. du MDCV choisi (nits), None s'il n'est pas modifié : aperçu de l'onglet Luminance.
     mastering_changed = Signal(object)
@@ -96,6 +97,8 @@ class EditionTab(QWidget):
         self._report: InspectionReport | None = None
         self._static_values = (0, 0)
         self._busy = False
+        self._ready_plan: PatchPlan | None = None
+        self._reason = ""
         self._syncing = False
         self._suggested: tuple[MasteringEdit, str] | None = None
         self._prefilled: tuple[str, int, bool] | None = None
@@ -232,12 +235,9 @@ class EditionTab(QWidget):
         layout.addLayout(row)
         self._summary = _label("", color=C.TEXT_PRI)
         layout.addWidget(self._summary)
-        self.write_btn = _primary_button(translate_text("Écrire le fichier corrigé"))
-        self.write_btn.clicked.connect(self._write)
-        actions = QHBoxLayout()
-        actions.addWidget(self.write_btn)
-        actions.addStretch()
-        layout.addLayout(actions)
+        layout.addWidget(_label(translate_text(
+            "Lancement : bouton « Écrire le fichier corrigé » de la barre d'exécution, sous le panneau."),
+            color=C.TEXT_DIM, size=10))
         return card
 
     # ── Données ─────────────────────────────────────────────────────────
@@ -472,8 +472,22 @@ class EditionTab(QWidget):
         else:
             summary = translate_text("Modifications : {changes}.", changes=", ".join(changes))
         self._summary.setText(summary)
-        self.write_btn.setEnabled(bool(changes and not invalid and output and Path(output) != Path(source))
-                                  and self._report is not None and not self._busy)
+        ready = bool(changes and not invalid and output and Path(output) != Path(source)) and self._report is not None
+        self._ready_plan = None
+        if ready:
+            try:
+                plan = self.plan()
+            except ValueError as exc:
+                summary = str(exc)
+                self._summary.setText(summary)
+            else:
+                self._ready_plan = plan if plan is not None and not plan.is_empty() else None
+        self._reason = "" if self._ready_plan is not None else summary
+        self.changed.emit()
+
+    def readiness(self) -> tuple[PatchPlan | None, str]:
+        """Plan prêt à écrire, sinon None et la raison affichée à l'utilisateur."""
+        return self._ready_plan, self._reason
 
     def _update_mdcv_hint(self) -> None:
         report = self._report
@@ -492,11 +506,6 @@ class EditionTab(QWidget):
                                          primaries=edit.primaries, min=f"{edit.min_nits:g}", max=f"{edit.max_nits:g}",
                                          source=translate_text(_MASTERING_SOURCES[source]))
         self._mdcv_hint.setText(text)
-
-    def _write(self) -> None:
-        plan = self.plan()
-        if plan is not None and not plan.is_empty():
-            self.write_requested.emit(plan)
 
 
 __all__ = ["EditionTab"]

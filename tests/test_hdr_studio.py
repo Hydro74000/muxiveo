@@ -370,16 +370,43 @@ def test_edition_plan_and_write(studio, qt_app, tmp_path, monkeypatch):
             self.kwargs = kwargs
 
         def run(self, plan):
+            self.kwargs["on_step"]("Édition du RPU Dolby Vision…", 0.0, 0.5)
+            self.kwargs["run_cmd"](["dovi_tool", "editor", "-i", "rpu.bin"])
             written.append(plan)
             plan.output.write_bytes(b"ok")
             return plan.output
 
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def _run_cmd(self, cmd, *, progress_cb=None, **_kwargs):
+            progress_cb("$ " + " ".join(cmd))
+            progress_cb("Rewriting file…")
+            return ""
+
     monkeypatch.setattr(panel_module, "MetadataPatcher", FakePatcher)
-    editor.write_btn.click()
+    monkeypatch.setattr(panel_module, "ToolRunner", FakeRunner)
+    # Barre d'exécution : opération « hdr » prête, lancée par run(), états et journal.
+    state = studio.operation_state()
+    assert state.key == "hdr" and state.page == 7 and state.ready and state.summary == "film.hdrfix.mkv ← film.mkv"
+    states: list[tuple[str, str]] = []
+    logs: list[tuple[str, str]] = []
+    tools: list[tuple[str, str]] = []
+    studio.op_state_changed.connect(lambda *args: states.append(args))
+    studio.log_message.connect(lambda *args: logs.append(args))
+    studio.tool_output.connect(lambda *args: tools.append(args))
+    studio.run()
     assert _wait(qt_app, lambda: not studio.is_busy() and studio._last_output is not None)
     assert written and studio._open_output_btn.isVisibleTo(studio)
+    assert [s for s, _ in states] == ["started", "step", "finished"] and "film.hdrfix.mkv" in states[-1][1]
+    assert ("INFO", "Édition du RPU Dolby Vision…") in logs
+    assert tools == [("dovi_tool", "$ dovi_tool editor -i rpu.bin"), ("dovi_tool", "Rewriting file…")]
     editor.output.setText(str(media))
-    assert not editor.write_btn.isEnabled() and "autre fichier" in editor._summary.text()
+    state = studio.operation_state()
+    assert not state.ready and "autre fichier" in state.reason and "autre fichier" in editor._summary.text()
+    studio.run()
+    assert ("WARN", state.reason) in logs
 
 
 def test_edition_mastering_display_sync(studio, qt_app, tmp_path, monkeypatch):
@@ -423,7 +450,7 @@ def test_edition_mastering_display_sync(studio, qt_app, tmp_path, monkeypatch):
     # Écran invalide : écriture refusée avec le motif.
     editor.mdcv_min.setValue(20)
     editor.mdcv_max.setValue(10)
-    assert not editor.write_btn.isEnabled() and "Écran de mastering invalide" in editor._summary.text()
+    assert editor.readiness()[0] is None and "Écran de mastering invalide" in editor._summary.text()
 
 
 def test_encode_panel_applies_light_levels(qt_app, monkeypatch):

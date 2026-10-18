@@ -2005,6 +2005,11 @@ class MainWindow(QMainWindow):
         )
         self._remux_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._hdr_panel.apply_to_encode_requested.connect(self._apply_hdr_levels_to_encode)
+        # HDR Studio → barre d'exécution (écriture du fichier corrigé) ; sortie des outils → journal verbose
+        self._hdr_panel.op_state_changed.connect(lambda state, label: self._on_studio_op_state("hdr", state, label))
+        self._hdr_panel.op_progress_pct.connect(self._on_hdr_progress_pct)
+        self._hdr_panel.ready_changed.connect(self._on_ready_changed)
+        self._hdr_panel.tool_output.connect(self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection)
         self._encode_panel.fel_analysis_requested.connect(self._open_fel_analyzer)
         self._encode_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._remux_panel.tool_output.connect(
@@ -2172,6 +2177,8 @@ class MainWindow(QMainWindow):
                        for source, path in episode.donor_files)) for episode in panel.matrix_episodes),
                 tuple(sorted(panel.jobs.items())),
             )
+        if owner == "hdr":
+            return repr(self._hdr_panel._editor.readiness()[0])
         if owner == "merge_dovi":
             dovi_panel = self._dovi_panel
             section = dovi_panel._config_section
@@ -2205,18 +2212,20 @@ class MainWindow(QMainWindow):
             str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
             ready, translate_text("Ajoutez une source et renseignez le fichier de sortie."),
         )
-        return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state()]
+        return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
+                self._hdr_panel.operation_state()]
 
     def _refresh_operation_bar(self) -> None:
         if not hasattr(self, "_action_bar"):
             return
         operations = self._operation_states()
-        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid"}.get(self._stack.currentIndex())
+        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid", 7: "hdr"}.get(self._stack.currentIndex())
         label = ""
         if self._running:
             active = {"encode": "media", "remux": "media", "extract": "media", "audio_sync": "media"}.get(self._op_mode, self._op_mode)
             label = translate_text({
                 "hybrid": "Hybridation en cours…", "merge_dovi": "Fusion DoVi en cours…",
+                "hdr": "Correction HDR en cours…",
                 "encode": "Encodage en cours…", "remux": "Remuxage en cours…",
                 "extract": "Extraction en cours…", "audio_sync": "Synchronisation en cours…",
             }.get(self._op_mode, "Opération en cours…"))
@@ -2229,7 +2238,8 @@ class MainWindow(QMainWindow):
         if not self._running and result is not None:
             key, status, message = result
             if key == active:
-                retry_label = translate_text({"hybrid": "Relancer l’hybridation", "merge_dovi": "Relancer la fusion", "media": "Relancer l’opération"}.get(key, "Relancer l’opération"))
+                retry_label = translate_text({"hybrid": "Relancer l’hybridation", "merge_dovi": "Relancer la fusion", "hdr": "Relancer la correction",
+                                            "media": "Relancer l’opération"}.get(key, "Relancer l’opération"))
                 operations = [replace(op, summary=message, label=retry_label if status == "failed" else op.label) if op.key == key else op for op in operations]
         self._action_bar.set_operations(operations, active, label)
         if not self._running:
@@ -2259,12 +2269,14 @@ class MainWindow(QMainWindow):
             self._hybrid_panel.run()
         elif key == "merge_dovi":
             self._dovi_panel._on_run()
+        elif key == "hdr":
+            self._hdr_panel.run()
         else:
             self._run_media_operation()
         self._refresh_operation_bar()
 
     def _on_run(self) -> None:
-        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid"}.get(self._stack.currentIndex())
+        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid", 7: "hdr"}.get(self._stack.currentIndex())
         if active is None:
             self._action_bar.open_menu()
         else:
@@ -2958,6 +2970,8 @@ class MainWindow(QMainWindow):
             self._hybrid_panel.cancel()
         elif self._op_mode == "merge_dovi":
             self._dovi_panel._on_cancel()
+        elif self._op_mode == "hdr":
+            self._hdr_panel.cancel()
         elif self._signals is not None:
             self._signals.cancel()
 
@@ -2999,7 +3013,7 @@ class MainWindow(QMainWindow):
             self._cancel_btn.setEnabled(True)
             self._cancel_btn.hide()
             self.log_requested.emit("OK" if state == "finished" else "WARN" if state == "cancelled" else "ERROR",
-                                    f"[{'HYBRID' if owner == 'hybrid' else 'DOVI'}] {label}")
+                                    f"[{ {'hybrid': 'HYBRID', 'hdr': 'HDR'}.get(owner, 'DOVI') }] {label}")
             if state == "failed":
                 self._expand_log_panel()
             self._op_mode = ""
@@ -3016,6 +3030,17 @@ class MainWindow(QMainWindow):
             self._prog_lbl.setText(self._format_progress_label(native_mux_progress_label(line) or ""))
         else:
             self._prog_lbl.setText(self._format_progress_label(line[:180]))
+
+    def _on_hdr_progress_pct(self, pct: int) -> None:
+        """Progression de la correction HDR : étape en cours (barre d'exécution) et pourcentage global."""
+        if self._op_mode != "hdr":
+            return
+        self._stop_prep_progress()
+        clamped = max(0, min(100, int(pct)))
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(clamped)
+        step = getattr(self, "_op_stage_label", "") or ""
+        self._prog_lbl.setText(f"{step}  ·  {clamped}%" if step else f"{clamped}%")
 
     def _on_hybrid_progress_pct(self, pct: int) -> None:
         if self._op_mode == "hybrid":

@@ -51,6 +51,7 @@ from core.inspector import FileInfo, FileInspector
 from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
 from ui.design_system import colors as C, font_px, scale
+from ui.operation_bar import OperationState
 from ui.panels.hdr_studio.editor import EditionTab
 from ui.panels.hdr_studio.fel_tab import FelTab
 from ui.panels.hdr_studio.luminance import LuminanceTab
@@ -168,6 +169,12 @@ class HdrStudio(QWidget):
 
     log_message = Signal(str, str)
     busy_changed = Signal(bool)
+    # Barre d'exécution globale (écriture du fichier corrigé) : mêmes signaux que les autres studios.
+    op_state_changed = Signal(str, str)
+    op_progress_pct = Signal(int)
+    ready_changed = Signal(bool)
+    #: Sortie détaillée des outils (outil, ligne) : journal verbose (niveau debug).
+    tool_output = Signal(str, str)
     #: Chemin, index ffprobe de la piste, MaxCLL, MaxFALL.
     apply_to_encode_requested = Signal(object, int, int, int)
     _inspected = Signal(int, object, int, object, str)
@@ -192,6 +199,8 @@ class HdrStudio(QWidget):
         self._pending_analyze = False
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
+        self._patch_token: int | None = None
+        self._last_step = ""
         # Moteur de mesure (plugin mvo-fel), remplaçable par les tests.
         from core.fel.engine import FelEngine
         self._engine_factory = FelEngine.installed
@@ -304,7 +313,7 @@ class HdrStudio(QWidget):
         self._editor = EditionTab()
         self._luminance.values_changed.connect(self._editor.set_static_values)
         self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
-        self._editor.write_requested.connect(self.write_patch)
+        self._editor.changed.connect(lambda: self.ready_changed.emit(self.operation_state().ready))
         self._editor.mastering_changed.connect(self._luminance.set_mastering_choice)
         editor_scroll = QScrollArea()
         editor_scroll.setWidgetResizable(True)
@@ -349,8 +358,8 @@ class HdrStudio(QWidget):
         """Charge ``path`` (piste ``stream_index`` si donnée) ; ``analyze`` : lance le niveau 2 ensuite."""
         path = Path(path)
         if not path.is_file() or not is_accepted(path):
-            self._set_status(translate_text("Fichier vidéo introuvable ou non pris en charge : {name}", name=path.name),
-                             error=True)
+            self._notify("ERROR", translate_text("Fichier vidéo introuvable ou non pris en charge : {name}",
+                                                 name=path.name))
             return
         self._stop_running()
         self._token += 1
@@ -385,7 +394,7 @@ class HdrStudio(QWidget):
             return
         self._set_busy(False)
         if info is None or not info.video_tracks:
-            self._set_status(error or translate_text("Aucune piste vidéo."), error=True)
+            self._notify("ERROR", error or translate_text("Aucune piste vidéo."))
             return
         self._info = info
         self._track_combo.blockSignals(True)
@@ -452,7 +461,7 @@ class HdrStudio(QWidget):
         info, stream = self._info, self._current_stream()
         snapshot = build_snapshot(info, stream)
         if snapshot.dovi is None and not snapshot.hdr10plus:
-            self._set_status(translate_text("Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste."))
+            self._notify("INFO", translate_text("Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste."))
             return
         self._token += 1
         token = self._token
@@ -473,7 +482,8 @@ class HdrStudio(QWidget):
             self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
 
         def run(cmd: object) -> object:
-            return runner._run_cmd(cmd, label="hdr-inspection", progress_pct_cb=on_pct, signals=signals)  # type: ignore[arg-type]
+            return runner._run_cmd(cmd, label="hdr-inspection", progress_cb=self._tool_line(cmd),  # type: ignore[arg-type]
+                                   progress_pct_cb=on_pct, signals=signals)
 
         def task() -> None:
             owned = None
@@ -506,7 +516,27 @@ class HdrStudio(QWidget):
             return
         if label:
             self._status.setText(label)
-        self._progress_bar.setValue(max(self._progress_bar.value(), pct))
+            if label != self._last_step:
+                self._last_step = label
+                self.log_message.emit("INFO", label)
+                if token == self._patch_token:
+                    self.op_state_changed.emit("step", label)
+        value = max(self._progress_bar.value(), pct)
+        self._progress_bar.setValue(value)
+        if token == self._patch_token:
+            self.op_progress_pct.emit(value)
+
+    def _tool_line(self, cmd: object) -> Callable[[str], None]:
+        """Lignes d'un outil (commande comprise) vers le journal verbose, étiquetées par l'outil."""
+        name = Path(str(cmd[0])).name if isinstance(cmd, list) and cmd else "hdr-studio"
+        return lambda line: self.tool_output.emit(name, line)
+
+    def _notify(self, level: str, text: str) -> None:
+        """Message visible dans la ligne d'état et dans le journal d'exécution, au niveau donné."""
+        if not text:
+            return
+        self._set_status(text, error=level == "ERROR")
+        self.log_message.emit(level, text)
 
     def _on_analyzed(self, token: int, report: InspectionReport | None, error: str) -> None:
         if token != self._token:
@@ -518,10 +548,9 @@ class HdrStudio(QWidget):
                                                                  self._measurement))
         if report is None:
             if error:
-                self._set_status(translate_text("Analyse impossible : {error}", error=error), error=True)
-                self.log_message.emit("ERROR", translate_text("Analyse HDR impossible : {error}", error=error))
+                self._notify("ERROR", translate_text("Analyse HDR impossible : {error}", error=error))
             else:
-                self._set_status(translate_text("Analyse annulée."))
+                self._notify("WARN", translate_text("Analyse annulée."))
             return
         self._render(report)
         for message in report.errors:
@@ -539,21 +568,20 @@ class HdrStudio(QWidget):
         info, stream = self._info, self._current_stream()
         snapshot = build_snapshot(info, stream)
         if snapshot.codec.lower() != "hevc" or not snapshot.is_pq:
-            self._set_status(translate_text("Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+)."),
-                             error=True)
+            self._notify("WARN", translate_text("Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+)."))
             return
         if snapshot.dovi is not None and snapshot.dovi.profile == 5:
-            self._set_status(translate_text("Profil 5 : aucune couche HDR10 à mesurer."), error=True)
+            self._notify("WARN", translate_text("Profil 5 : aucune couche HDR10 à mesurer."))
             return
         try:
             engine = self._engine_factory()
         except Exception as exc:  # extension absente ou incompatible : message à l'utilisateur
-            self._set_status(translate_text("Mesure impossible : {error}", error=str(exc)), error=True)
+            self._notify("ERROR", translate_text("Mesure impossible : {error}", error=str(exc)))
             return
         from core.fel.engine import measure_supported
         if not measure_supported(engine, "base"):
-            self._set_status(translate_text(
-                "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."), error=True)
+            self._notify("ERROR", translate_text(
+                "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."))
             return
         self._token += 1
         token = self._token
@@ -597,10 +625,9 @@ class HdrStudio(QWidget):
             return
         self._set_busy(False)
         if measurement is None:
-            self._set_status(translate_text("Mesure impossible : {error}", error=error) if error
-                             else translate_text("Mesure annulée."), error=bool(error))
-            if error:
-                self.log_message.emit("ERROR", translate_text("Mesure de l'image impossible : {error}", error=error))
+            self._notify("ERROR" if error else "WARN",
+                         translate_text("Mesure de l'image impossible : {error}", error=error) if error
+                         else translate_text("Mesure annulée."))
             return
         self._measurement = measurement
         report = self._report
@@ -624,12 +651,12 @@ class HdrStudio(QWidget):
         try:
             engine = self._engine_factory()
         except Exception as exc:  # extension absente ou incompatible
-            self._set_status(translate_text("FEL Analyzer impossible : {error}", error=str(exc)), error=True)
+            self._notify("ERROR", translate_text("FEL Analyzer impossible : {error}", error=str(exc)))
             return None
         from core.fel.engine import layers_supported
         if not (layers_supported(engine, "mapped") and layers_supported(engine, "reconstructed")):
-            self._set_status(translate_text(
-                "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."), error=True)
+            self._notify("ERROR", translate_text(
+                "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."))
             return None
         return engine
 
@@ -653,11 +680,11 @@ class HdrStudio(QWidget):
         snapshot, report = self._report.snapshot, self._report
         dovi = report.dovi
         if dovi is None:
-            self._set_status(translate_text(
-                "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU."), error=True)
+            self._notify("WARN", translate_text(
+                "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU."))
             return
         if dovi.el_type != "FEL" or not dovi.residual_active_frames:
-            self._set_status(translate_text(
+            self._notify("INFO", translate_text(
                 "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
                 kind="MEL" if dovi.el_type == "MEL" else translate_text("FEL vide")))
             return
@@ -772,10 +799,8 @@ class HdrStudio(QWidget):
         self._set_busy(False)
         from core.hdr_inspection.fel_analyzer import FelReport, recommendation
         if not isinstance(fel, FelReport):
-            self._set_status(translate_text("FEL Analyzer : {error}", error=error) if error
-                             else translate_text("Analyse annulée."), error=bool(error))
-            if error:
-                self.log_message.emit("ERROR", translate_text("FEL Analyzer : {error}", error=error))
+            self._notify("ERROR" if error else "WARN", translate_text("FEL Analyzer : {error}", error=error) if error
+                         else translate_text("Analyse annulée."))
             return
         self._fel_tab.set_fel_report(fel)
         verdict, detail = recommendation(fel)
@@ -799,6 +824,25 @@ class HdrStudio(QWidget):
             self.apply_to_encode_requested.emit(Path(report.snapshot.path), report.snapshot.stream_index,
                                                 max_cll, max_fall)
 
+    def operation_state(self) -> OperationState:
+        """Opération « Écrire le fichier corrigé » de la barre d'exécution."""
+        plan, reason = self._editor.readiness()
+        summary = (f"{plan.output.name} ← {plan.source.name}" if plan is not None
+                   else translate_text("Correction des métadonnées HDR sans réencodage"))
+        if plan is not None and self._busy:
+            reason = translate_text("HDR Studio occupé : attendre la fin de l'analyse en cours.")
+        return OperationState("hdr", 7, translate_text("Écrire le fichier corrigé"), summary,
+                              plan is not None and not self._busy,
+                              reason or translate_text("Choisissez les corrections dans l'onglet Édition."))
+
+    def run(self) -> None:
+        """Lancement depuis la barre d'exécution."""
+        plan, reason = self._editor.readiness()
+        if plan is None:
+            self._notify("WARN", reason)
+            return
+        self.write_patch(plan)
+
     def write_patch(self, plan: PatchPlan) -> None:
         """Écrit le fichier corrigé (thread de travail, annulable)."""
         if self._busy:
@@ -821,7 +865,8 @@ class HdrStudio(QWidget):
             self._progress.emit(token, "", int((span[0] + span[1] * max(0, min(100, pct)) / 100) * 100))
 
         def run(cmd: list[str]) -> object:
-            return runner._run_cmd(cmd, label="hdr-patch", progress_pct_cb=on_pct, signals=signals)
+            return runner._run_cmd(cmd, label="hdr-patch", progress_cb=self._tool_line(cmd), progress_pct_cb=on_pct,
+                                   signals=signals)
 
         def task() -> None:
             owned = None
@@ -844,28 +889,32 @@ class HdrStudio(QWidget):
                     except OSError:
                         pass
 
+        self._patch_token = token
         self._set_busy(True, translate_text("Correction du fichier…"))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Correction des métadonnées : {source} → {output}",
                                                      source=plan.source.name, output=plan.output.name))
+        self.op_state_changed.emit("started", translate_text("Correction de {name}…", name=plan.source.name))
         self._executor.submit(task)
 
     def _on_patched(self, token: int, output: Path | None, error: str) -> None:
         if token != self._token:
             return
         self._signals = None
+        self._patch_token = None
         self._set_busy(False)
         if output is None:
-            self._set_status(translate_text("Correction impossible : {error}", error=error) if error
-                             else translate_text("Correction annulée."), error=bool(error))
-            if error:
-                self.log_message.emit("ERROR", translate_text("Correction impossible : {error}", error=error))
+            message = (translate_text("Correction impossible : {error}", error=error) if error
+                       else translate_text("Correction annulée."))
+            self._set_status(message, error=bool(error))
+            # Journal : écrit par la barre d'exécution (état terminal).
+            self.op_state_changed.emit("failed" if error else "cancelled", message)
             return
         self._last_output = Path(output)
         self._open_output_btn.setVisible(True)
         self._set_status(translate_text("Fichier corrigé écrit : {name}", name=Path(output).name))
-        self.log_message.emit("OK", translate_text("Fichier corrigé écrit : {path}", path=str(output)))
+        self.op_state_changed.emit("finished", translate_text("Fichier corrigé écrit : {path}", path=str(output)))
 
     def _open_output(self) -> None:
         if self._last_output is not None:
@@ -888,6 +937,7 @@ class HdrStudio(QWidget):
     # ── État ────────────────────────────────────────────────────────────
     def _set_busy(self, busy: bool, status: str = "") -> None:
         self._busy = busy
+        self._last_step = ""
         self._progress_bar.setVisible(busy)
         if busy:
             self._set_status(status)
@@ -896,6 +946,7 @@ class HdrStudio(QWidget):
             self._progress_bar.setValue(0)
         self._update_actions()
         self.busy_changed.emit(busy)
+        self.ready_changed.emit(self.operation_state().ready)
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         self._status.setText(text)

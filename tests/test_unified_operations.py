@@ -342,6 +342,39 @@ def test_failure_retry_and_stale_auxiliary_messages(window, tmp_path):
     assert window._run_btn.text() == "Lancer l’hybridation"
 
 
+def test_hdr_studio_correction_uses_the_global_operation(window, tmp_path, monkeypatch, qt_app):
+    """HDR Studio : « Écrire le fichier corrigé » est l'opération de la barre d'exécution (page 7)."""
+    from ui.operation_bar import OperationState
+
+    studio = window._hdr_panel
+    ready = OperationState("hdr", 7, "Écrire le fichier corrigé", "film.hdrfix.mkv ← film.mkv", True)
+    monkeypatch.setattr(studio, "operation_state", lambda: ready)
+    run, cancel = Mock(), Mock()
+    monkeypatch.setattr(studio, "run", run)
+    monkeypatch.setattr(studio, "cancel", cancel)
+    window._stack.setCurrentIndex(7)
+    window._refresh_operation_bar()
+    assert window._action_bar._active == "hdr" and window._run_btn.text() == "Écrire le fichier corrigé"
+    assert window._action_bar.heading.text() == "HDR STUDIO"
+    window._run_btn.click()
+    run.assert_called_once()
+    studio.op_state_changed.emit("started", "Correction de film.mkv…")
+    studio.op_state_changed.emit("step", "Édition du RPU Dolby Vision…")
+    studio.op_progress_pct.emit(40)
+    assert window._running and window._prog_bar.value() == 40
+    assert window._prog_lbl.text().startswith("Édition du RPU Dolby Vision…")
+    monkeypatch.setattr("ui.main_window.QMessageBox.question", lambda *_a, **_kw: QMessageBox.StandardButton.Yes)
+    window._on_cancel_op()
+    cancel.assert_called_once()
+    entries: list[tuple[str, str]] = []
+    monkeypatch.setattr(window, "_emit_log_entry", lambda message, level: entries.append((level.value, message)))
+    studio.op_state_changed.emit("failed", "Correction impossible : disque plein")
+    assert not window._running and window._run_btn.text() == "Relancer la correction"
+    assert ("ERROR", "[HDR] Correction impossible : disque plein") in entries
+    studio.log_message.emit("WARN", "Analyse annulée.")
+    _wait_until(qt_app, lambda: ("WARN", "[HDR] Analyse annulée.") in entries)
+
+
 @pytest.mark.parametrize("owner,page", [("hybrid", 4), ("merge_dovi", 1)])
 def test_navigation_and_cancellation_keep_the_owner(window, tmp_path, monkeypatch, owner, page):
     ready_hybrid(window, tmp_path)

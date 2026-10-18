@@ -130,7 +130,8 @@ class OperationBar(QWidget):
             self.run_button.style().unpolish(self.run_button)
             self.run_button.style().polish(self.run_button)
         self.cancel_button.setVisible(self._busy)
-        self.heading.setText(translate_text({"media": "REMUX / ENCODAGE", "hybrid": "HYBRID STUDIO", "merge_dovi": "MERGE DOVI / HDR10+"}.get(active or "", "OPÉRATIONS CONFIGURÉES")))
+        self.heading.setText(translate_text({"media": "REMUX / ENCODAGE", "hybrid": "HYBRID STUDIO", "merge_dovi": "MERGE DOVI / HDR10+",
+                                                    "hdr": "HDR STUDIO"}.get(active or "", "OPÉRATIONS CONFIGURÉES")))
         if not self._busy:
             self.status_label.setVisible(True)
             self.status_label.setText((current.summary if current.ready else current.reason) if current else translate_text("{count} opérations prêtes", count=len(ready)))

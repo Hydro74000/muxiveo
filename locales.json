@@ -8130,5 +8130,37 @@
   "écran usuel couvrant le pic du contenu": {
     "fra": "écran usuel couvrant le pic du contenu",
     "eng": "a common display covering the content peak"
+  },
+  "Correction des métadonnées HDR sans réencodage": {
+    "fra": "Correction des métadonnées HDR sans réencodage",
+    "eng": "HDR metadata correction without re-encoding"
+  },
+  "HDR Studio occupé : attendre la fin de l'analyse en cours.": {
+    "fra": "HDR Studio occupé : attendre la fin de l'analyse en cours.",
+    "eng": "HDR Studio is busy: wait for the current analysis to finish."
+  },
+  "Correction de {name}…": {
+    "fra": "Correction de {name}…",
+    "eng": "Correcting {name}…"
+  },
+  "Choisissez les corrections dans l'onglet Édition.": {
+    "fra": "Choisissez les corrections dans l'onglet Édition.",
+    "eng": "Choose the corrections in the Editing tab."
+  },
+  "Lancement : bouton « Écrire le fichier corrigé » de la barre d'exécution, sous le panneau.": {
+    "fra": "Lancement : bouton « Écrire le fichier corrigé » de la barre d'exécution, sous le panneau.",
+    "eng": "Run it with the “Write the corrected file” button of the execution bar, below the panel."
+  },
+  "Correction HDR en cours…": {
+    "fra": "Correction HDR en cours…",
+    "eng": "HDR correction in progress…"
+  },
+  "Relancer la correction": {
+    "fra": "Relancer la correction",
+    "eng": "Retry the correction"
+  },
+  "HDR STUDIO": {
+    "fra": "HDR STUDIO",
+    "eng": "HDR STUDIO"
   }
 }
