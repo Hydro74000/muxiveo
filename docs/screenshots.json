@@ -35,7 +35,21 @@
   "extra_scenes": [
     "settings",
     "plugins",
-    "operations"
+    "operations",
+    "hdr-overview",
+    "hdr-luminance",
+    "hdr-dovi",
+    "hdr-fel",
+    "hdr-fel-detail",
+    "hdr-compare",
+    "hdr-edit",
+    "fel-encoding",
+    "interpolation",
+    "video-budget",
+    "closed-captions",
+    "workflow-menu",
+    "hdr-fel-viewer",
+    "hdr-fel-difference"
   ],
   "images": [
     {
@@ -115,6 +129,66 @@
     },
     {
       "locale": "fr",
+      "file": "Muxiveo-fr-closed-captions.png",
+      "sha256": "963905ced450820417b16546b9e40a9bbc4fab80cf382ae185f8202138b41730"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-fel-encoding.png",
+      "sha256": "3f879361b8faf057100e63f2e60c214d804cd0ff09084cc0b18413d4205ddec5"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-compare.png",
+      "sha256": "533885c9d30627ea59b66c16c094f306a9159f9fee7a2f40c91b2714a5148fa4"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-dovi.png",
+      "sha256": "aed3310aa0316ef68484afc23162fb921e4596da05f810987d9c9eb86fa6de0e"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-edit.png",
+      "sha256": "3b97fe463d41d90735be5abf9d3d39ea829a613e7214b48603479ebd439a2a2e"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-detail.png",
+      "sha256": "01e9df53db1f075846561f668e0bd97bcdf8a98f968d9bc788013c20ab8433fe"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-difference.png",
+      "sha256": "d10f16a131e50a22ba606d45d7a2d854934ae8a5030a73f901f94270394fa6dd"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-viewer.png",
+      "sha256": "662c40a19acee005bdbc434ff6a7c2245d5a0107d00fc4828eaace6fab6c6588"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel.png",
+      "sha256": "f27d38d3cda163e47090d8f40516e7f646dd125ca3527522b2f6b2d0aff44efe"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-luminance.png",
+      "sha256": "f3c99849bd0cc6aead16c1b441622ce8afeb71324b34168a6043757953fd28ec"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-overview.png",
+      "sha256": "7c367b3817b5dc86b73b66ae890d42b88dbb4a3f3b7ba6e0635defc445adbbf1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-interpolation.png",
+      "sha256": "08c6818665f0b892953865e0667c918360caf15bbc48b3d9483747cab4920b2a"
+    },
+    {
+      "locale": "fr",
       "file": "Muxiveo-fr-operations.png",
       "sha256": "f2a7c585792a4e47526087119f597bdfa90cf2e4cd143ff749177ad3ea7ded86"
     },
@@ -127,6 +201,16 @@
       "locale": "fr",
       "file": "Muxiveo-fr-settings.png",
       "sha256": "5eb8c90c283076f2eb47c107c2ba69bc65f7efd42f656398114a5aec3e89cd73"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-video-budget.png",
+      "sha256": "f881a8b31af024dd868232cbfc5d8e91b9e97e99054d0fd4a1bee8ea4b025ae1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-workflow-menu.png",
+      "sha256": "f3f0d109849461cacf6db12fa83ed4688d3a355f4e6c5d9f40d17f0980cdb715"
     },
     {
       "locale": "en",
@@ -195,6 +279,66 @@
     },
     {
       "locale": "en",
+      "file": "Muxiveo-en-closed-captions.png",
+      "sha256": "9f05b056df7951f216b675c3ad9e4df00248457f586b2137f8e9dfc36aa79610"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-fel-encoding.png",
+      "sha256": "efa59d5d19e76febc919daef757705e79d37620c1d7237582d6f1d3965f9f73f"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-compare.png",
+      "sha256": "7ee5275b2f38d3a46b1b0946d2e35f6e361cc213284c8e768b8f2747dc116794"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-dovi.png",
+      "sha256": "d733e756af751b1f9241349fbf7f67fc84d738ee5941bc34fb8a4bf2948ea485"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-edit.png",
+      "sha256": "fbc6dd002c5aac3ec438633b40fe425a2a59c9ffcb2ea71fb98113b5e9fd83f8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-detail.png",
+      "sha256": "636ab3d78b2b5845fadbe9c5546a303b1500cf7dea7b6a42c1df76d256491cff"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-difference.png",
+      "sha256": "5d434afa3d772a1d953ffc3402bd8e134da93297f07bb5219fa43c851ef6a1f5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-viewer.png",
+      "sha256": "a5f0d299a0a4f56f960946cc8571d1e097a883b00e5bc6be4c5298be618d77a1"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel.png",
+      "sha256": "ba4a41cff04371691c73515dd2e581f93dc196be16fc77bdaf039e4fb62e8d74"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-luminance.png",
+      "sha256": "11bd23dc90f0b4b8b9c566a94a9cc1b7f31e04c8d22941fd4b9f3085dcb8c80d"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-overview.png",
+      "sha256": "f529c9b003ab6c1104a33ec40f04f444f047d1a50ab603264978adfcc89c258a"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-interpolation.png",
+      "sha256": "4b51e3e5b79b4634358ba856ecfe5357cc6e7f9d3c149931f3a432de88984d2a"
+    },
+    {
+      "locale": "en",
       "file": "Muxiveo-en-operations.png",
       "sha256": "3f7e8a157bb50c29e4d5485c3361683ea99128ed004bc67fc1a1c4cd6ba600da"
     },
@@ -207,6 +351,16 @@
       "locale": "en",
       "file": "Muxiveo-en-settings.png",
       "sha256": "ce07d1846c0242a38e41180c63177a4e922d34d92a033d88a5c1affe82dcb46c"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-video-budget.png",
+      "sha256": "6fc71007c97e242dd364cab1abe8069feb4841d2486e8d0b1dc4a8813e1715e4"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-workflow-menu.png",
+      "sha256": "649264989cae5ca3232b23352ef29d0d8f37adbfcc3508e63b2bf12f3201ffe1"
     }
   ]
 }

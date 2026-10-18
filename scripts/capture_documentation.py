@@ -35,10 +35,16 @@ SCENES = {
         "11": "cuts", "12": "profile",
     },
 }
-EXTRA_SCENES = ("settings", "plugins", "operations")
+DETAIL_SCENES = (
+    "hdr-overview", "hdr-luminance", "hdr-dovi", "hdr-fel", "hdr-fel-detail",
+    "hdr-compare", "hdr-edit", "fel-encoding", "interpolation", "video-budget",
+    "closed-captions", "workflow-menu",
+    "hdr-fel-viewer", "hdr-fel-difference",
+)
+EXTRA_SCENES = ("settings", "plugins", "operations", *DETAIL_SCENES)
 
 
-def render(locale: str, destination: Path) -> None:
+def render(locale: str, destination: Path, only: list[str] | None = None) -> None:
     with tempfile.TemporaryDirectory(prefix="muxiveo-documentation-") as temp:
         scratch = Path(temp)
         for variable in ("MUXIVEO_CONFIG_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
@@ -46,10 +52,10 @@ def render(locale: str, destination: Path) -> None:
             os.environ[variable] = str(scratch / variable)
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         sys.path.insert(0, str(ROOT))
-        _render_widgets(locale, destination, scratch)
+        _render_widgets(locale, destination, scratch, only)
 
 
-def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
+def _render_widgets(locale: str, destination: Path, scratch: Path, only: list[str] | None = None) -> None:
     import numpy as np
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtGui import QFont, QPainter
@@ -245,6 +251,8 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
         settle()
 
     scenes = {**SCENES[locale], **{name: name for name in EXTRA_SCENES}}
+    if only:
+        scenes = {key: scene for key, scene in scenes.items() if scene in only}
     for key, scene in scenes.items():
         basename = f"Muxiveo-{locale}-{key}.png"
         if scene == "container-empty":
@@ -256,6 +264,11 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
             save(scene, basename)
             continue
         populate()
+        if scene in DETAIL_SCENES:
+            from documentation_hdr import capture_detail
+
+            capture_detail(scene, win, reference_info, page, settle, save, basename, text)
+            continue
         if scene in ("tracks", "track-edit"):
             page(3)
             if scene == "track-edit":
@@ -376,6 +389,12 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
             DesignSystem.set_theme("dark")
             DesignSystem.apply_to_application(app)
 
+    if only and "cli-help" not in only:
+        win.close()
+        settle(2)
+        app.shutdown()
+        return
+
     # Real command output, rather than a fabricated successful processing log.
     terminal = QWidget()
     terminal.setWindowTitle("Muxiveo CLI")
@@ -399,12 +418,15 @@ def _render_widgets(locale: str, destination: Path, scratch: Path) -> None:
     app.shutdown()
 
 
-def publish(site: Path, wiki: Path) -> None:
+def publish(site: Path, wiki: Path, only: list[str] | None = None) -> None:
     records = []
     for locale in SCENES:
         destination = site / "assets/img/screenshots" / locale
-        subprocess.run([sys.executable, __file__, "--render-locale", locale,
-                        "--destination", str(destination)], check=True, cwd=ROOT)
+        command = [sys.executable, __file__, "--render-locale", locale,
+                   "--destination", str(destination)]
+        if only:
+            command += ["--only", *only]
+        subprocess.run(command, check=True, cwd=ROOT)
         for path in sorted(destination.glob("*.png")):
             records.append({"locale": locale, "file": path.name,
                             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
@@ -424,16 +446,19 @@ def main() -> None:
     parser.add_argument("--wiki-root", type=Path, default=ROOT.parent / "mediarecode.wiki")
     parser.add_argument("--render-locale", choices=SCENES)
     parser.add_argument("--destination", type=Path)
+    parser.add_argument("--only", nargs="+", choices=sorted({
+        scene for scenes in SCENES.values() for scene in scenes.values()
+    } | set(EXTRA_SCENES) | {"cli-help"}), help="Render only these scenes; retain the other images.")
     args = parser.parse_args()
     if args.render_locale:
         if args.destination is None:
             parser.error("--destination is required with --render-locale")
-        render(args.render_locale, args.destination)
+        render(args.render_locale, args.destination, args.only)
     else:
         for directory in (args.site_root, args.wiki_root):
             if not directory.is_dir():
                 parser.error(f"Missing repository: {directory}")
-        publish(args.site_root, args.wiki_root)
+        publish(args.site_root, args.wiki_root, args.only)
 
 
 if __name__ == "__main__":
