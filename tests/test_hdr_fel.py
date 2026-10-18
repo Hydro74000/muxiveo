@@ -346,8 +346,11 @@ def test_fel_tab_renders_report(qt_app, tmp_path):
         assert any("1920×1080" in text for text in labels) and any("0:12" in text for text in labels)
         moments: list[float] = []
         tab.moment_requested.connect(moments.append)
-        from PySide6.QtWidgets import QPushButton
-        next(b for b in tab.findChildren(QPushButton) if b.text().startswith("Comparer en pleine")).click()
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        from ui.panels.hdr_studio.fel_tab import _ClickableLabel
+        QTest.mouseClick(tab.findChildren(_ClickableLabel)[1], Qt.MouseButton.LeftButton)
         assert moments == [12.0]
     finally:
         tab.close()

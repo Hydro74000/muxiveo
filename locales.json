@@ -8671,14 +8671,6 @@
     "fra": "Apport global moyen ({jnd} JND) par cumul : {categories}.",
     "eng": "Medium overall contribution ({jnd} JND) by pooling: {categories}."
   },
-  "Comparer en pleine définition…": {
-    "fra": "Comparer en pleine définition…",
-    "eng": "Compare at full resolution…"
-  },
-  "Image avant / après zoomable, trait de séparation à glisser.": {
-    "fra": "Image avant / après zoomable, trait de séparation à glisser.",
-    "eng": "Zoomable before / after picture with a draggable divider."
-  },
   "Capture du moment {time} en pleine définition…": {
     "fra": "Capture du moment {time} en pleine définition…",
     "eng": "Capturing moment {time} at full resolution…"
@@ -8714,5 +8706,9 @@
   "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}": {
     "fra": "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}",
     "eng": "Pixel {x}, {y}: without FEL {before} nits · with FEL {after} nits{change}"
+  },
+  "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).": {
+    "fra": "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).",
+    "eng": "Click: full-resolution before / after comparison (zoom, draggable divider)."
   }
 }

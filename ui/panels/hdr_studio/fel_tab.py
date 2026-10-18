@@ -292,15 +292,8 @@ class FelTab(QWidget):
         layout = QVBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, scale(6))
         layout.setSpacing(scale(4))
-        header = QHBoxLayout()
-        header.addWidget(_text(translate_text("{time} · indice {score}", time=format_time(moment.time_s),
+        layout.addWidget(_text(translate_text("{time} · indice {score}", time=format_time(moment.time_s),
                                               score=f"{moment.score:.2f}"), bold=True))
-        compare = _secondary_button(translate_text("Comparer en pleine définition…"))
-        compare.setToolTip(translate_text("Image avant / après zoomable, trait de séparation à glisser."))
-        compare.clicked.connect(lambda: self.moment_requested.emit(moment.time_s))
-        header.addWidget(compare)
-        header.addStretch()
-        layout.addLayout(header)
         images = QHBoxLayout()
         images.setSpacing(scale(8))
         for title, image in ((translate_text("Sans FEL (P8.1)"), moment.mapped),
@@ -310,7 +303,8 @@ class FelTab(QWidget):
             picture = _ClickableLabel()
             picture.setPixmap(_pixmap(image, scale(300)))
             picture.setCursor(Qt.CursorShape.PointingHandCursor)
-            picture.setToolTip(translate_text("Comparer en pleine définition…"))
+            picture.setToolTip(translate_text("Clic : comparateur avant / après en pleine définition (zoom, trait à "
+                                              "glisser)."))
             picture.clicked.connect(lambda time_s=moment.time_s: self.moment_requested.emit(time_s))
             column.addWidget(picture)
             column.addWidget(_text(title, color=C.TEXT_SEC, size=10))
