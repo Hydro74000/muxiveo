@@ -199,9 +199,12 @@ class Hdr10PlusEdit:
     drop_bezier: bool = False
     #: Plafond (nits) des MaxScl, AverageRGB et percentiles (valeurs saturées, pics aberrants).
     cap_nits: float | None = None
+    #: HDR10+ recalculé depuis la mesure de l'image : (``ImageMeasurement``, débuts de plans), profil A.
+    recompute: tuple[object, object] | None = field(default=None, compare=False)
 
     def is_empty(self) -> bool:
-        return not (self.remove or self.targeted_display is not None or self.drop_bezier or self.cap_nits)
+        return not (self.remove or self.targeted_display is not None or self.drop_bezier or self.cap_nits
+                    or self.recompute is not None)
 
 
 @dataclass(frozen=True)
@@ -374,7 +377,14 @@ class MetadataPatcher:
                     stripped = self._work / "video_sans_hdr10plus.hevc"
                     extracted, edited_json = self._work / "hdr10plus.json", self._work / "hdr10plus_edit.json"
                     temporaries += [extracted, edited_json]
-                    if not plan.hdr10plus.remove:
+                    if plan.hdr10plus.recompute is not None and not plan.hdr10plus.remove:
+                        # Statistiques de la mesure → JSON profil A, puis options éventuelles (TSDML, plafond).
+                        from core.fel.hdr10plus import statistics_from_measurement, write_hdr10plus_json
+
+                        write_hdr10plus_json(statistics_from_measurement(*plan.hdr10plus.recompute), extracted)
+                        transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
+                        extracted.unlink(missing_ok=True)
+                    elif not plan.hdr10plus.remove:
                         self._run([self._hdr10plus, "extract", str(current), "-o", str(extracted)])
                         transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
                         extracted.unlink(missing_ok=True)

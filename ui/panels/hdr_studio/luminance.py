@@ -19,7 +19,7 @@ from core.hdr_inspection.tonemap import (
 )
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
-from ui.panels.hdr_studio.chart import ChartMarker, ChartSeries, LuminanceChart
+from ui.panels.hdr_studio.chart import ChartMarker, ChartSeries, LuminanceChart, chart_controls
 from ui.styles import _card, _checkbox_style, _combo_style, _primary_button, _secondary_button, _section_label
 
 _SOURCE_LABELS = {
@@ -120,13 +120,17 @@ class LuminanceTab(QWidget):
         self._legend.setSpacing(scale(14))
         layout.addLayout(self._legend)
         self.chart = LuminanceChart()
+        self.chart_controls = chart_controls(self.chart)
+        layout.addWidget(self.chart_controls)
         layout.addWidget(self.chart, 1)
         self._hover = _text(color=C.TEXT_SEC, size=10)
         self.chart.hover_changed.connect(self._hover.setText)
         layout.addWidget(self._hover)
         layout.addWidget(_text(translate_text(
-            "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. "
-            "Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict."),
+            "Axes en nits, plage ajustée aux valeurs visibles (échelle PQ par défaut) ; pics et affichage TV à gauche, "
+            "moyennes à droite ; un repère hors plage est signalé en haut (↑). Molette : zoom ; glisser : déplacement ; "
+            "double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ "
+            "est un maximum strict."),
             color=C.TEXT_DIM, size=10))
 
         card = _card()

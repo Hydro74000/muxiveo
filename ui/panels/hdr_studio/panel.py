@@ -42,6 +42,7 @@ from core.hdr_inspection import (
 )
 from core.hdr_inspection import summary
 from core.hdr_inspection.compare import Side
+from core.hdr_inspection.realign import Realignment, realign
 from core.hdr_inspection.fel_analyzer import CaptureLayer
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
 from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
@@ -188,6 +189,9 @@ class HdrStudio(QWidget):
         # Piste B de l'onglet Comparer.
         self._compare_info: FileInfo | None = None
         self._compare_token = 0
+        # Réalignement sur la mesure, mémorisé (rapport, mesure, pic de l'écran).
+        self._realign_key: tuple | None = None
+        self._realign_value: Realignment | None = None
         self._patch_token: int | None = None
         self._last_step = ""
         # Moteur de mesure (plugin mvo-fel), remplaçable par les tests.
@@ -314,6 +318,7 @@ class HdrStudio(QWidget):
         self._editor.luminance_requested.connect(self.show_luminance_tab)
         self._editor.changed.connect(lambda: self.ready_changed.emit(self.operation_state().ready))
         self._editor.mastering_changed.connect(self._luminance.set_mastering_choice)
+        self._editor.light_levels_requested.connect(self._luminance.set_values)
         self._tabs.addTab(self._scroll_area(self._editor), translate_text("Édition"))
         outer.addWidget(self._tabs, 1)
 
@@ -326,6 +331,17 @@ class HdrStudio(QWidget):
         scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
         scroll.setWidget(widget)
         return scroll
+
+    def _realignment(self, report: InspectionReport | None) -> Realignment | None:
+        """Réalignement sur la mesure (mémorisé par rapport, mesure et pic de l'écran)."""
+        measurement = self._measurement
+        if report is None or measurement is None:
+            return None
+        peak = float(getattr(self._config, "display_peak_nits", 1000) or 1000)
+        key = (id(report), id(measurement), peak)
+        if self._realign_key != key:
+            self._realign_key, self._realign_value = key, realign(report, measurement, peak)
+        return self._realign_value
 
     def show_luminance_tab(self) -> None:
         self._tabs.setCurrentWidget(self._luminance_scroll)
@@ -648,6 +664,11 @@ class HdrStudio(QWidget):
         self.log_message.emit("OK", translate_text("Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
                                                    frames=measurement.frames, cll=measurement.max_cll(),
                                                    fall=measurement.max_fall()))
+        realignment = self._realignment(report)
+        for proposal in getattr(realignment, "proposals", ()):
+            self.log_message.emit("WARN" if proposal.applicable else "INFO", translate_text(
+                "Réalignement proposé (onglet Édition) — {title} : {current} → {proposed} ({impact})",
+                title=proposal.title, current=proposal.current, proposed=proposal.proposed, impact=proposal.impact))
         self.show_luminance_tab()
 
     # ── FEL Analyzer ────────────────────────────────────────────────────
@@ -970,6 +991,7 @@ class HdrStudio(QWidget):
     def _display_peak_changed(self, value: int) -> None:
         # Enregistré avec la configuration (fermeture de l'application ou page Paramètres).
         self._config.display_peak_nits = int(value)
+        self._editor.set_realignment(self._realignment(self._report))
 
     def _apply_to_encode(self, max_cll: int, max_fall: int) -> None:
         report = self._report
@@ -1151,6 +1173,7 @@ class HdrStudio(QWidget):
         self._fel_tab.set_report(report)
         self._compare_tab.set_side_a(Side(report, self._measurement) if report is not None else None)
         self._editor.set_report(report, self._measurement)
+        self._editor.set_realignment(self._realignment(report))
         if report is None:
             self._overview.addWidget(_label(translate_text(
                 "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo "

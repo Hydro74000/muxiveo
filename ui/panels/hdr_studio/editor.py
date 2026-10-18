@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from core.hdr_inspection import InspectionReport
 from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.patch import Hdr10PlusEdit, MasteringEdit, PatchPlan, RpuEdit, StaticEdit, suggested_mastering
+from core.hdr_inspection.realign import Realignment, scene_cuts
 from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
@@ -90,6 +91,8 @@ class EditionTab(QWidget):
     luminance_requested = Signal()
     #: Luminance max. du MDCV choisi (nits), None s'il n'est pas modifié : aperçu de l'onglet Luminance.
     mastering_changed = Signal(object)
+    #: MaxCLL, MaxFALL proposés par le réalignement : valeurs de l'onglet Luminance.
+    light_levels_requested = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -103,6 +106,9 @@ class EditionTab(QWidget):
         self._suggested: tuple[MasteringEdit, str] | None = None
         self._prefilled: tuple[str, int, bool] | None = None
         self._emitted_mastering: float | None = None
+        self._measurement: ImageMeasurement | None = None
+        self._realignment: Realignment | None = None
+        self._realign_boxes: dict[str, QCheckBox] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, scale(10), 0, 0)
         layout.setSpacing(scale(10))
@@ -110,6 +116,8 @@ class EditionTab(QWidget):
             "Les corrections réécrivent le fichier sans réencoder l'image : flux vidéo extrait, métadonnées "
             "corrigées par dovi_tool et hdr10plus_tool, puis replacé dans une copie du MKV (autres pistes, "
             "chapitres et pièces jointes conservés). La source n'est jamais modifiée."), color=C.TEXT_DIM, size=10))
+        self._realign_card = self._build_realign()
+        layout.addWidget(self._realign_card)
         layout.addWidget(self._build_static())
         self._dovi_card = self._build_dovi()
         layout.addWidget(self._dovi_card)
@@ -134,6 +142,83 @@ class EditionTab(QWidget):
         layout.setSpacing(scale(6))
         layout.addWidget(_section_label(title))
         return card, layout
+
+    def _build_realign(self) -> QWidget:
+        card, layout = self._card(translate_text("RÉALIGNEMENT D'APRÈS LA MESURE"))
+        layout.addWidget(_label(translate_text(
+            "Écarts entre les métadonnées et l'image mesurée qui ont un effet visible (écrêtage ou assombrissement "
+            "simulés sur l'écran choisi dans l'onglet Luminance). Les propositions cochées sont reportées dans les "
+            "corrections ci-dessous ; l'écriture se lance ensuite depuis la barre d'exécution."), color=C.TEXT_DIM,
+            size=10))
+        self._realign_rows = QVBoxLayout()
+        self._realign_rows.setSpacing(scale(6))
+        layout.addLayout(self._realign_rows)
+        self.realign_btn = _secondary_button(translate_text("Reporter les propositions cochées"))
+        self.realign_btn.clicked.connect(self.apply_realignment)
+        actions = QHBoxLayout()
+        actions.addWidget(self.realign_btn)
+        actions.addStretch()
+        layout.addLayout(actions)
+        card.setVisible(False)
+        return card
+
+    def set_realignment(self, realignment: Realignment | None) -> None:
+        """Propositions de réalignement (mesure de l'image) ; carte masquée sans écart visible."""
+        self._realignment = realignment
+        while self._realign_rows.count():
+            item = self._realign_rows.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._realign_boxes = {}
+        proposals = realignment.proposals if realignment is not None else ()
+        for proposal in proposals:
+            row = QWidget()
+            row.setStyleSheet("background:transparent;")
+            column = QVBoxLayout(row)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(scale(2))
+            text = f"{proposal.title} : {proposal.current} → {proposal.proposed}"
+            if proposal.applicable:
+                box = _check(text)
+                box.setChecked(True)
+                self._realign_boxes[proposal.key] = box
+                column.addWidget(box)
+            else:
+                column.addWidget(_label("⚠ " + text, color=C.WARN))
+            impact = _label(proposal.impact, color=C.TEXT_DIM, size=10)
+            impact.setContentsMargins(scale(22), 0, 0, 0)
+            column.addWidget(impact)
+            self._realign_rows.addWidget(row)
+        self.realign_btn.setVisible(bool(self._realign_boxes))
+        self._realign_card.setVisible(bool(proposals))
+
+    def apply_realignment(self) -> None:
+        """Reporte les propositions cochées dans les corrections (cases cochées, valeurs remplies)."""
+        realignment = self._realignment
+        if realignment is None:
+            return
+        chosen = {key for key, box in self._realign_boxes.items() if box.isChecked()}
+        if "static" in chosen and realignment.light_levels is not None:
+            self.light_levels_requested.emit(*realignment.light_levels)
+            self.static_box.setChecked(True)
+        if "mdcv" in chosen and realignment.mastering is not None:
+            edit = realignment.mastering
+            self._set_mdcv(edit.primaries, edit.min_nits, edit.max_nits)
+            self.mdcv_box.setChecked(True)
+            self._mastering_edited("mdcv")
+        if "l6" in chosen and realignment.l6 is not None:
+            max_mastering, min_mastering, cll, fall = realignment.l6
+            self.l6_max_mastering.setValue(int(max_mastering))
+            self.l6_min_mastering.setValue(float(min_mastering))
+            self.l6_cll.setValue(int(cll))
+            self.l6_fall.setValue(int(fall))
+            self.l6_box.setChecked(True)
+        if "hdr10plus" in chosen and realignment.hdr10plus_scenes is not None:
+            self.h10_remove.setChecked(False)
+            self.h10_recompute.setChecked(True)
+        self._sync()
 
     def _build_static(self) -> QWidget:
         card, layout = self._card(translate_text("HDR10 STATIQUE (SEI ET CONTENEUR)"))
@@ -206,6 +291,10 @@ class EditionTab(QWidget):
     def _build_hdr10plus(self) -> QWidget:
         card, layout = self._card(translate_text("HDR10+"))
         self.h10_remove = _check(translate_text("Retirer le HDR10+"))
+        self.h10_recompute = _check(translate_text("Recalculer le HDR10+ depuis la mesure de l'image (profil A)"))
+        self.h10_recompute.setToolTip(translate_text(
+            "Statistiques de chaque image mesurée, regroupées par plan (règles du HDR10+ recalculé du FEL) : "
+            "MaxScl, percentiles et AverageRGB décrivent l'image réelle."))
         self.h10_target_box = _check(translate_text("Écran ciblé (TSDML)"))
         self.h10_target = _int_spin(10000, " nits")
         self.h10_bezier = _check(translate_text("Retirer la courbe de Bézier (profil A)"))
@@ -213,6 +302,7 @@ class EditionTab(QWidget):
         self.h10_cap = _int_spin(10000, " nits")
         self.h10_cap.setMinimum(100)
         layout.addWidget(self.h10_remove)
+        layout.addWidget(self.h10_recompute)
         layout.addWidget(self.h10_target_box)
         layout.addLayout(_row(self.h10_target))
         layout.addWidget(self.h10_bezier)
@@ -245,6 +335,7 @@ class EditionTab(QWidget):
         """Préremplit avec les valeurs actuelles du fichier (RPU et HDR10+ si lus)."""
         previous = self._report.snapshot.path if self._report is not None else None
         self._report = report
+        self._measurement = measurement
         if report is None:
             self._suggested = None
             self._prefilled = None
@@ -398,9 +489,24 @@ class EditionTab(QWidget):
             targeted_display=self.h10_target.value() if self.h10_target_box.isChecked() else None,
             drop_bezier=self.h10_bezier.isChecked(),
             cap_nits=float(self.h10_cap.value()) if self.h10_cap_box.isChecked() else None,
+            recompute=self._recompute_source() if self.h10_recompute.isChecked() and self.h10_recompute.isEnabled()
+            else None,
         ) if report.snapshot.hdr10plus else None
         return PatchPlan(Path(report.snapshot.path), report.snapshot.stream_index, Path(self.output.text().strip()),
                          static=static, rpu=rpu, hdr10plus=hdr10plus)
+
+    def _recompute_source(self) -> tuple[object, object] | None:
+        """Mesure et débuts de plans du HDR10+ recalculé (plans du HDR10+ actuel si cohérents)."""
+        measurement = self._measurement
+        if measurement is None:
+            return None
+        realignment = self._realignment
+        if realignment is not None and realignment.hdr10plus_scenes is not None:
+            return measurement, realignment.hdr10plus_scenes
+        hdr10plus = self._report.hdr10plus if self._report is not None else None
+        if hdr10plus is not None and hdr10plus.scenes >= 2 and hdr10plus.frames == measurement.frames:
+            return measurement, hdr10plus.scene_starts
+        return measurement, scene_cuts(measurement)
 
     def _mastering_edit(self) -> MasteringEdit:
         return MasteringEdit(str(self.mdcv_primaries.currentData()), self.mdcv_min.value(), float(self.mdcv_max.value()))
@@ -424,6 +530,7 @@ class EditionTab(QWidget):
                 changes.append(translate_text("HDR10+ retiré"))
             else:
                 hdr10plus_labels: tuple[tuple[QCheckBox, str], ...] = (
+                    (self.h10_recompute, translate_text("HDR10+ recalculé")),
                     (self.h10_target_box, "TSDML"), (self.h10_bezier, translate_text("profil A")),
                     (self.h10_cap_box, translate_text("plafond HDR10+")))
                 changes += [label for box, label in hdr10plus_labels if box.isChecked()]
@@ -435,6 +542,9 @@ class EditionTab(QWidget):
         removing = self.h10_remove.isChecked()
         for widget in (self.h10_target_box, self.h10_target, self.h10_bezier, self.h10_cap_box, self.h10_cap):
             widget.setEnabled(not removing)
+        self.h10_recompute.setEnabled(not removing and self._measurement is not None)
+        if self.h10_recompute.isChecked() and self.h10_recompute.isEnabled():
+            self.h10_bezier.setEnabled(False)  # profil A d'office
         self.h10_target.setEnabled(not removing and self.h10_target_box.isChecked() and not self.h10_bezier.isChecked())
         self.h10_cap.setEnabled(not removing and self.h10_cap_box.isChecked())
         dovi = self._report is not None and self._report.snapshot.dovi is not None

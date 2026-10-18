@@ -17,12 +17,12 @@ from pathlib import Path
 import numpy as np
 
 from core.atomic_io import atomic_write_text
-from core.hdr_inspection import summary
+from core.hdr_inspection import axes, summary
 from core.hdr_inspection.compare import SOURCE_LABELS, Comparison
 from core.hdr_inspection.fel_analyzer import CATEGORIES, FelReport, recommendation
 from core.hdr_inspection.inspector import InspectionReport
 from core.hdr_inspection.measure import ImageMeasurement
-from core.hdr_inspection.pq import nits_to_pq, pq12_to_nits
+from core.hdr_inspection.pq import pq12_to_nits
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import current_language, translate_text
 from core.version import APP_NAME, APP_VERSION
@@ -31,7 +31,6 @@ REPORT_FORMAT = "muxiveo-hdr-report"
 REPORT_VERSION = 1
 #: Colonnes des courbes exportées (maximum ou moyenne par colonne).
 COLUMNS = 1200
-_NITS_TICKS = (0.1, 1, 10, 100, 200, 400, 600, 1000, 2000, 4000, 10000)
 _SERIES_COLORS = {"peak": "#4f8cff", "average": "#3ecf8e", "l1_max": "#a970ff", "l1_avg": "#6fa8ff",
                   "maxscl": "#f2b33d", "avgrgb": "#e07ad8", "a": "#4f8cff", "b": "#f2b33d"}
 
@@ -222,25 +221,44 @@ def _section(title: str, body: str) -> str:
     return f"<section><h2>{_e(title)}</h2>{body}</section>"
 
 
-def _y(nits: float, top: float, height: float) -> float:
-    return height - height * float(nits_to_pq(max(nits, 0.0))) / float(nits_to_pq(top))
-
-
-def svg_chart(curves: list[tuple[str, str, list[float | None]]], *, frames: int, fps: float,
+def svg_chart(curves: list[tuple[str, str, list[float | None], str]], *, frames: int, fps: float,
               width: int = 1000, height: int = 300) -> str:
-    """Courbes (libellé, couleur, valeurs par colonne) en SVG, axe vertical en échelle PQ."""
-    left, plot_w, plot_h = 52, width - 60, height - 30
-    values = [v for _, _, column in curves for v in column if v is not None]
-    peak = max(values, default=1000.0)
-    top = next((t for t in _NITS_TICKS if t >= peak * 1.05), 10000)
+    """Courbes (libellé, couleur, valeurs par colonne, agrégation) en SVG, échelle PQ à plage ajustée.
+
+    Pics (agrégation « max ») sur l'axe gauche, moyennes (« mean ») sur l'axe droit, chacun à sa plage.
+    """
+    left, top_margin, plot_h = 52, 18, height - 42
+    dual = any(mode == "mean" for *_, mode in curves) and any(mode != "mean" for *_, mode in curves)
+    plot_w = width - left - (56 if dual else 8)
+
+    def axis_of(mode: str) -> str:
+        return "second" if dual and mode == "mean" else "main"
+
+    ranges: dict[str, tuple[float, float]] = {}
+    for axis in ("main", "second"):
+        values = np.array([v for *_, column, mode in curves if axis_of(mode) == axis for v in column if v is not None],
+                          dtype=np.float64)
+        ranges[axis] = axes.fit_range(values, "pq") if values.size else (0.1, 1000.0)
+
+    def y_of(value: float, axis: str) -> float:
+        low, high = ranges[axis]
+        return top_margin + plot_h * (1 - float(axes.position(value, low, high, "pq")))
+
     parts = [f"<svg viewBox='0 0 {width} {height}' role='img' xmlns='http://www.w3.org/2000/svg'>"]
-    for tick in _NITS_TICKS:
-        if tick > top:
-            break
-        y = 6 + _y(tick, top, plot_h)
+    for tick in axes.ticks(*ranges["main"], "pq", 18 / plot_h):
+        y = y_of(tick, "main")
         parts.append(f"<line x1='{left}' x2='{left + plot_w}' y1='{y:.1f}' y2='{y:.1f}' style='stroke:var(--grid)'/>"
                      f"<text x='{left - 6}' y='{y + 4:.1f}' font-size='11' text-anchor='end' style='fill:var(--dim)'>"
                      f"{tick:g}</text>")
+    if dual:
+        for tick in axes.ticks(*ranges["second"], "pq", 18 / plot_h):
+            y = y_of(tick, "second")
+            parts.append(f"<text x='{left + plot_w + 6}' y='{y + 4:.1f}' font-size='11' style='fill:var(--dim)'>"
+                         f"{tick:g}</text>")
+        parts.append(f"<text x='{left}' y='12' font-size='10' style='fill:var(--dim)'>"
+                     f"{_e(translate_text('← pics (nits)'))}</text>"
+                     f"<text x='{left + plot_w}' y='12' font-size='10' text-anchor='end' style='fill:var(--dim)'>"
+                     f"{_e(translate_text('moyennes (nits) →'))}</text>")
     duration = frames / fps if fps > 0 else 0
     step = next((s for s in (60, 300, 600, 900, 1800, 3600) if duration / s <= 10), 3600) if duration > 60 else 10
     seconds = 0
@@ -249,7 +267,7 @@ def svg_chart(curves: list[tuple[str, str, list[float | None]]], *, frames: int,
         parts.append(f"<text x='{x:.1f}' y='{height - 4}' font-size='11' text-anchor='middle' style='fill:var(--dim)'>"
                      f"{summary.format_time(seconds)}</text>")
         seconds += step
-    for _label, color, column in curves:
+    for _label, color, column, mode in curves:
         if not column:
             continue
         path, pen = [], "M"
@@ -258,11 +276,12 @@ def svg_chart(curves: list[tuple[str, str, list[float | None]]], *, frames: int,
                 pen = "M"
                 continue
             x = left + plot_w * (index + 0.5) / len(column)
-            path.append(f"{pen}{x:.1f},{6 + _y(value, top, plot_h):.1f}")
+            path.append(f"{pen}{x:.1f},{y_of(value, axis_of(mode)):.1f}")
             pen = "L"
         parts.append(f"<path d='{' '.join(path)}' fill='none' stroke='{color}' stroke-width='1.2'/>")
-    parts.append(f"<rect x='{left}' y='6' width='{plot_w}' height='{plot_h}' style='fill:none;stroke:var(--line)'/></svg>")
-    legend = "".join(f"<span><i style='background:{color}'></i>{_e(label)}</span>" for label, color, _ in curves)
+    parts.append(f"<rect x='{left}' y='{top_margin}' width='{plot_w}' height='{plot_h}' "
+                 f"style='fill:none;stroke:var(--line)'/></svg>")
+    legend = "".join(f"<span><i style='background:{color}'></i>{_e(label)}</span>" for label, color, *_ in curves)
     return "".join(parts) + f"<div class='legend'>{legend}</div>"
 
 
@@ -341,8 +360,8 @@ def _comparison_html(comparison: Comparison, report: InspectionReport, other: In
         if end > start:
             b[start:end] = comparison.peak_b.values[start - comparison.offset:end - comparison.offset]
         columns = min(COLUMNS, a.size)
-        parts.append(svg_chart([("A", _SERIES_COLORS["a"], _column_values(a, columns, "max")),
-                                ("B", _SERIES_COLORS["b"], _column_values(b, columns, "max"))],
+        parts.append(svg_chart([("A", _SERIES_COLORS["a"], _column_values(a, columns, "max"), "max"),
+                                ("B", _SERIES_COLORS["b"], _column_values(b, columns, "max"), "max")],
                                frames=a.size, fps=fps))
     return "".join(parts)
 
@@ -370,7 +389,7 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
     if curves:
         columns = min(COLUMNS, frames)
         body.append(_section(translate_text("Luminance"), svg_chart(
-            [(label, _SERIES_COLORS.get(key, "#888"), _column_values(values, columns, mode))
+            [(label, _SERIES_COLORS.get(key, "#888"), _column_values(values, columns, mode), mode)
              for key, label, mode, values in curves], frames=frames, fps=fps)))
     if measurement is not None:
         body.append(_section(translate_text("Mesure de l'image"), _kv(summary.measurement_rows(measurement, fps))))

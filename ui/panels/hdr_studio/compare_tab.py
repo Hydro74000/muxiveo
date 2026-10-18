@@ -24,7 +24,7 @@ from core.hdr_inspection.inspector import InspectionReport
 from core.hdr_inspection.summary import format_time
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
-from ui.panels.hdr_studio.chart import ChartSeries, LuminanceChart
+from ui.panels.hdr_studio.chart import ChartSeries, LuminanceChart, chart_controls
 from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _secondary_button, _section_label
 
 _ALIGNMENT = {"dovi": "plans du RPU", "hdr10plus": "plans HDR10+", "measure": "plans mesurés",
@@ -101,6 +101,7 @@ class CompareTab(QWidget):
         curves.addLayout(self._legend)
         self.chart = LuminanceChart()
         self.chart.setMinimumHeight(scale(240))
+        curves.addWidget(chart_controls(self.chart))
         curves.addWidget(self.chart)
         self._deltas = QVBoxLayout()
         self._deltas.setSpacing(scale(4))

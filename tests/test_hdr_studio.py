@@ -63,6 +63,40 @@ class _FakeInspector:
         return _info(Path(path))
 
 
+def test_axes_ranges_and_ticks():
+    from core.hdr_inspection import axes
+
+    peaks = np.concatenate([np.full(500, 300.0), np.full(10, 950.0), [0.01]])
+    low, high = axes.fit_range(peaks, "pq", markers=[1000, 4000])
+    assert high == 1200 and 100 <= low <= 300  # repère 4000 hors plage, 1000 inclus ; image noire ignorée
+    assert axes.fit_range(peaks, "pq_fixed") == (0.1, 10000.0)
+    assert axes.fit_range(peaks, "linear") == (0.0, 1000.0)
+    assert float(axes.position(5000, low, high, "pq")) == 1.0 and float(axes.position(0.001, low, high, "pq")) == 0.0
+    ticks = axes.ticks(0.0, 1200.0, "linear", 0.05)
+    assert ticks == [0.0, 200.0, 400.0, 600.0, 800.0, 1000.0, 1200.0]
+    pq_ticks = axes.ticks(low, high, "pq", 0.08)
+    gaps = np.diff([float(axes.position(t, low, high, "pq")) for t in pq_ticks])
+    assert pq_ticks and (gaps >= 0.08 - 1e-9).all()
+
+
+def test_chart_dual_axes_and_out_of_range_markers(qt_app):
+    chart = LuminanceChart()
+    chart.resize(900, 320)
+    peaks = np.full(100, 600.0, dtype=np.float32)
+    averages = np.full(100, 8.0, dtype=np.float32)
+    chart.set_data(frames=100, fps=24, series=[ChartSeries("p", "Pic", "#f00", peaks, "max"),
+                                               ChartSeries("m", "Moyenne", "#00f", averages, "mean")],
+                   markers=[ChartMarker("MDCV", 4000, "#888")])
+    chart.grab()
+    assert chart.axis_range("main")[1] == 800 and chart.axis_range("second")[1] == 10
+    chart.set_dual_axes(False)
+    chart.grab()
+    assert chart.axis_range("main")[0] <= 5  # moyennes sur l'axe principal
+    chart.set_scale("pq_fixed")
+    chart.grab()
+    assert chart.axis_range("main") == (0.1, 10000.0)
+
+
 def test_bucket_and_time_format():
     import numpy as np
     values = np.array([1, 5, 2, 8, 3, 3], dtype=np.float32)
@@ -98,7 +132,8 @@ def test_render_report_tabs(studio, tmp_path):
     assert [s.key for s in chart.series()] == ["l1_max", "l1_avg", "maxscl", "avgrgb", "displayed"]
     # Avec Dolby Vision, les courbes HDR10+ sont masquées par défaut.
     assert [s.visible for s in chart.series()] == [True, True, False, False, True]
-    assert len(studio._luminance.findChildren(QCheckBox)) == 5
+    # Cinq courbes et la case « moyennes sur un axe à droite ».
+    assert len(studio._luminance.findChildren(QCheckBox)) == 6
     assert studio._overview.count() > 3 and studio._dovi_tab.count() > 2 and studio._hdr10plus_tab.count() > 1
     studio._render(None)
     assert chart.series() == []
@@ -451,6 +486,34 @@ def test_edition_mastering_display_sync(studio, qt_app, tmp_path, monkeypatch):
     editor.mdcv_min.setValue(20)
     editor.mdcv_max.setValue(10)
     assert editor.readiness()[0] is None and "Écran de mastering invalide" in editor._summary.text()
+
+
+def test_edition_realignment_card_applies_proposals(studio, qt_app, tmp_path, monkeypatch):
+    from tests.test_hdr_realign import _measurement
+
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None)
+    report = _dynamic_report(tmp_path)
+    report = dataclasses.replace(report, snapshot=dataclasses.replace(report.snapshot, path=str(media)))
+    editor = studio._editor
+    studio._render(report)
+    assert not editor._realign_card.isVisibleTo(editor) and not editor.h10_recompute.isEnabled()
+    studio._measurement = _measurement(1600, 320)
+    studio._render(report)
+    assert editor._realign_card.isVisibleTo(editor) and editor.h10_recompute.isEnabled()
+    assert {"static", "l6", "hdr10plus"} <= set(editor._realign_boxes)
+    # MDCV et L6 décochés (avec la synchronisation, un MDCV reporté recopie aussi le mastering du L6).
+    for key in ("l6", "mdcv"):
+        if key in editor._realign_boxes:
+            editor._realign_boxes[key].setChecked(False)
+    editor.realign_btn.click()
+    assert studio._luminance.values() == (1600, 320) and editor.static_box.isChecked()
+    assert editor.h10_recompute.isChecked() and not editor.l6_box.isChecked()
+    plan = editor.plan()
+    assert plan.static.light_levels == (1600, 320) and plan.hdr10plus.recompute is not None
+    assert "HDR10+ recalculé" in editor._summary.text()
 
 
 def test_encode_panel_applies_light_levels(qt_app, monkeypatch):

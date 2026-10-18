@@ -1,4 +1,9 @@
-"""Courbe de luminance dans le temps, axe vertical en échelle PQ (perceptuelle)."""
+"""Courbe de luminance dans le temps : échelle PQ (perceptuelle) ou linéaire, plage dynamique, deux axes.
+
+Axe principal (gauche) : pics, affichage simulé de la TV et repères ; axe secondaire (droite) : moyennes.
+La plage de chaque axe suit les valeurs visibles (zoom, déplacement) ; un repère hors plage est signalé
+en bord haut au lieu d'écraser la courbe.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,14 +11,15 @@ from dataclasses import dataclass
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QSizePolicy, QWidget
 
-from core.hdr_inspection.pq import nits_to_pq
+from core.hdr_inspection import axes
+from core.hdr_inspection.axes import SCALES
 from core.hdr_inspection.summary import bucket, format_time
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
+from ui.styles import _checkbox_style, _combo_style
 
-_NITS_TICKS = (0.1, 1, 10, 100, 200, 400, 600, 1000, 2000, 4000, 10000)
 _TIME_STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
 
 
@@ -55,11 +61,14 @@ class LuminanceChart(QWidget):
         self._fps = 24000 / 1001
         self._view = (0, 0)
         self._hover_x: float | None = None
-        self._top_nits = 1000.0
         self._drag: tuple[float, tuple[int, int]] | None = None
         self._dragged = False
         self._bands: np.ndarray | None = None
         self._band_color = C.ERROR
+        self._scale = "pq"
+        self._dual = True
+        #: Plages (bas, haut) en nits des axes principal et secondaire, recalculées à chaque rendu.
+        self._ranges: dict[str, tuple[float, float]] = {"main": (0.1, 1000.0), "second": (0.1, 1000.0)}
 
     # ── Données ─────────────────────────────────────────────────────────
     def set_data(self, *, frames: int, fps: float | None, series: list[ChartSeries],
@@ -78,10 +87,6 @@ class LuminanceChart(QWidget):
             self._view = (0, self._frames)
             self._bands = None
         self._drag = None
-        peaks = [float(np.nanmax(s.values)) for s in self._series if s.values.size and np.isfinite(s.values).any()]
-        peaks += [m.nits for m in self._markers]
-        peak = max(peaks, default=1000.0)
-        self._top_nits = next((t for t in _NITS_TICKS if t >= peak * 1.05), 10000)
         self._hover_x = None
         self.update()
 
@@ -110,13 +115,49 @@ class LuminanceChart(QWidget):
         self._view = (0, self._frames)
         self.update()
 
+    def set_scale(self, mode: str) -> None:
+        """``pq`` (PQ dynamique), ``pq_fixed`` (0,1 – 10 000 nits) ou ``linear`` (linéaire dynamique)."""
+        self._scale = mode if mode in dict(SCALES) else "pq"
+        self.update()
+
+    def set_dual_axes(self, dual: bool) -> None:
+        """Moyennes sur un axe secondaire (droite) avec leur propre plage."""
+        self._dual = bool(dual)
+        self.update()
+
+    def scale_mode(self) -> str:
+        return self._scale
+
+    def dual_axes(self) -> bool:
+        return self._dual
+
+    def _axis(self, item: ChartSeries) -> str:
+        return "second" if self._dual and item.mode == "mean" else "main"
+
+    def axis_range(self, axis: str = "main") -> tuple[float, float]:
+        """Plage (nits) de l'axe au dernier rendu."""
+        return self._ranges[axis]
+
     # ── Géométrie ───────────────────────────────────────────────────────
     def _plot_rect(self) -> QRectF:
-        return QRectF(scale(52), scale(10), max(1, self.width() - scale(64)), max(1, self.height() - scale(36)))
+        right = scale(56) if self._dual else scale(12)
+        return QRectF(scale(52), scale(16), max(1, self.width() - scale(52) - right), max(1, self.height() - scale(42)))
 
-    def _y(self, rect: QRectF, nits: np.ndarray | float) -> np.ndarray:
-        top = float(nits_to_pq(self._top_nits))
-        return rect.bottom() - np.asarray(nits_to_pq(nits)) / top * rect.height()
+    def _y(self, rect: QRectF, nits: np.ndarray | float, axis: str = "main") -> np.ndarray:
+        """Ordonnée (pixels) : valeurs hors plage ramenées aux bords."""
+        low, high = self._ranges[axis]
+        return rect.bottom() - axes.position(nits, low, high, self._scale) * rect.height()
+
+    def _fit_ranges(self, columns: dict[str, list[np.ndarray]]) -> None:
+        """Plages d'après les valeurs visibles (colonnes agrégées) ; repères proches inclus (axe principal)."""
+        for axis in ("main", "second"):
+            parts = columns.get(axis, [])
+            if not parts and axis == "second":
+                self._ranges[axis] = self._ranges["main"]
+                continue
+            values = np.concatenate(parts) if parts else np.zeros(0)
+            markers = [m.nits for m in self._markers] if axis == "main" else []
+            self._ranges[axis] = axes.fit_range(values, self._scale, markers)
 
     def _frame_at(self, x: float) -> int | None:
         rect = self._plot_rect()
@@ -138,9 +179,19 @@ class LuminanceChart(QWidget):
             painter.setPen(QColor(C.TEXT_DIM))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, translate_text("Aucune donnée de luminance"))
             return
-        self._draw_grid(painter, rect)
         start, end = self._view
         columns = max(1, int(rect.width()))
+        aggregated: list[tuple[ChartSeries, np.ndarray]] = []
+        for item in self._series:
+            if item.visible and item.values.size:
+                values = bucket(item.values, start, min(end, item.values.size), columns, item.mode)
+                if values.size:
+                    aggregated.append((item, values))
+        by_axis: dict[str, list[np.ndarray]] = {}
+        for item, values in aggregated:
+            by_axis.setdefault(self._axis(item), []).append(values)
+        self._fit_ranges(by_axis)
+        self._draw_grid(painter, rect, second="second" in by_axis)
         if self._bands is not None:
             marked = bucket(self._bands.astype(np.float32), start, end, columns, "max")
             band = QColor(self._band_color)
@@ -148,15 +199,10 @@ class LuminanceChart(QWidget):
             step = rect.width() / max(1, marked.size)
             for index in np.nonzero(marked > 0)[0]:
                 painter.fillRect(QRectF(rect.left() + index * step, rect.top(), max(1.0, step), rect.height()), band)
-        for item in self._series:
-            if not item.visible or not item.values.size:
-                continue
-            values = bucket(item.values, start, min(end, item.values.size), columns, item.mode)
-            if values.size == 0:
-                continue
+        for item, values in aggregated:
             span = min(end, item.values.size) - start
             xs = rect.left() + np.arange(values.size) * (span / values.size) / max(1, end - start) * rect.width()
-            ys = self._y(rect, np.nan_to_num(values, nan=0.0))
+            ys = self._y(rect, np.nan_to_num(values, nan=0.0), self._axis(item))
             finite = np.isfinite(values)
             color = QColor(item.color)
             # Tronçons continus : une image sans valeur (NaN) coupe la courbe.
@@ -179,19 +225,21 @@ class LuminanceChart(QWidget):
                 painter.drawPath(path)
         label_h = scale(13)
         last_label: float | None = None
+        high = self._ranges["main"][1]
         for marker in sorted(self._markers, key=lambda m: -m.nits):
+            above = marker.nits > high
             y = float(self._y(rect, marker.nits))
-            pen = QPen(QColor(marker.color), 1, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
-            # Étiquettes empilées vers le bas quand deux repères sont proches.
-            top = y - label_h - scale(1)
+            painter.setPen(QPen(QColor(marker.color), 1, Qt.PenStyle.DotLine if above else Qt.PenStyle.DashLine))
+            if not above:
+                painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+            # Étiquettes empilées vers le bas quand deux repères sont proches ; hors plage : en bord haut.
+            top = rect.top() + scale(1) if above else y - label_h - scale(1)
             if last_label is not None and top < last_label + label_h:
                 top = last_label + label_h
             last_label = top
             painter.drawText(QRectF(rect.left() + scale(4), top, rect.width() - scale(8), label_h),
                              Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                             f"{marker.label} {round(marker.nits)}")
+                             f"{marker.label} {round(marker.nits)}" + (" ↑" if above else ""))
         self._draw_scenes(painter, rect)
         self._draw_hover(painter, rect)
 
@@ -208,18 +256,39 @@ class LuminanceChart(QWidget):
             x = rect.left() + (float(frame) - start) / max(1, end - start) * rect.width()
             painter.drawLine(QPointF(x, rect.bottom() - scale(6)), QPointF(x, rect.bottom()))
 
-    def _draw_grid(self, painter: QPainter, rect: QRectF) -> None:
+    def ticks(self, axis: str, height: float) -> list[float]:
+        """Graduations de l'axe dans sa plage, espacées d'au moins 18 px."""
+        low, high = self._ranges[axis]
+        return axes.ticks(low, high, self._scale, scale(18) / max(1.0, height))
+
+    @staticmethod
+    def _tick_text(tick: float) -> str:
+        return f"{tick:g}"
+
+    def _draw_grid(self, painter: QPainter, rect: QRectF, *, second: bool = False) -> None:
         grid = QColor(C.BORDER)
-        painter.setPen(QColor(C.TEXT_DIM))
-        for tick in _NITS_TICKS:
-            if tick > self._top_nits:
-                break
+        for tick in self.ticks("main", rect.height()):
             y = float(self._y(rect, tick))
             painter.setPen(QPen(grid, 1))
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor(C.TEXT_DIM))
             painter.drawText(QRectF(0, y - scale(7), rect.left() - scale(6), scale(14)),
-                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, str(tick))
+                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._tick_text(tick))
+        if second:
+            # Axe secondaire (moyennes) : graduations à droite, sans grille (lecture sur l'axe).
+            painter.setPen(QColor(C.TEXT_SEC))
+            for tick in self.ticks("second", rect.height()):
+                y = float(self._y(rect, tick, "second"))
+                painter.drawLine(QPointF(rect.right(), y), QPointF(rect.right() + scale(4), y))
+                painter.drawText(QRectF(rect.right() + scale(6), y - scale(7), scale(52), scale(14)),
+                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._tick_text(tick))
+            painter.setPen(QColor(C.TEXT_DIM))
+            painter.drawText(QRectF(rect.right() - scale(160), rect.top() - scale(12), scale(214), scale(11)),
+                             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                             translate_text("moyennes (nits) →"))
+            painter.drawText(QRectF(rect.left(), rect.top() - scale(12), scale(200), scale(11)),
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                             translate_text("← pics (nits)"))
         start, end = self._view
         duration = (end - start) / self._fps
         step = next((s for s in _TIME_STEPS if duration / s <= 8), 7200)
@@ -296,3 +365,28 @@ class LuminanceChart(QWidget):
         self._view = (new_start, new_start + width)
         self.update()
         event.accept()
+
+
+def chart_controls(chart: LuminanceChart) -> QWidget:
+    """Choix de l'échelle et des deux axes d'un graphique (à placer près de sa légende)."""
+    holder = QWidget()
+    holder.setStyleSheet("background:transparent;")
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(scale(8))
+    combo = QComboBox()
+    combo.setStyleSheet(_combo_style())
+    for key, label in SCALES:
+        combo.addItem(translate_text(label), key)
+    combo.setCurrentIndex(max(0, combo.findData(chart.scale_mode())))
+    combo.currentIndexChanged.connect(lambda _i: chart.set_scale(str(combo.currentData())))
+    dual = QCheckBox(translate_text("Moyennes sur un axe à droite"))
+    dual.setStyleSheet(_checkbox_style())
+    dual.setChecked(chart.dual_axes())
+    dual.toggled.connect(chart.set_dual_axes)
+    row.addWidget(combo)
+    row.addWidget(dual)
+    row.addStretch()
+    holder.scale_combo = combo  # type: ignore[attr-defined]
+    holder.dual_box = dual  # type: ignore[attr-defined]
+    return holder

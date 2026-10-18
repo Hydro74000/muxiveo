@@ -165,6 +165,30 @@ def hdr10plus_document(statistics: FrameStatistics) -> dict:
     }
 
 
+def statistics_from_measurement(measurement: object, scene_starts: object) -> FrameStatistics:
+    """Statistiques par image d'une mesure du HDR Studio (``ImageMeasurement``), découpées en ``scene_starts``."""
+    import numpy as np
+
+    max_rgb = np.asarray(getattr(measurement, "max_rgb"), dtype=np.float64)
+    average = np.asarray(getattr(measurement, "average"), dtype=np.float64)
+    y9999 = np.asarray(getattr(measurement, "y9999"), dtype=np.float64)
+    y100 = np.asarray(getattr(measurement, "y100"), dtype=np.float64)
+    percentiles = np.asarray(getattr(measurement, "percentiles"), dtype=np.float64)
+    count = int(average.size)
+    starts = sorted({int(s) for s in np.asarray(scene_starts).tolist() if 0 <= int(s) < count} | {0})
+    if not count or percentiles.shape != (count, len(_PERCENTILE_INDEX)):
+        raise FrameStatisticsError("Mesure de l'image incomplète.")
+    first = set(starts)
+    frames = tuple(FrameRecord(index in first, (float(max_rgb[index, 0]), float(max_rgb[index, 1]),
+                                                float(max_rgb[index, 2])), float(average[index]),
+                               float(y9999[index]), float(y100[index]), tuple(float(v) for v in percentiles[index]))
+                   for index in range(count))
+    bounds = [*starts, count]
+    scenes = tuple(SceneRecord(start, end - start) for start, end in zip(bounds, bounds[1:]))
+    window = getattr(measurement, "window", (0, 0, 0, 0))
+    return FrameStatistics(int(window[2]), int(window[3]), frames, scenes)
+
+
 def write_hdr10plus_json(statistics: FrameStatistics, output: Path) -> int:
     """Écrit le JSON HDR10+ ; renvoie le nombre de plans."""
     document = hdr10plus_document(statistics)

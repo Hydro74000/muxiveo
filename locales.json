@@ -8438,5 +8438,145 @@
   "Courbes": {
     "fra": "Courbes",
     "eng": "Curves"
+  },
+  "aucun défaut simulé": {
+    "fra": "aucun défaut simulé",
+    "eng": "no simulated defect"
+  },
+  "écrêtage visible sur {share} % des images": {
+    "fra": "écrêtage visible sur {share} % des images",
+    "eng": "visible clipping on {share}% of frames"
+  },
+  "hautes lumières assombries de {ev} EV sur {share} % des images": {
+    "fra": "hautes lumières assombries de {ev} EV sur {share} % des images",
+    "eng": "highlights darkened by {ev} EV on {share}% of frames"
+  },
+  "absents : les TV prennent une valeur par défaut": {
+    "fra": "absents : les TV prennent une valeur par défaut",
+    "eng": "missing: TVs fall back to a default value"
+  },
+  "TV suivant la MaxCLL, écran {peak} nits : {now} ; mesurés : {after}": {
+    "fra": "TV suivant la MaxCLL, écran {peak} nits : {now} ; mesurés : {after}",
+    "eng": "TV following MaxCLL, {peak}-nit display: {now}; measured: {after}"
+  },
+  "absent : les TV supposent un écran par défaut": {
+    "fra": "absent : les TV supposent un écran par défaut",
+    "eng": "missing: TVs assume a default display"
+  },
+  "TV suivant le MDCV, écran {peak} nits : {now} ; proposé : {after}. Le MDCV décrit l'écran d'étalonnage : le changer adapte le tone mapping des TV, pas l'image.": {
+    "fra": "TV suivant le MDCV, écran {peak} nits : {now} ; proposé : {after}. Le MDCV décrit l'écran d'étalonnage : le changer adapte le tone mapping des TV, pas l'image.",
+    "eng": "TV following the MDCV, {peak}-nit display: {now}; proposed: {after}. The MDCV describes the grading display: changing it adapts the TVs' tone mapping, not the picture."
+  },
+  "MaxScl sous le pic de l'image sur {share} % des images (écrêtage)": {
+    "fra": "MaxScl sous le pic de l'image sur {share} % des images (écrêtage)",
+    "eng": "MaxScl below the picture peak on {share}% of frames (clipping)"
+  },
+  "MaxScl au double du pic sur {share} % des images (image assombrie)": {
+    "fra": "MaxScl au double du pic sur {share} % des images (image assombrie)",
+    "eng": "MaxScl at twice the peak on {share}% of frames (darkened picture)"
+  },
+  "{count} images à 10 000 nits": {
+    "fra": "{count} images à 10 000 nits",
+    "eng": "{count} frames at 10,000 nits"
+  },
+  "{hdr10plus} trames pour {video} images": {
+    "fra": "{hdr10plus} trames pour {video} images",
+    "eng": "{hdr10plus} metadata frames for {video} frames"
+  },
+  "profil {profile}, pic MaxScl {peak} nits": {
+    "fra": "profil {profile}, pic MaxScl {peak} nits",
+    "eng": "profile {profile}, MaxScl peak {peak} nits"
+  },
+  "recalculé depuis la mesure (profil A, {scenes} plans)": {
+    "fra": "recalculé depuis la mesure (profil A, {scenes} plans)",
+    "eng": "recomputed from the measurement (profile A, {scenes} shots)"
+  },
+  "L1 max sous l'image sur {share} % des images (écrêtage en lecture Dolby Vision)": {
+    "fra": "L1 max sous l'image sur {share} % des images (écrêtage en lecture Dolby Vision)",
+    "eng": "L1 max below the picture on {share}% of frames (clipping in Dolby Vision playback)"
+  },
+  "L1 max au double du pic sur {share} % des images (image assombrie)": {
+    "fra": "L1 max au double du pic sur {share} % des images (image assombrie)",
+    "eng": "L1 max at twice the peak on {share}% of frames (darkened picture)"
+  },
+  "L1 Dolby Vision": {
+    "fra": "L1 Dolby Vision",
+    "eng": "Dolby Vision L1"
+  },
+  "pic L1 {peak} nits": {
+    "fra": "pic L1 {peak} nits",
+    "eng": "L1 peak {peak} nits"
+  },
+  "non corrigé": {
+    "fra": "non corrigé",
+    "eng": "not corrected"
+  },
+  "absent ou contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10": {
+    "fra": "absent ou contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10",
+    "eng": "missing or contradicted by the measurement: HDR10 fallback playback of Dolby Vision players and DV → HDR10 conversions"
+  },
+  "contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10": {
+    "fra": "contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10",
+    "eng": "contradicted by the measurement: HDR10 fallback playback of Dolby Vision players and DV → HDR10 conversions"
+  },
+  "dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source Dolby Vision avec l'outil d'origine.": {
+    "fra": "dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source Dolby Vision avec l'outil d'origine.",
+    "eng": "dovi_tool cannot rewrite L1 without losing the trims (L2/L8): re-analyse the Dolby Vision source with the original tool."
+  },
+  "Moyennes sur un axe à droite": {
+    "fra": "Moyennes sur un axe à droite",
+    "eng": "Averages on a right-hand axis"
+  },
+  "moyennes (nits) →": {
+    "fra": "moyennes (nits) →",
+    "eng": "averages (nits) →"
+  },
+  "← pics (nits)": {
+    "fra": "← pics (nits)",
+    "eng": "← peaks (nits)"
+  },
+  "RÉALIGNEMENT D'APRÈS LA MESURE": {
+    "fra": "RÉALIGNEMENT D'APRÈS LA MESURE",
+    "eng": "REALIGNMENT FROM THE MEASUREMENT"
+  },
+  "Reporter les propositions cochées": {
+    "fra": "Reporter les propositions cochées",
+    "eng": "Apply the checked proposals"
+  },
+  "Recalculer le HDR10+ depuis la mesure de l'image (profil A)": {
+    "fra": "Recalculer le HDR10+ depuis la mesure de l'image (profil A)",
+    "eng": "Recompute HDR10+ from the picture measurement (profile A)"
+  },
+  "Statistiques de chaque image mesurée, regroupées par plan (règles du HDR10+ recalculé du FEL) : MaxScl, percentiles et AverageRGB décrivent l'image réelle.": {
+    "fra": "Statistiques de chaque image mesurée, regroupées par plan (règles du HDR10+ recalculé du FEL) : MaxScl, percentiles et AverageRGB décrivent l'image réelle.",
+    "eng": "Statistics of each measured frame, grouped by shot (same rules as the FEL recomputed HDR10+): MaxScl, percentiles and AverageRGB describe the actual picture."
+  },
+  "Écarts entre les métadonnées et l'image mesurée qui ont un effet visible (écrêtage ou assombrissement simulés sur l'écran choisi dans l'onglet Luminance). Les propositions cochées sont reportées dans les corrections ci-dessous ; l'écriture se lance ensuite depuis la barre d'exécution.": {
+    "fra": "Écarts entre les métadonnées et l'image mesurée qui ont un effet visible (écrêtage ou assombrissement simulés sur l'écran choisi dans l'onglet Luminance). Les propositions cochées sont reportées dans les corrections ci-dessous ; l'écriture se lance ensuite depuis la barre d'exécution.",
+    "eng": "Differences between the metadata and the measured picture that have a visible effect (clipping or darkening simulated on the display chosen in the Luminance tab). Checked proposals are copied into the corrections below; writing is then started from the execution bar."
+  },
+  "HDR10+ recalculé": {
+    "fra": "HDR10+ recalculé",
+    "eng": "HDR10+ recomputed"
+  },
+  "Réalignement proposé (onglet Édition) — {title} : {current} → {proposed} ({impact})": {
+    "fra": "Réalignement proposé (onglet Édition) — {title} : {current} → {proposed} ({impact})",
+    "eng": "Realignment proposed (Editing tab) — {title}: {current} → {proposed} ({impact})"
+  },
+  "Axes en nits, plage ajustée aux valeurs visibles (échelle PQ par défaut) ; pics et affichage TV à gauche, moyennes à droite ; un repère hors plage est signalé en haut (↑). Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.": {
+    "fra": "Axes en nits, plage ajustée aux valeurs visibles (échelle PQ par défaut) ; pics et affichage TV à gauche, moyennes à droite ; un repère hors plage est signalé en haut (↑). Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.",
+    "eng": "Axes in nits, range fitted to the visible values (PQ scale by default); peaks and TV display on the left, averages on the right; an out-of-range marker is shown at the top (↑). Wheel: zoom; drag: pan; double-click: whole view. Dolby L1 is a robust maximum (isolated pixels excluded); HDR10+ MaxScl is a strict maximum."
+  },
+  "PQ dynamique": {
+    "fra": "PQ dynamique",
+    "eng": "Dynamic PQ"
+  },
+  "PQ fixe (0,1 – 10 000 nits)": {
+    "fra": "PQ fixe (0,1 – 10 000 nits)",
+    "eng": "Fixed PQ (0.1 – 10,000 nits)"
+  },
+  "Linéaire dynamique": {
+    "fra": "Linéaire dynamique",
+    "eng": "Dynamic linear"
   }
 }
