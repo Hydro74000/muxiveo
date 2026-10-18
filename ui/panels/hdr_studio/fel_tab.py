@@ -7,7 +7,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QComboBox, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 from core.hdr_inspection import InspectionReport
-from core.hdr_inspection.fel_analyzer import CATEGORIES, LEVELS, FelReport, Moment, recommendation
+from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, LEVELS, FelReport, Moment, recommendation
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
 from ui.panels.hdr_studio.chart import format_time
@@ -59,7 +59,8 @@ class FelTab(QWidget):
         self._layout.addWidget(_text(translate_text(
             "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans "
             "résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images "
-            "réparties dans le film. Seuils faible / moyen / fort provisoires."), color=C.TEXT_DIM, size=10))
+            "réparties dans le film. Niveaux faible / moyen / fort exprimés en seuils de visibilité (JND)."),
+            color=C.TEXT_DIM, size=10))
         controls = _card()
         row = QHBoxLayout(controls)
         row.setContentsMargins(scale(14), scale(10), scale(14), scale(10))
@@ -198,7 +199,8 @@ class FelTab(QWidget):
         grid.setHorizontalSpacing(scale(18))
         grid.setVerticalSpacing(scale(4))
         for column, title in enumerate((translate_text("Catégorie"), translate_text("Médiane"),
-                                        translate_text("p90"), translate_text("Niveau"))):
+                                        translate_text("p90"), translate_text("Visibilité (p90)"),
+                                        translate_text("Niveau"))):
             grid.addWidget(_text(title, color=C.TEXT_SEC, size=10, bold=True), 0, column)
         summaries = {s.key: s for s in fel.summary}
         for row, (key, label, unit, _thresholds) in enumerate(CATEGORIES, start=1):
@@ -208,14 +210,22 @@ class FelTab(QWidget):
             grid.addWidget(_text(translate_text(label)), row, 0)
             grid.addWidget(_text(f"{summary.median:.2f} {translate_text(unit)}"), row, 1)
             grid.addWidget(_text(f"{summary.p90:.2f} {translate_text(unit)}"), row, 2)
-            grid.addWidget(_text(translate_text(summary.level), color=_level_color(summary.level), bold=True), row, 3)
-        grid.setColumnStretch(4, 1)
+            grid.addWidget(_text(translate_text("≈ {value} JND", value=f"{summary.jnd:.1f}")), row, 3)
+            grid.addWidget(_text(translate_text(summary.level), color=_level_color(summary.level), bold=True), row, 4)
+        overall, row = fel.overall, len(CATEGORIES) + 1
+        grid.addWidget(_text(translate_text("Apport global (cumul)"), bold=True), row, 0)
+        grid.addWidget(_text(f"{overall.median:.2f} JND"), row, 1)
+        grid.addWidget(_text(f"{overall.p90:.2f} JND"), row, 2)
+        grid.addWidget(_text(translate_text("≈ {value} JND", value=f"{overall.jnd:.1f}")), row, 3)
+        grid.addWidget(_text(translate_text(overall.level), color=_level_color(overall.level), bold=True), row, 4)
+        grid.setColumnStretch(5, 1)
         holder = QWidget()
         holder.setStyleSheet("background:transparent;")
         holder.setLayout(grid)
         self._categories.addWidget(holder)
         self._categories.addWidget(_text(translate_text("{count} instants mesurés.", count=len(fel.samples)),
                                          color=C.TEXT_DIM, size=10))
+        self._categories.addWidget(_text(translate_text(JND_NOTE), color=C.TEXT_DIM, size=10))
         survival = fel.survival
         if survival is not None:
             self._survival.addWidget(_text(translate_text(

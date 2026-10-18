@@ -23,6 +23,7 @@ from core.hdr_inspection.fel_analyzer import (
     difference_map,
     encode_round_trip,
     frame_metrics,
+    pooled_jnd,
     recommendation,
     sample_times,
     summarise,
@@ -178,13 +179,35 @@ def test_classify_summary_and_recommendation():
     assert recommendation(report)[0].endswith("inutile")
     strong_tone = [dataclasses.replace(s, metrics={**s.metrics, "tone": 12.0}) for s in weak]
     assert recommendation(FelReport(None, tuple(strong_tone), summarise(strong_tone), ()))[0].endswith("utile")
-    detail_only = [dataclasses.replace(s, metrics={**s.metrics, "detail": 3.0}) for s in weak]
+    assert summarise(weak)[0].jnd == pytest.approx(0.5 / 1.2)
+    # Détail de 3 codes RMS ≈ 1,2 JND vu à une hauteur d'image : faible.
+    assert summarise([dataclasses.replace(s, metrics={**s.metrics, "detail": 3.0}) for s in weak])[2].level == LEVELS[0]
+    detail_only = [dataclasses.replace(s, metrics={**s.metrics, "detail": 12.0}) for s in weak]
     detail_report = FelReport(None, tuple(detail_only), summarise(detail_only), ())
     assert "si le débit le permet" in recommendation(detail_report)[0]
     from core.hdr_inspection.fel_analyzer import Survival
     lost = dataclasses.replace(detail_report, survival=Survival("libx265", 20000, 0.9, 0.2, 5.0, 3.0))
     assert "haut débit" in recommendation(lost)[0] and "20000" in recommendation(lost)[1]
     assert summarise([])[0].level == LEVELS[0]
+
+
+def test_overall_contribution_pools_weak_categories():
+    # Quatre catégories faibles (≈ 1,3 JND chacune) au même instant : cumul ≈ 2,1 JND, apport moyen.
+    base = {"tone": 1.6, "detail": 3.3, "highlights": 0, "grain": 0, "colour": 0.6, "shadows": 1.6, "temporal": 0.9}
+    weak = [FelSample(t, dict(base)) for t in range(10)]
+    report = FelReport(None, tuple(weak), summarise(weak), ())
+    assert all(s.level == LEVELS[0] for s in report.summary)
+    assert report.overall.p90 == pytest.approx(1.6 / 1.2 * 4 ** (1 / 3), rel=0.02)
+    assert report.overall.level == LEVELS[1]
+    verdict, detail = recommendation(report)
+    assert verdict.endswith("apport modéré") and "cumul" in detail
+    # Ombres comptées avec le ton (mêmes pixels) : pas de double compte.
+    assert pooled_jnd({"tone": 2.4}) == pytest.approx(pooled_jnd({"tone": 2.4, "shadows": 2.4}))
+    medium = [FelSample(t, {**base, "tone": 4.5, "shadows": 4.5, "colour": 1.6, "detail": 9.0, "temporal": 2.5})
+              for t in range(10)]
+    strong = FelReport(None, tuple(medium), summarise(medium), ())
+    assert LEVELS[2] not in [s.level for s in strong.summary] and strong.overall.level == LEVELS[2]
+    assert recommendation(strong)[0].endswith("utile") and "cumul" in recommendation(strong)[1]
 
 
 def test_thumbnails_and_analyse_with_fake_capture():

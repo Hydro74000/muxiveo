@@ -7835,9 +7835,9 @@
     "fra": "MOMENTS LES PLUS MARQUÉS",
     "eng": "STRONGEST MOMENTS"
   },
-  "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Seuils faible / moyen / fort provisoires.": {
-    "fra": "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Seuils faible / moyen / fort provisoires.",
-    "eng": "Compares the picture reconstructed with the FEL to the base layer mapped by the RPU curves without residual (what a Dolby Vision TV shows with the P8.1 version without FEL), on frames spread through the film. Provisional weak / medium / strong thresholds."
+  "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Niveaux faible / moyen / fort exprimés en seuils de visibilité (JND).": {
+    "fra": "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Niveaux faible / moyen / fort exprimés en seuils de visibilité (JND).",
+    "eng": "Compares the picture reconstructed with the FEL to the base layer mapped by the RPU curves without residual (what a Dolby Vision TV shows with the P8.1 version without FEL), on frames spread through the film. Weak / medium / strong levels expressed in visibility thresholds (JND)."
   },
   "Catégorie": {
     "fra": "Catégorie",
@@ -8646,5 +8646,29 @@
   "mesure rapide de l'image (images clés, estimation)": {
     "fra": "mesure rapide de l'image (images clés, estimation)",
     "eng": "fast picture measurement (keyframes, estimate)"
+  },
+  "Visibilité (p90)": {
+    "fra": "Visibilité (p90)",
+    "eng": "Visibility (p90)"
+  },
+  "≈ {value} JND": {
+    "fra": "≈ {value} JND",
+    "eng": "≈ {value} JND"
+  },
+  "JND : seuil de visibilité en conditions critiques (ΔE ITP, ITU-R BT.2124 ; CSF de Barten pour le détail, vu à une hauteur d'image). Moyen ≈ 1,5 JND : perceptible en comparaison directe ; fort ≈ 4 JND : perceptible sans référence. Apport global : écarts cumulés au même instant (Minkowski β = 3), ombres et hautes lumières comptées avec le ton, grain avec le détail.": {
+    "fra": "JND : seuil de visibilité en conditions critiques (ΔE ITP, ITU-R BT.2124 ; CSF de Barten pour le détail, vu à une hauteur d'image). Moyen ≈ 1,5 JND : perceptible en comparaison directe ; fort ≈ 4 JND : perceptible sans référence. Apport global : écarts cumulés au même instant (Minkowski β = 3), ombres et hautes lumières comptées avec le ton, grain avec le détail.",
+    "eng": "JND: visibility threshold under critical conditions (ΔE ITP, ITU-R BT.2124; Barten CSF for detail, viewed at one picture height). Medium ≈ 1.5 JND: noticeable in a direct comparison; strong ≈ 4 JND: noticeable without a reference. Overall contribution: differences pooled at the same instant (Minkowski β = 3), shadows and highlights counted with tone, grain with detail."
+  },
+  "Apport global (cumul)": {
+    "fra": "Apport global (cumul)",
+    "eng": "Overall contribution (pooled)"
+  },
+  "Apport global fort ({jnd} JND) par cumul : {categories}.": {
+    "fra": "Apport global fort ({jnd} JND) par cumul : {categories}.",
+    "eng": "Strong overall contribution ({jnd} JND) by pooling: {categories}."
+  },
+  "Apport global moyen ({jnd} JND) par cumul : {categories}.": {
+    "fra": "Apport global moyen ({jnd} JND) par cumul : {categories}.",
+    "eng": "Medium overall contribution ({jnd} JND) by pooling: {categories}."
   }
 }

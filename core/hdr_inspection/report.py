@@ -19,7 +19,7 @@ import numpy as np
 from core.atomic_io import atomic_write_text
 from core.hdr_inspection import axes, summary
 from core.hdr_inspection.compare import SOURCE_LABELS, Comparison
-from core.hdr_inspection.fel_analyzer import CATEGORIES, FelReport, recommendation
+from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, FelReport, recommendation
 from core.hdr_inspection.inspector import InspectionReport
 from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.pq import pq12_to_nits
@@ -123,7 +123,10 @@ def _fel_data(fel: FelReport) -> dict:
         "verdict": verdict, "detail": detail, "samples": len(fel.samples),
         "categories": [{"key": item.key, "label": translate_text(labels[item.key][0]),
                         "unit": translate_text(labels[item.key][1]), "median": _number(item.median),
-                        "p90": _number(item.p90), "level": translate_text(item.level)} for item in fel.summary],
+                        "p90": _number(item.p90), "jnd": _number(item.jnd), "level": translate_text(item.level)}
+                       for item in fel.summary],
+        "overall": {"median_jnd": _number(fel.overall.median), "p90_jnd": _number(fel.overall.p90),
+                    "level": translate_text(fel.overall.level)},
         "layers": None if facts is None else {
             "frames": facts.frames, "duration_s": _number(facts.duration_s),
             "bl_bitrate": _number(facts.bitrate(facts.bl_bytes), 0), "el_bitrate": _number(facts.bitrate(facts.el_bytes), 0),
@@ -312,9 +315,15 @@ def _fel_html(fel: FelReport) -> str:
     data = _fel_data(fel)
     parts = [f"<p><b>{_e(data['verdict'])}</b><br>{_e(data['detail'])}</p>"]
     parts.append(_table([translate_text("Catégorie"), translate_text("Médiane"), translate_text("p90"),
-                         translate_text("Niveau")],
-                        [[c["label"], f"{c['median']:.2f} {c['unit']}", f"{c['p90']:.2f} {c['unit']}", c["level"]]
-                         for c in data["categories"]]))
+                         translate_text("Visibilité (p90)"), translate_text("Niveau")],
+                        [[c["label"], f"{c['median']:.2f} {c['unit']}", f"{c['p90']:.2f} {c['unit']}",
+                          translate_text("≈ {value} JND", value=f"{c['jnd']:.1f}"), c["level"]]
+                         for c in data["categories"]]
+                        + [[translate_text("Apport global (cumul)"), f"{data['overall']['median_jnd']:.2f} JND",
+                            f"{data['overall']['p90_jnd']:.2f} JND",
+                            translate_text("≈ {value} JND", value=f"{data['overall']['p90_jnd']:.1f}"),
+                            data["overall"]["level"]]]))
+    parts.append(f"<p><small>{_e(translate_text(JND_NOTE))}</small></p>")
     survival = fel.survival
     if survival is not None:
         parts.append("<p>" + _e(translate_text(

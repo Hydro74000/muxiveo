@@ -24,16 +24,39 @@ from core.hdr_inspection.pq import pq_to_nits
 from core.i18n import translate_text
 from core.subprocess_utils import subprocess_windows_no_window_kwargs
 
-#: Catégorie : libellé, unité, seuils faible/moyen et moyen/fort (valeur absolue).
+#: Seuil de visibilité (JND) de chaque catégorie, dans son unité, en conditions critiques :
+#: - ton, ombres : ΔE ITP (ITU-R BT.2124, 1 = JND) d'un code de luma 10 bits PQ plage limitée ≈ 0,82 ;
+#: - couleur : ΔE ITP de l'écart moyen Cb/Cr filtré ≈ 2,2 par code (1 code Cb ≈ 1,1 JND, Cr ≈ 1,7) ;
+#: - hautes lumières : 1 code ≈ 1,05 % au-delà de 500 nits, petite surface et compression de la TV (≈ × 2) ;
+#: - détail : bande d − moyenne 5 × 5 pondérée par la CSF de Barten (spectre en 1/f, 1 hauteur d'image
+#:   en UHD) : sensibilité ≈ 0,48 du pic → 1 JND ≈ 2,5 codes RMS (3,9 à 1,5 H, 10 à 3 H) ;
+#: - grain : discrimination de contraste au-dessus du seuil (loi de puissance de Legge) ≈ 10 % ;
+#: - stabilité : saut de luminance de toute l'image d'une image à la suivante ≈ 0,7 code.
+JND: dict[str, float] = {"tone": 1.2, "highlights": 2.5, "detail": 2.5, "grain": 10.0, "colour": 0.45,
+                         "shadows": 1.2, "temporal": 0.7}
+#: Catégorie : libellé, unité, seuils faible/moyen et moyen/fort (valeur absolue) : moyen ≈ 1,5 JND
+#: (perceptible en comparaison directe), fort ≈ 4 JND (perceptible sans référence).
 CATEGORIES: tuple[tuple[str, str, str, tuple[float, float]], ...] = (
-    ("tone", "Ton / exposition", "codes", (2.0, 8.0)),
-    ("highlights", "Hautes lumières", "%", (5.0, 30.0)),
-    ("detail", "Détail / texture", "codes RMS", (0.5, 2.0)),
-    ("grain", "Grain", "%", (3.0, 10.0)),
-    ("colour", "Couleur", "codes", (0.5, 2.0)),
-    ("shadows", "Ombres", "codes", (1.0, 4.0)),
-    ("temporal", "Stabilité temporelle", "codes", (0.5, 2.0)),
+    ("tone", "Ton / exposition", "codes", (2.0, 5.0)),
+    ("highlights", "Hautes lumières", "%", (4.0, 10.0)),
+    ("detail", "Détail / texture", "codes RMS", (4.0, 10.0)),
+    ("grain", "Grain", "%", (15.0, 40.0)),
+    ("colour", "Couleur", "codes", (0.7, 1.8)),
+    ("shadows", "Ombres", "codes", (2.0, 5.0)),
+    ("temporal", "Stabilité temporelle", "codes", (1.0, 3.0)),
 )
+_STRONG = {key: thresholds[1] for key, _label, _unit, thresholds in CATEGORIES}
+#: Apport global : écarts cumulés à chaque instant (sommation de probabilités, Minkowski β = 3 sur les
+#: écarts en JND) ; catégories recouvrantes réduites à leur maximum (luminance : ton, ombres, hautes
+#: lumières ; hautes fréquences : détail, grain) pour ne pas compter deux fois les mêmes pixels.
+POOLING_BETA = 3.0
+POOLING_GROUPS: tuple[tuple[str, ...], ...] = (("tone", "shadows", "highlights"), ("colour",), ("detail", "grain"),
+                                               ("temporal",))
+OVERALL_THRESHOLDS = (1.5, 4.0)
+JND_NOTE = ("JND : seuil de visibilité en conditions critiques (ΔE ITP, ITU-R BT.2124 ; CSF de Barten pour le "
+            "détail, vu à une hauteur d'image). Moyen ≈ 1,5 JND : perceptible en comparaison directe ; "
+            "fort ≈ 4 JND : perceptible sans référence. Apport global : écarts cumulés au même instant "
+            "(Minkowski β = 3), ombres et hautes lumières comptées avec le ton, grain avec le détail.")
 LEVELS = ("faible", "moyen", "fort")
 #: Plage limitée 10 bits : noir et blanc nominaux de la luma.
 _BLACK, _RANGE = 64.0, 876.0
@@ -62,6 +85,8 @@ class CategorySummary:
     median: float
     p90: float
     level: str
+    #: p90 en multiples du seuil de visibilité (JND) de la catégorie.
+    jnd: float = 0.0
 
 
 @dataclass(frozen=True, eq=False)
@@ -97,6 +122,11 @@ class FelReport:
 
     def level(self, key: str) -> str:
         return next((s.level for s in self.summary if s.key == key), "faible")
+
+    @property
+    def overall(self) -> CategorySummary:
+        """Apport global (JND cumulés par instant) : médiane, p90 et niveau."""
+        return overall_summary(self.samples)
 
 
 def _box(image: np.ndarray, radius: int) -> np.ndarray:
@@ -167,8 +197,22 @@ def summarise(samples: Sequence[FelSample]) -> tuple[CategorySummary, ...]:
             summary.append(CategorySummary(key, 0.0, 0.0, LEVELS[0]))
             continue
         p90 = float(np.percentile(values, 90))
-        summary.append(CategorySummary(key, float(np.median(values)), p90, classify(p90, thresholds)))
+        summary.append(CategorySummary(key, float(np.median(values)), p90, classify(p90, thresholds), p90 / JND[key]))
     return tuple(summary)
+
+
+def pooled_jnd(metrics: dict[str, float]) -> float:
+    """Écart cumulé d'un instant, en JND (voir ``POOLING_GROUPS``)."""
+    groups = [max(abs(metrics.get(key, 0.0)) / JND[key] for key in group) for group in POOLING_GROUPS]
+    return float(sum(value ** POOLING_BETA for value in groups) ** (1 / POOLING_BETA))
+
+
+def overall_summary(samples: Sequence[FelSample]) -> CategorySummary:
+    values = np.array([pooled_jnd(s.metrics) for s in samples], dtype=np.float64)
+    if not values.size:
+        return CategorySummary("overall", 0.0, 0.0, LEVELS[0])
+    p90 = float(np.percentile(values, 90))
+    return CategorySummary("overall", float(np.median(values)), p90, classify(p90, OVERALL_THRESHOLDS), p90)
 
 
 def recommendation(report: FelReport) -> tuple[str, str]:
@@ -190,9 +234,21 @@ def recommendation(report: FelReport) -> tuple[str, str]:
         return (translate_text("Intégrer le FEL : utile si le débit le permet"),
                 translate_text("Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.",
                                categories=", ".join(labels[k] for k in strong)))
+    # Catégories faibles prises une à une mais cumulées au même instant (moyennes comprises).
+    overall = report.overall
+    contributors = [s.key for s in report.summary if s.jnd >= 0.5]
+    cumulated = ", ".join(labels[k] for k in contributors) or "—"
+    if overall.level == LEVELS[2]:
+        return (translate_text("Intégrer le FEL : utile"),
+                translate_text("Apport global fort ({jnd} JND) par cumul : {categories}.", jnd=f"{overall.p90:.1f}",
+                               categories=cumulated))
     if medium:
         return (translate_text("Intégrer le FEL : apport modéré"),
                 translate_text("Apport moyen : {categories}.", categories=", ".join(labels[k] for k in medium)))
+    if overall.level == LEVELS[1]:
+        return (translate_text("Intégrer le FEL : apport modéré"),
+                translate_text("Apport global moyen ({jnd} JND) par cumul : {categories}.",
+                               jnd=f"{overall.p90:.1f}", categories=cumulated))
     return (translate_text("Intégrer le FEL : inutile"),
             translate_text("Apport négligeable : ce FEL se comporte comme un MEL."))
 
@@ -330,7 +386,8 @@ def _sample_metrics(reconstructed: list[Frame], mapped: list[Frame],
     # Stabilité : variation de l'écart moyen d'une image à la suivante (pompage corrigé par le FEL).
     following = float((reconstructed[1].y[rows].astype(np.float64) - mapped[1].y[rows].astype(np.float64)).mean())
     metrics["temporal"] = abs(following - first["mean"])
-    score = metrics["tone"] / 8.0 + metrics["detail"] / 2.0 + abs(metrics["highlights"]) / 30.0
+    score = (metrics["tone"] / _STRONG["tone"] + metrics["detail"] / _STRONG["detail"]
+             + abs(metrics["highlights"]) / _STRONG["highlights"])
     return metrics, score, rows
 
 
