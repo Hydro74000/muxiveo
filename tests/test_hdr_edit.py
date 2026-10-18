@@ -282,6 +282,21 @@ def test_static_sei_mastering_replaced_and_colour_written(tmp_path):
     assert struct.unpack(">d", mastering[LUMINANCE_MAX_ID])[0] == 4000.0
 
 
+def test_static_sei_rewrite_reports_progress_and_cancels(tmp_path):
+    from core.workflows.hevc_static_hdr_metadata import replace_static_hdr_sei_file
+    start = b"\x00\x00\x00\x01"
+    source, output = tmp_path / "in.hevc", tmp_path / "out.hevc"
+    source.write_bytes((start + bytes([19 << 1, 1, 0x80, 0x11])) * 200)
+    fractions: list[float] = []
+    assert replace_static_hdr_sei_file(source, output, max_cll="900,300", progress_cb=fractions.append).applied
+    assert len(fractions) == 3 and fractions == sorted(fractions) and 0 < fractions[-1] < 1
+
+    def cancel(_fraction: float) -> None:
+        raise PatchCancelled
+
+    with pytest.raises(PatchCancelled):
+        replace_static_hdr_sei_file(source, output, max_cll="900,300", progress_cb=cancel)
+
 def test_transform_hdr10plus(tmp_path):
     source = _write_hdr10plus(tmp_path / "h.json", [2, 3], maxscl=(50000, 40000, 30000), avg=6000)
     target = tmp_path / "out.json"
@@ -339,16 +354,21 @@ def test_patcher_raw_hevc_flow_and_publication(tmp_path):
     source = tmp_path / "film.hevc"
     source.write_bytes(b"\x00\x00\x00\x01" + b"\x40\x01" + b"\x00" * 64)
     tools = _FakeTools(_write_hdr10plus(tmp_path / "h.json", [3]))
-    steps: list[str] = []
+    steps: list[tuple[str, float, float]] = []
     output = tmp_path / "out.hevc"
     plan = PatchPlan(source, 0, output, rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)),
                      hdr10plus=Hdr10PlusEdit(targeted_display=600))
-    assert _patcher(tmp_path, tools, on_step=lambda label, start, span: steps.append(label)).run(plan) == output
+    assert _patcher(tmp_path, tools, on_step=lambda *step: steps.append(step)).run(plan) == output
     assert output.read_bytes() == source.read_bytes()
     verbs = [(Path(c[0]).name, c[1]) for c in tools.commands]
     assert verbs == [("dovi_tool", "extract-rpu"), ("dovi_tool", "editor"), ("dovi_tool", "inject-rpu"),
                      ("hdr10plus_tool", "extract"), ("hdr10plus_tool", "remove"), ("hdr10plus_tool", "inject")]
-    assert len(steps) == 3 and not list((tmp_path / "work").iterdir())
+    assert len({label for label, _, _ in steps}) == 3 and not list((tmp_path / "work").iterdir())
+    # Une fenêtre par balayage outil : extract-rpu, inject-rpu ×2 | extract, remove, inject ×2 | écriture.
+    starts = [round(start, 6) for _, start, _ in steps]
+    assert starts == sorted(starts) and steps[-1][1] + steps[-1][2] == pytest.approx(1.0)
+    assert steps[2][1] + 2 * steps[2][2] == pytest.approx(steps[3][1])
+    assert steps[-2][1] + 2 * steps[-2][2] == pytest.approx(steps[-1][1])
     assert not list(tmp_path.glob("*.partial"))
     # Sortie existante : remplacée (destination relevée au départ) ; la source n'est jamais la sortie.
     _patcher(tmp_path, _FakeTools(tmp_path / "h.json")).run(plan)

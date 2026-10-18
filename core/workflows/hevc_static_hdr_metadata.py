@@ -5,6 +5,7 @@ from __future__ import annotations
 import mmap
 import re
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -210,11 +211,13 @@ def replace_static_hdr_sei_file(
     *,
     master_display: str = "",
     max_cll: str = "",
+    progress_cb: Callable[[float], None] | None = None,
 ) -> StaticHdrSeiInjectionResult:
     """Remplace les SEI HDR statiques demandés (MDCV ``master_display``, CLL ``max_cll``) d'un flux annexB.
 
     Seuls les types fournis sont retirés des SEI préfixes puis réinsérés sur la première image et
-    chaque image IRAP ; les autres messages SEI sont conservés.
+    chaque image IRAP ; les autres messages SEI sont conservés. ``progress_cb`` reçoit la part lue
+    (0–1) ; une exception levée par le rappel (annulation) interrompt la réécriture.
     """
     sei_nal, requested_types = _build_static_hdr_sei_nal(master_display=master_display, max_cll=max_cll)
     if input_path.stat().st_size == 0:
@@ -224,7 +227,7 @@ def replace_static_hdr_sei_file(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("wb") as dst:
                 result = _rewrite_stream(mm, dst, sei_nal=sei_nal, requested_types=requested_types,
-                                         strip_types=requested_types)
+                                         strip_types=requested_types, progress_cb=progress_cb)
     if not result.applied:
         output_path.unlink(missing_ok=True)
     return result
@@ -237,7 +240,9 @@ def _rewrite_stream(
     sei_nal: bytes,
     requested_types: frozenset[int],
     strip_types: frozenset[int] = frozenset(),
+    progress_cb: Callable[[float], None] | None = None,
 ) -> StaticHdrSeiInjectionResult:
+    total = len(data)
     current_au: list[_NalRef] = []
     access_units = 0
     targeted_access_units = 0
@@ -269,6 +274,8 @@ def _rewrite_stream(
             injected_access_units += 1
         elif is_target and already_present:
             preserved_access_units += 1
+        if progress_cb is not None and total and access_units % 64 == 0:
+            progress_cb(current_au[-1].end_offset / total)
         current_au = []
         has_slice = False
         current_is_keyframe = False

@@ -283,7 +283,12 @@ def _same_volume(first: Path, second: Path) -> bool:
 
 
 class MetadataPatcher:
-    """Exécute un :class:`PatchPlan` dans ``work_dir`` (dossier process jetable)."""
+    """Exécute un :class:`PatchPlan` dans ``work_dir`` (dossier process jetable).
+
+    ``on_step(libellé, début, largeur)`` est appelé avant chaque commande : la fenêtre reçoit le
+    pourcentage de l'outil ; un outil à deux balayages 0→100 % (``inject-rpu``, ``hdr10plus_tool
+    inject``) occupe deux fenêtres consécutives de même largeur.
+    """
 
     def __init__(self, *, ffmpeg_bin: str, dovi_tool_bin: str, hdr10plus_bin: str, run_cmd: RunCommand,
                  work_dir: Path, on_step: StepCallback | None = None,
@@ -301,6 +306,13 @@ class MetadataPatcher:
             raise PatchCancelled
         if self._on_step is not None:
             self._on_step(label, start, span)
+
+    def _report(self, fraction: float) -> None:
+        """Avancement global (0–1) d'une étape Python ; lève :class:`PatchCancelled` sur annulation."""
+        if self._cancelled():
+            raise PatchCancelled
+        if self._progress is not None:
+            self._progress(fraction)
 
     def _check_space(self, plan: PatchPlan) -> None:
         size = plan.source.stat().st_size
@@ -334,7 +346,9 @@ class MetadataPatcher:
         if plan.static is not None and not plan.static.is_empty():
             steps.append("static")
         steps.append("write")
-        span = 1.0 / len(steps)
+        # Poids ≈ volume lu/écrit : extraction 2, RPU/HDR10+ 3 à 4 passes outil, SEI et écriture 2.
+        weights = {"extract": 2.0, "rpu": 4.0, "hdr10plus": 4.0, "static": 2.0, "write": 2.0}
+        total_weight = sum(weights[step] for step in steps)
         position = 0.0
         current = source
         temporaries: list[Path] = []
@@ -350,6 +364,7 @@ class MetadataPatcher:
         try:
             with OutputReservation.acquire(output) as reservation:
                 if "extract" in steps:
+                    span = weights["extract"] / total_weight
                     self._step(translate_text("Extraction du flux vidéo…"), position, span)
                     target = self._work / "video.hevc"
                     command = [self._ffmpeg, "-nostdin", "-y", "-loglevel", "error"]
@@ -361,19 +376,30 @@ class MetadataPatcher:
                     position += span
                 if "rpu" in steps:
                     assert plan.rpu is not None
-                    self._step(translate_text("Édition du RPU Dolby Vision…"), position, span)
+                    span = weights["rpu"] / total_weight
+                    label = translate_text("Édition du RPU Dolby Vision…")
+                    window = span / 3  # extract-rpu, puis inject-rpu (analyse + réécriture)
+                    self._step(label, position, window)
                     rpu, edited, config = self._work / "rpu.bin", self._work / "rpu_edit.bin", self._work / "rpu_edit.json"
                     temporaries += [rpu, edited, config]
                     config.write_text(json.dumps(plan.rpu.editor_config()), encoding="utf-8")
                     self._run([self._dovi, "extract-rpu", "-i", str(current), "-o", str(rpu)])
+                    self._step(label, position + window, window)
                     self._run([self._dovi, "editor", "-i", str(rpu), "-j", str(config), "-o", str(edited)])
                     target = self._work / "video_rpu.hevc"
+                    self._step(label, position + window, window)
                     self._run([self._dovi, "inject-rpu", "-i", str(current), "-r", str(edited), "-o", str(target)])
                     advance(target)
                     position += span
                 if "hdr10plus" in steps:
                     assert plan.hdr10plus is not None
-                    self._step(translate_text("Édition du HDR10+…"), position, span)
+                    span = weights["hdr10plus"] / total_weight
+                    label = translate_text("Édition du HDR10+…")
+                    extract_json = plan.hdr10plus.recompute is None and not plan.hdr10plus.remove
+                    # Balayages outil : extract 1, remove 1, inject 2.
+                    window = span / ((1 if extract_json else 0) + 1 + (0 if plan.hdr10plus.remove else 2))
+                    sub = position
+                    self._step(label, sub, window)
                     stripped = self._work / "video_sans_hdr10plus.hevc"
                     extracted, edited_json = self._work / "hdr10plus.json", self._work / "hdr10plus_edit.json"
                     temporaries += [extracted, edited_json]
@@ -388,30 +414,37 @@ class MetadataPatcher:
                         self._run([self._hdr10plus, "extract", str(current), "-o", str(extracted)])
                         transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
                         extracted.unlink(missing_ok=True)
+                        sub += window
+                        self._step(label, sub, window)
                     self._run([self._hdr10plus, "remove", "-i", str(current), "-o", str(stripped)])
                     advance(stripped)
                     if not plan.hdr10plus.remove:
                         target = self._work / "video_hdr10plus.hevc"
+                        self._step(label, sub + window, window)
                         self._run([self._hdr10plus, "inject", "-i", str(current), "-j", str(edited_json),
                                    "-o", str(target)])
                         advance(target)
                     position += span
                 if "static" in steps:
                     assert plan.static is not None
+                    span = weights["static"] / total_weight
                     self._step(translate_text("HDR10 statique du flux…"), position, span)
                     from core.workflows.hevc_static_hdr_metadata import replace_static_hdr_sei_file
 
                     target = self._work / "video_static.hevc"
                     levels, mastering = plan.static.light_levels, plan.static.mastering
+                    start, part = position, span
                     result = replace_static_hdr_sei_file(
                         current, target, master_display=mastering.master_display() if mastering else "",
-                        max_cll=f"{levels[0]},{levels[1]}" if levels else "")
+                        max_cll=f"{levels[0]},{levels[1]}" if levels else "",
+                        progress_cb=lambda fraction: self._report(start + part * fraction))
                     if not result.applied:
                         raise PatchError(translate_text("SEI HDR10 statiques non écrits dans le flux."))
                     advance(target)
                     position += span
                 if self._cancelled():
                     raise PatchCancelled
+                span = weights["write"] / total_weight
                 self._step(translate_text("Écriture du fichier corrigé…"), position, span)
                 candidate = reserve_candidate(output)
                 total = source.stat().st_size
