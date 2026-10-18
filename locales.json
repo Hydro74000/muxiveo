@@ -6698,5 +6698,597 @@
   "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.": {
     "fra": "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.",
     "eng": "Recomputed: HDR10+ statistics (profile A) and MaxCLL/MaxFALL measured on the reconstructed image per Dolby Vision shot, then injected after encoding (HEVC, mvo-fel extension 0.3.0 or later). Kept: the source HDR10+, computed on the BL without the FEL contribution."
+  },
+  "{name} : {extra} trames de plus que la vidéo": {
+    "fra": "{name} : {extra} trames de plus que la vidéo",
+    "eng": "{name}: {extra} more frames than the video"
+  },
+  "{count} trames de métadonnées pour {video} images vidéo.": {
+    "fra": "{count} trames de métadonnées pour {video} images vidéo.",
+    "eng": "{count} metadata frames for {video} video frames."
+  },
+  "{name} : {count} images": {
+    "fra": "{name} : {count} images",
+    "eng": "{name}: {count} frames"
+  },
+  "{name} présent sur les {count} images": {
+    "fra": "{name} présent sur les {count} images",
+    "eng": "{name} present on all {count} frames"
+  },
+  "{name} : {count} images, vidéo {video} d'après la durée (comptage non exact)": {
+    "fra": "{name} : {count} images, vidéo {video} d'après la durée (comptage non exact)",
+    "eng": "{name}: {count} frames, video {video} from duration (approximate count)"
+  },
+  "{name} absent sur {missing} images": {
+    "fra": "{name} absent sur {missing} images",
+    "eng": "{name} missing on {missing} frames"
+  },
+  "RPU Dolby Vision": {
+    "fra": "RPU Dolby Vision",
+    "eng": "Dolby Vision RPU"
+  },
+  "MDCV absent (SMPTE ST 2086)": {
+    "fra": "MDCV absent (SMPTE ST 2086)",
+    "eng": "MDCV missing (SMPTE ST 2086)"
+  },
+  "Une TV HDR10 suppose alors un écran de mastering par défaut.": {
+    "fra": "Une TV HDR10 suppose alors un écran de mastering par défaut.",
+    "eng": "An HDR10 TV then assumes a default mastering display."
+  },
+  "MaxCLL/MaxFALL absents": {
+    "fra": "MaxCLL/MaxFALL absents",
+    "eng": "MaxCLL/MaxFALL missing"
+  },
+  "Le tone mapping HDR10 se fonde alors sur le MDCV seul.": {
+    "fra": "Le tone mapping HDR10 se fonde alors sur le MDCV seul.",
+    "eng": "HDR10 tone mapping then relies on the MDCV alone."
+  },
+  "MaxCLL/MaxFALL inconnus (0)": {
+    "fra": "MaxCLL/MaxFALL inconnus (0)",
+    "eng": "MaxCLL/MaxFALL unknown (0)"
+  },
+  "Valeur « inconnue » de CTA-861.3 : la TV se fonde sur le MDCV.": {
+    "fra": "Valeur « inconnue » de CTA-861.3 : la TV se fonde sur le MDCV.",
+    "eng": "CTA-861.3 “unknown” value: the TV relies on the MDCV."
+  },
+  "MaxCLL/MaxFALL 1000/400 : valeurs par défaut probables": {
+    "fra": "MaxCLL/MaxFALL 1000/400 : valeurs par défaut probables",
+    "eng": "MaxCLL/MaxFALL 1000/400: likely default values"
+  },
+  "Valeurs souvent écrites par les encodeurs sans mesure du contenu.": {
+    "fra": "Valeurs souvent écrites par les encodeurs sans mesure du contenu.",
+    "eng": "Values often written by encoders without measuring the content."
+  },
+  "L1 absent sur {count} images": {
+    "fra": "L1 absent sur {count} images",
+    "eng": "L1 missing on {count} frames"
+  },
+  "Profil du conteneur (P{record}) différent du RPU (P{rpu})": {
+    "fra": "Profil du conteneur (P{record}) différent du RPU (P{rpu})",
+    "eng": "Container profile (P{record}) differs from the RPU (P{rpu})"
+  },
+  "Zone active variable : {changes} changements, {distinct} formats": {
+    "fra": "Zone active variable : {changes} changements, {distinct} formats",
+    "eng": "Variable active area: {changes} changes, {distinct} formats"
+  },
+  "Format d'image variable (scènes IMAX, par exemple).": {
+    "fra": "Format d'image variable (scènes IMAX, par exemple).",
+    "eng": "Variable aspect ratio (IMAX scenes, for example)."
+  },
+  "{count} jeux L6 différents dans le film": {
+    "fra": "{count} jeux L6 différents dans le film",
+    "eng": "{count} different L6 sets in the film"
+  },
+  "Le L6 devrait être constant : RPU assemblé depuis plusieurs sources ?": {
+    "fra": "Le L6 devrait être constant : RPU assemblé depuis plusieurs sources ?",
+    "eng": "L6 should be constant: RPU assembled from several sources?"
+  },
+  "Profil B : courbe de Bézier pour un écran de {targets} nits": {
+    "fra": "Profil B : courbe de Bézier pour un écran de {targets} nits",
+    "eng": "Profile B: Bézier curve for a {targets}-nit display"
+  },
+  "Plusieurs fenêtres de traitement": {
+    "fra": "Plusieurs fenêtres de traitement",
+    "eng": "Several processing windows"
+  },
+  "RPU ({dv} images) et HDR10+ ({hdr10plus} images) de longueurs différentes": {
+    "fra": "RPU ({dv} images) et HDR10+ ({hdr10plus} images) de longueurs différentes",
+    "eng": "RPU ({dv} frames) and HDR10+ ({hdr10plus} frames) have different lengths"
+  },
+  "Plans HDR10+ décalés de {shift} images par rapport au RPU": {
+    "fra": "Plans HDR10+ décalés de {shift} images par rapport au RPU",
+    "eng": "HDR10+ scenes shifted by {shift} frames relative to the RPU"
+  },
+  "HDR10+ recalé depuis une autre source ? {share} % des plans coïncident après décalage.": {
+    "fra": "HDR10+ recalé depuis une autre source ? {share} % des plans coïncident après décalage.",
+    "eng": "HDR10+ realigned from another source? {share}% of scenes match after shifting."
+  },
+  "Vidéo SDR : aucune métadonnée HDR": {
+    "fra": "Vidéo SDR : aucune métadonnée HDR",
+    "eng": "SDR video: no HDR metadata"
+  },
+  "HLG : aucune métadonnée statique ni dynamique requise": {
+    "fra": "HLG : aucune métadonnée statique ni dynamique requise",
+    "eng": "HLG: no static or dynamic metadata required"
+  },
+  "PQ en {bits} bits : postérisation probable": {
+    "fra": "PQ en {bits} bits : postérisation probable",
+    "eng": "{bits}-bit PQ: banding likely"
+  },
+  "MaxCLL ({cll} nits) sous le pic {name} ({peak} nits)": {
+    "fra": "MaxCLL ({cll} nits) sous le pic {name} ({peak} nits)",
+    "eng": "MaxCLL ({cll} nits) below the {name} peak ({peak} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà.",
+    "eng": "An HDR10 TV that follows MaxCLL may clip highlights above it."
+  },
+  "L6 Dolby Vision ({l6}) différent du HDR10 ({hdr10})": {
+    "fra": "L6 Dolby Vision ({l6}) différent du HDR10 ({hdr10})",
+    "eng": "Dolby Vision L6 ({l6}) differs from HDR10 ({hdr10})"
+  },
+  "Les TV Dolby Vision lisent le L6, les TV HDR10 le SEI ou le conteneur.": {
+    "fra": "Les TV Dolby Vision lisent le L6, les TV HDR10 le SEI ou le conteneur.",
+    "eng": "Dolby Vision TVs read L6; HDR10 TVs read the SEI or the container."
+  },
+  "MDCV ({mdcv} nits) différent du L6 ({l6} nits)": {
+    "fra": "MDCV ({mdcv} nits) différent du L6 ({l6} nits)",
+    "eng": "MDCV ({mdcv} nits) differs from L6 ({l6} nits)"
+  },
+  "Niveau Dolby Vision {level} insuffisant (minimum {needed})": {
+    "fra": "Niveau Dolby Vision {level} insuffisant (minimum {needed})",
+    "eng": "Dolby Vision level {level} too low (minimum {needed})"
+  },
+  "FEL vide : résiduel désactivé sur toutes les images": {
+    "fra": "FEL vide : résiduel désactivé sur toutes les images",
+    "eng": "Empty FEL: residual disabled on every frame"
+  },
+  "La couche d'amélioration n'apporte rien de plus qu'un MEL.": {
+    "fra": "La couche d'amélioration n'apporte rien de plus qu'un MEL.",
+    "eng": "The enhancement layer adds nothing over a MEL."
+  },
+  "FEL : résiduel actif sur {share} % des images": {
+    "fra": "FEL : résiduel actif sur {share} % des images",
+    "eng": "FEL: residual active on {share}% of frames"
+  },
+  "Plans HDR10+ alignés sur le RPU ({share} %)": {
+    "fra": "Plans HDR10+ alignés sur le RPU ({share} %)",
+    "eng": "HDR10+ scenes aligned with the RPU ({share}%)"
+  },
+  "Plans HDR10+ indépendants du RPU ({share} % communs)": {
+    "fra": "Plans HDR10+ indépendants du RPU ({share} % communs)",
+    "eng": "HDR10+ scenes independent of the RPU ({share}% shared)"
+  },
+  "Découpages produits par des analyses différentes.": {
+    "fra": "Découpages produits par des analyses différentes.",
+    "eng": "Scene cuts produced by different analyses."
+  },
+  "MaxCLL ({cll} nits) très au-dessus du pic {name} ({peak} nits)": {
+    "fra": "MaxCLL ({cll} nits) très au-dessus du pic {name} ({peak} nits)",
+    "eng": "MaxCLL ({cll} nits) far above the {name} peak ({peak} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL compresse les hautes lumières sans nécessité.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL compresse les hautes lumières sans nécessité.",
+    "eng": "An HDR10 TV that follows MaxCLL compresses highlights needlessly."
+  },
+  "Extraction du RPU Dolby Vision…": {
+    "fra": "Extraction du RPU Dolby Vision…",
+    "eng": "Extracting the Dolby Vision RPU…"
+  },
+  "Analyse du RPU…": {
+    "fra": "Analyse du RPU…",
+    "eng": "Analysing the RPU…"
+  },
+  "Extraction du HDR10+…": {
+    "fra": "Extraction du HDR10+…",
+    "eng": "Extracting HDR10+…"
+  },
+  "Analyse du HDR10+…": {
+    "fra": "Analyse du HDR10+…",
+    "eng": "Analysing HDR10+…"
+  },
+  "RPU Dolby Vision illisible : {error}": {
+    "fra": "RPU Dolby Vision illisible : {error}",
+    "eng": "Unreadable Dolby Vision RPU: {error}"
+  },
+  "HDR10+ illisible : {error}": {
+    "fra": "HDR10+ illisible : {error}",
+    "eng": "Unreadable HDR10+: {error}"
+  },
+  "Aucune donnée de luminance": {
+    "fra": "Aucune donnée de luminance",
+    "eng": "No luminance data"
+  },
+  "image": {
+    "fra": "image",
+    "eng": "frame"
+  },
+  "HDR Studio": {
+    "fra": "HDR Studio",
+    "eng": "HDR Studio"
+  },
+  "Inspecter le HDR d'une vidéo : formats, cohérence des métadonnées, courbes de luminance.": {
+    "fra": "Inspecter le HDR d'une vidéo : formats, cohérence des métadonnées, courbes de luminance.",
+    "eng": "Inspect a video's HDR: formats, metadata consistency, luminance curves."
+  },
+  "Déposer une vidéo ici ou choisir un fichier…": {
+    "fra": "Déposer une vidéo ici ou choisir un fichier…",
+    "eng": "Drop a video here or choose a file…"
+  },
+  "Choisir un fichier": {
+    "fra": "Choisir un fichier",
+    "eng": "Choose a file"
+  },
+  "Lire les métadonnées dynamiques": {
+    "fra": "Lire les métadonnées dynamiques",
+    "eng": "Read dynamic metadata"
+  },
+  "Extrait et analyse le RPU Dolby Vision et le HDR10+ : lecture complète du fichier, sans décodage.": {
+    "fra": "Extrait et analyse le RPU Dolby Vision et le HDR10+ : lecture complète du fichier, sans décodage.",
+    "eng": "Extracts and analyses the Dolby Vision RPU and HDR10+: full file read, no decoding."
+  },
+  "Relire le fichier": {
+    "fra": "Relire le fichier",
+    "eng": "Read the file again"
+  },
+  "Ignore le résultat en cache et relit le fichier.": {
+    "fra": "Ignore le résultat en cache et relit le fichier.",
+    "eng": "Ignores the cached result and reads the file again."
+  },
+  "Vue d'ensemble": {
+    "fra": "Vue d'ensemble",
+    "eng": "Overview"
+  },
+  "Luminance": {
+    "fra": "Luminance",
+    "eng": "Luminance"
+  },
+  "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.": {
+    "fra": "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.",
+    "eng": "Vertical axis in nits, PQ scale. Wheel: zoom; drag: pan; double-click: full view. Dolby L1 is a robust maximum (isolated pixels discarded); HDR10+ MaxScl is a strict maximum."
+  },
+  "Choisir une vidéo": {
+    "fra": "Choisir une vidéo",
+    "eng": "Choose a video"
+  },
+  "Inspection de {name}…": {
+    "fra": "Inspection de {name}…",
+    "eng": "Inspecting {name}…"
+  },
+  "Inspection HDR : {name}": {
+    "fra": "Inspection HDR : {name}",
+    "eng": "HDR inspection: {name}"
+  },
+  "Analyse des métadonnées dynamiques…": {
+    "fra": "Analyse des métadonnées dynamiques…",
+    "eng": "Analysing dynamic metadata…"
+  },
+  "Lecture des métadonnées dynamiques : {name}": {
+    "fra": "Lecture des métadonnées dynamiques : {name}",
+    "eng": "Reading dynamic metadata: {name}"
+  },
+  "Analyse HDR terminée : {count} point(s) à vérifier": {
+    "fra": "Analyse HDR terminée : {count} point(s) à vérifier",
+    "eng": "HDR analysis finished: {count} item(s) to check"
+  },
+  "absent": {
+    "fra": "absent",
+    "eng": "missing"
+  },
+  "absents": {
+    "fra": "absents",
+    "eng": "missing"
+  },
+  "aucune": {
+    "fra": "aucune",
+    "eng": "none"
+  },
+  "non renseigné": {
+    "fra": "non renseigné",
+    "eng": "not set"
+  },
+  "SOURCE": {
+    "fra": "SOURCE",
+    "eng": "SOURCE"
+  },
+  "Fichier vidéo introuvable ou non pris en charge : {name}": {
+    "fra": "Fichier vidéo introuvable ou non pris en charge : {name}",
+    "eng": "Video file not found or not supported: {name}"
+  },
+  "Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste.": {
+    "fra": "Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste.",
+    "eng": "No dynamic metadata (Dolby Vision, HDR10+) on this track."
+  },
+  "PISTE": {
+    "fra": "PISTE",
+    "eng": "TRACK"
+  },
+  "HDR10 STATIQUE": {
+    "fra": "HDR10 STATIQUE",
+    "eng": "STATIC HDR10"
+  },
+  "CONTRÔLES": {
+    "fra": "CONTRÔLES",
+    "eng": "CHECKS"
+  },
+  "≈ {count} (d'après la durée)": {
+    "fra": "≈ {count} (d'après la durée)",
+    "eng": "≈ {count} (from duration)"
+  },
+  "Résolution": {
+    "fra": "Résolution",
+    "eng": "Resolution"
+  },
+  "Cadence": {
+    "fra": "Cadence",
+    "eng": "Frame rate"
+  },
+  "Images": {
+    "fra": "Images",
+    "eng": "Frames"
+  },
+  "Transfert": {
+    "fra": "Transfert",
+    "eng": "Transfer"
+  },
+  "Primaires": {
+    "fra": "Primaires",
+    "eng": "Primaries"
+  },
+  "Matrice": {
+    "fra": "Matrice",
+    "eng": "Matrix"
+  },
+  "Écran de mastering (MDCV)": {
+    "fra": "Écran de mastering (MDCV)",
+    "eng": "Mastering display (MDCV)"
+  },
+  "Pas de Dolby Vision sur cette piste.": {
+    "fra": "Pas de Dolby Vision sur cette piste.",
+    "eng": "No Dolby Vision on this track."
+  },
+  "Lire les métadonnées dynamiques pour analyser le RPU.": {
+    "fra": "Lire les métadonnées dynamiques pour analyser le RPU.",
+    "eng": "Read dynamic metadata to analyse the RPU."
+  },
+  "résiduel actif sur {share} % des images": {
+    "fra": "résiduel actif sur {share} % des images",
+    "eng": "residual active on {share}% of frames"
+  },
+  "Profil (RPU)": {
+    "fra": "Profil (RPU)",
+    "eng": "Profile (RPU)"
+  },
+  "Couche EL": {
+    "fra": "Couche EL",
+    "eng": "EL layer"
+  },
+  "Version CM": {
+    "fra": "Version CM",
+    "eng": "CM version"
+  },
+  "Plans": {
+    "fra": "Plans",
+    "eng": "Scenes"
+  },
+  "Pic L1 (MaxCLL du RPU)": {
+    "fra": "Pic L1 (MaxCLL du RPU)",
+    "eng": "L1 peak (RPU MaxCLL)"
+  },
+  "Moyenne L1 max. (MaxFALL du RPU)": {
+    "fra": "Moyenne L1 max. (MaxFALL du RPU)",
+    "eng": "Max. L1 average (RPU MaxFALL)"
+  },
+  "Écran de mastering (RPU)": {
+    "fra": "Écran de mastering (RPU)",
+    "eng": "Mastering display (RPU)"
+  },
+  "Trims L2 (écrans cibles)": {
+    "fra": "Trims L2 (écrans cibles)",
+    "eng": "L2 trims (target displays)"
+  },
+  "RPU": {
+    "fra": "RPU",
+    "eng": "RPU"
+  },
+  "ZONES ACTIVES L5": {
+    "fra": "ZONES ACTIVES L5",
+    "eng": "L5 ACTIVE AREAS"
+  },
+  "Pas de HDR10+ sur cette piste.": {
+    "fra": "Pas de HDR10+ sur cette piste.",
+    "eng": "No HDR10+ on this track."
+  },
+  "Lire les métadonnées dynamiques pour analyser le HDR10+.": {
+    "fra": "Lire les métadonnées dynamiques pour analyser le HDR10+.",
+    "eng": "Read dynamic metadata to analyse HDR10+."
+  },
+  "Fenêtres": {
+    "fra": "Fenêtres",
+    "eng": "Windows"
+  },
+  "Écran ciblé (TSDML)": {
+    "fra": "Écran ciblé (TSDML)",
+    "eng": "Targeted display (TSDML)"
+  },
+  "Pic MaxScl": {
+    "fra": "Pic MaxScl",
+    "eng": "MaxScl peak"
+  },
+  "AverageRGB max.": {
+    "fra": "AverageRGB max.",
+    "eng": "Max. AverageRGB"
+  },
+  "Percentile 99,98 % max.": {
+    "fra": "Percentile 99,98 % max.",
+    "eng": "Max. 99.98% percentile"
+  },
+  "Lire les métadonnées dynamiques pour afficher les courbes (Dolby Vision L1, HDR10+).": {
+    "fra": "Lire les métadonnées dynamiques pour afficher les courbes (Dolby Vision L1, HDR10+).",
+    "eng": "Read dynamic metadata to display the curves (Dolby Vision L1, HDR10+)."
+  },
+  "Aucune piste vidéo.": {
+    "fra": "Aucune piste vidéo.",
+    "eng": "No video track."
+  },
+  "Analyse impossible : {error}": {
+    "fra": "Analyse impossible : {error}",
+    "eng": "Analysis failed: {error}"
+  },
+  "Analyse HDR impossible : {error}": {
+    "fra": "Analyse HDR impossible : {error}",
+    "eng": "HDR analysis failed: {error}"
+  },
+  "Analyse annulée.": {
+    "fra": "Analyse annulée.",
+    "eng": "Analysis cancelled."
+  },
+  "Métadonnées dynamiques : résultat en cache.": {
+    "fra": "Métadonnées dynamiques : résultat en cache.",
+    "eng": "Dynamic metadata: cached result."
+  },
+  "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo (Conteneur, Encodage) puis « Inspecter le HDR… ».": {
+    "fra": "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo (Conteneur, Encodage) puis « Inspecter le HDR… ».",
+    "eng": "Drop a video, choose a file, or right-click a video track (Container, Encoding) and pick “Inspect HDR…”."
+  },
+  "Niveau": {
+    "fra": "Niveau",
+    "eng": "Level"
+  },
+  "Couches": {
+    "fra": "Couches",
+    "eng": "Layers"
+  },
+  "DOLBY VISION (CONTENEUR)": {
+    "fra": "DOLBY VISION (CONTENEUR)",
+    "eng": "DOLBY VISION (CONTAINER)"
+  },
+  "Contrôles des en-têtes seulement. « Lire les métadonnées dynamiques » vérifie aussi le RPU, le HDR10+ et leur cohérence.": {
+    "fra": "Contrôles des en-têtes seulement. « Lire les métadonnées dynamiques » vérifie aussi le RPU, le HDR10+ et leur cohérence.",
+    "eng": "Header checks only. “Read dynamic metadata” also checks the RPU, HDR10+ and their consistency."
+  },
+  "Aucune remarque.": {
+    "fra": "Aucune remarque.",
+    "eng": "Nothing to report."
+  },
+  "{count} (durée min. {min} s, médiane {median} s, max. {max} s)": {
+    "fra": "{count} (durée min. {min} s, médiane {median} s, max. {max} s)",
+    "eng": "{count} (min. {min} s, median {median} s, max. {max} s)"
+  },
+  "Trims L8 (index d'écran)": {
+    "fra": "Trims L8 (index d'écran)",
+    "eng": "L8 trims (display index)"
+  },
+  "Écrans L10": {
+    "fra": "Écrans L10",
+    "eng": "L10 displays"
+  },
+  "Primaires L9": {
+    "fra": "Primaires L9",
+    "eng": "L9 primaries"
+  },
+  "Type de contenu L11": {
+    "fra": "Type de contenu L11",
+    "eng": "L11 content type"
+  },
+  "L6 (HDR10 DU RPU)": {
+    "fra": "L6 (HDR10 DU RPU)",
+    "eng": "L6 (RPU HDR10)"
+  },
+  "L1 max": {
+    "fra": "L1 max",
+    "eng": "L1 max"
+  },
+  "L1 moyenne": {
+    "fra": "L1 moyenne",
+    "eng": "L1 average"
+  },
+  "MaxScl HDR10+": {
+    "fra": "MaxScl HDR10+",
+    "eng": "HDR10+ MaxScl"
+  },
+  "AverageRGB HDR10+": {
+    "fra": "AverageRGB HDR10+",
+    "eng": "HDR10+ AverageRGB"
+  },
+  "Métadonnées dynamiques lues.": {
+    "fra": "Métadonnées dynamiques lues.",
+    "eng": "Dynamic metadata read."
+  },
+  "Début": {
+    "fra": "Début",
+    "eng": "Start"
+  },
+  "Durée": {
+    "fra": "Durée",
+    "eng": "Duration"
+  },
+  "Gauche / droite / haut / bas": {
+    "fra": "Gauche / droite / haut / bas",
+    "eng": "Left / right / top / bottom"
+  },
+  "Image active": {
+    "fra": "Image active",
+    "eng": "Active picture"
+  },
+  " (courbe de Bézier)": {
+    "fra": " (courbe de Bézier)",
+    "eng": " (Bézier curve)"
+  },
+  "MaxCLL": {
+    "fra": "MaxCLL",
+    "eng": "MaxCLL"
+  },
+  "MDCV": {
+    "fra": "MDCV",
+    "eng": "MDCV"
+  },
+  "Aucune métadonnée dynamique sur cette piste.": {
+    "fra": "Aucune métadonnée dynamique sur cette piste.",
+    "eng": "No dynamic metadata on this track."
+  },
+  "Mastering (nits)": {
+    "fra": "Mastering (nits)",
+    "eng": "Mastering (nits)"
+  },
+  "Inspecter le HDR…": {
+    "fra": "Inspecter le HDR…",
+    "eng": "Inspect HDR…"
+  },
+  "Défaut": {
+    "fra": "Défaut",
+    "eng": "Default"
+  },
+  "Cinéma": {
+    "fra": "Cinéma",
+    "eng": "Cinema"
+  },
+  "Jeu": {
+    "fra": "Jeu",
+    "eng": "Game"
+  },
+  "Sport": {
+    "fra": "Sport",
+    "eng": "Sports"
+  },
+  "Contenu utilisateur": {
+    "fra": "Contenu utilisateur",
+    "eng": "User-generated content"
+  },
+  "MaxScl à 10 000 nits sur {frames} images ({scenes} plan(s), dès {when})": {
+    "fra": "MaxScl à 10 000 nits sur {frames} images ({scenes} plan(s), dès {when})",
+    "eng": "MaxScl at 10,000 nits on {frames} frames ({scenes} scene(s), from {when})"
+  },
+  "Valeur maximale du format : plan mal analysé (générique, logo, mire) ; écarté de la comparaison avec la MaxCLL.": {
+    "fra": "Valeur maximale du format : plan mal analysé (générique, logo, mire) ; écarté de la comparaison avec la MaxCLL.",
+    "eng": "Format maximum: badly analysed scene (credits, logo, test pattern); left out of the MaxCLL comparison."
+  },
+  "Pic MaxScl hors saturation": {
+    "fra": "Pic MaxScl hors saturation",
+    "eng": "MaxScl peak excluding saturation"
+  },
+  "Images à 10 000 nits": {
+    "fra": "Images à 10 000 nits",
+    "eng": "Frames at 10,000 nits"
   }
 }

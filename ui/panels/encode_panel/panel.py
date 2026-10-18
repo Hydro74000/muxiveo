@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLayout,
-    QLineEdit, QListWidget, QListWidgetItem,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QMessageBox,
     QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
@@ -163,6 +163,7 @@ class EncodePanel(QWidget):
     # Indication « accélération NVIDIA disponible » cliquée : dialogue d'installation (fenêtre principale).
     trt_install_requested    = Signal()
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
+    hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
     rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
@@ -694,6 +695,8 @@ class EncodePanel(QWidget):
             f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
         )
         self._video_list.currentRowChanged.connect(self._on_video_row_changed)
+        self._video_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._video_list.customContextMenuRequested.connect(self._on_video_list_menu)
         cl.addWidget(self._video_list)
 
         self._video_placeholder = QLabel(
@@ -709,6 +712,17 @@ class EncodePanel(QWidget):
         self._video_list.setVisible(False)
         self._video_placeholder.setVisible(True)
         return card
+
+    def _on_video_list_menu(self, pos) -> None:
+        item = self._video_list.itemAt(pos)
+        data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return
+        file_info, track = data
+        menu = QMenu(self)
+        action = menu.addAction(translate_text("Inspecter le HDR…"))
+        if menu.exec(self._video_list.viewport().mapToGlobal(pos)) is action:
+            self.hdr_studio_requested.emit(file_info.path, track.mkv_tid)
 
     def _build_video_selector_row(self) -> QWidget:
         row = QWidget()

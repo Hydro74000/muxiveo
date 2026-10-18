@@ -183,6 +183,7 @@ class _TrackTable(QTableWidget):
     sync_studio_requested = Signal(object)  # TrackEntry
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
     sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
+    hdr_inspect_requested = Signal(object)  # TrackEntry (vidéo)
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -1142,7 +1143,12 @@ class _TrackTable(QTableWidget):
         if not isinstance(entry, TrackEntry) or entry.embedded_caption_parent_id:
             return
 
-        if entry.track_type == "subtitle":
+        if entry.track_type == "video":
+            menu = QMenu(self)
+            action_hdr = menu.addAction(translate_text("Inspecter le HDR…"))
+            if menu.exec(self.viewport().mapToGlobal(pos)) is action_hdr:
+                self.hdr_inspect_requested.emit(entry)
+        elif entry.track_type == "subtitle":
             menu = QMenu(self)
             action_extract = menu.addAction(translate_text("Extraire…"))
             action_studio = None

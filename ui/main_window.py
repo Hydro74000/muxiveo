@@ -99,6 +99,7 @@ from ui.panels.encode_panel.theme import (
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+from ui.panels.hdr_studio import HdrStudio
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.panels.extensions_panel import ExtensionsPanel
@@ -1187,7 +1188,8 @@ class _NavButton(QWidget):
         )
         self._full_icon_lbl.setStyleSheet(icon_style_full)
         self._compact_icon_lbl.setStyleSheet(icon_style_compact)
-        key = {0: "home", 1: "merge_dovi", 2: "encode", 3: "media", 4: "hybrid", 5: "settings", 6: "extensions"}[self.page_index]
+        key = {0: "home", 1: "merge_dovi", 2: "encode", 3: "media", 4: "hybrid", 5: "settings", 6: "extensions",
+               7: "hdr"}[self.page_index]
         self._full_icon_lbl.setPixmap(workflow_icon(key, icon_c).pixmap(_scale(18), _scale(18)))
         self._compact_icon_lbl.setPixmap(workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26)))
         font_size = f"{_font_px(11 if self._is_sub else 12)}px"
@@ -1217,6 +1219,7 @@ class _Sidebar(QWidget):
         ("Conteneur", "⊞", 3, False),
         ("Encodage", "▶", 2, True),
         ("Hybrid Studio", "⧉", 4, False),
+        ("HDR Studio", "◐", 7, False),
         ("Merge DoVi / HDR10+", "◈", 1, False),
         ("Paramètres", "⚙", 5, False),
         ("Extensions", "⊕", 6, False),
@@ -1445,6 +1448,7 @@ class MainWindow(QMainWindow):
         "hybrid": 4,
         "settings": 5,
         "extensions": 6,
+        "hdr": 7,
     }
 
     @property
@@ -1671,6 +1675,10 @@ class MainWindow(QMainWindow):
         self._extensions_panel = ExtensionsPanel(self._config)
         self._stack.addWidget(self._extensions_panel)
 
+        # Page 7 — HDR Studio (inspection HDR à la demande)
+        self._hdr_panel = HdrStudio(self._config)
+        self._stack.addWidget(self._hdr_panel)
+
         self._install_source_drop_targets(self._dashboard)
         self._install_source_drop_targets(self._encode_panel)
 
@@ -1807,6 +1815,13 @@ class MainWindow(QMainWindow):
         container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
         self._stack.setCurrentIndex(container_index)
         self._sidebar.select_page(container_index)
+
+    def _open_hdr_studio(self, path: Path, stream_index: int) -> None:
+        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
+        index = self._PAGE_INDEX_BY_PANEL_KEY["hdr"]
+        self._sidebar.select_page(index)
+        self._stack.setCurrentIndex(index)
+        self._hdr_panel.load_source(Path(path), int(stream_index))
 
     def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
         self._open_container_panel()
@@ -1965,6 +1980,13 @@ class MainWindow(QMainWindow):
             Qt.ConnectionType.QueuedConnection,
         )
         self._hybrid_panel.open_in_remux.connect(self._on_hybrid_open_in_remux)
+        # HDR Studio → LogPanel global ; clic droit « Inspecter le HDR… » des panneaux
+        self._hdr_panel.log_message.connect(
+            lambda level, message: self.log_requested.emit(level, "[HDR] " + message),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._remux_panel.hdr_studio_requested.connect(self._open_hdr_studio)
+        self._encode_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )
@@ -3354,7 +3376,7 @@ class MainWindow(QMainWindow):
                     timer.stop()
             self._shutdown_pages = [
                 page for name in ("_dashboard", "_encode_panel", "_remux_panel",
-                                  "_dovi_panel", "_hybrid_panel", "_settings_panel")
+                                  "_dovi_panel", "_hybrid_panel", "_hdr_panel", "_settings_panel")
                 if (page := getattr(self, name, None)) is not None
             ]
         # Chaque panneau annule et rejoint ses propres workers. Un panneau qui

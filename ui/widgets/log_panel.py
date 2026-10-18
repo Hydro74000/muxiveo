@@ -13,9 +13,18 @@ from core.i18n import translate_text
 from core.logging import LogLevel
 from ui.design_system import colors as C, font_px, scale
 
-_SOURCE = re.compile(r"^\[(HYBRID|DOVI|MEDIA|ENCODE|REMUX|EXTRACT)\]\s*")
+_SOURCE = re.compile(r"^\[(HYBRID|DOVI|HDR|MEDIA|ENCODE|REMUX|EXTRACT)\]\s*")
 _Entry = tuple[str, LogLevel, str, str]
 _BADGE_SOURCE = int(QTextFormat.Property.UserProperty) + 1
+
+
+def _source_color(source: str) -> str:
+    """Couleur du badge d'origine."""
+    if source == "DOVI":
+        return C.PURPLE
+    if source in {"ENCODE", "REMUX", "MEDIA", "EXTRACT"}:
+        return C.INFO
+    return {"HYBRID": C.ACCENT, "HDR": C.WARN}.get(source, C.TEXT_SEC)
 
 
 def split_log_source(message: str) -> tuple[str, str]:
@@ -48,7 +57,7 @@ class _LogTextEdit(QTextEdit):
                     cursor.setPosition(fragment.position() + fragment.length())
                     right = self.cursorRect(cursor)
                     rect = QRectF(left.x(), left.y() + 1, right.x() - left.x(), left.height() - 2)
-                    color = QColor(C.PURPLE if source == "DOVI" else C.INFO if source in {"ENCODE", "REMUX", "MEDIA", "EXTRACT"} else C.ACCENT if source == "HYBRID" else C.TEXT_SEC)
+                    color = QColor(_source_color(str(source)))
                     background = QColor(color)
                     background.setAlpha(40)
                     painter.fillRect(rect, QColor(C.LOG_BG))
@@ -91,7 +100,8 @@ class LogPanel(QWidget):
         title.setStyleSheet(f"color:{C.TEXT_SEC};font-size:{font_px(9)}px;font-weight:700;letter-spacing:1.5px;background:transparent;border:none;")
         row.addWidget(title)
         self._filter = QComboBox()
-        for text, key in (("Toutes les opérations", ""), ("Remux / Encodage", "MEDIA"), ("Hybrid Studio", "HYBRID"), ("Merge DoVi", "DOVI"), ("Application", "APP")):
+        for text, key in (("Toutes les opérations", ""), ("Remux / Encodage", "MEDIA"), ("Hybrid Studio", "HYBRID"),
+                          ("Merge DoVi", "DOVI"), ("HDR Studio", "HDR"), ("Application", "APP")):
             self._filter.addItem(translate_text(text), key)
         self._filter.setAccessibleName(translate_text("Filtrer le journal"))
         self._filter.setStyleSheet(f"QComboBox{{background:transparent;color:{C.TEXT_SEC};border:none;font-size:{font_px(10)}px;padding:0 6px;}}QComboBox QAbstractItemView{{background:{C.BG_PANEL};color:{C.TEXT_PRI};selection-background-color:{C.BG_ACTIVE};}}")
@@ -160,7 +170,7 @@ class LogPanel(QWidget):
             cursor.insertText(f"{level.value:<5} ", fmt)
             fmt.setFontWeight(QFont.Weight.Normal)
             fmt.setProperty(_BADGE_SOURCE, source)
-            fmt.setForeground(QColor(C.PURPLE if source == "DOVI" else C.INFO))
+            fmt.setForeground(QColor(_source_color(source)))
             cursor.insertText(f" {source:^7} ", fmt)
             fmt.clearProperty(_BADGE_SOURCE)
             fmt.setFontWeight(QFont.Weight.Normal)

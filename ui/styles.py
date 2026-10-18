@@ -28,6 +28,7 @@ def workflow_icon(name: str, color: str | None = None, size: int = 20) -> QIcon:
         "encode": '<path d="m13 2-9 12h7l-1 8 10-13h-7Z"/>',
         "settings": '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
         "extensions": '<path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0ZM12 17v5"/>',
+        "hdr": f'<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="{color or _C.TEXT_SEC}"/>',
     }
     svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color or _C.TEXT_SEC}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{paths.get(name, paths["media"])}</svg>'
     pix = QPixmap(_scale(size), _scale(size))
