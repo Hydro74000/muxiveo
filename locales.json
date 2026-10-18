@@ -7762,5 +7762,317 @@
   "Mesurés sur l'image": {
     "fra": "Mesurés sur l'image",
     "eng": "Measured on the picture"
+  },
+  "Intégrer le FEL : inutile": {
+    "fra": "Intégrer le FEL : inutile",
+    "eng": "Baking the FEL: not useful"
+  },
+  "Apport négligeable : ce FEL se comporte comme un MEL.": {
+    "fra": "Apport négligeable : ce FEL se comporte comme un MEL.",
+    "eng": "Negligible contribution: this FEL behaves like a MEL."
+  },
+  "Intégrer le FEL : utile": {
+    "fra": "Intégrer le FEL : utile",
+    "eng": "Baking the FEL: useful"
+  },
+  "Apport fort : {categories}.": {
+    "fra": "Apport fort : {categories}.",
+    "eng": "Strong contribution: {categories}."
+  },
+  "Intégrer le FEL : utile si le débit le permet": {
+    "fra": "Intégrer le FEL : utile si le débit le permet",
+    "eng": "Baking the FEL: useful if the bitrate allows"
+  },
+  "Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.": {
+    "fra": "Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.",
+    "eng": "Strong fine-detail contribution ({categories}); test how it survives encoding."
+  },
+  "Intégrer le FEL : apport modéré": {
+    "fra": "Intégrer le FEL : apport modéré",
+    "eng": "Baking the FEL: moderate contribution"
+  },
+  "Apport moyen : {categories}.": {
+    "fra": "Apport moyen : {categories}.",
+    "eng": "Medium contribution: {categories}."
+  },
+  "Intégrer le FEL : utile seulement à haut débit": {
+    "fra": "Intégrer le FEL : utile seulement à haut débit",
+    "eng": "Baking the FEL: useful only at a high bitrate"
+  },
+  "Apport de détail fin, à {kept} % conservé à {bitrate} kbit/s ({encoder}).": {
+    "fra": "Apport de détail fin, à {kept} % conservé à {bitrate} kbit/s ({encoder}).",
+    "eng": "Fine-detail contribution, {kept}% kept at {bitrate} kbit/s ({encoder})."
+  },
+  "Couche {layer} : images manquantes à {time} s.": {
+    "fra": "Couche {layer} : images manquantes à {time} s.",
+    "eng": "Layer {layer}: missing frames at {time} s."
+  },
+  "Analyser l'apport du FEL": {
+    "fra": "Analyser l'apport du FEL",
+    "eng": "Analyse the FEL contribution"
+  },
+  "COUCHE D'AMÉLIORATION": {
+    "fra": "COUCHE D'AMÉLIORATION",
+    "eng": "ENHANCEMENT LAYER"
+  },
+  "APPORT PAR CATÉGORIE": {
+    "fra": "APPORT PAR CATÉGORIE",
+    "eng": "CONTRIBUTION BY CATEGORY"
+  },
+  "Tester la survie": {
+    "fra": "Tester la survie",
+    "eng": "Test survival"
+  },
+  "Encode une seconde du moment le plus détaillé au débit choisi puis mesure la part de l'apport du FEL conservée.": {
+    "fra": "Encode une seconde du moment le plus détaillé au débit choisi puis mesure la part de l'apport du FEL conservée.",
+    "eng": "Encodes one second of the most detailed moment at the chosen bitrate, then measures how much of the FEL contribution is kept."
+  },
+  "SURVIE À L'ENCODAGE": {
+    "fra": "SURVIE À L'ENCODAGE",
+    "eng": "SURVIVAL THROUGH ENCODING"
+  },
+  "MOMENTS LES PLUS MARQUÉS": {
+    "fra": "MOMENTS LES PLUS MARQUÉS",
+    "eng": "STRONGEST MOMENTS"
+  },
+  "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Seuils faible / moyen / fort provisoires.": {
+    "fra": "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Seuils faible / moyen / fort provisoires.",
+    "eng": "Compares the picture reconstructed with the FEL to the base layer mapped by the RPU curves without residual (what a Dolby Vision TV shows with the P8.1 version without FEL), on frames spread through the film. Provisional weak / medium / strong thresholds."
+  },
+  "Catégorie": {
+    "fra": "Catégorie",
+    "eng": "Category"
+  },
+  "Médiane": {
+    "fra": "Médiane",
+    "eng": "Median"
+  },
+  "p90": {
+    "fra": "p90",
+    "eng": "p90"
+  },
+  "{count} instants mesurés.": {
+    "fra": "{count} instants mesurés.",
+    "eng": "{count} moments measured."
+  },
+  "{time} · indice {score}": {
+    "fra": "{time} · indice {score}",
+    "eng": "{time} · score {score}"
+  },
+  "Sans FEL (P8.1)": {
+    "fra": "Sans FEL (P8.1)",
+    "eng": "Without FEL (P8.1)"
+  },
+  "Avec FEL": {
+    "fra": "Avec FEL",
+    "eng": "With FEL"
+  },
+  "Écart (16 codes = jaune)": {
+    "fra": "Écart (16 codes = jaune)",
+    "eng": "Difference (16 codes = yellow)"
+  },
+  "Aucune couche d'amélioration (EL) : le FEL Analyzer concerne les sources Dolby Vision profil 7.": {
+    "fra": "Aucune couche d'amélioration (EL) : le FEL Analyzer concerne les sources Dolby Vision profil 7.",
+    "eng": "No enhancement layer (EL): the FEL Analyzer applies to Dolby Vision profile 7 sources."
+  },
+  "Couche sans résiduel (MEL ou FEL vide) : l'image reconstruite est celle de la lecture P8.1, le FEL n'apporte rien à l'image.": {
+    "fra": "Couche sans résiduel (MEL ou FEL vide) : l'image reconstruite est celle de la lecture P8.1, le FEL n'apporte rien à l'image.",
+    "eng": "Layer without residual (MEL or empty FEL): the reconstructed picture is the P8.1 playback picture; the FEL adds nothing to the picture."
+  },
+  "Lancer l'analyse : relevé des couches puis comparaison image par image (extension mvo-fel 0.4.0 ou plus récente).": {
+    "fra": "Lancer l'analyse : relevé des couches puis comparaison image par image (extension mvo-fel 0.4.0 ou plus récente).",
+    "eng": "Run the analysis: layer survey, then frame-by-frame comparison (mvo-fel extension 0.4.0 or later)."
+  },
+  "{encoder} à {bitrate} Mbit/s : ton conservé à {tone} %, détail à {detail} % (erreur d'encodage {error} codes RMS pour un apport de {contribution} codes RMS).": {
+    "fra": "{encoder} à {bitrate} Mbit/s : ton conservé à {tone} %, détail à {detail} % (erreur d'encodage {error} codes RMS pour un apport de {contribution} codes RMS).",
+    "eng": "{encoder} at {bitrate} Mbit/s: tone kept at {tone}%, detail at {detail}% (encoding error {error} RMS codes for a contribution of {contribution} RMS codes)."
+  },
+  "Aucun moment mesuré.": {
+    "fra": "Aucun moment mesuré.",
+    "eng": "No moment measured."
+  },
+  "lire les métadonnées dynamiques pour le préciser": {
+    "fra": "lire les métadonnées dynamiques pour le préciser",
+    "eng": "read dynamic metadata to identify it"
+  },
+  "Débit de l'EL": {
+    "fra": "Débit de l'EL",
+    "eng": "EL bitrate"
+  },
+  "{rate} Mbit/s ({share} % du flux vidéo)": {
+    "fra": "{rate} Mbit/s ({share} % du flux vidéo)",
+    "eng": "{rate} Mbit/s ({share}% of the video stream)"
+  },
+  "Débit de la BL": {
+    "fra": "Débit de la BL",
+    "eng": "BL bitrate"
+  },
+  "vide (résiduel désactivé partout)": {
+    "fra": "vide (résiduel désactivé partout)",
+    "eng": "empty (residual disabled everywhere)"
+  },
+  "Résolution de l'EL": {
+    "fra": "Résolution de l'EL",
+    "eng": "EL resolution"
+  },
+  "FEL": {
+    "fra": "FEL",
+    "eng": "FEL"
+  },
+  "Analyse de l'apport du FEL…": {
+    "fra": "Analyse de l'apport du FEL…",
+    "eng": "Analysing the FEL contribution…"
+  },
+  "FEL Analyzer : {name}": {
+    "fra": "FEL Analyzer : {name}",
+    "eng": "FEL Analyzer: {name}"
+  },
+  "Test de survie à l'encodage…": {
+    "fra": "Test de survie à l'encodage…",
+    "eng": "Encoding survival test…"
+  },
+  "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).": {
+    "fra": "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).",
+    "eng": "FEL Analyzer: mvo-fel extension 0.4.0 or later required (Extensions page)."
+  },
+  "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU.": {
+    "fra": "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU.",
+    "eng": "Read dynamic metadata first: the layer type (FEL, MEL) comes from the RPU."
+  },
+  "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.": {
+    "fra": "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
+    "eng": "{kind}: no residual, the picture is identical to P8.1 playback; nothing to measure."
+  },
+  "FEL Analyzer impossible : {error}": {
+    "fra": "FEL Analyzer impossible : {error}",
+    "eng": "FEL Analyzer failed: {error}"
+  },
+  "Comparaison avec et sans FEL…": {
+    "fra": "Comparaison avec et sans FEL…",
+    "eng": "Comparing with and without FEL…"
+  },
+  "Capture des images…": {
+    "fra": "Capture des images…",
+    "eng": "Capturing frames…"
+  },
+  "Encodage de test…": {
+    "fra": "Encodage de test…",
+    "eng": "Test encoding…"
+  },
+  "FEL Analyzer : {error}": {
+    "fra": "FEL Analyzer : {error}",
+    "eng": "FEL Analyzer: {error}"
+  },
+  "Relevé des couches BL / EL…": {
+    "fra": "Relevé des couches BL / EL…",
+    "eng": "Surveying BL / EL layers…"
+  },
+  "Encodeur {encoder} indisponible : {detail}": {
+    "fra": "Encodeur {encoder} indisponible : {detail}",
+    "eng": "Encoder {encoder} unavailable: {detail}"
+  },
+  "FEL vide": {
+    "fra": "FEL vide",
+    "eng": "Empty FEL"
+  },
+  "Analyser l'apport du FEL…": {
+    "fra": "Analyser l'apport du FEL…",
+    "eng": "Analyse the FEL contribution…"
+  },
+  "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) et survie à l'encodage.": {
+    "fra": "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) et survie à l'encodage.",
+    "eng": "Opens HDR Studio: FEL contribution by category (tone, highlights, detail…) and survival through encoding."
+  },
+  "Ton / exposition": {
+    "fra": "Ton / exposition",
+    "eng": "Tone / exposure"
+  },
+  "Hautes lumières": {
+    "fra": "Hautes lumières",
+    "eng": "Highlights"
+  },
+  "Détail / texture": {
+    "fra": "Détail / texture",
+    "eng": "Detail / texture"
+  },
+  "Grain": {
+    "fra": "Grain",
+    "eng": "Grain"
+  },
+  "Couleur": {
+    "fra": "Couleur",
+    "eng": "Colour"
+  },
+  "Ombres": {
+    "fra": "Ombres",
+    "eng": "Shadows"
+  },
+  "Stabilité temporelle": {
+    "fra": "Stabilité temporelle",
+    "eng": "Temporal stability"
+  },
+  "codes": {
+    "fra": "codes",
+    "eng": "codes"
+  },
+  "%": {
+    "fra": "%",
+    "eng": "%"
+  },
+  "codes RMS": {
+    "fra": "codes RMS",
+    "eng": "RMS codes"
+  },
+  "faible": {
+    "fra": "faible",
+    "eng": "weak"
+  },
+  "moyen": {
+    "fra": "moyen",
+    "eng": "medium"
+  },
+  "fort": {
+    "fra": "fort",
+    "eng": "strong"
+  },
+  "Rapide : une image par minute": {
+    "fra": "Rapide : une image par minute",
+    "eng": "Fast: one frame per minute"
+  },
+  "Normal : une image toutes les 30 s": {
+    "fra": "Normal : une image toutes les 30 s",
+    "eng": "Normal: one frame every 30 s"
+  },
+  "Fin : une image toutes les 10 s": {
+    "fra": "Fin : une image toutes les 10 s",
+    "eng": "Fine: one frame every 10 s"
+  },
+  "x265 (logiciel)": {
+    "fra": "x265 (logiciel)",
+    "eng": "x265 (software)"
+  },
+  "NVENC (NVIDIA)": {
+    "fra": "NVENC (NVIDIA)",
+    "eng": "NVENC (NVIDIA)"
+  },
+  "QSV (Intel)": {
+    "fra": "QSV (Intel)",
+    "eng": "QSV (Intel)"
+  },
+  "VAAPI": {
+    "fra": "VAAPI",
+    "eng": "VAAPI"
+  },
+  "Images mesurées": {
+    "fra": "Images mesurées",
+    "eng": "Measured frames"
+  },
+  "MaxCLL / MaxFALL mesurés": {
+    "fra": "MaxCLL / MaxFALL mesurés",
+    "eng": "Measured MaxCLL / MaxFALL"
+  },
+  "Zone mesurée": {
+    "fra": "Zone mesurée",
+    "eng": "Measured area"
   }
 }

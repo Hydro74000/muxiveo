@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPen, QWh
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from core.hdr_inspection.pq import nits_to_pq
+from core.hdr_inspection.summary import bucket, format_time
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
 
@@ -34,29 +35,6 @@ class ChartMarker:
     label: str
     nits: float
     color: str
-
-
-def format_time(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    hours, rest = divmod(seconds, 3600)
-    minutes, secs = divmod(rest, 60)
-    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
-
-
-def bucket(values: np.ndarray, start: int, end: int, count: int, mode: str) -> np.ndarray:
-    """Agrège ``values[start:end]`` en ``count`` colonnes (maximum ou moyenne, NaN ignorés)."""
-    window = np.asarray(values[start:end], dtype=np.float64)
-    if window.size == 0 or count <= 0:
-        return np.zeros(0)
-    count = min(count, window.size)
-    edges = np.linspace(0, window.size, count + 1).astype(np.int64)[:-1]
-    if mode == "mean":
-        valid = np.isfinite(window)
-        sums = np.add.reduceat(np.where(valid, window, 0.0), edges)
-        sizes = np.add.reduceat(valid.astype(np.float64), edges)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            return np.where(sizes > 0, sums / np.maximum(sizes, 1), np.nan)
-    return np.fmax.reduceat(window, edges)
 
 
 class LuminanceChart(QWidget):

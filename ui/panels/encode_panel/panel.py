@@ -164,6 +164,7 @@ class EncodePanel(QWidget):
     trt_install_requested    = Signal()
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
     hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
+    fel_analysis_requested = Signal(object, int)  # « Analyser l'apport du FEL… » : chemin, index ffprobe
     rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
@@ -727,6 +728,12 @@ class EncodePanel(QWidget):
                 self._max_cll.setText(f"{int(max_cll)},{int(max_fall)}")
                 return True
         return False
+
+    def _request_fel_analysis(self) -> None:
+        row = self._video_list.currentRow()
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            self.fel_analysis_requested.emit(file_info.path, track.mkv_tid)
 
     def _on_video_list_menu(self, pos) -> None:
         item = self._video_list.itemAt(pos)
@@ -1308,7 +1315,18 @@ class EncodePanel(QWidget):
             "Nécessite l’extension mvo-fel."
         ))
         self._bake_fel_cb.clicked.connect(self._on_fel_clicked)
-        cl.addWidget(self._bake_fel_cb)
+        fel_row = QHBoxLayout()
+        fel_row.setSpacing(8)
+        fel_row.addWidget(self._bake_fel_cb)
+        self._fel_analyse_btn = _secondary_button(translate_text("Analyser l'apport du FEL…"))
+        self._fel_analyse_btn.setToolTip(translate_text(
+            "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) "
+            "et survie à l'encodage."))
+        self._fel_analyse_btn.clicked.connect(self._request_fel_analysis)
+        self._fel_analyse_btn.setVisible(False)
+        fel_row.addWidget(self._fel_analyse_btn)
+        fel_row.addStretch()
+        cl.addLayout(fel_row)
         from ui.panels.encode_panel.fel_device_combo import FelDeviceCombo
         from ui.panels.encode_panel.fel_precision_combo import FelPrecisionCombo
         self._fel_precision_choice = "exact"
@@ -4723,6 +4741,8 @@ class EncodePanel(QWidget):
         from core.workflows.encode.dovi_policy import wants_fel_bake
         self._bake_fel_cb.setChecked(wants_fel_bake(self._bake_fel_choice, sub_profile))
         self._bake_fel_cb.setEnabled(codec != "copy")
+        # Analyse : sources à couche d'amélioration (profil 7) seulement.
+        self._fel_analyse_btn.setVisible(getattr(source, "dovi_profile", None) == 7)
         self._fel_device_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
         self._fel_precision_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
         self._sync_fel_hdr10plus_option()

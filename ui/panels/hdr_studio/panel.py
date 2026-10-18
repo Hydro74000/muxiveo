@@ -6,11 +6,12 @@ RPU Dolby Vision et HDR10+ extraits et analysés, sans décoder l'image ; résul
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -40,7 +41,8 @@ from core.hdr_inspection import (
     audit,
     build_snapshot,
 )
-from core.hdr_inspection.dovi import L9_PRIMARY_NAMES
+from core.hdr_inspection import summary
+from core.hdr_inspection.fel_analyzer import CaptureLayer
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
 from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
 from core.hdr_inspection.snapshot import HdrSnapshot
@@ -49,15 +51,14 @@ from core.inspector import FileInfo, FileInspector
 from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
 from ui.design_system import colors as C, font_px, scale
-from ui.panels.hdr_studio.chart import format_time
 from ui.panels.hdr_studio.editor import EditionTab
+from ui.panels.hdr_studio.fel_tab import FelTab
 from ui.panels.hdr_studio.luminance import LuminanceTab
 from ui.shutdown import Shutdown, defer_close
 from ui.styles import _card, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
 
 _SEVERITY_COLORS = {Severity.OK: "OK", Severity.INFO: "INFO", Severity.WARN: "WARN", Severity.ERROR: "ERROR"}
 _SEVERITY_ICONS = {Severity.OK: "✓", Severity.INFO: "i", Severity.WARN: "!", Severity.ERROR: "✕"}
-_L11_CONTENT = {0: "Défaut", 1: "Cinéma", 2: "Jeu", 3: "Sport", 4: "Contenu utilisateur"}
 
 
 def _label(text: str, *, color: str | None = None, size: int = 11, bold: bool = False, wrap: bool = False) -> QLabel:
@@ -122,12 +123,6 @@ def _badge(text: str, color: str) -> QLabel:
     return badge
 
 
-def _nits(value: float | None) -> str:
-    if value is None:
-        return "?"
-    return f"{value:.4f}".rstrip("0").rstrip(".") if value < 1 else f"{round(value)}"
-
-
 def _finding_row(finding: Finding) -> QWidget:
     row = QWidget()
     row.setStyleSheet("background:transparent;")
@@ -181,6 +176,7 @@ class HdrStudio(QWidget):
     _analyzed = Signal(int, object, str)
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
+    _fel_done = Signal(int, object, str)
 
     def __init__(self, config, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -207,6 +203,7 @@ class HdrStudio(QWidget):
         self._analyzed.connect(self._on_analyzed, Qt.ConnectionType.QueuedConnection)
         self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
         self._patched.connect(self._on_patched, Qt.ConnectionType.QueuedConnection)
+        self._fel_done.connect(self._on_fel_done, Qt.ConnectionType.QueuedConnection)
         self._render(None)
 
     # ── Construction ────────────────────────────────────────────────────
@@ -294,6 +291,16 @@ class HdrStudio(QWidget):
         self._tabs.addTab(self._luminance, translate_text("Luminance"))
         self._dovi_tab = self._scroll_tab(translate_text("Dolby Vision"))
         self._hdr10plus_tab = self._scroll_tab(translate_text("HDR10+"))
+        self._fel_tab = FelTab()
+        self._fel_tab.analysis_requested.connect(self.analyse_fel)
+        self._fel_tab.survival_requested.connect(self.test_fel_survival)
+        fel_scroll = QScrollArea()
+        fel_scroll.setWidgetResizable(True)
+        fel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        fel_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        fel_scroll.setWidget(self._fel_tab)
+        self._fel_scroll = fel_scroll
+        self._tabs.addTab(fel_scroll, translate_text("FEL"))
         self._editor = EditionTab()
         self._luminance.values_changed.connect(self._editor.set_static_values)
         self._editor.luminance_requested.connect(lambda: self._tabs.setCurrentWidget(self._luminance))
@@ -607,6 +614,174 @@ class HdrStudio(QWidget):
                                                    fall=measurement.max_fall()))
         self._tabs.setCurrentWidget(self._luminance)
 
+    # ── FEL Analyzer ────────────────────────────────────────────────────
+    def show_fel_tab(self) -> None:
+        self._tabs.setCurrentWidget(self._fel_scroll)
+
+    def _fel_engine(self) -> object | None:
+        """Moteur mvo-fel capable de produire les couches comparées ; message à l'utilisateur sinon."""
+        try:
+            engine = self._engine_factory()
+        except Exception as exc:  # extension absente ou incompatible
+            self._set_status(translate_text("FEL Analyzer impossible : {error}", error=str(exc)), error=True)
+            return None
+        from core.fel.engine import layers_supported
+        if not (layers_supported(engine, "mapped") and layers_supported(engine, "reconstructed")):
+            self._set_status(translate_text(
+                "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions)."), error=True)
+            return None
+        return engine
+
+    def _fel_capture(self, engine: object, snapshot: HdrSnapshot, cancel: threading.Event,
+                     device: str = "cpu") -> CaptureLayer:
+        from fractions import Fraction
+
+        from core.hdr_inspection.fel_analyzer import plugin_capture
+
+        rate = Fraction(snapshot.fps or 24000 / 1001).limit_denominator(1001)
+        return plugin_capture(engine, Path(snapshot.path), snapshot.stream_index,
+                              ffmpeg_bin=str(self._config.tool_ffmpeg), width=snapshot.width or 3840,
+                              height=snapshot.height or 2160, frame_rate=f"{rate.numerator}/{rate.denominator}",
+                              threads=max(2, int(getattr(self._config, "ffmpeg_threads", 8) or 8)), cancelled=cancel,
+                              device=device)
+
+    def analyse_fel(self, interval_s: int) -> None:
+        """Relevé des couches puis comparaison image reconstruite / couche mapped aux instants échantillonnés."""
+        if self._info is None or self._busy or self._report is None:
+            return
+        snapshot, report = self._report.snapshot, self._report
+        dovi = report.dovi
+        if dovi is None:
+            self._set_status(translate_text(
+                "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU."), error=True)
+            return
+        if dovi.el_type != "FEL" or not dovi.residual_active_frames:
+            self._set_status(translate_text(
+                "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
+                kind="MEL" if dovi.el_type == "MEL" else translate_text("FEL vide")))
+            return
+        engine = self._fel_engine()
+        if engine is None:
+            return
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        self._signals = None
+        duration = snapshot.duration_s or (snapshot.frames or 0) / (snapshot.fps or 24)
+        area = self._fel_area()
+
+        def task() -> None:
+            from core.hdr_inspection.fel_analyzer import analyse, sample_times
+            from core.hdr_inspection.fel_layer import scan_layers
+
+            try:
+                facts = None
+                if Path(snapshot.path).suffix.lower() == ".mkv":
+                    self._progress.emit(token, translate_text("Relevé des couches BL / EL…"), 0)
+                    facts = scan_layers(Path(snapshot.path), snapshot.stream_index, cancelled=cancel.is_set,
+                                        progress=lambda f: self._progress.emit(token, "", int(f * 20)))
+                self._progress.emit(token, translate_text("Comparaison avec et sans FEL…"), 20)
+                result = analyse(self._fel_capture(engine, snapshot, cancel), sample_times(duration, interval_s),
+                                 area=area, facts=facts, cancelled=cancel.is_set,
+                                 progress=lambda f: self._progress.emit(token, "", 20 + int(f * 80)))
+                self._fel_done.emit(token, result, "")
+            except Exception as exc:
+                self._fel_done.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+
+        self._set_busy(True, translate_text("Analyse de l'apport du FEL…"))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self.log_message.emit("INFO", translate_text("FEL Analyzer : {name}", name=Path(snapshot.path).name))
+        self._executor.submit(task)
+
+    def _fel_area(self) -> Callable[[float], tuple[int, int, int, int] | None]:
+        """Zone active L5 (gauche, droite, haut, bas) en vigueur à un instant, None sans L5."""
+        report = self._report
+        dovi = report.dovi if report is not None else None
+        fps = (report.snapshot.fps if report is not None else None) or 24
+
+        def area(time_s: float) -> tuple[int, int, int, int] | None:
+            if dovi is None or not dovi.active_areas:
+                return None
+            frame = int(time_s * fps)
+            current = dovi.active_areas[0]
+            for item in dovi.active_areas:
+                if item.first_frame > frame:
+                    break
+                current = item
+            return (current.left, current.right, current.top, current.bottom)
+
+        return area
+
+    def test_fel_survival(self, encoder: str, bitrate_kbps: int) -> None:
+        """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée."""
+        fel = self._fel_tab.fel_report()
+        if fel is None or not fel.samples or self._busy or self._report is None:
+            return
+        snapshot = self._report.snapshot
+        engine = self._fel_engine()
+        if engine is None:
+            return
+        self._token += 1
+        token = self._token
+        cancel = threading.Event()
+        self._cancel = cancel
+        moment = max(fel.samples, key=lambda s: s.metrics.get("detail", 0.0))
+        burst = max(4, int(round(snapshot.fps or 24)))
+        # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
+        capture = self._fel_capture(engine, snapshot, cancel, device="auto")
+        area = self._fel_area()
+
+        def task() -> None:
+            from fractions import Fraction
+
+            from core.hdr_inspection.fel_analyzer import active_rows, encode_round_trip, survival, survival_indices
+
+            try:
+                self._progress.emit(token, translate_text("Capture des images…"), 10)
+                reconstructed = capture("reconstructed", moment.time_s, burst)
+                picked = survival_indices(len(reconstructed))
+                burst_mapped = capture("mapped", moment.time_s, burst)
+                mapped = [burst_mapped[i] for i in picked]
+                del burst_mapped
+                self._progress.emit(token, translate_text("Encodage de test…"), 50)
+                fps = Fraction(snapshot.fps or 24000 / 1001).limit_denominator(1001)
+                encoded = encode_round_trip(reconstructed, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
+                                            bitrate_kbps=bitrate_kbps, frame_rate=f"{fps.numerator}/{fps.denominator}",
+                                            keep=picked)
+                result = survival([reconstructed[i] for i in picked], mapped, encoded, encoder=encoder,
+                                  bitrate_kbps=bitrate_kbps, rows=active_rows(mapped[0], area(moment.time_s)))
+                self._fel_done.emit(token, dataclasses.replace(fel, survival=result), "")
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
+                self._fel_done.emit(token, None, translate_text("Encodeur {encoder} indisponible : {detail}",
+                                                                encoder=encoder, detail=detail or exc))
+            except Exception as exc:
+                self._fel_done.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+
+        self._set_busy(True, translate_text("Test de survie à l'encodage…"))
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._executor.submit(task)
+
+    def _on_fel_done(self, token: int, fel: object, error: str) -> None:
+        if token != self._token:
+            return
+        self._set_busy(False)
+        from core.hdr_inspection.fel_analyzer import FelReport, recommendation
+        if not isinstance(fel, FelReport):
+            self._set_status(translate_text("FEL Analyzer : {error}", error=error) if error
+                             else translate_text("Analyse annulée."), error=bool(error))
+            if error:
+                self.log_message.emit("ERROR", translate_text("FEL Analyzer : {error}", error=error))
+            return
+        self._fel_tab.set_fel_report(fel)
+        verdict, detail = recommendation(fel)
+        self._set_status(verdict)
+        self.log_message.emit("OK", f"{verdict} — {detail}")
+        self.show_fel_tab()
+
     # ── Correction du fichier ───────────────────────────────────────────
     def _prepare_patch(self, max_cll: int, max_fall: int) -> None:
         self._editor.set_static_values(max_cll, max_fall)
@@ -735,6 +910,7 @@ class HdrStudio(QWidget):
         self._cancel_btn.setVisible(self._busy)
         self._track_combo.setEnabled(not self._busy and self._track_combo.count() > 1)
         self._luminance.set_busy(self._busy)
+        self._fel_tab.set_busy(self._busy)
         self._editor.set_busy(self._busy)
         if report is not None and not self._busy:
             if report.from_cache:
@@ -765,6 +941,7 @@ class HdrStudio(QWidget):
         for layout in (self._overview, self._dovi_tab, self._hdr10plus_tab):
             self._clear(layout)
         self._luminance.set_report(report, self._measurement)
+        self._fel_tab.set_report(report)
         self._editor.set_report(report)
         if report is None:
             self._overview.addWidget(_label(translate_text(
@@ -790,18 +967,12 @@ class HdrStudio(QWidget):
         holder.setStyleSheet("background:transparent;")
         holder.setLayout(badges)
         self._overview.addWidget(holder)
-        self._overview.addWidget(_section(translate_text("PISTE"), _kv_grid(self._track_rows(snapshot))))
-        static_rows = self._static_rows(snapshot)
-        if self._measurement is not None:
-            static_rows.append((translate_text("Mesurés sur l'image"),
-                                f"{self._measurement.max_cll()} / {self._measurement.max_fall()}"))
-        self._overview.addWidget(_section(translate_text("HDR10 STATIQUE"), _kv_grid(static_rows)))
+        self._overview.addWidget(_section(translate_text("PISTE"), _kv_grid(summary.track_rows(snapshot))))
+        self._overview.addWidget(_section(translate_text("HDR10 STATIQUE"),
+                                          _kv_grid(summary.static_rows(snapshot, self._measurement))))
         if snapshot.dovi is not None:
-            record = snapshot.dovi
-            layers = "+".join(name for name, present in (("BL", record.bl), ("EL", record.el), ("RPU", record.rpu)) if present)
-            rows = [(translate_text("Profil"), record.label), (translate_text("Niveau"), str(record.level or "?")),
-                    (translate_text("Couches"), layers)]
-            self._overview.addWidget(_section(translate_text("DOLBY VISION (CONTENEUR)"), _kv_grid(rows)))
+            self._overview.addWidget(_section(translate_text("DOLBY VISION (CONTENEUR)"),
+                                              _kv_grid(summary.container_dovi_rows(snapshot.dovi))))
         checks = QWidget()
         checks.setStyleSheet("background:transparent;")
         checks_layout = QVBoxLayout(checks)
@@ -819,29 +990,6 @@ class HdrStudio(QWidget):
             checks_layout.addWidget(_label(translate_text("Aucune remarque."), color=C.TEXT_SEC))
         self._overview.addWidget(_section(translate_text("CONTRÔLES"), checks))
 
-    @staticmethod
-    def _track_rows(snapshot: HdrSnapshot) -> list[tuple[str, str]]:
-        frames = "?" if snapshot.frames is None else (
-            f"{snapshot.frames}" if snapshot.frames_exact else translate_text("≈ {count} (d'après la durée)", count=snapshot.frames))
-        return [
-            (translate_text("Codec"), snapshot.codec.upper()),
-            (translate_text("Résolution"), f"{snapshot.width or '?'}×{snapshot.height or '?'}"),
-            (translate_text("Cadence"), f"{snapshot.fps:.3f} i/s" if snapshot.fps else "?"),
-            (translate_text("Images"), frames),
-            (translate_text("Profondeur"), f"{snapshot.bit_depth} bits" if snapshot.bit_depth else "?"),
-            (translate_text("Transfert"), snapshot.transfer or "?"),
-            (translate_text("Primaires"), snapshot.primaries or "?"),
-            (translate_text("Matrice"), snapshot.matrix or "?"),
-        ]
-
-    @staticmethod
-    def _static_rows(snapshot: HdrSnapshot) -> list[tuple[str, str]]:
-        mastering = snapshot.mastering
-        mdcv = translate_text("absent") if mastering is None else (
-            f"{mastering.primaries}, {_nits(mastering.min_nits)} – {_nits(mastering.max_nits)} nits")
-        levels = translate_text("absents") if snapshot.max_cll is None else f"{snapshot.max_cll} / {snapshot.max_fall}"
-        return [(translate_text("Écran de mastering (MDCV)"), mdcv), (translate_text("MaxCLL / MaxFALL"), levels)]
-
     def _render_dovi(self, report: InspectionReport) -> None:
         dovi = report.dovi
         if dovi is None:
@@ -849,49 +997,12 @@ class HdrStudio(QWidget):
                 "Lire les métadonnées dynamiques pour analyser le RPU.")
             self._dovi_tab.addWidget(_label(text, color=C.TEXT_DIM, wrap=True))
             return
-        fps = report.snapshot.fps or 24000 / 1001
-        lengths = dovi.scene_lengths() / fps
-        el = dovi.el_type or translate_text("aucune")
-        if dovi.el_type == "FEL" and dovi.frames:
-            el += " · " + translate_text("résiduel actif sur {share} % des images",
-                                          share=round(100 * dovi.residual_active_frames / dovi.frames, 1))
-        display = ", ".join(f"{_nits(lo)} – {hi} nits" for lo, hi in dovi.source_display) or "?"
-        rows = [
-            (translate_text("Profil (RPU)"), f"P{dovi.profile}" if dovi.profile is not None else "?"),
-            (translate_text("Couche EL"), el),
-            (translate_text("Version CM"), dovi.cm_version),
-            (translate_text("Images"), str(dovi.frames)),
-            (translate_text("Plans"), translate_text("{count} (durée min. {min} s, médiane {median} s, max. {max} s)",
-                                                     count=dovi.scenes, min=f"{lengths.min():.1f}",
-                                                     median=f"{np.median(lengths):.1f}", max=f"{lengths.max():.1f}")
-             if lengths.size else "0"),
-            (translate_text("Pic L1 (MaxCLL du RPU)"), f"{round(dovi.l1_peak_nits())} nits"),
-            (translate_text("Moyenne L1 max. (MaxFALL du RPU)"), f"{dovi.l1_fall_nits():.1f} nits"),
-            (translate_text("Écran de mastering (RPU)"), display),
-            (translate_text("Trims L2 (écrans cibles)"), ", ".join(f"{t} nits" for t in dovi.l2_targets) or "—"),
-        ]
-        if dovi.cm_version == "4.0":
-            rows.append((translate_text("Trims L8 (index d'écran)"), ", ".join(str(t) for t in dovi.l8_targets) or "—"))
-            rows.append((translate_text("Écrans L10"), ", ".join(f"{t} nits" for t in dovi.l10_targets) or "—"))
-        if dovi.l9_primaries:
-            rows.append((translate_text("Primaires L9"), ", ".join(L9_PRIMARY_NAMES.get(p, str(p)) for p in dovi.l9_primaries)))
-        if dovi.l11_content:
-            rows.append((translate_text("Type de contenu L11"),
-                         ", ".join(translate_text(_L11_CONTENT.get(c, str(c))) for c in dovi.l11_content)))
+        rows = summary.dovi_rows(dovi, report.snapshot.fps or 24000 / 1001)
         self._dovi_tab.addWidget(_section(translate_text("RPU"), _kv_grid(rows)))
-        l6_rows = [[f"{s.max_cll} / {s.max_fall}", f"{_nits(s.min_mastering)} – {s.max_mastering}", str(s.frames)]
-                   for s in dovi.l6]
+        headers, l6_rows = summary.l6_table(dovi)
         if l6_rows:
-            self._dovi_tab.addWidget(_section(translate_text("L6 (HDR10 DU RPU)"), _table(
-                [translate_text("MaxCLL / MaxFALL"), translate_text("Mastering (nits)"), translate_text("Images")], l6_rows)))
-        width, height = report.snapshot.width or 0, report.snapshot.height or 0
-        area_rows = [[format_time(a.first_frame / fps), format_time(a.frames / fps),
-                      f"{a.left} / {a.right} / {a.top} / {a.bottom}",
-                      f"{max(0, width - a.left - a.right)}×{max(0, height - a.top - a.bottom)}"]
-                     for a in dovi.active_areas[:500]]
-        self._dovi_tab.addWidget(_section(translate_text("ZONES ACTIVES L5"), _table(
-            [translate_text("Début"), translate_text("Durée"), translate_text("Gauche / droite / haut / bas"),
-             translate_text("Image active")], area_rows)))
+            self._dovi_tab.addWidget(_section(translate_text("L6 (HDR10 DU RPU)"), _table(headers, l6_rows)))
+        self._dovi_tab.addWidget(_section(translate_text("ZONES ACTIVES L5"), _table(*summary.active_area_table(report))))
 
     def _render_hdr10plus(self, report: InspectionReport) -> None:
         hdr10plus = report.hdr10plus
@@ -900,20 +1011,7 @@ class HdrStudio(QWidget):
                 "Lire les métadonnées dynamiques pour analyser le HDR10+.")
             self._hdr10plus_tab.addWidget(_label(text, color=C.TEXT_DIM, wrap=True))
             return
-        targets = ", ".join(f"{t} nits" for t in hdr10plus.targeted_display if t) or translate_text("non renseigné")
-        rows = [
-            (translate_text("Profil"), hdr10plus.profile + (translate_text(" (courbe de Bézier)") if hdr10plus.profile == "B" else "")),
-            (translate_text("Images"), str(hdr10plus.frames)),
-            (translate_text("Plans"), str(hdr10plus.scenes)),
-            (translate_text("Fenêtres"), ", ".join(str(w) for w in hdr10plus.windows)),
-            (translate_text("Écran ciblé (TSDML)"), targets),
-            (translate_text("Pic MaxScl"), f"{round(hdr10plus.peak_nits())} nits"),
-            *([(translate_text("Pic MaxScl hors saturation"), f"{round(hdr10plus.credible_peak_nits())} nits"),
-               (translate_text("Images à 10 000 nits"), str(hdr10plus.saturated().size))]
-              if hdr10plus.saturated().size else []),
-            (translate_text("AverageRGB max."), f"{hdr10plus.max_average_nits():.1f} nits"),
-            (translate_text("Percentile 99,98 % max."), f"{round(float(hdr10plus.p99.max()))} nits" if hdr10plus.frames else "?"),
-        ]
+        rows = summary.hdr10plus_rows(hdr10plus)
         self._hdr10plus_tab.addWidget(_section(translate_text("HDR10+"), _kv_grid(rows)))
 
     # ── Fermeture ───────────────────────────────────────────────────────

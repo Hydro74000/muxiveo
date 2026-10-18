@@ -1823,6 +1823,11 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(index)
         self._hdr_panel.load_source(Path(path), int(stream_index))
 
+    def _open_fel_analyzer(self, path: Path, stream_index: int) -> None:
+        """HDR Studio sur l'onglet FEL de la piste (bouton du panneau Encodage)."""
+        self._open_hdr_studio(path, stream_index)
+        self._hdr_panel.show_fel_tab()
+
     def _apply_hdr_levels_to_encode(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> None:
         """MaxCLL/MaxFALL choisis dans HDR Studio, appliqués à la piste du panneau Encodage."""
         if self._encode_panel.apply_static_light_levels(Path(path), int(stream_index), max_cll, max_fall):
@@ -2000,6 +2005,7 @@ class MainWindow(QMainWindow):
         )
         self._remux_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._hdr_panel.apply_to_encode_requested.connect(self._apply_hdr_levels_to_encode)
+        self._encode_panel.fel_analysis_requested.connect(self._open_fel_analyzer)
         self._encode_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
