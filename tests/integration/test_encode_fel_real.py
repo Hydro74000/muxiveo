@@ -85,7 +85,7 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
         bit_depth="8" if mode == "sdr" else "10", tonemap_to_sdr=mode == "sdr",
         crop=VideoCropSettings(enabled=True, top=8, bottom=8) if mode.endswith("_crop") else VideoCropSettings(),
         source_bit_depth=10, source_color_transfer="smpte2084",
-        inject_hdr_meta=mode == "x265_hdr10", master_display=master, max_cll=light,
+        inject_hdr_meta=mode in ("x265_hdr10", "nvencc_dv"), master_display=master, max_cll=light,
         static_hdr_metadata_source="source", static_hdr_light_level_source="source",
         input_frame_rate=source_stream["avg_frame_rate"], crf=24)
     output = tmp_path / f"{mode}.mkv"
@@ -142,9 +142,11 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
         return [value-pts[0] for value in pts]
     # Un tick Matroska (1 ms), avec une marge pour la représentation des floats.
     assert timestamps(output) == pytest.approx(timestamps(source), abs=.001+1e-9)
-    if mode == "x265_hdr10":
+    if mode in ("x265_hdr10", "nvencc_dv"):
+        # MaxCLL/MaxFALL mesurés sur l'image reconstruite (plus jamais l'estimation L1), même sans HDR10+.
+        assert not any("estimés depuis L1" in message for _, message in messages)
         estimate_message = next(message for _, message in messages
-            if "MaxCLL/MaxFALL estimés depuis L1" in message)
+            if "MaxCLL/MaxFALL exacts de l'image reconstruite" in message)
         estimated_light = estimate_message.rsplit(" : ", 1)[1].removesuffix(".")
         frame = _probe(output, "-read_intervals", "%+#1", "-show_frames")["frames"][0]
         side_data = frame.get("side_data_list", [])

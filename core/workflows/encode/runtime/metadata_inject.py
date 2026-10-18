@@ -41,7 +41,8 @@ from core.workflows.hevc_static_hdr_metadata import (
     inject_static_hdr_sei_file, replace_content_light_level_sei_file,
 )
 from core.fel.hdr10plus import (
-    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    read_frame_statistics,
     write_hdr10plus_json,
 )
 from core.dovi_profile_detector import DoviSubProfile
@@ -436,7 +437,7 @@ class MetadataInjectRunner:
                 hdr10p_json = tmp / "hdr10p.json"
                 # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
                 fel_statistics = fel_statistics_path(video)
-                if video.copy_hdr10plus and fel_statistics is None:
+                if video.copy_hdr10plus and not hdr10plus_recomputed(video):
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
@@ -637,13 +638,13 @@ class MetadataInjectRunner:
                     )
 
                 light_levels: tuple[int, int] | None = None
-                if fel_statistics is not None and (video.copy_hdr10plus or deferred_light_levels(video)):
+                if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
                     # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
                     try:
                         statistics = read_frame_statistics(fel_statistics)
                     except FrameStatisticsError as exc:
                         raise EncodeError(str(exc)) from exc
-                    if video.copy_hdr10plus:
+                    if hdr10plus_recomputed(video):
                         write_hdr10plus_json(statistics, hdr10p_json)
                         expand_dynamic_hdr_metadata(
                             ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,

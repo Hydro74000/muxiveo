@@ -25,7 +25,8 @@ from core.workflows.hevc_static_hdr_metadata import (
     inject_static_hdr_sei_file, replace_content_light_level_sei_file,
 )
 from core.fel.hdr10plus import (
-    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    read_frame_statistics,
     write_hdr10plus_json,
 )
 from core.workflows.encode.interpolation import (
@@ -173,6 +174,8 @@ class MultiVideoPipelineRunner:
             video.copy_dv
             or video.copy_hdr10plus
             or needs_static_hdr_sei_reinjection(video)
+            # FEL intégré : MaxCLL/MaxFALL exacts écrits après l'encodage (SEI CLL et Colour).
+            or deferred_light_levels(video)
         ):
             rpu_bin = work_dir / f"video_{index}.rpu.bin"
             hdr10p_json = work_dir / f"video_{index}.hdr10plus.json"
@@ -241,7 +244,7 @@ class MultiVideoPipelineRunner:
                 local_cleanup.extend([rpu_bin, dovi_geometry_edit_json(rpu_bin)])
             # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
             fel_statistics = fel_statistics_path(video)
-            if video.copy_hdr10plus and fel_statistics is None:
+            if video.copy_hdr10plus and not hdr10plus_recomputed(video):
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",
                     str(meta_input), "-o", str(hdr10p_json),
@@ -329,13 +332,13 @@ class MultiVideoPipelineRunner:
             remove_path(enc_video_mkv)
 
             light_levels: tuple[int, int] | None = None
-            if fel_statistics is not None and (video.copy_hdr10plus or deferred_light_levels(video)):
+            if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
                 # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
                 try:
                     statistics = read_frame_statistics(fel_statistics)
                 except FrameStatisticsError as exc:
                     raise EncodeError(str(exc)) from exc
-                if video.copy_hdr10plus:
+                if hdr10plus_recomputed(video):
                     write_hdr10plus_json(statistics, hdr10p_json)
                     local_cleanup.append(hdr10p_json)
                     expand_dynamic_hdr_metadata(

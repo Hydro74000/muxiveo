@@ -47,11 +47,30 @@ def requested(video: VideoEncodeSettings) -> bool:
     return wants_fel_bake(video.bake_dovi_fel, sub_profile_from_value(video.dovi_source_profile), video.codec)
 
 
+def _hevc_output(video: VideoEncodeSettings) -> bool:
+    codec = str(video.codec or "").lower()
+    return codec == "libx265" or "hevc" in codec
+
+
 def recomputes_hdr10plus(video: VideoEncodeSettings) -> bool:
     """HDR10+ recalculé demandé : copie HDR10+ active, sortie HEVC (hdr10plus_tool), choix « recompute »."""
-    codec = str(video.codec or "").lower()
-    return bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute"
-                and (codec == "libx265" or "hevc" in codec) and not video.tonemap_to_sdr)
+    return bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute" and _hevc_output(video)
+                and not video.tonemap_to_sdr)
+
+
+#: Provenances des MaxCLL/MaxFALL déduites automatiquement (source, RPU) : remplacées par la mesure.
+_AUTOMATIC_LIGHT_LEVELS = {"source", "rpu_estimate", "source_metadata"}
+
+
+def measures_light_levels(video: VideoEncodeSettings) -> bool:
+    """MaxCLL/MaxFALL exacts de l'image reconstruite : HDR10 statique écrit, valeurs non saisies, sortie HEVC.
+
+    Les valeurs de la source décrivent la BL ; le plugin mesure l'image produite et les valeurs exactes
+    remplacent celles du flux après l'encodage (SEI CLL et élément Colour).
+    """
+    provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source
+    return bool(video.inject_hdr_meta and not video.tonemap_to_sdr and _hevc_output(video)
+                and (not video.max_cll or provenance in _AUTOMATIC_LIGHT_LEVELS))
 
 
 def prepare_fel(
@@ -84,12 +103,12 @@ def prepare_fel(
         # suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
         workers = 1 if video.interpolation.enabled else None
         statistics: Path | None = None
-        if recomputes_hdr10plus(video):
+        if recomputes_hdr10plus(video) or measures_light_levels(video):
             if frame_statistics_supported(engine):
                 statistics = work_dir / f"fel_statistics_{index}.jsonl"
             else:
-                log("WARN", prefix + "Extension mvo-fel antérieure à 0.3.0 : HDR10+ de la source conservé "
-                    "(mettre à jour l'extension pour le recalculer).")
+                log("WARN", prefix + "Extension mvo-fel antérieure à 0.3.0 : HDR10+ et MaxCLL/MaxFALL de la source "
+                    "conservés (mettre à jour l'extension pour les mesurer sur l'image reconstruite).")
         context = FelExecution(FelSource(engine, source, video.stream_index, max(1, threads), video.input_frame_rate, plan,
                                          precision=video.fel_precision, render_workers=workers,
                                          statistics_path=statistics),
@@ -100,17 +119,21 @@ def prepare_fel(
         if statistics is not None:
             # MaxCLL/MaxFALL exacts mesurés pendant l'encodage, insérés ensuite : rien de provisoire
             # n'est transmis à l'encodeur.
-            provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source
-            if video.inject_hdr_meta and (not video.max_cll or provenance in {"source", "rpu_estimate", "source_metadata"}):
+            if measures_light_levels(video):
                 result = replace(result, max_cll="", static_hdr_light_level_source="fel_frame_statistics")
-            log("INFO", prefix + "HDR10+ et MaxCLL/MaxFALL recalculés sur l'image reconstruite (statistiques du plugin).")
+            log("INFO", prefix + ("HDR10+ et MaxCLL/MaxFALL recalculés" if recomputes_hdr10plus(video)
+                                  else "MaxCLL/MaxFALL mesurés") + " sur l'image reconstruite (statistiques du plugin).")
         elif video.inject_hdr_meta and not video.tonemap_to_sdr:
-            provenance = video.static_hdr_light_level_source or video.static_hdr_metadata_source
-            if not video.max_cll or provenance in {"source", "rpu_estimate", "source_metadata"}:
+            if video.max_cll:
+                # Valeurs de la source (mesurées sur le master) : bien plus proches que le L1 du RPU, maximum
+                # robuste et moyenne de codes PQ qui sous-estiment MaxCLL et MaxFALL.
+                log("INFO", prefix + f"MaxCLL/MaxFALL de la source conservés : {video.max_cll}.")
+            else:
                 estimate = estimate_static_hdr_from_rpu(dovi, rpu, capture, prefer_l1=True)
                 result = replace(result, max_cll=estimate.max_cll, static_hdr_light_level_source="fel_rpu_l1_estimate")
-                log("WARN", prefix + f"MaxCLL/MaxFALL estimés depuis L1 : {estimate.max_cll or 'indisponibles'}.")
-        if video.copy_hdr10plus and statistics is None:
+                log("WARN", prefix + f"MaxCLL/MaxFALL absents de la source, estimés depuis L1 (sous-estimés) : "
+                    f"{estimate.max_cll or 'indisponibles'}.")
+        if video.copy_hdr10plus and (statistics is None or not recomputes_hdr10plus(video)):
             log("WARN", prefix + "HDR10+ conservé depuis la source : il décrit la BL, pas l'image reconstruite.")
         log("INFO", prefix + "FEL confirmé : reconstruction active avant les filtres et l'encodage.")
         return result

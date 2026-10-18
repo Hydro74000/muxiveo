@@ -66,7 +66,8 @@ from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sy
 from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
 from core.fel.hdr10plus import (
-    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, read_frame_statistics,
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    read_frame_statistics,
     write_hdr10plus_json,
 )
 from core.matroska.hevc.access_units import HevcStreamCancelled
@@ -117,12 +118,14 @@ def _apply_fel_hdr10plus(
         statistics = read_frame_statistics(statistics_path)
     except FrameStatisticsError as exc:
         raise EncodeError(str(exc)) from exc
+    # Statistiques fournies par l'appelant : HDR10+ recalculé selon le choix, sinon MaxCLL/MaxFALL seuls.
+    recompute = bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
     json_path = cwd / "fel_hdr10plus.json"
     annexb, injected, with_cll, rewritten = (
         cwd / name for name in ("fel_annexb.hevc", "fel_hdr10plus.hevc", "fel_cll.hevc", "nvencc_hdr10plus.mkv")
     )
     try:
-        if video.copy_hdr10plus:
+        if recompute:
             write_hdr10plus_json(statistics, json_path)
             _expand_dynamic_hdr_metadata(
                 ratio=frame_ratio, rpu_bin=None, hdr10p_json=json_path, dovi_tool_bin=dovi_bin,
@@ -137,12 +140,13 @@ def _apply_fel_hdr10plus(
         needed = 2.2 * intermediate.stat().st_size
         if shutil.disk_usage(cwd).free < needed:
             raise EncodeError(
-                f"HDR10+ recalculé : espace insuffisant dans le dossier de travail ({needed / 1e9:.1f} Go nécessaires)."
+                f"Métadonnées de l'image reconstruite : espace insuffisant dans le dossier de travail "
+                f"({needed / 1e9:.1f} Go nécessaires)."
             )
-        progress("Extraction du flux NVEncC pour l'injection HDR10+…")
+        progress("Extraction du flux NVEncC (métadonnées de l'image reconstruite)…")
         run([ffmpeg_bin, "-nostdin", "-y", "-v", "error", "-i", str(intermediate), "-map", "0:v:0", "-c", "copy",
              "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(annexb)], "hdr10plus-extract")
-        if video.copy_hdr10plus:
+        if recompute:
             progress("Injection du HDR10+ recalculé…")
             run([hdr10plus_bin, "inject", "-i", str(annexb), "-j", str(json_path), "-o", str(injected)],
                 "hdr10plus-inject")
@@ -158,7 +162,7 @@ def _apply_fel_hdr10plus(
             max_cll, max_fall = (int(value) for value in exact.split(","))
             levels = (max_cll, max_fall)
             log(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
-        progress("Réécriture du flux NVEncC avec le HDR10+ recalculé…")
+        progress("Réécriture du flux NVEncC avec les métadonnées recalculées…")
         try:
             MatroskaHevcPayloadRewriter().rewrite(
                 encoded_mkv=intermediate, injected_hevc=final, output=rewritten,
@@ -170,7 +174,7 @@ def _apply_fel_hdr10plus(
     finally:
         for path in (annexb, injected, with_cll, rewritten, json_path):
             path.unlink(missing_ok=True)
-    if video.copy_hdr10plus:
+    if recompute:
         log(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
 
 
@@ -725,7 +729,7 @@ class NvenccDirectOutputRunner:
                                           lambda line: signals.progress.emit(line), signals)
 
                     # HDR10+ recalculé (FEL intégré) : injecté après l'encodage, rien depuis la source.
-                    if runtime_video.copy_hdr10plus and fel_statistics_path(runtime_video) is None:
+                    if runtime_video.copy_hdr10plus and not hdr10plus_recomputed(runtime_video):
                         hdr10plus_json_path = cwd / "source_hdr10plus.json"
                         cleanup_paths.append(hdr10plus_json_path)
                         signals.progress.emit("Extraction métadonnées HDR10+…")
@@ -855,7 +859,7 @@ class NvenccDirectOutputRunner:
                     cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
                 statistics_path = fel_statistics_path(runtime_video)
                 if statistics_path is not None and intermediate.is_file() and (
-                        runtime_video.copy_hdr10plus or deferred_light_levels(runtime_video)):
+                        hdr10plus_recomputed(runtime_video) or deferred_light_levels(runtime_video)):
                     cb.check_cancelled(signals)
                     _apply_fel_hdr10plus(
                         video=runtime_video, intermediate=intermediate, statistics_path=statistics_path, cwd=cwd,

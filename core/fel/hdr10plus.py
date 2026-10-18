@@ -38,6 +38,15 @@ def fel_statistics_path(video: object) -> Path | None:
     return statistics if isinstance(statistics, Path) else None
 
 
+def hdr10plus_recomputed(video: object) -> bool:
+    """HDR10+ recalculé sur l'image reconstruite : statistiques du plugin et choix « recompute ».
+
+    Les statistiques peuvent aussi servir aux seuls MaxCLL/MaxFALL (HDR10+ de la source conservé).
+    """
+    return bool(fel_statistics_path(video) is not None and getattr(video, "copy_hdr10plus", False)
+                and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
+
+
 def deferred_light_levels(video: object) -> bool:
     """MaxCLL/MaxFALL différés jusqu'aux statistiques (aucune valeur transmise à l'encodeur)."""
     return bool(getattr(video, "inject_hdr_meta", False)

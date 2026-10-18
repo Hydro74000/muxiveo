@@ -266,8 +266,12 @@ def test_confirmation_without_fel_is_noop(tmp_path, monkeypatch, kind):
     assert "sans effet" in log.call_args.args[1]
 
 
-@pytest.mark.parametrize("provenance,expected", [("manual", "1000,400"), ("source", "2000,500")])
-def test_original_l1_estimate_respects_manual_light_levels(tmp_path, monkeypatch, provenance, expected):
+@pytest.mark.parametrize("provenance,current,expected", [
+    ("manual", "1000,400", "1000,400"),   # valeurs saisies : conservées
+    ("source", "1000,400", "1000,400"),   # valeurs de la source : conservées (plus proches que le L1)
+    ("source", "", "2000,500"),           # source sans valeurs : estimation L1 en dernier recours
+])
+def test_original_l1_estimate_respects_manual_light_levels(tmp_path, monkeypatch, provenance, current, expected):
     import core.fel.preparation as preparation
     monkeypatch.setattr(preparation, "extract_dovi_rpu", Mock())
     estimate = Mock(return_value=SimpleNamespace(max_cll="2000,500"))
@@ -275,13 +279,13 @@ def test_original_l1_estimate_respects_manual_light_levels(tmp_path, monkeypatch
     engine = Mock()
     engine.classify.return_value = "fel"
     video = VideoEncodeSettings(bake_dovi_fel=True, inject_hdr_meta=True,
-                                max_cll="1000,400", static_hdr_light_level_source=provenance)
+                                max_cll=current, static_hdr_light_level_source=provenance)
     result = prepare_fel(video, source=tmp_path / "original.mkv", work_dir=tmp_path, index=1,
                          ffmpeg="ffmpeg", dovi="dovi_tool", threads=2, run=Mock(), capture=Mock(),
                          cancelled=lambda: False, log=Mock(), engine_loader=lambda: engine)
     assert result.max_cll == expected
     assert result.fel_context.original_rpu == tmp_path / "fel_original_1.bin"
-    if provenance == "source":
+    if not current:
         assert estimate.call_args.kwargs["prefer_l1"]
     else:
         estimate.assert_not_called()

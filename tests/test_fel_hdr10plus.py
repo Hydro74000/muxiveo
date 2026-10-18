@@ -120,9 +120,28 @@ def test_manual_light_levels_are_kept_while_hdr10plus_is_recomputed(tmp_path, mo
     assert result.max_cll == "900,100" and not deferred_light_levels(result)
 
 
+def test_source_hdr10plus_kept_with_measured_light_levels(tmp_path, monkeypatch):
+    """Choix « HDR10+ de la source » : HDR10+ conservé, MaxCLL/MaxFALL mesurés sur l'image reconstruite."""
+    from core.fel.hdr10plus import hdr10plus_recomputed
+
+    result, journal = prepared(tmp_path, monkeypatch, capabilities={"frame_statistics": 1}, fel_hdr10plus="source")
+    assert fel_statistics_path(result) is not None and not hdr10plus_recomputed(result)
+    assert result.max_cll == "" and deferred_light_levels(result)
+    assert "décrit la BL" in journal and "MaxCLL/MaxFALL mesurés" in journal
+
+
+def test_light_levels_measured_without_hdr10plus(tmp_path, monkeypatch):
+    """Source Dolby Vision sans HDR10+ : MaxCLL/MaxFALL mesurés (plus jamais l'estimation L1)."""
+    from core.fel.hdr10plus import hdr10plus_recomputed
+
+    result, journal = prepared(tmp_path, monkeypatch, capabilities={"frame_statistics": 1}, copy_hdr10plus=False,
+                               max_cll="998,316", static_hdr_light_level_source="source")
+    assert fel_statistics_path(result) is not None and not hdr10plus_recomputed(result)
+    assert result.max_cll == "" and deferred_light_levels(result) and "estimés depuis L1" not in journal
+
+
 @pytest.mark.parametrize("capabilities,settings", [
     ({}, {}),                                                   # extension antérieure à 0.3.0
-    ({"frame_statistics": 1}, {"fel_hdr10plus": "source"}),     # choix « conservé »
     ({"frame_statistics": 1}, {"codec": "libsvtav1"}),          # hors HEVC (hdr10plus_tool)
 ])
 def test_source_hdr10plus_is_kept_otherwise(tmp_path, monkeypatch, capabilities, settings):

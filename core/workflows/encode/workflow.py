@@ -677,9 +677,12 @@ class EncodeWorkflow(QObject):
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
             return cls._wants_dovi_profile_normalization(config)
-        if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
+        video = EncodeWorkflow._primary_video_settings(config)
+        if _is_nvencc_codec_runtime(video.codec):
             return False
-        return cls._wants_dynamic_hdr_copy(config)
+        # FEL intégré : MaxCLL/MaxFALL exacts de l'image reconstruite, connus seulement après l'encodage.
+        from core.fel.hdr10plus import deferred_light_levels
+        return cls._wants_dynamic_hdr_copy(config) or deferred_light_levels(video)
 
     @staticmethod
     def _video_source_path(config: EncodeConfig) -> Path:
