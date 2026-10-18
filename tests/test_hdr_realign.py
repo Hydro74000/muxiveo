@@ -47,18 +47,25 @@ def _report(tmp_path, *, max_pq: int, maxscl=(40000, 39000, 38000)) -> Inspectio
 
 def test_realign_proposes_only_visible_deviations(tmp_path):
     # Image à 1600 nits : MaxCLL 1000 du fichier écrête sur un écran de 1000 nits, L6 contredit,
-    # MaxScl HDR10+ à 4000 (image assombrie), L1 (≈ 1000 nits) sous l'image.
+    # MaxScl HDR10+ à 4000 (image assombrie). L1 (≈ 1000 nits) sous le pic robuste (1520) : normal.
     report = _report(tmp_path, max_pq=3079)
     measurement = _measurement(1600, 320)
     result = realign(report, measurement, 1000)
     keys = [p.key for p in result.proposals]
-    assert keys[:1] == ["static"] and "l6" in keys and "hdr10plus" in keys and "l1" in keys
+    assert keys[:1] == ["static"] and "l6" in keys and "hdr10plus" in keys and "l1" not in keys
     assert result.light_levels == (1600, 320)
     assert result.l6 is not None and result.l6[2:] == (1600, 320)
     assert result.hdr10plus_scenes is not None and result.hdr10plus_scenes.tolist() == [0, 5]
-    assert not next(p for p in result.proposals if p.key == "l1").applicable
     assert "écrêtage" in next(p for p in result.proposals if p.key == "static").impact
-    assert [p.key for p in result.applicable()] == [k for k in keys if k != "l1"]
+    assert [p.key for p in result.applicable()] == keys
+
+
+def test_realign_flags_l1_only_beyond_one_stop(tmp_path):
+    # Pic robuste 2470 nits pour un L1 ≈ 1000 nits : plus d'un diaph d'écart, diagnostic non applicable.
+    result = realign(_report(tmp_path, max_pq=3079), _measurement(2600, 320), 1000)
+    l1 = next(p for p in result.proposals if p.key == "l1")
+    assert not l1.applicable and "moitié" in l1.impact and "RPU généré" in l1.impact
+    assert "l1" not in [p.key for p in result.applicable()]
 
 
 def test_realign_estimate_never_lowers_values_nor_recomputes_hdr10plus(tmp_path):

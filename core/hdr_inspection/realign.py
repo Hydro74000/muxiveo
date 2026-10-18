@@ -25,6 +25,11 @@ from core.i18n import translate_text
 DYNAMIC_SHARE = 0.02
 #: Écart relatif toléré entre une valeur du fichier et la mesure (arrondis, outils d'analyse).
 TOLERANCE = 0.10
+#: L1 : l'analyse Dolby écarte volontairement les reflets isolés (L1 max un peu sous le pic mesuré : normal).
+#: Signalé seulement au-delà d'un diaph d'écart sur plus de 5 % des images (RPU généré, recalé ou d'un autre
+#: étalonnage).
+L1_RATIO = 2.0
+L1_SHARE = 0.05
 
 
 @dataclass(frozen=True)
@@ -223,14 +228,15 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
         high = _per_scene(measurement.percentiles[:count, -1], dovi.scene_starts, np.fmax)
         peak = _per_scene(measurement.peaks()[:count], dovi.scene_starts, np.fmax)
         valid = high > 50
-        under = valid & (high > 1.3 * l1)
-        over = valid & (l1 > 2 * peak) & (l1 > 400)
-        if under.mean() > DYNAMIC_SHARE or over.mean() > DYNAMIC_SHARE:
+        under = valid & (high > L1_RATIO * l1)
+        over = valid & (l1 > L1_RATIO * peak) & (l1 > 400)
+        if under.mean() > L1_SHARE or over.mean() > L1_SHARE:
             reasons = []
-            if under.any():
-                reasons.append(translate_text("L1 max sous l'image sur {share} % des images (écrêtage en lecture "
-                                              "Dolby Vision)", share=_share(int(under.sum()), count)))
-            if over.any():
+            if under.mean() > L1_SHARE:
+                reasons.append(translate_text("L1 max à moins de la moitié de l'image sur {share} % des images "
+                                              "(écrêtage possible en lecture Dolby Vision)",
+                                              share=_share(int(under.sum()), count)))
+            if over.mean() > L1_SHARE:
                 reasons.append(translate_text("L1 max au double du pic sur {share} % des images (image assombrie)",
                                               share=_share(int(over.sum()), count)))
             proposals.append(Proposal(
@@ -238,8 +244,9 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
                                                                         peak=round(dovi.l1_peak_nits())),
                 translate_text("non corrigé"),
                 "; ".join(reasons) + ". " + translate_text(
-                    "dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source "
-                    "Dolby Vision avec l'outil d'origine."), applicable=False))
+                    "Écart typique d'un RPU généré, recalé ou d'un autre étalonnage ; dovi_tool ne réécrit pas "
+                    "le L1 sans perdre les trims (L2/L8) : ré-analyser la source avec l'outil d'origine."),
+                applicable=False))
     if estimate:
         note = translate_text("estimation de la mesure rapide (images clés) : mesure complète conseillée avant "
                               "d'écrire")
