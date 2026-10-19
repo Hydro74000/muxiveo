@@ -1310,7 +1310,7 @@ class EncodePanel(QWidget):
         cl.addWidget(self._copy_dv_cb)
         # Conversion P8.1 : choix de l'utilisateur, affichage figé quand le traitement l'impose.
         self._dovi_profile_choice = "0"
-        self._dovi_p81_cb = QCheckBox(translate_text("Convertir en P8.1 (retirer la couche d’amélioration P7)"))
+        self._dovi_p81_cb = QCheckBox(translate_text("Convertir en P8.1 (retire la couche d’amélioration MEL/FEL)"))
         self._dovi_p81_cb.setStyleSheet(_checkbox_style())
         self._dovi_p81_cb.clicked.connect(self._on_dovi_p81_clicked)
         self._dovi_profile_widget = QWidget()

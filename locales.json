@@ -5455,9 +5455,9 @@
     "fra": "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).",
     "eng": "Size of the whole file: audio, subtitles, attachments and copied video are deducted, the rest is shared between the encoded video tracks.\nSoftware: 2 passes. Hardware: 1 capped VBR pass (approximate size)."
   },
-  "Convertir en P8.1 (retirer la couche d’amélioration P7)": {
-    "fra": "Convertir en P8.1 (retirer la couche d’amélioration P7)",
-    "eng": "Convert to P8.1 (remove the P7 enhancement layer)"
+  "Convertir en P8.1 (retire la couche d’amélioration MEL/FEL)": {
+    "fra": "Convertir en P8.1 (retire la couche d’amélioration MEL/FEL)",
+    "eng": "Convert to P8.1 (removes the MEL/FEL enhancement layer)"
   },
   "Réencodage : la sortie est toujours P8.1. La couche d’amélioration ne s’applique qu’à l’image de base d’origine ; « Intégrer la couche FEL » en conserve l’apport.": {
     "fra": "Réencodage : la sortie est toujours P8.1. La couche d’amélioration ne s’applique qu’à l’image de base d’origine ; « Intégrer la couche FEL » en conserve l’apport.",
