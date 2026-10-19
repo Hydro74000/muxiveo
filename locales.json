@@ -8726,5 +8726,53 @@
   "Verdict provisoire sur {count} instants : l'analyse continue sur la densité choisie.": {
     "fra": "Verdict provisoire sur {count} instants : l'analyse continue sur la densité choisie.",
     "eng": "Provisional verdict on {count} instants: the analysis continues at the chosen density."
+  },
+  "{label} plus court que la vidéo : {value} trames contre {target} ({delta}) — aucune trame de métadonnées n'est fabriquée.": {
+    "fra": "{label} plus court que la vidéo : {value} trames contre {target} ({delta}) — aucune trame de métadonnées n'est fabriquée.",
+    "eng": "{label} shorter than the video: {value} frames against {target} ({delta}) — no metadata frame is fabricated."
+  },
+  "{label} : {value} trames contre {target} (+{delta}) — aucun ajustement autorisé (politique exacte).": {
+    "fra": "{label} : {value} trames contre {target} (+{delta}) — aucun ajustement autorisé (politique exacte).",
+    "eng": "{label}: {value} frames against {target} (+{delta}) — no adjustment allowed (exact policy)."
+  },
+  "{label} : {value} trames contre {target} (+{delta}) — surplus au-delà de la tolérance ({tolerance}).": {
+    "fra": "{label} : {value} trames contre {target} (+{delta}) — surplus au-delà de la tolérance ({tolerance}).",
+    "eng": "{label}: {value} frames against {target} (+{delta}) — surplus beyond the tolerance ({tolerance})."
+  },
+  "Encodage non frame-preserving : source={source} frames, encodé={encoded} frames. Réessayez avec un preset NVENC plus lent (p4/p5) ou un encodeur software.": {
+    "fra": "Encodage non frame-preserving : source={source} frames, encodé={encoded} frames. Réessayez avec un preset NVENC plus lent (p4/p5) ou un encodeur software.",
+    "eng": "Non frame-preserving encode: source={source} frames, encoded={encoded} frames. Retry with a slower NVENC preset (p4/p5) or a software encoder."
+  },
+  "Comptage {label} illisible ({file}) : contrôle impossible, injection refusée.": {
+    "fra": "Comptage {label} illisible ({file}) : contrôle impossible, injection refusée.",
+    "eng": "{label} count unreadable ({file}): check impossible, injection refused."
+  },
+  "flux encodé et métadonnées extraites de la source (source non relue)": {
+    "fra": "flux encodé et métadonnées extraites de la source (source non relue)",
+    "eng": "encoded stream and metadata extracted from the source (source not re-read)"
+  },
+  "vidéo et métadonnées": {
+    "fra": "vidéo et métadonnées",
+    "eng": "video and metadata"
+  },
+  "Comptage identique ({target} trames) : {basis}. L'alignement temporel n'est pas vérifié par ce contrôle.": {
+    "fra": "Comptage identique ({target} trames) : {basis}. L'alignement temporel n'est pas vérifié par ce contrôle.",
+    "eng": "Identical count ({target} frames): {basis}. Temporal alignment is not verified by this check."
+  },
+  "{label} : {count} trame(s) excédentaire(s) retirée(s) en fin de flux ({value} → {target}). Hypothèse : début aligné.": {
+    "fra": "{label} : {count} trame(s) excédentaire(s) retirée(s) en fin de flux ({value} → {target}). Hypothèse : début aligné.",
+    "eng": "{label}: {count} surplus frame(s) removed at the end of the stream ({value} → {target}). Assumption: aligned start."
+  },
+  "{label} : coupe en fin de flux sans effet ({count} trames après coupe, {target} attendues).": {
+    "fra": "{label} : coupe en fin de flux sans effet ({count} trames après coupe, {target} attendues).",
+    "eng": "{label}: end-of-stream trim had no effect ({count} frames after trimming, {target} expected)."
+  },
+  "Audit trames : {detail}": {
+    "fra": "Audit trames : {detail}",
+    "eng": "Frame audit: {detail}"
+  },
+  "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.": {
+    "fra": "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.",
+    "eng": "Frame audit: encoded frame count unreadable, RPU coverage cannot be verified."
   }
 }

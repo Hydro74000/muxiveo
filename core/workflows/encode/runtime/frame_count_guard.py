@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.frame_count import ffprobe_packet_count, frame_count_is_plausible, probe_video_timing
+from core.i18n import translate_text
 from core.subprocess_utils import subprocess_text_kwargs
 
 
@@ -102,26 +103,28 @@ def metadata_count_verdict(
 
     Un surplus accepté (``TRIM_TAIL``) reste à retirer en fin de flux par l'appelant.
     """
-    label = _METADATA_LABELS.get(name, name)
+    label = _metadata_label(name)
     delta = value - target
     if delta == 0:
         return None
     if delta < 0:
-        return (
-            f"{label} plus court que la vidéo : {value} trames contre {target} "
-            f"({delta}) — aucune trame de métadonnées n'est fabriquée."
-        )
+        return translate_text(
+            "{label} plus court que la vidéo : {value} trames contre {target} ({delta}) — aucune trame de "
+            "métadonnées n'est fabriquée.", label=label, value=value, target=target, delta=delta)
     if adjustment is MetadataAdjustment.EXACT:
-        return (
-            f"{label} : {value} trames contre {target} (+{delta}) — aucun ajustement "
-            "autorisé (politique exacte)."
-        )
+        return translate_text(
+            "{label} : {value} trames contre {target} (+{delta}) — aucun ajustement autorisé (politique exacte).",
+            label=label, value=value, target=target, delta=delta)
     if delta > tolerance:
-        return (
-            f"{label} : {value} trames contre {target} (+{delta}) — surplus au-delà de "
-            f"la tolérance ({tolerance})."
-        )
+        return translate_text(
+            "{label} : {value} trames contre {target} (+{delta}) — surplus au-delà de la tolérance ({tolerance}).",
+            label=label, value=value, target=target, delta=delta, tolerance=tolerance)
     return None
+
+
+def _metadata_label(name: str) -> str:
+    """Nom des métadonnées dans la langue de l'interface (« RPU Dolby Vision », « HDR10+ »)."""
+    return translate_text(_METADATA_LABELS.get(name, name))
 
 
 @dataclass(frozen=True)
@@ -371,21 +374,19 @@ class FrameCountGuard:
                 )
             return audit
         if audit.encoded != audit.source:
-            raise FrameCountAuditError(
-                f"Encodage non frame-preserving : source={audit.source} frames, "
-                f"encodé={audit.encoded} frames. Réessayez avec un preset "
-                f"NVENC plus lent (p4/p5) ou un encodeur software."
-            )
+            raise FrameCountAuditError(translate_text(
+                "Encodage non frame-preserving : source={source} frames, encodé={encoded} frames. Réessayez avec "
+                "un preset NVENC plus lent (p4/p5) ou un encodeur software.",
+                source=audit.source, encoded=audit.encoded))
 
         target = audit.source
         counts = {"rpu": audit.rpu, "hdr10p": audit.hdr10p}
         files = {"rpu": rpu_bin, "hdr10p": hdr10p_json}
         for name, path in files.items():
             if path is not None and counts[name] is None:
-                raise FrameCountAuditError(
-                    f"Comptage {_METADATA_LABELS[name]} illisible ({path.name}) : "
-                    "contrôle impossible, injection refusée."
-                )
+                raise FrameCountAuditError(translate_text(
+                    "Comptage {label} illisible ({file}) : contrôle impossible, injection refusée.",
+                    label=_metadata_label(name), file=path.name))
             value = counts[name]
             if value is None:
                 continue
@@ -397,15 +398,14 @@ class FrameCountGuard:
 
         if all(value is None or value == target for value in counts.values()):
             if on_info:
-                basis = (
+                basis = translate_text(
                     "flux encodé et métadonnées extraites de la source (source non relue)"
                     if audit.source_basis == "metadata"
                     else "vidéo et métadonnées"
                 )
-                on_info(
-                    f"Comptage identique ({target} trames) : {basis}. "
-                    "L'alignement temporel n'est pas vérifié par ce contrôle."
-                )
+                on_info(translate_text(
+                    "Comptage identique ({target} trames) : {basis}. L'alignement temporel n'est pas vérifié par "
+                    "ce contrôle.", target=target, basis=basis))
             return audit
 
         # Surplus accepté par TRIM_TAIL : retrait en fin de flux puis recomptage.
@@ -418,10 +418,10 @@ class FrameCountGuard:
                     f"{_METADATA_LABELS[name]} excédentaire mais fichier non fourni à enforce()."
                 )
             if on_warn:
-                on_warn(
-                    f"{_METADATA_LABELS[name]} : {value - target} trame(s) excédentaire(s) "
-                    f"retirée(s) en fin de flux ({value} → {target}). Hypothèse : début aligné."
-                )
+                on_warn(translate_text(
+                    "{label} : {count} trame(s) excédentaire(s) retirée(s) en fin de flux ({value} → {target}). "
+                    "Hypothèse : début aligné.", label=_metadata_label(name), count=value - target, value=value,
+                    target=target))
             if name == "rpu":
                 self._trim_rpu(path, target_frames=target, current_frames=value)
                 counts[name] = self._dovi_rpu_frame_count(path)
@@ -429,10 +429,9 @@ class FrameCountGuard:
                 self._trim_hdr10p_json(path, target_frames=target)
                 counts[name] = self._hdr10p_json_frame_count(path)
             if counts[name] != target:
-                raise FrameCountAuditError(
-                    f"{_METADATA_LABELS[name]} : coupe en fin de flux sans effet "
-                    f"({counts[name]} trames après coupe, {target} attendues)."
-                )
+                raise FrameCountAuditError(translate_text(
+                    "{label} : coupe en fin de flux sans effet ({count} trames après coupe, {target} attendues).",
+                    label=_metadata_label(name), count=counts[name], target=target))
 
         return FrameCountAudit(
             source=audit.source,

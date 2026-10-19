@@ -38,7 +38,10 @@ def _hevc10_encoder() -> list[str] | None:
 
 _TOOLS = ("ffmpeg", "ffprobe", "mediainfo", "dovi_tool", "hdr10plus_tool")
 _ENCODER = _hevc10_encoder() if all(shutil.which(t) for t in _TOOLS) else None
-pytestmark = pytest.mark.skipif(_ENCODER is None, reason="outils DoVi ou encodeur HEVC 10 bits absents")
+pytestmark = [
+    pytest.mark.skipif(_ENCODER is None, reason="outils DoVi ou encodeur HEVC 10 bits absents"),
+    pytest.mark.usefixtures("french_messages"),
+]
 
 
 def _encoder() -> list[str]:

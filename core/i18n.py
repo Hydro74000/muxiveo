@@ -85,6 +85,36 @@ def set_current_language(code: str | None) -> str:
     return _current_language
 
 
+def install_qt_translations(language: str | None = None) -> bool:
+    """Traductions propres à Qt dans la langue de l'application : boutons standard des boîtes de dialogue
+    (Oui, Non, Annuler…), menus contextuels des champs de saisie. Sans effet hors application Qt ou en
+    anglais ; la traduction précédente est remplacée. True si une traduction est installée."""
+    from PySide6.QtCore import QCoreApplication, QLibraryInfo, QTranslator
+
+    app = QCoreApplication.instance()
+    if app is None:
+        return False
+    previous = getattr(app, "_muxiveo_qt_translator", None)
+    if previous is not None:
+        app.removeTranslator(previous)
+        app._muxiveo_qt_translator = None  # type: ignore[attr-defined]
+    tag = Rfc5646LanguageTags.from_iso639_2(normalize_language(language or _current_language)) or ""
+    primary = tag.split("-")[0].lower()
+    if not primary or primary == "en":
+        return False
+    import PySide6
+
+    translator = QTranslator(app)
+    folders = (QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
+               str(Path(PySide6.__file__).parent / "Qt" / "translations"))
+    for folder in folders:
+        if translator.load(f"qtbase_{primary}", folder):
+            app.installTranslator(translator)
+            app._muxiveo_qt_translator = translator  # type: ignore[attr-defined]
+            return True
+    return False
+
+
 def current_language() -> str:
     return _current_language
 

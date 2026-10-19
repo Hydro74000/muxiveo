@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args, is_bluray_playlist
+from core.i18n import translate_text
 from core.pipeline_command import command_preview_tokens, command_stages, is_broken_pipe_exit, pipeline_root_failure
 from core.workflows.encode.backends.progress import parse_nvencc_progress
 from core.workflows.encode.interpolation import (
@@ -712,11 +713,12 @@ class NvenccDirectOutputRunner:
                     except FrameCountAuditError as exc:
                         cb.check_cancelled(signals)
                         if not accept_validation_override(
-                            cb.validation_override, dovi_rpu_path, f"Audit trames : {exc}",
+                            cb.validation_override, dovi_rpu_path,
+                            translate_text("Audit trames : {detail}", detail=exc),
                             signals._cancel_event.is_set, cb.log_info,
                         ):
                             cb.check_cancelled(signals)
-                            raise EncodeError(f"Audit trames : {exc}") from exc
+                            raise EncodeError(translate_text("Audit trames : {detail}", detail=exc)) from exc
                         source_frames = 0
                         accepted_missing_rpu = exc.missing.get("rpu", 0)
                     if source_frames:
@@ -846,7 +848,8 @@ class NvenccDirectOutputRunner:
                 if expected_frames is not None and monitor.encoded_frames is None and cb.count_video_frames is not None:
                     monitor.encoded_frames = cb.count_video_frames(intermediate)
                 if expected_frames is not None and monitor.encoded_frames is None:
-                    message = "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable."
+                    message = translate_text(
+                        "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.")
                     if not accept_validation_override(
                         cb.validation_override, intermediate, message, signals._cancel_event.is_set, cb.log_info,
                     ):

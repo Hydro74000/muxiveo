@@ -17,6 +17,8 @@ from core.workflows.encode.runtime.frame_count_guard import (
 )
 from core.workflows.encode.runtime.metadata_inject import _build_dovi_record_from_rpu
 
+pytestmark = pytest.mark.usefixtures("french_messages")
+
 _TRIM = MetadataAdjustment.TRIM_TAIL
 _EXACT = MetadataAdjustment.EXACT
 
@@ -128,7 +130,7 @@ class TestFrameCountGuardAudit:
              patch.object(guard, "_ffprobe_count_packets", side_effect=counted), \
              patch.object(guard, "_ffprobe_count_frames", return_value=None):
             audit = guard.audit(source=tmp_path / "src.mkv", encoded=tmp_path / "enc.hevc")
-        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+        with pytest.raises(FrameCountAuditError, match="(?i)non frame-preserving"):
             guard.enforce(audit, adjustment=_TRIM)
 
     def test_failed_recount_with_partial_stdout_does_not_hide_frame_loss(self, tmp_path):
@@ -138,7 +140,7 @@ class TestFrameCountGuardAudit:
              patch("subprocess.run", return_value=partial):
             audit = guard.audit(source=tmp_path / "src.mkv", encoded=tmp_path / "enc.hevc")
         assert (audit.source, audit.encoded) == (1000, 999)
-        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+        with pytest.raises(FrameCountAuditError, match="(?i)non frame-preserving"):
             guard.enforce(audit, adjustment=_TRIM)
 
     @pytest.mark.parametrize("reader", ["_mediainfo_frame_count", "_ffprobe_nb_frames", "_ffprobe_count_frames"])
@@ -231,7 +233,7 @@ class TestFrameCountGuardEnforce:
     def test_enforce_aborts_when_encoded_mismatch(self):
         guard = FrameCountGuard()
         audit = FrameCountAudit(source=1000, encoded=999, rpu=1000, hdr10p=1000)
-        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+        with pytest.raises(FrameCountAuditError, match="(?i)non frame-preserving"):
             guard.enforce(audit, adjustment=_TRIM)
 
     def test_enforce_warns_when_all_readers_failed(self):
@@ -491,7 +493,7 @@ class TestMetadataAsSourceReference:
         fast.assert_not_called()  # pas d'estimation mediainfo sur un flux brut
         exact.assert_called_once_with(tmp_path / "source.hevc")
         assert (audit.source, audit.encoded, audit.source_basis) == (1000, 998, "video")
-        with pytest.raises(FrameCountAuditError, match="non frame-preserving"):
+        with pytest.raises(FrameCountAuditError, match="(?i)non frame-preserving"):
             guard.enforce(audit, adjustment=_TRIM, rpu_bin=rpu)
 
     def test_container_inexact_estimate_avoids_full_recount(self, tmp_path):

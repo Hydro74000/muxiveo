@@ -23,7 +23,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QMessageBox, QPushButton, QSplashScreen  # noqa: E402
 
 from core.config import AppConfig  # noqa: E402
-from core.i18n import set_current_language, translate_text  # noqa: E402
+from core.i18n import install_qt_translations, set_current_language, translate_text  # noqa: E402
 from core.version import APP_NAME, APP_VERSION  # noqa: E402
 from ui.design_system import DesignSystem, colors  # noqa: E402
 
@@ -175,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setFont(default_font)
     DesignSystem.apply_to_application(app)
     set_current_language(config.language)
+    install_qt_translations()  # boutons standard des boîtes de dialogue (Oui / Non…) dans la langue choisie
     try:
         _prompt_work_dir_cleanup(config)
     except OSError:

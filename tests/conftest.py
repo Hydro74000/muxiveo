@@ -156,3 +156,14 @@ def _isolated_output_locks(monkeypatch, tmp_path_factory):
 
     lock_dir = tmp_path_factory.mktemp("output-locks")
     monkeypatch.setattr(output_commit, "default_lock_dir", lambda: lock_dir)
+
+
+@pytest.fixture
+def french_messages():
+    """Messages traduits en français (langue d'origine des chaînes) pendant le test."""
+    from core.i18n import current_language, set_current_language
+
+    previous = current_language()
+    set_current_language("fra")
+    yield
+    set_current_language(previous)

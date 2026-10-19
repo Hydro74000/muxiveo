@@ -32,6 +32,8 @@ from core.workflows.merge_dovi_storage import (
     storage_requirement,
 )
 
+pytestmark = pytest.mark.usefixtures("french_messages")
+
 EXACT = MetadataAdjustment.EXACT
 TRIM = MetadataAdjustment.TRIM_TAIL
 GIB = 1024 ** 3

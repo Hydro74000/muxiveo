@@ -61,7 +61,7 @@ from core.config import AppConfig, write_ini_settings
 from core.matroska.progress import native_mux_progress_label
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
-from core.i18n import apply_translations, set_current_language, translate_text
+from core.i18n import apply_translations, install_qt_translations, set_current_language, translate_text
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
@@ -2153,6 +2153,7 @@ class MainWindow(QMainWindow):
 
     def _apply_locale(self) -> None:
         set_current_language(self._config.language)
+        install_qt_translations()
         apply_translations(self)
 
     # ------------------------------------------------------------------

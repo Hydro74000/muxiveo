@@ -457,6 +457,7 @@ def _guard(source: int | None, exact: int | None, rpu: int | None) -> FrameCount
     return guard
 
 
+@pytest.mark.usefixtures("french_messages")
 def test_l5_06_external_rpu_strict_guard(tmp_path):
     rpu = tmp_path / "rpu.bin"
     # Statistique conteneur périmée : recomptage exact avant de conclure.

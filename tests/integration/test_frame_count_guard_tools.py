@@ -16,7 +16,10 @@ from core.workflows.encode.runtime.frame_count_guard import (
     MetadataAdjustment,
 )
 
-pytestmark = pytest.mark.skipif(shutil.which("dovi_tool") is None, reason="dovi_tool requis")
+pytestmark = [
+    pytest.mark.skipif(shutil.which("dovi_tool") is None, reason="dovi_tool requis"),
+    pytest.mark.usefixtures("french_messages"),
+]
 
 
 def _generate_rpu(path: Path, frames: int) -> Path:
