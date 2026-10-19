@@ -184,7 +184,8 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
             scan_in_background(path, snapshot.stream_index, cancelled=cancel.is_set)
         duration = snapshot.duration_s or (snapshot.frames or 0) / fps
         times = sample_times(duration, interval_s)
-        reused = sum(1 for s in (cached.samples if cached is not None else ()) if s.time_s in set(times))
+        grid = set(times)
+        reused = sum(1 for s in (cached.samples if cached is not None else ()) if s.time_s in grid)
         logger.emit("info", f"FEL Analyzer : {len(times)} instants (une image toutes les {interval_s} s)"
                     + (f", dont {reused} en cache" if reused else ""))
         reported = [-1]
@@ -198,8 +199,9 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
             _code, title, _detail = verdict(report)
             logger.emit("info", f"FEL Analyzer : verdict provisoire ({len(report.samples)} instants) — {title}")
 
-        capture = capture_on("cpu")
+        capture = None
         try:
+            capture = capture_on("cpu")
             result = analyse_progressive(capture, duration, interval_s, area=area, cached=cached,
                                          facts=facts, progress=progress, partial=partial, cancelled=cancel.is_set)
         except (RuntimeError, FelError, OSError) as exc:
@@ -211,8 +213,9 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
         if survival is not None:
             encoder, bitrate = survival
             logger.emit("info", f"FEL Analyzer : test de survie {encoder} à {bitrate} kbit/s")
-            survival_capture = capture_on("auto")
+            survival_capture = None
             try:
+                survival_capture = capture_on("auto")
                 kept = run_survival(survival_capture, result, ffmpeg_bin=ffmpeg, encoder=encoder,
                                     bitrate_kbps=bitrate, fps=fps, area=area, duration_s=duration or None)
             except subprocess.CalledProcessError as exc:

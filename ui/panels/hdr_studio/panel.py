@@ -774,8 +774,9 @@ class HdrStudio(QWidget):
                 facts = (lambda: known) if known is not None else \
                     scan_in_background(path, snapshot.stream_index, cancelled=cancel.is_set)
                 self._progress.emit(token, translate_text("Comparaison avec et sans FEL…"), 0)
-                capture = self._fel_capture(engine, snapshot, cancel)
+                capture = None
                 try:
+                    capture = self._fel_capture(engine, snapshot, cancel)
                     result = analyse_progressive(
                         capture, duration, interval_s, area=area, cached=cached, facts=facts,
                         cancelled=cancel.is_set, progress=lambda f: self._progress.emit(token, "", int(f * 100)),
@@ -814,14 +815,15 @@ class HdrStudio(QWidget):
         token = self._token
         cancel = threading.Event()
         self._cancel = cancel
-        # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
-        capture = self._fel_capture(engine, snapshot, cancel, device="auto")
         area = self._fel_area()
 
         def task() -> None:
             from core.hdr_inspection.fel_analyzer import close_capture, run_survival
 
+            capture = None
             try:
+                # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
+                capture = self._fel_capture(engine, snapshot, cancel, device="auto")
                 result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
                                       bitrate_kbps=bitrate_kbps, fps=snapshot.fps or 24000 / 1001, area=area,
                                       duration_s=snapshot.duration_s,
@@ -874,13 +876,14 @@ class HdrStudio(QWidget):
         token = self._token
         cancel = threading.Event()
         self._cancel = cancel
-        capture = self._fel_capture(engine, snapshot, cancel)
         area = self._fel_area()
 
         def task() -> None:
             from core.hdr_inspection.fel_analyzer import active_rows, close_capture, moment_images
 
+            capture = None
             try:
+                capture = self._fel_capture(engine, snapshot, cancel)
                 both = getattr(capture, "pair", None)
                 if callable(both):  # session : les deux couches d'un seul décodage
                     pair = both(time_s, 1)
