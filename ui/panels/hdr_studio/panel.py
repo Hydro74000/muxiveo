@@ -763,7 +763,7 @@ class HdrStudio(QWidget):
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import analyse_progressive
+            from core.hdr_inspection.fel_analyzer import analyse_progressive, close_capture
             from core.hdr_inspection.fel_layer import scan_in_background
 
             try:
@@ -774,10 +774,14 @@ class HdrStudio(QWidget):
                 facts = (lambda: known) if known is not None else \
                     scan_in_background(path, snapshot.stream_index, cancelled=cancel.is_set)
                 self._progress.emit(token, translate_text("Comparaison avec et sans FEL…"), 0)
-                result = analyse_progressive(
-                    self._fel_capture(engine, snapshot, cancel), duration, interval_s, area=area, cached=cached,
-                    facts=facts, cancelled=cancel.is_set, progress=lambda f: self._progress.emit(token, "", int(f * 100)),
-                    partial=lambda report: self._fel_partial.emit(token, report))
+                capture = self._fel_capture(engine, snapshot, cancel)
+                try:
+                    result = analyse_progressive(
+                        capture, duration, interval_s, area=area, cached=cached, facts=facts,
+                        cancelled=cancel.is_set, progress=lambda f: self._progress.emit(token, "", int(f * 100)),
+                        partial=lambda report: self._fel_partial.emit(token, report))
+                finally:
+                    close_capture(capture)
                 self._cache.store_fel(path, snapshot.stream_index, result)
                 self._fel_done.emit(token, result, "")
             except Exception as exc:
@@ -815,7 +819,7 @@ class HdrStudio(QWidget):
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import run_survival
+            from core.hdr_inspection.fel_analyzer import close_capture, run_survival
 
             try:
                 result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
@@ -829,6 +833,8 @@ class HdrStudio(QWidget):
                                                                 encoder=encoder, detail=detail or exc))
             except Exception as exc:
                 self._fel_done.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                close_capture(capture)
 
         self._set_busy(True, translate_text("Test de survie à l'encodage…"))
         self._progress_bar.setRange(0, 100)
@@ -872,16 +878,23 @@ class HdrStudio(QWidget):
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import active_rows, moment_images
+            from core.hdr_inspection.fel_analyzer import active_rows, close_capture, moment_images
 
             try:
-                reconstructed = capture("reconstructed", time_s, 1)[0]
-                self._progress.emit(token, "", 50)
-                mapped = capture("mapped", time_s, 1)[0]
+                both = getattr(capture, "pair", None)
+                if callable(both):  # session : les deux couches d'un seul décodage
+                    pair = both(time_s, 1)
+                    reconstructed, mapped = pair[0][0], pair[1][0]
+                else:
+                    reconstructed = capture("reconstructed", time_s, 1)[0]
+                    self._progress.emit(token, "", 50)
+                    mapped = capture("mapped", time_s, 1)[0]
                 images = moment_images(reconstructed, mapped, active_rows(mapped, area(time_s)), time_s)
                 self._moment_ready.emit(token, images, "")
             except Exception as exc:
                 self._moment_ready.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                close_capture(capture)
 
         self._set_busy(True, translate_text("Capture du moment {time} en pleine définition…",
                                             time=format_time(time_s)))

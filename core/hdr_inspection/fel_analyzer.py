@@ -28,6 +28,7 @@ from core.i18n import translate_text
 from core.subprocess_utils import subprocess_windows_no_window_kwargs
 
 if TYPE_CHECKING:
+    from core.fel.engine import CaptureSession
     from core.hdr_inspection.dovi import DoviAnalysis
 
 #: Seuil de visibilité (JND) de chaque catégorie, dans son unité, en conditions critiques :
@@ -470,16 +471,64 @@ def luminance_nits(codes: np.ndarray) -> float:
 CaptureLayer = Callable[[str, float, int], list[Frame]]
 
 
+class SessionCapture:
+    """Capture par session du plugin (≥ 0.6.0) : les deux couches d'un seul décodage, source et GPU ouverts
+    une fois. Rendu « exact » (certifié identique au CPU au bit près) : mêmes octets que la capture par
+    couche. ``close`` libère la session."""
+
+    def __init__(self, session: CaptureSession, width: int, height: int,
+                 cancelled: threading.Event | None = None) -> None:
+        self._session, self._width, self._height, self._cancelled = session, width, height, cancelled
+
+    def pair(self, time_s: float, count: int) -> tuple[list[Frame], list[Frame]]:
+        if self._cancelled is not None and self._cancelled.is_set():
+            raise InterruptedError
+        buffer = self._session.capture_pair(time_s, count)
+        size = self._session.frame_size
+
+        def frame(index: int) -> Frame:
+            return _frames(buffer[index * size:(index + 1) * size], self._width, self._height)
+
+        return [frame(2 * i) for i in range(count)], [frame(2 * i + 1) for i in range(count)]
+
+    def __call__(self, layer: str, time_s: float, count: int) -> list[Frame]:
+        if layer not in ("reconstructed", "mapped"):
+            raise ValueError(f"Couche {layer} non capturée par la session")
+        reconstructed, mapped = self.pair(time_s, count)
+        return reconstructed if layer == "reconstructed" else mapped
+
+    def backend(self) -> str:
+        return self._session.backend()
+
+    def close(self) -> None:
+        self._session.close()
+
+
+def close_capture(capture: object) -> None:
+    """Libère la session d'une capture (sans effet pour la capture par couche)."""
+    close = getattr(capture, "close", None)
+    if callable(close):
+        close()
+
+
 def plugin_capture(engine: object, path: Path, stream: int, *, ffmpeg_bin: str, width: int, height: int,
                    frame_rate: str, chroma_location: str = "topleft", device: str = "cpu",
                    precision: str = "fast", threads: int = 8,
                    cancelled: threading.Event | None = None) -> CaptureLayer:
     """Fonction de capture : ``count`` images de la couche ``layer`` à partir de ``time_s``.
 
-    CPU par défaut : pour quelques images, l'initialisation d'un contexte GPU coûte plus que le
-    rendu (mesuré 0,7 s contre 1,7 s pour deux images UHD) ; le CPU est le rendu certifié exact.
+    Plugin ≥ 0.6.0 : session (``SessionCapture``) sur GPU en précision exacte (« cpu » demandé : choix
+    automatique, l'initialisation du GPU n'étant payée qu'une fois), libérée par ``close_capture``.
+    Sinon, une production par appel, CPU par défaut : pour quelques images, l'initialisation d'un
+    contexte GPU coûte plus que le rendu (mesuré 0,7 s contre 1,7 s pour deux images UHD).
     """
-    from core.fel.engine import FelSource
+    from core.fel.engine import CaptureSession, FelSource, capture_supported
+
+    if capture_supported(engine):
+        session = CaptureSession(engine, path, stream, frame_rate=frame_rate,  # type: ignore[arg-type]
+                                 chroma_location=chroma_location, device="auto" if device == "cpu" else device,
+                                 precision="exact", threads=threads)
+        return SessionCapture(session, width, height, cancelled)
 
     frame_size = width * height * 3 // 2 * 2
 
@@ -812,9 +861,13 @@ def run_survival(capture: CaptureLayer, fel: FelReport, *, ffmpeg_bin: str, enco
         start = max(0.0, min(start, duration_s - (burst + 2) / fps))
     if progress is not None:
         progress(translate_text("Capture des images…"), 10)
-    reconstructed = capture("reconstructed", start, burst)
+    both = getattr(capture, "pair", None)
+    if callable(both):  # session : les deux couches d'un seul décodage
+        reconstructed, burst_mapped = both(start, burst)
+    else:
+        reconstructed = capture("reconstructed", start, burst)
+        burst_mapped = capture("mapped", start, burst)
     picked = survival_indices(len(reconstructed))
-    burst_mapped = capture("mapped", start, burst)
     mapped = [burst_mapped[i] for i in picked]
     del burst_mapped
     if progress is not None:

@@ -729,3 +729,91 @@ def test_progressive_analysis_reuses_cache_and_reports_partial_verdicts(tmp_path
     coarse = analyse_progressive(capture, 130.0, 60, cached=cached)
     assert captured == [] and [s.time_s for s in coarse.samples] == sample_times(130.0, 60)
     assert coarse.facts == facts
+
+
+# ── Session de capture (plugin ≥ 0.6.0) ─────────────────────────────────────
+class _FakeSession:
+    def __init__(self, width: int, height: int) -> None:
+        self.frame_size = width * height * 3
+        self.calls: list[tuple[float, int]] = []
+        self.closed = False
+
+    def capture_pair(self, time_s: float, count: int) -> np.ndarray:
+        self.calls.append((time_s, count))
+        # Image k : tous les codes à 100 + k (reconstruite paire, mapped impaire).
+        return np.concatenate([np.full(self.frame_size // 2, 100 + k, "<u2").view(np.uint8) for k in range(2 * count)])
+
+    def backend(self) -> str:
+        return "cpu"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_session_capture_splits_layers_and_closes():
+    from core.hdr_inspection.fel_analyzer import SessionCapture, close_capture
+
+    fake = _FakeSession(8, 4)
+    cancel = threading.Event()
+    capture = SessionCapture(fake, 8, 4, cancel)  # type: ignore[arg-type]
+    reconstructed, mapped = capture.pair(1.5, 2)
+    assert [int(f.y[0, 0]) for f in reconstructed] == [100, 102] and [int(f.y[0, 0]) for f in mapped] == [101, 103]
+    assert reconstructed[0].y.shape == (4, 8) and reconstructed[0].cb.shape == (2, 4)
+    assert int(capture("mapped", 2.0, 1)[0].cr[0, 0]) == 101 and fake.calls[-1] == (2.0, 1)
+    with pytest.raises(ValueError):
+        capture("base", 1.0, 1)
+    cancel.set()
+    with pytest.raises(InterruptedError):
+        capture.pair(3.0, 1)
+    close_capture(capture)
+    assert fake.closed
+    close_capture(lambda *a: [])  # capture par couche : rien à fermer
+
+
+def test_plugin_capture_prefers_the_session(monkeypatch):
+    import core.fel.engine as engine_module
+    from core.hdr_inspection.fel_analyzer import SessionCapture, plugin_capture
+
+    created: list[dict] = []
+
+    class Session(_FakeSession):
+        def __init__(self, engine, path, stream, **kwargs):
+            super().__init__(8, 4)
+            created.append(kwargs)
+
+    monkeypatch.setattr(engine_module, "CaptureSession", Session)
+    engine = type("E", (), {"capabilities": {"capture": ["pair"]}})()
+    capture = plugin_capture(engine, Path("/x.mkv"), 0, ffmpeg_bin="ffmpeg", width=8, height=4,
+                             frame_rate="24000/1001")
+    assert isinstance(capture, SessionCapture)
+    # « cpu » demandé : session sur GPU en précision exacte (certifiée identique au CPU).
+    assert created[0]["device"] == "auto" and created[0]["precision"] == "exact"
+    legacy = plugin_capture(type("E", (), {"capabilities": {}})(), Path("/x.mkv"), 0, ffmpeg_bin="ffmpeg",
+                            width=8, height=4, frame_rate="24000/1001")
+    assert not isinstance(legacy, SessionCapture) and callable(legacy)
+
+
+def test_run_survival_uses_one_decode_with_a_session():
+    from core.hdr_inspection.fel_analyzer import run_survival
+
+    m = _base(h=64, w=96)
+    calls: list[tuple[float, int]] = []
+
+    class Capture:
+        def pair(self, time_s, count):
+            calls.append((time_s, count))
+            return [_frame(m + 4)] * count, [_frame(m)] * count
+
+        def __call__(self, layer, time_s, count):
+            raise AssertionError("capture par couche non attendue")
+
+    report = FelReport(None, (FelSample(30.0, {"detail": 1.0}),), (), ())
+    import core.hdr_inspection.fel_analyzer as module
+    original = module.encode_round_trip
+    module.encode_round_trip = lambda frames, **k: [frames[i] for i in k["keep"]]
+    try:
+        result = run_survival(Capture(), report, ffmpeg_bin="ffmpeg", encoder="libx265", bitrate_kbps=1,
+                              fps=24000 / 1001, area=lambda _t: None, duration_s=600)
+    finally:
+        module.encode_round_trip = original
+    assert calls == [(30.0, 24)] and result.tone_kept == pytest.approx(1.0)

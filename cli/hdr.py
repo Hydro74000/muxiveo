@@ -140,6 +140,7 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
     from core.hdr_inspection.fel_analyzer import (
         analyse_progressive,
         area_at,
+        close_capture,
         nothing_to_measure,
         plugin_capture,
         run_survival,
@@ -197,24 +198,30 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
             _code, title, _detail = verdict(report)
             logger.emit("info", f"FEL Analyzer : verdict provisoire ({len(report.samples)} instants) — {title}")
 
+        capture = capture_on("cpu")
         try:
-            result = analyse_progressive(capture_on("cpu"), duration, interval_s, area=area, cached=cached,
+            result = analyse_progressive(capture, duration, interval_s, area=area, cached=cached,
                                          facts=facts, progress=progress, partial=partial, cancelled=cancel.is_set)
-        except (RuntimeError, FelError) as exc:
+        except (RuntimeError, FelError, OSError) as exc:
             raise CliError(f"FEL Analyzer : capture impossible ({exc}).", EXIT_TOOL) from exc
+        finally:
+            close_capture(capture)
         if cache is not None:
             cache.store_fel(path, snapshot.stream_index, result)
         if survival is not None:
             encoder, bitrate = survival
             logger.emit("info", f"FEL Analyzer : test de survie {encoder} à {bitrate} kbit/s")
+            survival_capture = capture_on("auto")
             try:
-                kept = run_survival(capture_on("auto"), result, ffmpeg_bin=ffmpeg, encoder=encoder,
+                kept = run_survival(survival_capture, result, ffmpeg_bin=ffmpeg, encoder=encoder,
                                     bitrate_kbps=bitrate, fps=fps, area=area, duration_s=duration or None)
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
                 raise CliError(f"FEL Analyzer : encodeur {encoder} indisponible : {detail or exc}", EXIT_TOOL) from exc
-            except (RuntimeError, FelError) as exc:
+            except (RuntimeError, FelError, OSError) as exc:
                 raise CliError(f"FEL Analyzer : test de survie impossible ({exc}).", EXIT_TOOL) from exc
+            finally:
+                close_capture(survival_capture)
             result = dataclasses.replace(result, survival=kept)
         return result
     finally:
