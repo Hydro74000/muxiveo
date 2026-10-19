@@ -449,6 +449,14 @@ class TestTracksFromFileInfo:
         entries = tracks_from_file_info(info)
         assert "HDR10" in entries[0].display_info
 
+    def test_video_display_info_includes_dolby_vision_layer_type(self):
+        video = _video(0, hdr_type=HDRType.DOLBY_VISION)
+        video.dovi_profile, video.dovi_compat_id = 7, 6
+        assert "Dolby Vision P7.6  " in tracks_from_file_info(_file_info(videos=[video]))[0].display_info + "  "
+        video.dovi_el_type = "MEL"
+        assert video.hdr_label == "Dolby Vision P7.6 MEL"
+        assert "Dolby Vision P7.6 MEL" in tracks_from_file_info(_file_info(videos=[video]))[0].display_info
+
     def test_video_display_info_sdr_has_no_hdr_label(self):
         info = _file_info(videos=[_video(0, hdr_type=HDRType.NONE)])
         entries = tracks_from_file_info(info)

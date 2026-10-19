@@ -12,6 +12,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import IO, Any, Callable
 
+import numpy as np
+
 from core import plugins
 from core.fel.devices import PRECISION_LABELS, FelDevice, FelDevicePlan
 
@@ -66,6 +68,93 @@ def layers_supported(engine: object, layer: str) -> bool:
     """Couche produite choisie (plugin ≥ 0.4.0) : « base », « mapped » ou « reconstructed »."""
     capabilities = getattr(engine, "capabilities", None)
     return isinstance(capabilities, dict) and layer in (capabilities.get("layers") or [])
+
+
+def capture_supported(engine: object) -> bool:
+    """Session de capture des deux couches d'un seul décodage (plugin ≥ 0.6.0, capacité ``capture``)."""
+    capabilities = getattr(engine, "capabilities", None)
+    return isinstance(capabilities, dict) and "pair" in (capabilities.get("capture") or [])
+
+
+class CaptureSession:
+    """Session de capture du FEL Analyzer : source, décodeurs et GPU ouverts une fois (premier appel),
+    puis, à chaque instant, l'image reconstruite et la couche mapped d'un seul décodage.
+
+    Images Y'CbCr 4:2:0 10 bits (plans contigus). Rendu « exact » sur GPU (certifié identique au CPU au
+    bit près), CPU sinon. Appels depuis un seul fil ; ``close`` libère le contexte.
+    """
+
+    def __init__(self, engine: FelEngine, path: Path, stream: int, *, frame_rate: str,
+                 chroma_location: str = "topleft", device: str = "auto", precision: str = "exact",
+                 threads: int = 8) -> None:
+        if not capture_supported(engine):
+            raise FelError("Session de capture indisponible : extension mvo-fel 0.6.0 ou plus récente requise")
+        num, _sep, den = frame_rate.partition("/")
+        self._engine = engine
+        lib = engine.lib
+        handle = lib.mvo_fel_create(str(path).encode("utf-8"), stream, max(1, min(16, threads)),
+                                    int(num or 0), int(den or 1))
+        if not handle:
+            raise FelError("Création du contexte FEL impossible")
+        self._handle: int | None = handle
+        self._finalizer = weakref.finalize(self, lib.mvo_fel_destroy, handle)
+        try:
+            if lib.mvo_fel_set_output(handle, b"yuv420p10le", chroma_location.encode("ascii"), b"none") != 0:
+                raise FelError("Sortie Y'CbCr 10 bits refusée par le plugin")
+            if engine.capabilities.get("device_selection") == 1 and lib.mvo_fel_set_device(
+                    handle, device.encode("ascii")) != 0:
+                raise FelError("Le plugin refuse le moteur FEL sélectionné")
+            if precision_supported(engine) and lib.mvo_fel_set_precision(handle, precision.encode("ascii")) != 0:
+                raise FelError("Précision FEL refusée par le plugin")
+            if render_workers_range(engine) is not None:
+                lib.mvo_fel_set_render_workers(handle, 1)  # rendu synchrone : un seul contexte GPU
+        except Exception:
+            self.close()
+            raise
+        self.frame_size = 0
+
+    def _error(self) -> str:
+        assert self._handle is not None
+        return (self._engine.lib.mvo_fel_error(self._handle) or b"").decode("utf-8", errors="replace")
+
+    def open(self) -> int:
+        """Ouvre la source (décodeurs, GPU) si besoin ; octets d'une image produite."""
+        if self._handle is None:
+            raise FelError("Session de capture fermée")
+        if not self.frame_size:
+            self.frame_size = int(self._engine.lib.mvo_fel_capture_frame_size(self._handle))
+            if not self.frame_size:
+                raise FelError(self._error() or "Ouverture de la capture impossible")
+        return self.frame_size
+
+    def capture_pair(self, time_s: float, count: int) -> np.ndarray:
+        """``count`` images à partir de ``time_s`` : pour chacune, reconstruite puis mapped (octets)."""
+        size = self.open()
+        buffer = np.empty(2 * count * size, dtype=np.uint8)
+        assert self._handle is not None
+        status = self._engine.lib.mvo_fel_capture_pair(self._handle, int(round(max(0.0, time_s) * 1e6)), count,
+                                                      buffer.ctypes.data, buffer.nbytes)
+        if status == 3:
+            raise FelCancelled()
+        if status == 4:
+            raise OSError(self._error())
+        if status != 0:
+            raise FelError(self._error())
+        return buffer
+
+    def backend(self) -> str:
+        if self._handle is None or self._engine.capabilities.get("device_selection") != 1:
+            return "cpu"
+        return (self._engine.lib.mvo_fel_backend(self._handle) or b"").decode("utf-8", errors="replace")
+
+    def cancel(self) -> None:
+        if self._handle is not None:
+            self._engine.lib.mvo_fel_cancel(self._handle)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle = None
+            self._finalizer()
 
 
 def _base_only_frames(statistics: str) -> int:
@@ -144,6 +233,12 @@ class FelEngine:
             if capabilities.get("measure_sampling"):
                 self.lib.mvo_fel_set_measure_sampling.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
                 self.lib.mvo_fel_set_measure_sampling.restype = ctypes.c_int
+            if "pair" in (capabilities.get("capture") or []):
+                self.lib.mvo_fel_capture_frame_size.argtypes = [ctypes.c_void_p]
+                self.lib.mvo_fel_capture_frame_size.restype = ctypes.c_size_t
+                self.lib.mvo_fel_capture_pair.argtypes = [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int,
+                                                          ctypes.c_void_p, ctypes.c_size_t]
+                self.lib.mvo_fel_capture_pair.restype = ctypes.c_int
             if capabilities.get("transport") != "nut" or capabilities.get("pixel_format") != "gbrp16le":
                 raise FelError("Capacités du plugin FEL incompatibles")
             self.lib.mvo_fel_classify.argtypes = [ctypes.c_char_p, ctypes.c_size_t]

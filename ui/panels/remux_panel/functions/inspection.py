@@ -6,9 +6,11 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.dovi_profile_detector import DoviProfileDetector
 from core.i18n import translate_text
 from core.inspector import FileInfo, FileInspector, InspectionError
-from core.workflows.remux_models import tracks_from_file_info
+from core.workflows.remux_models import tracks_from_file_info, video_display_info
+from ui.panels.remux_panel.functions.signals import emit_video_tracks
 from ui.panels.remux_panel.models import SourceFile, _pick_file_color
 from ui.panels.remux_panel.theme import _C
 
@@ -130,6 +132,65 @@ def apply_inspection(panel: "RemuxPanel", file_id: str, info: FileInfo) -> None:
     panel.ready_changed.emit(panel._has_ready_files())
     panel._rebuild_preview()
     panel._emit_signals()
+    schedule_el_detection(panel, sf)
+
+
+def schedule_el_detection(panel: "RemuxPanel", sf: SourceFile) -> None:
+    """FEL / MEL des pistes Dolby Vision profil 7, lu dans les 100 premiers RPU hors du fil de l'interface.
+
+    L'inspection (ffprobe + MediaInfo) ne les distingue pas (« BL+EL+RPU » dans les deux cas) : le
+    libellé est complété quand le résultat arrive, sans retarder l'ajout ni l'inspection d'autres sources.
+    """
+    info = sf.info
+    if info is None:
+        return
+    targets = [(position, video.index) for position, video in enumerate(info.video_tracks)
+               if video.dovi_profile == 7 and not video.dovi_el_type]
+    if not targets:
+        return
+    path, file_id = sf.path, sf.id
+    cancel = getattr(panel, "_probe_cancel", None)
+    detector = DoviProfileDetector(dovi_tool_bin=str(panel._config.tool_dovi_tool),
+                                   ffmpeg_bin=str(panel._config.tool_ffmpeg),
+                                   ffprobe_bin=str(panel._config.tool_ffprobe))
+
+    def task() -> None:
+        found: dict[int, str] = {}
+        for position, index in targets:
+            if getattr(panel, "_closing", False) or (cancel is not None and cancel.is_set()):
+                return
+            # Première piste vidéo : lecture directe par dovi_tool ; les suivantes, par le flux FFmpeg.
+            el_type = detector.detect_el_type(path, stream_index=None if position == 0 else index)
+            if el_type:
+                found[index] = el_type
+        if found and not getattr(panel, "_closing", False):
+            panel._el_types_detected.emit(file_id, found)
+
+    panel._dovi_executor.submit(task)
+
+
+def apply_el_types(panel: "RemuxPanel", file_id: str, found: dict[int, str]) -> None:
+    """Complète le libellé HDR des pistes vidéo (colonne Info, bandeau de la source, panneau Encodage)."""
+    sf = find_source(panel, file_id)
+    if panel._closing or sf is None or sf.info is None:
+        return
+    videos = {video.index: video for video in sf.info.video_tracks}
+    for index, el_type in found.items():
+        if index in videos:
+            videos[index].dovi_el_type = el_type
+    for entry in sf.tracks:
+        video = videos.get(entry.mkv_tid)
+        if entry.track_type != "video" or video is None or entry.mkv_tid not in found:
+            continue
+        label = video_display_info(video)
+        if entry.orig_display_info == entry.display_info:
+            entry.orig_display_info = label
+        entry.display_info = label
+        panel._track_table.refresh_entry_info(entry.entry_id)
+    panel._file_list.update_file(sf)
+    panel.log_message.emit("INFO", translate_text("{name} : Dolby Vision profil 7 {layers}", name=sf.path.name,
+                                                  layers=" / ".join(sorted(set(found.values())))))
+    emit_video_tracks(panel)
 
 
 def on_inspection_error(panel: "RemuxPanel", file_id: str, message: str) -> None:

@@ -8714,5 +8714,17 @@
   "Aucun instant mesuré : analyser d'abord l'apport du FEL.": {
     "fra": "Aucun instant mesuré : analyser d'abord l'apport du FEL.",
     "eng": "No instant measured: analyse the FEL contribution first."
+  },
+  "{name} : Dolby Vision profil 7 {layers}": {
+    "fra": "{name} : Dolby Vision profil 7 {layers}",
+    "eng": "{name}: Dolby Vision profile 7 {layers}"
+  },
+  "sous le pic mesuré ({peak} nits) et contredit par le RPU : les TV qui suivent le MDCV écrêtent au-delà de {mdcv} nits en lecture HDR10": {
+    "fra": "sous le pic mesuré ({peak} nits) et contredit par le RPU : les TV qui suivent le MDCV écrêtent au-delà de {mdcv} nits en lecture HDR10",
+    "eng": "below the measured peak ({peak} nits) and contradicted by the RPU: TVs that follow the MDCV clip above {mdcv} nits in HDR10 playback"
+  },
+  "Verdict provisoire sur {count} instants : l'analyse continue sur la densité choisie.": {
+    "fra": "Verdict provisoire sur {count} instants : l'analyse continue sur la densité choisie.",
+    "eng": "Provisional verdict on {count} instants: the analysis continues at the chosen density."
   }
 }

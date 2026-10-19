@@ -125,6 +125,7 @@ class VideoTrack:
     hdr_type:        HDRType      = HDRType.NONE
     dovi_profile:    int | None   = None   # ex: 8 pour P8.x
     dovi_compat_id:  int | None   = None   # 0=P8.0, 1=P8.1
+    dovi_el_type:    str | None   = None   # "FEL" / "MEL" (profil 7, lu dans le RPU après l'inspection)
     language:        str | None   = None
     title:           str | None   = None
     duration_s:      float | None = None
@@ -166,6 +167,8 @@ class VideoTrack:
                     dv += f" P{self.dovi_profile}.{compat}"
                 else:
                     dv += f" P{self.dovi_profile}"
+            if self.dovi_el_type:
+                dv += f" {self.dovi_el_type}"
             parts.append(dv)
 
         if self.hdr_type == HDRType.DOLBY_VISION_HDR10PLUS:

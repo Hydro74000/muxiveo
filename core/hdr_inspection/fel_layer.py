@@ -135,3 +135,25 @@ def scan_layers(path: Path, track_index: int, *, progress: Callable[[float], Non
         if progress is not None and frames % 4096 == 0:
             progress(min(0.99, consumed / total_size))
     return LayerFacts(frames, duration, sizes["bl"], sizes["el"], sizes["rpu"], el_size)
+
+
+def scan_in_background(path: Path, track_index: int, *,
+                       cancelled: Callable[[], bool] | None = None) -> Callable[[], LayerFacts | None]:
+    """Lance ``scan_layers`` dans un fil à part ; la fonction renvoyée attend son résultat (None : pas un
+    MKV, annulé ou illisible). Le relevé lit tout le fichier : il se fait pendant l'échantillonnage."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if Path(path).suffix.lower() != ".mkv":
+        return lambda: None
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fel-couches")
+    future = executor.submit(scan_layers, Path(path), track_index, cancelled=cancelled)
+    executor.shutdown(wait=False)
+
+    def result() -> LayerFacts | None:
+        try:
+            return future.result()
+        except Exception:  # relevé facultatif : l'analyse reste valable sans les débits
+            return None
+
+    return result
+

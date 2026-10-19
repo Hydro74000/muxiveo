@@ -170,6 +170,7 @@ class HdrStudio(QWidget):
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
     _fel_done = Signal(int, object, str)
+    _fel_partial = Signal(int, object)
     _moment_ready = Signal(int, object, str)
     _compare_inspected = Signal(int, object, int, object, str)
     _compare_analyzed = Signal(int, object, str)
@@ -209,6 +210,7 @@ class HdrStudio(QWidget):
         self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
         self._patched.connect(self._on_patched, Qt.ConnectionType.QueuedConnection)
         self._fel_done.connect(self._on_fel_done, Qt.ConnectionType.QueuedConnection)
+        self._fel_partial.connect(self._on_fel_partial, Qt.ConnectionType.QueuedConnection)
         self._moment_ready.connect(self._on_moment_ready, Qt.ConnectionType.QueuedConnection)
         self._compare_inspected.connect(self._on_compare_inspected, Qt.ConnectionType.QueuedConnection)
         self._compare_analyzed.connect(self._on_compare_analyzed, Qt.ConnectionType.QueuedConnection)
@@ -762,19 +764,27 @@ class HdrStudio(QWidget):
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import analyse, sample_times
-            from core.hdr_inspection.fel_layer import scan_layers
+            from core.hdr_inspection.fel_analyzer import analyse_progressive, close_capture
+            from core.hdr_inspection.fel_layer import scan_in_background
 
             try:
-                facts = None
-                if Path(snapshot.path).suffix.lower() == ".mkv":
-                    self._progress.emit(token, translate_text("Relevé des couches BL / EL…"), 0)
-                    facts = scan_layers(Path(snapshot.path), snapshot.stream_index, cancelled=cancel.is_set,
-                                        progress=lambda f: self._progress.emit(token, "", int(f * 20)))
-                self._progress.emit(token, translate_text("Comparaison avec et sans FEL…"), 20)
-                result = analyse(self._fel_capture(engine, snapshot, cancel), sample_times(duration, interval_s),
-                                 area=area, facts=facts, cancelled=cancel.is_set,
-                                 progress=lambda f: self._progress.emit(token, "", 20 + int(f * 80)))
+                path = Path(snapshot.path)
+                cached = self._cache.load_fel(path, snapshot.stream_index)
+                # Relevé des couches (lecture complète du fichier) pendant l'échantillonnage, sauf s'il est en cache.
+                known = cached.facts if cached is not None else None
+                facts = (lambda: known) if known is not None else \
+                    scan_in_background(path, snapshot.stream_index, cancelled=cancel.is_set)
+                self._progress.emit(token, translate_text("Comparaison avec et sans FEL…"), 0)
+                capture = None
+                try:
+                    capture = self._fel_capture(engine, snapshot, cancel)
+                    result = analyse_progressive(
+                        capture, duration, interval_s, area=area, cached=cached, facts=facts,
+                        cancelled=cancel.is_set, progress=lambda f: self._progress.emit(token, "", int(f * 100)),
+                        partial=lambda report: self._fel_partial.emit(token, report))
+                finally:
+                    close_capture(capture)
+                self._cache.store_fel(path, snapshot.stream_index, result)
                 self._fel_done.emit(token, result, "")
             except Exception as exc:
                 self._fel_done.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
@@ -806,14 +816,15 @@ class HdrStudio(QWidget):
         token = self._token
         cancel = threading.Event()
         self._cancel = cancel
-        # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
-        capture = self._fel_capture(engine, snapshot, cancel, device="auto")
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import run_survival
+            from core.hdr_inspection.fel_analyzer import close_capture, run_survival
 
+            capture = None
             try:
+                # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
+                capture = self._fel_capture(engine, snapshot, cancel, device="auto")
                 result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
                                       bitrate_kbps=bitrate_kbps, fps=snapshot.fps or 24000 / 1001, area=area,
                                       duration_s=snapshot.duration_s,
@@ -825,11 +836,19 @@ class HdrStudio(QWidget):
                                                                 encoder=encoder, detail=detail or exc))
             except Exception as exc:
                 self._fel_done.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                close_capture(capture)
 
         self._set_busy(True, translate_text("Test de survie à l'encodage…"))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self._executor.submit(task)
+
+    def _on_fel_partial(self, token: int, fel: object) -> None:
+        """Verdict provisoire après une passe grossière (60 s, 30 s) : affiché, l'analyse continue."""
+        from core.hdr_inspection.fel_analyzer import FelReport
+        if token == self._token and isinstance(fel, FelReport):
+            self._fel_tab.set_fel_report(fel, provisional=True)
 
     def _on_fel_done(self, token: int, fel: object, error: str) -> None:
         if token != self._token:
@@ -858,20 +877,28 @@ class HdrStudio(QWidget):
         token = self._token
         cancel = threading.Event()
         self._cancel = cancel
-        capture = self._fel_capture(engine, snapshot, cancel)
         area = self._fel_area()
 
         def task() -> None:
-            from core.hdr_inspection.fel_analyzer import active_rows, moment_images
+            from core.hdr_inspection.fel_analyzer import active_rows, close_capture, moment_images
 
+            capture = None
             try:
-                reconstructed = capture("reconstructed", time_s, 1)[0]
-                self._progress.emit(token, "", 50)
-                mapped = capture("mapped", time_s, 1)[0]
+                capture = self._fel_capture(engine, snapshot, cancel)
+                both = getattr(capture, "pair", None)
+                if callable(both):  # session : les deux couches d'un seul décodage
+                    pair = both(time_s, 1)
+                    reconstructed, mapped = pair[0][0], pair[1][0]
+                else:
+                    reconstructed = capture("reconstructed", time_s, 1)[0]
+                    self._progress.emit(token, "", 50)
+                    mapped = capture("mapped", time_s, 1)[0]
                 images = moment_images(reconstructed, mapped, active_rows(mapped, area(time_s)), time_s)
                 self._moment_ready.emit(token, images, "")
             except Exception as exc:
                 self._moment_ready.emit(token, None, "" if cancel.is_set() else (str(exc) or exc.__class__.__name__))
+            finally:
+                close_capture(capture)
 
         self._set_busy(True, translate_text("Capture du moment {time} en pleine définition…",
                                             time=format_time(time_s)))

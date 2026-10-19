@@ -392,3 +392,49 @@ def test_encode_reset_ignores_pending_preview_results(qt_app, monkeypatch):
         assert not encode._preview_open_video_btn.isEnabled()
     finally:
         encode.close()
+
+
+def test_dolby_vision_p7_layer_type_is_detected_off_the_gui_thread(qt_app, monkeypatch, tmp_path):
+    from core.dovi_profile_detector import DoviProfileDetector
+
+    calls: list[tuple[int | None, int]] = []
+    gui_thread = get_ident()
+
+    def detect(self, source, *, stream_index=None):
+        calls.append((stream_index, get_ident()))
+        return "FEL" if stream_index is None else "MEL"
+
+    monkeypatch.setattr(DoviProfileDetector, "detect_el_type", detect)
+    panel = RemuxPanel(AppConfig())
+    try:
+        first, second = _video_track(0, HDRType.DOLBY_VISION_HDR10PLUS), _video_track(1, HDRType.DOLBY_VISION)
+        first.dovi_profile, first.dovi_compat_id, second.dovi_profile = 7, 6, 7
+        info = _file_info(tmp_path / "p7.mkv", [first, second], HDRType.DOLBY_VISION_HDR10PLUS)
+        sf = SourceFile("p7", info.path, "#fff")
+        panel._source_files.append(sf)
+        panel._source_colors[sf.id] = sf.color
+        observed = []
+        panel.video_tracks_changed.connect(observed.append)
+        panel._apply_inspection(sf.id, info)
+        wait_until(qt_app, lambda: first.dovi_el_type == "FEL" and second.dovi_el_type == "MEL")
+        assert [index for index, _thread in calls] == [None, 1]  # première piste directe, suivante par FFmpeg
+        assert all(thread != gui_thread for _index, thread in calls)
+        entries = {entry.mkv_tid: entry for entry in sf.tracks}
+        assert "Dolby Vision P7.6 FEL + HDR10+" in entries[0].display_info
+        assert entries[0].orig_display_info == entries[0].display_info
+        assert "Dolby Vision P7 MEL" in entries[1].display_info
+        row = panel._track_table._find_row_for_entry(entries[0])
+        assert row is not None and "P7.6 FEL" in panel._track_table.item(row, panel._track_table.COL_INFO).text()
+        assert observed and "P7.6 FEL" in observed[-1][0][1].display_info  # panneau Encodage rafraîchi
+        # Profil 8 : aucune sonde.
+        calls.clear()
+        p8 = _video_track(0, HDRType.DOLBY_VISION)
+        p8.dovi_profile, p8.dovi_compat_id = 8, 1
+        other = SourceFile("p8", tmp_path / "p8.mkv", "#000")
+        panel._source_files.append(other)
+        panel._source_colors[other.id] = other.color
+        panel._apply_inspection(other.id, _file_info(other.path, [p8], HDRType.DOLBY_VISION))
+        qt_app.processEvents()
+        assert calls == [] and p8.dovi_el_type is None
+    finally:
+        panel.close()

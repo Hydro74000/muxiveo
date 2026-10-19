@@ -63,6 +63,7 @@ class FelTab(QWidget):
         self.setStyleSheet("background:transparent;")
         self._report: InspectionReport | None = None
         self._fel: FelReport | None = None
+        self._provisional = False
         self._busy = False
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, scale(10), 0, 0)
@@ -156,8 +157,10 @@ class FelTab(QWidget):
             self._fel = None
         self._render()
 
-    def set_fel_report(self, fel: FelReport | None) -> None:
+    def set_fel_report(self, fel: FelReport | None, *, provisional: bool = False) -> None:
+        """``provisional`` : résultat d'une passe grossière, l'analyse continue sur la densité choisie."""
         self._fel = fel
+        self._provisional = provisional
         self._render()
 
     def fel_report(self) -> FelReport | None:
@@ -203,6 +206,10 @@ class FelTab(QWidget):
             return
         verdict, detail = recommendation(fel)
         self._categories.addWidget(_text(verdict, bold=True, size=12))
+        if self._provisional:
+            self._categories.addWidget(_text(translate_text(
+                "Verdict provisoire sur {count} instants : l'analyse continue sur la densité choisie.",
+                count=len(fel.samples)), color=C.WARN, size=10))
         self._categories.addWidget(_text(detail, color=C.TEXT_SEC))
         grid = QGridLayout()
         grid.setHorizontalSpacing(scale(18))
