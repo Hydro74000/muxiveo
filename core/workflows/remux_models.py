@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import uuid4
 
-from core.inspector import AttachmentInfo, FileInfo, HDRType
+from core.inspector import AttachmentInfo, FileInfo, HDRType, VideoTrack
 
 
 MUX_BACKENDS = frozenset({"auto", "native", "ffmpeg"})
@@ -337,6 +337,26 @@ def _native_enabled_flags(info: FileInfo) -> dict[int, bool]:
     return {index: track.flag_enabled for index, track in enumerate(tracks)}
 
 
+def video_display_info(v: VideoTrack) -> str:
+    """Colonne « Info » d'une piste vidéo : définition, HDR (dont FEL / MEL une fois lu), cadence."""
+    parts: list[str] = [v.resolution]
+    if v.hdr_type != HDRType.NONE:
+        parts.append(v.hdr_label)
+    if v.frame_rate:
+        fr = v.frame_rate
+        if "/" in fr:
+            try:
+                num, den = fr.split("/")
+                fps = round(int(num) / int(den), 3)
+                fr = f"{fps} fps"
+            except (ValueError, ZeroDivisionError):
+                pass
+        else:
+            fr = f"{fr} fps"
+        parts.append(fr)
+    return "  ".join(parts)
+
+
 def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]:
     """
     Construit la liste des TrackEntry depuis un FileInfo inspecté.
@@ -371,26 +391,11 @@ def tracks_from_file_info(info: FileInfo, file_id: str = "") -> list[TrackEntry]
         )
 
     for v in info.video_tracks:
-        parts: list[str] = [v.resolution]
-        if v.hdr_type != HDRType.NONE:
-            parts.append(v.hdr_label)
-        if v.frame_rate:
-            fr = v.frame_rate
-            if "/" in fr:
-                try:
-                    num, den = fr.split("/")
-                    fps = round(int(num) / int(den), 3)
-                    fr = f"{fps} fps"
-                except (ValueError, ZeroDivisionError):
-                    pass
-            else:
-                fr = f"{fr} fps"
-            parts.append(fr)
         entries.append(TrackEntry(
             mkv_tid=v.index,
             track_type="video",
             codec=v.codec.upper(),
-            display_info="  ".join(parts),
+            display_info=video_display_info(v),
             language=v.language or "",
             title=v.title or "",
             orig_language=v.language or "",

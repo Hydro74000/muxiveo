@@ -152,6 +152,7 @@ def test_main_window_close_event_lifecycle(qt_app) -> None:
             self._preview_executor = ThreadPoolExecutor(max_workers=1)
             self._path_executor = ThreadPoolExecutor(max_workers=1)
             self._inspection_executor = ThreadPoolExecutor(max_workers=1)
+            self._dovi_executor = ThreadPoolExecutor(max_workers=1)
 
     class Window(MainWindow):
         def __init__(self):

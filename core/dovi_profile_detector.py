@@ -119,6 +119,8 @@ class DoviDetectionResult:
     bl_signal_compat_id: int | None
     raw_source: str        # "mediainfo" | "dovi_tool" | "none"
     l5_offsets: tuple[int, int, int, int] | None = None  # (top, bottom, left, right)
+    #: Type de couche annoncé par ``dovi_tool info`` (« Profile: 7 (FEL) ») ; None s'il est seulement déduit.
+    el_type: str | None = None
 
 
 class DoviProfileDetector:
@@ -340,6 +342,7 @@ class DoviProfileDetector:
         has_el_marker = bool(re.search(r"\b(FEL|MEL)\b", text))
         is_fel = bool(re.search(r"\bFEL\b", text))
         is_mel = bool(re.search(r"\bMEL\b", text))
+        explicit_el = "MEL" if is_mel else "FEL" if is_fel else None
 
         # Si profile=7 et pas de marqueur explicite, on déduit de "el flag".
         if profile == 7 and not has_el_marker:
@@ -381,7 +384,12 @@ class DoviProfileDetector:
             bl_signal_compat_id=compat_id,
             raw_source="dovi_tool",
             l5_offsets=l5_offsets,
+            el_type=explicit_el if profile == 7 else None,
         )
+
+    def detect_el_type(self, source: Path, *, stream_index: int | None = None) -> str | None:
+        """« FEL » ou « MEL » d'une piste profil 7 (100 premiers RPU), None si non annoncé ou illisible."""
+        return self.detect_from_dovi_tool(Path(source), stream_index=stream_index).el_type
 
     def probe_l5_offsets(
         self, source: Path | str, *, duration_s: float | None = None, stream_index: int = 0,

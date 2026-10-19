@@ -155,6 +155,7 @@ class RemuxPanel(QWidget):
 
     _inspection_done = Signal(str, object)
     _inspection_error = Signal(str, str)
+    _el_types_detected = Signal(str, object)
     _paths_scanned = Signal(object)
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
@@ -187,6 +188,9 @@ class RemuxPanel(QWidget):
         # nouveaux fichiers même lorsqu'une synchro est en cours.
         self._inspection_executor = ThreadPoolExecutor(max_workers=2)
         self._inspection_futures: dict[str, Future] = {}
+        # Type de couche Dolby Vision (FEL / MEL) lu après l'inspection : pool dédié, jamais en attente
+        # derrière ni devant une inspection.
+        self._dovi_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="remux-dovi-el")
         self._path_executor = ThreadPoolExecutor(max_workers=1)
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._scan_cancel = threading.Event()
@@ -236,6 +240,7 @@ class RemuxPanel(QWidget):
         self._inspection_done.connect(
             self._apply_inspection, Qt.ConnectionType.QueuedConnection
         )
+        self._el_types_detected.connect(self._apply_el_types, Qt.ConnectionType.QueuedConnection)
         self._inspection_error.connect(
             self._on_inspection_error, Qt.ConnectionType.QueuedConnection
         )
@@ -720,6 +725,10 @@ class RemuxPanel(QWidget):
 
     def _apply_inspection(self, file_id: str, info: FileInfo) -> None:
         inspection.apply_inspection(self, file_id, info)
+
+    def _apply_el_types(self, file_id: str, found: object) -> None:
+        if isinstance(found, dict):
+            inspection.apply_el_types(self, file_id, found)
 
     def _on_inspection_error(self, file_id: str, message: str) -> None:
         inspection.on_inspection_error(self, file_id, message)
@@ -2409,7 +2418,7 @@ class RemuxPanel(QWidget):
             self._preview_timer.stop()
             self._shutdown = Shutdown(executors=(
                 self._preview_executor, self._path_executor,
-                self._inspection_executor, self._executor,
+                self._inspection_executor, self._executor, self._dovi_executor,
             ))
         if defer_close(self, event, ready=self._shutdown.done.is_set()):
             return

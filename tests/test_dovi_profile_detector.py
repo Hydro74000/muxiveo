@@ -255,3 +255,18 @@ def test_l5_failed_sample_does_not_authorize_crop(tmp_path):
     source.touch()
     with patch("core.dovi_profile_detector.subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 20)):
         assert DoviProfileDetector().probe_l5_offsets(source, duration_s=7200) is None
+
+
+class TestElTypeMarker:
+    def test_summary_profile_marker_sets_el_type(self):
+        detector = DoviProfileDetector()
+        assert detector.parse_dovi_tool_output("Summary:\n  Frames: 39\n  Profile: 7 (FEL)\n").el_type == "FEL"
+        assert detector.parse_dovi_tool_output("Summary:\n  Profile: 7 (MEL)\n").el_type == "MEL"
+
+    def test_deduced_fel_is_not_reported_as_el_type(self):
+        # Sans marqueur explicite, le classement FEL par défaut ne doit pas être affiché.
+        result = DoviProfileDetector().parse_dovi_tool_output("Profile: 7\nel flag: 1\n")
+        assert result.sub_profile == DoviSubProfile.P7_FEL and result.el_type is None
+
+    def test_el_type_only_for_profile_7(self):
+        assert DoviProfileDetector().parse_dovi_tool_output("Profile: 8.1\nFEL\n").el_type is None
