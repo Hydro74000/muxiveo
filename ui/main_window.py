@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
     QGuiApplication,
 )
@@ -81,7 +81,10 @@ from core.update_install import (
     download_update,
     manual_update_hint,
 )
-from core.version import APP_BUILD_VERSION, APP_IS_UNSTABLE_BUILD, APP_VERSION_LABEL, WRITING_APPLICATION_TAG
+from core.version import (
+    APP_BUILD_VERSION, APP_DONATION_URL, APP_IS_UNSTABLE_BUILD,
+    APP_VERSION_LABEL, WRITING_APPLICATION_TAG,
+)
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
 from core.workflows.encode import EncodeError
@@ -1334,19 +1337,47 @@ class _Sidebar(QWidget):
 
         layout.addSpacing(_scale(12))
 
-        # Version
+        # Version et soutien : une seule ligne, à la même taille de police.
+        footer = QWidget()
+        footer.setStyleSheet("background: transparent; border: none;")
+        self._footer_layout = QHBoxLayout(footer)
+        self._footer_layout.setSpacing(_scale(4))
+        footer_style = (
+            f"color: {_Colors.TEXT_DIM}; font-size: {_font_px(9)}px;"
+            "background: transparent; border: none;"
+        )
         self._version_lbl = QLabel(APP_VERSION_LABEL)
         self._version_lbl.setToolTip("")
         self._version_lbl.linkActivated.connect(lambda _url: self.update_requested.emit())
         self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
-        self._version_lbl.setStyleSheet(f"""
-            color: {_Colors.TEXT_DIM};
-            font-size: {_font_px(9)}px;
-            background: transparent;
-            border: none;
+        self._version_lbl.setMinimumWidth(0)
+        self._version_lbl.setStyleSheet(footer_style)
+        self._footer_layout.addWidget(self._version_lbl)
+
+        separator = QLabel("·")
+        separator.setStyleSheet(footer_style)
+        self._footer_layout.addWidget(separator)
+
+        self._support_btn = QPushButton()
+        self._support_btn.setProperty("_i18n_skip", True)
+        self._support_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._support_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._support_btn.setIcon(workflow_icon("heart", _Colors.WARN, 9))
+        self._support_btn.setIconSize(QSize(_scale(9), _scale(9)))
+        self._support_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {_Colors.TEXT_DIM};
+                font-size: {_font_px(9)}px;
+                background: transparent;
+                border: 1px solid transparent;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {_Colors.TEXT_PRI}; }}
+            QPushButton:focus {{ border: 1px dotted {_Colors.BORDER_LT}; }}
         """)
-        layout.addWidget(self._version_lbl)
+        self._support_btn.clicked.connect(lambda: open_external(QUrl(APP_DONATION_URL)))
+        self._footer_layout.addWidget(self._support_btn)
+        layout.addWidget(footer)
 
         # Sélectionner le premier bouton
         if self._buttons:
@@ -1383,13 +1414,22 @@ class _Sidebar(QWidget):
             self._toggle_btn.setText("▶")
             self._toggle_btn.setToolTip(translate_text("Agrandir le menu"))
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._version_lbl.setContentsMargins(0, 0, 0, _scale(12))
+            self._footer_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._footer_layout.setContentsMargins(0, 0, 0, _scale(12))
         else:
             self._toggle_btn.setText("◀")
             self._toggle_btn.setToolTip(translate_text("Réduire le menu"))
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
+            self._footer_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._footer_layout.setContentsMargins(_scale(16), 0, _scale(8), _scale(12))
         self._refresh_version_label()
+        self._refresh_support_button()
+
+    def _refresh_support_button(self) -> None:
+        self._support_btn.setText("" if self._compact else translate_text("Soutenir"))
+        description = translate_text("Soutenir Muxiveo via PayPal")
+        self._support_btn.setToolTip(description)
+        self._support_btn.setAccessibleName(description)
 
     def set_ready_operations(self, pages: set[int]) -> None:
         for button in self._buttons:
@@ -2155,6 +2195,7 @@ class MainWindow(QMainWindow):
         set_current_language(self._config.language)
         install_qt_translations()
         apply_translations(self)
+        self._sidebar._refresh_support_button()
 
     # ------------------------------------------------------------------
     # Bouton "Exécuter l'opération" — logique hybride remux / encode

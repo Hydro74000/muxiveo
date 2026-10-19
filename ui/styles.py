@@ -25,6 +25,7 @@ def workflow_icon(name: str, color: str | None = None, size: int = 20) -> QIcon:
         "play": f'<path d="m7 4 14 8-14 8Z" fill="{color or _C.TEXT_SEC}"/>',
         "down": '<path d="m6 9 6 6 6-6"/>',
         "home": '<path d="m3 10 9-7 9 7v10H3Zm6 10v-7h6v7"/>',
+        "heart": '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
         "encode": '<path d="m13 2-9 12h7l-1 8 10-13h-7Z"/>',
         "settings": '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
         "extensions": '<path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0ZM12 17v5"/>',
