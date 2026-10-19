@@ -465,7 +465,8 @@ class HdrStudio(QWidget):
                 "measure": self._cache.load_measurement(path, stream_index)}
 
     def _show_snapshot(self, cached: object) -> None:
-        assert self._info is not None
+        if self._info is None:
+            return
         snapshot = build_snapshot(self._info, self._current_stream())
         dynamic = cached.get("dynamic") if isinstance(cached, dict) else None
         if isinstance(cached, dict) and isinstance(cached.get("measure"), ImageMeasurement):

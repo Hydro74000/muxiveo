@@ -95,6 +95,7 @@ def test_rife_device_names_are_matched_without_assuming_an_index(monkeypatch):
 
 
 def test_load_distinguishes_compute_and_codec_engines_and_keeps_unknown_values(monkeypatch):
+    monkeypatch.setattr("core.fel.devices.shutil.which", lambda _: "/opt/nvidia/nvidia-smi")
     monkeypatch.setattr("core.fel.devices.subprocess.run", Mock(return_value=Mock(
         returncode=0, stdout=f"0, GPU-{NVIDIA.uuid}, 12, 99, N/A, 8192\n"
                             f"1, GPU-{SECOND.uuid}, N/A, N/A, 4, N/A\n")))
@@ -103,6 +104,14 @@ def test_load_distinguishes_compute_and_codec_engines_and_keeps_unknown_values(m
     assert loads[SECOND.uuid] == DeviceLoad(None, None, 1, None, 4)
     # Un NVENC occupé ne signifie pas que le calcul Vulkan est saturé.
     assert select_device((NVIDIA,), loads, frozenset(), Counter()) == NVIDIA
+
+
+def test_load_without_nvidia_smi_keeps_telemetry_optional(monkeypatch):
+    monkeypatch.setattr("core.fel.devices.shutil.which", lambda _: None)
+    run = Mock()
+    monkeypatch.setattr("core.fel.devices.subprocess.run", run)
+    assert probe_load((NVIDIA,)) == {}
+    run.assert_not_called()
 
 
 def test_sysfs_does_not_assign_readable_load_from_another_gpu(monkeypatch, tmp_path):

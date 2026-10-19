@@ -374,8 +374,7 @@ class MetadataPatcher:
                     self._run(command)
                     advance(target)
                     position += span
-                if "rpu" in steps:
-                    assert plan.rpu is not None
+                if plan.rpu is not None and not plan.rpu.is_empty():
                     span = weights["rpu"] / total_weight
                     label = translate_text("Édition du RPU Dolby Vision…")
                     window = span / 3  # extract-rpu, puis inject-rpu (analyse + réécriture)
@@ -391,8 +390,7 @@ class MetadataPatcher:
                     self._run([self._dovi, "inject-rpu", "-i", str(current), "-r", str(edited), "-o", str(target)])
                     advance(target)
                     position += span
-                if "hdr10plus" in steps:
-                    assert plan.hdr10plus is not None
+                if plan.hdr10plus is not None and not plan.hdr10plus.is_empty():
                     span = weights["hdr10plus"] / total_weight
                     label = translate_text("Édition du HDR10+…")
                     extract_json = plan.hdr10plus.recompute is None and not plan.hdr10plus.remove
@@ -425,8 +423,7 @@ class MetadataPatcher:
                                    "-o", str(target)])
                         advance(target)
                     position += span
-                if "static" in steps:
-                    assert plan.static is not None
+                if plan.static is not None and not plan.static.is_empty():
                     span = weights["static"] / total_weight
                     self._step(translate_text("HDR10 statique du flux…"), position, span)
                     from core.workflows.hevc_static_hdr_metadata import replace_static_hdr_sei_file

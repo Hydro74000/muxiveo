@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -76,11 +77,13 @@ def device_choice(value: object) -> str:
 def probe_load(devices: tuple[FelDevice, ...]) -> dict[str, DeviceLoad]:
     """Mesures facultatives : absence de télémétrie = charge inconnue."""
     loads: dict[str, DeviceLoad] = {}
-    if any(d.vendor == 0x10DE for d in devices):
+    nvidia_smi = shutil.which("nvidia-smi") if any(d.vendor == 0x10DE for d in devices) else None
+    if nvidia_smi is not None:
         try:
             # Arguments constants, aucun shell ; cet outil reste facultatif.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(  # nosec B603
-                ["nvidia-smi", "--query-gpu=index,uuid,utilization.gpu,utilization.encoder,utilization.decoder,memory.free", "--format=csv,noheader,nounits"],
+                [nvidia_smi, "--query-gpu=index,uuid,utilization.gpu,utilization.encoder,utilization.decoder,memory.free", "--format=csv,noheader,nounits"],
                 capture_output=True, check=False, timeout=2, **subprocess_text_kwargs(),
             )
             if result.returncode == 0:
@@ -169,6 +172,8 @@ def pipeline_devices(video: VideoEncodeSettings, devices: tuple[FelDevice, ...],
             if not stage or "rife" not in Path(stage[0]).stem.lower():
                 continue
             try:
+                # Binaire RIFE de la commande préparée, option fixe, aucun shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run(  # nosec B603
                     [stage[0], "--list-gpus"], capture_output=True, check=False,
                     timeout=5, **subprocess_text_kwargs(),
@@ -276,7 +281,8 @@ class FelDevicePlan:
                         downgraded = explicit is not None and not self.eligible(explicit, False)
                         self.selected = "cpu" if downgraded else self.choice
                 key = self.selected
-                assert key is not None
+                if key is None:
+                    raise RuntimeError("Moteur de reconstruction FEL non sélectionné.")
                 if key != "cpu":
                     _ACTIVE[key] += 1
         released = False

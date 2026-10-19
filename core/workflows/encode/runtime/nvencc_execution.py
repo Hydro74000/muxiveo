@@ -338,7 +338,8 @@ class NvenccPipeExecutor:
         try:
             if native is not None:
                 target = producers[0].stdin if producers else encode_proc.stdin
-                assert target is not None
+                if target is None:
+                    raise RuntimeError("Entrée du producteur FEL indisponible.")
                 fel_producer = native.start(target, signals._cancel_event)
             encode_rc = encode_proc.wait()
             producer_rcs = [proc.wait() for proc in producers]

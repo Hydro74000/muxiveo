@@ -347,10 +347,10 @@ def pq_codes(frame: Frame, rows: slice) -> np.ndarray:
     cr = (frame.cr[start // 2:stop // 2].astype(np.float32) - 512) / 896
     # Termes de chroma calculés en demi-définition, ajoutés par diffusion sur les blocs 2 × 2.
     blocks = np.empty((height // 2, 2, width // 2, 2, 3), np.float32)
-    luma = y.reshape(height // 2, 2, width // 2, 2)
+    luma = y.reshape((height // 2, 2, width // 2, 2))
     for channel, term in enumerate((1.4746 * cr, -0.16455 * cb - 0.57135 * cr, 1.8814 * cb)):
         np.add(luma, term[:, None, :, None], out=blocks[..., channel])
-    rgb = blocks.reshape(height, width, 3)[rows.start - start:rows.stop - start]
+    rgb = blocks.reshape((height, width, 3))[rows.start - start:rows.stop - start]
     np.clip(rgb, 0, 1, out=rgb)
     rgb *= 65535
     np.rint(rgb, out=rgb)
@@ -411,12 +411,20 @@ def plugin_capture(engine: object, path: Path, stream: int, *, ffmpeg_bin: str, 
             return None
 
     def capture(layer: str, time_s: float, count: int) -> list[Frame]:
-        reader = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
+        # FFmpeg configuré par l'utilisateur, options séparées, aucun shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        reader = subprocess.Popen(  # nosec B603 # outil configuré, arguments séparés
             [ffmpeg_bin, "-v", "error", "-nostdin", "-f", "nut", "-i", "pipe:0", "-frames:v", str(count),
              "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "pipe:1"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             **subprocess_windows_no_window_kwargs(include_stdin=False))
-        assert reader.stdin is not None and reader.stdout is not None
+        if reader.stdin is None or reader.stdout is None:
+            reader.kill()
+            reader.wait()
+            for pipe in (reader.stdin, reader.stdout):
+                if pipe is not None:
+                    pipe.close()
+            raise RuntimeError("Tubes de capture FEL indisponibles.")
         source = FelSource(engine=engine, path=path, stream=stream, threads=threads,  # type: ignore[arg-type]
                            frame_rate=frame_rate, device_plan=_Plan(),  # type: ignore[arg-type]
                            start_us=int(round(max(0.0, time_s) * 1e6)), pixel_format="yuv420p10le",
@@ -464,7 +472,8 @@ def analyse(capture: CaptureLayer, times: Sequence[float], *,
                 if pending is not None:
                     pending.cancel()
                 raise InterruptedError
-            assert pending is not None
+            if pending is None:
+                raise RuntimeError("Capture FEL non préparée.")
             reconstructed, mapped = pending.result()
             pending = prefetch.submit(pair, times[index + 1]) if index + 1 < len(times) else None
             metrics, score, rows = _sample_metrics(reconstructed, mapped, area(time_s))
@@ -554,10 +563,18 @@ def survival_indices(total: int) -> list[int]:
 
 def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Callable[[IO[bytes]], object]) -> None:
     """Exécute ``cmd`` : entrée écrite par un fil, sortie lue par l'appelant, erreurs collectées."""
-    process = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
+    # Commande FFmpeg construite par encode_round_trip, arguments séparés, aucun shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    process = subprocess.Popen(  # nosec B603 # outil configuré, arguments séparés
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **subprocess_windows_no_window_kwargs(include_stdin=False))
-    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        raise RuntimeError("Tubes du test de survie FEL indisponibles.")
     stdin, stderr = process.stdin, process.stderr
     errors: list[bytes] = []
 

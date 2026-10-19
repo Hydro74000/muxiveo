@@ -113,7 +113,7 @@ jobs:
       - uses: ./.github/actions/apt-install
         with:
           packages: build-essential cmake ninja-build pkg-config nasm
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
       - name: Build and test the CPU plugin with pinned dependencies
         run: python fel-extension/mvo-fel/scripts/build.py "$RUNNER_TEMP/fel-build" --jobs 2
       - name: Prepare verified media tools

@@ -384,10 +384,8 @@ class EditionTab(QWidget):
                 self.h10_target.setValue(targets[0] if targets else 1000)
                 if hdr10plus is not None and hdr10plus.frames:
                     self.h10_cap.setValue(max(100, int(round(hdr10plus.credible_peak_nits() or 1000))))
-                current = (mastering is not None and mastering.primaries in PRIMARY_SETS and mastering.max_nits
-                           and mastering.min_nits is not None)
-                if current:
-                    assert mastering is not None
+                if (mastering is not None and mastering.primaries in PRIMARY_SETS and mastering.max_nits
+                        and mastering.min_nits is not None):
                     self._set_mdcv(mastering.primaries, float(mastering.min_nits or 0), float(mastering.max_nits or 0))
                 else:
                     edit = self._suggested[0]

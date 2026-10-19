@@ -866,7 +866,8 @@ class ToolRunner(QObject):
                     readers.append(reader)
 
             if cmd.producer is not None:
-                assert procs[0].stdin is not None
+                if procs[0].stdin is None:
+                    raise RuntimeError("Entrée du producteur natif indisponible.")
                 producer = cmd.producer.start(
                     procs[0].stdin, signals._cancel_event if signals is not None else threading.Event(),
                 )

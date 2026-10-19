@@ -145,6 +145,21 @@ def test_windows_zip_archive_is_installed(tmp_path, monkeypatch):
     assert (installed.path / lib).read_bytes() == b"dll"
 
 
+@pytest.mark.parametrize("absolute", [False, True])
+def test_zip_paths_are_all_checked_before_extraction(tmp_path, absolute):
+    outside = tmp_path / "outside.txt"
+    archive = tmp_path / "unsafe.zip"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("safe.txt", b"safe")
+        z.writestr(str(outside) if absolute else "../outside.txt", b"unsafe")
+    with pytest.raises(plugins.PluginError, match="chemin d'archive refusé"):
+        plugins._extract(archive, staging, is_zip=True)
+    assert not outside.exists()
+    assert not list(staging.iterdir())
+
+
 def test_corrupted_archive_raises_plugin_error(tmp_path):
     bad = tmp_path / f"mvo-rife-trt-{MVO_RIFE_TRT_VERSION}-{PLATFORM}.tar.gz"
     bad.write_bytes(b"pas une archive")

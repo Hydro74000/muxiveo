@@ -148,8 +148,19 @@ def test_old_driver_keeps_existing_nut_transport(prepared, monkeypatch):
 
 @pytest.mark.parametrize("version,accepted", [("570.0", True), ("580.82.07", True), ("550.127", False), ("N/A", False)])
 def test_driver_gate_checks_actual_version(monkeypatch, version, accepted):
-    monkeypatch.setattr(direct.subprocess, "run", Mock(return_value=SimpleNamespace(returncode=0, stdout=version)))
+    monkeypatch.setattr(direct.shutil, "which", lambda _: "/opt/nvidia/nvidia-smi")
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout=version))
+    monkeypatch.setattr(direct.subprocess, "run", run)
     assert direct.compatible_driver(GPU.uuid) is accepted
+    assert run.call_args.args[0][0] == "/opt/nvidia/nvidia-smi"
+
+
+def test_missing_nvidia_smi_disables_direct_driver_probe(monkeypatch):
+    monkeypatch.setattr(direct.shutil, "which", lambda _: None)
+    run = Mock()
+    monkeypatch.setattr(direct.subprocess, "run", run)
+    assert not direct.compatible_driver(GPU.uuid)
+    run.assert_not_called()
 
 
 @pytest.mark.parametrize("precision", ["standard", "fast"])

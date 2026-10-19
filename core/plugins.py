@@ -386,7 +386,7 @@ def _extract_members(archive: Path, staging: Path, is_zip: bool) -> None:
         with zipfile.ZipFile(archive) as z:
             for info in z.infolist():
                 _safe_member(staging, info.filename)
-            z.extractall(staging)
+            z.extractall(staging)  # nosec B202 # ZIP, chemins validés ci-dessus par _safe_member
         return
     with tarfile.open(archive, "r:gz") as t:
         members = t.getmembers()
@@ -473,9 +473,8 @@ def install(
     éventuellement différents sous le même nom ; le préchauffage le reconstruit).
     """
     platform = platform_tag()
-    if not spec.supports(platform):
+    if platform is None or not spec.supports(platform):
         raise PluginError("plate-forme non prise en charge")
-    assert platform is not None
     version = version or spec.min_version
     previous = installed_plugin(spec, root, platform)
     base = _plugin_dir(spec, root)
@@ -566,6 +565,7 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
                 # Binaire muxiveo-rife configuré, arguments construits ici, sans shell.
                 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run(  # nosec B603
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
                     cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
                 )
             except (OSError, subprocess.SubprocessError) as exc:

@@ -144,9 +144,7 @@ class FelTab(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-            elif item.layout() is not None:
-                child = item.layout()
-                assert child is not None
+            elif (child := item.layout()) is not None:
                 FelTab._clear(child)  # type: ignore[arg-type]
 
     # ── Données ─────────────────────────────────────────────────────────
@@ -252,7 +250,8 @@ class FelTab(QWidget):
 
     def _render_facts(self) -> None:
         report = self._report
-        assert report is not None
+        if report is None:
+            return
         dovi = report.dovi
         facts = self._fel.facts if self._fel is not None else None
         rows: list[tuple[str, str]] = []

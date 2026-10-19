@@ -117,7 +117,8 @@ def l6_table(dovi: DoviAnalysis) -> Table:
 
 def active_area_table(report: InspectionReport, limit: int = 500) -> Table:
     dovi = report.dovi
-    assert dovi is not None
+    if dovi is None:
+        raise ValueError("Les zones actives nécessitent une analyse Dolby Vision.")
     fps = report.snapshot.fps or 24000 / 1001
     width, height = report.snapshot.width or 0, report.snapshot.height or 0
     return ([translate_text("Début"), translate_text("Durée"), translate_text("Gauche / droite / haut / bas"),

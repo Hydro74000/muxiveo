@@ -120,7 +120,8 @@ class BeforeAfterView(QWidget):
                                min(max(self._center.y(), 0.0), float(size.height())))
 
     def _target(self) -> QRectF:
-        assert self._images is not None
+        if self._images is None:
+            return QRectF()
         size = self._images[0].size()
         left = self.width() / 2 - self._center.x() * self._zoom
         top = self.height() / 2 - self._center.y() * self._zoom

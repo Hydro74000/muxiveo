@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import sys
 import subprocess
 from contextlib import contextmanager
@@ -27,10 +28,15 @@ def filter_string(value: str) -> str:
 
 def compatible_driver(uuid: str) -> bool:
     """Les en-têtes NVENC 13 épinglés exigent un pilote Linux 570 ou supérieur."""
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi is None:
+        return False
     key = f"GPU-{uuid[:8]}-{uuid[8:12]}-{uuid[12:16]}-{uuid[16:20]}-{uuid[20:]}"
     try:
+        # nvidia-smi résolu dans PATH, arguments séparés, aucun shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(  # nosec B603
-            ["nvidia-smi", f"--id={key}", "--query-gpu=driver_version", "--format=csv,noheader"],
+            [nvidia_smi, f"--id={key}", "--query-gpu=driver_version", "--format=csv,noheader"],
             timeout=2, check=False, capture_output=True, **subprocess_text_kwargs(),
         )
         return result.returncode == 0 and int(result.stdout.strip().split(".")[0]) >= 570
@@ -101,10 +107,12 @@ class DirectFelCommand(PipelineCommand):
     @contextmanager
     def execution(self) -> Iterator[list[str]]:
         context = self.video.fel_context
-        assert context is not None and context.source.device_plan is not None
+        if context is None:
+            raise RuntimeError("Contexte de reconstruction FEL absent.")
         source = context.source
         plan = source.device_plan
-        assert plan is not None
+        if plan is None:
+            raise RuntimeError("Plan de reconstruction FEL absent.")
         key, release = plan.acquire()
         try:
             chosen = next((d for d in plan.devices if d.uuid == key), None)

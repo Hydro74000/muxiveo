@@ -2,8 +2,16 @@
 import pytest
 
 from core.config import AppConfig
+from core.i18n import current_language, set_current_language
 from tests.test_encode_panel_dovi_geometry import _file_info, _video_entry, _PATH_A, _COLOR
 from ui.panels.encode_panel.panel import EncodePanel
+
+
+@pytest.fixture(autouse=True)
+def _restore_language():
+    previous = current_language()
+    yield
+    set_current_language(previous)
 
 
 @pytest.mark.parametrize("checked", [False, True])
@@ -99,7 +107,11 @@ def test_device_combo_dynamic_selection_and_track_state(qt_app, monkeypatch):
         panel.close()
 
 
-def test_precision_combo_modes_tooltips_and_track_state(qt_app, monkeypatch):
+@pytest.mark.parametrize("language,exact_word,fast_word", [
+    ("fra", "certifié", "synthétiques"),
+    ("eng", "Certified", "synthetic"),
+])
+def test_precision_combo_modes_tooltips_and_track_state(qt_app, monkeypatch, language, exact_word, fast_word):
     """Trois précisions : Lent par défaut, infobulles, état par piste et GPU sans double signalé."""
     from core.fel.engine import FelEngine
     from core.i18n import translate_text
@@ -113,15 +125,17 @@ def test_precision_combo_modes_tooltips_and_track_state(qt_app, monkeypatch):
     engine.capabilities = {"device_features": ["float64"]}
     engine.devices.return_value = (RTX64, ARC)
     monkeypatch.setattr(FelEngine, "installed", lambda: engine)
-    panel = EncodePanel(AppConfig())
+    config = AppConfig()
+    config.language = language
+    panel = EncodePanel(config)
     try:
         panel.set_video_tracks([(_file_info(_PATH_A), _video_entry(), _COLOR)])
         combo = panel._fel_precision_combo
         assert [combo.itemData(i) for i in range(combo.count())] == ["exact", "standard", "fast"]
         assert combo.choice() == "exact" and translate_text("Lent (recommandé)") == combo.currentText()
         assert "1/64" in combo.itemData(1, Qt.ItemDataRole.ToolTipRole)
-        assert "certifié" in combo.itemData(0, Qt.ItemDataRole.ToolTipRole)
-        assert "synthétiques" in combo.itemData(2, Qt.ItemDataRole.ToolTipRole)
+        assert exact_word in combo.itemData(0, Qt.ItemDataRole.ToolTipRole)
+        assert fast_word in combo.itemData(2, Qt.ItemDataRole.ToolTipRole)
         assert combo.itemData(2, Qt.ItemDataRole.ForegroundRole) is not None
         panel._set_combo_data(panel._codec_combo, "libx265")
         panel._bake_fel_cb.click()
