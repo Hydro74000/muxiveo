@@ -165,10 +165,12 @@ def _band_box_sums(image: np.ndarray, radius: int, lo: int, hi: int, dtype: type
     """Sommes (2r+1)² des lignes [lo, hi) d'une image entière, bords répliqués (comme ``_box``), exactes."""
     height, width = image.shape
     k = 2 * radius + 1
-    vertical = np.cumsum(image[np.clip(np.arange(lo - radius, hi + radius), 0, height - 1)], axis=0, dtype=dtype)
+    vertical: np.ndarray = np.cumsum(image[np.clip(np.arange(lo - radius, hi + radius), 0, height - 1)], axis=0,
+                                     dtype=dtype)
     window = vertical[k - 1:].copy()
     window[1:] -= vertical[:-k]
-    horizontal = np.cumsum(window[:, np.clip(np.arange(-radius, width + radius), 0, width - 1)], axis=1, dtype=dtype)
+    horizontal: np.ndarray = np.cumsum(window[:, np.clip(np.arange(-radius, width + radius), 0, width - 1)], axis=1,
+                                       dtype=dtype)
     sums = horizontal[:, k - 1:].copy()
     sums[:, 1:] -= horizontal[:, :-k]
     return sums
@@ -751,7 +753,7 @@ def _encoder_args(encoder: str) -> tuple[list[str], list[str]]:
     return [], ["-pix_fmt", "yuv420p10le", "-preset", "medium", "-x265-params", "log-level=error"]
 
 
-def _frames(data: bytes, width: int, height: int) -> Frame:
+def _frames(data: bytes | np.ndarray, width: int, height: int) -> Frame:
     planes = np.frombuffer(data, dtype="<u2")
     luma = width * height
     return Frame(planes[:luma].reshape(height, width), planes[luma:luma * 5 // 4].reshape(height // 2, width // 2),
