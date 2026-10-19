@@ -203,10 +203,6 @@
     "fra": "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.",
     "eng": "P7 → P8.1: FEL contribution integrated into pixels if confirmed."
   },
-  "Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)": {
-    "fra": "Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)",
-    "eng": "Convert to P8.1 (P7 enhancement layer removed, copy included)"
-  },
   "0 = illimité (débit choisi par l'encodeur).": {
     "fra": "0 = illimité (débit choisi par l'encodeur).",
     "eng": "0 = unlimited (bitrate chosen by the encoder)."
@@ -1254,10 +1250,6 @@
   "Copier le RPU Dolby Vision depuis la source": {
     "fra": "Copier le RPU Dolby Vision depuis la source",
     "eng": "Copy Dolby Vision RPU from source"
-  },
-  "Profil Dolby Vision": {
-    "fra": "Profil Dolby Vision",
-    "eng": "Dolby Vision profile"
   },
   "P8.1 — conserver (par défaut)": {
     "fra": "P8.1 — conserver (par défaut)",
@@ -5463,9 +5455,17 @@
     "fra": "Taille du fichier complet : audio, sous-titres, pièces jointes et vidéo copiée sont déduits, le reste est réparti entre les pistes vidéo encodées.\nLogiciel : 2 passes. Matériel : 1 passe VBR plafonnée (taille approchée).",
     "eng": "Size of the whole file: audio, subtitles, attachments and copied video are deducted, the rest is shared between the encoded video tracks.\nSoftware: 2 passes. Hardware: 1 capped VBR pass (approximate size)."
   },
-  "Conserver le profil source (P8.1 seulement si réencodage)": {
-    "fra": "Conserver le profil source (P8.1 seulement si réencodage)",
-    "eng": "Keep source profile (P8.1 only when re-encoding)"
+  "Convertir en P8.1 (retirer la couche d’amélioration P7)": {
+    "fra": "Convertir en P8.1 (retirer la couche d’amélioration P7)",
+    "eng": "Convert to P8.1 (remove the P7 enhancement layer)"
+  },
+  "Réencodage : la sortie est toujours P8.1. La couche d’amélioration ne s’applique qu’à l’image de base d’origine ; « Intégrer la couche FEL » en conserve l’apport.": {
+    "fra": "Réencodage : la sortie est toujours P8.1. La couche d’amélioration ne s’applique qu’à l’image de base d’origine ; « Intégrer la couche FEL » en conserve l’apport.",
+    "eng": "Re-encoding: the output is always P8.1. The enhancement layer only applies to the original base layer; “Integrate the FEL layer” keeps its contribution."
+  },
+  "Retire la couche d’amélioration (EL) et convertit le RPU en P8.1. En copie, l’image de base est recopiée sans réencodage ; décochée, une piste P7 est recopiée telle quelle.": {
+    "fra": "Retire la couche d’amélioration (EL) et convertit le RPU en P8.1. En copie, l’image de base est recopiée sans réencodage ; décochée, une piste P7 est recopiée telle quelle.",
+    "eng": "Removes the enhancement layer (EL) and converts the RPU to P8.1. In copy mode, the base layer is copied without re-encoding; unchecked, a P7 track is copied as is."
   },
   "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)": {
     "fra": "Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)",

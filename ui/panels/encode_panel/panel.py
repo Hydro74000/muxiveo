@@ -77,6 +77,7 @@ from core.workflows.encode.runtime.nvencc import (
 )
 from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
 from core.workflows.encode.runtime.dovi_geometry import DOVI_UHD_CANVAS, NvencDoviGeometryResult
+from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.dovi_policy import (
     NORMALIZE_P81,
     resolve_dovi_plan,
@@ -1306,6 +1307,19 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
         cl.addWidget(self._copy_dv_cb)
+        # Conversion P8.1 : choix de l'utilisateur, affichage figé quand le traitement l'impose.
+        self._dovi_profile_choice = "0"
+        self._dovi_p81_cb = QCheckBox(translate_text("Convertir en P8.1 (retirer la couche d’amélioration P7)"))
+        self._dovi_p81_cb.setStyleSheet(_checkbox_style())
+        self._dovi_p81_cb.clicked.connect(self._on_dovi_p81_clicked)
+        self._dovi_profile_widget = QWidget()
+        self._dovi_profile_widget.setStyleSheet("background:transparent;")
+        dp_l = QHBoxLayout(self._dovi_profile_widget)
+        dp_l.setContentsMargins(20, 0, 0, 0)
+        dp_l.addWidget(self._dovi_p81_cb)
+        dp_l.addStretch()
+        self._dovi_profile_widget.setVisible(False)
+        cl.addWidget(self._dovi_profile_widget)
         self._bake_fel_choice: bool | None = None
         self._bake_fel_cb = QCheckBox(translate_text("Intégrer la couche FEL à l’image avant encodage"))
         self._bake_fel_cb.setStyleSheet(_checkbox_style())
@@ -1379,27 +1393,6 @@ class EncodePanel(QWidget):
         self._dovi_warning_widget.setVisible(False)
         cl.addWidget(self._dovi_warning_widget)
 
-        self._dovi_profile_widget = QWidget()
-        self._dovi_profile_widget.setStyleSheet("background:transparent;")
-        dp_l = QHBoxLayout(self._dovi_profile_widget)
-        dp_l.setContentsMargins(20, 0, 0, 0)
-        dp_l.setSpacing(8)
-        dp_lbl = QLabel("Profil Dolby Vision")
-        dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
-        self._dovi_profile_combo = QComboBox()
-        self._dovi_profile_combo.setStyleSheet(_combo_style())
-        self._dovi_profile_combo.addItem(
-            translate_text("Conserver le profil source (P8.1 seulement si réencodage)"), "0",
-        )
-        self._dovi_profile_combo.addItem(
-            translate_text("Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)"), NORMALIZE_P81,
-        )
-        self._dovi_profile_combo.currentIndexChanged.connect(self._on_dovi_profile_changed)
-        dp_l.addWidget(dp_lbl)
-        dp_l.addWidget(self._dovi_profile_combo)
-        dp_l.addStretch()
-        self._dovi_profile_widget.setVisible(False)
-        cl.addWidget(self._dovi_profile_widget)
 
         # Traitement Dolby Vision réellement prévu (matrice V30, dovi_policy).
         self._dovi_plan_label = QLabel()
@@ -2841,11 +2834,11 @@ class EncodePanel(QWidget):
     def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
         if codec_id != "copy":
             return False
-        if not hasattr(self, "_copy_dv_cb") or not hasattr(self, "_dovi_profile_combo"):
+        if not hasattr(self, "_copy_dv_cb") or not hasattr(self, "_dovi_p81_cb"):
             return False
         return bool(
             self._copy_dv_cb.isChecked()
-            and str(self._dovi_profile_combo.currentData() or "0").strip() == "2"
+            and self._dovi_profile_choice == NORMALIZE_P81
             and self._inject_hdr_cb.isChecked()
         )
 
@@ -2950,7 +2943,11 @@ class EncodePanel(QWidget):
             self._maybe_offer_static_hdr_estimate_for_current()
         self._rebuild_preview()
 
-    def _on_dovi_profile_changed(self, _idx: int = 0) -> None:
+    def _on_dovi_p81_clicked(self, checked: bool) -> None:
+        self._dovi_profile_choice = NORMALIZE_P81 if checked else "0"
+        self._on_dovi_profile_changed()
+
+    def _on_dovi_profile_changed(self) -> None:
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "copy")
         self._sync_dovi_profile_options()
         if not self._loading_video_settings:
@@ -4694,7 +4691,7 @@ class EncodePanel(QWidget):
 
     @staticmethod
     def _sub_setting_row(label: str, field: QWidget) -> QWidget:
-        """Ligne de réglage secondaire de la carte HDR (style de « Profil Dolby Vision ») : libellé puis champ."""
+        """Ligne de réglage secondaire de la carte HDR (décalée sous l'option parente) : libellé puis champ."""
         row = QWidget()
         row.setStyleSheet("background:transparent;")
         layout = QHBoxLayout(row)
@@ -4749,26 +4746,31 @@ class EncodePanel(QWidget):
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
-        model = self._dovi_profile_combo.model()
-        index = self._dovi_profile_combo.findData(NORMALIZE_P81)
-        item = model.item(index) if hasattr(model, "item") and index >= 0 else None
-        if item is not None:
-            item.setEnabled(not normalize_plan.error)
-            self._dovi_profile_combo.setItemData(
-                index,
-                translate_text(normalize_plan.error) if normalize_plan.error else None,
-                Qt.ItemDataRole.ToolTipRole,
-            )
-        if normalize_plan.error and self._dovi_profile_combo.currentData() == NORMALIZE_P81:
-            self._dovi_profile_combo.blockSignals(True)
-            self._set_combo_data(self._dovi_profile_combo, "0")
-            self._dovi_profile_combo.blockSignals(False)
+        if normalize_plan.error and self._dovi_profile_choice == NORMALIZE_P81:
+            self._dovi_profile_choice = "0"
             if not self._loading_video_settings:
                 self._save_current_video_state()
+        # P7 réencodé : sortie toujours P8.1 (affichage seulement, le choix pour la copie est gardé).
+        always_p81 = codec != "copy" and sub_profile in {DoviSubProfile.P7_FEL, DoviSubProfile.P7_MEL}
+        if normalize_plan.error:
+            checked, tip = False, translate_text(normalize_plan.error)
+        elif always_p81:
+            checked, tip = True, translate_text(
+                "Réencodage : la sortie est toujours P8.1. La couche d’amélioration ne s’applique qu’à "
+                "l’image de base d’origine ; « Intégrer la couche FEL » en conserve l’apport."
+            )
+        else:
+            checked, tip = self._dovi_profile_choice == NORMALIZE_P81, translate_text(
+                "Retire la couche d’amélioration (EL) et convertit le RPU en P8.1. En copie, l’image de base "
+                "est recopiée sans réencodage ; décochée, une piste P7 est recopiée telle quelle."
+            )
+        self._dovi_p81_cb.setChecked(checked)
+        self._dovi_p81_cb.setEnabled(not normalize_plan.error and not always_p81)
+        self._dovi_p81_cb.setToolTip(tip)
         plan = resolve_dovi_plan(
             codec=codec,
             copy_dv=self._copy_dv_cb.isChecked(),
-            dovi_profile=str(self._dovi_profile_combo.currentData() or "0"),
+            dovi_profile=self._dovi_profile_choice,
             sub_profile=sub_profile,
             bake_dovi_fel=self._bake_fel_choice,
         )
@@ -4953,7 +4955,7 @@ class EncodePanel(QWidget):
             "fel_precision": self._fel_precision_choice,
             "fel_hdr10plus": self._fel_hdr10plus_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
-            "dovi_profile": self._combo_data(self._dovi_profile_combo),
+            "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
             "tonemap_algorithm": self._combo_data(self._tonemap_algo),
         }
@@ -5258,7 +5260,7 @@ class EncodePanel(QWidget):
             self._max_cll.setText(cll_state)
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
-            self._set_combo_data(self._dovi_profile_combo, state.get("dovi_profile"))
+            self._dovi_profile_choice = NORMALIZE_P81 if str(state.get("dovi_profile") or "0").strip() == NORMALIZE_P81 else "0"
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:
@@ -5679,7 +5681,7 @@ class EncodePanel(QWidget):
             static_hdr_metadata_analysis_request=str(current_state.get("static_hdr_metadata_analysis_request") or ""),
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
-            dovi_profile=self._dovi_profile_combo.currentData() or "0",
+            dovi_profile=self._dovi_profile_choice,
             source_color_transfer=source_transfer,
             tonemap_to_sdr=tonemap,
             tonemap_algorithm=self._tonemap_algo.currentData() or "hable",

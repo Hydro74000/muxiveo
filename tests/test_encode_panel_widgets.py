@@ -976,9 +976,7 @@ class TestEncodePanelDynamicHdrDefaults:
         entry.entry_id = "video-p5"
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
-        panel._dovi_profile_combo.blockSignals(True)
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
-        panel._dovi_profile_combo.blockSignals(False)
+        panel._dovi_profile_choice = "2"
         panel._save_current_video_state()
 
         candidate = panel._static_hdr_estimate_candidate_current()
@@ -1052,12 +1050,10 @@ class TestEncodePanelDynamicHdrDefaults:
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
         # V30 : une copie ne convertit jamais un P5 ; la normalisation suppose un réencodage.
         _select_codec(panel, "libx265")
-        panel._dovi_profile_combo.setCurrentIndex(
-            next(i for i in range(panel._dovi_profile_combo.count()) if panel._dovi_profile_combo.itemData(i) == "2")
-        )
+        panel._dovi_p81_cb.click()
 
         assert scheduled == [("video-p5", StaticHdrEstimateService.PRECISE_MODE)]
-        assert panel._dovi_profile_combo.currentData() == "2"
+        assert panel._dovi_profile_choice == "2" and panel._dovi_p81_cb.isChecked()
         assert panel._video_settings_by_entry_id["video-p5"]["dovi_profile"] == "2"
         panel.close()
 
@@ -1081,10 +1077,10 @@ class TestEncodePanelDynamicHdrDefaults:
 
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
         _select_codec(panel, "libx265")
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
+        panel._dovi_p81_cb.click()
 
         assert scheduled == [StaticHdrEstimateService.FAST_MODE]
-        assert panel._dovi_profile_combo.currentData() == "2"
+        assert panel._dovi_profile_choice == "2" and panel._dovi_p81_cb.isChecked()
         panel.close()
 
     def test_static_hdr_estimate_is_scheduled_for_workflow(self, qt_app):
@@ -1095,9 +1091,7 @@ class TestEncodePanelDynamicHdrDefaults:
         entry = _video_entry(0)
         entry.entry_id = "video-p5"
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
-        panel._dovi_profile_combo.blockSignals(True)
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
-        panel._dovi_profile_combo.blockSignals(False)
+        panel._dovi_profile_choice = "2"
         panel._save_current_video_state()
         state = panel._video_settings_by_entry_id["video-p5"]
 
@@ -1156,9 +1150,7 @@ class TestEncodePanelDynamicHdrDefaults:
         entry = _video_entry(0)
         entry.entry_id = "video-p5"
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
-        panel._dovi_profile_combo.blockSignals(True)
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
-        panel._dovi_profile_combo.blockSignals(False)
+        panel._dovi_profile_choice = "2"
         panel._save_current_video_state()
         state = panel._video_settings_by_entry_id["video-p5"]
         panel._schedule_static_hdr_estimate("video-p5", state, mode="precise")
@@ -1178,14 +1170,12 @@ class TestEncodePanelDynamicHdrDefaults:
         entry = _video_entry(0)
         entry.entry_id = "video-p5"
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
-        panel._dovi_profile_combo.blockSignals(True)
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
-        panel._dovi_profile_combo.blockSignals(False)
+        panel._dovi_profile_choice = "2"
         panel._save_current_video_state()
         state = panel._video_settings_by_entry_id["video-p5"]
         panel._schedule_static_hdr_estimate("video-p5", state, mode="fast")
 
-        panel._set_combo_data(panel._dovi_profile_combo, "0")
+        panel._on_dovi_p81_clicked(False)
 
         updated = panel._video_settings_by_entry_id["video-p5"]
         assert updated["dovi_profile"] == "0"
@@ -1212,9 +1202,7 @@ class TestEncodePanelDynamicHdrDefaults:
         entry = _video_entry(0)
         entry.entry_id = "video-p5"
         panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
-        panel._dovi_profile_combo.blockSignals(True)
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
-        panel._dovi_profile_combo.blockSignals(False)
+        panel._dovi_profile_choice = "2"
         panel._save_current_video_state()
         panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
         estimate = StaticHdrEstimate(
@@ -2473,25 +2461,24 @@ class TestEncodePanelAuditLot5:
 
     @staticmethod
     def _normalize_item(panel: EncodePanel):
-        index = panel._dovi_profile_combo.findData("2")
-        return panel._dovi_profile_combo.model().item(index), index
+        return panel._dovi_p81_cb, 0
 
     def test_p5_copy_cannot_normalize_but_reencode_can(self, qt_app, monkeypatch):
         panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=5, transfer=None)
         # Fenêtre « Analyse HDR10 estimée » (modale) proposée à la normalisation P5.
         monkeypatch.setattr(panel, "_ask_static_hdr_estimate_mode", lambda: "")
         _select_codec(panel, "copy")
-        item, index = self._normalize_item(panel)
+        item, _index = self._normalize_item(panel)
         assert not item.isEnabled()
-        assert "réencodée" in str(panel._dovi_profile_combo.itemData(index, Qt.ItemDataRole.ToolTipRole))
+        assert "réencodée" in item.toolTip()
         _select_codec(panel, "libx265")
         item, _index = self._normalize_item(panel)
         assert item.isEnabled()
         assert "P5" in panel._dovi_plan_label.text() and not panel._dovi_plan_label.isHidden()
-        panel._set_combo_data(panel._dovi_profile_combo, "2")
+        panel._dovi_p81_cb.click()
         _select_codec(panel, "copy")
         # Normaliser devenu impossible en copie : retour à « Conserver ».
-        assert panel._dovi_profile_combo.currentData() == "0"
+        assert panel._dovi_profile_choice == "0" and not panel._dovi_p81_cb.isChecked()
         panel.close()
 
     def test_p8_4_never_offers_normalize(self, qt_app):
@@ -2545,7 +2532,7 @@ class TestEncodePanelAuditLot5:
         panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=7, transfer="smpte2084")
         panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
         _select_codec(panel, "copy")
-        assert panel._dovi_profile_combo.currentData() == "0"
+        assert panel._dovi_profile_choice == "0" and not panel._dovi_p81_cb.isChecked()
         config = panel.collect_config()
         assert config is not None and config.video is not None
         assert config.video.codec == "copy" and config.video.dovi_profile == "0" and config.video.copy_dv
@@ -2553,6 +2540,26 @@ class TestEncodePanelAuditLot5:
         # Remux pur si aucune autre transformation n'est demandée (HDR10 statique source non réécrit).
         pure = dataclasses.replace(config.video, inject_hdr_meta=False)
         assert panel.is_pure_copy(dataclasses.replace(config, video=pure, video_tracks=[pure], audio_tracks=[]))
+        panel.close()
+
+    def test_p7_p81_checkbox_follows_copy_and_reencode(self, qt_app):
+        """Case P8.1 sous la copie du RPU : libre en copie, cochée et figée en réencodage (P7 → P8.1)."""
+        panel = self._panel(HDRType.DOLBY_VISION, dovi_profile=7, transfer="smpte2084")
+        layout = panel._copy_dv_cb.parentWidget().layout()
+        assert layout.indexOf(panel._dovi_profile_widget) == layout.indexOf(panel._copy_dv_cb) + 1
+        _select_codec(panel, "copy")
+        assert panel._dovi_p81_cb.isEnabled() and not panel._dovi_p81_cb.isChecked()
+        panel._dovi_p81_cb.click()
+        assert panel._current_video_settings().dovi_profile == "2"
+        assert "sans réencodage" in panel._dovi_plan_label.text()
+        panel._dovi_p81_cb.click()
+        _select_codec(panel, "libx265")
+        assert panel._dovi_p81_cb.isChecked() and not panel._dovi_p81_cb.isEnabled()
+        assert "toujours P8.1" in panel._dovi_p81_cb.toolTip()
+        _select_codec(panel, "copy")
+        # Choix de copie conservé (décoché) après le passage en réencodage.
+        assert panel._dovi_p81_cb.isEnabled() and not panel._dovi_p81_cb.isChecked()
+        assert panel._current_video_settings().dovi_profile == "0"
         panel.close()
 
 
