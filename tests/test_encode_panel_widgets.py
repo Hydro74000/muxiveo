@@ -2474,7 +2474,7 @@ class TestEncodePanelAuditLot5:
         _select_codec(panel, "libx265")
         item, _index = self._normalize_item(panel)
         assert item.isEnabled()
-        assert "P5" in panel._dovi_plan_label.text() and not panel._dovi_plan_label.isHidden()
+        assert "P5" in panel._dovi_p81_note.text() and not panel._dovi_p81_note.isHidden()
         panel._dovi_p81_cb.click()
         _select_codec(panel, "copy")
         # Normaliser devenu impossible en copie : retour à « Conserver ».
@@ -2551,7 +2551,7 @@ class TestEncodePanelAuditLot5:
         assert panel._dovi_p81_cb.isEnabled() and not panel._dovi_p81_cb.isChecked()
         panel._dovi_p81_cb.click()
         assert panel._current_video_settings().dovi_profile == "2"
-        assert "sans réencodage" in panel._dovi_plan_label.text()
+        assert "sans réencodage" in panel._dovi_p81_note.text() and not panel._dovi_plan_label.text()
         panel._dovi_p81_cb.click()
         _select_codec(panel, "libx265")
         assert panel._dovi_p81_cb.isChecked() and not panel._dovi_p81_cb.isEnabled()

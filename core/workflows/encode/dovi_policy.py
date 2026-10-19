@@ -18,6 +18,8 @@ P5_COPY_NORMALIZE_ERROR = (
     "Une source P5 doit être réencodée pour devenir P8.1 : choisissez un encodeur HEVC (x265 ou NVEncC)."
 )
 BASE_LAYER_NORMALIZE_ERROR = "Image de base HLG/SDR : conversion en P8.1 impossible."
+# Seule note propre à la reconstruction FEL ; les autres décrivent la conversion Dolby Vision.
+FEL_BAKE_NOTE = "Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement."
 
 # Profil Dolby Vision de sortie d'un réencodage avec copie DV, selon la source.
 _REENCODE_OUTPUT_PROFILE = {
@@ -109,7 +111,7 @@ def resolve_dovi_plan(
     bake = wants_fel_bake(bake_dovi_fel, sub_profile, codec)
     notes_list: list[str] = []
     if bake:
-        notes_list.append("Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.")
+        notes_list.append(FEL_BAKE_NOTE)
     if color_convert:
         notes_list.append("P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).")
     if not copy_dv:
@@ -191,6 +193,7 @@ def dovi_transfer_error(output_profile: str, output_transfer: str) -> str:
 __all__ = [
     "BASE_LAYER_NORMALIZE_ERROR",
     "DoviPlan",
+    "FEL_BAKE_NOTE",
     "NORMALIZE_P81",
     "P5_COPY_NORMALIZE_ERROR",
     "dovi_output_compat_id",

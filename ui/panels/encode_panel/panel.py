@@ -79,6 +79,7 @@ from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_
 from core.workflows.encode.runtime.dovi_geometry import DOVI_UHD_CANVAS, NvencDoviGeometryResult
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.dovi_policy import (
+    FEL_BAKE_NOTE,
     NORMALIZE_P81,
     resolve_dovi_plan,
     sub_profile_from_track,
@@ -1316,8 +1317,14 @@ class EncodePanel(QWidget):
         self._dovi_profile_widget.setStyleSheet("background:transparent;")
         dp_l = QHBoxLayout(self._dovi_profile_widget)
         dp_l.setContentsMargins(20, 0, 0, 0)
+        dp_l.setSpacing(12)
         dp_l.addWidget(self._dovi_p81_cb)
-        dp_l.addStretch()
+        # Traitement Dolby Vision prévu (conversion P7/P5 → P8.1), à côté de la case.
+        self._dovi_p81_note = QLabel()
+        self._dovi_p81_note.setWordWrap(True)
+        self._dovi_p81_note.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        self._dovi_p81_note.setVisible(False)
+        dp_l.addWidget(self._dovi_p81_note, 1)
         self._dovi_profile_widget.setVisible(False)
         cl.addWidget(self._dovi_profile_widget)
         self._bake_fel_choice: bool | None = None
@@ -4774,7 +4781,8 @@ class EncodePanel(QWidget):
             sub_profile=sub_profile,
             bake_dovi_fel=self._bake_fel_choice,
         )
-        notes = [translate_text(note) for note in plan.notes]
+        notes = [translate_text(note) for note in plan.notes if note == FEL_BAKE_NOTE]
+        conversion_notes = [translate_text(note) for note in plan.notes if note != FEL_BAKE_NOTE]
         self._fel_extensions_link.hide()
         if self._bake_fel_cb.isChecked():
             if codec == "copy":
@@ -4785,7 +4793,12 @@ class EncodePanel(QWidget):
                     notes.append(translate_text("Extension mvo-fel absente : repli BL. Installation dans Extensions."))
                     self._fel_extensions_link.show()
         if self._tonemap_cb.isChecked() and plan.color_convert:
-            notes.append(translate_text("Puis tone-mapping HDR → SDR."))
+            conversion_notes.append(translate_text("Puis tone-mapping HDR → SDR."))
+        if not self._copy_dv_cb.isChecked():
+            # Case de conversion masquée : légende sous les options FEL.
+            notes, conversion_notes = conversion_notes + notes, []
+        self._dovi_p81_note.setText("\n".join(conversion_notes))
+        self._dovi_p81_note.setVisible(bool(conversion_notes))
         self._dovi_plan_label.setText("\n".join(notes))
         self._dovi_plan_label.setVisible(bool(notes))
 
