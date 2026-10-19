@@ -13,6 +13,4 @@ Le journal s’ouvre au lancement. Les messages portent leur origine — média,
 
 Le défilement suit les nouvelles lignes. Remonter dans le journal suspend ce suivi ; **Reprendre le défilement** revient aux messages récents. La limite de lignes configurée continue de s’appliquer.
 
-L’habillage reprend le [prototype interactif](mockups/execution-unifiee/index.html) : en-tête de l’espace de travail, navigation regroupée, cartes, commande scindée et journal commun. Le modèle d’assemblage témoin, les options avancées et la pré-écoute restent accessibles dans les sections repliables d’Hybrid. Merge conserve le détail de ses étapes dans une section repliable. Les thèmes sombre et clair et l’échelle de l’interface restent disponibles.
-
-Captures de l’application native avec des données d’illustration : [choix de l’opération](mockups/execution-unifiee/application-menu.png), [Hybrid en cours](mockups/execution-unifiee/application-running.png), [Merge DoVi](mockups/execution-unifiee/application-merge.png).
+L’habillage comprend l’en-tête de l’espace de travail, navigation regroupée, cartes, commande scindée et journal commun. Le modèle d’assemblage témoin, les options avancées et la pré-écoute restent accessibles dans les sections repliables d’Hybrid. Merge conserve le détail de ses étapes dans une section repliable. Les thèmes sombre et clair et l’échelle de l’interface restent disponibles.

@@ -125,14 +125,15 @@ tools/*
 !native/**/*.md
 audit_*
 !audit_mkv.py
+
+# Documents internes (plans, audits, revues, études, bancs, maquettes) : jamais publiés
+/internal-docs/
 docs/audit*
-!docs/audits/
-docs/audits/*
-!docs/audits/2026-10-17-prerelease-5.0.0.md
 docs/reaudit*
 docs/plan*
-docs/dolby_vision_nvenc_workflow.md
-docs/projects
+docs/projects/
+docs/benchmarks/
+docs/mockups/
 
 # Échantillons média locaux (trop volumineux pour le dépôt)
 samples/

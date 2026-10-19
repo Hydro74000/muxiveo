@@ -54,11 +54,11 @@ class InterpolationPreset:
     args: tuple[str, ...] = ()  # options supplémentaires fournies par l'extension
 
 
-# Moteur hybride : barreaux et motifs fins répétitifs gardés droits là où RIFE les fait onduler
-# (docs/benchmarks/2026-10-07-interpolation-hybride.md). v4.6 : meilleur VMAF moyen, débit le
+# Moteur hybride : barreaux et motifs fins répétitifs gardés droits là où RIFE les fait onduler.
+# v4.6 : meilleur VMAF moyen, débit le
 # plus élevé et VRAM la plus basse ; v4.15 : meilleur résultat hybride (coût ≈ 2 × RIFE) ;
 # Light = v4.15-lite toujours en mode Fast (petites cartes) ; Ultra = hybride avec RIFE inversé en candidat
-# supplémentaire du sélecteur appris (muxiveo-rife 1.6.0, docs/benchmarks/2026-10-08-selecteur-hybride.md).
+# supplémentaire du sélecteur appris (muxiveo-rife 1.6.0).
 # Qualité / Ultra : RIFE v4.15 affiné par Muxiveo (rife-v4.15-mvo1, même architecture et même coût que v4.15).
 INTERPOLATION_PRESETS: dict[str, InterpolationPreset] = {
     "fast": InterpolationPreset("rife", "rife-v4.6"),
