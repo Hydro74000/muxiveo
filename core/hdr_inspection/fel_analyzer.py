@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
 
 import numpy as np
 
@@ -24,6 +24,9 @@ from core.hdr_inspection.fel_layer import LayerFacts
 from core.hdr_inspection.pq import pq_to_nits
 from core.i18n import translate_text
 from core.subprocess_utils import subprocess_windows_no_window_kwargs
+
+if TYPE_CHECKING:
+    from core.hdr_inspection.dovi import DoviAnalysis
 
 #: Seuil de visibilité (JND) de chaque catégorie, dans son unité, en conditions critiques :
 #: - ton, ombres : ΔE ITP (ITU-R BT.2124, 1 = JND) d'un code de luma 10 bits PQ plage limitée ≈ 0,82 ;
@@ -216,23 +219,38 @@ def overall_summary(samples: Sequence[FelSample]) -> CategorySummary:
     return CategorySummary("overall", float(np.median(values)), p90, classify(p90, OVERALL_THRESHOLDS), p90)
 
 
+#: Codes stables des verdicts (CLI, scripts), du plus utile au moins utile.
+VERDICTS = ("useful", "useful_if_bitrate", "useful_high_bitrate", "moderate", "useless")
+#: Codes stables des niveaux (JSON) : faible / moyen / fort.
+LEVEL_KEYS = {"faible": "weak", "moyen": "medium", "fort": "strong"}
+
+
 def recommendation(report: FelReport) -> tuple[str, str]:
     """Verdict et explication (texte traduit)."""
+    return verdict(report)[1:]
+
+
+def verdict(report: FelReport) -> tuple[str, str, str]:
+    """Code stable (``VERDICTS``), verdict et explication (texte traduit)."""
+    if not report.samples and report.notes:
+        # Rien mesuré (MEL, FEL vide) : la raison tient lieu d'explication.
+        return "useless", translate_text("Intégrer le FEL : inutile"), report.notes[0]
     strong = [key for key, *_ in CATEGORIES if report.level(key) == LEVELS[2]]
     medium = [key for key, *_ in CATEGORIES if report.level(key) == LEVELS[1]]
     labels = {key: translate_text(label) for key, label, *_ in CATEGORIES}
-    visible = [key for key in strong if key in ("tone", "highlights", "colour", "shadows")]
+    # Seuls le détail fin et le grain dépendent du débit d'encodage ; le reste (ton, couleur, stabilité) se voit.
+    visible = [key for key in strong if key not in ("detail", "grain")]
     if visible:
-        return (translate_text("Intégrer le FEL : utile"),
+        return ("useful", translate_text("Intégrer le FEL : utile"),
                 translate_text("Apport fort : {categories}.", categories=", ".join(labels[k] for k in strong)))
     if strong:
         survival = report.survival
         if survival is not None and survival.detail_kept < 0.5:
-            return (translate_text("Intégrer le FEL : utile seulement à haut débit"),
+            return ("useful_high_bitrate", translate_text("Intégrer le FEL : utile seulement à haut débit"),
                     translate_text("Apport de détail fin, à {kept} % conservé à {bitrate} kbit/s ({encoder}).",
                                    kept=round(survival.detail_kept * 100), bitrate=survival.bitrate_kbps,
                                    encoder=survival.encoder))
-        return (translate_text("Intégrer le FEL : utile si le débit le permet"),
+        return ("useful_if_bitrate", translate_text("Intégrer le FEL : utile si le débit le permet"),
                 translate_text("Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.",
                                categories=", ".join(labels[k] for k in strong)))
     # Catégories faibles prises une à une mais cumulées au même instant (moyennes comprises).
@@ -240,17 +258,17 @@ def recommendation(report: FelReport) -> tuple[str, str]:
     contributors = [s.key for s in report.summary if s.jnd >= 0.5]
     cumulated = ", ".join(labels[k] for k in contributors) or "—"
     if overall.level == LEVELS[2]:
-        return (translate_text("Intégrer le FEL : utile"),
+        return ("useful", translate_text("Intégrer le FEL : utile"),
                 translate_text("Apport global fort ({jnd} JND) par cumul : {categories}.", jnd=f"{overall.p90:.1f}",
                                categories=cumulated))
     if medium:
-        return (translate_text("Intégrer le FEL : apport modéré"),
+        return ("moderate", translate_text("Intégrer le FEL : apport modéré"),
                 translate_text("Apport moyen : {categories}.", categories=", ".join(labels[k] for k in medium)))
     if overall.level == LEVELS[1]:
-        return (translate_text("Intégrer le FEL : apport modéré"),
+        return ("moderate", translate_text("Intégrer le FEL : apport modéré"),
                 translate_text("Apport global moyen ({jnd} JND) par cumul : {categories}.",
                                jnd=f"{overall.p90:.1f}", categories=cumulated))
-    return (translate_text("Intégrer le FEL : inutile"),
+    return ("useless", translate_text("Intégrer le FEL : inutile"),
             translate_text("Apport négligeable : ce FEL se comporte comme un MEL."))
 
 
@@ -475,6 +493,30 @@ def _sample_metrics(reconstructed: list[Frame], mapped: list[Frame],
     return metrics, score, rows
 
 
+def area_at(dovi: DoviAnalysis | None, fps: float) -> Callable[[float], tuple[int, int, int, int] | None]:
+    """Zone active L5 (gauche, droite, haut, bas) en vigueur à un instant, None sans L5."""
+
+    def area(time_s: float) -> tuple[int, int, int, int] | None:
+        if dovi is None or not dovi.active_areas:
+            return None
+        frame = int(time_s * (fps or 24))
+        current = dovi.active_areas[0]
+        for item in dovi.active_areas:
+            if item.first_frame > frame:
+                break
+            current = item
+        return (current.left, current.right, current.top, current.bottom)
+
+    return area
+
+
+def nothing_to_measure(dovi: DoviAnalysis) -> str | None:
+    """Nature de la couche quand l'image reconstruite égale la lecture P8.1 (« MEL », « FEL vide »), sinon None."""
+    if dovi.el_type == "FEL" and dovi.residual_active_frames:
+        return None
+    return "MEL" if dovi.el_type == "MEL" else translate_text("FEL vide")
+
+
 def sample_times(duration_s: float, interval_s: float, margin_s: float = 5.0) -> list[float]:
     """Instants répartis sur le film (marges du début et de la fin écartées)."""
     if duration_s <= 2 * margin_s:
@@ -584,6 +626,42 @@ def encode_round_trip(frames: Sequence[Frame], *, ffmpeg_bin: str, encoder: str,
     _streamed([ffmpeg_bin, *common, "-f", "hevc", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "yuv420p10le",
                "pipe:1"], lambda pipe: pipe.write(encoded), read_frames)
     return result
+
+
+def run_survival(capture: CaptureLayer, fel: FelReport, *, ffmpeg_bin: str, encoder: str, bitrate_kbps: int,
+                 fps: float, area: Callable[[float], tuple[int, int, int, int] | None],
+                 duration_s: float | None = None, progress: Callable[[str, int], None] | None = None) -> Survival:
+    """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée.
+
+    La rafale reste dans la source (``duration_s``) : avancée ou raccourcie près de la fin d'un extrait.
+    ``subprocess.CalledProcessError`` : encodeur indisponible (stderr dans l'exception).
+    """
+    from fractions import Fraction
+
+    if not fel.samples:
+        raise ValueError(translate_text("Aucun instant mesuré : analyser d'abord l'apport du FEL."))
+    moment = max(fel.samples, key=lambda s: s.metrics.get("detail", 0.0))
+    fps = fps or 24000 / 1001
+    burst = max(4, int(round(fps)))
+    start = moment.time_s
+    if duration_s:
+        # Marge de deux images : la dernière image annoncée par le conteneur n'est pas toujours décodable.
+        burst = max(2, min(burst, int(duration_s * fps) - 2))
+        start = max(0.0, min(start, duration_s - (burst + 2) / fps))
+    if progress is not None:
+        progress(translate_text("Capture des images…"), 10)
+    reconstructed = capture("reconstructed", start, burst)
+    picked = survival_indices(len(reconstructed))
+    burst_mapped = capture("mapped", start, burst)
+    mapped = [burst_mapped[i] for i in picked]
+    del burst_mapped
+    if progress is not None:
+        progress(translate_text("Encodage de test…"), 50)
+    rate = Fraction(fps).limit_denominator(1001)
+    encoded = encode_round_trip(reconstructed, ffmpeg_bin=ffmpeg_bin, encoder=encoder, bitrate_kbps=bitrate_kbps,
+                                frame_rate=f"{rate.numerator}/{rate.denominator}", keep=picked)
+    return survival([reconstructed[i] for i in picked], mapped, encoded, encoder=encoder, bitrate_kbps=bitrate_kbps,
+                    rows=active_rows(mapped[0], area(moment.time_s)))
 
 
 def survival(reconstructed: Sequence[Frame], mapped: Sequence[Frame], encoded: Sequence[Frame], *,

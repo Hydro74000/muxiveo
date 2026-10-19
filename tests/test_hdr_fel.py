@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
 import subprocess
 import threading
@@ -11,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import core.hdr_inspection.fel_analyzer as fel_analyzer_module
 import core.hdr_inspection.fel_layer as fel_layer
 from core.hdr_inspection.fel_analyzer import (
     LEVELS,
@@ -188,6 +190,10 @@ def test_classify_summary_and_recommendation():
     from core.hdr_inspection.fel_analyzer import Survival
     lost = dataclasses.replace(detail_report, survival=Survival("libx265", 20000, 0.9, 0.2, 5.0, 3.0))
     assert "haut débit" in recommendation(lost)[0] and "20000" in recommendation(lost)[1]
+    # Stabilité temporelle forte (pompage de la lecture P8.1 corrigé) : visible, pas un détail fin.
+    flicker = [dataclasses.replace(s, metrics={**s.metrics, "temporal": 4.0}) for s in weak]
+    flicker_report = FelReport(None, tuple(flicker), summarise(flicker), ())
+    assert recommendation(flicker_report) == ("Intégrer le FEL : utile", "Apport fort : Stabilité temporelle.")
     assert summarise([])[0].level == LEVELS[0]
 
 
@@ -501,3 +507,123 @@ def test_before_after_view_zoom_pan_split_and_dialog(qt_app):
         assert dialog.readout.text() == ""
     finally:
         dialog.close()
+
+
+# ── CLI : inspect --hdr-fel ──────────────────────────────────────────────────
+def _fel_cli(tmp_path, monkeypatch, capsys, *argv: str, el_type: str = "FEL", contribution: float = 12.0,
+             layers=("base", "mapped", "reconstructed"), dovi: bool = True) -> tuple[int, dict, list[str]]:
+    import cli.hdr as cli_hdr
+    import core.fel.engine as engine_module
+    from cli.logging import Logger
+    from cli.parser import build_parser
+    from core.config import AppConfig
+    from core.hdr_inspection import InspectionReport, audit, build_snapshot
+    from tests.test_hdr_inspection import _analyses
+    from tests.test_hdr_studio import _FakeInspector
+
+    calls: list[str] = []
+    analysis, _h = _analyses(tmp_path, el_type=el_type, residual_off=False)
+
+    def dynamic(config, info, stream, *args, **kwargs):
+        calls.append("dynamic")
+        snapshot = build_snapshot(info, stream)
+        found = analysis if dovi else None
+        return InspectionReport(snapshot, found, None, audit(snapshot, found), dynamic=True)
+
+    m = _base(h=64, w=96)
+
+    def capture_factory(*args, **kwargs):
+        calls.append(f"capture:{kwargs.get('device')}")
+        return lambda layer, t, n: [_frame(m + (contribution if layer == "reconstructed" else 0))] * n
+
+    monkeypatch.setattr(cli_hdr, "FileInspector", _FakeInspector)
+    monkeypatch.setattr(cli_hdr, "_dynamic", dynamic)
+    monkeypatch.setattr(fel_analyzer_module, "plugin_capture", capture_factory)
+    monkeypatch.setattr(fel_layer, "scan_layers",
+                        lambda *a, **k: LayerFacts(10, 0.4, 4_000_000, 1_000_000, 10_000, (1920, 1080)))
+    monkeypatch.setattr(fel_analyzer_module, "encode_round_trip",
+                        lambda frames, **k: [frames[i] for i in k["keep"]])
+    engine = type("E", (), {"capabilities": {"layers": list(layers)}})()
+    monkeypatch.setattr(engine_module.FelEngine, "installed", classmethod(lambda cls: engine))
+    config = AppConfig()
+    config.app_data_dir = tmp_path / "appdata"
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"\x1a\x45\xdf\xa3")
+    args = build_parser().parse_args(["inspect", str(media), *argv, "--work-dir", str(tmp_path / "work")])
+    code = args.func(args, config, Logger())
+    return code, json.loads(capsys.readouterr().out), calls
+
+
+def test_cli_hdr_fel_analysis_survival_and_report(tmp_path, monkeypatch, capsys):
+    report_path = tmp_path / "rapport.html"
+    code, payload, calls = _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", "--hdr-fel-interval", "10",
+                                    "--hdr-fel-survival", "libx265:35000", "--hdr-fel-min", "useful",
+                                    "--hdr-report", str(report_path))
+    fel = payload["hdr"][0]["fel"]
+    assert code == 0 and calls[0] == "dynamic" and "capture:cpu" in calls and "capture:auto" in calls
+    assert fel["verdict_code"] == "useful" and fel["samples"] == 1 and fel["layers"]["el_size"] == [1920, 1080]
+    tone = next(c for c in fel["categories"] if c["key"] == "tone")
+    assert tone["level_key"] == "strong" and tone["p90"] == pytest.approx(12, abs=0.5)
+    assert fel["overall"]["level_key"] == "strong"
+    assert fel["survival"]["encoder"] == "libx265" and fel["survival"]["tone_kept"] == pytest.approx(1.0)
+    assert "FEL Analyzer" in report_path.read_text(encoding="utf-8")
+
+
+def test_cli_hdr_fel_min_mel_and_errors(tmp_path, monkeypatch, capsys):
+    from cli.constants import EXIT_ARGS, EXIT_TOOL, EXIT_VALIDATION
+    from cli.errors import CliError
+
+    # Apport nul : verdict « useless », code 3 avec --hdr-fel-min moderate ; --hdr static relevé en dynamique.
+    code, payload, calls = _fel_cli(tmp_path, monkeypatch, capsys, "--hdr", "static", "--hdr-fel",
+                                    "--hdr-fel-min", "moderate", contribution=0.0)
+    assert code == EXIT_VALIDATION and payload["hdr"][0]["fel"]["verdict_code"] == "useless" and calls[0] == "dynamic"
+    # MEL : rien capturé, la raison tient lieu d'explication.
+    code, payload, calls = _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", el_type="MEL")
+    fel = payload["hdr"][0]["fel"]
+    assert code == 0 and fel["verdict_code"] == "useless" and fel["detail"].startswith("MEL")
+    assert fel["samples"] == 0 and not any(c.startswith("capture") for c in calls)
+    with pytest.raises(CliError) as error:
+        _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", dovi=False)
+    assert error.value.exit_code == EXIT_ARGS
+    with pytest.raises(CliError) as error:
+        _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", layers=("reconstructed",))
+    assert error.value.exit_code == EXIT_TOOL and "0.4.0" in str(error.value)
+    with pytest.raises(CliError):
+        _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel-survival", "libx265:35000")
+    for bad in ("x264:1000", "libx265:abc", "libx265:0"):
+        with pytest.raises(SystemExit):
+            _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", "--hdr-fel-survival", bad)
+    with pytest.raises(SystemExit):
+        _fel_cli(tmp_path, monkeypatch, capsys, "--hdr-fel", "--hdr-fel-interval", "0")
+
+
+def test_run_survival_keeps_the_burst_inside_short_sources():
+    from core.hdr_inspection.fel_analyzer import run_survival
+
+    m = _base(h=64, w=96)
+    requests: list[tuple[str, float, int]] = []
+
+    def capture(layer, time_s, count):
+        requests.append((layer, round(time_s, 3), count))
+        return [_frame(m + (6 if layer == "reconstructed" else 0))] * count
+
+    report = FelReport(None, (FelSample(0.75, {"detail": 1.0}),), (), ())
+    import core.hdr_inspection.fel_analyzer as module
+    original = module.encode_round_trip
+    module.encode_round_trip = lambda frames, **k: [frames[i] for i in k["keep"]]
+    try:
+        result = run_survival(capture, report, ffmpeg_bin="ffmpeg", encoder="libx265", bitrate_kbps=20000,
+                              fps=24000 / 1001, area=lambda _t: None, duration_s=1.5)
+    finally:
+        module.encode_round_trip = original
+    # 1,5 s à 23,976 i/s : 35 images, rafale de 24 avancée à 1,5 − 26 / 23,976 ≈ 0,416 s.
+    assert requests == [("reconstructed", 0.416, 24), ("mapped", 0.416, 24)]
+    assert result.tone_kept == pytest.approx(1.0)
+    requests.clear()
+    module.encode_round_trip = lambda frames, **k: [frames[i] for i in k["keep"]]
+    try:
+        run_survival(capture, report, ffmpeg_bin="ffmpeg", encoder="libx265", bitrate_kbps=20000,
+                     fps=24000 / 1001, area=lambda _t: None, duration_s=0.3)
+    finally:
+        module.encode_round_trip = original
+    assert requests[0] == ("reconstructed", 0.008, 5)  # extrait de 7 images : rafale raccourcie

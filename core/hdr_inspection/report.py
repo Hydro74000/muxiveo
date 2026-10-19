@@ -19,7 +19,7 @@ import numpy as np
 from core.atomic_io import atomic_write_text
 from core.hdr_inspection import axes, summary
 from core.hdr_inspection.compare import SOURCE_LABELS, Comparison
-from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, FelReport, recommendation
+from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, LEVEL_KEYS, FelReport, verdict
 from core.hdr_inspection.inspector import InspectionReport
 from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.pq import pq12_to_nits
@@ -116,17 +116,18 @@ def _hdr10plus_data(report: InspectionReport) -> dict | None:
 
 
 def _fel_data(fel: FelReport) -> dict:
-    verdict, detail = recommendation(fel)
+    code, title, detail = verdict(fel)
     facts = fel.facts
     labels = {key: (label, unit) for key, label, unit, _ in CATEGORIES}
     return {
-        "verdict": verdict, "detail": detail, "samples": len(fel.samples),
+        "verdict_code": code, "verdict": title, "detail": detail, "samples": len(fel.samples),
         "categories": [{"key": item.key, "label": translate_text(labels[item.key][0]),
                         "unit": translate_text(labels[item.key][1]), "median": _number(item.median),
-                        "p90": _number(item.p90), "jnd": _number(item.jnd), "level": translate_text(item.level)}
+                        "p90": _number(item.p90), "jnd": _number(item.jnd), "level": translate_text(item.level),
+                        "level_key": LEVEL_KEYS[item.level]}
                        for item in fel.summary],
         "overall": {"median_jnd": _number(fel.overall.median), "p90_jnd": _number(fel.overall.p90),
-                    "level": translate_text(fel.overall.level)},
+                    "level": translate_text(fel.overall.level), "level_key": LEVEL_KEYS[fel.overall.level]},
         "layers": None if facts is None else {
             "frames": facts.frames, "duration_s": _number(facts.duration_s),
             "bl_bitrate": _number(facts.bitrate(facts.bl_bytes), 0), "el_bitrate": _number(facts.bitrate(facts.el_bytes), 0),

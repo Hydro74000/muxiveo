@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import subprocess
 import threading
+from fractions import Fraction
 from pathlib import Path
 
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_TOOL, EXIT_VALIDATION
@@ -14,14 +16,37 @@ from cli.options import common_options
 from core.config import AppConfig
 from core.hdr_inspection import DynamicInspector, InspectionCache, InspectionReport, Severity, audit, snapshot_report
 from core.hdr_inspection.compare import Side, compare
+from core.hdr_inspection.fel_analyzer import FelReport, verdict
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
 from core.hdr_inspection.report import report_data, write_report
+from core.i18n import translate_text
 from core.inspector import FileInspector
 from core.runner import ToolRunner
 from core.workdir import create_process_work_dir
 
 LEVELS = ("static", "dynamic", "measure")
 _FAIL_ON = {"warn": (Severity.WARN, Severity.ERROR), "error": (Severity.ERROR,)}
+#: Encodeurs du test de survie FEL (mêmes familles que l'onglet FEL du HDR Studio).
+FEL_ENCODERS = ("libx265", "hevc_nvenc", "hevc_qsv", "hevc_vaapi")
+#: Verdict minimal exigé par ``--hdr-fel-min`` : verdicts acceptés.
+_FEL_MIN = {"moderate": ("useful", "useful_if_bitrate", "useful_high_bitrate", "moderate"),
+            "useful": ("useful", "useful_if_bitrate", "useful_high_bitrate")}
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("valeur strictement positive attendue")
+    return number
+
+
+def _survival_spec(value: str) -> tuple[str, int]:
+    """``ENCODEUR:KBPS`` (ex. ``libx265:35000``)."""
+    encoder, _sep, bitrate = value.partition(":")
+    if encoder not in FEL_ENCODERS or not bitrate.isdigit() or int(bitrate) <= 0:
+        raise argparse.ArgumentTypeError(
+            f"ENCODEUR:KBPS attendu, encodeur parmi {', '.join(FEL_ENCODERS)} (ex. libx265:35000)")
+    return encoder, int(bitrate)
 
 
 def add_hdr_options(parser: argparse.ArgumentParser) -> None:
@@ -43,6 +68,15 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Avec --hdr measure : mesure rapide (images clés, extension mvo-fel ≥ 0.5.0) ; estimation.")
     group.add_argument("--hdr-no-cache", action="store_true",
                        help="Relit le fichier au lieu du résultat en cache (RPU, HDR10+, mesure).")
+    group.add_argument("--hdr-fel", action="store_true",
+                       help="FEL Analyzer : apport de la couche FEL d'une source Dolby Vision profil 7 (lit les "
+                            "métadonnées dynamiques ; extension mvo-fel ≥ 0.4.0).")
+    group.add_argument("--hdr-fel-interval", type=_positive_int, default=30, metavar="SECONDES",
+                       help="Avec --hdr-fel : une image mesurée toutes les SECONDES (défaut 30 ; 60 rapide, 10 fin).")
+    group.add_argument("--hdr-fel-survival", type=_survival_spec, default=None, metavar="ENCODEUR:KBPS",
+                       help="Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).")
+    group.add_argument("--hdr-fel-min", choices=tuple(_FEL_MIN), default=None,
+                       help="Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).")
 
 
 def _dynamic(config: AppConfig, info, stream: int | None, cache: InspectionCache | None, refresh: bool,
@@ -98,8 +132,96 @@ def _measure(config: AppConfig, report: InspectionReport, threads: int, work_roo
         owned.remove()
 
 
+def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: int,
+                  survival: tuple[str, int] | None, ffmpeg: str, threads: int, logger: Logger) -> FelReport:
+    """FEL Analyzer d'une source P7 (mêmes mesures que l'onglet FEL) ; MEL ou FEL vide : rien à capturer."""
+    from core.fel.engine import FelEngine, FelError, layers_supported
+    from core.hdr_inspection.fel_analyzer import (
+        analyse,
+        area_at,
+        nothing_to_measure,
+        plugin_capture,
+        run_survival,
+        sample_times,
+        summarise,
+    )
+    from core.hdr_inspection.fel_layer import scan_layers
+
+    snapshot, dovi = report.snapshot, report.dovi
+    if dovi is None or dovi.el_type is None:
+        raise CliError("FEL Analyzer : aucune couche d'amélioration Dolby Vision (profil 7 attendu).", EXIT_ARGS)
+    kind = nothing_to_measure(dovi)
+    if kind is not None:
+        reason = translate_text("{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
+                                kind=kind)
+        logger.emit("info", reason)
+        return FelReport(None, (), summarise([]), (), notes=(reason,))
+    try:
+        engine = FelEngine.installed()
+    except FelError as exc:
+        raise CliError(f"FEL Analyzer : {exc}", EXIT_TOOL) from exc
+    if not (layers_supported(engine, "mapped") and layers_supported(engine, "reconstructed")):
+        raise CliError("FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise.", EXIT_TOOL)
+    fps = snapshot.fps or 24000 / 1001
+    rate = Fraction(fps).limit_denominator(1001)
+    cancel = threading.Event()
+
+    def capture_on(device: str):
+        return plugin_capture(engine, Path(snapshot.path), snapshot.stream_index, ffmpeg_bin=ffmpeg,
+                              width=snapshot.width or 3840, height=snapshot.height or 2160,
+                              frame_rate=f"{rate.numerator}/{rate.denominator}", threads=threads, cancelled=cancel,
+                              device=device)
+
+    area = area_at(dovi, fps)
+    try:
+        facts = None
+        if Path(snapshot.path).suffix.lower() == ".mkv":
+            logger.emit("info", "FEL Analyzer : relevé des couches BL / EL…")
+            reported = [0]
+
+            def scanned(fraction: float) -> None:
+                if int(fraction * 10) > reported[0]:
+                    reported[0] = int(fraction * 10)
+                    logger.emit("info", f"FEL Analyzer : relevé des couches {reported[0] * 10} %")
+
+            facts = scan_layers(Path(snapshot.path), snapshot.stream_index, progress=scanned)
+        duration = snapshot.duration_s or (snapshot.frames or 0) / fps
+        times = sample_times(duration, interval_s)
+        step = max(1, len(times) // 10)
+        logger.emit("info", f"FEL Analyzer : {len(times)} instants (une image toutes les {interval_s} s)")
+
+        def progress(fraction: float) -> None:
+            done = int(round(fraction * len(times)))
+            if done % step == 0 or done == len(times):
+                logger.emit("info", f"FEL Analyzer : {done}/{len(times)} instants")
+
+        try:
+            result = analyse(capture_on("cpu"), times, area=area, facts=facts, progress=progress)
+        except (RuntimeError, FelError) as exc:
+            raise CliError(f"FEL Analyzer : capture impossible ({exc}).", EXIT_TOOL) from exc
+        if survival is not None:
+            encoder, bitrate = survival
+            logger.emit("info", f"FEL Analyzer : test de survie {encoder} à {bitrate} kbit/s")
+            try:
+                kept = run_survival(capture_on("auto"), result, ffmpeg_bin=ffmpeg, encoder=encoder,
+                                    bitrate_kbps=bitrate, fps=fps, area=area, duration_s=duration or None)
+            except subprocess.CalledProcessError as exc:
+                detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
+                raise CliError(f"FEL Analyzer : encodeur {encoder} indisponible : {detail or exc}", EXIT_TOOL) from exc
+            except (RuntimeError, FelError) as exc:
+                raise CliError(f"FEL Analyzer : test de survie impossible ({exc}).", EXIT_TOOL) from exc
+            result = dataclasses.replace(result, survival=kept)
+        return result
+    finally:
+        cancel.set()
+
+
 def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
-    level = str(args.hdr)
+    fel_interval = args.hdr_fel_interval if args.hdr_fel else None
+    # Le type de couche (FEL / MEL) et la zone active viennent du RPU : niveau dynamique au minimum.
+    level = str(args.hdr or "dynamic")
+    if args.hdr_fel and level == "static":
+        level = "dynamic"
     inputs = [Path(value).expanduser() for value in args.input]
     if args.hdr_compare and len(inputs) != 2:
         raise CliError("--hdr-compare : deux sources attendues (A puis B).", EXIT_ARGS)
@@ -116,6 +238,7 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
     work_root.mkdir(parents=True, exist_ok=True)
     threads = max(2, int(options.threads or getattr(config, "ffmpeg_threads", 8) or 8))
     sides: list[Side] = []
+    fel_reports: list[FelReport] = []
     for path in inputs:
         info = inspector.inspect(path)
         if not info.video_tracks:
@@ -134,17 +257,28 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
         if measurement is not None:
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
                                                                  measurement))
+        if fel_interval is not None:
+            fel_reports.append(_fel_analysis(config, report, interval_s=fel_interval, survival=args.hdr_fel_survival,
+                                             ffmpeg=ffmpeg, threads=threads, logger=logger))
         sides.append(Side(report, measurement))
     comparison = compare(sides[0], sides[1], args.hdr_offset) if args.hdr_compare else None
-    payload: dict = {"hdr": [report_data(side.report, measurement=side.measurement) for side in sides]}
+    fels: list[FelReport | None] = list(fel_reports) if fel_reports else [None] * len(sides)
+    payload: dict = {"hdr": [report_data(side.report, measurement=side.measurement, fel=fel)
+                             for side, fel in zip(sides, fels)]}
     if comparison is not None:
         payload["comparison"] = report_data(sides[0].report, measurement=sides[0].measurement, comparison=comparison,
                                             other=sides[1].report)["comparison"]
     print(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False))
     if args.hdr_report:
         target = write_report(Path(args.hdr_report).expanduser(), sides[0].report, measurement=sides[0].measurement,
-                              comparison=comparison, other=sides[1].report if comparison is not None else None)
+                              fel=fels[0], comparison=comparison,
+                              other=sides[1].report if comparison is not None else None)
         logger.emit("info", f"Rapport HDR écrit : {target}")
+    for fel in fel_reports:
+        _code, title, detail = verdict(fel)
+        logger.emit("info", f"{title} — {detail}")
+    if args.hdr_fel_min and any(verdict(fel)[0] not in _FEL_MIN[args.hdr_fel_min] for fel in fel_reports):
+        return EXIT_VALIDATION
     if args.hdr_fail_on:
         failing = _FAIL_ON[args.hdr_fail_on]
         if any(f.severity in failing for side in sides for f in side.report.findings) or any(

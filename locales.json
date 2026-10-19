@@ -8710,5 +8710,9 @@
   "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).": {
     "fra": "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).",
     "eng": "Click: full-resolution before / after comparison (zoom, draggable divider)."
+  },
+  "Aucun instant mesuré : analyser d'abord l'apport du FEL.": {
+    "fra": "Aucun instant mesuré : analyser d'abord l'apport du FEL.",
+    "eng": "No instant measured: analyse the FEL contribution first."
   }
 }

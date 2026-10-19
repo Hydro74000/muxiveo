@@ -743,10 +743,11 @@ class HdrStudio(QWidget):
             self._notify("WARN", translate_text(
                 "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU."))
             return
-        if dovi.el_type != "FEL" or not dovi.residual_active_frames:
+        from core.hdr_inspection.fel_analyzer import nothing_to_measure
+        kind = nothing_to_measure(dovi)
+        if kind is not None:
             self._notify("INFO", translate_text(
-                "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
-                kind="MEL" if dovi.el_type == "MEL" else translate_text("FEL vide")))
+                "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.", kind=kind))
             return
         engine = self._fel_engine()
         if engine is None:
@@ -785,22 +786,11 @@ class HdrStudio(QWidget):
 
     def _fel_area(self) -> Callable[[float], tuple[int, int, int, int] | None]:
         """Zone active L5 (gauche, droite, haut, bas) en vigueur à un instant, None sans L5."""
+        from core.hdr_inspection.fel_analyzer import area_at
+
         report = self._report
-        dovi = report.dovi if report is not None else None
-        fps = (report.snapshot.fps if report is not None else None) or 24
-
-        def area(time_s: float) -> tuple[int, int, int, int] | None:
-            if dovi is None or not dovi.active_areas:
-                return None
-            frame = int(time_s * fps)
-            current = dovi.active_areas[0]
-            for item in dovi.active_areas:
-                if item.first_frame > frame:
-                    break
-                current = item
-            return (current.left, current.right, current.top, current.bottom)
-
-        return area
+        return area_at(report.dovi if report is not None else None,
+                       (report.snapshot.fps if report is not None else None) or 24)
 
     def test_fel_survival(self, encoder: str, bitrate_kbps: int) -> None:
         """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée."""
@@ -815,31 +805,18 @@ class HdrStudio(QWidget):
         token = self._token
         cancel = threading.Event()
         self._cancel = cancel
-        moment = max(fel.samples, key=lambda s: s.metrics.get("detail", 0.0))
-        burst = max(4, int(round(snapshot.fps or 24)))
         # Rafale d'une seconde : le GPU amortit son initialisation (CPU pour les instants isolés).
         capture = self._fel_capture(engine, snapshot, cancel, device="auto")
         area = self._fel_area()
 
         def task() -> None:
-            from fractions import Fraction
-
-            from core.hdr_inspection.fel_analyzer import active_rows, encode_round_trip, survival, survival_indices
+            from core.hdr_inspection.fel_analyzer import run_survival
 
             try:
-                self._progress.emit(token, translate_text("Capture des images…"), 10)
-                reconstructed = capture("reconstructed", moment.time_s, burst)
-                picked = survival_indices(len(reconstructed))
-                burst_mapped = capture("mapped", moment.time_s, burst)
-                mapped = [burst_mapped[i] for i in picked]
-                del burst_mapped
-                self._progress.emit(token, translate_text("Encodage de test…"), 50)
-                fps = Fraction(snapshot.fps or 24000 / 1001).limit_denominator(1001)
-                encoded = encode_round_trip(reconstructed, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
-                                            bitrate_kbps=bitrate_kbps, frame_rate=f"{fps.numerator}/{fps.denominator}",
-                                            keep=picked)
-                result = survival([reconstructed[i] for i in picked], mapped, encoded, encoder=encoder,
-                                  bitrate_kbps=bitrate_kbps, rows=active_rows(mapped[0], area(moment.time_s)))
+                result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
+                                      bitrate_kbps=bitrate_kbps, fps=snapshot.fps or 24000 / 1001, area=area,
+                                      duration_s=snapshot.duration_s,
+                                      progress=lambda text, value: self._progress.emit(token, text, value))
                 self._fel_done.emit(token, dataclasses.replace(fel, survival=result), "")
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
