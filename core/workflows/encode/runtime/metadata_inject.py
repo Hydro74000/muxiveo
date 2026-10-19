@@ -498,33 +498,48 @@ class MetadataInjectRunner:
                             "n'a pas pu être construit."
                         )
 
-                cb.log_step(6, "Encodage vidéo vers MKV mono-piste horodaté")
                 enc_video_mkv = _alloc("enc_video.mkv", src_size_est)
-                signals.progress.emit("Encodage vidéo…")
-                passlog_prefix = (
-                    cb.two_pass_log_prefix(tmp, "inject_video")
-                    if uses_two_pass_video(video)
-                    else None
-                )
-                encode_cmds = cb.build_video_track_encode_commands(
-                    effective_config,
-                    video,
-                    cb.video_source_path(effective_config),
-                    enc_video_mkv,
-                    passlog_prefix=passlog_prefix,
-                )
-                try:
-                    for pass_index, encode_cmd in enumerate(encode_cmds, start=1):
-                        if len(encode_cmds) > 1:
-                            cb.log_info(
-                                f"Passe {pass_index}/{len(encode_cmds)} "
-                                f"({'analyse' if pass_index == 1 else 'encodage'})…"
-                            )
-                        _run(encode_cmd)
-                        _check()
-                finally:
-                    if passlog_prefix is not None:
-                        cb.cleanup_two_pass_logs_for_prefix(passlog_prefix)
+                copy_video = str(video.codec or "").strip().lower() == "copy"
+                if copy_video:
+                    # Copie : un annexB brut n'a pas d'horodatage (images B) ; la piste
+                    # d'origine fournit le timing, ses blocs sont remplacés un pour un.
+                    cb.log_step(6, "Copie de la piste vidéo source (horodatage d'origine)")
+                    signals.progress.emit("Copie de la piste vidéo source…")
+                    timed_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
+                    append_ffmpeg_input_args(timed_cmd, selected_video_source)
+                    timed_cmd.extend([
+                        "-map", f"0:{int(selected_video_stream)}", "-c:v", "copy",
+                        "-an", "-sn", "-dn", str(enc_video_mkv),
+                    ])
+                    _run(timed_cmd)
+                    _check()
+                else:
+                    cb.log_step(6, "Encodage vidéo vers MKV mono-piste horodaté")
+                    signals.progress.emit("Encodage vidéo…")
+                    passlog_prefix = (
+                        cb.two_pass_log_prefix(tmp, "inject_video")
+                        if uses_two_pass_video(video)
+                        else None
+                    )
+                    encode_cmds = cb.build_video_track_encode_commands(
+                        effective_config,
+                        video,
+                        cb.video_source_path(effective_config),
+                        enc_video_mkv,
+                        passlog_prefix=passlog_prefix,
+                    )
+                    try:
+                        for pass_index, encode_cmd in enumerate(encode_cmds, start=1):
+                            if len(encode_cmds) > 1:
+                                cb.log_info(
+                                    f"Passe {pass_index}/{len(encode_cmds)} "
+                                    f"({'analyse' if pass_index == 1 else 'encodage'})…"
+                                )
+                            _run(encode_cmd)
+                            _check()
+                    finally:
+                        if passlog_prefix is not None:
+                            cb.cleanup_two_pass_logs_for_prefix(passlog_prefix)
                 # Squelette de timing : mêmes TrackEntry/timestamps que le MKV
                 # encodé, payloads vides (quelques Mo). Il portera seul la
                 # vérité temporelle jusqu'à la réécriture des payloads.
@@ -544,18 +559,24 @@ class MetadataInjectRunner:
                 # de la source d'origine ne sont plus jamais réassociés au
                 # bitstream. Le MKV encodé complet est libéré aussitôt — le
                 # squelette suffit à la réécriture (pic disque 2× vidéo).
-                enc_hevc = _alloc("enc.hevc", src_size_est)
-                signals.progress.emit("Extraction annexB depuis l'artefact encodé…")
-                _run([
-                    cb.ffmpeg_bin, "-nostdin", "-y",
-                    "-i", str(enc_video_mkv),
-                    "-map", "0:v:0", "-c", "copy",
-                    "-bsf:v", "hevc_mp4toannexb",
-                    "-f", "hevc", str(enc_hevc),
-                ])
-                _check()
-                _free(enc_video_mkv)
-                current_hevc = enc_hevc
+                converted_hevc = cb.video_source_path(effective_config)
+                if copy_video and converted_hevc.suffix.lower() in _RAW_HEVC_EXT:
+                    # Flux converti (P7 → P8.1) : déjà en annexB, mêmes access units que la piste copiée.
+                    _free(enc_video_mkv)
+                    current_hevc = converted_hevc
+                else:
+                    enc_hevc = _alloc("enc.hevc", src_size_est)
+                    signals.progress.emit("Extraction annexB depuis l'artefact encodé…")
+                    _run([
+                        cb.ffmpeg_bin, "-nostdin", "-y",
+                        "-i", str(enc_video_mkv),
+                        "-map", "0:v:0", "-c", "copy",
+                        "-bsf:v", "hevc_mp4toannexb",
+                        "-f", "hevc", str(enc_hevc),
+                    ])
+                    _check()
+                    _free(enc_video_mkv)
+                    current_hevc = enc_hevc
 
                 request_mode = str(
                     getattr(video, "static_hdr_metadata_analysis_request", "") or ""
@@ -734,7 +755,9 @@ class MetadataInjectRunner:
                     and p7_router_decision.conversion_needed
                     and effective_config.source != config.source
                 ):
-                    _free(effective_config.source)
+                    # Copie : le flux converti est le flux en cours, libéré par l'injection.
+                    if effective_config.source != current_hevc:
+                        _free(effective_config.source)
                     effective_config = config
 
                 cb.log_step(7, "Injection des métadonnées vidéo HDR")

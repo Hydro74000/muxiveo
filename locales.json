@@ -195,9 +195,9 @@
     "fra": "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.",
     "eng": "P7 → P8.1: FEL contribution integrated into pixels if confirmed."
   },
-  "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)": {
-    "fra": "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)",
-    "eng": "Normalize the RPU to P8.1 (remove the EL from the output stream)"
+  "Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)": {
+    "fra": "Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)",
+    "eng": "Convert to P8.1 (P7 enhancement layer removed, copy included)"
   },
   "0 = illimité (débit choisi par l'encodeur).": {
     "fra": "0 = illimité (débit choisi par l'encodeur).",
@@ -1247,9 +1247,9 @@
     "fra": "Copier le RPU Dolby Vision depuis la source",
     "eng": "Copy Dolby Vision RPU from source"
   },
-  "Profil dovi_tool": {
-    "fra": "Profil dovi_tool",
-    "eng": "dovi_tool profile"
+  "Profil Dolby Vision": {
+    "fra": "Profil Dolby Vision",
+    "eng": "Dolby Vision profile"
   },
   "P8.1 — conserver (par défaut)": {
     "fra": "P8.1 — conserver (par défaut)",

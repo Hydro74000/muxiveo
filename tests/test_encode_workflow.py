@@ -2788,6 +2788,45 @@ class TestMetadataInjectCopyCodec:
         assert Path(estimate_mock.call_args.args[0]).name == "enc.hevc"
         assert ready == [("video-p5", estimate)]
 
+    def test_p7_copy_normalize_takes_timing_from_source_track(self, tmp_path):
+        """Copy + P8.1 : timing de la piste d'origine (annexB sans horodatage), flux converti injecté."""
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        video = _make_video_settings(codec="copy", copy_dv=True, dovi_profile="2")
+        config = _make_config(
+            source=src, output=tmp_path / "output.mkv", video=video, video_tracks=[video],
+            work_dir=tmp_path / "work",
+        )
+        wf = _make_workflow(enabled=False)
+        commands: list[list[str]] = []
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            commands.append([str(part) for part in cmd])
+            for arg in reversed(cmd):
+                path = Path(str(arg))
+                if path.suffix.lower() in {".hevc", ".mkv", ".bin", ".json"}:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        decision = P7RoutingDecision(
+            conversion_needed=True, sub_profile=DoviSubProfile.P7_FEL, convert_mode="2", reason="Source P7 FEL.",
+        )
+        module = "core.workflows.encode.runtime.metadata_inject"
+        with patch(f"{module}.DoviP7Router.analyze", return_value=decision), \
+                patch(f"{module}.write_timing_skeleton", return_value=MagicMock(blocks_written=10)), \
+                patch(f"{module}.FrameCountGuard"), \
+                patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            _collect_signals(wf._run_with_metadata_inject(config))
+
+        timed = [cmd for cmd in commands if cmd[-1].endswith("enc_video.mkv")]
+        assert len(timed) == 1
+        assert str(src) in timed[0] and timed[0][timed[0].index("-c:v") + 1] == "copy"
+        inject = next(cmd for cmd in commands if "inject-rpu" in cmd)
+        assert Path(inject[inject.index("-i") + 1]).name == "source_p8.hevc"
+        assert not any("enc.hevc" in part for cmd in commands for part in cmd)
+
 
 # ===========================================================================
 # Codec COPY — passthrough métadonnées dans les commandes FFmpeg

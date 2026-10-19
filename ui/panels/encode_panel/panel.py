@@ -1384,7 +1384,7 @@ class EncodePanel(QWidget):
         dp_l = QHBoxLayout(self._dovi_profile_widget)
         dp_l.setContentsMargins(20, 0, 0, 0)
         dp_l.setSpacing(8)
-        dp_lbl = QLabel("Profil dovi_tool")
+        dp_lbl = QLabel("Profil Dolby Vision")
         dp_lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
         self._dovi_profile_combo = QComboBox()
         self._dovi_profile_combo.setStyleSheet(_combo_style())
@@ -1392,7 +1392,7 @@ class EncodePanel(QWidget):
             translate_text("Conserver le profil source (P8.1 seulement si réencodage)"), "0",
         )
         self._dovi_profile_combo.addItem(
-            translate_text("Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)"), NORMALIZE_P81,
+            translate_text("Convertir en P8.1 (couche d’amélioration P7 retirée, aussi en copie)"), NORMALIZE_P81,
         )
         self._dovi_profile_combo.currentIndexChanged.connect(self._on_dovi_profile_changed)
         dp_l.addWidget(dp_lbl)
@@ -4694,7 +4694,7 @@ class EncodePanel(QWidget):
 
     @staticmethod
     def _sub_setting_row(label: str, field: QWidget) -> QWidget:
-        """Ligne de réglage secondaire de la carte HDR (style de « Profil dovi_tool ») : libellé puis champ."""
+        """Ligne de réglage secondaire de la carte HDR (style de « Profil Dolby Vision ») : libellé puis champ."""
         row = QWidget()
         row.setStyleSheet("background:transparent;")
         layout = QHBoxLayout(row)
