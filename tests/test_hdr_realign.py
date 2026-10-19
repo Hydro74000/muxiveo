@@ -133,3 +133,20 @@ def test_patcher_injects_hdr10plus_recomputed_from_measurement(tmp_path):
     assert tools.injected["SceneInfoSummary"]["SceneFrameNumbers"] == [2, 2]
     assert {i["TargetedSystemDisplayMaximumLuminance"] for i in tools.injected["SceneInfo"]} == {600}
     assert not list(work.iterdir())
+
+
+def test_l6_keeps_the_rpu_mastering_when_the_mdcv_is_below_the_picture(tmp_path):
+    # Cas réel : MDCV 1000 nits, L6 0/0 sur écran 4000 nits, image mesurée à 2211 nits, MaxCLL absent.
+    from tests.test_hdr_inspection import _DOVI_RECORD, _MASTERING
+
+    dovi, _ = _analyses(tmp_path, max_pq=3500, l6=(4000, 50, 0, 0))
+    snapshot = build_snapshot(_info(tmp_path / "a.mkv", side_data=[_DOVI_RECORD, _MASTERING]))
+    report = InspectionReport(snapshot, dovi, None, audit(snapshot, dovi, None), dynamic=True)
+    result = realign(report, _measurement(2211, 204), 1000)
+    proposals = {p.key: p for p in result.proposals}
+    assert result.light_levels == (2211, 204)
+    assert proposals["mdcv"].proposed.endswith("0.005 – 4000 nits") and "sous le pic mesuré" in proposals["mdcv"].impact
+    assert result.mastering is not None and result.mastering.max_nits == 4000
+    # L6 : niveaux mesurés, écran 4000 nits conservé (jamais ramené au MDCV contredit).
+    assert result.l6 == (4000, 0.005, 2211, 204)
+    assert proposals["l6"].proposed == "2211 / 204, 0.005 – 4000 nits"

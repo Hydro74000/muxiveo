@@ -30,6 +30,8 @@ TOLERANCE = 0.10
 #: étalonnage).
 L1_RATIO = 2.0
 L1_SHARE = 0.05
+#: Écran de mastering plausible : au moins 90 % du pic mesuré (arrondis, outils d'analyse).
+MASTERING_FLOOR = 0.9
 
 
 @dataclass(frozen=True)
@@ -136,10 +138,21 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
         scored.append((_score(risk), candidate not in (1000.0, 4000.0, 10000.0), candidate, risk))
     best_score, _unusual, best, best_risk = min(scored, key=lambda item: item[:3])
     if current is None or not current.max_nits:
-        mastering_edit = standard_mastering(float(cll), primaries)
+        mastering_edit = _rpu_mastering(report, cll, primaries) or standard_mastering(float(cll), primaries)
         proposals.append(Proposal("mdcv", translate_text("Écran de mastering (MDCV)"), translate_text("absent"),
                                   f"{mastering_edit.primaries}, {mastering_edit.min_nits:g} – {mastering_edit.max_nits:g} nits",
                                   translate_text("absent : les TV supposent un écran par défaut")))
+    elif current.max_nits < MASTERING_FLOOR * cll and (rpu_mastering := _rpu_mastering(report, cll, primaries)):
+        # Écran d'étalonnage sous le pic de l'image : impossible, le RPU (L6, écran source) donne la valeur.
+        mastering_edit = rpu_mastering
+        proposals.append(Proposal(
+            "mdcv", translate_text("Écran de mastering (MDCV)"),
+            f"{current.primaries}, {current.min_nits if current.min_nits is not None else '?'} – "
+            f"{current.max_nits:g} nits",
+            f"{mastering_edit.primaries}, {mastering_edit.min_nits:g} – {mastering_edit.max_nits:g} nits",
+            translate_text("sous le pic mesuré ({peak} nits) et contredit par le RPU : les TV qui suivent le MDCV "
+                           "écrêtent au-delà de {mdcv} nits en lecture HDR10", peak=cll,
+                           mdcv=f"{current.max_nits:g}")))
     else:
         current_risk = analyse(levels, model=TvModel.MDCV, max_cll=None, mdcv_max=current.max_nits,
                                display_peak=display_peak)
@@ -160,12 +173,14 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     dovi = report.dovi
     l6_target: tuple[int, float, int, int] | None = None
     if dovi is not None and dovi.frames:
-        target_mastering = mastering_edit or (MasteringEdit(primaries, float(current.min_nits or 0.0001),
-                                                            float(current.max_nits))
-                                              if current is not None and current.max_nits else None)
-        reference = target_mastering or standard_mastering(float(cll), primaries)
         sets = [item for item in dovi.l6]
         main = max(sets, key=lambda item: item.frames) if sets else None
+        # Écran du L6 : MDCV proposé ou du fichier, sinon celui du RPU, s'il n'est pas sous le pic de l'image.
+        file_mastering = (MasteringEdit(primaries, float(current.min_nits or 0.0001), float(current.max_nits))
+                          if current is not None and current.max_nits else None)
+        reference = next((m for m in (mastering_edit, file_mastering, _rpu_mastering(report, cll, primaries))
+                          if m is not None and m.max_nits >= MASTERING_FLOOR * cll),
+                         None) or standard_mastering(float(cll), primaries)
         off = (main is None or not main.max_cll
                or abs(main.max_cll - cll) > TOLERANCE * cll or abs(main.max_fall - fall) > max(5, TOLERANCE * fall)
                or main.max_mastering != round(reference.max_nits))
@@ -252,6 +267,23 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
                               "d'écrire")
         proposals = [dataclasses.replace(p, impact=f"{p.impact} — {note}") for p in proposals]
     return Realignment(tuple(proposals), light_levels, mastering_edit, l6_target, scenes)
+
+
+def _rpu_mastering(report: InspectionReport, peak: int, primaries: str) -> MasteringEdit | None:
+    """Écran d'étalonnage décrit par le RPU (L6 principal, sinon écran source) s'il couvre le pic mesuré."""
+    dovi = report.dovi
+    if dovi is None:
+        return None
+    candidates: list[tuple[float, float]] = []
+    if dovi.l6:
+        main = max(dovi.l6, key=lambda item: item.frames)
+        if main.max_mastering:
+            candidates.append((float(main.min_mastering), float(main.max_mastering)))
+    candidates += [(float(low), float(high)) for low, high in sorted(dovi.source_display, key=lambda s: -s[1])]
+    for low, high in candidates:
+        if MASTERING_FLOOR * peak <= high <= 10000 and 0 <= low < high:
+            return MasteringEdit(primaries, min(low, 50.0), high)
+    return None
 
 
 def _per_scene(values: np.ndarray, starts: np.ndarray, reduce: np.ufunc) -> np.ndarray:
