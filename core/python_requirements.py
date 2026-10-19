@@ -3,13 +3,16 @@ core/python_requirements.py — Dépendances Python d'exécution (source unique 
 
 Le nom de distribution (pip) et le module importable peuvent différer
 (``PySide6`` s'importe sous ce nom exact, avec sa casse). Une borne minimale
-est vérifiée sur la version installée de la distribution
-(``importlib.metadata``) : un import réussi ne prouve pas la version.
+et des versions exclues (``!=x.y.z``, version défectueuse connue) sont vérifiées
+sur la version installée de la distribution (``importlib.metadata``) : un import
+réussi ne prouve pas la version. Les conditions ``python_version < "x.y"``
+et ``python_version >= "x.y"`` sélectionnent les dépendances de l'interpréteur.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -18,17 +21,24 @@ REQUIREMENTS_FILE = Path(__file__).resolve().parents[1] / "requirements.txt"
 
 # Module importable quand il diffère du nom de distribution (clé en minuscules).
 _MODULE_NAMES = {"pyside6": "PySide6"}
-_LINE_RE = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:>=\s*(?P<minimum>[0-9][0-9.]*))?$")
+_LINE_RE = re.compile(
+    r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:>=\s*(?P<minimum>[0-9][0-9.]*))?"
+    r"(?P<excluded>(?:\s*,\s*!=\s*[0-9][0-9.]*)*)$"
+)
+_MARKER_RE = re.compile(
+    r"""^python_version\s*(?P<operator><|>=)\s*(?P<quote>["'])(?P<version>\d+\.\d+)(?P=quote)$"""
+)
 
 
 @dataclass(frozen=True)
 class PythonRequirement:
-    """Ligne de requirements.txt : distribution, borne minimale et module importable."""
+    """Ligne de requirements.txt : distribution, borne minimale, versions exclues et module importable."""
 
     distribution: str
     spec: str
     minimum: tuple[int, ...] | None
     module: str
+    excluded: tuple[tuple[int, ...], ...] = ()
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -44,23 +54,39 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def read_requirements(path: Path = REQUIREMENTS_FILE) -> list[PythonRequirement]:
-    """Dépendances déclarées ; seules les formes ``Nom`` et ``Nom>=x.y`` sont admises."""
+def read_requirements(
+    path: Path = REQUIREMENTS_FILE, *, python_version: tuple[int, int] | None = None,
+) -> list[PythonRequirement]:
+    """Dépendances actives : borne minimale, exclusions et condition optionnelle sur Python."""
+    if python_version is None:
+        python_version = (sys.version_info.major, sys.version_info.minor)
     requirements: list[PythonRequirement] = []
     for raw in Path(path).read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        match = _LINE_RE.match(line)
+        spec, separator, marker = line.partition(";")
+        match = _LINE_RE.fullmatch(spec.strip())
         if match is None:
             raise ValueError(f"Dépendance non prise en charge dans {path.name} : {line}")
+        if separator:
+            condition = _MARKER_RE.fullmatch(marker.strip())
+            if condition is None:
+                raise ValueError(f"Condition non prise en charge dans {path.name} : {marker.strip()}")
+            boundary = parse_version(condition.group("version"))
+            below = python_version < boundary
+            if below != (condition.group("operator") == "<"):
+                continue
         name = match.group("name")
         minimum = match.group("minimum")
+        excluded = re.findall(r"!=\s*([0-9][0-9.]*)", match.group("excluded"))
+        clauses = ([f">={minimum}"] if minimum else []) + [f"!={version}" for version in excluded]
         requirements.append(PythonRequirement(
             distribution=name,
-            spec=f"{name}>={minimum}" if minimum else name,
+            spec=name + ",".join(clauses),
             minimum=parse_version(minimum) if minimum else None,
             module=_MODULE_NAMES.get(name.lower(), name.replace("-", "_")),
+            excluded=tuple(parse_version(version) for version in excluded),
         ))
     return requirements
 
@@ -76,13 +102,27 @@ def installed_version(distribution: str) -> str | None:
 def unsatisfied_requirements(
     requirements: list[PythonRequirement],
 ) -> list[tuple[PythonRequirement, str | None]]:
-    """Dépendances absentes ou trop anciennes, avec la version trouvée (None si absente)."""
+    """Dépendances absentes, trop anciennes ou exclues, avec la version trouvée (None si absente)."""
     missing: list[tuple[PythonRequirement, str | None]] = []
     for requirement in requirements:
         version = installed_version(requirement.distribution)
-        if version is None or (requirement.minimum and not _meets_minimum(version, requirement.minimum)):
+        if (
+            version is None
+            or (requirement.minimum and not _meets_minimum(version, requirement.minimum))
+            or is_excluded(version, requirement)
+        ):
             missing.append((requirement, version))
     return missing
+
+
+def is_excluded(version: str, requirement: PythonRequirement) -> bool:
+    """Vrai si la version installée est exclue (``!=x.y.z`` : composantes manquantes égales à zéro)."""
+    release = parse_version(version)
+    for excluded in requirement.excluded:
+        width = max(len(release), len(excluded))
+        if release + (0,) * (width - len(release)) == excluded + (0,) * (width - len(excluded)):
+            return True
+    return False
 
 
 def _meets_minimum(version: str, minimum: tuple[int, ...]) -> bool:
@@ -98,6 +138,6 @@ def _meets_minimum(version: str, minimum: tuple[int, ...]) -> bool:
 
 
 __all__ = [
-    "PythonRequirement", "REQUIREMENTS_FILE", "installed_version", "parse_version",
+    "PythonRequirement", "REQUIREMENTS_FILE", "installed_version", "is_excluded", "parse_version",
     "read_requirements", "unsatisfied_requirements",
 ]

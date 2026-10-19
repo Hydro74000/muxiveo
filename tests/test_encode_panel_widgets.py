@@ -98,6 +98,16 @@ def _french_ui(monkeypatch):
     yield
     set_current_language(previous)
 
+
+@pytest.fixture(autouse=True)
+def _no_real_hardware_probe(monkeypatch):
+    """Tests de widgets : capacités injectées, sans démarrer 100 sondes GPU concurrentes.
+
+    Les tests de capacités appellent _on_hw_detected avec leur propre résultat.
+    Une sonde réelle prend jusqu'à 15 secondes et dépasse le délai de fermeture Qt.
+    """
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+
 def _at(
     index: int = 1,
     codec: str = "eac3",
@@ -542,7 +552,7 @@ class TestAudioTableReloadPreservesSettings:
 
 class TestAudioTableCurrentAudioSettings:
 
-    def test_truehd_atmos_copy_enables_truehd_core_extraction(self, table):
+    def test_truehd_atmos_copy_preserves_atmos_without_core_extraction(self, table):
         track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")
         _load_one(table, track)
 
@@ -550,7 +560,7 @@ class TestAudioTableCurrentAudioSettings:
 
         assert len(settings) == 1
         assert settings[0].codec == "copy"
-        assert settings[0].extract_truehd_core is True
+        assert settings[0].extract_truehd_core is False
 
     def test_truehd_atmos_transcode_disables_truehd_core_extraction(self, table):
         track = _at(codec="truehd", codec_long="TrueHD Atmos", title="VO Atmos")
@@ -2047,7 +2057,7 @@ class TestEncodePanelInterpolationTta:
         badges = panel._video_filter_badges_from_state(
             {"interpolation": FrameInterpolationSettings(enabled=True, factor=2, tta=4)}
         )
-        assert any(b.startswith("RIFE x2") and "TTA ×4" in b for b in badges)
+        assert any(b.startswith("MVO-RIFE x2") and "TTA ×4" in b for b in badges)
 
         panel._interp_cb.setChecked(False)
         parent = tta.parentWidget()
@@ -2600,3 +2610,70 @@ def test_file_target_size_is_shared_by_all_video_tracks(qt_app):
         assert panel._file_target_size_mb([crf]) is None
     finally:
         panel.deleteLater()
+
+
+def test_interpolation_fractional_factor_and_legacy_target(qt_app, monkeypatch):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        combo = panel._interp_factor_combo
+        assert [combo.itemData(i) for i in range(combo.count())] == ["2", "2.5", "3", "4"]
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2.5))
+        assert combo.currentText() == "x2,5"
+        settings = panel._current_interpolation_settings()
+        assert settings.factor == 2.5
+        assert settings.target_fps == ""
+        badges = panel._video_filter_badges_from_state(
+            {"interpolation": FrameInterpolationSettings(enabled=True, factor=2.5)}
+        )
+        assert any("MVO-RIFE x2,5" in badge for badge in badges)
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, target_fps="60000/1001"))
+        assert panel._current_interpolation_settings().target_fps == "60000/1001"
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("target", ["60", "59.94", "60000/1001", "2", "invalide", "0/0"])
+def test_interpolation_target_restoration_keeps_fps_distinct_from_multiplier(qt_app, monkeypatch, target):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._codec_combo.setCurrentIndex(panel._codec_combo.findData("libx265"))
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, target_fps=target))
+        restored = panel._current_interpolation_settings()
+        assert restored.target_fps == target
+        assert restored.factor == 2
+        assert panel._interp_factor_combo.currentText().endswith(" i/s")
+        # Le badge doit aussi accepter un profil invalide, que la validation
+        # du workflow refusera ensuite sans interrompre le chargement de l'UI.
+        assert panel._video_filter_badges_from_state({"interpolation": restored})
+        panel._apply_interpolation_settings(FrameInterpolationSettings(enabled=True, factor=2))
+        assert panel._current_interpolation_settings().target_fps == ""
+        assert panel._interp_factor_combo.currentText() == "x2"
+    finally:
+        panel.close()
+
+
+def test_legacy_integer_target_fps_survives_profile_loading(qt_app, tmp_path, monkeypatch):
+    from core.workflows.encode import FrameInterpolationSettings
+
+    panel = EncodePanel(AppConfig())
+    try:
+        monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: True)
+        panel._sync_interpolation_availability()
+        panel._profiles = ProfileManager(tmp_path / "profiles")
+        panel._profiles.save(EncodePreset(name="60 fps", interpolation=FrameInterpolationSettings(enabled=True, target_fps="60")))
+        panel._refresh_profiles(select="60 fps")
+        panel._load_profile()
+        restored = panel._current_interpolation_settings()
+        assert restored.enabled
+        assert restored.target_fps == "60"
+        assert restored.factor == 2
+    finally:
+        panel.close()

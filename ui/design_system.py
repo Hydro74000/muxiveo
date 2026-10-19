@@ -30,8 +30,8 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "BORDER": "#252a3a",
         "BORDER_LT": "#2e3450",
         "TEXT_PRI": "#e8ecf4",
-        "TEXT_SEC": "#7a85a0",
-        "TEXT_DIM": "#3d4560",
+        "TEXT_SEC": "#929cb2",
+        "TEXT_DIM": "#68748f",
         "ACCENT": "#4f6ef7",
         "ACCENT_DIM": "#2a3a8a",
         "OK": "#5dcc8a",
@@ -43,7 +43,7 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "LOG_OK": "#5dcc8a",
         "LOG_WARN": "#f5c842",
         "LOG_ERROR": "#f55a5a",
-        "LOG_TS": "#3d4560",
+        "LOG_TS": "#68748f",
         "LOG_BG": "#0a0c11",
         "TRACK_VIDEO": "#7ab3f5",
         "TRACK_AUDIO": "#ce93d8",
@@ -191,6 +191,15 @@ class DesignSystem:
         p.setColor(QPalette.ColorRole.Highlight, QColor(cls.color("ACCENT")))
         p.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
         app.setPalette(p)
+        thickness = cls.scale(6)
+        app.setStyleSheet(f"""
+            QScrollBar:vertical {{background:{cls.color('BG_DEEP')};width:{thickness}px;border:none;margin:0;}}
+            QScrollBar:horizontal {{background:{cls.color('BG_DEEP')};height:{thickness}px;border:none;margin:0;}}
+            QScrollBar::handle:vertical {{background:{cls.color('BORDER_LT')};border-radius:3px;min-height:24px;}}
+            QScrollBar::handle:horizontal {{background:{cls.color('BORDER_LT')};border-radius:3px;min-width:24px;}}
+            QScrollBar::add-line,QScrollBar::sub-line {{width:0;height:0;border:none;}}
+            QScrollBar::add-page,QScrollBar::sub-page {{background:transparent;}}
+        """)
 
 
 class _ColorProxy:

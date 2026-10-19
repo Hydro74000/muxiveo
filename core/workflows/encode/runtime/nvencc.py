@@ -28,6 +28,7 @@ import shutil
 from functools import lru_cache
 from collections.abc import Callable
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
@@ -312,8 +313,9 @@ def build_decode_pipe_cmd(
     extra_input_args: list[str] | None = None,
     vf: str | None = None,
     frame_exact: bool = False,
+    nut: bool = False,
 ) -> list[str]:
-    """Phase 1 : décode ffmpeg → yuv4mpegpipe sur stdout.
+    """Phase 1 : images décodées vers stdout (NUT horodaté ou yuv4mpegpipe).
 
     Le ``-vf`` optionnel sert uniquement aux préfiltrages portables que
     NVEncC ne couvre pas nativement dans l'application.
@@ -329,9 +331,13 @@ def build_decode_pipe_cmd(
     ])
     if vf:
         cmd.extend(["-vf", str(vf)])
-    if frame_exact:
+    if frame_exact or nut:
         cmd.extend(["-fps_mode", "passthrough"])
-    cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
+    if nut:
+        # Transport sans compression : aucun encodage intermédiaire avec pertes.
+        cmd.extend(["-c:v", "rawvideo", "-f", "nut", "-"])
+    else:
+        cmd.extend(["-f", "yuv4mpegpipe", "-strict", "-1", "-"])
     return cmd
 
 
@@ -487,19 +493,27 @@ def nvencc_p5_native_args() -> list[str]:
     ]
 
 
+# ``--chromaloc`` NVEncC : chroma_sample_loc_type H.273 (noms FFmpeg).
+_NVENCC_CHROMA_LOCATIONS = {"left": 0, "center": 1, "topleft": 2, "top": 3, "bottomleft": 4, "bottom": 5}
+
+
 def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> list[str]:
     """Signalisation couleur HDR (VUI) et recopie des métadonnées statiques source.
 
     Sans ``--transfer``/``--colorprim``, NVEncC émet un flux PQ non signalé,
     lu comme SDR : la VUI doit suivre dès qu'un HDR statique ou dynamique est
     conservé. Le y4m ne transporte pas la couleur : HDR10 statique = BT.2020/PQ.
+    FEL : images 4:2:0 produites par Muxiveo à la position chroma du BL, HDR comme SDR.
     """
+    fel = video.fel_context
+    fel_location = (["--chromaloc", str(_NVENCC_CHROMA_LOCATIONS.get(fel.chroma_location, 0))]
+                    if fel is not None and not direct_input else [])
     # NVEncC H.264 refuse toute signalisation HDR (--master-display/--max-cll).
     # Sortie HDR (source PQ/HLG sans tone-mapping) : la VUI suit, même sans
     # métadonnées statiques (case HDR10 décochée).
     transfer = output_hdr_transfer(video)
     if not transfer:
-        return []
+        return fel_location
     static = bool(getattr(video, "inject_hdr_meta", False))
     if direct_input and getattr(video, "p5_to_hdr10", False):
         # VUI d'origine IPT-PQ-c2 plage pleine : décrire l'image convertie.
@@ -515,7 +529,9 @@ def _auto_source_hdr_args(video: VideoEncodeSettings, *, direct_input: bool) -> 
             "--colorprim", "bt2020",
             "--transfer", "arib-std-b67" if transfer == "hlg" else "smpte2084",
         ]
-        if getattr(video, "copy_dv", False):
+        if fel_location:
+            args.extend(fel_location)
+        elif getattr(video, "copy_dv", False):
             args.extend(["--chromaloc", "2"])
         return args
     args = [
@@ -905,6 +921,24 @@ def _hdr_dynamic_args(
     return args
 
 
+def nvencc_fps_arg(value: str | float | None) -> str | None:
+    """Cadence exacte pour ``--fps`` (``num/den``), ou None si inconnue ou invalide.
+
+    Les flottants issus d'une sonde (23,976023976…) sont ramenés à la fraction la plus proche
+    de dénominateur ≤ 1001 (24000/1001, 25/1, 30000/1001, 60000/1001…).
+    """
+    try:
+        if isinstance(value, str):
+            rate = Fraction(value.strip())
+        elif isinstance(value, (int, float)):
+            rate = Fraction(value).limit_denominator(1001)
+        else:
+            return None
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+    return f"{rate.numerator}/{rate.denominator}" if rate > 0 else None
+
+
 def build_nvencc_command(
     nvencc_bin: str,
     video: VideoEncodeSettings,
@@ -943,7 +977,18 @@ def build_nvencc_command(
 
     cmd: list[str] = [str(nvencc_bin), "-c", codec_flag]
     if input_path is None:
-        if sys.platform != "win32":
+        if video.fel_context is not None and not video.interpolates():
+            # Le NUT conserve les PTS du producteur FEL, même en cadence variable.
+            # Analyse d'entrée courte : le NUT décrit son flux, et l'analyse par défaut (5 s)
+            # accumule ~100 images brutes UHD avant la première image encodée (7 à 10 s perdues).
+            cmd.extend(["--avsw", "--input-format", "nut", "--input-analyze", "0.2", "--avsync", "vfr", "-i", "-"])
+            # Le NUT ne porte aucune cadence (base de temps de la source, souvent 1/1000 en MKV) :
+            # NVEncC la devinerait (24/1 pour 23,976). Cadence de la source déclarée ; les
+            # horodatages restent ceux du producteur (--avsync vfr).
+            fps = nvencc_fps_arg(source_fps or input_fps)
+            if fps:
+                cmd.extend(["--fps", fps])
+        elif sys.platform != "win32":
             # NVEncC 9.16/9.19 : hors Windows, la couche POSIX rigaya mappe
             # strtok_s sur strtok (non ré-entrant) dans le parseur Y4M natif,
             # alors que l'initialisation est parallèle.

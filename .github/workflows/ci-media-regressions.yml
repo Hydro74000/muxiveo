@@ -1,0 +1,210 @@
+name: Media regressions (FFmpeg 6.1 / 8.1, FEL and RIFE CPU)
+
+# Le gate général couvre les contrats simulés et les widgets. Ici les outils
+# réels vérifient les origines audio, le pré-roll et les images reconstruites.
+on:
+  workflow_dispatch:
+    inputs:
+      fel_ref:
+        description: Référence publiée du plugin FEL à tester
+        type: string
+        default: "855d6ca8092aa82752085ae888bc4a4700dff20f"
+  workflow_call:
+    inputs:
+      fel_ref:
+        type: string
+        default: "855d6ca8092aa82752085ae888bc4a4700dff20f"
+  pull_request:
+    paths:
+      - "core/fel/**"
+      - "core/plugins/**"
+      - "core/workflows/**"
+      - "core/bluray.py"
+      - "core/github_release.py"
+      - "core/pipeline_command.py"
+      - "core/runner.py"
+      - "core/subprocess_utils.py"
+      - "core/version.py"
+      - "tests/integration/**"
+      - "tests/test_fel*.py"
+      - "tests/test_workflows_common.py"
+      - "tests/conftest.py"
+      - "scripts/ci_media_tools.py"
+      - "requirements.txt"
+      - ".github/workflows/ci-media-regressions.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rife:
+    name: Real RIFE / factors 2 and 2.5 / Vulkan CPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: libvulkan1 mesa-vulkan-drivers libegl1 libgl1 libglib2.0-0 libdbus-1-3
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-qt
+      - name: Install verified FFmpeg and pinned RIFE with its models
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/ci_media_tools.py ffmpeg ci-rife-tools
+          echo "$PWD/ci-rife-tools" >> "$GITHUB_PATH"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from core.plugins import RIFE, install, main_file
+          from core.version import MVO_RIFE_VERSION
+          plugin = install(RIFE, Path(os.environ["RUNNER_TEMP"]) / "rife-plugins", version=MVO_RIFE_VERSION)
+          icds = sorted(Path("/usr/share/vulkan/icd.d").glob("*lvp*.json"))
+          assert len(icds) == 1, icds
+          with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+              output.write(f"MUXIVEO_RIFE_BIN={main_file(RIFE, plugin)}\n")
+              output.write(f"VK_ICD_FILENAMES={icds[0]}\n")
+          PY
+      - name: Require the software Vulkan device
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          result = subprocess.check_output([os.environ["MUXIVEO_RIFE_BIN"], "--list-gpus"], text=True)
+          print(result)
+          assert json.loads(result)["gpus"], "Vulkan logiciel requis : aucun test ignoré silencieusement"
+          PY
+      - name: Test odd frame counts, fractional cadence and complete decoding
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m pytest -q -rs tests/integration/test_encode_interpolation.py
+          -k multiplies_frame_rate
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
+          --junitxml=pytest-rife.xml
+      - name: Upload RIFE test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-regressions-rife-cpu
+          path: pytest-rife.xml
+          if-no-files-found: ignore
+
+  fel-tools:
+    name: Build pinned FEL CPU fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Hydro74000/muxiveo-plugins
+          # Ce commit public fonctionne dès le push applicatif. Une nouvelle
+          # référence peut être testée explicitement après publication du plugin.
+          ref: ${{ inputs.fel_ref || '855d6ca8092aa82752085ae888bc4a4700dff20f' }}
+          path: fel-extension
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: build-essential cmake ninja-build pkg-config nasm
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Build and test the CPU plugin with pinned dependencies
+        run: python fel-extension/mvo-fel/scripts/build.py "$RUNNER_TEMP/fel-build" --jobs 2
+      - name: Prepare verified media tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ci-media-tools
+          cp "$RUNNER_TEMP/fel-build/plugin/libmvo_fel.so" ci-media-tools/
+          cp fel-extension/mvo-fel/tests/fixtures/synthetic-fel.hevc ci-media-tools/
+          git -C fel-extension rev-parse HEAD > ci-media-tools/plugin-commit.txt
+          python scripts/ci_media_tools.py dovi ci-media-tools
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-regression-tools
+          path: ci-media-tools/
+          if-no-files-found: error
+
+  media:
+    name: Real media / FFmpeg ${{ matrix.ffmpeg }}
+    needs: fel-tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        ffmpeg: ["6.1", "8.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg libegl1 libgl1 libglib2.0-0 libdbus-1-3
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-qt
+      - uses: actions/download-artifact@v4
+        with:
+          name: media-regression-tools
+          path: ci-media-tools
+      - name: Enable verified tools
+        run: |
+          chmod +x ci-media-tools/dovi_tool
+          echo "$PWD/ci-media-tools" >> "$GITHUB_PATH"
+          echo "MUXIVEO_TEST_FEL_LIBRARY=$PWD/ci-media-tools/libmvo_fel.so" >> "$GITHUB_ENV"
+          echo "MUXIVEO_TEST_FEL_FIXTURE=$PWD/ci-media-tools/synthetic-fel.hevc" >> "$GITHUB_ENV"
+      - name: Install verified FFmpeg 8.1
+        if: matrix.ffmpeg == '8.1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci_media_tools.py ffmpeg ci-media-tools
+      - name: Check required tools and runtime versions
+        env:
+          EXPECTED_FFMPEG: ${{ matrix.ffmpeg }}
+        run: |
+          python - <<'PY'
+          import os, re, subprocess
+          from pathlib import Path
+          from core.fel.engine import FelEngine
+          for tool in ("ffmpeg", "ffprobe"):
+              version = subprocess.check_output([tool, "-version"], text=True).splitlines()[0]
+              print(version)
+              expected = re.escape(os.environ["EXPECTED_FFMPEG"])
+              assert re.match(rf"{tool} version n?{expected}(?:[.\s-]|$)", version), version
+          subprocess.run(["dovi_tool", "--version"], check=True)
+          assert Path(os.environ["MUXIVEO_TEST_FEL_FIXTURE"]).is_file()
+          print(FelEngine(Path(os.environ["MUXIVEO_TEST_FEL_LIBRARY"])).capabilities)
+          PY
+      - name: Test actual timestamps and priming
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m pytest -q -rs
+          tests/integration/test_physical_sync_timestamps.py
+          tests/integration/test_encode_native_sync.py
+          tests/integration/test_unified_hybrid_batch.py
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
+          --junitxml=pytest-timestamps-${{ matrix.ffmpeg }}.xml
+      - name: Test real FEL reconstruction without a GPU
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m pytest -q -rs
+          tests/integration/test_encode_fel.py
+          -k 'not ffmpeg_nvenc and not direct_nvenc and not nvencc and not rife'
+          -W error::pytest.PytestUnhandledThreadExceptionWarning
+          --junitxml=pytest-fel-${{ matrix.ffmpeg }}.xml
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-regressions-ffmpeg-${{ matrix.ffmpeg }}
+          path: pytest-*.xml
+          if-no-files-found: ignore

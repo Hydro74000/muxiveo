@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, field
 from io import BytesIO
 import mmap
 from pathlib import Path
 import struct
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, overload
 
 
 _CONTENT_ENCODINGS_ID = bytes.fromhex("6d80")
@@ -21,6 +22,71 @@ _CONTENT_ENCODING_ID = bytes.fromhex("6240")
 _CONTENT_COMPRESSION_ID = bytes.fromhex("5034")
 _CONTENT_ENCRYPTION_ID = bytes.fromhex("5035")
 _INFO_DURATION_ID = bytes.fromhex("4489")
+
+
+class _MappedInput:
+    """Projection glissante : mémoire résidente bornée, offsets de fichier absolus.
+
+    Les slices retournent des bytes indépendants du mapping, donc les paquets
+    déjà lus restent valides après remapping. Une frame plus grande que la
+    fenêtre reste lisible, comme avec le lecteur tamponné.
+    """
+
+    _WINDOW_BYTES = 32 * 1024 * 1024
+
+    def __init__(self, fh: BinaryIO, size: int) -> None:
+        self._fh = fh
+        self._size = size
+        self._mapping: mmap.mmap | None = None
+        self._start = self._end = 0
+        self._ensure(0, min(1, size))
+
+    def __len__(self) -> int:
+        return self._size
+
+    def element_header(self, cursor: int, limit: int) -> tuple[int, int, int | None]:
+        mapping = self._ensure(cursor, min(cursor + 16, limit))
+        element_id, payload, size = _memory_element_header(mapping, cursor - self._start, limit - self._start)
+        return element_id, payload + self._start, size
+
+    def block_data(self, start: int, end: int) -> tuple[mmap.mmap, int, int]:
+        mapping = self._ensure(start, end)
+        return mapping, start - self._start, end - self._start
+
+    def _ensure(self, start: int, end: int) -> mmap.mmap:
+        if self._mapping is not None and self._start <= start and end <= self._end:
+            return self._mapping
+        self.close()
+        self._start = start - start % mmap.ALLOCATIONGRANULARITY
+        length = min(self._size - self._start, max(self._WINDOW_BYTES, end - self._start))
+        self._mapping = mmap.mmap(self._fh.fileno(), length, access=mmap.ACCESS_READ, offset=self._start)
+        self._end = self._start + length
+        if hasattr(mmap, "MADV_SEQUENTIAL"):
+            try:
+                self._mapping.madvise(mmap.MADV_SEQUENTIAL)
+            except (OSError, ValueError):
+                pass
+        return self._mapping
+
+    @overload
+    def __getitem__(self, key: int) -> int: ...
+
+    @overload
+    def __getitem__(self, key: slice) -> bytes: ...
+
+    def __getitem__(self, key: int | slice) -> int | bytes:
+        if isinstance(key, int):
+            mapping = self._ensure(key, key + 1)
+            return mapping[key - self._start]
+        start = 0 if key.start is None else key.start
+        end = self._size if key.stop is None else key.stop
+        mapping = self._ensure(start, end)
+        return mapping[start - self._start:end - self._start]
+
+    def close(self) -> None:
+        if self._mapping is not None:
+            self._mapping.close()
+            self._mapping = None
 
 
 @dataclass(frozen=True)
@@ -37,10 +103,9 @@ class EbmlElement:
 
 
 def _vint_length(first: int) -> int:
-    for length in range(1, 9):
-        if first & (0x80 >> (length - 1)):
-            return length
-    raise ValueError("VINT EBML invalide")
+    if not first:
+        raise ValueError("VINT EBML invalide")
+    return 9 - first.bit_length()
 
 
 def _read_exact(fh: BinaryIO, count: int) -> bytes:
@@ -50,16 +115,39 @@ def _read_exact(fh: BinaryIO, count: int) -> bytes:
     return value
 
 
-def _read_vint_value(data: bytes, offset: int = 0) -> tuple[int, int]:
+def _read_vint_value(data: bytes | mmap.mmap | _MappedInput, offset: int = 0) -> tuple[int, int]:
     if offset >= len(data):
         raise ValueError("VINT absent")
-    length = _vint_length(data[offset])
+    first = data[offset]
+    if first & 0x80:
+        return first & 0x7F, 1
+    length = _vint_length(first)
     if offset + length > len(data):
         raise ValueError("VINT tronqué")
-    value = data[offset] & (0xFF >> length)
-    for byte in data[offset + 1:offset + length]:
-        value = (value << 8) | byte
-    return value, length
+    return int.from_bytes(data[offset:offset + length], "big") & ((1 << (7 * length)) - 1), length
+
+
+def _memory_element_header(data: mmap.mmap, cursor: int, limit: int) -> tuple[int, int, int | None]:
+    """ID entier, début du payload et taille, avec les mêmes bornes que read_element."""
+    first = data[cursor]
+    id_len = 1 if first & 0x80 else _vint_length(first)
+    size_offset = cursor + id_len
+    if size_offset >= limit:
+        raise ValueError("EBML tronqué")
+    element_id = first if id_len == 1 else int.from_bytes(data[cursor:size_offset], "big")
+    first_size = data[size_offset]
+    size_len = 1 if first_size & 0x80 else _vint_length(first_size)
+    payload_offset = size_offset + size_len
+    if payload_offset > limit:
+        raise ValueError("EBML tronqué")
+    if size_len == 1:
+        value = first_size & 0x7F
+    else:
+        value = int.from_bytes(data[size_offset:payload_offset], "big") & ((1 << (7 * size_len)) - 1)
+    size = None if value == (1 << (7 * size_len)) - 1 else value
+    if size is not None and payload_offset + size > limit:
+        raise ValueError("Élément EBML hors limites")
+    return element_id, payload_offset, size
 
 
 def _split_lace_sizes(payload: bytes, flags: int, total_payload_len: int) -> tuple[int, ...]:
@@ -943,7 +1031,7 @@ class MatroskaReader:
 
     @staticmethod
     def _decode_block(
-        raw: bytes,
+        raw: bytes | mmap.mmap | _MappedInput,
         cluster_timestamp: int,
         *,
         duration_ms: int | None = None,
@@ -954,29 +1042,50 @@ class MatroskaReader:
         duration_ns: int | None = None,
         references_ns: tuple[int, ...] = (),
         is_keyframe: bool | None = None,
-    ) -> tuple["MatroskaBlock", ...]:
-        track_no, length = _read_vint_value(raw)
-        if len(raw) < length + 3:
+        timestamp_scale_ns: int = 1_000_000,
+        first_lace_only: bool = False,
+        raw_offset: int = 0,
+        raw_end: int | None = None,
+    ) -> Iterator["MatroskaBlock"]:
+        end = len(raw) if raw_end is None else raw_end
+        if isinstance(raw, _MappedInput):
+            raw, raw_offset, end = raw.block_data(raw_offset, end)
+        track_no, length = _read_vint_value(raw, raw_offset)
+        if end - raw_offset < length + 3:
             raise ValueError("Block Matroska tronqué")
-        relative = int.from_bytes(raw[length:length + 2], "big", signed=True)
-        flags = raw[length + 2]
-        encoded_frames_payload = raw[length + 3:]
-        frames = _split_laces(encoded_frames_payload, flags)
-        return tuple(MatroskaBlock(
-            track_number=track_no, timestamp_ms=cluster_timestamp + relative,
-            flags=flags, payload=frame, lace_index=index, lace_count=len(frames),
-            duration_ms=duration_ms,
-            references=references,
-            discard_padding_ns=discard_padding_ns,
-            codec_state=codec_state,
-            block_additions=block_additions,
-            duration_ns=duration_ns,
-            references_ns=references_ns,
-            lacing_mode=(flags >> 1) & 0x03,
-            encoded_frames_payload=encoded_frames_payload,
-            is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
-            payload_bytes=len(frame),
-        ) for index, frame in enumerate(frames))
+        relative_offset = raw_offset + length
+        relative = int.from_bytes(raw[relative_offset:relative_offset + 2], "big", signed=True)
+        flags = raw[relative_offset + 2]
+        encoded_frames_payload = raw[relative_offset + 3:end]
+        frames: tuple[bytes, ...]
+        if first_lace_only and flags & 0x06:
+            sizes = _split_lace_sizes(encoded_frames_payload, flags, len(encoded_frames_payload))
+            start = len(encoded_frames_payload) - sum(sizes)
+            frames = (encoded_frames_payload[start:start + sizes[0]],)
+            lace_count = len(sizes)
+        else:
+            frames = _split_laces(encoded_frames_payload, flags)
+            lace_count = len(frames)
+        timestamp_ticks = cluster_timestamp + relative
+        timestamp_ns = timestamp_ticks * timestamp_scale_ns
+        timestamp_ms = timestamp_ticks if timestamp_scale_ns == 1_000_000 else round(timestamp_ns / 1_000_000)
+        for index, frame in enumerate(frames):
+            yield MatroskaBlock(
+                track_number=track_no, timestamp_ms=timestamp_ms,
+                timestamp_ns=timestamp_ns if index == 0 else None,
+                flags=flags, payload=frame, lace_index=index, lace_count=lace_count,
+                duration_ms=duration_ms,
+                references=references,
+                discard_padding_ns=discard_padding_ns,
+                codec_state=codec_state,
+                block_additions=block_additions,
+                duration_ns=duration_ns,
+                references_ns=references_ns,
+                lacing_mode=(flags >> 1) & 0x03,
+                encoded_frames_payload=encoded_frames_payload,
+                is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
+                payload_bytes=len(frame),
+            )
 
     @classmethod
     def _decode_block_header_only_stream(
@@ -997,6 +1106,8 @@ class MatroskaReader:
         duration_ns: int | None = None,
         references_ns: tuple[int, ...] = (),
         is_keyframe: bool | None = None,
+        timestamp_scale_ns: int = 1_000_000,
+        first_lace_only: bool = False,
     ) -> tuple["MatroskaBlock", ...]:
         if len(header) < vint_len + 3:
             raise ValueError("Block Matroska tronqué")
@@ -1016,9 +1127,11 @@ class MatroskaReader:
                 fh.seek(payload_offset)
                 header = _read_exact(fh, probe_size)
 
+        timestamp_ns = (cluster_timestamp + relative) * timestamp_scale_ns
         return tuple(MatroskaBlock(
             track_number=track_no,
-            timestamp_ms=cluster_timestamp + relative,
+            timestamp_ms=round(timestamp_ns / 1_000_000),
+            timestamp_ns=timestamp_ns if index == 0 else None,
             flags=flags,
             payload=b"",
             lace_index=index,
@@ -1034,20 +1147,127 @@ class MatroskaReader:
             encoded_frames_payload=b"",
             is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
             payload_bytes=frame_size,
-        ) for index, frame_size in enumerate(sizes))
+        ) for index, frame_size in enumerate(sizes[:1] if first_lace_only else sizes))
 
     def blocks(
         self,
         *,
         track_numbers: set[int] | None = None,
         read_payload: bool = True,
+        first_lace_only: bool = False,
     ) -> Iterator["MatroskaBlock"]:
         """Yield SimpleBlock and BlockGroup frames, including all lacing modes.
 
         Permet de filtrer en amont par numéros de pistes (``track_numbers``) et
         de sauter la lecture du contenu brut des frames (``read_payload=False``)
         en ne décodant que les en-têtes et métadonnées temporelles.
+        ``first_lace_only`` garde le payload lacé original pour le mux, sans
+        créer les objets des frames suivantes que le writer n'utilise pas.
         """
+        if read_payload:
+            with self.path.open("rb") as fh:
+                try:
+                    mapped = _MappedInput(fh, self.path.stat().st_size)
+                except (OSError, ValueError, OverflowError):
+                    mapped = None
+                if mapped is not None:
+                    with closing(mapped):
+                        # Les erreurs de parsing ne déclenchent jamais un
+                        # second parcours qui dupliquerait les paquets émis.
+                        yield from self._blocks_mmap(mapped, track_numbers, first_lace_only)
+                    return
+        yield from self._blocks_stream(
+            track_numbers=track_numbers, read_payload=read_payload,
+            first_lace_only=first_lace_only,
+        )
+
+    def _blocks_mmap(
+        self, data: _MappedInput, track_numbers: set[int] | None, first_lace_only: bool,
+    ) -> Iterator["MatroskaBlock"]:
+        scale_ns = self.timestamp_scale_ns()
+        segment = self.segment()
+        segment_end = segment.end if segment.end is not None else len(data)
+        level1_ids = {int.from_bytes(key, "big") for key in self.LEVEL1_IDS}
+        top_cursor = segment.payload_offset
+        while top_cursor < segment_end:
+            top_id, cursor, top_size = data.element_header(top_cursor, segment_end)
+            if top_id != 0x1F43B675:  # Cluster
+                if top_size is None:
+                    return
+                top_cursor = cursor + top_size
+                continue
+            unknown_cluster = top_size is None
+            limit = segment_end if top_size is None else cursor + top_size
+            top_cursor = limit
+            timestamp = 0
+            while cursor < limit:
+                element_id, payload_offset, size = data.element_header(cursor, limit)
+                # Un Cluster de taille inconnue finit au prochain élément
+                # level-1. Sa frontière est trouvée pendant la lecture des
+                # paquets, sans une passe préalable sur tous ses en-têtes.
+                if unknown_cluster and element_id in level1_ids:
+                    top_cursor = cursor
+                    break
+                if size is None:
+                    break
+                cursor = payload_offset + size
+                if element_id == 0xE7:  # Timestamp
+                    timestamp = int.from_bytes(data[payload_offset:cursor], "big")
+                elif element_id == 0xA3:  # SimpleBlock
+                    if not size:
+                        raise ValueError("VINT absent")
+                    first = data[payload_offset]
+                    vint_len = 1 if first & 0x80 else _vint_length(first)
+                    if vint_len > size:
+                        raise ValueError("VINT tronqué")
+                    track_no = first & 0x7F if vint_len == 1 else _read_vint_value(data[payload_offset:payload_offset + vint_len])[0]
+                    if track_numbers is not None and track_no not in track_numbers:
+                        continue
+                    yield from self._decode_block(
+                        data, timestamp, raw_offset=payload_offset, raw_end=cursor,
+                        timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                    )
+                elif element_id == 0xA0:  # BlockGroup
+                    block_offset = block_end = None
+                    parts: list[tuple[int, int, int]] = []
+                    group_cursor = payload_offset
+                    while group_cursor < cursor:
+                        part_id, part_offset, part_size = data.element_header(group_cursor, cursor)
+                        if part_size is None:
+                            break
+                        group_cursor = part_offset + part_size
+                        if part_id == 0xA1:  # Block : premier, comme le reader flux
+                            if block_offset is None:
+                                block_offset, block_end = part_offset, group_cursor
+                        else:
+                            parts.append((part_id, part_offset, group_cursor))
+                    if block_offset is None or block_end is None:
+                        raise ValueError("BlockGroup sans Block")
+                    track_no, _ = _read_vint_value(data[block_offset:min(block_offset + 8, block_end)])
+                    if track_numbers is not None and track_no not in track_numbers:
+                        continue
+                    values: dict[int, list[bytes]] = {}
+                    for part_id, start, end in parts:
+                        values.setdefault(part_id, []).append(data[start:end])
+                    references = tuple(int.from_bytes(item, "big", signed=True) for item in values.get(0xFB, []))
+                    duration_ticks = int.from_bytes((values.get(0x9B) or [b""])[0], "big")
+                    yield from self._decode_block(
+                        data, timestamp, raw_offset=block_offset, raw_end=block_end,
+                        timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                        duration_ms=round(duration_ticks * scale_ns / 1_000_000) if duration_ticks else None,
+                        duration_ns=duration_ticks * scale_ns if duration_ticks else None,
+                        references=tuple(round(value * scale_ns / 1_000_000) for value in references),
+                        references_ns=tuple(value * scale_ns for value in references),
+                        is_keyframe=not references,
+                        discard_padding_ns=int.from_bytes((values.get(0x75A2) or [b""])[0], "big", signed=True),
+                        codec_state=(values.get(0xA4) or [b""])[0],
+                        block_additions=(values.get(0x75A1) or [b""])[0],
+                    )
+
+    def _blocks_stream(
+        self, *, track_numbers: set[int] | None = None, read_payload: bool = True,
+        first_lace_only: bool = False,
+    ) -> Iterator["MatroskaBlock"]:
         size = self.path.stat().st_size
         scale_ns = self.timestamp_scale_ns()
         with self.path.open("rb") as fh:
@@ -1069,22 +1289,21 @@ class MatroskaReader:
                         track_no, vint_len = _read_vint_value(header)
                         if track_numbers is not None and track_no not in track_numbers:
                             continue
+                        decoded: Iterator[MatroskaBlock] | tuple[MatroskaBlock, ...]
                         if read_payload:
                             fh.seek(child.payload_offset)
                             raw = _read_exact(fh, child.size)
-                            decoded = self._decode_block(raw, timestamp)
+                            decoded = self._decode_block(
+                                raw, timestamp, timestamp_scale_ns=scale_ns,
+                                first_lace_only=first_lace_only,
+                            )
                         else:
                             decoded = self._decode_block_header_only_stream(
                                 fh, child.payload_offset, child.size, timestamp,
                                 header=header, track_no=track_no, vint_len=vint_len,
+                                timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
                             )
-                        for block in decoded:
-                            timestamp_ns = block.timestamp_ms * scale_ns if block.lace_index == 0 else None
-                            yield block.__class__(**{
-                                **block.__dict__,
-                                "timestamp_ms": round(block.timestamp_ms * scale_ns / 1_000_000),
-                                "timestamp_ns": timestamp_ns,
-                            })
+                        yield from decoded
                     elif child.element_id == self.BLOCK_GROUP_ID and child.size is not None:
                         group_children: list[EbmlElement] = []
                         fh.seek(child.payload_offset)
@@ -1139,6 +1358,7 @@ class MatroskaReader:
                             raw = _read_exact(fh, block_elem.size)
                             decoded = self._decode_block(
                                 raw, timestamp,
+                                timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
                                 duration_ms=duration_ms,
                                 duration_ns=duration_ns,
                                 references=references_ms,
@@ -1152,6 +1372,7 @@ class MatroskaReader:
                             decoded = self._decode_block_header_only_stream(
                                 fh, block_elem.payload_offset, block_elem.size, timestamp,
                                 header=header, track_no=track_no, vint_len=vint_len,
+                                timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
                                 duration_ms=duration_ms,
                                 duration_ns=duration_ns,
                                 references=references_ms,
@@ -1161,13 +1382,7 @@ class MatroskaReader:
                                 codec_state=codec_state,
                                 block_additions=block_additions,
                             )
-                        for block in decoded:
-                            timestamp_ns = block.timestamp_ms * scale_ns if block.lace_index == 0 else None
-                            yield block.__class__(**{
-                                **block.__dict__,
-                                "timestamp_ms": round(block.timestamp_ms * scale_ns / 1_000_000),
-                                "timestamp_ns": timestamp_ns,
-                            })
+                        yield from decoded
 
     def simple_blocks(self) -> Iterator["MatroskaBlock"]:
         """Compatibility alias for callers predating BlockGroup support."""

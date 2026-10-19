@@ -146,13 +146,16 @@ class DynamicHdrConfigNormalizer:
             )
 
         auto_md, auto_cll = video.master_display, video.max_cll
+        # FEL intégré avec HDR10+ recalculé : MaxCLL/MaxFALL exacts insérés après l'encodage.
+        from core.fel.hdr10plus import deferred_light_levels
+        deferred = deferred_light_levels(video)
         analysis_pending = bool(
             str(getattr(video, "static_hdr_metadata_analysis_request", "") or "").strip()
         ) or bool(self._cb.defer_static_hdr is not None and self._cb.defer_static_hdr(video))
         if (
             (copy_dv or copy_hdr10plus)
             and video.inject_hdr_meta
-            and (not auto_md or not auto_cll)
+            and (not auto_md or (not auto_cll and not deferred))
             and not analysis_pending
         ):
             auto_md, auto_cll = self._fill_static_hdr_fallbacks(
@@ -161,6 +164,7 @@ class DynamicHdrConfigNormalizer:
                 master_display=auto_md,
                 max_cll=auto_cll,
                 track_label=track_label,
+                fill_light_levels=not deferred,
             )
         elif analysis_pending:
             self._cb.log(
@@ -188,23 +192,25 @@ class DynamicHdrConfigNormalizer:
         master_display: str,
         max_cll: str,
         track_label: str | None,
+        fill_light_levels: bool = True,
     ) -> tuple[str, str]:
         auto_md, auto_cll = master_display, max_cll
+        # fill_light_levels faux : MaxCLL/MaxFALL différés, seul le Master Display est complété.
 
         md_mi, cll_mi = self._cb.extract_static_hdr_metadata(source, stream_index)
         if not auto_md and md_mi:
             auto_md = md_mi
             self._cb.log("WARN", self._static_hdr_message(track_label, "Master Display", "mediainfo", md_mi))
-        if not auto_cll and cll_mi:
+        if fill_light_levels and not auto_cll and cll_mi:
             auto_cll = cll_mi
             self._cb.log("WARN", self._static_hdr_message(track_label, "MaxCLL/MaxFALL", "mediainfo", cll_mi))
 
-        if not auto_md or not auto_cll:
+        if not auto_md or (fill_light_levels and not auto_cll):
             md_ff, cll_ff = self._cb.extract_static_hdr_via_ffprobe(source, stream_index)
             if not auto_md and md_ff:
                 auto_md = md_ff
                 self._cb.log("WARN", self._static_hdr_message(track_label, "Master Display", "ffprobe", md_ff))
-            if not auto_cll and cll_ff:
+            if fill_light_levels and not auto_cll and cll_ff:
                 auto_cll = cll_ff
                 self._cb.log("WARN", self._static_hdr_message(track_label, "MaxCLL/MaxFALL", "ffprobe", cll_ff))
 
@@ -226,7 +232,7 @@ class DynamicHdrConfigNormalizer:
                         "+ luminance par défaut 1000/0.0001 nits (master UHD BD typique). "
                         "Si la source est gradée >1000 nits, éditez le champ Master Display avant l'encode.",
                     )
-        if not auto_cll:
+        if fill_light_levels and not auto_cll:
             auto_cll = HdrMetadataProbeService.DEFAULT_MAX_CLL
             if track_label:
                 self._cb.log(

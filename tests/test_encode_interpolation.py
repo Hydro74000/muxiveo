@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from PySide6.QtCore import Qt
 
 from core.pipeline_command import (
     PipelineCommand,
@@ -46,8 +47,11 @@ from core.workflows.encode import (
 )
 from core.workflows.encode.domain import EncodeCodecDomainCallbacks, build_encoder_vf, hardware_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
+from core.workflows.encode.interpolation import _legacy_capabilities
 from core.workflows.encode.interpolation import (
     INTERPOLATION_MODELS,
+    NvofCapability,
+    detect_nvof as real_detect_nvof,  # capturée avant la neutralisation de tests/conftest.py
     frame_repeats,
     ratio_label,
     InterpolationSource,
@@ -68,7 +72,8 @@ from core.workflows.encode.runtime.metadata_inject import _build_dovi_record_fro
 from core.workflows.encode.workflow import _interpolation_decode_cmd
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard
 from core.workflows.encode.runtime.nvencc import nvencc_requires_ffmpeg_filter_pipe
-from core.workflows.encode.runtime.nvencc_execution import NvenccPipeExecutor
+from core.workflows.encode.runtime.nvencc_execution import NvenccPipeExecutor, build_nvencc_pipeline_commands
+from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouting
 from core.workflows.encode.runtime.video_preparation import (
     VideoOnlyCommandBuilder,
     VideoOnlyCommandBuilderCallbacks,
@@ -102,6 +107,7 @@ class TestSettings:
         video = VideoEncodeSettings(interpolation=cast(FrameInterpolationSettings, {"enabled": True, "factor": 3, "quality": "max"}))
         assert isinstance(video.interpolation, FrameInterpolationSettings)
         assert video.interpolation.factor == 3
+        assert video.interpolation.quality == "quality"  # ancien préréglage Max migré
         assert video.has_video_transform()
 
     def test_preset_roundtrip(self):
@@ -202,7 +208,9 @@ def test_rife_stage_arguments():
     )
     assert cmd[0] == "/opt/muxiveo-rife"
     assert cmd[cmd.index("--factor") + 1] == "3"
-    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["max"]
+    # ancien préréglage Max : préréglage Qualité (hybride + v4.15)
+    assert cmd[cmd.index("--model") + 1] == INTERPOLATION_MODELS["quality"] == "rife-v4.15-mvo1"
+    assert cmd[cmd.index("--engine") + 1] == "hybrid"
     assert cmd[cmd.index("--matrix") + 1] == "bt2020nc"
     assert cmd[cmd.index("--chroma-loc") + 1] == "topleft"
     assert cmd[cmd.index("--scene-threshold") + 1] == "12.5"
@@ -219,12 +227,68 @@ def test_rife_stage_arguments():
 
 def test_presets_map_to_benchmarked_models():
     assert INTERPOLATION_MODELS["fast"] == INTERPOLATION_MODELS["balanced"] == "rife-v4.6"
-    assert INTERPOLATION_MODELS["max"] == "rife-v4.6"  # ancien preset Max enregistré
+    assert INTERPOLATION_MODELS["quality"] == "rife-v4.15-mvo1"
+    assert "max" not in INTERPOLATION_MODELS
+    fast = build_rife_stage("r", quality="fast", source=InterpolationSource())
+    assert "--engine" not in fast  # RIFE seul : commande inchangée, compatible avec les anciens binaires
+    for quality in ("balanced", "quality", "?"):
+        stage = build_rife_stage("r", quality=quality, source=InterpolationSource())
+        assert stage[stage.index("--engine") + 1] == "hybrid"
+        assert "--nvof" not in stage  # flux NVIDIA : auto (défaut du binaire)
     light = build_rife_stage("r", quality="light", source=InterpolationSource(), mode="normal")
     assert light[light.index("--model") + 1] == "rife-v4.15-lite"
     assert "--uhd" in light  # Light impose le mode Fast
     assert _interp(quality="light").fast_mode()
     assert not _interp(quality="balanced").fast_mode()
+
+
+def test_ultra_preset_forces_normal_mode_without_tta():
+    assert INTERPOLATION_MODELS["ultra"] == "rife-v4.15-mvo1"
+    ultra = build_rife_stage("r", quality="ultra", source=InterpolationSource(), mode="fast", tta=4)
+    assert ultra[ultra.index("--engine") + 1] == "hybrid"
+    assert "--ultra" in ultra
+    assert "--uhd" not in ultra and "--tta" not in ultra  # combinaisons refusées par muxiveo-rife
+    assert "--ultra" not in build_rife_stage("r", quality="quality", source=InterpolationSource())
+    settings = _interp(quality="ultra", mode="fast", tta=4)
+    assert not settings.fast_mode() and settings.tta_passes() == 1
+    assert _interp(quality="quality", tta=4).tta_passes() == 4
+
+
+_GPU_LISTING = json.dumps({"version": "1.3.0", "default": 0, "gpus": [
+    {"index": 0, "name": "NVIDIA GeForce RTX 4070", "type": "discrete", "fp16": True, "nvof": True, "nvof_status": "disponible"},
+    {"index": 1, "name": "NVIDIA GeForce GTX 1070", "type": "discrete", "fp16": True, "nvof": False,
+     "nvof_status": "session Optical Flow refusée (GPU sans NVOFA ou dimensions non prises en charge)"},
+]})
+
+
+def test_detect_nvof_reads_gpu_listing(tmp_path):
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_text("")
+    listing = subprocess.CompletedProcess([], 0, stdout=_GPU_LISTING, stderr="")
+    with patch("core.workflows.encode.interpolation.rife_capabilities", return_value=_legacy_capabilities((1, 3, 0))), \
+            patch("core.workflows.encode.interpolation.subprocess.run", return_value=listing) as run:
+        default = real_detect_nvof(str(binary))
+        pascal = real_detect_nvof(str(binary), gpu=1)
+        absent = real_detect_nvof(str(binary), gpu=5)
+    assert run.call_args.args[0][1:] == ["--list-gpus"]
+    assert default == NvofCapability(available=True, device="NVIDIA GeForce RTX 4070")
+    assert not pascal.available and "NVOFA" in pascal.reason and pascal.device.endswith("1070")
+    assert not absent.available and absent.reason == "aucun GPU Vulkan"
+
+
+def test_detect_nvof_requires_hybrid_capable_rife(tmp_path):
+    assert real_detect_nvof(None).reason == "muxiveo-rife introuvable"
+    binary = tmp_path / "muxiveo-rife"
+    binary.write_text("")
+    with patch("core.workflows.encode.interpolation.rife_capabilities", return_value=_legacy_capabilities((1, 2, 3))), \
+            patch("core.workflows.encode.interpolation.subprocess.run") as run:
+        old = real_detect_nvof(str(binary))
+    run.assert_not_called()
+    assert not old.available and "1.3.0" in old.reason and "1.2.3" in old.reason
+    with patch("core.workflows.encode.interpolation.rife_capabilities", return_value=_legacy_capabilities((1, 3, 0))), \
+            patch("core.workflows.encode.interpolation.subprocess.run",
+                  return_value=subprocess.CompletedProcess([], 0, stdout="pas du json", stderr="")):
+        assert "illisible" in real_detect_nvof(str(binary)).reason
 
 
 def test_rife_version_parsed_from_binary():
@@ -551,6 +615,20 @@ def test_nvencc_executor_reports_intermediate_root_cause(qt_app):
     assert "code 5" in str(exc.value) and "VRAM" in str(exc.value)
 
 
+def test_nvencc_preview_gop_follows_interpolated_rate(tmp_path):
+    """Aperçu = exécution : GOP Dolby Vision borné à 2 s de la cadence de sortie (23,976 -> 59,94 : 120)."""
+    video = _video(codec="nvencc_hevc", copy_dv=True, interpolation=_interp(target_fps="60000/1001"))
+    cfg = EncodeConfig(source=tmp_path / "src.mkv", output=tmp_path / "out.mkv", video=video, work_dir=tmp_path)
+    routing = NvenccInputRouting(input_path=cfg.source, stream_index=0, video=video, source_fps="24000/1001")
+    cmds = build_nvencc_pipeline_commands(
+        cfg, nvencc_bin="nvencc", ffmpeg_bin="ffmpeg", video_tracks=lambda _c: [video],
+        resolve_input_routing=lambda _c: routing,
+    )
+    assert cmds is not None
+    encode = next(c for c in cmds if c and Path(c[0]).name == "nvencc")
+    assert encode[encode.index("--gop-len") + 1] == "120"
+
+
 def test_nvencc_pipe_forced_by_interpolation():
     assert nvencc_requires_ffmpeg_filter_pipe(_video(codec="nvencc_hevc"))
     assert not nvencc_requires_ffmpeg_filter_pipe(VideoEncodeSettings(codec="nvencc_hevc"))
@@ -624,11 +702,11 @@ class TestWorkflowInterpolation:
             assert not interp_workflow._interpolation_source(_video(), tmp_path / "s.mkv").is_vfr
 
     def test_fast_mode_requires_recent_rife(self, interp_workflow, tmp_path):
-        cfg = _cfg(tmp_path, _video(interpolation=_interp(mode="fast")))
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(mode="fast", quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
-            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 0, 0))):
                 errors = interp_workflow._interpolation_validation_errors(cfg)
-            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 0)):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 1, 0))):
                 missing = interp_workflow._interpolation_validation_errors(cfg)
                 assert len(missing) == 1 and "rife-v4.6" in missing[0] and "absent" in missing[0]
                 model = tmp_path / "rife-models" / "rife-v4.6"
@@ -636,7 +714,7 @@ class TestWorkflowInterpolation:
                 (model / "flownet.param").write_text("")
                 assert interp_workflow._interpolation_validation_errors(cfg) == []
             light = _cfg(tmp_path, _video(interpolation=_interp(quality="light")))
-            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 0, 0)):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 0, 0))):
                 assert any("1.1.0" in e for e in interp_workflow._interpolation_validation_errors(light))
             bad = _cfg(tmp_path, _video(interpolation=_interp(mode="turbo")))
             assert any("turbo" in e for e in interp_workflow._interpolation_validation_errors(bad))
@@ -646,15 +724,47 @@ class TestWorkflowInterpolation:
         model = tmp_path / "rife-models" / "rife-v4.6"
         model.mkdir(parents=True)
         (model / "flownet.param").write_text("")
-        cfg = _cfg(tmp_path, _video(interpolation=_interp(tta=4)))
+        cfg = _cfg(tmp_path, _video(interpolation=_interp(tta=4, quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
-            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 1, 1)):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 1, 1))):
                 old = interp_workflow._interpolation_validation_errors(cfg)
-            with patch("core.workflows.encode.workflow._rife_version", return_value=(1, 2, 0)):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 2, 0))):
                 assert interp_workflow._interpolation_validation_errors(cfg) == []
-                bad = _cfg(tmp_path, _video(interpolation=_interp(tta=3)))
+                bad = _cfg(tmp_path, _video(interpolation=_interp(tta=3, quality="fast")))
                 assert any("TTA x3" in e for e in interp_workflow._interpolation_validation_errors(bad))
         assert len(old) == 1 and "TTA" in old[0] and "1.2.0" in old[0] and "1.1.1" in old[0]
+
+    def test_hybrid_presets_require_rife_1_3_and_their_model(self, interp_workflow, tmp_path):
+        for name in ("rife-v4.6", "rife-v4.15-mvo1"):
+            (tmp_path / "rife-models" / name).mkdir(parents=True)
+        (tmp_path / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
+        balanced = _cfg(tmp_path, _video(interpolation=_interp()))
+        quality = _cfg(tmp_path, _video(interpolation=_interp(quality="quality")))
+        fast = _cfg(tmp_path, _video(interpolation=_interp(quality="fast")))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 2, 3))):
+                old = interp_workflow._interpolation_validation_errors(balanced)
+                assert interp_workflow._interpolation_validation_errors(fast) == []
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 3, 0))):
+                assert interp_workflow._interpolation_validation_errors(balanced) == []
+                missing = interp_workflow._interpolation_validation_errors(quality)
+                assert len(missing) == 1 and "rife-v4.15-mvo1" in missing[0]
+                (tmp_path / "rife-models" / "rife-v4.15-mvo1" / "flownet.param").write_text("")
+                assert interp_workflow._interpolation_validation_errors(quality) == []
+        assert len(old) == 1 and "hybride" in old[0] and "1.3.0" in old[0] and "1.2.3" in old[0]
+
+    def test_ultra_preset_requires_rife_1_6(self, interp_workflow, tmp_path):
+        model = tmp_path / "rife-models" / "rife-v4.15-mvo1"
+        model.mkdir(parents=True)
+        (model / "flownet.param").write_text("")
+        # TTA enregistré ignoré en Ultra : pas d'erreur de version TTA
+        ultra = _cfg(tmp_path, _video(interpolation=_interp(quality="ultra", tta=4)))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 5, 0))):
+                old = interp_workflow._interpolation_validation_errors(ultra)
+            with patch("core.workflows.encode.workflow._rife_capabilities", return_value=_legacy_capabilities((1, 6, 0))):
+                assert interp_workflow._interpolation_validation_errors(ultra) == []
+        assert len(old) == 1 and "Ultra" in old[0] and "1.6.0" in old[0] and "1.5.0" in old[0]
 
     def test_vfr_with_dynamic_hdr_copy_rejected(self, interp_workflow, tmp_path):
         payload = _probe_payload(r_frame_rate="30/1", avg_frame_rate="29/1")
@@ -900,3 +1010,74 @@ def test_required_dovi_level_capped_for_tv_compat():
     with patch("core.workflows.encode.interpolation._probe_stream", return_value=stream):
         assert required_dovi_level("ffprobe", Path("s.mkv"), 0, 2) == 9            # 100 i/s : plafonné (TV)
         assert required_dovi_level("ffprobe", Path("s.mkv"), 0, Fraction(6, 5)) == 9  # 60 i/s
+
+
+@pytest.mark.parametrize("quality", ["fast", "balanced", "quality", "ultra", "light"])
+def test_optional_feature_cache_is_forwarded_for_every_preset(quality):
+    cmd = build_rife_stage("r", quality=quality, source=InterpolationSource(), feature_cache=True)
+    assert "--feature-cache" in cmd
+    plain = build_rife_stage("r", quality=quality, source=InterpolationSource())
+    assert "--feature-cache" not in plain
+    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": True}))
+    assert preset.to_video_settings().interpolation.feature_cache
+
+
+def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
+    from core.config import AppConfig
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._set_combo_data(panel._interp_mode_combo, "fast")
+        panel._set_combo_data(panel._interp_tta_combo, 4)
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
+        panel._sync_interpolation_controls()
+        settings = panel._current_interpolation_settings()
+        assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
+        assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
+        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8, feature_cache=True))
+        assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
+        assert panel._interp_cache_cb.isChecked() and panel._current_interpolation_settings().feature_cache
+        panel._set_combo_data(panel._interp_quality_combo, "light")
+        assert panel._current_interpolation_settings().feature_cache
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
+        assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
+    finally:
+        panel.close()   # arrête les sondes du panneau (threads) avant la destruction
+
+
+def test_panel_restores_user_choices_after_forcing_presets(qt_app):
+    from core.config import AppConfig
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    panel = EncodePanel(AppConfig())
+    try:
+        panel._apply_interpolation_settings(_interp(quality="quality", mode="fast", tta=4))
+        for forcing in ("ultra", "light"):
+            panel._set_combo_data(panel._interp_quality_combo, forcing)
+            panel._set_combo_data(panel._interp_quality_combo, "balanced")
+            assert panel._interp_mode_combo.currentData() == "fast" and panel._interp_tta_combo.currentData() == 4
+        # préréglage chargé : ses valeurs priment sur les choix antérieurs
+        panel._set_combo_data(panel._interp_quality_combo, "ultra")
+        panel._apply_interpolation_settings(_interp(quality="balanced", mode="normal", tta=2))
+        assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 2
+        # infobulle de chaque entrée, et du préréglage choisi (= celle de son entrée), quelle que soit la langue
+        combo = panel._interp_quality_combo
+        tips = [combo.itemData(i, Qt.ItemDataRole.ToolTipRole) for i in range(combo.count())]
+        assert sum(1 for t in tips if t) == 5
+        assert combo.toolTip() == tips[combo.currentIndex()] and combo.currentData() == "balanced"
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("source_rate, expected", [("24000/1001", "60000/1001"), ("24", "60"), ("25", "125/2")])
+def test_fractional_multiplier_preserves_source_cadence(source_rate, expected):
+    settings = FrameInterpolationSettings.from_value({"enabled": True, "factor": 2.5})
+    video = _video(interpolation=settings)
+    assert video.interpolates()
+    assert Fraction(source_rate) * video.frame_ratio(source_rate) == Fraction(expected)
+    restored = EncodePreset(**json.loads(json.dumps(EncodePreset(name="x25", interpolation=settings).to_json_dict())))
+    assert restored.to_video_settings().frame_ratio(source_rate) == Fraction(5, 2)
+    command = build_rife_stage("rife", factor=settings.factor, quality="balanced", source=InterpolationSource())
+    assert command[command.index("--factor") + 1] == "5/2"
+    assert "--fps" not in command

@@ -430,6 +430,19 @@ def test_l5_07_missing_rpu_line_fails_even_with_exit_zero(tmp_path, qt_app):
     clean.raise_if_failed(expected_frames=47)
 
 
+def test_missing_rpu_tolerated_only_up_to_explicitly_accepted_shortfall():
+    """Audit forcé (RPU plus court de 2) : 2 trames NVEncC sans RPU acceptées et signalées, pas 3."""
+    warnings: list[str] = []
+    monitor = NvenccDoviRpuMonitor()
+    for frame in (2876, 2877):
+        monitor.feed(f"avout: Failed to get dovi rpu for {frame}.")
+    monitor.raise_if_failed(accepted_missing=2, warn=warnings.append)
+    assert warnings and "2 trame(s)" in warnings[0]
+    monitor.feed("avout: Failed to get dovi rpu for 2878.")
+    with pytest.raises(EncodeError, match="sans RPU"):
+        monitor.raise_if_failed(accepted_missing=2, warn=warnings.append)
+
+
 def _guard(source: int | None, exact: int | None, rpu: int | None) -> FrameCountGuard:
     guard = FrameCountGuard(mediainfo_bin="mediainfo", ffprobe_bin="ffprobe", dovi_tool_bin="dovi_tool")
     counts = {"rpu": rpu}
@@ -450,8 +463,9 @@ def test_l5_06_external_rpu_strict_guard(tmp_path):
     assert _guard(1817, 312, 312).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu) == 312
     # Surplus final ≤ 4 retiré (même source, début aligné).
     assert _guard(312, 312, 314).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu) == 312
-    with pytest.raises(FrameCountAuditError, match="plus court"):
+    with pytest.raises(FrameCountAuditError, match="plus court") as shorter:
         _guard(312, 312, 300).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu)
+    assert shorter.value.missing == {"rpu": 12}
     with pytest.raises(FrameCountAuditError, match="illisible"):
         _guard(None, None, 312).check_external_rpu(source=tmp_path / "s.mkv", stream_index=0, rpu_bin=rpu)
 
@@ -745,3 +759,18 @@ def test_l5_a10_static_provenance_per_field(tmp_path, qt_app):
     assert prepared.max_cll == "758,143" and prepared.static_hdr_light_level_source == "rpu_estimate"
     estimated = [line for line in logs if "estimé depuis les métadonnées du RPU" in line]
     assert estimated and "MaxCLL/MaxFALL 758,143" in estimated[0] and "Master Display" not in estimated[0]
+
+
+@pytest.mark.parametrize(("kwargs", "mode"), [
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p7_fel"}, "2"),
+    ({"codec": "libx265", "dovi_source_profile": "p7_mel"}, "2"),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p5", "p5_to_hdr10": True}, "3"),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": "p8_1"}, None),
+    ({"codec": "nvencc_hevc", "dovi_source_profile": ""}, None),
+    ({"codec": "copy", "dovi_source_profile": "p7_fel"}, None),
+])
+def test_rpu_extract_mode_converts_p7_for_reencoded_base_layer(kwargs, mode):
+    """Réencodage d'une source P7 : RPU extrait en P8.1 (``-m 2``), sinon NVEncC injecte un RPU P7."""
+    from core.workflows.encode.dovi_policy import rpu_extract_mode
+
+    assert rpu_extract_mode(VideoEncodeSettings(copy_dv=True, **kwargs)) == mode

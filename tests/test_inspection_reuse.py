@@ -80,3 +80,16 @@ def test_old_inspection_cannot_overwrite_probe_for_modified_source(tmp_path: Pat
         service.remember_ffprobe_payload(source, old_payload, source_key=inspected_key)
         assert service.ffprobe_streams_payload(source) == new_payload
         probe.assert_called_once()
+
+
+def test_frame_dynamic_hdr_probe_decodes_multithreaded(tmp_path: Path) -> None:
+    # ffprobe décode sur un seul fil par défaut : 240 images UHD coûtaient ~15 s par job.
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"x")
+    service = HdrMetadataProbeService(ffmpeg_bin=lambda: "ffmpeg", tool_bin=lambda name: name)
+    payload = {"frames": [{"side_data_list": [{"side_data_type": "Dolby Vision RPU Data"}]}]}
+    done = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+    with patch("subprocess.run", return_value=done) as probe:
+        assert service.ffprobe_frame_dynamic_hdr_flags(source) == (True, False)
+    command = probe.call_args.args[0]
+    assert command[command.index("-threads") + 1] == "0"

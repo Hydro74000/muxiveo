@@ -46,7 +46,7 @@ Cette documentation correspond à **Muxiveo v4.2.1**.
 | **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
 | **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
 
-![Studio d'Hybridation Muxiveo v4](docs/assets/img/Muxiveo-fr-11.png)
+![Studio d'Hybridation Muxiveo](docs/assets/img/Muxiveo-fr-11.png)
 
 > Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
 
@@ -61,6 +61,10 @@ Cette documentation correspond à **Muxiveo v4.2.1**.
 - **Python 3.10+**
 
 `setup.py` installe ensuite **tous les autres prérequis** pour **Windows**, **Linux Fedora / RHEL**, **Linux Debian / Ubuntu** et **macOS**, y compris **PySide6** et les outils externes nécessaires.
+
+Les dépendances sont définies dans `requirements.txt` et adaptées au Python utilisé.
+PySide6 6.12.0 est exclue sous Python 3.10 et 3.11 à cause d'un défaut de gestion
+des références de `None` ; elle reste autorisée à partir de Python 3.12.
 
 ### Installation avec binaires (recommandée)
 
@@ -153,6 +157,7 @@ Le tableau de bord affiche :
 - les dossiers configurés (travail, sortie, app data)
 - les encodeurs logiciels vus par `ffmpeg -encoders`
 - les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
+- les filtres GPU et accélérations NVIDIA de l'interpolation : `Vulkan`, `NVOF·CUDA` et, sur carte NVIDIA compatible seulement, l'extension `TensorRT`
 - les plans d'encodage et badges utiles pour visualiser plus clairement les traitements prepares
 
 > Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
@@ -245,7 +250,7 @@ force MKVToolNix et, sans option, la sélection est Muxiveo puis `mkvmerge` puis
 FFmpeg. Cette compatibilité standalone n'ajoute aucune dépendance MKVToolNix au
 runtime ou au packaging de Muxiveo. Voir [le contrat détaillé](docs/remux-native.md).
 
-![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-07.png)
+![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-08.png)
 
 Les options HDR disponibles côté encodage sont :
 
@@ -260,6 +265,59 @@ Ergonomie du panneau :
 - progression "la plus lente" pour les preparations video multi-pistes, avec suivi plus detaille par traitement disponible
 - **suppression de source accélérée** via suivi incrémental (pas de rescan global à chaque retrait)
 - covers TMDB cliquables dans les résultats de recherche (aperçu grand format avant validation)
+
+### Interpolation d'images (MVO-RIFE)
+
+La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s.
+
+L'interpolation est une **extension** (`mvo-rife` : moteur, modèles, poids du sélecteur, préréglages), installée depuis
+la page **Extensions** ou directement depuis la ligne MVO-RIFE (« Interpolation non installée — Installer… »), dans le
+dossier utilisateur (Linux, Windows x86-64, macOS Apple Silicon). Elle évolue sans nouvelle version de Muxiveo :
+Muxiveo installe la version la plus récente compatible avec lui (nouveaux modèles, réglages des préréglages),
+vérifiée par SHA-256. Les paquets all-inclusive (AppImage, Setup-AllInc, zip portable) l'embarquent préinstallée ;
+une extension installée dans le dossier utilisateur reste prioritaire. Préréglages :
+
+| Préréglage | Traitement | Temps de calcul |
+|---|---|---|
+| Rapide | RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler. | référence |
+| Équilibré (défaut) | Moteur hybride avec RIFE v4.6 : pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements (flou de bougé, panoramiques rapides) et le flux optique NVIDIA s'il est disponible. | ≈ 2 × Rapide |
+| Qualité | Même moteur hybride, avec RIFE v4.15 affiné par Muxiveo : plus précis sur les mouvements complexes, les occultations (objet qui passe devant un autre), les détails fins et les textes incrustés. | ≈ 3 × Rapide |
+| Ultra | Qualité, plus une seconde passe RIFE calculée dans le sens inverse et proposée au sélecteur comme candidat supplémentaire : moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. | ≈ 1,5 × Qualité |
+| Light | RIFE v4.15 lite en mode Fast : le moins gourmand en mémoire GPU, pour les petites cartes graphiques. | ≈ Rapide |
+
+Temps mesurés en 4K sur GPU Vulkan ; ils varient selon la scène (la passe des grands mouvements ne se déclenche que
+lorsqu'elle est utile).
+
+Le calcul se fait sur le GPU (Vulkan, toutes marques). Sur carte NVIDIA, le moteur hybride utilise en plus le flux
+optique matériel (NVOF) quand il est disponible, comme candidat du sélecteur. Le sélecteur choisit, pour chaque
+zone de l'image, le mélange des candidats le plus fidèle ; il a été appris sur un corpus de films et de séries de la
+SD à la 4K (tailles de zone proportionnelles à la largeur de l'image, jusqu'à la 8K).
+
+#### Accélération NVIDIA (TensorRT)
+
+Extension facultative pour les cartes NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récentes, sous Linux et Windows :
+l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec des images identiques à l'œil.
+
+- **Page Extensions** (barre latérale) : installation, mise à jour et suppression ; sur une machine incompatible,
+  l'extension est rangée sous « Non compatibles avec cette machine » avec la raison. Badge `TensorRT +` du tableau de
+  bord et indication unique sur la ligne MVO-RIFE (« Installer… », « Gérer les extensions »).
+- **Installation en un clic** après acceptation de la licence NVIDIA : téléchargement vérifié (SHA-256 publié par
+  GitHub, puis empreinte de chaque fichier), préparation des moteurs pour la carte, sans redémarrage.
+- **Mises à jour automatiques** (désactivables, communes à toutes les extensions) dès qu'une version compatible plus
+  récente est publiée ; l'ancienne version reste utilisée jusqu'à la bascule. L'extension Interpolation est requise.
+- **Repli automatique** : sans extension, extension désactivée, pilote trop ancien ou erreur, l'interpolation continue
+  sur Vulkan ; un encodage n'échoue jamais à cause d'elle.
+- **Emplacements** des extensions, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage
+  comprise) : `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
+  `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows,
+  `~/Library/Application Support/Muxiveo/plugins` sous macOS.
+- **Désinstallation** : bouton **Supprimer** de la page Extensions ou `muxiveo --cli plugins remove <extension>` ; le
+  désinstalleur Windows retire aussi ces dossiers.
+- Sans interface : `muxiveo --cli plugins list`, `install mvo-rife`, `install mvo-rife-trt --accept-license`,
+  `update [extension]`, `remove <extension>`.
+
+Le code des extensions (moteur MVO-RIFE compris) est publié dans
+[muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
 
 ### Profils
 
@@ -606,7 +664,7 @@ Profils Dolby Vision proposés :
 
 ### Paramètres
 
-![Paramètres et configuration](docs/assets/img/Muxiveo-fr-10.png)
+![Paramètres et configuration](docs/assets/img/Muxiveo-fr-settings.png)
 
 Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
 
@@ -892,6 +950,7 @@ Sous-commandes disponibles :
 | `remux` / `run` | exécute un remux headless (avec synchronisation optionnelle) |
 | `batch` | applique un template ou profil à plusieurs entrées / dossiers |
 | `profile` | valide, prévisualise ou applique un profil décisionnel |
+| `plugins` | extensions facultatives (accélération NVIDIA TensorRT) : `list`, `install --accept-license`, `update`, `remove` |
 | `sync-scan` | analyse le calage acoustique FFT ou par sous-titres |
 | `shift-subs` | décale physiquement des sous-titres (SRT, ASS) |
 | `hybrid` | assemble automatiquement une référence vidéo et un donneur audio/subs |

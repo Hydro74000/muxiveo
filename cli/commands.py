@@ -95,6 +95,13 @@ def _metadata_job_from_args(args: argparse.Namespace) -> dict:
 
 
 def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    if not getattr(args, "hdr_fel", False) and (getattr(args, "hdr_fel_survival", None)
+                                                or getattr(args, "hdr_fel_min", None)):
+        raise CliError("--hdr-fel-survival et --hdr-fel-min s'utilisent avec --hdr-fel.", EXIT_ARGS)
+    if getattr(args, "hdr", None) or getattr(args, "hdr_fel", False):
+        from cli.hdr import cmd_inspect_hdr
+
+        return cmd_inspect_hdr(args, config, logger)
     options = common_options(args)
     ffprobe = options.ffprobe or config.tool_ffprobe
     mediainfo = options.mediainfo or config.tool_mediainfo

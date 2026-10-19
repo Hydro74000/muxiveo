@@ -1,0 +1,366 @@
+{
+  "source": "Native PySide6 widgets; isolated demonstration data; no media workflow executed",
+  "scenes": {
+    "fr": {
+      "01": "dashboard",
+      "02": "container-empty",
+      "03": "tracks",
+      "04": "search",
+      "05": "tags",
+      "06": "chapters",
+      "07": "audio",
+      "08": "encoding",
+      "09": "merge",
+      "10": "running",
+      "11": "hybrid",
+      "12": "waveform",
+      "13": "cuts",
+      "14": "profile"
+    },
+    "en": {
+      "01": "container-light",
+      "02": "track-edit",
+      "03": "tags",
+      "04": "chapters",
+      "05": "audio",
+      "06": "encoding",
+      "07": "merge",
+      "08": "dashboard",
+      "09": "hybrid",
+      "10": "waveform",
+      "11": "cuts",
+      "12": "profile"
+    }
+  },
+  "extra_scenes": [
+    "settings",
+    "plugins",
+    "operations",
+    "hdr-overview",
+    "hdr-luminance",
+    "hdr-dovi",
+    "hdr-fel",
+    "hdr-fel-detail",
+    "hdr-compare",
+    "hdr-edit",
+    "fel-encoding",
+    "interpolation",
+    "video-budget",
+    "closed-captions",
+    "workflow-menu",
+    "hdr-fel-viewer",
+    "hdr-fel-difference"
+  ],
+  "images": [
+    {
+      "locale": "fr",
+      "file": "Muxiveo-cli-terminal.png",
+      "sha256": "5ce342b59cded190739a47356415297f1208b64fc8b1caf2976fcd7e2da3312b"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-01.png",
+      "sha256": "a88247d9b2599cef0cfe0832fab727ce5935a6f6c6ef5a3aa0d3daf43b33691c"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-02.png",
+      "sha256": "f4f189812c9fcce24fa3b1c59ab1a51653e965eb11bc412c89c02c02ebe77c73"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-03.png",
+      "sha256": "80a7fb003864e7cbc7516eb81917668ed756e407feab43f0ad282f51c0ab06c9"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-04.png",
+      "sha256": "6458ceb922122c5acb90f31b4a4f71ece8f34d90a353f78274c2a7d6619095df"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-05.png",
+      "sha256": "2eca0846d04e0e9c95b93bd9e58ba5bb26a216b4f90cd15e9295ea04f2fc4e32"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-06.png",
+      "sha256": "668b3b89541e1edb958177168b465ebdc4827f4a57a5825fdc80ce5cb5b1be40"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-07.png",
+      "sha256": "252dda88ec561043392694becd0d0964ef97450cd80184904875c195237c1894"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-08.png",
+      "sha256": "978e560ea53fc8f8baa1554ceb49792531d588becea782931e655686da0c4a61"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-09.png",
+      "sha256": "0858abd3c4a1d3f66a5db269caa2e9537e3537c79be4970e29e7bdfeb08d1bb4"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-10.png",
+      "sha256": "011a4fb49a54f7c6f1fc59a9cfb83cad814a45a60d0237ce55be178e86f510dc"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-11.png",
+      "sha256": "02af79d510a197767181518e1ee32b3d540b3889f945d951151f42830deb723c"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-12.png",
+      "sha256": "39370a3822af1d8f6c87ad18f9b2b8fa37130455189110bc124a593203f5d179"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-13.png",
+      "sha256": "02836fb5610c5736705ff9cc653db34fb5282d59a97f70d2e73fe32cb5a88ad1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-14.png",
+      "sha256": "52ffca390d6bb3a381db1281a3a1707ccdd997a5d698b59d240fba23bcb10b01"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-closed-captions.png",
+      "sha256": "963905ced450820417b16546b9e40a9bbc4fab80cf382ae185f8202138b41730"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-fel-encoding.png",
+      "sha256": "3f879361b8faf057100e63f2e60c214d804cd0ff09084cc0b18413d4205ddec5"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-compare.png",
+      "sha256": "533885c9d30627ea59b66c16c094f306a9159f9fee7a2f40c91b2714a5148fa4"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-dovi.png",
+      "sha256": "aed3310aa0316ef68484afc23162fb921e4596da05f810987d9c9eb86fa6de0e"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-edit.png",
+      "sha256": "3b97fe463d41d90735be5abf9d3d39ea829a613e7214b48603479ebd439a2a2e"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-detail.png",
+      "sha256": "01e9df53db1f075846561f668e0bd97bcdf8a98f968d9bc788013c20ab8433fe"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-difference.png",
+      "sha256": "d10f16a131e50a22ba606d45d7a2d854934ae8a5030a73f901f94270394fa6dd"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel-viewer.png",
+      "sha256": "662c40a19acee005bdbc434ff6a7c2245d5a0107d00fc4828eaace6fab6c6588"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-fel.png",
+      "sha256": "f27d38d3cda163e47090d8f40516e7f646dd125ca3527522b2f6b2d0aff44efe"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-luminance.png",
+      "sha256": "f3c99849bd0cc6aead16c1b441622ce8afeb71324b34168a6043757953fd28ec"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-hdr-overview.png",
+      "sha256": "7c367b3817b5dc86b73b66ae890d42b88dbb4a3f3b7ba6e0635defc445adbbf1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-interpolation.png",
+      "sha256": "08c6818665f0b892953865e0667c918360caf15bbc48b3d9483747cab4920b2a"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-operations.png",
+      "sha256": "f2a7c585792a4e47526087119f597bdfa90cf2e4cd143ff749177ad3ea7ded86"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-plugins.png",
+      "sha256": "5b1ac64b68e81a926df90da1e8490806cfa833036312d202e6bf0644890e2d98"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-settings.png",
+      "sha256": "5eb8c90c283076f2eb47c107c2ba69bc65f7efd42f656398114a5aec3e89cd73"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-video-budget.png",
+      "sha256": "f881a8b31af024dd868232cbfc5d8e91b9e97e99054d0fd4a1bee8ea4b025ae1"
+    },
+    {
+      "locale": "fr",
+      "file": "Muxiveo-fr-workflow-menu.png",
+      "sha256": "f3f0d109849461cacf6db12fa83ed4688d3a355f4e6c5d9f40d17f0980cdb715"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-cli-terminal.png",
+      "sha256": "3d8918392f1135ac5981a55fc850c5c372856ef7946d31b26d8036099ad729c5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-01.png",
+      "sha256": "ea1949192328dbda27c82c060622d485165a113cb44e8f9a4768dbc8e5cef2a5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-02.png",
+      "sha256": "e6cf80b4fe7c0c917277d3f9ee1fb8e0bf9f164fc686a903acaa8a09ea3ff592"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-03.png",
+      "sha256": "0e98c83efb03fd8d56b7eb08545022e7bbe5cfa6739eeab598850ffedc4d8e8c"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-04.png",
+      "sha256": "fbfa1c1bb041f2f0213cc2b676c5c664876b51d22e90959701d9d7927b5e93ea"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-05.png",
+      "sha256": "51d53caaf5e860ccb294176856c324b9e4f8ee07658c930092d4f5bbab04dfb8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-06.png",
+      "sha256": "5a2ca9ec8ca96731e342c0e21e4ca3e44ed925acc39bce5285f71dc3908b5cb9"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-07.png",
+      "sha256": "a7a5886d29c8374f9b156c2b92227ec1d091a390e94d88c8536b5fc59831c1da"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-08.png",
+      "sha256": "adf4d76e38b796a3f5cb462765f1cf2fb332f31aea91d2c40c6b0026066931c1"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-09.png",
+      "sha256": "4309669d1560583f719651a39fb54a69bd83b5fd0b6472d789702878ab8cf909"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-10.png",
+      "sha256": "44b741bcb03ddda843ebec2376186b32c0d13a92fa42f6ea36db807cb6b4d341"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-11.png",
+      "sha256": "899b749d24654e8988d871687cb96e3c6013af55f6ff8c706372f31206359dd8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-12.png",
+      "sha256": "04d600aa0a03561be50e53ef00408dbf50408907761ee87f150cd8443780785b"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-closed-captions.png",
+      "sha256": "9f05b056df7951f216b675c3ad9e4df00248457f586b2137f8e9dfc36aa79610"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-fel-encoding.png",
+      "sha256": "efa59d5d19e76febc919daef757705e79d37620c1d7237582d6f1d3965f9f73f"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-compare.png",
+      "sha256": "7ee5275b2f38d3a46b1b0946d2e35f6e361cc213284c8e768b8f2747dc116794"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-dovi.png",
+      "sha256": "d733e756af751b1f9241349fbf7f67fc84d738ee5941bc34fb8a4bf2948ea485"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-edit.png",
+      "sha256": "fbc6dd002c5aac3ec438633b40fe425a2a59c9ffcb2ea71fb98113b5e9fd83f8"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-detail.png",
+      "sha256": "636ab3d78b2b5845fadbe9c5546a303b1500cf7dea7b6a42c1df76d256491cff"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-difference.png",
+      "sha256": "5d434afa3d772a1d953ffc3402bd8e134da93297f07bb5219fa43c851ef6a1f5"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel-viewer.png",
+      "sha256": "a5f0d299a0a4f56f960946cc8571d1e097a883b00e5bc6be4c5298be618d77a1"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-fel.png",
+      "sha256": "ba4a41cff04371691c73515dd2e581f93dc196be16fc77bdaf039e4fb62e8d74"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-luminance.png",
+      "sha256": "11bd23dc90f0b4b8b9c566a94a9cc1b7f31e04c8d22941fd4b9f3085dcb8c80d"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-hdr-overview.png",
+      "sha256": "f529c9b003ab6c1104a33ec40f04f444f047d1a50ab603264978adfcc89c258a"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-interpolation.png",
+      "sha256": "4b51e3e5b79b4634358ba856ecfe5357cc6e7f9d3c149931f3a432de88984d2a"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-operations.png",
+      "sha256": "3f7e8a157bb50c29e4d5485c3361683ea99128ed004bc67fc1a1c4cd6ba600da"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-plugins.png",
+      "sha256": "9b37e3d7332e6c293ad1993617a6d18eb0d4833aa79076316454b1a9f28bacd9"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-settings.png",
+      "sha256": "ce07d1846c0242a38e41180c63177a4e922d34d92a033d88a5c1affe82dcb46c"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-video-budget.png",
+      "sha256": "6fc71007c97e242dd364cab1abe8069feb4841d2486e8d0b1dc4a8813e1715e4"
+    },
+    {
+      "locale": "en",
+      "file": "Muxiveo-en-workflow-menu.png",
+      "sha256": "649264989cae5ca3232b23352ef29d0d8f37adbfcc3508e63b2bf12f3201ffe1"
+    }
+  ]
+}

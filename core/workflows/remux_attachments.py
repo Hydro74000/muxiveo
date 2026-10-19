@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from core.inspector import AttachmentInfo
@@ -11,6 +11,36 @@ from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.common.attachments import ATTACHMENT_EXT_BY_MIME, sanitize_filename
 from core.workflows.remux_models import RemuxConfig, RemuxError
+
+
+def _clean_mediainfo_nfo(text: str, output_path: Path) -> str:
+    """Ne garder que les noms dans les champs de chemins, quelle que soit leur langue."""
+    # Le chemin de sortie peut aussi apparaître dans une balise ou un commentaire.
+    for path in sorted({str(output_path), output_path.as_posix()}, key=len, reverse=True):
+        text = text.replace(path, output_path.name)
+    cleaned = []
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        newline = line[len(body):]
+        if ":" not in body:
+            cleaned.append(line)
+            continue
+        key, value = body.split(":", 1)
+        current = value.strip()
+        quote = current[:1] if current[:1] in {"'", '"'} and current[-1:] == current[:1] else ""
+        path_value = current[1:-1] if quote else current
+        windows = PureWindowsPath(path_value)
+        posix = PurePosixPath(path_value)
+        if key.strip().casefold().replace(" ", "") == "completename" and ("/" in path_value or "\\" in path_value):
+            filename = output_path.name
+        elif windows.is_absolute() or posix.is_absolute():
+            filename = windows.name if windows.is_absolute() else posix.name
+        else:
+            cleaned.append(line)
+            continue
+        spacing = value[:len(value) - len(value.lstrip())]
+        cleaned.append(f"{key}:{spacing}{quote}{filename}{quote}{newline}")
+    return "".join(cleaned)
 
 
 def write_mediainfo_nfo(
@@ -33,30 +63,8 @@ def write_mediainfo_nfo(
         )
         if result.returncode:
             raise RemuxError(result.stderr or "MediaInfo échoué")
-        cleaned_lines: list[str] = []
-        changed = False
-        for line in result.stdout.splitlines(keepends=True):
-            line_body = line.rstrip("\r\n")
-            newline = line[len(line_body):]
-            if ":" not in line_body:
-                cleaned_lines.append(line)
-                continue
-
-            key, value = line_body.split(":", 1)
-            current = value.strip()
-            if (
-                clean_nfo and key.strip().casefold() == "complete name"
-                and current != output_path.name
-                and ("/" in current or "\\" in current)
-            ):
-                suffix_start = len(value) - len(value.lstrip())
-                cleaned_lines.append(f"{key}:{value[:suffix_start]}{output_path.name}{newline}")
-                changed = True
-            else:
-                cleaned_lines.append(line)
-
-        nfo_text = "".join(cleaned_lines) if changed else result.stdout
-        nfo_path.write_text(nfo_text, encoding="utf-8")
+        nfo_text = _clean_mediainfo_nfo(result.stdout, output_path) if clean_nfo else result.stdout
+        nfo_path.write_text(nfo_text, encoding="utf-8", newline="")
         log_cb("OK", f"NFO généré : {nfo_path.name}")
     except Exception as exc:
         log_cb("WARN", f"Impossible de générer le NFO : {exc}")

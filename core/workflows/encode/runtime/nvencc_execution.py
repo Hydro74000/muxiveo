@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
 from typing import Callable
@@ -33,6 +36,7 @@ from core.workflows.encode.models import EncodeConfig, EncodeError, VideoEncodeS
 from core.workflows.encode.planning.offsets import track_offset_ms as _track_offset_ms_plan
 from core.workflows.encode.planning.offsets import build_offset_specs as _build_offset_specs_plan
 from core.workflows.encode.planning.plan_models import EncodePlan, MaterializedContainerMetadataPlan
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_assembly import (
     build_track_input_paths as _build_track_input_paths_plan,
     resolve_track_assembly as _resolve_track_assembly_plan,
@@ -57,24 +61,121 @@ from core.workflows.encode.domain.codecs import vulkan_filter_device_args as _vu
 from core.workflows.encode.runtime.frame_count_guard import FrameCountAuditError
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
 from core.matroska.editors.dovi import sanitize_dovi_mkv
-from core.workflows.encode.dovi_policy import dovi_output_compat_id_for
+from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_extract_mode
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.fel.engine import FelError
+from core.fel.hdr10plus import (
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    read_frame_statistics,
+    write_hdr10plus_json,
+)
+from core.matroska.hevc.access_units import HevcStreamCancelled
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.writer import MatroskaWriteCancelled
+from core.workflows.hevc_static_hdr_metadata import replace_content_light_level_sei_file
 
 
 def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSettings | None = None) -> bool:
-    """Images décodées et filtrées par FFmpeg (pipe y4m) plutôt que par NVEncC.
+    """Images décodées et filtrées par FFmpeg (NUT ou y4m) plutôt que par NVEncC.
 
     Préfiltres sans équivalent NVEncC, RIFE, playlist Blu-ray, source P5 sans
     conversion native, tone-mapping sans libplacebo dans NVEncC.
     """
     video = routing.video if video is None else video
     return bool(
+        video.fel_context is not None
+        or
         _nvencc_requires_ffmpeg_filter_pipe_runtime(video)
         or is_bluray_playlist(routing.input_path)
         or (video.p5_to_hdr10 and not routing.p5_native)
         or (video.tonemap_to_sdr and not routing.native_tonemap)
     )
+
+
+def _apply_fel_hdr10plus(
+    *,
+    video: VideoEncodeSettings,
+    intermediate: Path,
+    statistics_path: Path,
+    cwd: Path,
+    frame_ratio: Fraction,
+    encoded_frames: int | None,
+    ffmpeg_bin: str,
+    hdr10plus_bin: str,
+    dovi_bin: str,
+    run: Callable[[list[str], str], object],
+    cancelled: Callable[[], bool],
+    log: Callable[[str], None],
+    progress: Callable[[str], None],
+) -> None:
+    """HDR10+ et MaxCLL/MaxFALL de l'image reconstruite (statistiques du plugin) injectés dans la sortie NVEncC.
+
+    Flux extrait en annexB, HDR10+ puis SEI CLL injectés, payloads réécrits dans le MKV de NVEncC
+    (horodatages et TrackEntry conservés, MaxCLL/MaxFALL posés dans Colour).
+    """
+    try:
+        statistics = read_frame_statistics(statistics_path)
+    except FrameStatisticsError as exc:
+        raise EncodeError(str(exc)) from exc
+    # Statistiques fournies par l'appelant : HDR10+ recalculé selon le choix, sinon MaxCLL/MaxFALL seuls.
+    recompute = bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
+    json_path = cwd / "fel_hdr10plus.json"
+    annexb, injected, with_cll, rewritten = (
+        cwd / name for name in ("fel_annexb.hevc", "fel_hdr10plus.hevc", "fel_cll.hevc", "nvencc_hdr10plus.mkv")
+    )
+    try:
+        if recompute:
+            write_hdr10plus_json(statistics, json_path)
+            _expand_dynamic_hdr_metadata(
+                ratio=frame_ratio, rpu_bin=None, hdr10p_json=json_path, dovi_tool_bin=dovi_bin,
+                run_cmd=lambda cmd: run(cmd, "hdr10plus-expand"), log=log,
+            )
+            count = len(json.loads(json_path.read_text(encoding="utf-8"))["SceneInfo"])
+            if encoded_frames is not None and count != encoded_frames:
+                raise EncodeError(
+                    f"HDR10+ recalculé : {count} trames pour {encoded_frames} encodées ; injection refusée."
+                )
+        # Flux annexB puis flux injecté coexistent avec l'artefact NVEncC.
+        needed = 2.2 * intermediate.stat().st_size
+        if shutil.disk_usage(cwd).free < needed:
+            raise EncodeError(
+                f"Métadonnées de l'image reconstruite : espace insuffisant dans le dossier de travail "
+                f"({needed / 1e9:.1f} Go nécessaires)."
+            )
+        progress("Extraction du flux NVEncC (métadonnées de l'image reconstruite)…")
+        run([ffmpeg_bin, "-nostdin", "-y", "-v", "error", "-i", str(intermediate), "-map", "0:v:0", "-c", "copy",
+             "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(annexb)], "hdr10plus-extract")
+        if recompute:
+            progress("Injection du HDR10+ recalculé…")
+            run([hdr10plus_bin, "inject", "-i", str(annexb), "-j", str(json_path), "-o", str(injected)],
+                "hdr10plus-inject")
+            annexb.unlink(missing_ok=True)
+        else:
+            annexb.replace(injected)
+        final, levels = injected, None
+        if deferred_light_levels(video):
+            exact = statistics.static_light_levels()
+            if replace_content_light_level_sei_file(injected, with_cll, max_cll=exact).applied:
+                injected.unlink(missing_ok=True)
+                final = with_cll
+            max_cll, max_fall = (int(value) for value in exact.split(","))
+            levels = (max_cll, max_fall)
+            log(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+        progress("Réécriture du flux NVEncC avec les métadonnées recalculées…")
+        try:
+            MatroskaHevcPayloadRewriter().rewrite(
+                encoded_mkv=intermediate, injected_hevc=final, output=rewritten,
+                cancel_cb=cancelled, light_levels=levels,
+            )
+        except (HevcStreamCancelled, MatroskaWriteCancelled) as exc:
+            raise TaskCancelledError() from exc
+        os.replace(rewritten, intermediate)
+    finally:
+        for path in (annexb, injected, with_cll, rewritten, json_path):
+            path.unlink(missing_ok=True)
+    if recompute:
+        log(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
 
 
 _MISSING_RPU_MARKER = "failed to get dovi rpu"
@@ -99,8 +200,21 @@ class NvenccDoviRpuMonitor:
         if match is not None:
             self.encoded_frames = int(match.group(1))
 
-    def raise_if_failed(self, *, expected_frames: int | None = None) -> None:
-        if self.missing:
+    def raise_if_failed(
+        self,
+        *,
+        expected_frames: int | None = None,
+        accepted_missing: int = 0,
+        warn: Callable[[str], None] | None = None,
+    ) -> None:
+        """``accepted_missing`` : RPU manquants déjà acceptés explicitement par l'utilisateur (audit forcé)."""
+        if self.missing and self.missing <= accepted_missing:
+            if warn is not None:
+                warn(
+                    f"NVEncC : {self.missing} trame(s) encodée(s) sans RPU Dolby Vision, "
+                    "conformément au manque accepté explicitement."
+                )
+        elif self.missing:
             raise EncodeError(
                 f"NVEncC : {self.missing} trame(s) encodée(s) sans RPU Dolby Vision "
                 "(« Failed to get dovi rpu ») ; sortie refusée."
@@ -128,7 +242,15 @@ class NvenccPipeExecutor:
         signals: TaskSignals,
         monitor: NvenccDoviRpuMonitor | None = None,
     ) -> str:
-        producer_stages = command_stages(decode_cmd)
+        from core.fel.pipeline import direct_feed
+        from core.pipeline_command import PipelineCommand
+        # FEL : étage FFmpeg réduit à une recopie du NUT, NVEncC lit directement le plugin.
+        feed = direct_feed(decode_cmd)
+        producer_stages = [] if feed is not None else command_stages(decode_cmd)
+        native = feed or (decode_cmd.producer if isinstance(decode_cmd, PipelineCommand) else None)
+        if feed is not None:
+            signals.progress.emit("FEL — NVEncC alimenté directement par le plugin (sans étage FFmpeg).")
+        fel_producer = None
         # Étage intermédiaire (muxiveo-rife) : c'est lui qui rapporte la
         # position dans la source ; les compteurs NVEncC (trames ×N) sont écartés.
         has_intermediate = len(producer_stages) > 1
@@ -172,6 +294,8 @@ class NvenccPipeExecutor:
                 popen_kwargs = subprocess_windows_no_window_kwargs(include_stdin=prev_stdout is None)
                 if prev_stdout is not None:
                     popen_kwargs["stdin"] = prev_stdout
+                elif native is not None:
+                    popen_kwargs["stdin"] = subprocess.PIPE
                 # Étages construits par le planificateur : argv séparés, aucun shell.
                 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 proc = subprocess.Popen(  # nosec B603
@@ -189,7 +313,7 @@ class NvenccPipeExecutor:
 
             encode_proc = subprocess.Popen(
                 encode_cmd,
-                stdin=prev_stdout,
+                stdin=prev_stdout if prev_stdout is not None else (subprocess.PIPE if native is not None else None),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(cwd),
@@ -212,11 +336,21 @@ class NvenccPipeExecutor:
             readers.submit(_reader, proc.stderr, label, sink)
         readers.submit(_reader, encode_proc.stdout, "nvencc", encode_lines)
         try:
+            if native is not None:
+                target = producers[0].stdin if producers else encode_proc.stdin
+                assert target is not None
+                fel_producer = native.start(target, signals._cancel_event)
             encode_rc = encode_proc.wait()
             producer_rcs = [proc.wait() for proc in producers]
             readers.shutdown(wait=True)
             if signals._cancel_event.is_set():
                 raise TaskCancelledError()
+            if fel_producer is not None:
+                from core.fel.engine import FelCancelled
+                fel_producer.finish()
+                if isinstance(fel_producer.error, FelCancelled):
+                    raise TaskCancelledError()
+                fel_producer.check_error()
             # Cause première (ex. VRAM insuffisante pour muxiveo-rife) : le
             # décodage tué par le pipe fermé et NVEncC privé de flux en découlent.
             results = [
@@ -240,6 +374,15 @@ class NvenccPipeExecutor:
                     raise EncodeError(f"{producer_labels[root]} a échoué (code {rc}).\n{tail}")
             return "\n".join(encode_lines[-400:])
         finally:
+            if fel_producer is not None:
+                fel_producer.cancel()
+            for proc in [*producers, encode_proc]:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+            if fel_producer is not None:
+                fel_producer.finish()
+            readers.shutdown(wait=True)
             signals._unregister_proc(encode_proc)
             for proc in producers:
                 signals._unregister_proc(proc)
@@ -299,10 +442,18 @@ class NvenccRuntimeRemuxBuilder:
             append_ffmpeg_input_args(cmd, src)
         cb.append_sync_inputs(cmd, sync_inputs)
 
+        subtitle_inputs = plan_isolated_subtitle_inputs(
+            config, plan, source_idx=source_idx_shifted, sync_remap=sync_remap,
+            start_input_index=1 + len(all_sources) + len(sync_inputs),
+        )
+        for source in subtitle_inputs.paths:
+            append_ffmpeg_input_args(cmd, source)
+        sync_remap = subtitle_inputs.remap
+
         metadata_inputs = cb.materialize_container_metadata_inputs(
             config,
             source_idx=source_idx_shifted,
-            next_input_index=1 + len(all_sources) + len(sync_inputs),
+            next_input_index=1 + len(all_sources) + len(sync_inputs) + len(subtitle_inputs.paths),
             plan=plan,
             chapter_materialize_dir=chapter_materialize_dir,
             chapter_probe_source=config.source,
@@ -314,7 +465,7 @@ class NvenccRuntimeRemuxBuilder:
             leading_inputs=(encoded_video,),
             all_sources=all_sources,
             sync_inputs=sync_inputs,
-        )
+        ) + subtitle_inputs.paths
         track_assembly = _resolve_track_assembly_plan(
             config,
             plan,
@@ -340,7 +491,7 @@ class NvenccRuntimeRemuxBuilder:
             cmd,
             config,
             source_idx=source_idx_shifted,
-            subtitle_copy_input_indices=[index + 1 for index in range(len(all_sources))],
+            subtitle_copy_input_indices=list(subtitle_inputs.copy_input_indices),
             sync_remap=sync_remap,
             offset_remap=offset_remap,
             subtitle_tracks_override=list(plan.resolved_subtitle_tracks),
@@ -410,6 +561,8 @@ class NvenccDirectOutputRunner:
         plan = plan or cb.build_encode_plan(config)
 
         def _task() -> None:
+            nonlocal config
+            attempt_start = len(cleanup_paths)
             chapter_dir: Path | None = None
             live_sync_session: LiveSyncSession | None = None
             sync_cleanup_paths: list[Path] = []
@@ -465,7 +618,7 @@ class NvenccDirectOutputRunner:
                         + ("NVEncC (libplacebo)." if routing.p5_native else "FFmpeg (libplacebo), pipe y4m.")
                     )
                 from core.workflows.encode.runtime.dovi_geometry import (
-                    align_dovi_rpu_geometry, dovi_geometry_edit_json, extract_dovi_rpu,
+                    align_dovi_rpu_geometry, convert_p7_rpu_to_p81, dovi_geometry_edit_json, extract_dovi_rpu,
                 )
 
                 dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
@@ -487,14 +640,30 @@ class NvenccDirectOutputRunner:
                     if runtime_video.p5_to_hdr10 and prepared is not None and Path(prepared).is_file():
                         return Path(prepared)
                     cleanup_paths.append(target)
+                    fel = runtime_video.fel_context
+                    # FEL : RPU original de la préparation converti en P8.1, sans relire la source.
+                    if fel is not None and fel.original_rpu.is_file() and convert_p7_rpu_to_p81(
+                        dovi_tool_bin=dovi_bin, rpu_bin=fel.original_rpu, output_rpu=target, run_cmd=run_metadata,
+                    ):
+                        return target
                     signals.progress.emit("Extraction RPU Dolby Vision…")
-                    return extract_dovi_rpu(
+                    mode = rpu_extract_mode(runtime_video)
+                    rpu = extract_dovi_rpu(
                         source=routing.input_path, stream_index=routing.stream_index,
                         ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
                         output_rpu=target, work_dir=cwd, run_cmd=run_metadata,
                         cleanup_paths=cleanup_paths,
-                        mode="3" if runtime_video.p5_to_hdr10 else None,
+                        mode=mode,
                     )
+                    # Source au record P8 portant un RPU P7 (fichier mal étiqueté).
+                    converted = target.with_name(f"{target.stem}.p81.bin")
+                    cleanup_paths.append(converted)
+                    if not mode and convert_p7_rpu_to_p81(
+                        dovi_tool_bin=dovi_bin, rpu_bin=rpu, output_rpu=converted, run_cmd=run_metadata,
+                    ):
+                        cb.log_info("Dolby Vision : RPU P7 sur une source sans couche d'amélioration, converti en P8.1.")
+                        return converted
+                    return rpu
 
                 dovi_rpu_path: Path | None = None
                 if routing.needs_rpu_alignment:
@@ -528,12 +697,15 @@ class NvenccDirectOutputRunner:
                     if needs_ffmpeg_pipe
                     else Fraction(1)
                 )
-                # RPU indispensable en fichier : source P5 (jamais « copy ») ou pipe y4m.
+                # RPU indispensable en fichier : converti à l'extraction (P7, P5, FEL ;
+                # NVEncC ne convertit pas le profil du RPU) ou pipe y4m.
                 if runtime_video.copy_dv and dovi_rpu_path is None and (
-                    runtime_video.p5_to_hdr10 or frame_ratio > 1
+                    rpu_extract_mode(runtime_video) is not None or frame_ratio > 1
                 ):
                     dovi_rpu_path = source_rpu(cwd / "source_rpu.bin")
                 expected_frames: int | None = None
+                # RPU plus court que la vidéo accepté explicitement : trames tolérées sans RPU.
+                accepted_missing_rpu = 0
                 if runtime_video.copy_dv and dovi_rpu_path is not None and cb.check_external_rpu is not None:
                     try:
                         source_frames = cb.check_external_rpu(routing.input_path, routing.stream_index, dovi_rpu_path)
@@ -546,16 +718,18 @@ class NvenccDirectOutputRunner:
                             cb.check_cancelled(signals)
                             raise EncodeError(f"Audit trames : {exc}") from exc
                         source_frames = 0
+                        accepted_missing_rpu = exc.missing.get("rpu", 0)
                     if source_frames:
                         expected_frames = math.ceil(source_frames * frame_ratio)
                 hdr10plus_json_path: Path | None = None
-                if frame_ratio > 1 and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                if (frame_ratio > 1 or runtime_video.fel_context) and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
                     def run_interp_metadata(cmd: list[str]) -> object:
                         cb.check_cancelled(signals)
                         return cb.run_cmd(cmd, cwd, "interpolation-metadata",
                                           lambda line: signals.progress.emit(line), signals)
 
-                    if runtime_video.copy_hdr10plus:
+                    # HDR10+ recalculé (FEL intégré) : injecté après l'encodage, rien depuis la source.
+                    if runtime_video.copy_hdr10plus and not hdr10plus_recomputed(runtime_video):
                         hdr10plus_json_path = cwd / "source_hdr10plus.json"
                         cleanup_paths.append(hdr10plus_json_path)
                         signals.progress.emit("Extraction métadonnées HDR10+…")
@@ -627,11 +801,14 @@ class NvenccDirectOutputRunner:
                         frame_exact=bool(
                             (runtime_video.copy_dv and dovi_rpu_path is not None) or hdr10plus_json_path is not None
                         ),
+                        nut=runtime_video.fel_context is not None and not runtime_video.interpolates(),
                     )
                     if cb.wrap_decode_with_interpolation is not None:
                         decode_cmd = cb.wrap_decode_with_interpolation(
                             decode_cmd, runtime_video, routing.input_path,
                         )
+                    from core.fel.pipeline import with_fel_input
+                    decode_cmd = with_fel_input(decode_cmd, runtime_video)
                 remux_cmd: list[str] | None = None
                 if cb.native_assemble is None:
                     remux_cmd, live_sync_session, sync_cleanup_paths = cb.build_runtime_remux_cmd(
@@ -649,6 +826,7 @@ class NvenccDirectOutputRunner:
 
                 cb.check_cancelled(signals)
                 cb.log_step(6, "Encodage NVEncC")
+                signals.progress.emit("Encodage NVEncC…")
                 monitor = NvenccDoviRpuMonitor()
                 if decode_cmd is not None:
                     NvenccPipeExecutor().run(
@@ -674,7 +852,23 @@ class NvenccDirectOutputRunner:
                     ):
                         cb.check_cancelled(signals)
                         raise EncodeError(message)
-                monitor.raise_if_failed(expected_frames=expected_frames)
+                monitor.raise_if_failed(
+                    expected_frames=expected_frames, accepted_missing=accepted_missing_rpu, warn=cb.log_info,
+                )
+                if runtime_video.fel_context is not None:
+                    cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
+                statistics_path = fel_statistics_path(runtime_video)
+                if statistics_path is not None and intermediate.is_file() and (
+                        hdr10plus_recomputed(runtime_video) or deferred_light_levels(runtime_video)):
+                    cb.check_cancelled(signals)
+                    _apply_fel_hdr10plus(
+                        video=runtime_video, intermediate=intermediate, statistics_path=statistics_path, cwd=cwd,
+                        frame_ratio=frame_ratio, encoded_frames=monitor.encoded_frames, ffmpeg_bin=cb.ffmpeg_bin,
+                        hdr10plus_bin=hdr10plus_bin, dovi_bin=dovi_bin,
+                        run=lambda cmd, label: cb.run_cmd(cmd, cwd, label, lambda line: signals.progress.emit(line), signals),
+                        cancelled=signals._cancel_event.is_set, log=cb.log_info, progress=signals.progress.emit,
+                    )
+                    cb.check_cancelled(signals)
                 effective_fps = output_fps or routing.source_fps or routing.input_fps
                 # Record DOVI reconstruit (perdu au muxage) : compatibilité de la matrice V30.
                 dovi_compat = dovi_output_compat_id_for(runtime_video)
@@ -712,6 +906,27 @@ class NvenccDirectOutputRunner:
                     if runtime_video.copy_dv and config.output.is_file():
                         sanitize_dovi_mkv(config.output, fps=effective_fps, target_compat_id=dovi_compat)
                     signals.finished.emit(output)
+            except FelError as exc:
+                from core.fel.preparation import fallback_video
+                from core.workdir import remove_path
+                original = cb.primary_video_settings(config)
+                if signals._cancel_event.is_set():
+                    signals.cancelled.emit()
+                elif original.fel_context is None:
+                    signals.failed.emit(str(exc), exc)
+                else:
+                    if live_sync_session is not None:
+                        for proc in live_sync_session.processes:
+                            signals._unregister_proc(proc)
+                        live_sync_session.close()
+                        live_sync_session = None
+                    for path in cleanup_paths[attempt_start:]:
+                        remove_path(path)
+                    del cleanup_paths[attempt_start:]
+                    fallback = fallback_video(original)
+                    config = replace(config, video=fallback, video_tracks=[fallback])
+                    signals.progress.emit(f"[WARN] Reconstruction FEL : {exc} ; reprise complète NVEncC sur le BL.")
+                    _task()
             except TaskCancelledError:
                 signals.cancelled.emit()
             except Exception as exc:
@@ -765,6 +980,10 @@ def build_nvencc_pipeline_commands(
             dovi_rpu_preview = work_dir / "rpu_aligned.bin"
         elif routing.video.p5_to_hdr10 or routing.video.interpolates():
             dovi_rpu_preview = work_dir / "source_rpu.bin"
+    # Cadence encodée comme à l'exécution (interpolation : GOP Dolby Vision borné sur la cadence de sortie).
+    preview_fps = routing.source_fps or routing.input_fps
+    if needs_ffmpeg_pipe and routing.video.interpolates() and preview_fps:
+        preview_fps = _multiply_fps_expr(preview_fps, routing.video.frame_ratio(str(preview_fps))) or preview_fps
     encode = _build_nvencc_command_runtime(
         nvencc_bin,
         (
@@ -777,7 +996,7 @@ def build_nvencc_pipeline_commands(
         stream_index=None if needs_ffmpeg_pipe else routing.stream_index,
         input_reader=None if needs_ffmpeg_pipe else routing.input_reader,
         input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
-        source_fps=routing.source_fps or routing.input_fps,
+        source_fps=preview_fps,
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
         dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
@@ -791,6 +1010,7 @@ def build_nvencc_pipeline_commands(
             extra_input_args=_vulkan_filter_device_args(routing.video),
             vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
             frame_exact=dovi_rpu_preview is not None,
+            nut=routing.video.fel_context is not None and not routing.video.interpolates(),
         )
         if wrap_decode_with_interpolation is not None:
             # aperçu : décodage | muxiveo-rife sur une seule ligne de jetons

@@ -175,7 +175,17 @@ def main(argv: list[str] | None = None) -> int:
     app.setFont(default_font)
     DesignSystem.apply_to_application(app)
     set_current_language(config.language)
-    _prompt_work_dir_cleanup(config)
+    try:
+        _prompt_work_dir_cleanup(config)
+    except OSError:
+        QMessageBox.warning(
+            None,
+            translate_text("Dossier de travail inaccessible"),
+            translate_text(
+                "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}",
+                path=str(config.work_dir),
+            ),
+        )
     splash = _show_startup_splash(app)
 
     # Fenêtre principale

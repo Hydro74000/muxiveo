@@ -260,6 +260,43 @@ def extract_dovi_rpu(
     return output_rpu
 
 
+def rpu_dovi_profile(dovi_tool_bin: str, rpu_path: Path) -> int | None:
+    """Profil Dolby Vision porté par le RPU (``dovi_tool info --summary``), None si illisible."""
+    try:
+        # Outil local configuré et arguments séparés, sans interprétation shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        res = subprocess.run(  # nosec B603
+            [dovi_tool_bin, "info", "-i", str(rpu_path), "--summary"],
+            check=False, capture_output=True, **subprocess_text_kwargs(),
+        )
+    except OSError:
+        return None
+    match = re.search(r"^\s*Profile\s*:\s*(\d+)", (res.stdout or "") + (res.stderr or ""), re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def convert_p7_rpu_to_p81(
+    *, dovi_tool_bin: str, rpu_bin: Path, output_rpu: Path,
+    run_cmd: Callable[[list[str]], object],
+) -> bool:
+    """RPU P7 (FEL/MEL) converti en P8.1 (mode 2) ; False si le RPU n'est pas P7.
+
+    Pour une vidéo sans couche d'amélioration. ``-m`` est ignoré par ``inject-rpu`` :
+    un RPU déjà extrait passe par l'éditeur (``{"mode": 2}``), résultat identique
+    octet pour octet à ``-m 2 extract-rpu``.
+    """
+    if rpu_dovi_profile(dovi_tool_bin, rpu_bin) != 7:
+        return False
+    edit_json = output_rpu.with_suffix(".mode2.json")
+    edit_json.write_text(json.dumps({"mode": 2}), encoding="utf-8")
+    try:
+        output_rpu.unlink(missing_ok=True)
+        run_cmd([dovi_tool_bin, "editor", "-i", str(rpu_bin), "-j", str(edit_json), "-o", str(output_rpu)])
+    finally:
+        edit_json.unlink(missing_ok=True)
+    return True
+
+
 def align_dovi_rpu_geometry(
     *, dovi_tool_bin: str, rpu_input: Path, output_rpu: Path,
     crop_offsets: tuple[int, int, int, int] = (0, 0, 0, 0),

@@ -87,54 +87,8 @@ def test_inspector_cancellation(tmp_path: Path) -> None:
     assert time.monotonic() - started < 10
 
 
-# ---------------------------------------------------------------------------
-# MediaManager (A18)
-# ---------------------------------------------------------------------------
-
-def test_mediamanager_probe_stops_on_interruption() -> None:
-    import mediamanager
-
-    interrupted = threading.Event()
-    threading.Timer(0.3, interrupted.set).start()
-    started = time.monotonic()
-    assert mediamanager._run_interruptible(SLEEPER, interrupted.is_set) is None
-    assert time.monotonic() - started < 10
-
-
-def test_mediamanager_close_waits_for_threads_without_blocking(qt_app, tmp_path: Path, monkeypatch) -> None:
-    import mediamanager
-    from PySide6.QtCore import QCoreApplication
-
-    monkeypatch.setattr(mediamanager, "_resolve_mediainfo_command", lambda: list(SLEEPER))
-    movie = tmp_path / "Matrix.1999.1080p.mkv"
-    movie.write_bytes(b"x" * 10)
-    win = mediamanager.MediaManager(startup_dir=str(tmp_path))
-    assert win.scanner is not None and win.scanner.wait(5000)
-    thread = mediamanager.MediaInfoThread(str(movie))
-    emitted: list[object] = []
-    thread.info_ready.connect(emitted.append)
-    win._threads.append(thread)
-    thread.start()
-    time.sleep(0.2)
-    assert thread.isRunning()
-    win.close()
-    # Fermeture différée : la sonde est interrompue, la boucle Qt reste active.
-    deadline = time.monotonic() + 10
-    while thread.isRunning() and time.monotonic() < deadline:
-        QCoreApplication.processEvents()
-        time.sleep(0.02)
-    assert not thread.isRunning()
-    assert emitted == []
-    for _ in range(10):
-        QCoreApplication.processEvents()
-        time.sleep(0.06)
-    assert not win.isVisible()
-
-
-@pytest.mark.parametrize("mode", ["timeout", "cancel", "exited-parent", "mediamanager"])
+@pytest.mark.parametrize("mode", ["timeout", "cancel", "exited-parent"])
 def test_descendant_holding_stdout_cannot_keep_probe_alive(tmp_path: Path, mode: str) -> None:
-    import mediamanager
-
     pidfile = tmp_path / "child.pid"
     child = "import time; time.sleep(30)"
     body = (
@@ -145,16 +99,13 @@ def test_descendant_holding_stdout_cannot_keep_probe_alive(tmp_path: Path, mode:
     )
     cancel = threading.Event()
     started = time.monotonic()
-    if mode in ("cancel", "mediamanager"):
+    if mode == "cancel":
         threading.Timer(0.5, cancel.set).start()
     try:
-        if mode == "mediamanager":
-            assert mediamanager._run_interruptible([sys.executable, "-c", body], cancel.is_set) is None
-        else:
-            expected = ProbeCancelledError if mode == "cancel" else subprocess.TimeoutExpired
-            with pytest.raises(expected):
-                run_probe([sys.executable, "-c", body], timeout=0.8,
-                          cancel_event=cancel if mode == "cancel" else None)
+        expected = ProbeCancelledError if mode == "cancel" else subprocess.TimeoutExpired
+        with pytest.raises(expected):
+            run_probe([sys.executable, "-c", body], timeout=0.8,
+                      cancel_event=cancel if mode == "cancel" else None)
         assert time.monotonic() - started < 5
         if sys.platform.startswith("linux") and pidfile.exists():
             status = Path("/proc") / pidfile.read_text() / "status"

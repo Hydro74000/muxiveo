@@ -165,8 +165,10 @@ class RemuxPanel(QWidget):
     video_tracks_changed = Signal(object)
     audio_tracks_changed = Signal(object)
     ready_changed = Signal(bool)
+    operation_changed = Signal()
     mux_backend_changed = Signal(str)
     sources_reset = Signal()
+    hdr_studio_requested = Signal(object, int)  # chemin source, index ffprobe de la piste vidéo
 
     def __init__(
         self,
@@ -328,8 +330,8 @@ class RemuxPanel(QWidget):
 
         title = QLabel("Manipulation Conteneur")
         title.setStyleSheet(f"""
-            font-size: {_font_px(20)}px;
-            font-weight: 800;
+            font-size: {_font_px(22)}px;
+            font-weight: 700;
             color: {_C.TEXT_PRI};
             background: transparent;
             letter-spacing: -{_scale(1)}px;
@@ -423,6 +425,7 @@ class RemuxPanel(QWidget):
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
         self._track_table.subtitle_sync_requested.connect(self._on_subtitle_sync_requested)
         self._track_table.sync_studio_requested.connect(self._on_sync_studio_requested)
+        self._track_table.hdr_inspect_requested.connect(self._on_hdr_inspect_requested)
         self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
         self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
         content_layout.addWidget(self._track_table)
@@ -745,6 +748,7 @@ class RemuxPanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing:
             return
+        self.operation_changed.emit()
         if hasattr(self, "_autosave_timer"):
             from ui.panels.remux_panel.functions.workflow import mark_dirty
             mark_dirty(self)
@@ -2083,6 +2087,13 @@ class RemuxPanel(QWidget):
                 self.log_message.emit("ERROR", detail)
         finally:
             self.subtitle_sync_finished.emit(False, {"entry_id": _entry_id})
+
+    def _on_hdr_inspect_requested(self, entry: TrackEntry) -> None:
+        source = self._find_source(entry.file_id)
+        if source is None:
+            self.log_message.emit("WARN", translate_text("Source introuvable pour cette piste."))
+            return
+        self.hdr_studio_requested.emit(source.path, entry.mkv_tid)
 
     def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
         if not self._can_start_auxiliary_operation():

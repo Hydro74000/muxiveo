@@ -71,7 +71,8 @@ def test_stable_channel_uses_latest_endpoint():
     seen: list[str] = []
     with patch.object(update_check.urllib.request, "urlopen", _urlopen(_release("v99.0.0"), seen)):
         info = fetch_latest_release("stable")
-    assert seen == [LATEST_RELEASE_API_URL]
+    # flux du canal d'abord (réponse inexploitable ici), puis secours sur l'API
+    assert seen == [update_check.update_feed_url("stable"), LATEST_RELEASE_API_URL]
     assert info is not None and info.version == "99.0.0" and not info.prerelease
 
 
@@ -136,7 +137,8 @@ def test_fetch_is_silent_on_invalid_json():
 
 def test_unstable_query_is_light():
     seen: list[str] = []
-    with patch.object(update_check.urllib.request, "urlopen", _urlopen([], seen)):
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen([], seen)), \
+         patch.object(update_check, "_query_feed", lambda *a, **k: None):
         fetch_latest_release("unstable")
     assert seen == [f"{update_check.RELEASES_API_URL}?per_page={update_check.UNSTABLE_RELEASES_PAGE_SIZE}"]
 
@@ -146,6 +148,7 @@ def test_total_timeout_aborts_slow_response():
     clock = iter([0.0, 0.1, 99.0])
     with patch.object(update_check.urllib.request, "urlopen", _urlopen([_release("v99.0.0")] * 50)), \
          patch.object(update_check, "_READ_CHUNK_BYTES", 8), \
+         patch.object(update_check, "_query_feed", lambda *a, **k: None), \
          patch.object(update_check.time, "monotonic", lambda: next(clock)):
         try:
             query_latest_release("unstable", timeout=5.0)
@@ -191,3 +194,69 @@ def test_get_json_timeout_covers_header_wait():
         else:  # pragma: no cover
             raise AssertionError("TimeoutError attendu")
     assert _time.monotonic() - started < 0.6
+
+
+# ---------------------------------------------------------------------------
+# Flux de mise à jour (release update-feed)
+# ---------------------------------------------------------------------------
+
+def _feed(channel: str, tag: str, assets: list[dict] | None = None) -> dict:
+    return {"schema": 1, "channel": channel, "version": tag.lstrip("v"), "tag": tag,
+            "url": f"{APP_REPOSITORY_URL}releases/tag/{tag}", "published": "2026-10-09T08:00:00Z",
+            "assets": assets or []}
+
+
+def _routes(table: dict[str, object], seen: list[str] | None = None):
+    """urlopen simulé : réponse par URL, erreur réseau pour les autres."""
+    def _open(req, timeout=None):
+        if seen is not None:
+            seen.append(req.full_url)
+        if req.full_url not in table:
+            raise urllib.error.URLError("introuvable")
+        return _response(table[req.full_url])
+
+    return _open
+
+
+def test_feed_is_read_before_api():
+    seen: list[str] = []
+    feed = _feed("stable", "v99.0.0")
+    with patch.object(update_check.urllib.request, "urlopen", _routes({update_check.update_feed_url("stable"): feed}, seen)):
+        info = fetch_latest_release("stable")
+    assert seen == [update_check.update_feed_url("stable")]
+    assert info is not None and info.version == "99.0.0" and not info.prerelease
+    assert update_check.update_feed_url("unstable").endswith("/releases/download/update-feed/unstable.json")
+
+
+def test_unstable_feed_keeps_newest_of_unstable_and_stable():
+    unstable = _feed("unstable", f"v{_U2}")
+    for stable_tag, expected in (("v3.1.2", _U2), ("v99.0.0", "99.0.0")):
+        routes = {update_check.update_feed_url("unstable"): unstable,
+                  update_check.update_feed_url("stable"): _feed("stable", stable_tag)}
+        with patch.object(update_check.urllib.request, "urlopen", _routes(routes)):
+            info = fetch_latest_release("unstable")
+        assert info is not None and info.version == expected
+
+
+def test_invalid_feed_falls_back_to_api():
+    api = f"{update_check.RELEASES_API_URL}?per_page={update_check.UNSTABLE_RELEASES_PAGE_SIZE}"
+    for bad in ({"schema": 2, "channel": "unstable", "tag": f"v{_U1}"}, _feed("stable", f"v{_U1}"),
+                _feed("unstable", "muxiveo-rife-v1.6.0"), ["pas", "un", "objet"]):
+        seen: list[str] = []
+        routes = {update_check.update_feed_url("unstable"): bad, api: [_release(f"v{_U2}", prerelease=True)]}
+        with patch.object(update_check.urllib.request, "urlopen", _routes(routes, seen)):
+            info = fetch_latest_release("unstable")
+        assert seen[-1] == api
+        assert info is not None and info.version == _U2
+
+
+def test_feed_keeps_only_repository_assets():
+    prefix = update_check.RELEASE_DOWNLOAD_URL_PREFIX
+    feed = _feed("stable", "v99.0.0", [
+        {"name": "Muxiveo.AppImage", "url": f"{prefix}v99.0.0/Muxiveo.AppImage", "size": 10},
+        {"name": "SHA256SUMS", "url": f"{prefix}v99.0.0/SHA256SUMS", "size": 1},
+        {"name": "piege.AppImage", "url": "https://evil.example/piege.AppImage", "size": 1},
+    ])
+    with patch.object(update_check.urllib.request, "urlopen", _routes({update_check.update_feed_url("stable"): feed})):
+        info = fetch_latest_release("stable")
+    assert info is not None and [a.name for a in info.assets] == ["Muxiveo.AppImage", "SHA256SUMS"]

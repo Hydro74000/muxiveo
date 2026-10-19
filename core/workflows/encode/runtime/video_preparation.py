@@ -45,6 +45,8 @@ class VideoOnlyCommandBuilderCallbacks:
     # Interpolation RIFE : binaire muxiveo-rife et propriétés couleur/départ de la source.
     rife_bin: str | None = None
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
+    # Accélération NVIDIA (TensorRT) : dossier de l'extension et cache des moteurs ("" = Vulkan seul).
+    rife_trt_args: Callable[[], tuple[str, str]] | None = None
 
 
 _RAW_VIDEO_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc"})
@@ -71,6 +73,21 @@ class VideoOnlyCommandBuilder:
         offset_ms: int = 0,
         thread_count: int | None = None,
     ) -> list[str]:
+        from core.fel.pipeline import with_fel_input
+        return with_fel_input(self._build_video_track_base_cmd(
+            video=video, source=source, stream_index=stream_index,
+            offset_ms=offset_ms, thread_count=thread_count,
+        ), video, thread_count)
+
+    def _build_video_track_base_cmd(
+        self,
+        *,
+        video: VideoEncodeSettings,
+        source: Path,
+        stream_index: int,
+        offset_ms: int = 0,
+        thread_count: int | None = None,
+    ) -> list[str]:
         cb = self._cb
         if video.interpolates():
             return self._build_interpolated_base_cmd(
@@ -86,7 +103,7 @@ class VideoOnlyCommandBuilder:
         cmd.extend(hardware_input_args(video, callbacks=cb.codec_domain_callbacks()))
         cmd.extend(raw_input_rate_args(video, source))
         append_ffmpeg_input_args(cmd, source)
-        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks())
+        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks(), hw_decoded=video.fel_context is None)
         if vf:
             cmd.extend(["-vf", vf])
         cmd.extend(cb.ffmpeg_thread_args(thread_count))
@@ -131,16 +148,20 @@ class VideoOnlyCommandBuilder:
             vf=decode_vf,
             pre_input_args=decode_pre,
         )
+        trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
         rife = build_rife_stage(
             cb.rife_bin,
-            factor=int(settings.factor),
+            factor=settings.factor,
             target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
-            tta=settings.tta,
+            tta=settings.tta_passes(),
+            feature_cache=settings.feature_cache,
+            trt_plugin=trt_plugin,
+            trt_cache=trt_cache,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

@@ -24,6 +24,7 @@ on:
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
+      - "tests/test_unified_operations.py"
       - "tests/test_package.py"
       - "tests/test_launcher.py"
       - "tests/conftest.py"
@@ -51,6 +52,7 @@ on:
       - "tests/test_i18n.py"
       - "tests/test_encode_audio_bitrate_ui.py"
       - "tests/test_encode_panel_widgets.py"
+      - "tests/test_unified_operations.py"
       - "tests/test_package.py"
       - "tests/test_launcher.py"
       - "tests/conftest.py"
@@ -117,7 +119,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           for attempt in 1 2 3; do
-            if python -m pip install --retries 5 --timeout 60 pytest pytest-qt PySide6 numpy; then
+            if python -m pip install --retries 5 --timeout 60 -r requirements.txt pytest pytest-qt; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -144,6 +146,7 @@ jobs:
             tests/test_i18n.py \
             tests/test_encode_audio_bitrate_ui.py \
             tests/test_encode_panel_widgets.py \
+            tests/test_unified_operations.py \
             tests/test_package.py \
             tests/test_launcher.py \
             -v

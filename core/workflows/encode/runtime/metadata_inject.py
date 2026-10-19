@@ -21,6 +21,7 @@ from core.workflows.encode.domain.codecs import uses_two_pass_video
 from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.encode.planning.track_assembly import build_track_input_paths, resolve_track_assembly
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.offsets import track_offset_ms
 from core.workflows.encode.interpolation import (
     expand_dynamic_hdr_metadata,
@@ -36,10 +37,17 @@ from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountGuard,
     MetadataAdjustment,
 )
-from core.workflows.hevc_static_hdr_metadata import inject_static_hdr_sei_file
+from core.workflows.hevc_static_hdr_metadata import (
+    inject_static_hdr_sei_file, replace_content_light_level_sei_file,
+)
+from core.fel.hdr10plus import (
+    FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    read_frame_statistics,
+    write_hdr10plus_json,
+)
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
-from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu, extract_dovi_rpu
+from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
@@ -407,6 +415,17 @@ class MetadataInjectRunner:
                         "-i", str(meta_input), "-o", str(rpu_bin),
                     ])
                     _check()
+                    # Vidéo injectée toujours sans couche d'amélioration (P7 converti
+                    # en amont) : un RPU P7 restant (record P8 d'un fichier mal
+                    # étiqueté) est converti en P8.1.
+                    rpu_p81 = tmp / "rpu.p81.bin"
+                    if convert_p7_rpu_to_p81(
+                        dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=rpu_bin,
+                        output_rpu=rpu_p81, run_cmd=_run,
+                    ):
+                        cb.log_info("Dolby Vision : RPU P7 sur une vidéo sans couche d'amélioration, converti en P8.1.")
+                        rpu_bin = rpu_p81
+                    _check()
                 if video.copy_dv:
                     # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
                     rpu_bin = crop_dovi_rpu(
@@ -416,7 +435,9 @@ class MetadataInjectRunner:
                     _check()
 
                 hdr10p_json = tmp / "hdr10p.json"
-                if video.copy_hdr10plus:
+                # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
+                fel_statistics = fel_statistics_path(video)
+                if video.copy_hdr10plus and not hdr10plus_recomputed(video):
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
@@ -439,7 +460,7 @@ class MetadataInjectRunner:
                 expand_dynamic_hdr_metadata(
                     ratio=frame_ratio,
                     rpu_bin=rpu_bin if video.copy_dv else None,
-                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    hdr10p_json=hdr10p_json if (video.copy_hdr10plus and fel_statistics is None) else None,
                     dovi_tool_bin=cb.bins.get("dovi_tool"),
                     run_cmd=_run,
                     log=cb.log_info,
@@ -616,6 +637,44 @@ class MetadataInjectRunner:
                         f"{estimate_obj.confidence}) : {estimate_obj.max_cll}."
                     )
 
+                light_levels: tuple[int, int] | None = None
+                if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
+                    # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+                    try:
+                        statistics = read_frame_statistics(fel_statistics)
+                    except FrameStatisticsError as exc:
+                        raise EncodeError(str(exc)) from exc
+                    if hdr10plus_recomputed(video):
+                        write_hdr10plus_json(statistics, hdr10p_json)
+                        expand_dynamic_hdr_metadata(
+                            ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,
+                            dovi_tool_bin=cb.bins.get("dovi_tool"), run_cmd=_run, log=cb.log_info,
+                        )
+                        cb.log_info(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
+                    if deferred_light_levels(video):
+                        exact = statistics.static_light_levels()
+                        video = dataclasses.replace(video, max_cll=exact)
+                        max_cll, max_fall = (int(value) for value in exact.split(","))
+                        light_levels = (max_cll, max_fall)
+                        updated_tracks = []
+                        for track_index, track in enumerate(effective_config.video_tracks):
+                            same_track = bool(video.track_entry_id and track.track_entry_id == video.track_entry_id)
+                            if same_track or (not video.track_entry_id and track_index == 0):
+                                track = dataclasses.replace(track, max_cll=exact)
+                            updated_tracks.append(track)
+                        effective_config = dataclasses.replace(
+                            effective_config, video=video, video_tracks=updated_tracks or [video],
+                        )
+                        # SEI CLL remplacé (x265 écrit 0,0 avec master-display) ; MDCV de l'encodeur intact.
+                        out_cll = _alloc("enc_cll.hevc", current_hevc.stat().st_size)
+                        if replace_content_light_level_sei_file(current_hevc, out_cll, max_cll=exact).applied:
+                            _free(current_hevc)
+                            current_hevc = out_cll
+                        else:
+                            _free(out_cll)
+                        cb.log_info(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                    _check()
+
                 # Audit frame count : empêche l'injection sur un stream qui
                 # aurait dérapé en frame count (NVENC drop, NVDEC dup, filtre
                 # non frame-preserving). Sans ça, l'injection RPU/HDR10+ se
@@ -697,10 +756,9 @@ class MetadataInjectRunner:
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
-                    # Si une normalisation P7/P5→P8.1 a effectivement eu
-                    # lieu en amont, on force -m 2 pour que le RPU réinjecté
-                    # soit explicitement tagué P8.1. `inject-rpu` n'accepte
-                    # pas --compat-id : le mode est porté par `-m`.
+                    # `-m` est sans effet sur `inject-rpu` (dovi_tool 2.3) : le RPU
+                    # est déjà P8.1 (extraction du flux converti ou conversion P7
+                    # ci-dessus) ; compat id porté par le record Matroska.
                     inject_mode = video.dovi_profile
                     if (
                         p7_router_decision is not None
@@ -803,6 +861,7 @@ class MetadataInjectRunner:
                         output=wrapped_video,
                         dovi_record=record_for_muxer,
                         cancel_cb=signals._cancel_event.is_set,
+                        light_levels=light_levels,
                     )
                 except (HevcStreamCancelled, MatroskaWriteCancelled) as exc:
                     raise TaskCancelledError() from exc
@@ -881,11 +940,19 @@ class MetadataInjectRunner:
                     for proc in live_sync_session.processes:
                         signals._register_proc(proc)
 
+                subtitle_inputs = plan_isolated_subtitle_inputs(
+                    config, encode_plan, source_idx=recon_source_idx, sync_remap=sync_remap,
+                    start_input_index=2 + len(extra_sources) + len(sync_inputs),
+                )
+                for source in subtitle_inputs.paths:
+                    append_ffmpeg_input_args(recon_cmd, source)
+                sync_remap = subtitle_inputs.remap
+
                 next_input_index, chapter_input_index, tag_input_index = cb.prepare_container_metadata_inputs(
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
-                    next_input_index=2 + len(extra_sources) + len(sync_inputs),
+                    next_input_index=2 + len(extra_sources) + len(sync_inputs) + len(subtitle_inputs.paths),
                     plan=encode_plan,
                     chapter_materialize_dir=tmp,
                     chapter_probe_source=config.source,
@@ -903,7 +970,7 @@ class MetadataInjectRunner:
                         leading_inputs=[current_video_input],
                         all_sources=all_sources,
                         sync_inputs=sync_inputs,
-                    ),
+                    ) + subtitle_inputs.paths,
                     sync_remap=sync_remap,
                     video_default_map=video_default_map,
                     video_fallback_input=current_video_input,
@@ -938,7 +1005,7 @@ class MetadataInjectRunner:
                     recon_cmd,
                     config,
                     source_idx=recon_source_idx,
-                    subtitle_copy_input_indices=list(range(1, 2 + len(extra_sources))),
+                    subtitle_copy_input_indices=list(subtitle_inputs.copy_input_indices),
                     sync_remap=sync_remap,
                     offset_remap=offset_remap,
                     subtitle_tracks_override=resolved_subtitle_tracks,

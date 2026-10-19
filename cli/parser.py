@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 
+from cli.hdr import add_hdr_options
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
+from cli.plugins import add_plugins_parser
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
@@ -12,6 +14,8 @@ def _add_sync_options(parser):
     parser.add_argument("--sync-mode", choices=("physical", "container"), default=None)
     parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None)
     parser.add_argument("--clean-nfo", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--remove-closed-captions", action=argparse.BooleanOptionalAction, default=None,
+                        help="Retirer les sous-titres embarqués EIA-608/708 détectés, sans réencodage")
     parser.add_argument("--crossfade-ms", type=int, default=None)
     parser.add_argument("--auto-forced-subs", action="store_true")
     parser.add_argument("--forced-threshold", type=int, default=50)
@@ -94,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("input", nargs="+")
     inspect.add_argument("--config-template", action="store_true")
     inspect.add_argument("--output")
+    add_hdr_options(inspect)
     inspect.set_defaults(func=cmd_inspect)
 
     schema = sub.add_parser("schema", help="Afficher le schéma JSON du contrat CLI.")
@@ -111,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
     version.add_argument("--log-format", choices=("text", "jsonl"), default="text")
     version.set_defaults(func=cmd_version)
+
+    add_plugins_parser(sub)
 
     for name, help_text, func in (
         ("validate", "Valider une config remux.", cmd_validate),

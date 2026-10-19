@@ -1,0 +1,21 @@
+name: choco-install
+description: >-
+  Installe des paquets Chocolatey avec nouvelles tentatives, puis vérifie que les commandes attendues
+  sont disponibles. Le dépôt communautaire échoue par intermittence et choco sort alors en succès
+  après avoir installé « 0/0 packages » : sans vérification, les tests tournent sans les outils.
+inputs:
+  packages:
+    description: Paquets à installer, séparés par des espaces.
+    required: true
+  commands:
+    description: Commandes qui doivent exister après l'installation, séparées par des espaces.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Chocolatey packages (retries + verification)
+      shell: pwsh
+      env:
+        CHOCO_PACKAGES: ${{ inputs.packages }}
+        CHOCO_COMMANDS: ${{ inputs.commands }}
+      run: '& "$env:GITHUB_ACTION_PATH/choco-install.ps1"'

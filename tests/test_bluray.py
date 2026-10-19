@@ -312,6 +312,7 @@ def test_remux_offset_inputs_read_bluray_playlist_via_libbluray(tmp_path: Path) 
     assert cmd == [
         "-itsoffset", "0.250", "-playlist", "5", "-i", f"bluray:{root}",
         "-ss", "0.080", "-playlist", "5", "-i", f"bluray:{root}",
+        "-avoid_negative_ts", "disabled",
     ]
 
 

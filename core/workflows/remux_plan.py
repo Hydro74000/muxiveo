@@ -418,6 +418,8 @@ def passthrough_source_refs(
     refs: list[tuple[Path, int]] = []
     for item in mapped_tracks:
         track = item.track
+        if getattr(track, "remove_closed_captions", False):
+            return None
         if getattr(track, "is_new", False):
             return None
         if int(getattr(track, "time_shift_ms", 0) or 0):

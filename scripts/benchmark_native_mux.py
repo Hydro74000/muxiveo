@@ -69,13 +69,20 @@ def native_run(source: Path, output: Path, ffprobe: str) -> dict[str, float]:
         timings["ffprobe_s"] = time.perf_counter() - probe_started
 
     write_started = time.perf_counter()
+    emit_progress = native_mux_progress_callback(lambda line: None)
+
+    def progress(event):
+        timings["packets"] = event.packets_written
+        if "first_progress_s" not in timings:
+            timings["first_progress_s"] = time.perf_counter() - started
+        emit_progress(event)
+
     MatroskaWriter().write(
         compiled, external_validator=validate,
-        progress_cb=native_mux_progress_callback(lambda line: None),
+        progress_cb=progress,
     )
     timings["write_including_validation_s"] = time.perf_counter() - write_started
     timings["total_s"] = time.perf_counter() - started
-    timings["packets"] = compiled.total_packets
     timings["output_bytes"] = output.stat().st_size
     return timings
 

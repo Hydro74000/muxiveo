@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +414,7 @@ def build_remux_config(
     *,
     cli_inputs: list[str] | None = None,
     cli_output: str | None = None,
+    select_tracks: Callable[[list[SourceInput]], None] | None = None,
 ) -> RemuxConfig:
     job = dict(job)
     for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
@@ -442,6 +444,12 @@ def build_remux_config(
         strict_selectors=strict_selectors,
         relaxed_selectors=relaxed_selectors,
     )
+    if select_tracks is not None:
+        select_tracks(sources)
+    if options.remove_closed_captions is not None:
+        for track in tracks:
+            if track.is_video and track.has_closed_captions:
+                track.remove_closed_captions = options.remove_closed_captions
 
     # Synchronisation explicite via calibration ou dynamique via auto_sync
     calib_file = job.get("calibration") or getattr(options, "calibration", None)

@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
     QLayout,
-    QLineEdit, QListWidget, QListWidgetItem,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QMessageBox,
     QPlainTextEdit, QProgressBar, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTabWidget,
     QVBoxLayout, QWidget,
@@ -47,8 +47,9 @@ from core.workflows.encode import (
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
 from core.workflows.encode.interpolation import (
+    INTERPOLATION_DEFAULT_QUALITY,
     INTERPOLATION_FACTORS,
-    INTERPOLATION_TARGET_FPS,
+    INTERPOLATION_PRESETS,
     INTERPOLATION_TTA_LEVELS,
 )
 from core.workflows.encode.catalog import (
@@ -105,11 +106,41 @@ from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
 # Taille > 0 ; débit selon le mode (VBR NVENC / NVEncC : 0 = illimité).
 # Pas de borne haute applicative (limite technique de QIntValidator).
 _INT_INPUT_MAX = 2**31 - 1
+_INTERPOLATION_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+
+# Préréglages d'interpolation : libellé et infobulle (entrée de la liste et préréglage choisi).
+_INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("Rapide", "fast",
+     "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) "
+     "peuvent onduler."),
+    ("Équilibré", "balanced",
+     "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, "
+     "la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux "
+     "demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le "
+     "temps de Rapide."),
+    ("Qualité", "quality",
+     "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, "
+     "occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide."),
+    ("Ultra", "ultra",
+     "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme "
+     "candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ "
+     "1,5 fois le temps de Qualité."),
+    ("Light", "light",
+     "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques)."),
+)
 
 
 def _format_fps(value: float) -> str:
     """Cadence lisible à la française (ex. 59,94)."""
     return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _interpolation_target_label(value: str) -> str:
+    """Une cadence invalide reste lisible jusqu'à sa validation au lancement."""
+    try:
+        return _format_fps(float(Fraction(value)))
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return value
 
 
 class EncodePanel(QWidget):
@@ -123,11 +154,18 @@ class EncodePanel(QWidget):
 
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
+    operation_changed = Signal()
     audio_track_meta_changed = Signal(int, object, str, str, object)  # (stream_index, source_path, lang, title, entry_id)
     audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
     audio_track_remove_requested = Signal(object)  # (entry_id)
     video_tracks_encoding_changed = Signal(object)
+    # Indication « accélération NVIDIA disponible » cliquée : dialogue d'installation (fenêtre principale).
+    trt_install_requested    = Signal()
+    extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
+    hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
+    fel_analysis_requested = Signal(object, int)  # « Analyser l'apport du FEL… » : chemin, index ffprobe
+    rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
     _hw_detected             = Signal(object, object, object, object, object, object, object)
@@ -207,6 +245,10 @@ class EncodePanel(QWidget):
         self._vaapi_drivers: dict[str, str] = {}
         # NLMeans 10 bits sur le GPU (Vulkan détecté au lancement).
         self._vulkan_nlmeans = False
+        # Extension d'accélération NVIDIA (TensorRT) : dossier transmis aux encodages et état (TrtState).
+        self._trt_plugin_dir = ""
+        self._trt_state: object | None = None
+        self._rife_state: object | None = None
         # Paramètres avancés mémorisés par codec : une syntaxe propre à un
         # encodeur (x265-params, flags NVEncC…) ne suit pas un changement de codec.
         self._extra_params_by_codec: dict[str, str] = {}
@@ -307,7 +349,7 @@ class EncodePanel(QWidget):
 
         # --- Titre ---
         title = QLabel("Encodage Vidéo / Audio")
-        title.setStyleSheet(f"font-size:20px;font-weight:800;color:{_C.TEXT_PRI};"
+        title.setStyleSheet(f"font-size:22px;font-weight:700;color:{_C.TEXT_PRI};"
                             f"background:transparent;letter-spacing:-0.3px;")
         subtitle = QLabel("x265 · x264 · SVT-AV1 · NVENC/AMF/QSV — HDR10 · Tone mapping · Audio multicanal")
         subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:12px;background:transparent;")
@@ -654,6 +696,8 @@ class EncodePanel(QWidget):
             f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
         )
         self._video_list.currentRowChanged.connect(self._on_video_row_changed)
+        self._video_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._video_list.customContextMenuRequested.connect(self._on_video_list_menu)
         cl.addWidget(self._video_list)
 
         self._video_placeholder = QLabel(
@@ -669,6 +713,38 @@ class EncodePanel(QWidget):
         self._video_list.setVisible(False)
         self._video_placeholder.setVisible(True)
         return card
+
+    def apply_static_light_levels(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> bool:
+        """MaxCLL/MaxFALL choisis dans HDR Studio, posés sur la piste vidéo correspondante.
+
+        False si la piste n'est pas chargée ou si le codec courant ne permet pas de les modifier.
+        """
+        for row, (info, track, _color) in enumerate(self._video_tracks):
+            if Path(info.path) == Path(path) and track.mkv_tid == stream_index:
+                self._video_list.setCurrentRow(row)
+                if not self._inject_hdr_cb.isEnabled() or self._max_cll.isReadOnly():
+                    return False
+                self._inject_hdr_cb.setChecked(True)
+                self._max_cll.setText(f"{int(max_cll)},{int(max_fall)}")
+                return True
+        return False
+
+    def _request_fel_analysis(self) -> None:
+        row = self._video_list.currentRow()
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            self.fel_analysis_requested.emit(file_info.path, track.mkv_tid)
+
+    def _on_video_list_menu(self, pos) -> None:
+        item = self._video_list.itemAt(pos)
+        data = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if not data:
+            return
+        file_info, track = data
+        menu = QMenu(self)
+        action = menu.addAction(translate_text("Inspecter le HDR…"))
+        if menu.exec(self._video_list.viewport().mapToGlobal(pos)) is action:
+            self.hdr_studio_requested.emit(file_info.path, track.mkv_tid)
 
     def _build_video_selector_row(self) -> QWidget:
         row = QWidget()
@@ -1230,6 +1306,52 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
         cl.addWidget(self._copy_dv_cb)
+        self._bake_fel_choice: bool | None = None
+        self._bake_fel_cb = QCheckBox(translate_text("Intégrer la couche FEL à l’image avant encodage"))
+        self._bake_fel_cb.setStyleSheet(_checkbox_style())
+        self._bake_fel_cb.setToolTip(translate_text(
+            "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. "
+            "Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. "
+            "Nécessite l’extension mvo-fel."
+        ))
+        self._bake_fel_cb.clicked.connect(self._on_fel_clicked)
+        fel_row = QHBoxLayout()
+        fel_row.setSpacing(8)
+        fel_row.addWidget(self._bake_fel_cb)
+        self._fel_analyse_btn = _secondary_button(translate_text("Analyser l'apport du FEL…"))
+        self._fel_analyse_btn.setToolTip(translate_text(
+            "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) "
+            "et survie à l'encodage."))
+        self._fel_analyse_btn.clicked.connect(self._request_fel_analysis)
+        self._fel_analyse_btn.setVisible(False)
+        fel_row.addWidget(self._fel_analyse_btn)
+        fel_row.addStretch()
+        cl.addLayout(fel_row)
+        from ui.panels.encode_panel.fel_device_combo import FelDeviceCombo
+        from ui.panels.encode_panel.fel_precision_combo import FelPrecisionCombo
+        self._fel_precision_choice = "exact"
+        self._fel_precision_combo = FelPrecisionCombo(_C.WARN)
+        self._fel_precision_combo.setStyleSheet(_combo_style())
+        self._fel_precision_combo.activated.connect(self._on_fel_precision_changed)
+        cl.addWidget(self._sub_setting_row(translate_text("Précision de la reconstruction FEL"), self._fel_precision_combo))
+        self._fel_device_choice = "auto"
+        self._fel_device_combo = FelDeviceCombo()
+        self._fel_device_combo.setStyleSheet(_combo_style())
+        self._fel_device_combo.setToolTip(translate_text(
+            "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; "
+            "Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, "
+            "puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. "
+            "Un GPU sans double précision passe sur CPU en Lent et en Standard."
+        ))
+        self._fel_device_combo.activated.connect(self._on_fel_device_changed)
+        cl.addWidget(self._sub_setting_row(translate_text("Moteur de reconstruction FEL"), self._fel_device_combo))
+        self._fel_extensions_link = QLabel(
+            "<a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
+        )
+        self._fel_extensions_link.setStyleSheet("background:transparent;")
+        self._fel_extensions_link.linkActivated.connect(lambda _: self.extensions_page_requested.emit())
+        self._fel_extensions_link.hide()
+        cl.addWidget(self._fel_extensions_link)
 
         # Alerte visuelle pour Dolby Vision non supporté
         self._dovi_warning_widget = QWidget()
@@ -1270,7 +1392,7 @@ class EncodePanel(QWidget):
             translate_text("Conserver le profil source (P8.1 seulement si réencodage)"), "0",
         )
         self._dovi_profile_combo.addItem(
-            translate_text("Normaliser en P8.1 (supprimer FEL·MEL, sans réencodage en copie)"), NORMALIZE_P81,
+            translate_text("Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)"), NORMALIZE_P81,
         )
         self._dovi_profile_combo.currentIndexChanged.connect(self._on_dovi_profile_changed)
         dp_l.addWidget(dp_lbl)
@@ -1292,8 +1414,23 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb = QCheckBox("Copier les métadonnées HDR10+ depuis la source")
         self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
         self._copy_hdr10plus_cb.setEnabled(False)
-        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._rebuild_preview())
+        self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._on_hdr10plus_toggled())
         cl.addWidget(self._copy_hdr10plus_cb)
+        # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
+        self._fel_hdr10plus_choice = "recompute"
+        self._fel_hdr10plus_combo = QComboBox()
+        self._fel_hdr10plus_combo.setStyleSheet(_combo_style())
+        self._fel_hdr10plus_combo.addItem(translate_text("Recalculé sur l’image reconstruite (recommandé)"), "recompute")
+        self._fel_hdr10plus_combo.addItem(translate_text("Conservé depuis la source (décrit la BL)"), "source")
+        self._fel_hdr10plus_combo.setToolTip(translate_text(
+            "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite "
+            "par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). "
+            "Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL."
+        ))
+        self._fel_hdr10plus_combo.activated.connect(self._on_fel_hdr10plus_changed)
+        self._fel_hdr10plus_widget = self._sub_setting_row(translate_text("HDR10+ avec FEL intégré"), self._fel_hdr10plus_combo)
+        self._fel_hdr10plus_widget.setVisible(False)
+        cl.addWidget(self._fel_hdr10plus_widget)
 
         cl.addWidget(_separator())
 
@@ -1754,56 +1891,99 @@ class EncodePanel(QWidget):
             self._chroma_strength_combo,
         ))
 
+        # mode et TTA choisis hors préréglages qui les imposent (Light, Ultra), rétablis en les quittant
+        self._interp_user_mode: object = "normal"
+        self._interp_user_tta: object = 1
+        self._interp_last_quality: object = None
         self._interp_cb = QCheckBox("Interpolation")
         self._interp_cb.setStyleSheet(_checkbox_style())
         self._interp_cb.toggled.connect(lambda _: self._on_interpolation_changed())
         self._interp_factor_combo = QComboBox()
         self._interp_factor_combo.setStyleSheet(_combo_style())
         self._interp_factor_combo.setToolTip(
-            "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s)."
+            "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s)."
         )
         for factor in INTERPOLATION_FACTORS:
-            self._interp_factor_combo.addItem(f"x{factor}", str(factor))
-        for target in INTERPOLATION_TARGET_FPS:
-            self._interp_factor_combo.addItem(f"{_format_fps(float(Fraction(target)))} i/s", target)
+            self._interp_factor_combo.addItem("x" + f"{factor:g}".replace(".", ","), f"{factor:g}")
         self._interp_factor_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_quality_combo = QComboBox()
         self._interp_quality_combo.setStyleSheet(_combo_style())
-        self._interp_quality_combo.setToolTip(
-            "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques)."
-        )
-        for label, value in (("Rapide", "fast"), ("Équilibré", "balanced"), ("Light", "light")):
+        for label, value, _tip in _INTERPOLATION_PRESET_ITEMS:
+            if value == "light":
+                self._interp_quality_combo.insertSeparator(self._interp_quality_combo.count())
             self._interp_quality_combo.addItem(label, value)
         self._set_combo_data(self._interp_quality_combo, "balanced")
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_mode_combo = QComboBox()
         self._interp_mode_combo.setStyleSheet(_combo_style())
-        self._interp_mode_combo.setToolTip(
+        self._interp_mode_tip = (
             "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée."
         )
+        self._interp_mode_combo.setToolTip(self._interp_mode_tip)
         for label, value in (("Mode : Normal", "normal"), ("Mode : Fast", "fast")):
             self._interp_mode_combo.addItem(label, value)
         self._interp_mode_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_tta_combo = QComboBox()
         self._interp_tta_combo.setStyleSheet(_combo_style())
-        self._interp_tta_combo.setToolTip(
+        self._interp_tta_tip = (
             "TTA : chaque image intermédiaire est calculée plusieurs fois (sens inverse, miroirs) puis moyennée, "
             "ce qui lisse les petites erreurs. Temps de calcul RIFE multiplié par 2, 4 ou 8. "
             "Sans effet sur les motifs répétitifs (grilles, barreaux)."
         )
+        self._interp_tta_combo.setToolTip(self._interp_tta_tip)
         for level in INTERPOLATION_TTA_LEVELS:
             self._interp_tta_combo.addItem("TTA : Désactivé" if level == 1 else f"TTA : ×{level}", level)
         self._interp_tta_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
+        self._interp_cache_cb = QCheckBox("Cache des caractéristiques")
+        self._interp_cache_cb.setStyleSheet(_checkbox_style())
+        self._interp_cache_cb.setToolTip(
+            "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. "
+            "Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas "
+            "de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6."
+        )
+        self._interp_cache_cb.toggled.connect(lambda _: self._on_interpolation_changed())
         self._interp_fps_label = self._filter_tech_label("")
+        # Indication discrète, affichée une seule fois, sur machine NVIDIA compatible sans l'extension.
+        self._trt_hint = QLabel()
+        self._trt_hint.setTextFormat(Qt.TextFormat.RichText)
+        self._trt_hint.setText(
+            "<a href='install' style='color:" + _C.ACCENT + ";'>"
+            + translate_text("Accélération NVIDIA disponible (TensorRT) — Installer…") + "</a>"
+            + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
+            + translate_text("Gérer les extensions") + "</a>"
+        )
+        self._trt_hint.setStyleSheet("background:transparent;")
+        self._trt_hint.linkActivated.connect(
+            lambda link: self.extensions_page_requested.emit() if link == "manage" else self.trt_install_requested.emit()
+        )
+        self._trt_hint.hide()
+        # Moteur d'interpolation absent : installation directe de l'extension, ou page Extensions.
+        self._rife_hint = QLabel()
+        self._rife_hint.setTextFormat(Qt.TextFormat.RichText)
+        self._rife_hint.setText(
+            "<a href='install' style='color:" + _C.ACCENT + ";'>"
+            + translate_text("Interpolation non installée — Installer…") + "</a>"
+            + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
+            + translate_text("Gérer les extensions") + "</a>"
+        )
+        self._rife_hint.setStyleSheet("background:transparent;")
+        self._rife_hint.linkActivated.connect(
+            lambda link: self.extensions_page_requested.emit() if link == "manage" else self.rife_install_requested.emit()
+        )
+        self._rife_hint.hide()
         fl.addWidget(self._build_filter_row(
             self._interp_cb,
-            self._filter_tech_label("RIFE"),
+            self._filter_tech_label("MVO-RIFE"),
             self._interp_factor_combo,
             self._interp_quality_combo,
             self._interp_mode_combo,
             self._interp_tta_combo,
             self._interp_fps_label,
+            self._trt_hint,
+            self._rife_hint,
         ))
+        # Ligne séparée : la case reste lisible avec les réglages de cadence et de TTA.
+        fl.addWidget(self._build_filter_row(self._interp_cache_cb))
         self._sync_interpolation_availability()
 
         cl.addWidget(self._filters_controls)
@@ -1826,8 +2006,9 @@ class EncodePanel(QWidget):
                 "Dolby Vision et HDR10+ suivent la nouvelle cadence."
             )
             if available
-            else translate_text("muxiveo-rife introuvable : Paramètres > Outils externes, ou relancer le setup.")
+            else translate_text("Extension Interpolation d'images non installée : page Extensions.")
         )
+        self._rife_hint.setVisible(not available and not getattr(self._rife_state, "busy", ""))
         if not available and self._interp_cb.isChecked():
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
@@ -1842,12 +2023,47 @@ class EncodePanel(QWidget):
         enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
         self._interp_factor_combo.setEnabled(enabled)
         self._interp_quality_combo.setEnabled(enabled)
-        # Light impose le mode Fast (v4.15 lite + flux à demi-résolution)
-        light = self._interp_quality_combo.currentData() == "light"
+        self._interp_cache_cb.setEnabled(enabled)
+        # Light impose le mode Fast (v4.15 lite + flux à demi-résolution) ; Ultra impose le mode Normal sans TTA.
+        # En quittant ces préréglages, le mode et le TTA choisis auparavant sont rétablis.
+        quality = self._interp_quality_combo.currentData()
+        light = quality == "light"
+        ultra = quality == "ultra"
+        previous = self._interp_last_quality
+        self._interp_last_quality = quality
         if light:
             self._set_combo_data(self._interp_mode_combo, "fast")
-        self._interp_mode_combo.setEnabled(enabled and not light)
-        self._interp_tta_combo.setEnabled(enabled)
+        elif ultra:
+            self._set_combo_data(self._interp_mode_combo, "normal")
+            self._set_combo_data(self._interp_tta_combo, 1)
+        elif previous in ("light", "ultra"):
+            mode, tta = self._interp_user_mode, self._interp_user_tta   # lus avant les rappels imbriqués
+            self._set_combo_data(self._interp_mode_combo, mode)
+            self._set_combo_data(self._interp_tta_combo, tta)
+        if not (light or ultra):
+            self._interp_user_mode = self._interp_mode_combo.currentData()
+        if not ultra:
+            self._interp_user_tta = self._interp_tta_combo.currentData()
+        self._interp_mode_combo.setEnabled(enabled and not (light or ultra))
+        self._interp_tta_combo.setEnabled(enabled and not ultra)
+        # infobulles : préréglages (traduits à chaque mise à jour), préréglage choisi, réglages imposés expliqués
+        for index in range(self._interp_quality_combo.count()):
+            item_tip = next((t for _label, value, t in _INTERPOLATION_PRESET_ITEMS
+                             if value == self._interp_quality_combo.itemData(index)), "")
+            if item_tip:
+                self._interp_quality_combo.setItemData(index, translate_text(item_tip), Qt.ItemDataRole.ToolTipRole)
+        tip = next((t for _label, value, t in _INTERPOLATION_PRESET_ITEMS if value == quality), "")
+        self._interp_quality_combo.setToolTip(translate_text(tip) if tip else "")
+        self._interp_mode_combo.setToolTip(translate_text(
+            "Mode Fast imposé par le préréglage Light." if light
+            else "Mode Normal imposé par le préréglage Ultra." if ultra
+            else self._interp_mode_tip
+        ))
+        self._interp_tta_combo.setToolTip(translate_text(
+            "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le "
+            "sélecteur." if ultra else self._interp_tta_tip
+        ))
+        self._sync_trt_hint()
         self._interp_fps_label.setText(self._interpolation_fps_hint() if enabled else "")
 
     def _interpolation_fps_hint(self) -> str:
@@ -1883,26 +2099,41 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_interp_cb"):
             return FrameInterpolationSettings()
         choice = str(self._interp_factor_combo.currentData() or "2")
-        is_target = "/" in choice
+        is_target = bool(self._interp_factor_combo.currentData(_INTERPOLATION_TARGET_ROLE)) or "/" in choice
         return FrameInterpolationSettings(
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
-            factor=2 if is_target else int(choice),
+            factor=2 if is_target else float(choice),
             target_fps=choice if is_target else "",
             quality=str(self._interp_quality_combo.currentData() or "balanced"),
             mode="fast" if self._interp_quality_combo.currentData() == "light"
             else str(self._interp_mode_combo.currentData() or "normal"),
             tta=int(self._interp_tta_combo.currentData() or 1),
+            feature_cache=self._interp_cache_cb.isChecked(),
         )
 
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
         if not hasattr(self, "_interp_cb"):
             return
+        self._interp_last_quality = None   # réglages chargés : aucun choix antérieur à rétablir
         self._interp_cb.setChecked(bool(settings.enabled) and self._interpolation_tool_flag())
-        self._set_combo_data(self._interp_factor_combo, settings.target_fps or str(int(settings.factor)))
-        quality = settings.quality if settings.quality in ("fast", "balanced", "light") else "balanced"
+        # Conserver une cadence cible explicite des anciens projets sans la convertir en facteur.
+        target_fps = str(settings.target_fps or "")
+        if target_fps:
+            index = next((i for i in range(self._interp_factor_combo.count())
+                          if self._interp_factor_combo.itemData(i) == target_fps
+                          and self._interp_factor_combo.itemData(i, _INTERPOLATION_TARGET_ROLE)), -1)
+            if index < 0:
+                self._interp_factor_combo.addItem(f"{_interpolation_target_label(target_fps)} i/s", target_fps)
+                index = self._interp_factor_combo.count() - 1
+                self._interp_factor_combo.setItemData(index, True, _INTERPOLATION_TARGET_ROLE)
+            self._interp_factor_combo.setCurrentIndex(index)
+        else:
+            self._set_combo_data(self._interp_factor_combo, f"{settings.factor:g}")
+        quality = settings.quality if settings.quality in INTERPOLATION_PRESETS else INTERPOLATION_DEFAULT_QUALITY
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
         self._set_combo_data(self._interp_tta_combo, int(settings.tta) if int(settings.tta) in INTERPOLATION_TTA_LEVELS else 1)
+        self._interp_cache_cb.setChecked(settings.feature_cache)
         self._sync_interpolation_controls()
 
     def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:
@@ -2454,6 +2685,49 @@ class EncodePanel(QWidget):
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
 
+    def set_trt_plugin(self, plugin_dir: str) -> None:
+        """Dossier de l'accélération NVIDIA (TensorRT) à passer à MVO-RIFE ("" : Vulkan seul)."""
+        from core.plugins import trt_engine_cache_dir
+
+        self._trt_plugin_dir = plugin_dir or ""
+        self._workflow.set_rife_trt_plugin(self._trt_plugin_dir or None, trt_engine_cache_dir())
+        self._refresh_video_source_rows()
+        self._rebuild_preview()
+
+    def set_rife_state(self, state: object) -> None:
+        """État de l'extension Interpolation (RifeState) : indication d'installation pendant le téléchargement."""
+        self._rife_state = state
+        self._sync_interpolation_availability()
+
+    def refresh_rife_tool(self) -> None:
+        """Moteur muxiveo-rife changé (extension installée ou supprimée) : workflow, disponibilité, aperçu."""
+        self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
+        self._sync_interpolation_availability()
+        self._refresh_video_source_rows()
+        self._rebuild_preview()
+
+    def set_trt_state(self, state: object) -> None:
+        """État de l'extension TensorRT (TrtState) : badge « TRT » et indication d'installation."""
+        self._trt_state = state
+        self._sync_trt_hint()
+        self._refresh_video_source_rows()
+
+    def _sync_trt_hint(self) -> None:
+        if not hasattr(self, "_trt_hint"):
+            return
+        state = self._trt_state
+        offer = (
+            state is not None and bool(getattr(state, "compatible", False))
+            and getattr(state, "installed", None) is None and not getattr(state, "busy", "")
+            and self._interp_cb.isChecked()
+        )
+        if offer and not self._trt_hint.isVisible() and not getattr(self._config, "trt_hint_shown", False):
+            self._trt_hint.show()
+            self._config.trt_hint_shown = True
+            self._config.save()
+        elif not offer:
+            self._trt_hint.hide()
+
     def set_vulkan_capability(self, ffmpeg_bin: str, capability: object) -> None:
         """Capacité Vulkan détectée au lancement (tableau de bord) : workflow et badges NLMeans."""
         self._vulkan_nlmeans = bool(getattr(capability, "nlmeans", False))
@@ -2945,6 +3219,7 @@ class EncodePanel(QWidget):
             if hasattr(self, "_dovi_warning_widget"):
                 self._dovi_warning_widget.setVisible(False)
             self._sync_hdr_controls_for_codec()
+            self._sync_fel_hdr10plus_option()
             return
 
         codec = self._codec_combo.currentData() or "libx265"
@@ -3267,6 +3542,7 @@ class EncodePanel(QWidget):
                     "INFO", "Redimensionnement NVENC : copie Dolby Vision désactivée. "
                     "La conservation Dolby Vision requiert une image à l'échelle 1:1.",
                 )
+        self.operation_changed.emit()
         self._save_current_video_state()
         self._command_generation += 1
         self._command_dirty = True
@@ -3711,6 +3987,12 @@ class EncodePanel(QWidget):
                 translate_text("Profil « {name} » non chargé : {reason}", name=name, reason=problem),
             )
             return
+        self._bake_fel_choice = vs.bake_dovi_fel
+        self._fel_device_choice = vs.fel_device
+        self._fel_device_combo.set_choice(vs.fel_device)
+        self._fel_precision_choice = vs.fel_precision
+        self._fel_precision_combo.set_choice(vs.fel_precision)
+        self._fel_hdr10plus_choice = vs.fel_hdr10plus
         # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
         for i in range(self._codec_combo.count()):
             if self._codec_combo.itemData(i) == vs.codec:
@@ -3826,6 +4108,10 @@ class EncodePanel(QWidget):
             crop=vs.crop,
             filters=vs.filters,
             interpolation=vs.interpolation,
+            bake_dovi_fel=vs.bake_dovi_fel,
+            fel_device=vs.fel_device,
+            fel_precision=vs.fel_precision,
+            fel_hdr10plus=vs.fel_hdr10plus,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4240,6 +4526,8 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_mode": "",
             "static_hdr_metadata_analysis_request": "",
             "copy_dv": self._source_has_dv(source_hdr),
+            "bake_dovi_fel": None,
+            "fel_device": "auto",
             "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
             "dovi_profile": "0",
             "tonemap_to_sdr": False,
@@ -4388,6 +4676,59 @@ class EncodePanel(QWidget):
         """Source PQ / HLG ou Dolby Vision (P5 compris, transfert non déclaré) ; P8.2 (base SDR) exclue."""
         return source_is_hdr(self._selected_video_hdr_type(), self._selected_video_transfer())
 
+    def _on_fel_device_changed(self, _index: int) -> None:
+        self._fel_device_choice = str(self._fel_device_combo.currentData() or "auto")
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _on_fel_precision_changed(self, _index: int) -> None:
+        self._fel_precision_choice = self._fel_precision_combo.choice()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _on_fel_clicked(self, checked: bool) -> None:
+        self._bake_fel_choice = checked
+        self._sync_dovi_profile_options()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    @staticmethod
+    def _sub_setting_row(label: str, field: QWidget) -> QWidget:
+        """Ligne de réglage secondaire de la carte HDR (style de « Profil dovi_tool ») : libellé puis champ."""
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(20, 0, 0, 0)
+        layout.setSpacing(8)
+        text = QLabel(label)
+        text.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;")
+        layout.addWidget(text)
+        layout.addWidget(field)
+        layout.addStretch()
+        return row
+
+    def _on_fel_hdr10plus_changed(self, _index: int) -> None:
+        self._fel_hdr10plus_choice = str(self._fel_hdr10plus_combo.currentData() or "recompute")
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _on_hdr10plus_toggled(self) -> None:
+        self._sync_fel_hdr10plus_option()
+        self._rebuild_preview()
+
+    def _sync_fel_hdr10plus_option(self) -> None:
+        """Choix HDR10+ visible quand le FEL est intégré et la copie HDR10+ cochée."""
+        if not hasattr(self, "_fel_hdr10plus_widget"):
+            return
+        codec = str(self._codec_combo.currentData() or "").lower()
+        self._fel_hdr10plus_widget.setVisible(
+            self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
+            and self._copy_hdr10plus_cb.isChecked() and self._copy_hdr10plus_cb.isEnabled()
+            # Injection hdr10plus_tool : sorties HEVC seulement (recomputes_hdr10plus).
+            and (codec == "libx265" or "hevc" in codec)
+        )
+        self._set_combo_data(self._fel_hdr10plus_combo, self._fel_hdr10plus_choice)
+
     def _sync_dovi_profile_options(self) -> None:
         """Option « Normaliser » grisée selon la matrice V30 ; bandeau du traitement prévu."""
         if not hasattr(self, "_dovi_plan_label"):
@@ -4397,6 +4738,14 @@ class EncodePanel(QWidget):
             getattr(source, "dovi_profile", None), getattr(source, "dovi_compat_id", None),
         )
         codec = str(self._codec_combo.currentData() or "libx265")
+        from core.workflows.encode.dovi_policy import wants_fel_bake
+        self._bake_fel_cb.setChecked(wants_fel_bake(self._bake_fel_choice, sub_profile))
+        self._bake_fel_cb.setEnabled(codec != "copy")
+        # Analyse : sources à couche d'amélioration (profil 7) seulement.
+        self._fel_analyse_btn.setVisible(getattr(source, "dovi_profile", None) == 7)
+        self._fel_device_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
+        self._fel_precision_combo.setEnabled(codec != "copy" and self._bake_fel_cb.isChecked())
+        self._sync_fel_hdr10plus_option()
         normalize_plan = resolve_dovi_plan(
             codec=codec, copy_dv=True, dovi_profile=NORMALIZE_P81, sub_profile=sub_profile,
         )
@@ -4421,8 +4770,18 @@ class EncodePanel(QWidget):
             copy_dv=self._copy_dv_cb.isChecked(),
             dovi_profile=str(self._dovi_profile_combo.currentData() or "0"),
             sub_profile=sub_profile,
+            bake_dovi_fel=self._bake_fel_choice,
         )
         notes = [translate_text(note) for note in plan.notes]
+        self._fel_extensions_link.hide()
+        if self._bake_fel_cb.isChecked():
+            if codec == "copy":
+                notes.append(translate_text("La reconstruction FEL nécessite un réencodage."))
+            else:
+                from core import plugins
+                if plugins.installed_plugin(plugins.FEL) is None:
+                    notes.append(translate_text("Extension mvo-fel absente : repli BL. Installation dans Extensions."))
+                    self._fel_extensions_link.show()
         if self._tonemap_cb.isChecked() and plan.color_convert:
             notes.append(translate_text("Puis tone-mapping HDR → SDR."))
         self._dovi_plan_label.setText("\n".join(notes))
@@ -4589,6 +4948,10 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_analysis_mode": str(prev.get("static_hdr_metadata_analysis_mode") or ""),
             "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
+            "bake_dovi_fel": self._bake_fel_choice,
+            "fel_device": self._fel_device_choice,
+            "fel_precision": self._fel_precision_choice,
+            "fel_hdr10plus": self._fel_hdr10plus_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._combo_data(self._dovi_profile_combo),
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
@@ -4730,16 +5093,24 @@ class EncodePanel(QWidget):
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
             badge = (
-                f"RIFE {_format_fps(float(Fraction(interpolation.target_fps)))}"
+                f"MVO-RIFE {_interpolation_target_label(interpolation.target_fps)}"
                 if interpolation.target_fps
-                else f"RIFE x{int(interpolation.factor)}"
+                else "MVO-RIFE x" + f"{interpolation.factor:g}".replace(".", ",")
             )
             if interpolation.quality == "light":
                 badge += " Light"
+            elif interpolation.quality == "ultra":
+                badge += " Ultra"
+            elif interpolation.quality == "quality":
+                badge += " " + translate_text("Qualité")
+            elif interpolation.quality == "fast":
+                badge += " " + translate_text("Rapide")
             if interpolation.fast_mode():
                 badge += " Fast"
-            if int(interpolation.tta) > 1:
-                badge += f" TTA ×{int(interpolation.tta)}"
+            if interpolation.tta_passes() > 1:
+                badge += f" TTA ×{interpolation.tta_passes()}"
+            if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
+                badge += " TRT"
             badges.append(badge)
         codec = self._video_state_target_codec(state)
         if badges and is_nvencc_codec(codec):
@@ -4840,6 +5211,16 @@ class EncodePanel(QWidget):
         self._emit_video_encoding_plans()
 
     def _apply_video_state(self, state: dict[str, object]) -> None:
+        choice = state.get("bake_dovi_fel")
+        self._bake_fel_choice = choice if isinstance(choice, bool) else None
+        from core.fel.devices import device_choice, precision_choice
+        self._fel_device_choice = device_choice(state.get("fel_device"))
+        self._fel_device_combo.set_choice(self._fel_device_choice)
+        self._fel_precision_choice = precision_choice(state.get("fel_precision"))
+        self._fel_precision_combo.set_choice(self._fel_precision_choice)
+        from core.workflows.encode.models import fel_hdr10plus_choice
+        self._fel_hdr10plus_choice = fel_hdr10plus_choice(state.get("fel_hdr10plus"))
+        self._set_combo_data(self._fel_hdr10plus_combo, self._fel_hdr10plus_choice)
         self._hdr_disabled_by_codec = False
         self._dynamic_hdr_disabled_by_codec = (False, False)
         self._tonemap_enabled_by_codec = False
@@ -5287,6 +5668,11 @@ class EncodePanel(QWidget):
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
+            bake_dovi_fel=self._bake_fel_choice,
+            fel_device=self._fel_device_choice,
+            fel_precision=self._fel_precision_choice,
+            fel_hdr10plus=self._fel_hdr10plus_choice,
+            static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(current_state.get("static_hdr_metadata_analysis_mode") or ""),
@@ -5353,6 +5739,11 @@ class EncodePanel(QWidget):
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
+            bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
+            fel_device=str(state.get("fel_device") or "auto"),
+            fel_precision=str(state.get("fel_precision") or "exact"),
+            fel_hdr10plus=str(state.get("fel_hdr10plus") or "recompute"),
+            static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
             static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(state.get("static_hdr_metadata_analysis_mode") or ""),

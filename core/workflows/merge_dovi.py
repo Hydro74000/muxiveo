@@ -53,6 +53,7 @@ from core.subtitle_codec import plan_subtitle_codec
 from core.output_commit import OutputBusyError, OutputReservation
 from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
+from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81
 from core.workflows.encode.runtime.frame_count_guard import (
     FrameCountAudit,
     FrameCountAuditError,
@@ -677,6 +678,7 @@ class MergeDoviWorkflow(QObject):
     step_started    = Signal(object)          # WorkflowStep
     step_progress   = Signal(object, str)     # WorkflowStep, message
     step_progress_pct = Signal(object, int)   # WorkflowStep, pourcentage 0..100
+    tool_output = Signal(str, str)           # outil, sortie complète pour le journal détaillé
     step_finished   = Signal(object, object)  # WorkflowStep, StepResult
     workflow_finished = Signal(str)           # chemin du fichier de sortie
     workflow_failed   = Signal(object, str)   # WorkflowStep, message d'erreur
@@ -1841,6 +1843,17 @@ class MergeDoviWorkflow(QObject):
             )
         self._ensure_free_space(step, paths.work_dir, hevc_input.stat().st_size, "l'injection RPU")
 
+        if profile == DoviProfile.P8_1:
+            # `-m 2` est sans effet sur inject-rpu : un RPU P7 restant (Film 2
+            # au record P8 mal étiqueté) est converti ici, en place.
+            converted = paths.film2_rpu.with_name("film2_rpu.p81.bin")
+            if convert_p7_rpu_to_p81(
+                dovi_tool_bin=self._bins["dovi_tool"], rpu_bin=paths.film2_rpu,
+                output_rpu=converted, run_cmd=lambda cmd: self._run_cmd(cmd, step),
+            ):
+                os.replace(converted, paths.film2_rpu)
+                self.step_progress.emit(step, "RPU P7 converti en P8.1 (mode 2).")
+
         # -m est un flag GLOBAL de dovi_tool placé avant la sous-commande.
         # La valeur de DoviProfile.value est directement le flag -m à passer.
         # P8_1 → -m 2 (normalise en Profile 8.1, supprime mapping FEL)
@@ -2873,7 +2886,8 @@ class MergeDoviWorkflow(QObject):
         ):
             return self._run_cmd_pty(cmd, step)
 
-        # Popen (et non run) : le processus doit rester tuable par cancel().
+        # Drainer les deux pipes en parallèle : communicate() masquait tous
+        # les messages jusqu'à la fin, et une seule pipe peut bloquer l'autre.
         with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -2881,13 +2895,40 @@ class MergeDoviWorkflow(QObject):
             **subprocess_text_kwargs(),
         ) as proc:
             self._track_proc(proc)
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+
+            def consume(stream, lines: list[str]) -> None:
+                if stream is None:
+                    return
+                for raw in stream:
+                    lines.append(raw)
+                    line = _ANSI_RE.sub("", raw).strip()
+                    if not line:
+                        continue
+                    self.tool_output.emit(binary, line)
+                    if step is None:
+                        continue
+                    percent = _PERCENT_RE.search(line)
+                    if percent:
+                        self.step_progress_pct.emit(step, max(0, min(100, int(percent[1]))))
+                    elif line.startswith(("frame=", "out_time=", "speed=")):
+                        self.step_progress.emit(step, line)
+                    elif "ffmpeg" not in binary.lower() or any(word in line.lower() for word in ("error", "warning", "failed")):
+                        self.step_progress.emit(step, line)
+
+            reader = threading.Thread(target=consume, args=(proc.stdout, stdout_lines), daemon=True)
+            reader.start()
             try:
-                stdout, stderr = proc.communicate()
+                consume(proc.stderr, stderr_lines)
+                proc.wait()
             except BaseException:
                 kill_process_tree(proc, timeout=0.2)
                 raise
             finally:
+                reader.join()
                 self._untrack_proc(proc)
+            stdout, stderr = "".join(stdout_lines), "".join(stderr_lines)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"Commande échouée (code {format_returncode(proc.returncode)}) : {' '.join(cmd[:2])}\n"

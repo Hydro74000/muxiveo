@@ -1,4 +1,204 @@
 {
+  "Le profil s’applique après la détection forcés/SDH, sur les pistes du modèle d’assemblage s’il est défini : sélection finale, noms, flags, ordre et variantes audio.": {
+    "fra": "Le profil s’applique après la détection forcés/SDH, sur les pistes du modèle d’assemblage s’il est défini : sélection finale, noms, flags, ordre et variantes audio.",
+    "eng": "The profile runs after forced/SDH detection, on assembly-model tracks when defined: final selection, names, flags, order and audio variants."
+  },
+  "Cocher pour conserver les sous-titres dans la vidéo ; décocher pour les retirer sans réencodage.": {
+    "fra": "Cocher pour conserver les sous-titres dans la vidéo ; décocher pour les retirer sans réencodage.",
+    "eng": "Check to keep captions inside the video; uncheck to remove them without re-encoding."
+  },
+  "Sous-titre embarqué EIA-608/708": {
+    "fra": "Sous-titre embarqué EIA-608/708",
+    "eng": "Embedded EIA-608/708 subtitle"
+  },
+  "Supprimer les sous-titres embarqués EIA-608/708": {
+    "fra": "Supprimer les sous-titres embarqués EIA-608/708",
+    "eng": "Remove embedded EIA-608/708 subtitles"
+  },
+  "Disponible après détection sur une vidéo retenue. Préserve l’image et les métadonnées HDR/Dolby Vision.": {
+    "fra": "Disponible après détection sur une vidéo retenue. Préserve l’image et les métadonnées HDR/Dolby Vision.",
+    "eng": "Available after detection in a selected video. Preserves the picture and HDR/Dolby Vision metadata."
+  },
+  "OPTIONS D’HYBRIDATION": {
+    "fra": "OPTIONS D’HYBRIDATION",
+    "eng": "HYBRID OPTIONS"
+  },
+  "Aperçu du nom final": {
+    "fra": "Aperçu du nom final",
+    "eng": "Final filename preview"
+  },
+  "Template invalide : {error}": {
+    "fra": "Template invalide : {error}",
+    "eng": "Invalid template: {error}"
+  },
+  "Le template doit rester dans le dossier de sortie.": {
+    "fra": "Le template doit rester dans le dossier de sortie.",
+    "eng": "The template must stay within the output directory."
+  },
+  "Pistes et métadonnées du dernier plan analysé.": {
+    "fra": "Pistes et métadonnées du dernier plan analysé.",
+    "eng": "Tracks and metadata from the last analyzed plan."
+  },
+  "Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.": {
+    "fra": "Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.",
+    "eng": "Witness preview: analyze to apply the profile and options to the final tracks."
+  },
+  "Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.": {
+    "fra": "Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.",
+    "eng": "Partial preview: inspect the witness or analyze this item to identify its tracks."
+  },
+  "Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.": {
+    "fra": "Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.",
+    "eng": "Partial preview: this episode's TMDB title will be loaded during analysis."
+  },
+  "Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.": {
+    "fra": "Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.",
+    "eng": "Partial preview: search TMDB or analyze to load its metadata."
+  },
+  "Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.": {
+    "fra": "Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.",
+    "eng": "Profile changed: analyze again to update tracks and naming aliases."
+  },
+  "Valeur la mieux classée pour ce champ, sinon première valeur non vide.": {
+    "fra": "Valeur la mieux classée pour ce champ, sinon première valeur non vide.",
+    "eng": "The highest-ranked value for this field, otherwise the first nonempty value."
+  },
+  "Première valeur non vide, selon l'ordre final des pistes.": {
+    "fra": "Première valeur non vide, selon l'ordre final des pistes.",
+    "eng": "The first nonempty value in final track order."
+  },
+  "Valeurs distinctes des pistes finales, séparées par +.": {
+    "fra": "Valeurs distinctes des pistes finales, séparées par +.",
+    "eng": "Distinct values from the final tracks, separated by +."
+  },
+  "Rechercher…": {
+    "fra": "Rechercher…",
+    "eng": "Search…"
+  },
+  "Ouvrir le journal au démarrage": {
+    "fra": "Ouvrir le journal au démarrage",
+    "eng": "Expand the log panel at startup"
+  },
+  "Impossible d'enregistrer les paramètres : {error}": {
+    "fra": "Impossible d'enregistrer les paramètres : {error}",
+    "eng": "Unable to save settings: {error}"
+  },
+  "Piste donneuse à inspecter": {
+    "fra": "Piste donneuse à inspecter",
+    "eng": "Donor track to inspect"
+  },
+  "Piste de référence": {
+    "fra": "Piste de référence",
+    "eng": "Reference track"
+  },
+  "Donneur :": {
+    "fra": "Donneur :",
+    "eng": "Donor:"
+  },
+  "Élément :": {
+    "fra": "Élément :",
+    "eng": "Item:"
+  },
+  "Aucun élément analysé": {
+    "fra": "Aucun élément analysé",
+    "eng": "No analyzed items"
+  },
+  "Analysez la saison ou un élément du plan pour ouvrir le Sync Studio.": {
+    "fra": "Analysez la saison ou un élément du plan pour ouvrir le Sync Studio.",
+    "eng": "Analyze the season or an item in the plan to open Sync Studio."
+  },
+  "Choisissez un élément analysé ci-dessus ou analysez cet élément dans le plan.": {
+    "fra": "Choisissez un élément analysé ci-dessus ou analysez cet élément dans le plan.",
+    "eng": "Select an analyzed item above or analyze this item in the plan."
+  },
+  "Aucune piste audio ou sous-titre donneuse disponible pour cet élément.": {
+    "fra": "Aucune piste audio ou sous-titre donneuse disponible pour cet élément.",
+    "eng": "No donor audio or subtitle tracks are available for this item."
+  },
+  "Naviguer dans toute la piste": {
+    "fra": "Naviguer dans toute la piste",
+    "eng": "Navigate the complete track"
+  },
+  "Chargement de la durée…": {
+    "fra": "Chargement de la durée…",
+    "eng": "Loading duration…"
+  },
+  "Durée indisponible": {
+    "fra": "Durée indisponible",
+    "eng": "Duration unavailable"
+  },
+  "Synchronisation mise à jour : {source} ({count} segments).": {
+    "fra": "Synchronisation mise à jour : {source} ({count} segments).",
+    "eng": "Synchronization updated: {source} ({count} segments)."
+  },
+  "Cache des caractéristiques": {
+    "fra": "Cache des caractéristiques",
+    "eng": "Feature cache"
+  },
+  "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.": {
+    "fra": "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.",
+    "eng": "Speeds up successive outputs with Vulkan for Quality, Ultra and Light, including TTA. Preserves the same calculations. The cache turns off if available GPU memory cannot keep at least 1 GiB and 20% of the budget in reserve. Has no effect with TensorRT or RIFE v4.6."
+  },
+  "Auto": {
+    "fra": "Auto",
+    "eng": "Auto"
+  },
+  "CPU": {
+    "fra": "CPU",
+    "eng": "CPU"
+  },
+  "Moteur de reconstruction FEL": {
+    "fra": "Moteur de reconstruction FEL",
+    "eng": "FEL reconstruction engine"
+  },
+  "GPU indisponible ({id})": {
+    "fra": "GPU indisponible ({id})",
+    "eng": "GPU unavailable ({id})"
+  },
+  "Version publiée indisponible.": {
+    "fra": "Version publiée indisponible.",
+    "eng": "Published version unavailable."
+  },
+  "Intégrer la couche FEL à l’image avant encodage": {
+    "fra": "Intégrer la couche FEL à l’image avant encodage",
+    "eng": "Integrate the FEL layer into the image before encoding"
+  },
+  "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. Nécessite l’extension mvo-fel.": {
+    "fra": "Reconstruit l’image Dolby Vision avec la couche FEL avant les filtres et l’encodage. Fonctionne aussi sans conserver le RPU. La présence d’un FEL est confirmée au lancement. Nécessite l’extension mvo-fel.",
+    "eng": "Reconstructs the Dolby Vision image with the FEL layer before filtering and encoding. Also works without retaining the RPU. FEL presence is confirmed at launch. Requires the mvo-fel extension."
+  },
+  "Reconstruction Dolby Vision FEL": {
+    "fra": "Reconstruction Dolby Vision FEL",
+    "eng": "Dolby Vision FEL reconstruction"
+  },
+  "Intègre la couche FEL à l’image avant les filtres et l’encodage. Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.": {
+    "fra": "Intègre la couche FEL à l’image avant les filtres et l’encodage. Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.",
+    "eng": "Integrates the FEL layer into the image before filtering and encoding. Runs on CPU, with or without retaining the Dolby Vision RPU."
+  },
+  "La reconstruction FEL nécessite un réencodage.": {
+    "fra": "La reconstruction FEL nécessite un réencodage.",
+    "eng": "FEL reconstruction requires re-encoding."
+  },
+  "Extension mvo-fel absente : repli BL. Installation dans Extensions.": {
+    "fra": "Extension mvo-fel absente : repli BL. Installation dans Extensions.",
+    "eng": "mvo-fel extension missing: BL fallback. Install it in Extensions."
+  },
+  "Non installée : une demande FEL utilisera le BL avec avertissement.": {
+    "fra": "Non installée : une demande FEL utilisera le BL avec avertissement.",
+    "eng": "Not installed: a FEL request will use the BL with a warning."
+  },
+  "Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.": {
+    "fra": "Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.",
+    "eng": "FEL reconstruction requested (mvo-fel extension), to be confirmed at launch."
+  },
+  "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.": {
+    "fra": "P7 → P8.1 : apport FEL intégré aux pixels si confirmé.",
+    "eng": "P7 → P8.1: FEL contribution integrated into pixels if confirmed."
+  },
+  "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)": {
+    "fra": "Normaliser le RPU en P8.1 (retirer l’EL du flux de sortie)",
+    "eng": "Normalize the RPU to P8.1 (remove the EL from the output stream)"
+  },
   "0 = illimité (débit choisi par l'encodeur).": {
     "fra": "0 = illimité (débit choisi par l'encodeur).",
     "eng": "0 = unlimited (bitrate chosen by the encoder)."
@@ -1811,6 +2011,14 @@
     "fra": "Répertoire de travail non nettoyé",
     "eng": "Work directory not cleaned"
   },
+  "Dossier de travail inaccessible": {
+    "fra": "Dossier de travail inaccessible",
+    "eng": "Work directory inaccessible"
+  },
+  "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}": {
+    "fra": "Le dossier de travail configuré n'est pas accessible au démarrage :\n{path}",
+    "eng": "The configured work directory is not accessible at startup:\n{path}"
+  },
   "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?": {
     "fra": "Le dossier de travail contient des fichiers ou dossiers résiduels.\nSouhaitez-vous les conserver ou nettoyer le work_dir ?",
     "eng": "The work directory contains leftover files or folders.\nDo you want to keep them or clean the work_dir?"
@@ -2007,9 +2215,9 @@
     "fra": "Générer un fichier .nfo après remux/encodage",
     "eng": "Generate a .nfo file after remux/encode"
   },
-  "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.": {
-    "fra": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi.",
-    "eng": "Automatically creates a .nfo file (same name as the MKV) containing the raw mediainfo output after each successful workflow."
+  "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver.": {
+    "fra": "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver.",
+    "eng": "Automatically creates a .nfo file after each successful workflow. Paths are reduced to filenames unless explicitly requested otherwise."
   },
   "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.": {
     "fra": "Distance maximale entre keyframes (I-frames).\nCe paramètre pilote le GOP standard ffmpeg (-g), en plus des IDR open-GOP.",
@@ -4775,9 +4983,17 @@
     "fra": "Pré-version de développement (canal unstable) : moins testée qu'une release stable.",
     "eng": "Development pre-release (unstable channel): less tested than a stable release."
   },
-  "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]": {
-    "fra": "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}]",
-    "eng": "Active template: master video ({video}), donor audio: [{donor_audio}], master audio: [{master_audio}], donor subtitles: [{donor_subs}]"
+  "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}], ST Master : [{master_subs}]": {
+    "fra": "Modèle actif : Vidéo Master ({video}), Audio Donneur : [{donor_audio}], Audio Master : [{master_audio}], ST Donneur : [{donor_subs}], ST Master : [{master_subs}]",
+    "eng": "Active template: master video ({video}), donor audio: [{donor_audio}], master audio: [{master_audio}], donor subtitles: [{donor_subs}], master subtitles: [{master_subs}]"
+  },
+  "Workflows sauvegardés : {count}": {
+    "fra": "Workflows sauvegardés : {count}",
+    "eng": "Workflows saved: {count}"
+  },
+  "Plusieurs workflows portent le même nom.": {
+    "fra": "Plusieurs workflows portent le même nom.",
+    "eng": "Several workflows have the same filename."
   },
   "Non": {
     "fra": "Non",
@@ -4935,9 +5151,9 @@
     "fra": "Max",
     "eng": "Max"
   },
-  "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).": {
-    "fra": "Multiplicateur de cadence (x2 : 29,97 -> 59,94 i/s) ou cadence cible (23,976 -> 59,94 i/s).",
-    "eng": "Frame rate multiplier (x2: 29.97 -> 59.94 fps) or target frame rate (23.976 -> 59.94 fps)."
+  "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s).": {
+    "fra": "Multiplicateur de cadence (x2,5 : 23,976 -> 59,94 i/s ; 24 -> 60 i/s).",
+    "eng": "Frame rate multiplier (x2.5: 23.976 -> 59.94 fps; 24 -> 60 fps)."
   },
   "Mode : Normal": {
     "fra": "Mode : Normal",
@@ -4950,10 +5166,6 @@
   "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.": {
     "fra": "Mode Fast : flux optique calculé à demi-résolution (RIFE UHD). En 4K : +16 à +36 % de vitesse et 44 % de mémoire GPU en moins, pour une perte de qualité légère ; en 1080p, perte plus marquée.",
     "eng": "Fast mode: optical flow computed at half resolution (RIFE UHD). In 4K: 16 to 36% faster and 44% less GPU memory, for a slight quality loss; at 1080p the loss is larger."
-  },
-  "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).": {
-    "fra": "Modèle RIFE : Rapide et Équilibré (v4.6), Light (v4.15 lite + mode Fast, petites cartes graphiques).",
-    "eng": "RIFE model: Fast and Balanced (v4.6), Light (v4.15 lite + Fast mode, small graphics cards)."
   },
   "Light": {
     "fra": "Light",
@@ -5486,5 +5698,3021 @@
   "vitesse max": {
     "fra": "vitesse max",
     "eng": "maximum speed"
+  },
+  "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}": {
+    "fra": "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}",
+    "eng": "NVIDIA optical flow used by hybrid interpolation (Balanced and Quality presets): {device}"
+  },
+  "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.": {
+    "fra": "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.",
+    "eng": "NVIDIA optical flow unavailable: {reason}. Hybrid interpolation remains available on the Vulkan GPU alone."
+  },
+  "Accélération NVIDIA (TensorRT)": {
+    "fra": "Accélération NVIDIA (TensorRT)",
+    "eng": "NVIDIA acceleration (TensorRT)"
+  },
+  "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU (Vulkan) ; l'extension peut être réinstallée à tout moment.": {
+    "fra": "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU (Vulkan) ; l'extension peut être réinstallée à tout moment.",
+    "eng": "Remove NVIDIA acceleration (TensorRT)? MVO-RIFE interpolation will keep running on the GPU (Vulkan); the extension can be reinstalled at any time."
+  },
+  "Accélération NVIDIA (TensorRT) : opération en cours.": {
+    "fra": "Accélération NVIDIA (TensorRT) : opération en cours.",
+    "eng": "NVIDIA acceleration (TensorRT): operation in progress."
+  },
+  "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.": {
+    "fra": "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.",
+    "eng": "NVIDIA acceleration (TensorRT) available for {device}: click to install it."
+  },
+  "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions.": {
+    "fra": "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions.",
+    "eng": "NVIDIA acceleration (TensorRT): update available. Click to open extensions."
+  },
+  "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.": {
+    "fra": "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.",
+    "eng": "NVIDIA acceleration (TensorRT) active: MVO-RIFE interpolation on {device}."
+  },
+  "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.": {
+    "fra": "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.",
+    "eng": "NVIDIA acceleration (TensorRT) installed but unusable: {reason}. Interpolation stays on Vulkan."
+  },
+  "Accélération NVIDIA (TensorRT) : mise à jour automatique vers la version {version}.": {
+    "fra": "Accélération NVIDIA (TensorRT) : mise à jour automatique vers la version {version}.",
+    "eng": "NVIDIA acceleration (TensorRT): automatic update to version {version}."
+  },
+  "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : l'interpolation reste sur Vulkan.": {
+    "fra": "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : l'interpolation reste sur Vulkan.",
+    "eng": "NVIDIA acceleration (TensorRT) installed, but unusable on this machine ({reason}): interpolation stays on Vulkan."
+  },
+  "Accélération NVIDIA (TensorRT) {done} : version {version}.": {
+    "fra": "Accélération NVIDIA (TensorRT) {done} : version {version}.",
+    "eng": "NVIDIA acceleration (TensorRT) {done}: version {version}."
+  },
+  "Accélération NVIDIA (TensorRT) supprimée.": {
+    "fra": "Accélération NVIDIA (TensorRT) supprimée.",
+    "eng": "NVIDIA acceleration (TensorRT) removed."
+  },
+  "Accélération NVIDIA (TensorRT) désactivée ; fichiers encore utilisés retirés au prochain démarrage.": {
+    "fra": "Accélération NVIDIA (TensorRT) désactivée ; fichiers encore utilisés retirés au prochain démarrage.",
+    "eng": "NVIDIA acceleration (TensorRT) disabled; files still in use will be removed at next startup."
+  },
+  "Installation annulée.": {
+    "fra": "Installation annulée.",
+    "eng": "Installation cancelled."
+  },
+  "Accélération NVIDIA (TensorRT) : échec ({reason}).": {
+    "fra": "Accélération NVIDIA (TensorRT) : échec ({reason}).",
+    "eng": "NVIDIA acceleration (TensorRT): failed ({reason})."
+  },
+  "Installer l'accélération NVIDIA (TensorRT) ?": {
+    "fra": "Installer l'accélération NVIDIA (TensorRT) ?",
+    "eng": "Install NVIDIA acceleration (TensorRT)?"
+  },
+  "L'interpolation MVO-RIFE peut s'exécuter sur les Tensor Cores de votre carte NVIDIA{device} avec NVIDIA TensorRT for RTX : traitement nettement plus rapide, images identiques à l'œil. Sans cette extension, l'interpolation continue de fonctionner sur le GPU (Vulkan).": {
+    "fra": "L'interpolation MVO-RIFE peut s'exécuter sur les Tensor Cores de votre carte NVIDIA{device} avec NVIDIA TensorRT for RTX : traitement nettement plus rapide, images identiques à l'œil. Sans cette extension, l'interpolation continue de fonctionner sur le GPU (Vulkan).",
+    "eng": "MVO-RIFE interpolation can run on the Tensor Cores of your NVIDIA card{device} with NVIDIA TensorRT for RTX: much faster processing, visually identical frames. Without this extension, interpolation keeps working on the GPU (Vulkan)."
+  },
+  "L'extension contient NVIDIA TensorRT for RTX, distribué sous <a href=\"{url}\">licence NVIDIA</a>, pour un usage sur carte NVIDIA.": {
+    "fra": "L'extension contient NVIDIA TensorRT for RTX, distribué sous <a href=\"{url}\">licence NVIDIA</a>, pour un usage sur carte NVIDIA.",
+    "eng": "The extension contains NVIDIA TensorRT for RTX, distributed under the <a href=\"{url}\">NVIDIA license</a>, for use on NVIDIA cards."
+  },
+  "J'accepte la licence NVIDIA TensorRT for RTX": {
+    "fra": "J'accepte la licence NVIDIA TensorRT for RTX",
+    "eng": "I accept the NVIDIA TensorRT for RTX license"
+  },
+  "Suppression en cours…": {
+    "fra": "Suppression en cours…",
+    "eng": "Removing…"
+  },
+  "Préparation des moteurs TensorRT pour cette carte…": {
+    "fra": "Préparation des moteurs TensorRT pour cette carte…",
+    "eng": "Preparing TensorRT engines for this card…"
+  },
+  "Téléchargement : {progress} %": {
+    "fra": "Téléchargement : {progress} %",
+    "eng": "Download: {progress} %"
+  },
+  "Téléchargement…": {
+    "fra": "Téléchargement…",
+    "eng": "Downloading…"
+  },
+  "Non installée. GPU compatible : {device}.": {
+    "fra": "Non installée. GPU compatible : {device}.",
+    "eng": "Not installed. Compatible GPU: {device}."
+  },
+  "Version {version} installée ({size} Mo) dans {path}.": {
+    "fra": "Version {version} installée ({size} Mo) dans {path}.",
+    "eng": "Version {version} installed ({size} MB) in {path}."
+  },
+  "Active sur {device}.": {
+    "fra": "Active sur {device}.",
+    "eng": "Active on {device}."
+  },
+  "Inutilisable : {reason}.": {
+    "fra": "Inutilisable : {reason}.",
+    "eng": "Unusable: {reason}."
+  },
+  "Mise à jour disponible.": {
+    "fra": "Mise à jour disponible.",
+    "eng": "Update available."
+  },
+  "Accélération NVIDIA disponible (TensorRT) — Installer…": {
+    "fra": "Accélération NVIDIA disponible (TensorRT) — Installer…",
+    "eng": "NVIDIA acceleration available (TensorRT) — Install…"
+  },
+  "Exécute l'interpolation MVO-RIFE sur les Tensor Cores des cartes NVIDIA (NVIDIA TensorRT for RTX) : traitement nettement plus rapide, images identiques à l'œil. Sans elle, l'interpolation fonctionne sur le GPU (Vulkan).": {
+    "fra": "Exécute l'interpolation MVO-RIFE sur les Tensor Cores des cartes NVIDIA (NVIDIA TensorRT for RTX) : traitement nettement plus rapide, images identiques à l'œil. Sans elle, l'interpolation fonctionne sur le GPU (Vulkan).",
+    "eng": "Runs MVO-RIFE interpolation on the Tensor Cores of NVIDIA cards (NVIDIA TensorRT for RTX): much faster processing, visually identical frames. Without it, interpolation runs on the GPU (Vulkan)."
+  },
+  "Utiliser l'accélération TensorRT pour l'interpolation": {
+    "fra": "Utiliser l'accélération TensorRT pour l'interpolation",
+    "eng": "Use TensorRT acceleration for interpolation"
+  },
+  "Mises à jour automatiques": {
+    "fra": "Mises à jour automatiques",
+    "eng": "Automatic updates"
+  },
+  "Installer…": {
+    "fra": "Installer…",
+    "eng": "Install…"
+  },
+  "Mettre à jour": {
+    "fra": "Mettre à jour",
+    "eng": "Update"
+  },
+  "installée": {
+    "fra": "installée",
+    "eng": "installed"
+  },
+  "mise à jour": {
+    "fra": "mise à jour",
+    "eng": "updated"
+  },
+  "EXTENSIONS": {
+    "fra": "EXTENSIONS",
+    "eng": "EXTENSIONS"
+  },
+  "Ultra": {
+    "fra": "Ultra",
+    "eng": "Ultra"
+  },
+  "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler.": {
+    "fra": "Rapide : RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler.",
+    "eng": "Fast: RIFE v4.6 alone. The fastest; fine repeating patterns (bars, panning grids) may wobble."
+  },
+  "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le temps de Rapide.": {
+    "fra": "Équilibré : moteur hybride avec RIFE v4.6. Pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements et le flux optique NVIDIA s'il est disponible. Environ 2 fois le temps de Rapide.",
+    "eng": "Balanced: hybrid engine with RIFE v4.6. For each area of the picture, a learned selector blends RIFE, block motion compensation (keeps bars and repeating patterns straight), half-resolution-flow RIFE on large motion and NVIDIA optical flow when available. About 2 times the Fast time."
+  },
+  "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ 1,5 fois le temps de Qualité.": {
+    "fra": "Ultra : Qualité avec une seconde passe RIFE calculée dans le sens inverse, proposée au sélecteur comme candidat supplémentaire ; moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. Environ 1,5 fois le temps de Qualité.",
+    "eng": "Ultra: Quality with a second RIFE pass computed in reverse, offered to the selector as an extra candidate; fewer artifacts in difficult scenes. Normal mode, no TTA. About 1.5 times the Quality time."
+  },
+  "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques).": {
+    "fra": "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques).",
+    "eng": "Light: RIFE v4.15 lite in Fast mode, the lowest GPU memory use (small graphics cards)."
+  },
+  "Mode Fast imposé par le préréglage Light.": {
+    "fra": "Mode Fast imposé par le préréglage Light.",
+    "eng": "Fast mode required by the Light preset."
+  },
+  "Mode Normal imposé par le préréglage Ultra.": {
+    "fra": "Mode Normal imposé par le préréglage Ultra.",
+    "eng": "Normal mode required by the Ultra preset."
+  },
+  "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le sélecteur.": {
+    "fra": "TTA désactivé : le préréglage Ultra calcule déjà une passe inversée, choisie zone par zone par le sélecteur.",
+    "eng": "TTA disabled: the Ultra preset already computes a reversed pass, chosen area by area by the selector."
+  },
+  "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.": {
+    "fra": "Qualité : même moteur hybride avec RIFE v4.15 affiné par Muxiveo, plus précis (mouvements complexes, occultations, détails fins, textes incrustés). Environ 3 fois le temps de Rapide.",
+    "eng": "Quality: same hybrid engine with RIFE v4.15 fine-tuned by Muxiveo, more accurate (complex motion, occlusions, fine detail, burned-in text). About 3 times the Fast time."
+  },
+  "Extensions": {
+    "fra": "Extensions",
+    "eng": "Extensions"
+  },
+  "Composants facultatifs téléchargés à la demande, vérifiés (SHA-256) puis installés dans votre dossier utilisateur. Muxiveo fonctionne sans eux ; seules les extensions compatibles avec cette machine peuvent être installées.": {
+    "fra": "Composants facultatifs téléchargés à la demande, vérifiés (SHA-256) puis installés dans votre dossier utilisateur. Muxiveo fonctionne sans eux ; seules les extensions compatibles avec cette machine peuvent être installées.",
+    "eng": "Optional components downloaded on demand, verified (SHA-256) and installed in your user folder. Muxiveo works without them; only extensions compatible with this machine can be installed."
+  },
+  "DISPONIBLES POUR CETTE MACHINE": {
+    "fra": "DISPONIBLES POUR CETTE MACHINE",
+    "eng": "AVAILABLE FOR THIS MACHINE"
+  },
+  "Aucune extension compatible avec cette machine pour l'instant.": {
+    "fra": "Aucune extension compatible avec cette machine pour l'instant.",
+    "eng": "No extension is compatible with this machine yet."
+  },
+  "Non compatibles avec cette machine ({count})": {
+    "fra": "Non compatibles avec cette machine ({count})",
+    "eng": "Not compatible with this machine ({count})"
+  },
+  "Vérification de la compatibilité de cette machine…": {
+    "fra": "Vérification de la compatibilité de cette machine…",
+    "eng": "Checking this machine's compatibility…"
+  },
+  "Non compatible : {reason}.": {
+    "fra": "Non compatible : {reason}.",
+    "eng": "Not compatible: {reason}."
+  },
+  "Non compatible avec cette machine.": {
+    "fra": "Non compatible avec cette machine.",
+    "eng": "Not compatible with this machine."
+  },
+  "Requiert une carte NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récente, sous Linux ou Windows.": {
+    "fra": "Requiert une carte NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récente, sous Linux ou Windows.",
+    "eng": "Requires an NVIDIA Turing card (RTX 20xx, GTX 16xx) or newer, on Linux or Windows."
+  },
+  "Gérer les extensions": {
+    "fra": "Gérer les extensions",
+    "eng": "Manage extensions"
+  },
+  "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.": {
+    "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.",
+    "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in the Extensions page."
+  },
+  "Extension Interpolation d'images non installée : page Extensions.": {
+    "fra": "Extension Interpolation d'images non installée : page Extensions.",
+    "eng": "Frame interpolation extension not installed: see the Extensions page."
+  },
+  "Interpolation d'images (MVO-RIFE)": {
+    "fra": "Interpolation d'images (MVO-RIFE)",
+    "eng": "Frame interpolation (MVO-RIFE)"
+  },
+  "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.": {
+    "fra": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.",
+    "eng": "Frame interpolation (MVO-RIFE): path used only without the Interpolation extension (Extensions page), which takes priority."
+  },
+  "Interpolation d'images (extension MVO-RIFE) : page Extensions.": {
+    "fra": "Interpolation d'images (extension MVO-RIFE) : page Extensions.",
+    "eng": "Frame interpolation (MVO-RIFE extension): Extensions page."
+  },
+  "Interpolation non installée — Installer…": {
+    "fra": "Interpolation non installée — Installer…",
+    "eng": "Interpolation not installed — Install…"
+  },
+  "Mettre à jour automatiquement les extensions installées": {
+    "fra": "Mettre à jour automatiquement les extensions installées",
+    "eng": "Automatically update installed extensions"
+  },
+  "Non compatible : plate-forme non prise en charge. Requiert Linux ou Windows x86-64, ou macOS (Apple Silicon), avec un GPU Vulkan.": {
+    "fra": "Non compatible : plate-forme non prise en charge. Requiert Linux ou Windows x86-64, ou macOS (Apple Silicon), avec un GPU Vulkan.",
+    "eng": "Not compatible: unsupported platform. Requires Linux or Windows x86-64, or macOS (Apple Silicon), with a Vulkan GPU."
+  },
+  "Non installée : l'interpolation d'images est indisponible.": {
+    "fra": "Non installée : l'interpolation d'images est indisponible.",
+    "eng": "Not installed: frame interpolation is unavailable."
+  },
+  "Non installée : moteur hors extension utilisé ({path}).": {
+    "fra": "Non installée : moteur hors extension utilisé ({path}).",
+    "eng": "Not installed: engine outside the extension in use ({path})."
+  },
+  "Requiert l'extension Interpolation d'images.": {
+    "fra": "Requiert l'extension Interpolation d'images.",
+    "eng": "Requires the Frame interpolation extension."
+  },
+  "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.": {
+    "fra": "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.",
+    "eng": "Remove the frame interpolation extension? Interpolation will no longer be offered when encoding; the extension can be reinstalled at any time."
+  },
+  "Version {version} disponible.": {
+    "fra": "Version {version} disponible.",
+    "eng": "Version {version} available."
+  },
+  "{label} : mise à jour automatique vers la version {version}.": {
+    "fra": "{label} : mise à jour automatique vers la version {version}.",
+    "eng": "{label}: automatic update to version {version}."
+  },
+  "{label} : échec ({reason}).": {
+    "fra": "{label} : échec ({reason}).",
+    "eng": "{label}: failed ({reason})."
+  },
+  "{label} désactivée ; fichiers encore utilisés retirés au prochain démarrage.": {
+    "fra": "{label} désactivée ; fichiers encore utilisés retirés au prochain démarrage.",
+    "eng": "{label} disabled; files still in use will be removed at the next start."
+  },
+  "{label} supprimée.": {
+    "fra": "{label} supprimée.",
+    "eng": "{label} removed."
+  },
+  "{label} {done} : version {version}.": {
+    "fra": "{label} {done} : version {version}.",
+    "eng": "{label} {done}: version {version}."
+  },
+  "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
+    "fra": "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
+    "eng": "Multiplies the frame rate when encoding (×2, ×3, ×4, 59.94 / 60 fps) by generating in-between frames on the GPU (Vulkan): MVO-RIFE engine, RIFE models and presets. Updated independently of Muxiveo (new models, settings)."
+  },
+  "Précision de la reconstruction FEL": {
+    "fra": "Précision de la reconstruction FEL",
+    "eng": "FEL reconstruction precision"
+  },
+  "Lent (recommandé)": {
+    "fra": "Lent (recommandé)",
+    "eng": "Slow (recommended)"
+  },
+  "Standard (rapide, moins précis)": {
+    "fra": "Standard (rapide, moins précis)",
+    "eng": "Standard (fast, less precise)"
+  },
+  "Rapide (non recommandé)": {
+    "fra": "Rapide (non recommandé)",
+    "eng": "Fast (not recommended)"
+  },
+  "Résultat certifié : chaque couleur est l’arrondi exact démontré du calcul, identique au bit près à la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. Environ 1,5 fois plus lent que le mode Standard sur GPU NVIDIA récent, 2 à 3 fois sur GPU intégré ; sans effet sur la durée quand l’encodeur est plus lent que lui (x265, NVEncC en qualité élevée).": {
+    "fra": "Résultat certifié : chaque couleur est l’arrondi exact démontré du calcul, identique au bit près à la référence CPU, y compris aux couleurs extrêmes. Sur GPU, exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; en Auto, un GPU dédié, sinon le CPU. Environ 1,5 fois plus lent que le mode Standard sur GPU NVIDIA récent, 2 à 3 fois sur GPU intégré ; sans effet sur la durée quand l’encodeur est plus lent que lui (x265, NVEncC en qualité élevée).",
+    "eng": "Certified result: each colour is the proven exact rounding of the computation, bit-identical to the CPU reference, extreme colours included. On GPU, requires a GPU computing in double precision (NVIDIA, AMD, Intel up to 11th generation); in Auto, a dedicated GPU, otherwise the CPU. About 1.5 times slower than Standard mode on a recent NVIDIA GPU, 2 to 3 times on an integrated GPU; no effect on duration when the encoder is slower than it (x265, high-quality NVEncC)."
+  },
+  "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; sinon la reconstruction bascule automatiquement sur le CPU, plus lent mais exact. Sur GPU intégré, le gain face au CPU peut être faible.": {
+    "fra": "Hybride automatique avec légère dérive couleur possible aux extrêmes de 1/64e de code couleur. Non visible à l’œil nu. Exige un GPU calculant en double précision (NVIDIA, AMD, Intel jusqu’à la 11e génération) ; sinon la reconstruction bascule automatiquement sur le CPU, plus lent mais exact. Sur GPU intégré, le gain face au CPU peut être faible.",
+    "eng": "Automatic hybrid with a slight possible colour drift at the extremes of 1/64th of a colour code. Not visible to the naked eye. Requires a GPU computing in double precision (NVIDIA, AMD, Intel up to 11th generation); otherwise reconstruction automatically switches to the CPU, slower but exact. On an integrated GPU, the gain over the CPU may be small."
+  },
+  "Calcul en simple précision, compatible avec tous les GPU. Écart d’au plus 1/64e de code couleur sur les films mesurés ; jusqu’à 2 codes couleur possibles sur des couleurs saturées très lumineuses (tests synthétiques). Sur CPU, le calcul reste exact.": {
+    "fra": "Calcul en simple précision, compatible avec tous les GPU. Écart d’au plus 1/64e de code couleur sur les films mesurés ; jusqu’à 2 codes couleur possibles sur des couleurs saturées très lumineuses (tests synthétiques). Sur CPU, le calcul reste exact.",
+    "eng": "Single-precision computation, compatible with all GPUs. At most 1/64th of a colour code of deviation on the measured films; up to 2 colour codes possible on very bright saturated colours (synthetic tests). On CPU, the computation remains exact."
+  },
+  "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. Un GPU sans double précision passe sur CPU en Lent et en Standard.": {
+    "fra": "Auto selon la précision : Lent, GPU dédié calculant en double précision, sinon CPU ; Standard, GPU dédié puis intégré calculant en double précision, sinon CPU ; Rapide, GPU dédié, puis intégré, puis CPU. Entre GPU dédiés, il tient compte des autres étapes et de la charge connue. Un GPU sans double précision passe sur CPU en Lent et en Standard.",
+    "eng": "Auto depends on the precision: Slow, a dedicated GPU computing in double precision, otherwise the CPU; Standard, a dedicated then integrated GPU computing in double precision, otherwise the CPU; Fast, a dedicated GPU, then integrated, then the CPU. Between dedicated GPUs, it takes the other stages and known load into account. A GPU without double precision uses the CPU in Slow and Standard."
+  },
+  "sans double précision : CPU en Lent et Standard": {
+    "fra": "sans double précision : CPU en Lent et Standard",
+    "eng": "no double precision: CPU in Slow and Standard"
+  },
+  "+ Ajouter un donneur": {
+    "fra": "+ Ajouter un donneur",
+    "eng": "+ Add donor"
+  },
+  "1 opération prête": {
+    "fra": "1 opération prête",
+    "eng": "1 operation ready"
+  },
+  "Ajoutez une source et renseignez le fichier de sortie.": {
+    "fra": "Ajoutez une source et renseignez le fichier de sortie.",
+    "eng": "Add a source and set an output file."
+  },
+  "Analyse annulée": {
+    "fra": "Analyse annulée",
+    "eng": "Analysis cancelled"
+  },
+  "Analyse de {name}": {
+    "fra": "Analyse de {name}",
+    "eng": "Analysing {name}"
+  },
+  "Analyse des sources": {
+    "fra": "Analyse des sources",
+    "eng": "Analysing sources"
+  },
+  "Analyse terminée": {
+    "fra": "Analyse terminée",
+    "eng": "Analysis completed"
+  },
+  "Annuler l’opération": {
+    "fra": "Annuler l’opération",
+    "eng": "Cancel operation"
+  },
+  "Assembler la vidéo de référence avec l’audio et les sous-titres des donneurs.": {
+    "fra": "Assembler la vidéo de référence avec l’audio et les sous-titres des donneurs.",
+    "eng": "Combine the reference video with audio and subtitles from donor sources."
+  },
+  "Attendez la fin de la préparation audio.": {
+    "fra": "Attendez la fin de la préparation audio.",
+    "eng": "Wait for audio preparation to finish."
+  },
+  "Aucun plan d’hybridation prêt.": {
+    "fra": "Aucun plan d’hybridation prêt.",
+    "eng": "No hybridization plan is ready."
+  },
+  "Autres opérations prêtes": {
+    "fra": "Autres opérations prêtes",
+    "eng": "Other ready operations"
+  },
+  "Choisir une opération": {
+    "fra": "Choisir une opération",
+    "eng": "Choose an operation"
+  },
+  "Choisir une opération prête": {
+    "fra": "Choisir une opération prête",
+    "eng": "Choose a ready operation"
+  },
+  "Choisissez la vidéo cible et une source donneuse.": {
+    "fra": "Choisissez la vidéo cible et une source donneuse.",
+    "eng": "Select the target video and a donor source."
+  },
+  "Choisissez un dossier de sortie.": {
+    "fra": "Choisissez un dossier de sortie.",
+    "eng": "Select an output folder."
+  },
+  "Choisissez une référence et au moins une source donneuse.": {
+    "fra": "Choisissez une référence et au moins une source donneuse.",
+    "eng": "Select a reference and at least one donor source."
+  },
+  "Conversion PAL ↔ Cinéma automatique": {
+    "fra": "Conversion PAL ↔ Cinéma automatique",
+    "eng": "Automatic PAL ↔ Cinema conversion"
+  },
+  "ESPACE DE TRAVAIL": {
+    "fra": "ESPACE DE TRAVAIL",
+    "eng": "WORKSPACE"
+  },
+  "Espace de travail": {
+    "fra": "Espace de travail",
+    "eng": "Workspace"
+  },
+  "Filtrer le journal": {
+    "fra": "Filtrer le journal",
+    "eng": "Filter log"
+  },
+  "Fusion de métadonnées dynamiques": {
+    "fra": "Fusion de métadonnées dynamiques",
+    "eng": "Dynamic metadata merge"
+  },
+  "Hybridation annulée": {
+    "fra": "Hybridation annulée",
+    "eng": "Hybridization cancelled"
+  },
+  "Hybridation multi-sources": {
+    "fra": "Hybridation multi-sources",
+    "eng": "Multi-source hybridization"
+  },
+  "Hybrider le fichier": {
+    "fra": "Hybrider le fichier",
+    "eng": "Hybridize file"
+  },
+  "Hybrider {count} épisodes": {
+    "fra": "Hybrider {count} épisodes",
+    "eng": "Hybridize {count} episodes"
+  },
+  "JOURNAL D’EXÉCUTION": {
+    "fra": "JOURNAL D’EXÉCUTION",
+    "eng": "EXECUTION LOG"
+  },
+  "LANCER UNE OPÉRATION": {
+    "fra": "LANCER UNE OPÉRATION",
+    "eng": "RUN AN OPERATION"
+  },
+  "Lancer l’hybridation": {
+    "fra": "Lancer l’hybridation",
+    "eng": "Start hybridization"
+  },
+  "MODÈLE D’ASSEMBLAGE · ÉPISODE TÉMOIN": {
+    "fra": "MODÈLE D’ASSEMBLAGE · ÉPISODE TÉMOIN",
+    "eng": "ASSEMBLY TEMPLATE · SAMPLE EPISODE"
+  },
+  "Projet média partagé entre remux et encodage": {
+    "fra": "Projet média partagé entre remux et encodage",
+    "eng": "Shared media project for remuxing and encoding"
+  },
+  "Préparation de l’aperçu audio": {
+    "fra": "Préparation de l’aperçu audio",
+    "eng": "Preparing audio preview"
+  },
+  "Préparation de l’hybridation": {
+    "fra": "Préparation de l’hybridation",
+    "eng": "Preparing hybridization"
+  },
+  "RECALAGE ET PRÉ-ÉCOUTE": {
+    "fra": "RECALAGE ET PRÉ-ÉCOUTE",
+    "eng": "ALIGNMENT AND AUDIO PREVIEW"
+  },
+  "Replier le journal": {
+    "fra": "Replier le journal",
+    "eng": "Collapse log"
+  },
+  "SOURCES ET SORTIE": {
+    "fra": "SOURCES ET SORTIE",
+    "eng": "SOURCES AND OUTPUT"
+  },
+  "STUDIOS": {
+    "fra": "STUDIOS",
+    "eng": "STUDIOS"
+  },
+  "SYNCHRONISATION": {
+    "fra": "SYNCHRONISATION",
+    "eng": "SYNCHRONIZATION"
+  },
+  "TRAITEMENT MÉDIA": {
+    "fra": "TRAITEMENT MÉDIA",
+    "eng": "MEDIA PROCESSING"
+  },
+  "Traitement en cours": {
+    "fra": "Traitement en cours",
+    "eng": "Processing"
+  },
+  "{count} opérations prêtes": {
+    "fra": "{count} opérations prêtes",
+    "eng": "{count} operations ready"
+  },
+  "À configurer": {
+    "fra": "À configurer",
+    "eng": "Configuration required"
+  },
+  "Épisode {current}/{total} · {name}": {
+    "fra": "Épisode {current}/{total} · {name}",
+    "eng": "Episode {current}/{total} · {name}"
+  },
+  "↓ Reprendre le défilement": {
+    "fra": "↓ Reprendre le défilement",
+    "eng": "↓ Resume scrolling"
+  },
+  "● Suivi actif": {
+    "fra": "● Suivi actif",
+    "eng": "● Following"
+  },
+  "Encoder la vidéo": {
+    "fra": "Encoder la vidéo",
+    "eng": "Encode video"
+  },
+  "Remuxer le fichier": {
+    "fra": "Remuxer le fichier",
+    "eng": "Remux file"
+  },
+  "Fusionner HDR10+": {
+    "fra": "Fusionner HDR10+",
+    "eng": "Merge HDR10+"
+  },
+  "Fusionner DoVi / HDR10+": {
+    "fra": "Fusionner DoVi / HDR10+",
+    "eng": "Merge DoVi / HDR10+"
+  },
+  "Fusion DoVi en cours…": {
+    "fra": "Fusion DoVi en cours…",
+    "eng": "Merging DoVi…"
+  },
+  "Hybridation en cours…": {
+    "fra": "Hybridation en cours…",
+    "eng": "Hybridizing…"
+  },
+  "Relancer l’hybridation": {
+    "fra": "Relancer l’hybridation",
+    "eng": "Retry hybridization"
+  },
+  "Relancer la fusion": {
+    "fra": "Relancer la fusion",
+    "eng": "Retry merge"
+  },
+  "Relancer l’opération": {
+    "fra": "Relancer l’opération",
+    "eng": "Retry operation"
+  },
+  "OPÉRATIONS CONFIGURÉES": {
+    "fra": "OPÉRATIONS CONFIGURÉES",
+    "eng": "CONFIGURED OPERATIONS"
+  },
+  "REMUX / ENCODAGE": {
+    "fra": "REMUX / ENCODAGE",
+    "eng": "REMUX / ENCODING"
+  },
+  "HYBRID STUDIO": {
+    "fra": "HYBRID STUDIO",
+    "eng": "HYBRID STUDIO"
+  },
+  "MERGE DOVI / HDR10+": {
+    "fra": "MERGE DOVI / HDR10+",
+    "eng": "MERGE DOVI / HDR10+"
+  },
+  "Toutes les opérations": {
+    "fra": "Toutes les opérations",
+    "eng": "All operations"
+  },
+  "Application": {
+    "fra": "Application",
+    "eng": "Application"
+  },
+  "Hybridation terminée": {
+    "fra": "Hybridation terminée",
+    "eng": "Hybridization completed"
+  },
+  "Opération en cours…": {
+    "fra": "Opération en cours…",
+    "eng": "Operation running…"
+  },
+  "Aperçu annulé": {
+    "fra": "Aperçu annulé",
+    "eng": "Preview cancelled"
+  },
+  "Aperçu audio prêt": {
+    "fra": "Aperçu audio prêt",
+    "eng": "Audio preview ready"
+  },
+  "Fusion annulée": {
+    "fra": "Fusion annulée",
+    "eng": "Merge cancelled"
+  },
+  "Préparation terminée": {
+    "fra": "Préparation terminée",
+    "eng": "Preparation completed"
+  },
+  "DÉTAIL DES ÉTAPES": {
+    "fra": "DÉTAIL DES ÉTAPES",
+    "eng": "STEP DETAILS"
+  },
+  "Vérification · Extraction · Injection · Assemblage": {
+    "fra": "Vérification · Extraction · Injection · Assemblage",
+    "eng": "Validation · Extraction · Injection · Assembly"
+  },
+  "Merge DoVi / HDR10+": {
+    "fra": "Merge DoVi / HDR10+",
+    "eng": "Merge DoVi / HDR10+"
+  },
+  "Hybrider {count} fichiers": {
+    "fra": "Hybrider {count} fichiers",
+    "eng": "Hybridize {count} files"
+  },
+  "Fusionner Dolby Vision": {
+    "fra": "Fusionner Dolby Vision",
+    "eng": "Merge Dolby Vision"
+  },
+  "Fusionner les métadonnées HDR": {
+    "fra": "Fusionner les métadonnées HDR",
+    "eng": "Merge HDR metadata"
+  },
+  "Aucune piste audio donneuse disponible pour la pré-écoute.": {
+    "fra": "Aucune piste audio donneuse disponible pour la pré-écoute.",
+    "eng": "No donor audio track is available for preview."
+  },
+  "Remux & Encode": {
+    "fra": "Remux & Encode",
+    "eng": "Remux & Encode"
+  },
+  "Clic droit pour insérer un champ de nommage ou du texte fixe.": {
+    "fra": "Clic droit pour insérer un champ de nommage ou du texte fixe.",
+    "eng": "Right-click to insert a filename field or fixed text."
+  },
+  "Insérer un champ ou du texte": {
+    "fra": "Insérer un champ ou du texte",
+    "eng": "Insert a field or text"
+  },
+  "Identité": {
+    "fra": "Identité",
+    "eng": "Identity"
+  },
+  "Sous-titres": {
+    "fra": "Sous-titres",
+    "eng": "Subtitles"
+  },
+  "Texte fixe": {
+    "fra": "Texte fixe",
+    "eng": "Fixed text"
+  },
+  "Titre normalisé": {
+    "fra": "Titre normalisé",
+    "eng": "Release title"
+  },
+  "Titre TMDB": {
+    "fra": "Titre TMDB",
+    "eng": "TMDB title"
+  },
+  "Année": {
+    "fra": "Année",
+    "eng": "Year"
+  },
+  "Nom du fichier source": {
+    "fra": "Nom du fichier source",
+    "eng": "Source filename"
+  },
+  "Groupe du nom source": {
+    "fra": "Groupe du nom source",
+    "eng": "Group from source name"
+  },
+  "Assemblage multi-sources": {
+    "fra": "Assemblage multi-sources",
+    "eng": "Multiple source assembly"
+  },
+  "Saison et épisode (S01E02)": {
+    "fra": "Saison et épisode (S01E02)",
+    "eng": "Season and episode (S01E02)"
+  },
+  "Titre d'épisode normalisé": {
+    "fra": "Titre d'épisode normalisé",
+    "eng": "Release episode title"
+  },
+  "Titre d'épisode TMDB": {
+    "fra": "Titre d'épisode TMDB",
+    "eng": "TMDB episode title"
+  },
+  "Saison (01)": {
+    "fra": "Saison (01)",
+    "eng": "Season (01)"
+  },
+  "Épisode (02)": {
+    "fra": "Épisode (02)",
+    "eng": "Episode (02)"
+  },
+  "Saison numérique (01)": {
+    "fra": "Saison numérique (01)",
+    "eng": "Numeric season (01)"
+  },
+  "Épisode numérique (02)": {
+    "fra": "Épisode numérique (02)",
+    "eng": "Numeric episode (02)"
+  },
+  "Plusieurs langues (MULTi)": {
+    "fra": "Plusieurs langues (MULTi)",
+    "eng": "Multiple languages (MULTi)"
+  },
+  "Variante française (VFF, VFQ…)": {
+    "fra": "Variante française (VFF, VFQ…)",
+    "eng": "French variant (VFF, VFQ…)"
+  },
+  "Audio immersif (Atmos, DTS-X)": {
+    "fra": "Audio immersif (Atmos, DTS-X)",
+    "eng": "Immersive audio (Atmos, DTS-X)"
+  },
+  "Source détectée (WEB, BluRay…)": {
+    "fra": "Source détectée (WEB, BluRay…)",
+    "eng": "Detected source (WEB, BluRay…)"
+  },
+  "Profondeur 10 bits": {
+    "fra": "Profondeur 10 bits",
+    "eng": "10-bit depth"
+  },
+  "Dolby Vision (DV)": {
+    "fra": "Dolby Vision (DV)",
+    "eng": "Dolby Vision (DV)"
+  },
+  "Version originale sous-titrée FR": {
+    "fra": "Version originale sous-titrée FR",
+    "eng": "Original audio with French subtitles"
+  },
+  "MULTI en majuscules": {
+    "fra": "MULTI en majuscules",
+    "eng": "Uppercase MULTI"
+  },
+  "ATMOS en majuscules": {
+    "fra": "ATMOS en majuscules",
+    "eng": "Uppercase ATMOS"
+  },
+  "Point": {
+    "fra": "Point",
+    "eng": "Dot"
+  },
+  "Tiret": {
+    "fra": "Tiret",
+    "eng": "Hyphen"
+  },
+  "Titre d'épisode du fichier source": {
+    "fra": "Titre d'épisode du fichier source",
+    "eng": "Episode title from source filename"
+  },
+  "Codec audio release (DDP…)": {
+    "fra": "Codec audio release (DDP…)",
+    "eng": "Release audio codec (DDP…)"
+  },
+  "Codec audio brut": {
+    "fra": "Codec audio brut",
+    "eng": "Raw audio codec"
+  },
+  "Canaux audio (5.1, 7.1…)": {
+    "fra": "Canaux audio (5.1, 7.1…)",
+    "eng": "Audio channels (5.1, 7.1…)"
+  },
+  "Langues audio": {
+    "fra": "Langues audio",
+    "eng": "Audio languages"
+  },
+  "Noms des langues audio": {
+    "fra": "Noms des langues audio",
+    "eng": "Audio language names"
+  },
+  "Codec vidéo brut (HEVC…)": {
+    "fra": "Codec vidéo brut (HEVC…)",
+    "eng": "Raw video codec (HEVC…)"
+  },
+  "Codec vidéo release (x265…)": {
+    "fra": "Codec vidéo release (x265…)",
+    "eng": "Release video codec (x265…)"
+  },
+  "Résolution (2160p…)": {
+    "fra": "Résolution (2160p…)",
+    "eng": "Resolution (2160p…)"
+  },
+  "HDR (HDR, HDR10P…)": {
+    "fra": "HDR (HDR, HDR10P…)",
+    "eng": "HDR (HDR, HDR10P…)"
+  },
+  "Langues des sous-titres": {
+    "fra": "Langues des sous-titres",
+    "eng": "Subtitle languages"
+  },
+  "Noms des langues des sous-titres": {
+    "fra": "Noms des langues des sous-titres",
+    "eng": "Subtitle language names"
+  },
+  "Codec des sous-titres": {
+    "fra": "Codec des sous-titres",
+    "eng": "Subtitle codec"
+  },
+  "Automatique (best)": {
+    "fra": "Automatique (best)",
+    "eng": "Automatic (best)"
+  },
+  "Première valeur (first)": {
+    "fra": "Première valeur (first)",
+    "eng": "First value (first)"
+  },
+  "Toutes les valeurs (all)": {
+    "fra": "Toutes les valeurs (all)",
+    "eng": "All values (all)"
+  },
+  "Titre TMDB normalisé en ASCII avec des points.": {
+    "fra": "Titre TMDB normalisé en ASCII avec des points.",
+    "eng": "TMDB title normalized to ASCII with dots."
+  },
+  "Titre du film ou de la série, avec ses espaces et accents.": {
+    "fra": "Titre du film ou de la série, avec ses espaces et accents.",
+    "eng": "Movie or series title, retaining spaces and accents."
+  },
+  "Année de sortie fournie par TMDB.": {
+    "fra": "Année de sortie fournie par TMDB.",
+    "eng": "Release year provided by TMDB."
+  },
+  "Nom du fichier de référence sans son extension.": {
+    "fra": "Nom du fichier de référence sans son extension.",
+    "eng": "Reference filename without its extension."
+  },
+  "Groupe de release configuré, sinon extrait du nom source.": {
+    "fra": "Groupe de release configuré, sinon extrait du nom source.",
+    "eng": "Configured release group, otherwise extracted from the source name."
+  },
+  "Groupe extrait du nom source, remplacé par le groupe configuré dans Hybrid.": {
+    "fra": "Groupe extrait du nom source, remplacé par le groupe configuré dans Hybrid.",
+    "eng": "Group extracted from the source name, replaced by the configured group in Hybrid."
+  },
+  "Insère Hybrid si les pistes finales viennent de plusieurs sources.": {
+    "fra": "Insère Hybrid si les pistes finales viennent de plusieurs sources.",
+    "eng": "Inserts Hybrid if the final tracks come from multiple sources."
+  },
+  "Code saison/épisode du plan Hybrid ou de TMDB, par exemple S01E02.": {
+    "fra": "Code saison/épisode du plan Hybrid ou de TMDB, par exemple S01E02.",
+    "eng": "Season/episode code from the Hybrid plan or TMDB, such as S01E02."
+  },
+  "Titre d'épisode TMDB normalisé en ASCII avec des points.": {
+    "fra": "Titre d'épisode TMDB normalisé en ASCII avec des points.",
+    "eng": "TMDB episode title normalized to ASCII with dots."
+  },
+  "Titre d'épisode TMDB, avec ses espaces et accents.": {
+    "fra": "Titre d'épisode TMDB, avec ses espaces et accents.",
+    "eng": "TMDB episode title, retaining spaces and accents."
+  },
+  "Numéro de saison du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe S.": {
+    "fra": "Numéro de saison du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe S.",
+    "eng": "Two-digit season number from the Hybrid plan or TMDB, without the S prefix."
+  },
+  "Numéro d'épisode du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe E.": {
+    "fra": "Numéro d'épisode du plan Hybrid ou de TMDB sur deux chiffres, sans le préfixe E.",
+    "eng": "Two-digit episode number from the Hybrid plan or TMDB, without the E prefix."
+  },
+  "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.": {
+    "fra": "Numéro de saison du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.",
+    "eng": "Season number from the Hybrid plan or TMDB, supporting :02d or :03d formatting."
+  },
+  "Numéro d'épisode du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.": {
+    "fra": "Numéro d'épisode du plan Hybrid ou de TMDB, formatable avec :02d ou :03d.",
+    "eng": "Episode number from the Hybrid plan or TMDB, supporting :02d or :03d formatting."
+  },
+  "Insère MULTi si plusieurs familles de langues audio sont conservées. Pour MULTI en majuscules, utilisez le texte fixe.": {
+    "fra": "Insère MULTi si plusieurs familles de langues audio sont conservées. Pour MULTI en majuscules, utilisez le texte fixe.",
+    "eng": "Inserts MULTi if multiple audio language families are retained. Use fixed text for uppercase MULTI."
+  },
+  "Détecte la variante française des pistes audio finales : VFF, VFQ, VF2…": {
+    "fra": "Détecte la variante française des pistes audio finales : VFF, VFQ, VF2…",
+    "eng": "Detects the French variant of the final audio tracks: VFF, VFQ, VF2…"
+  },
+  "Insère Atmos ou DTS-X si détecté. Pour ATMOS en majuscules, utilisez le texte fixe.": {
+    "fra": "Insère Atmos ou DTS-X si détecté. Pour ATMOS en majuscules, utilisez le texte fixe.",
+    "eng": "Inserts Atmos or DTS-X when detected. Use fixed text for uppercase ATMOS."
+  },
+  "Source déduite du nom de référence : WEB, BluRay, HDTV… WEB-DL doit être ajouté en texte fixe.": {
+    "fra": "Source déduite du nom de référence : WEB, BluRay, HDTV… WEB-DL doit être ajouté en texte fixe.",
+    "eng": "Source inferred from the reference filename: WEB, BluRay, HDTV… Add WEB-DL as fixed text."
+  },
+  "Insère 10Bits si détecté, ou implicite avec HDR10+ ou Dolby Vision.": {
+    "fra": "Insère 10Bits si détecté, ou implicite avec HDR10+ ou Dolby Vision.",
+    "eng": "Inserts 10Bits when detected or implied by HDR10+ or Dolby Vision."
+  },
+  "Insère DV si Dolby Vision est présent sur une piste vidéo finale.": {
+    "fra": "Insère DV si Dolby Vision est présent sur une piste vidéo finale.",
+    "eng": "Inserts DV if a final video track contains Dolby Vision."
+  },
+  "Insère VOSTFR si des sous-titres français sont présents sans audio français.": {
+    "fra": "Insère VOSTFR si des sous-titres français sont présents sans audio français.",
+    "eng": "Inserts VOSTFR if French subtitles are present without French audio."
+  },
+  "Texte toujours ajouté, sans détection de la source.": {
+    "fra": "Texte toujours ajouté, sans détection de la source.",
+    "eng": "Always adds this text, without detecting the source."
+  },
+  "Texte toujours ajouté, même si une seule source fournit les pistes finales.": {
+    "fra": "Texte toujours ajouté, même si une seule source fournit les pistes finales.",
+    "eng": "Always adds this text, even if a single source provides the final tracks."
+  },
+  "Texte toujours ajouté, sans détection du nombre de langues.": {
+    "fra": "Texte toujours ajouté, sans détection du nombre de langues.",
+    "eng": "Always adds this text, without detecting the number of languages."
+  },
+  "Texte toujours ajouté, sans détection de l'audio immersif.": {
+    "fra": "Texte toujours ajouté, sans détection de l'audio immersif.",
+    "eng": "Always adds this text, without detecting immersive audio."
+  },
+  "Sépare deux éléments du nom avec un point.": {
+    "fra": "Sépare deux éléments du nom avec un point.",
+    "eng": "Separates two filename elements with a dot."
+  },
+  "Sépare deux éléments du nom avec un tiret.": {
+    "fra": "Sépare deux éléments du nom avec un tiret.",
+    "eng": "Separates two filename elements with a hyphen."
+  },
+  "Titre d'épisode extrait du nom de référence, sans requête TMDB.": {
+    "fra": "Titre d'épisode extrait du nom de référence, sans requête TMDB.",
+    "eng": "Episode title extracted from the reference filename, without a TMDB request."
+  },
+  "Codec audio normalisé release : DDP pour E-AC-3, TrueHD, DTSHD-MA… best retient le codec le mieux classé.": {
+    "fra": "Codec audio normalisé release : DDP pour E-AC-3, TrueHD, DTSHD-MA… best retient le codec le mieux classé.",
+    "eng": "Release audio codec: DDP for E-AC-3, TrueHD, DTSHD-MA… best selects the highest-ranked codec."
+  },
+  "Codec audio brut en majuscules, par exemple EAC3. Les alias du profil restent applicables.": {
+    "fra": "Codec audio brut en majuscules, par exemple EAC3. Les alias du profil restent applicables.",
+    "eng": "Raw uppercase audio codec, such as EAC3. Profile aliases still apply."
+  },
+  "Canaux des pistes audio finales. best retient le plus grand nombre de canaux.": {
+    "fra": "Canaux des pistes audio finales. best retient le plus grand nombre de canaux.",
+    "eng": "Final audio track channels. best selects the largest channel count."
+  },
+  "Langues audio finales au format régionalisé, par exemple fr-FR et en-US.": {
+    "fra": "Langues audio finales au format régionalisé, par exemple fr-FR et en-US.",
+    "eng": "Final audio languages in regional format, such as fr-FR and en-US."
+  },
+  "Noms lisibles des langues audio finales, avec leur variante régionale.": {
+    "fra": "Noms lisibles des langues audio finales, avec leur variante régionale.",
+    "eng": "Readable names of final audio languages, including regional variants."
+  },
+  "Codec vidéo brut en majuscules, par exemple HEVC. Les alias du profil restent applicables.": {
+    "fra": "Codec vidéo brut en majuscules, par exemple HEVC. Les alias du profil restent applicables.",
+    "eng": "Raw uppercase video codec, such as HEVC. Profile aliases still apply."
+  },
+  "Codec vidéo normalisé release : x265 pour HEVC, x264 pour AVC.": {
+    "fra": "Codec vidéo normalisé release : x265 pour HEVC, x264 pour AVC.",
+    "eng": "Release video codec: x265 for HEVC, x264 for AVC."
+  },
+  "Résolution vidéo au format release. best retient la meilleure résolution.": {
+    "fra": "Résolution vidéo au format release. best retient la meilleure résolution.",
+    "eng": "Video resolution in release format. best selects the highest resolution."
+  },
+  "Insère HDR10P, HDR ou HLG selon les pistes vidéo finales ; reste vide pour une vidéo SDR.": {
+    "fra": "Insère HDR10P, HDR ou HLG selon les pistes vidéo finales ; reste vide pour une vidéo SDR.",
+    "eng": "Inserts HDR10P, HDR or HLG based on the final video tracks; stays empty for SDR video."
+  },
+  "Langues des sous-titres conservés, par exemple fr-FR et en-US.": {
+    "fra": "Langues des sous-titres conservés, par exemple fr-FR et en-US.",
+    "eng": "Languages of retained subtitles, such as fr-FR and en-US."
+  },
+  "Noms lisibles des langues des sous-titres conservés.": {
+    "fra": "Noms lisibles des langues des sous-titres conservés.",
+    "eng": "Readable language names of retained subtitles."
+  },
+  "Codecs des sous-titres conservés, par exemple SUBRIP ou PGS.": {
+    "fra": "Codecs des sous-titres conservés, par exemple SUBRIP ou PGS.",
+    "eng": "Codecs of retained subtitles, such as SUBRIP or PGS."
+  },
+  "WEB-DL": {
+    "fra": "WEB-DL",
+    "eng": "WEB-DL"
+  },
+  "Hybrid": {
+    "fra": "Hybrid",
+    "eng": "Hybrid"
+  },
+  "HDR10+ avec FEL intégré": {
+    "fra": "HDR10+ avec FEL intégré",
+    "eng": "HDR10+ with baked FEL"
+  },
+  "Recalculé sur l’image reconstruite (recommandé)": {
+    "fra": "Recalculé sur l’image reconstruite (recommandé)",
+    "eng": "Recomputed on the reconstructed image (recommended)"
+  },
+  "Conservé depuis la source (décrit la BL)": {
+    "fra": "Conservé depuis la source (décrit la BL)",
+    "eng": "Kept from the source (describes the BL)"
+  },
+  "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.": {
+    "fra": "Recalculé : statistiques HDR10+ (profil A) et MaxCLL/MaxFALL mesurés sur l’image reconstruite par plan Dolby Vision, puis injectés après l’encodage (HEVC, extension mvo-fel 0.3.0 ou plus). Conservé : HDR10+ de la source, calculé sur la BL sans l’apport du FEL.",
+    "eng": "Recomputed: HDR10+ statistics (profile A) and MaxCLL/MaxFALL measured on the reconstructed image per Dolby Vision shot, then injected after encoding (HEVC, mvo-fel extension 0.3.0 or later). Kept: the source HDR10+, computed on the BL without the FEL contribution."
+  },
+  "{name} : {extra} trames de plus que la vidéo": {
+    "fra": "{name} : {extra} trames de plus que la vidéo",
+    "eng": "{name}: {extra} more frames than the video"
+  },
+  "{count} trames de métadonnées pour {video} images vidéo.": {
+    "fra": "{count} trames de métadonnées pour {video} images vidéo.",
+    "eng": "{count} metadata frames for {video} video frames."
+  },
+  "{name} : {count} images": {
+    "fra": "{name} : {count} images",
+    "eng": "{name}: {count} frames"
+  },
+  "{name} présent sur les {count} images": {
+    "fra": "{name} présent sur les {count} images",
+    "eng": "{name} present on all {count} frames"
+  },
+  "{name} : {count} images, vidéo {video} d'après la durée (comptage non exact)": {
+    "fra": "{name} : {count} images, vidéo {video} d'après la durée (comptage non exact)",
+    "eng": "{name}: {count} frames, video {video} from duration (approximate count)"
+  },
+  "{name} absent sur {missing} images": {
+    "fra": "{name} absent sur {missing} images",
+    "eng": "{name} missing on {missing} frames"
+  },
+  "RPU Dolby Vision": {
+    "fra": "RPU Dolby Vision",
+    "eng": "Dolby Vision RPU"
+  },
+  "MDCV absent (SMPTE ST 2086)": {
+    "fra": "MDCV absent (SMPTE ST 2086)",
+    "eng": "MDCV missing (SMPTE ST 2086)"
+  },
+  "Une TV HDR10 suppose alors un écran de mastering par défaut.": {
+    "fra": "Une TV HDR10 suppose alors un écran de mastering par défaut.",
+    "eng": "An HDR10 TV then assumes a default mastering display."
+  },
+  "MaxCLL/MaxFALL absents": {
+    "fra": "MaxCLL/MaxFALL absents",
+    "eng": "MaxCLL/MaxFALL missing"
+  },
+  "Le tone mapping HDR10 se fonde alors sur le MDCV seul.": {
+    "fra": "Le tone mapping HDR10 se fonde alors sur le MDCV seul.",
+    "eng": "HDR10 tone mapping then relies on the MDCV alone."
+  },
+  "MaxCLL/MaxFALL inconnus (0)": {
+    "fra": "MaxCLL/MaxFALL inconnus (0)",
+    "eng": "MaxCLL/MaxFALL unknown (0)"
+  },
+  "Valeur « inconnue » de CTA-861.3 : la TV se fonde sur le MDCV.": {
+    "fra": "Valeur « inconnue » de CTA-861.3 : la TV se fonde sur le MDCV.",
+    "eng": "CTA-861.3 “unknown” value: the TV relies on the MDCV."
+  },
+  "MaxCLL/MaxFALL 1000/400 : valeurs par défaut probables": {
+    "fra": "MaxCLL/MaxFALL 1000/400 : valeurs par défaut probables",
+    "eng": "MaxCLL/MaxFALL 1000/400: likely default values"
+  },
+  "Valeurs souvent écrites par les encodeurs sans mesure du contenu.": {
+    "fra": "Valeurs souvent écrites par les encodeurs sans mesure du contenu.",
+    "eng": "Values often written by encoders without measuring the content."
+  },
+  "L1 absent sur {count} images": {
+    "fra": "L1 absent sur {count} images",
+    "eng": "L1 missing on {count} frames"
+  },
+  "Profil du conteneur (P{record}) différent du RPU (P{rpu})": {
+    "fra": "Profil du conteneur (P{record}) différent du RPU (P{rpu})",
+    "eng": "Container profile (P{record}) differs from the RPU (P{rpu})"
+  },
+  "Zone active variable : {changes} changements, {distinct} formats": {
+    "fra": "Zone active variable : {changes} changements, {distinct} formats",
+    "eng": "Variable active area: {changes} changes, {distinct} formats"
+  },
+  "Format d'image variable (scènes IMAX, par exemple).": {
+    "fra": "Format d'image variable (scènes IMAX, par exemple).",
+    "eng": "Variable aspect ratio (IMAX scenes, for example)."
+  },
+  "{count} jeux L6 différents dans le film": {
+    "fra": "{count} jeux L6 différents dans le film",
+    "eng": "{count} different L6 sets in the film"
+  },
+  "Le L6 devrait être constant : RPU assemblé depuis plusieurs sources ?": {
+    "fra": "Le L6 devrait être constant : RPU assemblé depuis plusieurs sources ?",
+    "eng": "L6 should be constant: RPU assembled from several sources?"
+  },
+  "Profil B : courbe de Bézier pour un écran de {targets} nits": {
+    "fra": "Profil B : courbe de Bézier pour un écran de {targets} nits",
+    "eng": "Profile B: Bézier curve for a {targets}-nit display"
+  },
+  "Plusieurs fenêtres de traitement": {
+    "fra": "Plusieurs fenêtres de traitement",
+    "eng": "Several processing windows"
+  },
+  "RPU ({dv} images) et HDR10+ ({hdr10plus} images) de longueurs différentes": {
+    "fra": "RPU ({dv} images) et HDR10+ ({hdr10plus} images) de longueurs différentes",
+    "eng": "RPU ({dv} frames) and HDR10+ ({hdr10plus} frames) have different lengths"
+  },
+  "Plans HDR10+ décalés de {shift} images par rapport au RPU": {
+    "fra": "Plans HDR10+ décalés de {shift} images par rapport au RPU",
+    "eng": "HDR10+ scenes shifted by {shift} frames relative to the RPU"
+  },
+  "HDR10+ recalé depuis une autre source ? {share} % des plans coïncident après décalage.": {
+    "fra": "HDR10+ recalé depuis une autre source ? {share} % des plans coïncident après décalage.",
+    "eng": "HDR10+ realigned from another source? {share}% of scenes match after shifting."
+  },
+  "Vidéo SDR : aucune métadonnée HDR": {
+    "fra": "Vidéo SDR : aucune métadonnée HDR",
+    "eng": "SDR video: no HDR metadata"
+  },
+  "HLG : aucune métadonnée statique ni dynamique requise": {
+    "fra": "HLG : aucune métadonnée statique ni dynamique requise",
+    "eng": "HLG: no static or dynamic metadata required"
+  },
+  "PQ en {bits} bits : postérisation probable": {
+    "fra": "PQ en {bits} bits : postérisation probable",
+    "eng": "{bits}-bit PQ: banding likely"
+  },
+  "MaxCLL ({cll} nits) sous le pic {name} ({peak} nits)": {
+    "fra": "MaxCLL ({cll} nits) sous le pic {name} ({peak} nits)",
+    "eng": "MaxCLL ({cll} nits) below the {name} peak ({peak} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà.",
+    "eng": "An HDR10 TV that follows MaxCLL may clip highlights above it."
+  },
+  "L6 Dolby Vision ({l6}) différent du HDR10 ({hdr10})": {
+    "fra": "L6 Dolby Vision ({l6}) différent du HDR10 ({hdr10})",
+    "eng": "Dolby Vision L6 ({l6}) differs from HDR10 ({hdr10})"
+  },
+  "Les TV Dolby Vision lisent le L6, les TV HDR10 le SEI ou le conteneur.": {
+    "fra": "Les TV Dolby Vision lisent le L6, les TV HDR10 le SEI ou le conteneur.",
+    "eng": "Dolby Vision TVs read L6; HDR10 TVs read the SEI or the container."
+  },
+  "MDCV ({mdcv} nits) différent du L6 ({l6} nits)": {
+    "fra": "MDCV ({mdcv} nits) différent du L6 ({l6} nits)",
+    "eng": "MDCV ({mdcv} nits) differs from L6 ({l6} nits)"
+  },
+  "Niveau Dolby Vision {level} insuffisant (minimum {needed})": {
+    "fra": "Niveau Dolby Vision {level} insuffisant (minimum {needed})",
+    "eng": "Dolby Vision level {level} too low (minimum {needed})"
+  },
+  "FEL vide : résiduel désactivé sur toutes les images": {
+    "fra": "FEL vide : résiduel désactivé sur toutes les images",
+    "eng": "Empty FEL: residual disabled on every frame"
+  },
+  "La couche d'amélioration n'apporte rien de plus qu'un MEL.": {
+    "fra": "La couche d'amélioration n'apporte rien de plus qu'un MEL.",
+    "eng": "The enhancement layer adds nothing over a MEL."
+  },
+  "FEL : résiduel actif sur {share} % des images": {
+    "fra": "FEL : résiduel actif sur {share} % des images",
+    "eng": "FEL: residual active on {share}% of frames"
+  },
+  "Plans HDR10+ alignés sur le RPU ({share} %)": {
+    "fra": "Plans HDR10+ alignés sur le RPU ({share} %)",
+    "eng": "HDR10+ scenes aligned with the RPU ({share}%)"
+  },
+  "Plans HDR10+ indépendants du RPU ({share} % communs)": {
+    "fra": "Plans HDR10+ indépendants du RPU ({share} % communs)",
+    "eng": "HDR10+ scenes independent of the RPU ({share}% shared)"
+  },
+  "Découpages produits par des analyses différentes.": {
+    "fra": "Découpages produits par des analyses différentes.",
+    "eng": "Scene cuts produced by different analyses."
+  },
+  "MaxCLL ({cll} nits) très au-dessus du pic {name} ({peak} nits)": {
+    "fra": "MaxCLL ({cll} nits) très au-dessus du pic {name} ({peak} nits)",
+    "eng": "MaxCLL ({cll} nits) far above the {name} peak ({peak} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL compresse les hautes lumières sans nécessité.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL compresse les hautes lumières sans nécessité.",
+    "eng": "An HDR10 TV that follows MaxCLL compresses highlights needlessly."
+  },
+  "Extraction du RPU Dolby Vision…": {
+    "fra": "Extraction du RPU Dolby Vision…",
+    "eng": "Extracting the Dolby Vision RPU…"
+  },
+  "Analyse du RPU…": {
+    "fra": "Analyse du RPU…",
+    "eng": "Analysing the RPU…"
+  },
+  "Extraction du HDR10+…": {
+    "fra": "Extraction du HDR10+…",
+    "eng": "Extracting HDR10+…"
+  },
+  "Analyse du HDR10+…": {
+    "fra": "Analyse du HDR10+…",
+    "eng": "Analysing HDR10+…"
+  },
+  "RPU Dolby Vision illisible : {error}": {
+    "fra": "RPU Dolby Vision illisible : {error}",
+    "eng": "Unreadable Dolby Vision RPU: {error}"
+  },
+  "HDR10+ illisible : {error}": {
+    "fra": "HDR10+ illisible : {error}",
+    "eng": "Unreadable HDR10+: {error}"
+  },
+  "Aucune donnée de luminance": {
+    "fra": "Aucune donnée de luminance",
+    "eng": "No luminance data"
+  },
+  "image": {
+    "fra": "image",
+    "eng": "frame"
+  },
+  "HDR Studio": {
+    "fra": "HDR Studio",
+    "eng": "HDR Studio"
+  },
+  "Inspecter le HDR d'une vidéo : formats, cohérence des métadonnées, courbes de luminance.": {
+    "fra": "Inspecter le HDR d'une vidéo : formats, cohérence des métadonnées, courbes de luminance.",
+    "eng": "Inspect a video's HDR: formats, metadata consistency, luminance curves."
+  },
+  "Déposer une vidéo ici ou choisir un fichier…": {
+    "fra": "Déposer une vidéo ici ou choisir un fichier…",
+    "eng": "Drop a video here or choose a file…"
+  },
+  "Choisir un fichier": {
+    "fra": "Choisir un fichier",
+    "eng": "Choose a file"
+  },
+  "Lire les métadonnées dynamiques": {
+    "fra": "Lire les métadonnées dynamiques",
+    "eng": "Read dynamic metadata"
+  },
+  "Extrait et analyse le RPU Dolby Vision et le HDR10+ : lecture complète du fichier, sans décodage.": {
+    "fra": "Extrait et analyse le RPU Dolby Vision et le HDR10+ : lecture complète du fichier, sans décodage.",
+    "eng": "Extracts and analyses the Dolby Vision RPU and HDR10+: full file read, no decoding."
+  },
+  "Relire le fichier": {
+    "fra": "Relire le fichier",
+    "eng": "Read the file again"
+  },
+  "Ignore le résultat en cache et relit le fichier.": {
+    "fra": "Ignore le résultat en cache et relit le fichier.",
+    "eng": "Ignores the cached result and reads the file again."
+  },
+  "Vue d'ensemble": {
+    "fra": "Vue d'ensemble",
+    "eng": "Overview"
+  },
+  "Luminance": {
+    "fra": "Luminance",
+    "eng": "Luminance"
+  },
+  "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.": {
+    "fra": "Axe vertical en nits, échelle PQ. Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.",
+    "eng": "Vertical axis in nits, PQ scale. Wheel: zoom; drag: pan; double-click: full view. Dolby L1 is a robust maximum (isolated pixels discarded); HDR10+ MaxScl is a strict maximum."
+  },
+  "Choisir une vidéo": {
+    "fra": "Choisir une vidéo",
+    "eng": "Choose a video"
+  },
+  "Inspection de {name}…": {
+    "fra": "Inspection de {name}…",
+    "eng": "Inspecting {name}…"
+  },
+  "Inspection HDR : {name}": {
+    "fra": "Inspection HDR : {name}",
+    "eng": "HDR inspection: {name}"
+  },
+  "Analyse des métadonnées dynamiques…": {
+    "fra": "Analyse des métadonnées dynamiques…",
+    "eng": "Analysing dynamic metadata…"
+  },
+  "Lecture des métadonnées dynamiques : {name}": {
+    "fra": "Lecture des métadonnées dynamiques : {name}",
+    "eng": "Reading dynamic metadata: {name}"
+  },
+  "Analyse HDR terminée : {count} point(s) à vérifier": {
+    "fra": "Analyse HDR terminée : {count} point(s) à vérifier",
+    "eng": "HDR analysis finished: {count} item(s) to check"
+  },
+  "absent": {
+    "fra": "absent",
+    "eng": "missing"
+  },
+  "absents": {
+    "fra": "absents",
+    "eng": "missing"
+  },
+  "aucune": {
+    "fra": "aucune",
+    "eng": "none"
+  },
+  "non renseigné": {
+    "fra": "non renseigné",
+    "eng": "not set"
+  },
+  "SOURCE": {
+    "fra": "SOURCE",
+    "eng": "SOURCE"
+  },
+  "Fichier vidéo introuvable ou non pris en charge : {name}": {
+    "fra": "Fichier vidéo introuvable ou non pris en charge : {name}",
+    "eng": "Video file not found or not supported: {name}"
+  },
+  "Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste.": {
+    "fra": "Aucune métadonnée dynamique (Dolby Vision, HDR10+) sur cette piste.",
+    "eng": "No dynamic metadata (Dolby Vision, HDR10+) on this track."
+  },
+  "PISTE": {
+    "fra": "PISTE",
+    "eng": "TRACK"
+  },
+  "HDR10 STATIQUE": {
+    "fra": "HDR10 STATIQUE",
+    "eng": "STATIC HDR10"
+  },
+  "CONTRÔLES": {
+    "fra": "CONTRÔLES",
+    "eng": "CHECKS"
+  },
+  "≈ {count} (d'après la durée)": {
+    "fra": "≈ {count} (d'après la durée)",
+    "eng": "≈ {count} (from duration)"
+  },
+  "Résolution": {
+    "fra": "Résolution",
+    "eng": "Resolution"
+  },
+  "Cadence": {
+    "fra": "Cadence",
+    "eng": "Frame rate"
+  },
+  "Images": {
+    "fra": "Images",
+    "eng": "Frames"
+  },
+  "Transfert": {
+    "fra": "Transfert",
+    "eng": "Transfer"
+  },
+  "Primaires": {
+    "fra": "Primaires",
+    "eng": "Primaries"
+  },
+  "Matrice": {
+    "fra": "Matrice",
+    "eng": "Matrix"
+  },
+  "Écran de mastering (MDCV)": {
+    "fra": "Écran de mastering (MDCV)",
+    "eng": "Mastering display (MDCV)"
+  },
+  "Pas de Dolby Vision sur cette piste.": {
+    "fra": "Pas de Dolby Vision sur cette piste.",
+    "eng": "No Dolby Vision on this track."
+  },
+  "Lire les métadonnées dynamiques pour analyser le RPU.": {
+    "fra": "Lire les métadonnées dynamiques pour analyser le RPU.",
+    "eng": "Read dynamic metadata to analyse the RPU."
+  },
+  "résiduel actif sur {share} % des images": {
+    "fra": "résiduel actif sur {share} % des images",
+    "eng": "residual active on {share}% of frames"
+  },
+  "Profil (RPU)": {
+    "fra": "Profil (RPU)",
+    "eng": "Profile (RPU)"
+  },
+  "Couche EL": {
+    "fra": "Couche EL",
+    "eng": "EL layer"
+  },
+  "Version CM": {
+    "fra": "Version CM",
+    "eng": "CM version"
+  },
+  "Plans": {
+    "fra": "Plans",
+    "eng": "Scenes"
+  },
+  "Pic L1 (MaxCLL du RPU)": {
+    "fra": "Pic L1 (MaxCLL du RPU)",
+    "eng": "L1 peak (RPU MaxCLL)"
+  },
+  "Moyenne L1 max. (MaxFALL du RPU)": {
+    "fra": "Moyenne L1 max. (MaxFALL du RPU)",
+    "eng": "Max. L1 average (RPU MaxFALL)"
+  },
+  "Écran de mastering (RPU)": {
+    "fra": "Écran de mastering (RPU)",
+    "eng": "Mastering display (RPU)"
+  },
+  "Trims L2 (écrans cibles)": {
+    "fra": "Trims L2 (écrans cibles)",
+    "eng": "L2 trims (target displays)"
+  },
+  "RPU": {
+    "fra": "RPU",
+    "eng": "RPU"
+  },
+  "ZONES ACTIVES L5": {
+    "fra": "ZONES ACTIVES L5",
+    "eng": "L5 ACTIVE AREAS"
+  },
+  "Pas de HDR10+ sur cette piste.": {
+    "fra": "Pas de HDR10+ sur cette piste.",
+    "eng": "No HDR10+ on this track."
+  },
+  "Lire les métadonnées dynamiques pour analyser le HDR10+.": {
+    "fra": "Lire les métadonnées dynamiques pour analyser le HDR10+.",
+    "eng": "Read dynamic metadata to analyse HDR10+."
+  },
+  "Fenêtres": {
+    "fra": "Fenêtres",
+    "eng": "Windows"
+  },
+  "Écran ciblé (TSDML)": {
+    "fra": "Écran ciblé (TSDML)",
+    "eng": "Targeted display (TSDML)"
+  },
+  "Pic MaxScl": {
+    "fra": "Pic MaxScl",
+    "eng": "MaxScl peak"
+  },
+  "AverageRGB max.": {
+    "fra": "AverageRGB max.",
+    "eng": "Max. AverageRGB"
+  },
+  "Percentile 99,98 % max.": {
+    "fra": "Percentile 99,98 % max.",
+    "eng": "Max. 99.98% percentile"
+  },
+  "Lire les métadonnées dynamiques pour afficher les courbes (Dolby Vision L1, HDR10+).": {
+    "fra": "Lire les métadonnées dynamiques pour afficher les courbes (Dolby Vision L1, HDR10+).",
+    "eng": "Read dynamic metadata to display the curves (Dolby Vision L1, HDR10+)."
+  },
+  "Aucune piste vidéo.": {
+    "fra": "Aucune piste vidéo.",
+    "eng": "No video track."
+  },
+  "Analyse impossible : {error}": {
+    "fra": "Analyse impossible : {error}",
+    "eng": "Analysis failed: {error}"
+  },
+  "Analyse HDR impossible : {error}": {
+    "fra": "Analyse HDR impossible : {error}",
+    "eng": "HDR analysis failed: {error}"
+  },
+  "Analyse annulée.": {
+    "fra": "Analyse annulée.",
+    "eng": "Analysis cancelled."
+  },
+  "Métadonnées dynamiques : résultat en cache.": {
+    "fra": "Métadonnées dynamiques : résultat en cache.",
+    "eng": "Dynamic metadata: cached result."
+  },
+  "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo (Conteneur, Encodage) puis « Inspecter le HDR… ».": {
+    "fra": "Déposez une vidéo, choisissez un fichier, ou faites un clic droit sur une piste vidéo (Conteneur, Encodage) puis « Inspecter le HDR… ».",
+    "eng": "Drop a video, choose a file, or right-click a video track (Container, Encoding) and pick “Inspect HDR…”."
+  },
+  "Niveau": {
+    "fra": "Niveau",
+    "eng": "Level"
+  },
+  "Couches": {
+    "fra": "Couches",
+    "eng": "Layers"
+  },
+  "DOLBY VISION (CONTENEUR)": {
+    "fra": "DOLBY VISION (CONTENEUR)",
+    "eng": "DOLBY VISION (CONTAINER)"
+  },
+  "Contrôles des en-têtes seulement. « Lire les métadonnées dynamiques » vérifie aussi le RPU, le HDR10+ et leur cohérence.": {
+    "fra": "Contrôles des en-têtes seulement. « Lire les métadonnées dynamiques » vérifie aussi le RPU, le HDR10+ et leur cohérence.",
+    "eng": "Header checks only. “Read dynamic metadata” also checks the RPU, HDR10+ and their consistency."
+  },
+  "Aucune remarque.": {
+    "fra": "Aucune remarque.",
+    "eng": "Nothing to report."
+  },
+  "{count} (durée min. {min} s, médiane {median} s, max. {max} s)": {
+    "fra": "{count} (durée min. {min} s, médiane {median} s, max. {max} s)",
+    "eng": "{count} (min. {min} s, median {median} s, max. {max} s)"
+  },
+  "Trims L8 (index d'écran)": {
+    "fra": "Trims L8 (index d'écran)",
+    "eng": "L8 trims (display index)"
+  },
+  "Écrans L10": {
+    "fra": "Écrans L10",
+    "eng": "L10 displays"
+  },
+  "Primaires L9": {
+    "fra": "Primaires L9",
+    "eng": "L9 primaries"
+  },
+  "Type de contenu L11": {
+    "fra": "Type de contenu L11",
+    "eng": "L11 content type"
+  },
+  "L6 (HDR10 DU RPU)": {
+    "fra": "L6 (HDR10 DU RPU)",
+    "eng": "L6 (RPU HDR10)"
+  },
+  "L1 max": {
+    "fra": "L1 max",
+    "eng": "L1 max"
+  },
+  "L1 moyenne": {
+    "fra": "L1 moyenne",
+    "eng": "L1 average"
+  },
+  "MaxScl HDR10+": {
+    "fra": "MaxScl HDR10+",
+    "eng": "HDR10+ MaxScl"
+  },
+  "AverageRGB HDR10+": {
+    "fra": "AverageRGB HDR10+",
+    "eng": "HDR10+ AverageRGB"
+  },
+  "Métadonnées dynamiques lues.": {
+    "fra": "Métadonnées dynamiques lues.",
+    "eng": "Dynamic metadata read."
+  },
+  "Début": {
+    "fra": "Début",
+    "eng": "Start"
+  },
+  "Durée": {
+    "fra": "Durée",
+    "eng": "Duration"
+  },
+  "Gauche / droite / haut / bas": {
+    "fra": "Gauche / droite / haut / bas",
+    "eng": "Left / right / top / bottom"
+  },
+  "Image active": {
+    "fra": "Image active",
+    "eng": "Active picture"
+  },
+  " (courbe de Bézier)": {
+    "fra": " (courbe de Bézier)",
+    "eng": " (Bézier curve)"
+  },
+  "MaxCLL": {
+    "fra": "MaxCLL",
+    "eng": "MaxCLL"
+  },
+  "MDCV": {
+    "fra": "MDCV",
+    "eng": "MDCV"
+  },
+  "Aucune métadonnée dynamique sur cette piste.": {
+    "fra": "Aucune métadonnée dynamique sur cette piste.",
+    "eng": "No dynamic metadata on this track."
+  },
+  "Mastering (nits)": {
+    "fra": "Mastering (nits)",
+    "eng": "Mastering (nits)"
+  },
+  "Inspecter le HDR…": {
+    "fra": "Inspecter le HDR…",
+    "eng": "Inspect HDR…"
+  },
+  "Défaut": {
+    "fra": "Défaut",
+    "eng": "Default"
+  },
+  "Cinéma": {
+    "fra": "Cinéma",
+    "eng": "Cinema"
+  },
+  "Jeu": {
+    "fra": "Jeu",
+    "eng": "Game"
+  },
+  "Sport": {
+    "fra": "Sport",
+    "eng": "Sports"
+  },
+  "Contenu utilisateur": {
+    "fra": "Contenu utilisateur",
+    "eng": "User-generated content"
+  },
+  "MaxScl à 10 000 nits sur {frames} images ({scenes} plan(s), dès {when})": {
+    "fra": "MaxScl à 10 000 nits sur {frames} images ({scenes} plan(s), dès {when})",
+    "eng": "MaxScl at 10,000 nits on {frames} frames ({scenes} scene(s), from {when})"
+  },
+  "Valeur maximale du format : plan mal analysé (générique, logo, mire) ; écarté de la comparaison avec la MaxCLL.": {
+    "fra": "Valeur maximale du format : plan mal analysé (générique, logo, mire) ; écarté de la comparaison avec la MaxCLL.",
+    "eng": "Format maximum: badly analysed scene (credits, logo, test pattern); left out of the MaxCLL comparison."
+  },
+  "Pic MaxScl hors saturation": {
+    "fra": "Pic MaxScl hors saturation",
+    "eng": "MaxScl peak excluding saturation"
+  },
+  "Images à 10 000 nits": {
+    "fra": "Images à 10 000 nits",
+    "eng": "Frames at 10,000 nits"
+  },
+  "MaxCLL/MaxFALL invalides : MaxFALL doit rester sous MaxCLL.": {
+    "fra": "MaxCLL/MaxFALL invalides : MaxFALL doit rester sous MaxCLL.",
+    "eng": "Invalid MaxCLL/MaxFALL: MaxFALL must stay below MaxCLL."
+  },
+  "Espace insuffisant dans le dossier de travail : {needed} Go nécessaires.": {
+    "fra": "Espace insuffisant dans le dossier de travail : {needed} Go nécessaires.",
+    "eng": "Not enough space in the work folder: {needed} GB needed."
+  },
+  "Espace insuffisant à côté de la sortie : {needed} Go nécessaires.": {
+    "fra": "Espace insuffisant à côté de la sortie : {needed} Go nécessaires.",
+    "eng": "Not enough space next to the output: {needed} GB needed."
+  },
+  "Aucune modification demandée.": {
+    "fra": "Aucune modification demandée.",
+    "eng": "No change requested."
+  },
+  "La sortie doit être un autre fichier que la source.": {
+    "fra": "La sortie doit être un autre fichier que la source.",
+    "eng": "The output must be a different file from the source."
+  },
+  "Correction réservée aux fichiers MKV et HEVC bruts.": {
+    "fra": "Correction réservée aux fichiers MKV et HEVC bruts.",
+    "eng": "Correction is limited to MKV files and raw HEVC."
+  },
+  "JSON HDR10+ invalide (image {frame}).": {
+    "fra": "JSON HDR10+ invalide (image {frame}).",
+    "eng": "Invalid HDR10+ JSON (frame {frame})."
+  },
+  "Écriture du fichier corrigé…": {
+    "fra": "Écriture du fichier corrigé…",
+    "eng": "Writing the corrected file…"
+  },
+  "Extraction du flux vidéo…": {
+    "fra": "Extraction du flux vidéo…",
+    "eng": "Extracting the video stream…"
+  },
+  "Édition du RPU Dolby Vision…": {
+    "fra": "Édition du RPU Dolby Vision…",
+    "eng": "Editing the Dolby Vision RPU…"
+  },
+  "Édition du HDR10+…": {
+    "fra": "Édition du HDR10+…",
+    "eng": "Editing HDR10+…"
+  },
+  "MaxCLL/MaxFALL du flux…": {
+    "fra": "MaxCLL/MaxFALL du flux…",
+    "eng": "Stream MaxCLL/MaxFALL…"
+  },
+  "SEI MaxCLL/MaxFALL non écrit dans le flux.": {
+    "fra": "SEI MaxCLL/MaxFALL non écrit dans le flux.",
+    "eng": "MaxCLL/MaxFALL SEI not written to the stream."
+  },
+  "Écrêtage : {time} % du temps ({scenes} plan(s)), jusqu'à +{ev} EV au-delà de {level} nits": {
+    "fra": "Écrêtage : {time} % du temps ({scenes} plan(s)), jusqu'à +{ev} EV au-delà de {level} nits",
+    "eng": "Clipping: {time}% of the time ({scenes} scene(s)), up to +{ev} EV above {level} nits"
+  },
+  "Aucun écrêtage": {
+    "fra": "Aucun écrêtage",
+    "eng": "No clipping"
+  },
+  "Hautes lumières assombries de {median} EV (médiane, p90 {p90} EV) sur {time} % du temps": {
+    "fra": "Hautes lumières assombries de {median} EV (médiane, p90 {p90} EV) sur {time} % du temps",
+    "eng": "Highlights darkened by {median} EV (median, p90 {p90} EV) for {time}% of the time"
+  },
+  "Pas d'assombrissement notable des hautes lumières": {
+    "fra": "Pas d'assombrissement notable des hautes lumières",
+    "eng": "No noticeable highlight darkening"
+  },
+  "Courbe adaptée à chaque image": {
+    "fra": "Courbe adaptée à chaque image",
+    "eng": "Curve adapted to each frame"
+  },
+  " ; {pixels} % des pixels du film": {
+    "fra": " ; {pixels} % des pixels du film",
+    "eng": "; {pixels}% of the film pixels"
+  },
+  "Aucune compression : écran au moins aussi lumineux que le pic annoncé": {
+    "fra": "Aucune compression : écran au moins aussi lumineux que le pic annoncé",
+    "eng": "No compression: display at least as bright as the declared peak"
+  },
+  "Compression des hautes lumières à partir de {knee} nits (pic supposé {peak} nits)": {
+    "fra": "Compression des hautes lumières à partir de {knee} nits (pic supposé {peak} nits)",
+    "eng": "Highlight compression from {knee} nits (assumed peak {peak} nits)"
+  },
+  "Valeurs du fichier": {
+    "fra": "Valeurs du fichier",
+    "eng": "File values"
+  },
+  "Valeurs proposées": {
+    "fra": "Valeurs proposées",
+    "eng": "Suggested values"
+  },
+  "Mesurer l'image": {
+    "fra": "Mesurer l'image",
+    "eng": "Measure the picture"
+  },
+  "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte.": {
+    "fra": "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte.",
+    "eng": "Exact measurement of every frame on the GPU (mvo-fel extension 0.4.0 or later): real MaxCLL/MaxFALL, histograms, exact simulation."
+  },
+  "Appliquer au panneau Encodage": {
+    "fra": "Appliquer au panneau Encodage",
+    "eng": "Apply to the Encoding panel"
+  },
+  "Préparer la correction du fichier…": {
+    "fra": "Préparer la correction du fichier…",
+    "eng": "Prepare the file correction…"
+  },
+  "Niveaux : {source}.": {
+    "fra": "Niveaux : {source}.",
+    "eng": "Levels: {source}."
+  },
+  "Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. La MaxFALL est rarement utilisée par les téléviseurs.": {
+    "fra": "Modèle de référence (BT.2390), pas le comportement exact d'un téléviseur donné. La MaxFALL est rarement utilisée par les téléviseurs.",
+    "eng": "Reference model (BT.2390), not the exact behaviour of a given TV. MaxFALL is rarely used by TVs."
+  },
+  "MÉTADONNÉES STATIQUES ET TONE MAPPING HDR10": {
+    "fra": "MÉTADONNÉES STATIQUES ET TONE MAPPING HDR10",
+    "eng": "STATIC METADATA AND HDR10 TONE MAPPING"
+  },
+  "Pic de l'écran": {
+    "fra": "Pic de l'écran",
+    "eng": "Display peak"
+  },
+  "Téléviseur": {
+    "fra": "Téléviseur",
+    "eng": "TV"
+  },
+  "{cll} / {fall} d'après : {source}": {
+    "fra": "{cll} / {fall} d'après : {source}",
+    "eng": "{cll} / {fall} from: {source}"
+  },
+  "Mesurer à nouveau": {
+    "fra": "Mesurer à nouveau",
+    "eng": "Measure again"
+  },
+  "Lire les métadonnées dynamiques ou mesurer l'image pour afficher les courbes.": {
+    "fra": "Lire les métadonnées dynamiques ou mesurer l'image pour afficher les courbes.",
+    "eng": "Read dynamic metadata or measure the picture to display the curves."
+  },
+  "Écran": {
+    "fra": "Écran",
+    "eng": "Display"
+  },
+  "Valeurs du fichier affichées.": {
+    "fra": "Valeurs du fichier affichées.",
+    "eng": "File values shown."
+  },
+  "En lecture Dolby Vision ou HDR10+, la TV suit les métadonnées dynamiques : MaxCLL/MaxFALL ne servent qu'en lecture HDR10.": {
+    "fra": "En lecture Dolby Vision ou HDR10+, la TV suit les métadonnées dynamiques : MaxCLL/MaxFALL ne servent qu'en lecture HDR10.",
+    "eng": "In Dolby Vision or HDR10+ playback the TV follows the dynamic metadata: MaxCLL/MaxFALL only matter in HDR10 playback."
+  },
+  "Pic mesuré": {
+    "fra": "Pic mesuré",
+    "eng": "Measured peak"
+  },
+  "Moyenne mesurée": {
+    "fra": "Moyenne mesurée",
+    "eng": "Measured average"
+  },
+  "Affiché par la TV": {
+    "fra": "Affiché par la TV",
+    "eng": "Shown by the TV"
+  },
+  "MaxCLL du fichier": {
+    "fra": "MaxCLL du fichier",
+    "eng": "File MaxCLL"
+  },
+  "MaxCLL choisie": {
+    "fra": "MaxCLL choisie",
+    "eng": "Chosen MaxCLL"
+  },
+  "Valeurs du fichier ({cll}/{fall}) : {clip} ; {dark}.": {
+    "fra": "Valeurs du fichier ({cll}/{fall}) : {clip} ; {dark}.",
+    "eng": "File values ({cll}/{fall}): {clip}; {dark}."
+  },
+  "HDR10 STATIQUE (SEI ET CONTENEUR)": {
+    "fra": "HDR10 STATIQUE (SEI ET CONTENEUR)",
+    "eng": "STATIC HDR10 (SEI AND CONTAINER)"
+  },
+  "Écrire MaxCLL/MaxFALL": {
+    "fra": "Écrire MaxCLL/MaxFALL",
+    "eng": "Write MaxCLL/MaxFALL"
+  },
+  "Modifier dans Luminance": {
+    "fra": "Modifier dans Luminance",
+    "eng": "Edit in Luminance"
+  },
+  "DOLBY VISION (RPU)": {
+    "fra": "DOLBY VISION (RPU)",
+    "eng": "DOLBY VISION (RPU)"
+  },
+  "L6 : HDR10 porté par le RPU": {
+    "fra": "L6 : HDR10 porté par le RPU",
+    "eng": "L6: HDR10 carried by the RPU"
+  },
+  "Reprendre MaxCLL/MaxFALL choisis": {
+    "fra": "Reprendre MaxCLL/MaxFALL choisis",
+    "eng": "Use the chosen MaxCLL/MaxFALL"
+  },
+  "L5 : zone active de toutes les images": {
+    "fra": "L5 : zone active de toutes les images",
+    "eng": "L5: active area of every frame"
+  },
+  "L11 : type de contenu": {
+    "fra": "L11 : type de contenu",
+    "eng": "L11: content type"
+  },
+  "Mode de référence": {
+    "fra": "Mode de référence",
+    "eng": "Reference mode"
+  },
+  "Écran de mastering du RPU": {
+    "fra": "Écran de mastering du RPU",
+    "eng": "RPU mastering display"
+  },
+  "Retirer les métadonnées CM v4.0 (RPU en CM v2.9)": {
+    "fra": "Retirer les métadonnées CM v4.0 (RPU en CM v2.9)",
+    "eng": "Remove CM v4.0 metadata (CM v2.9 RPU)"
+  },
+  "Retirer le HDR10+": {
+    "fra": "Retirer le HDR10+",
+    "eng": "Remove HDR10+"
+  },
+  "Retirer la courbe de Bézier (profil A)": {
+    "fra": "Retirer la courbe de Bézier (profil A)",
+    "eng": "Remove the Bézier curve (profile A)"
+  },
+  "Plafonner MaxScl, AverageRGB et percentiles": {
+    "fra": "Plafonner MaxScl, AverageRGB et percentiles",
+    "eng": "Cap MaxScl, AverageRGB and percentiles"
+  },
+  "SORTIE": {
+    "fra": "SORTIE",
+    "eng": "OUTPUT"
+  },
+  "Choisir le fichier de sortie": {
+    "fra": "Choisir le fichier de sortie",
+    "eng": "Choose the output file"
+  },
+  "Écrire le fichier corrigé": {
+    "fra": "Écrire le fichier corrigé",
+    "eng": "Write the corrected file"
+  },
+  "Fichier corrigé": {
+    "fra": "Fichier corrigé",
+    "eng": "Corrected file"
+  },
+  "Matroska (*.mkv);;HEVC (*.hevc *.h265)": {
+    "fra": "Matroska (*.mkv);;HEVC (*.hevc *.h265)",
+    "eng": "Matroska (*.mkv);;HEVC (*.hevc *.h265)"
+  },
+  "Valeurs choisies dans l'onglet Luminance : {cll} / {fall} nits": {
+    "fra": "Valeurs choisies dans l'onglet Luminance : {cll} / {fall} nits",
+    "eng": "Values chosen in the Luminance tab: {cll} / {fall} nits"
+  },
+  "Aucune modification cochée.": {
+    "fra": "Aucune modification cochée.",
+    "eng": "No change selected."
+  },
+  "Les corrections réécrivent le fichier sans réencoder l'image : flux vidéo extrait, métadonnées corrigées par dovi_tool et hdr10plus_tool, puis replacé dans une copie du MKV (autres pistes, chapitres et pièces jointes conservés). La source n'est jamais modifiée.": {
+    "fra": "Les corrections réécrivent le fichier sans réencoder l'image : flux vidéo extrait, métadonnées corrigées par dovi_tool et hdr10plus_tool, puis replacé dans une copie du MKV (autres pistes, chapitres et pièces jointes conservés). La source n'est jamais modifiée.",
+    "eng": "Corrections rewrite the file without re-encoding the picture: the video stream is extracted, its metadata corrected by dovi_tool and hdr10plus_tool, then put back into a copy of the MKV (other tracks, chapters and attachments kept). The source is never modified."
+  },
+  "Lire les métadonnées dynamiques pour préremplir les valeurs actuelles du RPU.": {
+    "fra": "Lire les métadonnées dynamiques pour préremplir les valeurs actuelles du RPU.",
+    "eng": "Read dynamic metadata to prefill the current RPU values."
+  },
+  "MaxCLL/MaxFALL {cll}/{fall}": {
+    "fra": "MaxCLL/MaxFALL {cll}/{fall}",
+    "eng": "MaxCLL/MaxFALL {cll}/{fall}"
+  },
+  "Choisir le fichier de sortie.": {
+    "fra": "Choisir le fichier de sortie.",
+    "eng": "Choose the output file."
+  },
+  "écran de mastering du RPU": {
+    "fra": "écran de mastering du RPU",
+    "eng": "RPU mastering display"
+  },
+  "HDR10+ retiré": {
+    "fra": "HDR10+ retiré",
+    "eng": "HDR10+ removed"
+  },
+  "Modifications : {changes}.": {
+    "fra": "Modifications : {changes}.",
+    "eng": "Changes: {changes}."
+  },
+  "profil A": {
+    "fra": "profil A",
+    "eng": "profile A"
+  },
+  "plafond HDR10+": {
+    "fra": "plafond HDR10+",
+    "eng": "HDR10+ cap"
+  },
+  "Inspecter le fichier corrigé": {
+    "fra": "Inspecter le fichier corrigé",
+    "eng": "Inspect the corrected file"
+  },
+  "Édition": {
+    "fra": "Édition",
+    "eng": "Editing"
+  },
+  "Mesure de chaque image…": {
+    "fra": "Mesure de chaque image…",
+    "eng": "Measuring every frame…"
+  },
+  "Mesure de l'image : {name}": {
+    "fra": "Mesure de l'image : {name}",
+    "eng": "Picture measurement: {name}"
+  },
+  "Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.": {
+    "fra": "Image mesurée : MaxCLL {cll}, MaxFALL {fall} nits.",
+    "eng": "Picture measured: MaxCLL {cll}, MaxFALL {fall} nits."
+  },
+  "Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.": {
+    "fra": "Mesure terminée : {frames} images, MaxCLL/MaxFALL {cll}/{fall}.",
+    "eng": "Measurement finished: {frames} frames, MaxCLL/MaxFALL {cll}/{fall}."
+  },
+  "Correction du fichier…": {
+    "fra": "Correction du fichier…",
+    "eng": "Correcting the file…"
+  },
+  "Correction des métadonnées : {source} → {output}": {
+    "fra": "Correction des métadonnées : {source} → {output}",
+    "eng": "Metadata correction: {source} → {output}"
+  },
+  "Fichier corrigé écrit : {name}": {
+    "fra": "Fichier corrigé écrit : {name}",
+    "eng": "Corrected file written: {name}"
+  },
+  "Fichier corrigé écrit : {path}": {
+    "fra": "Fichier corrigé écrit : {path}",
+    "eng": "Corrected file written: {path}"
+  },
+  "Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+).": {
+    "fra": "Mesure réservée aux pistes HEVC PQ (HDR10, Dolby Vision, HDR10+).",
+    "eng": "Measurement is limited to HEVC PQ tracks (HDR10, Dolby Vision, HDR10+)."
+  },
+  "Profil 5 : aucune couche HDR10 à mesurer.": {
+    "fra": "Profil 5 : aucune couche HDR10 à mesurer.",
+    "eng": "Profile 5: no HDR10 layer to measure."
+  },
+  "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).": {
+    "fra": "Mesure de l'image : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).",
+    "eng": "Picture measurement: mvo-fel extension 0.4.0 or later required (Extensions page)."
+  },
+  "Mesure impossible : {error}": {
+    "fra": "Mesure impossible : {error}",
+    "eng": "Measurement failed: {error}"
+  },
+  "Mesure de l'image : {backend}": {
+    "fra": "Mesure de l'image : {backend}",
+    "eng": "Picture measurement: {backend}"
+  },
+  "Mesure annulée.": {
+    "fra": "Mesure annulée.",
+    "eng": "Measurement cancelled."
+  },
+  "Mesure de l'image impossible : {error}": {
+    "fra": "Mesure de l'image impossible : {error}",
+    "eng": "Picture measurement failed: {error}"
+  },
+  "Correction impossible : {error}": {
+    "fra": "Correction impossible : {error}",
+    "eng": "Correction failed: {error}"
+  },
+  "Correction annulée.": {
+    "fra": "Correction annulée.",
+    "eng": "Correction cancelled."
+  },
+  "Piste absente du panneau Encodage (ajouter la source dans Conteneur) ou codec sans métadonnées HDR10 modifiables.": {
+    "fra": "Piste absente du panneau Encodage (ajouter la source dans Conteneur) ou codec sans métadonnées HDR10 modifiables.",
+    "eng": "Track not in the Encoding panel (add the source in Container) or codec without editable HDR10 metadata."
+  },
+  "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.": {
+    "fra": "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.",
+    "eng": "MaxCLL/MaxFALL {cll}/{fall} applied to the Encoding panel."
+  },
+  "mesure de l'image (exacte)": {
+    "fra": "mesure de l'image (exacte)",
+    "eng": "picture measurement (exact)"
+  },
+  "MaxScl HDR10+ (valeurs saturées écartées)": {
+    "fra": "MaxScl HDR10+ (valeurs saturées écartées)",
+    "eng": "HDR10+ MaxScl (saturated values left out)"
+  },
+  "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact": {
+    "fra": "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact",
+    "eng": "Dolby Vision L1: robust peak, clipping underestimated; measure the picture for an exact result"
+  },
+  "TV suivant la MaxCLL (BT.2390)": {
+    "fra": "TV suivant la MaxCLL (BT.2390)",
+    "eng": "TV following MaxCLL (BT.2390)"
+  },
+  "TV suivant le MDCV seul": {
+    "fra": "TV suivant le MDCV seul",
+    "eng": "TV following the MDCV only"
+  },
+  "TV à analyse dynamique (référence)": {
+    "fra": "TV à analyse dynamique (référence)",
+    "eng": "TV with dynamic analysis (reference)"
+  },
+  "Mastering max.": {
+    "fra": "Mastering max.",
+    "eng": "Mastering max."
+  },
+  "min.": {
+    "fra": "min.",
+    "eng": "min."
+  },
+  "max.": {
+    "fra": "max.",
+    "eng": "max."
+  },
+  "Gauche": {
+    "fra": "Gauche",
+    "eng": "Left"
+  },
+  "Droite": {
+    "fra": "Droite",
+    "eng": "Right"
+  },
+  "Haut": {
+    "fra": "Haut",
+    "eng": "Top"
+  },
+  "Bas": {
+    "fra": "Bas",
+    "eng": "Bottom"
+  },
+  "Point blanc": {
+    "fra": "Point blanc",
+    "eng": "White point"
+  },
+  "Luminosité maximale de mon écran (nits)": {
+    "fra": "Luminosité maximale de mon écran (nits)",
+    "eng": "Peak brightness of my display (nits)"
+  },
+  "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.": {
+    "fra": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.",
+    "eng": "Peak luminance of the HDR TV or monitor: HDR Studio simulates its tone mapping (clipping, highlight compression) for the chosen MaxCLL/MaxFALL."
+  },
+  "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) below the measured value ({measured} nits)"
+  },
+  "MaxCLL déclarée ({cll}) très au-dessus de la valeur mesurée ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) très au-dessus de la valeur mesurée ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) far above the measured value ({measured} nits)"
+  },
+  "MaxCLL déclarée ({cll}) cohérente avec la mesure ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) cohérente avec la mesure ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) consistent with the measurement ({measured} nits)"
+  },
+  "MaxFALL déclarée ({fall}) différente de la mesure ({measured} nits)": {
+    "fra": "MaxFALL déclarée ({fall}) différente de la mesure ({measured} nits)",
+    "eng": "Declared MaxFALL ({fall}) differs from the measurement ({measured} nits)"
+  },
+  "L6 sans MaxCLL/MaxFALL (0) ; HDR10 statique {hdr10}": {
+    "fra": "L6 sans MaxCLL/MaxFALL (0) ; HDR10 statique {hdr10}",
+    "eng": "L6 without MaxCLL/MaxFALL (0); static HDR10 {hdr10}"
+  },
+  "Valeurs reportables dans le L6 depuis l'onglet Édition.": {
+    "fra": "Valeurs reportables dans le L6 depuis l'onglet Édition.",
+    "eng": "Values can be copied into L6 from the Editing tab."
+  },
+  "Mesurés sur l'image": {
+    "fra": "Mesurés sur l'image",
+    "eng": "Measured on the picture"
+  },
+  "Intégrer le FEL : inutile": {
+    "fra": "Intégrer le FEL : inutile",
+    "eng": "Baking the FEL: not useful"
+  },
+  "Apport négligeable : ce FEL se comporte comme un MEL.": {
+    "fra": "Apport négligeable : ce FEL se comporte comme un MEL.",
+    "eng": "Negligible contribution: this FEL behaves like a MEL."
+  },
+  "Intégrer le FEL : utile": {
+    "fra": "Intégrer le FEL : utile",
+    "eng": "Baking the FEL: useful"
+  },
+  "Apport fort : {categories}.": {
+    "fra": "Apport fort : {categories}.",
+    "eng": "Strong contribution: {categories}."
+  },
+  "Intégrer le FEL : utile si le débit le permet": {
+    "fra": "Intégrer le FEL : utile si le débit le permet",
+    "eng": "Baking the FEL: useful if the bitrate allows"
+  },
+  "Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.": {
+    "fra": "Apport fort en détail fin ({categories}) ; tester la survie à l'encodage.",
+    "eng": "Strong fine-detail contribution ({categories}); test how it survives encoding."
+  },
+  "Intégrer le FEL : apport modéré": {
+    "fra": "Intégrer le FEL : apport modéré",
+    "eng": "Baking the FEL: moderate contribution"
+  },
+  "Apport moyen : {categories}.": {
+    "fra": "Apport moyen : {categories}.",
+    "eng": "Medium contribution: {categories}."
+  },
+  "Intégrer le FEL : utile seulement à haut débit": {
+    "fra": "Intégrer le FEL : utile seulement à haut débit",
+    "eng": "Baking the FEL: useful only at a high bitrate"
+  },
+  "Apport de détail fin, à {kept} % conservé à {bitrate} kbit/s ({encoder}).": {
+    "fra": "Apport de détail fin, à {kept} % conservé à {bitrate} kbit/s ({encoder}).",
+    "eng": "Fine-detail contribution, {kept}% kept at {bitrate} kbit/s ({encoder})."
+  },
+  "Couche {layer} : images manquantes à {time} s.": {
+    "fra": "Couche {layer} : images manquantes à {time} s.",
+    "eng": "Layer {layer}: missing frames at {time} s."
+  },
+  "Analyser l'apport du FEL": {
+    "fra": "Analyser l'apport du FEL",
+    "eng": "Analyse the FEL contribution"
+  },
+  "COUCHE D'AMÉLIORATION": {
+    "fra": "COUCHE D'AMÉLIORATION",
+    "eng": "ENHANCEMENT LAYER"
+  },
+  "APPORT PAR CATÉGORIE": {
+    "fra": "APPORT PAR CATÉGORIE",
+    "eng": "CONTRIBUTION BY CATEGORY"
+  },
+  "Tester la survie": {
+    "fra": "Tester la survie",
+    "eng": "Test survival"
+  },
+  "Encode une seconde du moment le plus détaillé au débit choisi puis mesure la part de l'apport du FEL conservée.": {
+    "fra": "Encode une seconde du moment le plus détaillé au débit choisi puis mesure la part de l'apport du FEL conservée.",
+    "eng": "Encodes one second of the most detailed moment at the chosen bitrate, then measures how much of the FEL contribution is kept."
+  },
+  "SURVIE À L'ENCODAGE": {
+    "fra": "SURVIE À L'ENCODAGE",
+    "eng": "SURVIVAL THROUGH ENCODING"
+  },
+  "MOMENTS LES PLUS MARQUÉS": {
+    "fra": "MOMENTS LES PLUS MARQUÉS",
+    "eng": "STRONGEST MOMENTS"
+  },
+  "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Niveaux faible / moyen / fort exprimés en seuils de visibilité (JND).": {
+    "fra": "Compare l'image reconstruite avec le FEL à la couche de base passée par les courbes du RPU sans résiduel (ce qu'affiche une TV Dolby Vision avec la version P8.1 sans FEL), sur des images réparties dans le film. Niveaux faible / moyen / fort exprimés en seuils de visibilité (JND).",
+    "eng": "Compares the picture reconstructed with the FEL to the base layer mapped by the RPU curves without residual (what a Dolby Vision TV shows with the P8.1 version without FEL), on frames spread through the film. Weak / medium / strong levels expressed in visibility thresholds (JND)."
+  },
+  "Catégorie": {
+    "fra": "Catégorie",
+    "eng": "Category"
+  },
+  "Médiane": {
+    "fra": "Médiane",
+    "eng": "Median"
+  },
+  "p90": {
+    "fra": "p90",
+    "eng": "p90"
+  },
+  "{count} instants mesurés.": {
+    "fra": "{count} instants mesurés.",
+    "eng": "{count} moments measured."
+  },
+  "{time} · indice {score}": {
+    "fra": "{time} · indice {score}",
+    "eng": "{time} · score {score}"
+  },
+  "Sans FEL (P8.1)": {
+    "fra": "Sans FEL (P8.1)",
+    "eng": "Without FEL (P8.1)"
+  },
+  "Avec FEL": {
+    "fra": "Avec FEL",
+    "eng": "With FEL"
+  },
+  "Écart (16 codes = jaune)": {
+    "fra": "Écart (16 codes = jaune)",
+    "eng": "Difference (16 codes = yellow)"
+  },
+  "Aucune couche d'amélioration (EL) : le FEL Analyzer concerne les sources Dolby Vision profil 7.": {
+    "fra": "Aucune couche d'amélioration (EL) : le FEL Analyzer concerne les sources Dolby Vision profil 7.",
+    "eng": "No enhancement layer (EL): the FEL Analyzer applies to Dolby Vision profile 7 sources."
+  },
+  "Couche sans résiduel (MEL ou FEL vide) : l'image reconstruite est celle de la lecture P8.1, le FEL n'apporte rien à l'image.": {
+    "fra": "Couche sans résiduel (MEL ou FEL vide) : l'image reconstruite est celle de la lecture P8.1, le FEL n'apporte rien à l'image.",
+    "eng": "Layer without residual (MEL or empty FEL): the reconstructed picture is the P8.1 playback picture; the FEL adds nothing to the picture."
+  },
+  "Lancer l'analyse : relevé des couches puis comparaison image par image (extension mvo-fel 0.4.0 ou plus récente).": {
+    "fra": "Lancer l'analyse : relevé des couches puis comparaison image par image (extension mvo-fel 0.4.0 ou plus récente).",
+    "eng": "Run the analysis: layer survey, then frame-by-frame comparison (mvo-fel extension 0.4.0 or later)."
+  },
+  "{encoder} à {bitrate} Mbit/s : ton conservé à {tone} %, détail à {detail} % (erreur d'encodage {error} codes RMS pour un apport de {contribution} codes RMS).": {
+    "fra": "{encoder} à {bitrate} Mbit/s : ton conservé à {tone} %, détail à {detail} % (erreur d'encodage {error} codes RMS pour un apport de {contribution} codes RMS).",
+    "eng": "{encoder} at {bitrate} Mbit/s: tone kept at {tone}%, detail at {detail}% (encoding error {error} RMS codes for a contribution of {contribution} RMS codes)."
+  },
+  "Aucun moment mesuré.": {
+    "fra": "Aucun moment mesuré.",
+    "eng": "No moment measured."
+  },
+  "lire les métadonnées dynamiques pour le préciser": {
+    "fra": "lire les métadonnées dynamiques pour le préciser",
+    "eng": "read dynamic metadata to identify it"
+  },
+  "Débit de l'EL": {
+    "fra": "Débit de l'EL",
+    "eng": "EL bitrate"
+  },
+  "{rate} Mbit/s ({share} % du flux vidéo)": {
+    "fra": "{rate} Mbit/s ({share} % du flux vidéo)",
+    "eng": "{rate} Mbit/s ({share}% of the video stream)"
+  },
+  "Débit de la BL": {
+    "fra": "Débit de la BL",
+    "eng": "BL bitrate"
+  },
+  "vide (résiduel désactivé partout)": {
+    "fra": "vide (résiduel désactivé partout)",
+    "eng": "empty (residual disabled everywhere)"
+  },
+  "Résolution de l'EL": {
+    "fra": "Résolution de l'EL",
+    "eng": "EL resolution"
+  },
+  "FEL": {
+    "fra": "FEL",
+    "eng": "FEL"
+  },
+  "Analyse de l'apport du FEL…": {
+    "fra": "Analyse de l'apport du FEL…",
+    "eng": "Analysing the FEL contribution…"
+  },
+  "FEL Analyzer : {name}": {
+    "fra": "FEL Analyzer : {name}",
+    "eng": "FEL Analyzer: {name}"
+  },
+  "Test de survie à l'encodage…": {
+    "fra": "Test de survie à l'encodage…",
+    "eng": "Encoding survival test…"
+  },
+  "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).": {
+    "fra": "FEL Analyzer : extension mvo-fel 0.4.0 ou plus récente requise (page Extensions).",
+    "eng": "FEL Analyzer: mvo-fel extension 0.4.0 or later required (Extensions page)."
+  },
+  "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU.": {
+    "fra": "Lire d'abord les métadonnées dynamiques : le type de couche (FEL, MEL) vient du RPU.",
+    "eng": "Read dynamic metadata first: the layer type (FEL, MEL) comes from the RPU."
+  },
+  "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.": {
+    "fra": "{kind} : aucun résiduel, l'image est identique à la lecture P8.1 ; rien à mesurer.",
+    "eng": "{kind}: no residual, the picture is identical to P8.1 playback; nothing to measure."
+  },
+  "FEL Analyzer impossible : {error}": {
+    "fra": "FEL Analyzer impossible : {error}",
+    "eng": "FEL Analyzer failed: {error}"
+  },
+  "Comparaison avec et sans FEL…": {
+    "fra": "Comparaison avec et sans FEL…",
+    "eng": "Comparing with and without FEL…"
+  },
+  "Capture des images…": {
+    "fra": "Capture des images…",
+    "eng": "Capturing frames…"
+  },
+  "Encodage de test…": {
+    "fra": "Encodage de test…",
+    "eng": "Test encoding…"
+  },
+  "FEL Analyzer : {error}": {
+    "fra": "FEL Analyzer : {error}",
+    "eng": "FEL Analyzer: {error}"
+  },
+  "Relevé des couches BL / EL…": {
+    "fra": "Relevé des couches BL / EL…",
+    "eng": "Surveying BL / EL layers…"
+  },
+  "Encodeur {encoder} indisponible : {detail}": {
+    "fra": "Encodeur {encoder} indisponible : {detail}",
+    "eng": "Encoder {encoder} unavailable: {detail}"
+  },
+  "FEL vide": {
+    "fra": "FEL vide",
+    "eng": "Empty FEL"
+  },
+  "Analyser l'apport du FEL…": {
+    "fra": "Analyser l'apport du FEL…",
+    "eng": "Analyse the FEL contribution…"
+  },
+  "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) et survie à l'encodage.": {
+    "fra": "Ouvre HDR Studio : apport de la couche FEL par catégorie (ton, hautes lumières, détail…) et survie à l'encodage.",
+    "eng": "Opens HDR Studio: FEL contribution by category (tone, highlights, detail…) and survival through encoding."
+  },
+  "Ton / exposition": {
+    "fra": "Ton / exposition",
+    "eng": "Tone / exposure"
+  },
+  "Hautes lumières": {
+    "fra": "Hautes lumières",
+    "eng": "Highlights"
+  },
+  "Détail / texture": {
+    "fra": "Détail / texture",
+    "eng": "Detail / texture"
+  },
+  "Grain": {
+    "fra": "Grain",
+    "eng": "Grain"
+  },
+  "Couleur": {
+    "fra": "Couleur",
+    "eng": "Colour"
+  },
+  "Ombres": {
+    "fra": "Ombres",
+    "eng": "Shadows"
+  },
+  "Stabilité temporelle": {
+    "fra": "Stabilité temporelle",
+    "eng": "Temporal stability"
+  },
+  "codes": {
+    "fra": "codes",
+    "eng": "codes"
+  },
+  "%": {
+    "fra": "%",
+    "eng": "%"
+  },
+  "codes RMS": {
+    "fra": "codes RMS",
+    "eng": "RMS codes"
+  },
+  "faible": {
+    "fra": "faible",
+    "eng": "weak"
+  },
+  "moyen": {
+    "fra": "moyen",
+    "eng": "medium"
+  },
+  "fort": {
+    "fra": "fort",
+    "eng": "strong"
+  },
+  "Rapide : une image par minute": {
+    "fra": "Rapide : une image par minute",
+    "eng": "Fast: one frame per minute"
+  },
+  "Normal : une image toutes les 30 s": {
+    "fra": "Normal : une image toutes les 30 s",
+    "eng": "Normal: one frame every 30 s"
+  },
+  "Fin : une image toutes les 10 s": {
+    "fra": "Fin : une image toutes les 10 s",
+    "eng": "Fine: one frame every 10 s"
+  },
+  "x265 (logiciel)": {
+    "fra": "x265 (logiciel)",
+    "eng": "x265 (software)"
+  },
+  "NVENC (NVIDIA)": {
+    "fra": "NVENC (NVIDIA)",
+    "eng": "NVENC (NVIDIA)"
+  },
+  "QSV (Intel)": {
+    "fra": "QSV (Intel)",
+    "eng": "QSV (Intel)"
+  },
+  "VAAPI": {
+    "fra": "VAAPI",
+    "eng": "VAAPI"
+  },
+  "Images mesurées": {
+    "fra": "Images mesurées",
+    "eng": "Measured frames"
+  },
+  "MaxCLL / MaxFALL mesurés": {
+    "fra": "MaxCLL / MaxFALL mesurés",
+    "eng": "Measured MaxCLL / MaxFALL"
+  },
+  "Zone mesurée": {
+    "fra": "Zone mesurée",
+    "eng": "Measured area"
+  },
+  "Actuel : {current}.": {
+    "fra": "Actuel : {current}.",
+    "eng": "Current: {current}."
+  },
+  "Écrire l'écran de mastering (MDCV)": {
+    "fra": "Écrire l'écran de mastering (MDCV)",
+    "eng": "Write the mastering display (MDCV)"
+  },
+  "Garder identiques le MDCV, le mastering du L6 et l'écran de mastering du RPU": {
+    "fra": "Garder identiques le MDCV, le mastering du L6 et l'écran de mastering du RPU",
+    "eng": "Keep the MDCV, the L6 mastering and the RPU mastering display identical"
+  },
+  "{primaries}, {min} – {max} nits": {
+    "fra": "{primaries}, {min} – {max} nits",
+    "eng": "{primaries}, {min} – {max} nits"
+  },
+  "MDCV {primaries} {min}–{max} nits": {
+    "fra": "MDCV {primaries} {min}–{max} nits",
+    "eng": "MDCV {primaries} {min}–{max} nits"
+  },
+  "Proposé : {primaries}, {min} – {max} nits d'après {source}.": {
+    "fra": "Proposé : {primaries}, {min} – {max} nits d'après {source}.",
+    "eng": "Suggested: {primaries}, {min} – {max} nits from {source}."
+  },
+  "MDCV choisi": {
+    "fra": "MDCV choisi",
+    "eng": "Chosen MDCV"
+  },
+  "Primaires inconnues : {name}": {
+    "fra": "Primaires inconnues : {name}",
+    "eng": "Unknown primaries: {name}"
+  },
+  "Écran de mastering invalide : luminance max. de 1 à 10 000 nits, min. inférieure à la max.": {
+    "fra": "Écran de mastering invalide : luminance max. de 1 à 10 000 nits, min. inférieure à la max.",
+    "eng": "Invalid mastering display: max. luminance from 1 to 10,000 nits, min. below max."
+  },
+  "MaxCLL et MaxFALL se modifient ensemble.": {
+    "fra": "MaxCLL et MaxFALL se modifient ensemble.",
+    "eng": "MaxCLL and MaxFALL are changed together."
+  },
+  "HDR10 statique du flux…": {
+    "fra": "HDR10 statique du flux…",
+    "eng": "Stream static HDR10…"
+  },
+  "SEI HDR10 statiques non écrits dans le flux.": {
+    "fra": "SEI HDR10 statiques non écrits dans le flux.",
+    "eng": "Static HDR10 SEI not written to the stream."
+  },
+  "L6 du RPU": {
+    "fra": "L6 du RPU",
+    "eng": "the RPU L6"
+  },
+  "écran usuel couvrant le pic du contenu": {
+    "fra": "écran usuel couvrant le pic du contenu",
+    "eng": "a common display covering the content peak"
+  },
+  "Correction des métadonnées HDR sans réencodage": {
+    "fra": "Correction des métadonnées HDR sans réencodage",
+    "eng": "HDR metadata correction without re-encoding"
+  },
+  "HDR Studio occupé : attendre la fin de l'analyse en cours.": {
+    "fra": "HDR Studio occupé : attendre la fin de l'analyse en cours.",
+    "eng": "HDR Studio is busy: wait for the current analysis to finish."
+  },
+  "Correction de {name}…": {
+    "fra": "Correction de {name}…",
+    "eng": "Correcting {name}…"
+  },
+  "Choisissez les corrections dans l'onglet Édition.": {
+    "fra": "Choisissez les corrections dans l'onglet Édition.",
+    "eng": "Choose the corrections in the Editing tab."
+  },
+  "Lancement : bouton « Écrire le fichier corrigé » de la barre d'exécution, sous le panneau.": {
+    "fra": "Lancement : bouton « Écrire le fichier corrigé » de la barre d'exécution, sous le panneau.",
+    "eng": "Run it with the “Write the corrected file” button of the execution bar, below the panel."
+  },
+  "Correction HDR en cours…": {
+    "fra": "Correction HDR en cours…",
+    "eng": "HDR correction in progress…"
+  },
+  "Relancer la correction": {
+    "fra": "Relancer la correction",
+    "eng": "Retry the correction"
+  },
+  "HDR STUDIO": {
+    "fra": "HDR STUDIO",
+    "eng": "HDR STUDIO"
+  },
+  "plans du RPU": {
+    "fra": "plans du RPU",
+    "eng": "RPU shots"
+  },
+  "plans HDR10+": {
+    "fra": "plans HDR10+",
+    "eng": "HDR10+ shots"
+  },
+  "plans mesurés": {
+    "fra": "plans mesurés",
+    "eng": "measured shots"
+  },
+  "courbes de luminance": {
+    "fra": "courbes de luminance",
+    "eng": "luminance curves"
+  },
+  "décalage saisi": {
+    "fra": "décalage saisi",
+    "eng": "entered offset"
+  },
+  "aucun repère commun": {
+    "fra": "aucun repère commun",
+    "eng": "no common reference"
+  },
+  "Pic": {
+    "fra": "Pic",
+    "eng": "Peak"
+  },
+  "Moyenne": {
+    "fra": "Moyenne",
+    "eng": "Average"
+  },
+  "Contrôles": {
+    "fra": "Contrôles",
+    "eng": "Checks"
+  },
+  "HDR10 statique": {
+    "fra": "HDR10 statique",
+    "eng": "Static HDR10"
+  },
+  "Champ": {
+    "fra": "Champ",
+    "eng": "Field"
+  },
+  "Dolby Vision (conteneur)": {
+    "fra": "Dolby Vision (conteneur)",
+    "eng": "Dolby Vision (container)"
+  },
+  "Mesure de l'image": {
+    "fra": "Mesure de l'image",
+    "eng": "Picture measurement"
+  },
+  "Dolby Vision (RPU)": {
+    "fra": "Dolby Vision (RPU)",
+    "eng": "Dolby Vision (RPU)"
+  },
+  "FEL Analyzer": {
+    "fra": "FEL Analyzer",
+    "eng": "FEL Analyzer"
+  },
+  "Comparaison": {
+    "fra": "Comparaison",
+    "eng": "Comparison"
+  },
+  "Rapport HDR": {
+    "fra": "Rapport HDR",
+    "eng": "HDR report"
+  },
+  "Décalage : {frames} images ({seconds} s), d'après : {basis}.": {
+    "fra": "Décalage : {frames} images ({seconds} s), d'après : {basis}.",
+    "eng": "Offset: {frames} frames ({seconds} s), from: {basis}."
+  },
+  "Courbe": {
+    "fra": "Courbe",
+    "eng": "Curve"
+  },
+  "Sources": {
+    "fra": "Sources",
+    "eng": "Sources"
+  },
+  "B face à A (médiane)": {
+    "fra": "B face à A (médiane)",
+    "eng": "B vs A (median)"
+  },
+  "Écart PQ médian / 99 % (codes)": {
+    "fra": "Écart PQ médian / 99 % (codes)",
+    "eng": "Median / 99% PQ difference (codes)"
+  },
+  "Corrélation": {
+    "fra": "Corrélation",
+    "eng": "Correlation"
+  },
+  "Écarts les plus forts": {
+    "fra": "Écarts les plus forts",
+    "eng": "Largest differences"
+  },
+  "B : {name}": {
+    "fra": "B : {name}",
+    "eng": "B: {name}"
+  },
+  "L6 (HDR10 du RPU)": {
+    "fra": "L6 (HDR10 du RPU)",
+    "eng": "L6 (RPU HDR10)"
+  },
+  "Zones actives L5": {
+    "fra": "Zones actives L5",
+    "eng": "L5 active areas"
+  },
+  "COURBES": {
+    "fra": "COURBES",
+    "eng": "CURVES"
+  },
+  "PISTE B": {
+    "fra": "PISTE B",
+    "eng": "TRACK B"
+  },
+  "Déposer la vidéo à comparer ou choisir un fichier…": {
+    "fra": "Déposer la vidéo à comparer ou choisir un fichier…",
+    "eng": "Drop the video to compare or choose a file…"
+  },
+  "Lire les métadonnées dynamiques de B": {
+    "fra": "Lire les métadonnées dynamiques de B",
+    "eng": "Read B's dynamic metadata"
+  },
+  "ALIGNEMENT": {
+    "fra": "ALIGNEMENT",
+    "eng": "ALIGNMENT"
+  },
+  " images": {
+    "fra": " images",
+    "eng": " frames"
+  },
+  "Automatique": {
+    "fra": "Automatique",
+    "eng": "Automatic"
+  },
+  "Vidéo à comparer": {
+    "fra": "Vidéo à comparer",
+    "eng": "Video to compare"
+  },
+  "{share} % des plans appariés": {
+    "fra": "{share} % des plans appariés",
+    "eng": "{share}% of shots matched"
+  },
+  "Compare la piste inspectée (A) à une autre (B) : autre édition, encodage, source d'un remux. Les deux pistes sont alignées sur leurs plans (RPU, HDR10+, mesure) ou leurs courbes ; le décalage reste modifiable.": {
+    "fra": "Compare la piste inspectée (A) à une autre (B) : autre édition, encodage, source d'un remux. Les deux pistes sont alignées sur leurs plans (RPU, HDR10+, mesure) ou leurs courbes ; le décalage reste modifiable.",
+    "eng": "Compares the inspected track (A) with another one (B): another release, an encode, the source of a remux. Both tracks are aligned on their shots (RPU, HDR10+, measurement) or their curves; the offset can still be changed."
+  },
+  "Décalage de B": {
+    "fra": "Décalage de B",
+    "eng": "B offset"
+  },
+  "corrélation {value}": {
+    "fra": "corrélation {value}",
+    "eng": "correlation {value}"
+  },
+  "{seconds} s, d'après : {basis}": {
+    "fra": "{seconds} s, d'après : {basis}",
+    "eng": "{seconds} s, from: {basis}"
+  },
+  "Choisir la piste B : une vidéo déposée ici, ou une autre piste du même fichier.": {
+    "fra": "Choisir la piste B : une vidéo déposée ici, ou une autre piste du même fichier.",
+    "eng": "Choose track B: a video dropped here, or another track of the same file."
+  },
+  "{count} différence(s).": {
+    "fra": "{count} différence(s).",
+    "eng": "{count} difference(s)."
+  },
+  "Métadonnées identiques.": {
+    "fra": "Métadonnées identiques.",
+    "eng": "Identical metadata."
+  },
+  "{kind} : B {ratio} en médiane, écart PQ médian {median} codes (99 % : {p99}), corrélation {corr} ; écarts les plus forts : {worst}.": {
+    "fra": "{kind} : B {ratio} en médiane, écart PQ médian {median} codes (99 % : {p99}), corrélation {corr} ; écarts les plus forts : {worst}.",
+    "eng": "{kind}: B {ratio} in median, median PQ difference {median} codes (99%: {p99}), correlation {corr}; largest differences: {worst}."
+  },
+  "Sources différentes ({a} face à {b}) : écart indicatif.": {
+    "fra": "Sources différentes ({a} face à {b}) : écart indicatif.",
+    "eng": "Different sources ({a} vs {b}): indicative difference."
+  },
+  "Exporter le rapport…": {
+    "fra": "Exporter le rapport…",
+    "eng": "Export the report…"
+  },
+  "Page HTML autonome ou JSON : contrôles, métadonnées, courbes, FEL Analyzer et comparaison.": {
+    "fra": "Page HTML autonome ou JSON : contrôles, métadonnées, courbes, FEL Analyzer et comparaison.",
+    "eng": "Standalone HTML page or JSON: checks, metadata, curves, FEL Analyzer and comparison."
+  },
+  "Comparer": {
+    "fra": "Comparer",
+    "eng": "Compare"
+  },
+  "Analyse des métadonnées dynamiques de B…": {
+    "fra": "Analyse des métadonnées dynamiques de B…",
+    "eng": "Analysing B's dynamic metadata…"
+  },
+  "Rapport exporté : {name}": {
+    "fra": "Rapport exporté : {name}",
+    "eng": "Report exported: {name}"
+  },
+  "Rapport HDR exporté : {path}": {
+    "fra": "Rapport HDR exporté : {path}",
+    "eng": "HDR report exported: {path}"
+  },
+  "Opération en cours : réessayer ensuite.": {
+    "fra": "Opération en cours : réessayer ensuite.",
+    "eng": "Operation in progress: try again afterwards."
+  },
+  "B : en-têtes seulement ; lire les métadonnées dynamiques de B pour comparer les courbes.": {
+    "fra": "B : en-têtes seulement ; lire les métadonnées dynamiques de B pour comparer les courbes.",
+    "eng": "B: headers only; read B's dynamic metadata to compare the curves."
+  },
+  "Exporter le rapport HDR": {
+    "fra": "Exporter le rapport HDR",
+    "eng": "Export the HDR report"
+  },
+  "Page HTML (*.html);;JSON (*.json)": {
+    "fra": "Page HTML (*.html);;JSON (*.json)",
+    "eng": "HTML page (*.html);;JSON (*.json)"
+  },
+  "Export du rapport impossible : {error}": {
+    "fra": "Export du rapport impossible : {error}",
+    "eng": "Report export failed: {error}"
+  },
+  "mesure": {
+    "fra": "mesure",
+    "eng": "measurement"
+  },
+  "L1": {
+    "fra": "L1",
+    "eng": "L1"
+  },
+  "Formats": {
+    "fra": "Formats",
+    "eng": "Formats"
+  },
+  "Définition": {
+    "fra": "Définition",
+    "eng": "Resolution"
+  },
+  "Écran de mastering": {
+    "fra": "Écran de mastering",
+    "eng": "Mastering display"
+  },
+  "Couche d'amélioration": {
+    "fra": "Couche d'amélioration",
+    "eng": "Enhancement layer"
+  },
+  "Plans (RPU)": {
+    "fra": "Plans (RPU)",
+    "eng": "Shots (RPU)"
+  },
+  "Pic L1": {
+    "fra": "Pic L1",
+    "eng": "L1 peak"
+  },
+  "L6 MaxCLL / MaxFALL": {
+    "fra": "L6 MaxCLL / MaxFALL",
+    "eng": "L6 MaxCLL / MaxFALL"
+  },
+  "Profil HDR10+": {
+    "fra": "Profil HDR10+",
+    "eng": "HDR10+ profile"
+  },
+  "Plans (HDR10+)": {
+    "fra": "Plans (HDR10+)",
+    "eng": "Shots (HDR10+)"
+  },
+  "{fps} i/s": {
+    "fra": "{fps} i/s",
+    "eng": "{fps} fps"
+  },
+  "Courbes": {
+    "fra": "Courbes",
+    "eng": "Curves"
+  },
+  "aucun défaut simulé": {
+    "fra": "aucun défaut simulé",
+    "eng": "no simulated defect"
+  },
+  "écrêtage visible sur {share} % des images": {
+    "fra": "écrêtage visible sur {share} % des images",
+    "eng": "visible clipping on {share}% of frames"
+  },
+  "hautes lumières assombries de {ev} EV sur {share} % des images": {
+    "fra": "hautes lumières assombries de {ev} EV sur {share} % des images",
+    "eng": "highlights darkened by {ev} EV on {share}% of frames"
+  },
+  "absents : les TV prennent une valeur par défaut": {
+    "fra": "absents : les TV prennent une valeur par défaut",
+    "eng": "missing: TVs fall back to a default value"
+  },
+  "TV suivant la MaxCLL, écran {peak} nits : {now} ; mesurés : {after}": {
+    "fra": "TV suivant la MaxCLL, écran {peak} nits : {now} ; mesurés : {after}",
+    "eng": "TV following MaxCLL, {peak}-nit display: {now}; measured: {after}"
+  },
+  "absent : les TV supposent un écran par défaut": {
+    "fra": "absent : les TV supposent un écran par défaut",
+    "eng": "missing: TVs assume a default display"
+  },
+  "TV suivant le MDCV, écran {peak} nits : {now} ; proposé : {after}. Le MDCV décrit l'écran d'étalonnage : le changer adapte le tone mapping des TV, pas l'image.": {
+    "fra": "TV suivant le MDCV, écran {peak} nits : {now} ; proposé : {after}. Le MDCV décrit l'écran d'étalonnage : le changer adapte le tone mapping des TV, pas l'image.",
+    "eng": "TV following the MDCV, {peak}-nit display: {now}; proposed: {after}. The MDCV describes the grading display: changing it adapts the TVs' tone mapping, not the picture."
+  },
+  "MaxScl sous le pic de l'image sur {share} % des images (écrêtage)": {
+    "fra": "MaxScl sous le pic de l'image sur {share} % des images (écrêtage)",
+    "eng": "MaxScl below the picture peak on {share}% of frames (clipping)"
+  },
+  "MaxScl au double du pic sur {share} % des images (image assombrie)": {
+    "fra": "MaxScl au double du pic sur {share} % des images (image assombrie)",
+    "eng": "MaxScl at twice the peak on {share}% of frames (darkened picture)"
+  },
+  "{count} images à 10 000 nits": {
+    "fra": "{count} images à 10 000 nits",
+    "eng": "{count} frames at 10,000 nits"
+  },
+  "{hdr10plus} trames pour {video} images": {
+    "fra": "{hdr10plus} trames pour {video} images",
+    "eng": "{hdr10plus} metadata frames for {video} frames"
+  },
+  "profil {profile}, pic MaxScl {peak} nits": {
+    "fra": "profil {profile}, pic MaxScl {peak} nits",
+    "eng": "profile {profile}, MaxScl peak {peak} nits"
+  },
+  "recalculé depuis la mesure (profil A, {scenes} plans)": {
+    "fra": "recalculé depuis la mesure (profil A, {scenes} plans)",
+    "eng": "recomputed from the measurement (profile A, {scenes} shots)"
+  },
+  "L1 max à moins de la moitié de l'image sur {share} % des images (écrêtage possible en lecture Dolby Vision)": {
+    "fra": "L1 max à moins de la moitié de l'image sur {share} % des images (écrêtage possible en lecture Dolby Vision)",
+    "eng": "L1 max below half the picture on {share}% of frames (possible clipping in Dolby Vision playback)"
+  },
+  "L1 max au double du pic sur {share} % des images (image assombrie)": {
+    "fra": "L1 max au double du pic sur {share} % des images (image assombrie)",
+    "eng": "L1 max at twice the peak on {share}% of frames (darkened picture)"
+  },
+  "L1 Dolby Vision": {
+    "fra": "L1 Dolby Vision",
+    "eng": "Dolby Vision L1"
+  },
+  "pic L1 {peak} nits": {
+    "fra": "pic L1 {peak} nits",
+    "eng": "L1 peak {peak} nits"
+  },
+  "non corrigé": {
+    "fra": "non corrigé",
+    "eng": "not corrected"
+  },
+  "absent ou contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10": {
+    "fra": "absent ou contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10",
+    "eng": "missing or contradicted by the measurement: HDR10 fallback playback of Dolby Vision players and DV → HDR10 conversions"
+  },
+  "contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10": {
+    "fra": "contredit par la mesure : lecture HDR10 de secours des lecteurs Dolby Vision et conversions DV → HDR10",
+    "eng": "contradicted by the measurement: HDR10 fallback playback of Dolby Vision players and DV → HDR10 conversions"
+  },
+  "Écart typique d'un RPU généré, recalé ou d'un autre étalonnage ; dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source avec l'outil d'origine.": {
+    "fra": "Écart typique d'un RPU généré, recalé ou d'un autre étalonnage ; dovi_tool ne réécrit pas le L1 sans perdre les trims (L2/L8) : ré-analyser la source avec l'outil d'origine.",
+    "eng": "Typical of a generated, re-timed RPU or one from another grade; dovi_tool cannot rewrite L1 without losing the trims (L2/L8): re-analyse the source with the original tool."
+  },
+  "Moyennes sur un axe à droite": {
+    "fra": "Moyennes sur un axe à droite",
+    "eng": "Averages on a right-hand axis"
+  },
+  "moyennes (nits) →": {
+    "fra": "moyennes (nits) →",
+    "eng": "averages (nits) →"
+  },
+  "← pics (nits)": {
+    "fra": "← pics (nits)",
+    "eng": "← peaks (nits)"
+  },
+  "RÉALIGNEMENT D'APRÈS LA MESURE": {
+    "fra": "RÉALIGNEMENT D'APRÈS LA MESURE",
+    "eng": "REALIGNMENT FROM THE MEASUREMENT"
+  },
+  "Reporter les propositions cochées": {
+    "fra": "Reporter les propositions cochées",
+    "eng": "Apply the checked proposals"
+  },
+  "Recalculer le HDR10+ depuis la mesure de l'image (profil A)": {
+    "fra": "Recalculer le HDR10+ depuis la mesure de l'image (profil A)",
+    "eng": "Recompute HDR10+ from the picture measurement (profile A)"
+  },
+  "Statistiques de chaque image mesurée, regroupées par plan (règles du HDR10+ recalculé du FEL) : MaxScl, percentiles et AverageRGB décrivent l'image réelle.": {
+    "fra": "Statistiques de chaque image mesurée, regroupées par plan (règles du HDR10+ recalculé du FEL) : MaxScl, percentiles et AverageRGB décrivent l'image réelle.",
+    "eng": "Statistics of each measured frame, grouped by shot (same rules as the FEL recomputed HDR10+): MaxScl, percentiles and AverageRGB describe the actual picture."
+  },
+  "Écarts entre les métadonnées et l'image mesurée qui ont un effet visible (écrêtage ou assombrissement simulés sur l'écran choisi dans l'onglet Luminance). Les propositions cochées sont reportées dans les corrections ci-dessous ; l'écriture se lance ensuite depuis la barre d'exécution.": {
+    "fra": "Écarts entre les métadonnées et l'image mesurée qui ont un effet visible (écrêtage ou assombrissement simulés sur l'écran choisi dans l'onglet Luminance). Les propositions cochées sont reportées dans les corrections ci-dessous ; l'écriture se lance ensuite depuis la barre d'exécution.",
+    "eng": "Differences between the metadata and the measured picture that have a visible effect (clipping or darkening simulated on the display chosen in the Luminance tab). Checked proposals are copied into the corrections below; writing is then started from the execution bar."
+  },
+  "HDR10+ recalculé": {
+    "fra": "HDR10+ recalculé",
+    "eng": "HDR10+ recomputed"
+  },
+  "Réalignement proposé (onglet Édition) — {title} : {current} → {proposed} ({impact})": {
+    "fra": "Réalignement proposé (onglet Édition) — {title} : {current} → {proposed} ({impact})",
+    "eng": "Realignment proposed (Editing tab) — {title}: {current} → {proposed} ({impact})"
+  },
+  "Axes en nits, plage ajustée aux valeurs visibles (échelle PQ par défaut) ; pics et affichage TV à gauche, moyennes à droite ; un repère hors plage est signalé en haut (↑). Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.": {
+    "fra": "Axes en nits, plage ajustée aux valeurs visibles (échelle PQ par défaut) ; pics et affichage TV à gauche, moyennes à droite ; un repère hors plage est signalé en haut (↑). Molette : zoom ; glisser : déplacement ; double-clic : vue entière. Le L1 Dolby est un maximum robuste (pixels isolés écartés) ; le MaxScl HDR10+ est un maximum strict.",
+    "eng": "Axes in nits, range fitted to the visible values (PQ scale by default); peaks and TV display on the left, averages on the right; an out-of-range marker is shown at the top (↑). Wheel: zoom; drag: pan; double-click: whole view. Dolby L1 is a robust maximum (isolated pixels excluded); HDR10+ MaxScl is a strict maximum."
+  },
+  "PQ dynamique": {
+    "fra": "PQ dynamique",
+    "eng": "Dynamic PQ"
+  },
+  "PQ fixe (0,1 – 10 000 nits)": {
+    "fra": "PQ fixe (0,1 – 10 000 nits)",
+    "eng": "Fixed PQ (0.1 – 10,000 nits)"
+  },
+  "Linéaire dynamique": {
+    "fra": "Linéaire dynamique",
+    "eng": "Dynamic linear"
+  },
+  "MaxCLL déclarée ({cll}) sous l'estimation de la mesure rapide ({measured} nits)": {
+    "fra": "MaxCLL déclarée ({cll}) sous l'estimation de la mesure rapide ({measured} nits)",
+    "eng": "Declared MaxCLL ({cll}) below the fast measurement estimate ({measured} nits)"
+  },
+  "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà. Mesure complète conseillée avant correction.": {
+    "fra": "Une TV HDR10 qui suit la MaxCLL peut écrêter les hautes lumières au-delà. Mesure complète conseillée avant correction.",
+    "eng": "An HDR10 TV following MaxCLL may clip highlights above it. A full measurement is advised before correcting."
+  },
+  "estimation de la mesure rapide (images clés) : mesure complète conseillée avant d'écrire": {
+    "fra": "estimation de la mesure rapide (images clés) : mesure complète conseillée avant d'écrire",
+    "eng": "fast measurement estimate (keyframes): a full measurement is advised before writing"
+  },
+  "{sampled} images clés sur {frames} (mesure rapide, estimation)": {
+    "fra": "{sampled} images clés sur {frames} (mesure rapide, estimation)",
+    "eng": "{sampled} keyframes out of {frames} (fast measurement, estimate)"
+  },
+  "estimation": {
+    "fra": "estimation",
+    "eng": "estimate"
+  },
+  "Mesure rapide": {
+    "fra": "Mesure rapide",
+    "eng": "Fast measurement"
+  },
+  "Images clés seulement (environ une toutes les 2 à 3 s, moins d'une minute pour un film ; extension mvo-fel 0.5.0 ou plus récente) : estimation, MaxCLL et pics fidèles, MaxFALL souvent sous-estimée.": {
+    "fra": "Images clés seulement (environ une toutes les 2 à 3 s, moins d'une minute pour un film ; extension mvo-fel 0.5.0 ou plus récente) : estimation, MaxCLL et pics fidèles, MaxFALL souvent sous-estimée.",
+    "eng": "Keyframes only (about one every 2 to 3 s, under a minute for a film; mvo-fel extension 0.5.0 or later): estimate, MaxCLL and peaks accurate, MaxFALL often underestimated."
+  },
+  "Mesure complète": {
+    "fra": "Mesure complète",
+    "eng": "Full measurement"
+  },
+  "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte, HDR10+ recalculable.": {
+    "fra": "Mesure exacte de chaque image sur GPU (extension mvo-fel 0.4.0 ou plus récente) : MaxCLL/MaxFALL réels, histogrammes, simulation exacte, HDR10+ recalculable.",
+    "eng": "Exact measurement of every frame on the GPU (mvo-fel extension 0.4.0 or later): actual MaxCLL/MaxFALL, histograms, exact simulation, HDR10+ can be recomputed."
+  },
+  "Mesure rapide : {count} images clés, valeurs tenues entre elles (estimation).": {
+    "fra": "Mesure rapide : {count} images clés, valeurs tenues entre elles (estimation).",
+    "eng": "Fast measurement: {count} keyframes, values held in between (estimate)."
+  },
+  "images clés": {
+    "fra": "images clés",
+    "eng": "keyframes"
+  },
+  "Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise (page Extensions).": {
+    "fra": "Mesure rapide : extension mvo-fel 0.5.0 ou plus récente requise (page Extensions).",
+    "eng": "Fast measurement: mvo-fel extension 0.5.0 or later required (Extensions page)."
+  },
+  "Mesure rapide : flux HEVC brut sans horodatages, mesure complète nécessaire.": {
+    "fra": "Mesure rapide : flux HEVC brut sans horodatages, mesure complète nécessaire.",
+    "eng": "Fast measurement: raw HEVC stream without timestamps, a full measurement is required."
+  },
+  "Mesure rapide (images clés)…": {
+    "fra": "Mesure rapide (images clés)…",
+    "eng": "Fast measurement (keyframes)…"
+  },
+  "Mesure rapide : MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimation).": {
+    "fra": "Mesure rapide : MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimation).",
+    "eng": "Fast measurement: MaxCLL ≈ {cll}, MaxFALL ≥ {fall} nits (estimate)."
+  },
+  "Mesure rapide terminée : {sampled} images clés sur {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimation ; mesure complète pour des valeurs exactes).": {
+    "fra": "Mesure rapide terminée : {sampled} images clés sur {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimation ; mesure complète pour des valeurs exactes).",
+    "eng": "Fast measurement done: {sampled} keyframes out of {frames}, MaxCLL ≈ {cll}, MaxFALL ≥ {fall} (estimate; full measurement for exact values)."
+  },
+  "mesure rapide de l'image (images clés, estimation)": {
+    "fra": "mesure rapide de l'image (images clés, estimation)",
+    "eng": "fast picture measurement (keyframes, estimate)"
+  },
+  "Visibilité (p90)": {
+    "fra": "Visibilité (p90)",
+    "eng": "Visibility (p90)"
+  },
+  "≈ {value} JND": {
+    "fra": "≈ {value} JND",
+    "eng": "≈ {value} JND"
+  },
+  "JND : seuil de visibilité en conditions critiques (ΔE ITP, ITU-R BT.2124 ; CSF de Barten pour le détail, vu à une hauteur d'image). Moyen ≈ 1,5 JND : perceptible en comparaison directe ; fort ≈ 4 JND : perceptible sans référence. Apport global : écarts cumulés au même instant (Minkowski β = 3), ombres et hautes lumières comptées avec le ton, grain avec le détail.": {
+    "fra": "JND : seuil de visibilité en conditions critiques (ΔE ITP, ITU-R BT.2124 ; CSF de Barten pour le détail, vu à une hauteur d'image). Moyen ≈ 1,5 JND : perceptible en comparaison directe ; fort ≈ 4 JND : perceptible sans référence. Apport global : écarts cumulés au même instant (Minkowski β = 3), ombres et hautes lumières comptées avec le ton, grain avec le détail.",
+    "eng": "JND: visibility threshold under critical conditions (ΔE ITP, ITU-R BT.2124; Barten CSF for detail, viewed at one picture height). Medium ≈ 1.5 JND: noticeable in a direct comparison; strong ≈ 4 JND: noticeable without a reference. Overall contribution: differences pooled at the same instant (Minkowski β = 3), shadows and highlights counted with tone, grain with detail."
+  },
+  "Apport global (cumul)": {
+    "fra": "Apport global (cumul)",
+    "eng": "Overall contribution (pooled)"
+  },
+  "Apport global fort ({jnd} JND) par cumul : {categories}.": {
+    "fra": "Apport global fort ({jnd} JND) par cumul : {categories}.",
+    "eng": "Strong overall contribution ({jnd} JND) by pooling: {categories}."
+  },
+  "Apport global moyen ({jnd} JND) par cumul : {categories}.": {
+    "fra": "Apport global moyen ({jnd} JND) par cumul : {categories}.",
+    "eng": "Medium overall contribution ({jnd} JND) by pooling: {categories}."
+  },
+  "Capture du moment {time} en pleine définition…": {
+    "fra": "Capture du moment {time} en pleine définition…",
+    "eng": "Capturing moment {time} at full resolution…"
+  },
+  "FEL — moment {time}": {
+    "fra": "FEL — moment {time}",
+    "eng": "FEL — moment {time}"
+  },
+  "Exposition": {
+    "fra": "Exposition",
+    "eng": "Exposure"
+  },
+  "Éclaircit ou assombrit l'aperçu (les deux côtés) pour examiner ombres ou hautes lumières.": {
+    "fra": "Éclaircit ou assombrit l'aperçu (les deux côtés) pour examiner ombres ou hautes lumières.",
+    "eng": "Brightens or darkens the preview (both sides) to examine shadows or highlights."
+  },
+  "Carte de l'écart (16 codes = jaune)": {
+    "fra": "Carte de l'écart (16 codes = jaune)",
+    "eng": "Difference map (16 codes = yellow)"
+  },
+  "Image entière": {
+    "fra": "Image entière",
+    "eng": "Whole picture"
+  },
+  "Molette : zoom · glisser : déplacer · trait : comparer · double-clic : 100 % / image entière": {
+    "fra": "Molette : zoom · glisser : déplacer · trait : comparer · double-clic : 100 % / image entière",
+    "eng": "Wheel: zoom · drag: pan · divider: compare · double-click: 100% / whole picture"
+  },
+  "Écart": {
+    "fra": "Écart",
+    "eng": "Difference"
+  },
+  "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}": {
+    "fra": "Pixel {x}, {y} : sans FEL {before} nits · avec FEL {after} nits{change}",
+    "eng": "Pixel {x}, {y}: without FEL {before} nits · with FEL {after} nits{change}"
+  },
+  "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).": {
+    "fra": "Clic : comparateur avant / après en pleine définition (zoom, trait à glisser).",
+    "eng": "Click: full-resolution before / after comparison (zoom, draggable divider)."
+  },
+  "Aucun instant mesuré : analyser d'abord l'apport du FEL.": {
+    "fra": "Aucun instant mesuré : analyser d'abord l'apport du FEL.",
+    "eng": "No instant measured: analyse the FEL contribution first."
   }
 }

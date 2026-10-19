@@ -314,6 +314,8 @@ class HdrMetadataProbeService:
         cmd = [
             self._ffprobe_bin(),
             "-v", "quiet",
+            # Décodage multifil : ffprobe décode sur un seul fil par défaut (240 images UHD : 15 s → 2 s).
+            "-threads", "0",
             "-print_format", "json",
             "-select_streams", stream_selector(stream_index),
             "-read_intervals", f"%+#{max(1, int(max_frames))}",
@@ -630,6 +632,8 @@ class HdrMetadataProbeService:
             self._ffprobe_bin(),
             "-v", "quiet",
             "-skip_frame", "nokey",
+            # Décodage multifil (ffprobe : un seul fil par défaut).
+            "-threads", "0",
             "-print_format", "json",
             "-select_streams", str(max(0, int(stream_index))),
             "-show_frames",

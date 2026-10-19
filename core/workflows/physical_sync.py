@@ -3,14 +3,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from core.bluray import append_ffmpeg_input_args
+from core.workflows.common.audio_timestamps import (
+    common_timestamp_origin, input_timestamp_offset_args, preroll_input_offset, probe_timestamp_payload, timestamp_seconds,
+)
 
 from core.workflows.remux_models import RemuxError, SourceInput
 from core.workflows.remux_mapping import resolve_mapped_tracks
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.common.sync_rewrite import (
+    SYNC_AUDIO_ORIGIN_FILTER,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
     sync_rewrite_forced_offset,
+    track_has_object_audio_metadata,
 )
 
 
@@ -70,9 +78,9 @@ def track_calibration(config, mapped):
     return SyncCalibration.from_dict(payload) if payload else SyncCalibration.linear(mapped.track.time_shift_ms)
 
 
-def preparation_commands(config, root, ffmpeg):
+def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None):
     """Décrit chaque piste transformée ; le même contrat sert à la preview."""
-    result = []
+    result: list[tuple[Any, Path, list[str], SyncCalibration]] = []
     root = Path(root)
     if config.sync_mode != "physical":
         return result
@@ -93,8 +101,12 @@ def preparation_commands(config, root, ffmpeg):
         if track.track_type == "subtitle" and config.sync_subtitles == "none" and not track.time_shift_ms:
             continue
         calibration = SyncCalibration.linear(mirror_offset) if mirror_offset else track_calibration(config, mapped)
-        base = [str(ffmpeg), "-y", "-nostdin", "-v", "error", "-i", str(mapped.source_path),
-                "-map", f"0:{mapped.stream_index}"]
+        timestamp_args = (["-copyts", *input_timestamp_offset_args(
+            -(source_origins or {}).get(Path(mapped.source_path), 0.0),
+        )] if track.track_type == "audio" else [])
+        base = [str(ffmpeg), "-y", "-nostdin", "-v", "error", *timestamp_args]
+        append_ffmpeg_input_args(base, mapped.source_path)
+        base.extend(["-map", f"0:{mapped.stream_index}"])
         output = root / f"sync_{index}.mka"
         if track.track_type == "audio":
             codec = normalized_rewrite_codec(track.codec)
@@ -107,18 +119,25 @@ def preparation_commands(config, root, ffmpeg):
                 # Les codecs à pré-roll doivent conserver leur CodecDelay.
                 if codec in {"aac", "opus", "mp3"}:
                     continue
-                command = base + ["-c:a", "copy", "-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
+                command = base + ["-c:a", "copy"]
+                # AC-3/E-AC-3 peuvent aussi porter un CodecDelay : leur
+                # pré-roll doit être conservé en copie comme en réencodage.
+                if codec not in {"ac3", "eac3"}:
+                    command += ["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
             else:
-                if codec not in {"aac", "ac3", "eac3", "flac"} or any(
-                        tag in (track.display_info + track.title).casefold() for tag in ("atmos", "dts:x")):
+                if codec not in {"aac", "ac3", "eac3", "flac"} or track_has_object_audio_metadata(
+                        codec=track.codec, title=track.title, display_info=track.display_info):
                     raise RemuxError("Synchronisation physique : codec immersif/non encodable ; choisir explicitement une variante AAC, AC3, EAC3 ou FLAC.")
-                graph = audio_filter(calibration, config.crossfade_ms).replace("[0:a:0]", f"[0:{mapped.stream_index}]")
+                graph = audio_filter(calibration, config.crossfade_ms).replace(
+                    "[0:a:0]", f"[0:{mapped.stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},",
+                )
                 command = base[:-2] + ["-filter_complex", graph, "-map", "[out]", "-c:a", codec]
                 bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
                 if codec != "flac" and bitrate:
                     command += ["-b:a", f"{bitrate}k"]
-                if codec in {"ac3", "eac3", "flac"}:
-                    command += ["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
+                # Le filtre remet déjà le PCM à zéro. Conserver les timestamps
+                # de l'encodeur : setts annulerait son pré-roll tout en gardant
+                # le CodecDelay Matroska (+5 ms avec AC-3/E-AC-3 à 48 kHz).
             command += [str(output)]
         else:
             codec = track.codec.casefold()
@@ -134,11 +153,22 @@ def preparation_commands(config, root, ffmpeg):
     return result
 
 
-def prepare_physical(config, root: Path, ffmpeg, run, log=None):
+def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffprobe",
+                     cancel_cb: Callable[[], bool] | None = None):
     from core.workflows.subtitle_sync import shift_file
     sources = [replace(s, tracks=[replace(t) for t in s.tracks]) for s in config.sources]
     order = list(config.track_order)
-    for mapped, output, command, calibration in preparation_commands(config, root, ffmpeg):
+    # La description/preview reste sans processus ; les origines sont résolues une fois au lancement.
+    preparation_commands(config, root, ffmpeg)  # Valider les transformations avant les sondes.
+    payloads = {path: probe_timestamp_payload(path, ffprobe, cancel_cb=cancel_cb)
+                for path in dict.fromkeys(Path(source.path) for source in config.sources)}
+    origins = {path: common_timestamp_origin(payload) for path, payload in payloads.items()}
+    timestamp_offsets = dict(config.input_timestamp_offsets)
+    for path, payload in payloads.items():
+        offset = preroll_input_offset(payload)
+        if offset:
+            timestamp_offsets.setdefault(path, offset)
+    for mapped, output, command, calibration in preparation_commands(config, root, ffmpeg, source_origins=origins):
         if log is not None:
             track = mapped.track
             segments = calibration.segments
@@ -161,6 +191,10 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None):
                     f"({track.track_type} {track.codec}){cadence_info} — décalage {shift:+.1f} ms"
                 )
         run(command, "physical-sync")
+        if mapped.track.track_type == "audio":
+            payload = probe_timestamp_payload(output, ffprobe, cancel_cb=cancel_cb)
+            fmt = payload.get("format")
+            timestamp_offsets[output] = timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0
         if mapped.track.track_type == "subtitle":
             shift_file(output, output, calibration)
         track = replace(mapped.track, mkv_tid=0, time_shift_ms=0, sync_rewrite_label="", sync_rewrite_mode="", sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
@@ -169,4 +203,5 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None):
         for index, item in enumerate(order):
             if item[0] == mapped.source_file_index and item[1] == mapped.stream_index and (len(item) < 3 or item[2] == track.entry_id):
                 order[index] = (source_index, 0, track.entry_id)
-    return replace(config, sources=sources, track_order=order, sync_mode="container", sync_calibrations={})
+    return replace(config, sources=sources, track_order=order, sync_mode="container", sync_calibrations={},
+                   input_timestamp_offsets=timestamp_offsets)

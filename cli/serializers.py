@@ -55,6 +55,8 @@ def serialize_track_preview(track: TrackEntry) -> dict[str, Any]:
         "codec": track.codec,
         "display_info": track.display_info,
         "sync_rewrite_mode": track.sync_rewrite_mode,
+        "has_closed_captions": track.has_closed_captions,
+        "remove_closed_captions": track.remove_closed_captions,
         "flags": {
             "enabled": track.flag_enabled,
             "default": track.flag_default,

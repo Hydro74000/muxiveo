@@ -119,7 +119,8 @@ class NvenccEncodeBackend(EncodeBackend):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
         if (video.copy_dv or video.copy_hdr10plus) and not nvencc_supports_dynamic_hdr(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
-        if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_prefilter(video):
+        from core.fel.preparation import requested
+        if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_prefilter(video) and not requested(video):
             errors.append(
                 "NVEncC avec préfiltrage FFmpeg (deblock/chroma_smooth/crop %/resize %) "
                 "est incompatible avec la copie DoVi/HDR10+ dynamique dans cette version."

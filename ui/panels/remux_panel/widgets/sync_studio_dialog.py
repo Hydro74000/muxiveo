@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
 import threading
@@ -9,7 +10,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QRadioButton,
     QScrollBar,
+    QSlider,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -45,8 +47,10 @@ from ui.panels.remux_panel.theme import (
     _stop_icon,
     _table_style,
 )
-from ui.styles import _bolt_icon
+from ui.styles import _bolt_icon, _slider_style
+from ui.shutdown import Shutdown, defer_close
 from ui.widgets.waveform_view import WaveformView
+from ui.widgets.content_table import ContentTableWidget
 
 if TYPE_CHECKING:
     # QtMultimedia est optionnel à l'exécution.
@@ -75,15 +79,17 @@ def _parse_timestamp_ms(text: str) -> float | None:
 
 
 class SyncStudioDialog(QDialog):
-    """Dialogue complet d'inspection et d'ajustement acoustique pour le Remux Panel."""
+    """Éditeur d'inspection et d'ajustement acoustique partagé par Remux et Hybrid."""
 
     _waveform_loading = Signal(str)
     _segment_audio_ready = Signal(int, object, object, float, object)
     _subtitles_ready = Signal(object, object)
     _auto_sub_sync_ready = Signal(object)
     _auto_sub_sync_failed = Signal(str)
-    _preview_ready = Signal(str)
-    _preview_error = Signal(str)
+    _preview_ready = Signal(int, str)
+    _preview_error = Signal(int, str)
+    _duration_ready = Signal(float)
+    calibration_changed = Signal(object)
 
     def __init__(
         self,
@@ -97,8 +103,14 @@ class SyncStudioDialog(QDialog):
         ffmpeg_bin: str = "ffmpeg",
         ffprobe_bin: str = "ffprobe",
         parent: QWidget | None = None,
+        embedded: bool = False,
+        crossfade_ms: int = 80,
     ) -> None:
         super().__init__(parent)
+        self._embedded = embedded
+        self.crossfade_ms = crossfade_ms
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.target_entry = target_entry
         self.target_source_path = Path(target_source_path)
         self.target_stream_index = target_stream_index
@@ -129,6 +141,8 @@ class SyncStudioDialog(QDialog):
         self._current_cut_ms: float | None = None
         # Cache des extraits audio, indexé par position de début (ms).
         self._audio_cache: dict[int, tuple[object, object]] = {}
+        self._duration_requested = False
+        self._duration_ms = 0
 
         # Données de sous-titres
         self._ref_cues: list = []
@@ -139,7 +153,15 @@ class SyncStudioDialog(QDialog):
         self._player: QMediaPlayer | None = None
         self._audio_output: QAudioOutput | None = None
         self._is_playing = False
+        self._preview_token = 0
         self._closing = False
+        self._cancel_event = threading.Event()
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sync-studio")
+        self._shutdown: Shutdown | None = None
+        self._pending_result: int | None = None
+        self._done_timer = QTimer(self)
+        self._done_timer.setInterval(50)
+        self._done_timer.timeout.connect(self._finish_done_when_ready)
 
         self._waveform_loading.connect(self._on_waveform_loading)
         self._segment_audio_ready.connect(self._on_segment_audio_ready)
@@ -148,6 +170,7 @@ class SyncStudioDialog(QDialog):
         self._auto_sub_sync_failed.connect(self._on_auto_sub_sync_failed)
         self._preview_ready.connect(self._on_preview_ready)
         self._preview_error.connect(self._on_preview_error)
+        self._duration_ready.connect(self._on_duration_ready)
 
         self._init_ui()
         self._select_segment(0)
@@ -165,9 +188,10 @@ class SyncStudioDialog(QDialog):
                 codec=self.target_entry.codec,
             )
         )
-        self.resize(_scale(980), _scale(740))
-        self.setMinimumWidth(_scale(850))
-        self.setMinimumHeight(_scale(650))
+        if not self._embedded:
+            self.resize(_scale(980), _scale(740))
+            self.setMinimumWidth(_scale(850))
+            self.setMinimumHeight(_scale(650))
 
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(_scale(14), _scale(14), _scale(14), _scale(14))
@@ -190,8 +214,8 @@ class SyncStudioDialog(QDialog):
             )
         )
         title_lbl.setStyleSheet(f"font-weight: 700; font-size: {_font_px(13)}px; color: {_C.TEXT_PRI};")
-        title_row.addWidget(title_lbl)
-        title_row.addStretch()
+        title_lbl.setWordWrap(True)
+        title_row.addWidget(title_lbl, 1)
 
         if self.current_calibration.confidence:
             conf_badge = QLabel(f"Confiance : {self.current_calibration.confidence:.0%}")
@@ -211,6 +235,7 @@ class SyncStudioDialog(QDialog):
             f"<b>{translate_text('Cible :')}</b> <span style='color: {_C.ACCENT};'>{tgt_info}</span>"
         )
         info_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
+        info_lbl.setWordWrap(True)
         hc_layout.addWidget(info_lbl)
 
         # Section Cadence & Hauteur tonale (Pitch)
@@ -312,19 +337,22 @@ class SyncStudioDialog(QDialog):
         )
         wave_header.addWidget(self.seg_indicator)
 
-        if self.current_calibration.cuts_count > 0:
-            self.btn_prev_seg: QPushButton | None = _secondary_button("◀", fixed_width=30, padding_h=2)
-            self.btn_prev_seg.setToolTip(translate_text("Segment précédent"))
-            self.btn_prev_seg.clicked.connect(self._prev_segment)
-            wave_header.addWidget(self.btn_prev_seg)
+        self.btn_prev_seg: QPushButton = _secondary_button("◀", fixed_width=30, padding_h=2)
+        self.btn_prev_seg.setToolTip(translate_text("Segment précédent"))
+        self.btn_prev_seg.clicked.connect(self._prev_segment)
+        wave_header.addWidget(self.btn_prev_seg)
 
-            self.btn_next_seg: QPushButton | None = _secondary_button("▶", fixed_width=30, padding_h=2)
-            self.btn_next_seg.setToolTip(translate_text("Segment suivant"))
-            self.btn_next_seg.clicked.connect(self._next_segment)
-            wave_header.addWidget(self.btn_next_seg)
-        else:
-            self.btn_prev_seg = None
-            self.btn_next_seg = None
+        self.btn_next_seg: QPushButton = _secondary_button("▶", fixed_width=30, padding_h=2)
+        self.btn_next_seg.setToolTip(translate_text("Segment suivant"))
+        self.btn_next_seg.clicked.connect(self._next_segment)
+        wave_header.addWidget(self.btn_next_seg)
+        self.btn_prev_seg.setVisible(self.current_calibration.cuts_count > 0)
+        self.btn_next_seg.setVisible(self.current_calibration.cuts_count > 0)
+
+        wave_header.addStretch()
+        wc_layout.addLayout(wave_header)
+        wave_header = QHBoxLayout()
+        wave_header.setSpacing(_scale(8))
 
         # Navigation libre vers un instant arbitraire (±10 s autour)
         self.goto_edit = QLineEdit(self)
@@ -370,6 +398,21 @@ class SyncStudioDialog(QDialog):
         wave_header.addWidget(self.btn_mode_switch)
 
         wc_layout.addLayout(wave_header)
+
+        timeline_row = QHBoxLayout()
+        self.timeline = QSlider(Qt.Orientation.Horizontal)
+        self.timeline.setStyleSheet(_slider_style())
+        self.timeline.setRange(0, 0)
+        self.timeline.setEnabled(False)
+        self.timeline.setTracking(False)
+        self.timeline.setSingleStep(1000)
+        self.timeline.setPageStep(10000)
+        self.timeline.valueChanged.connect(self._seek_timeline)
+        self.timeline.setToolTip(translate_text("Naviguer dans toute la piste"))
+        self.timeline_label = QLabel(translate_text("Chargement de la durée…"))
+        timeline_row.addWidget(self.timeline, 1)
+        timeline_row.addWidget(self.timeline_label)
+        wc_layout.addLayout(timeline_row)
 
         # Widget Waveform
         self.waveform: WaveformView = WaveformView(
@@ -473,57 +516,56 @@ class SyncStudioDialog(QDialog):
         vbox.addWidget(ctrl_card)
 
         # ── Carte 4 : Coupures / Multi-segments (si applicable) ────────────────
-        if self.current_calibration.cuts_count > 0:
-            cuts_card = _card(self)
-            cuts_layout = QVBoxLayout(cuts_card)
-            cuts_layout.setContentsMargins(_scale(12), _scale(8), _scale(12), _scale(8))
-            cuts_layout.setSpacing(_scale(6))
+        cuts_card = _card(self)
+        cuts_layout = QVBoxLayout(cuts_card)
+        cuts_layout.setContentsMargins(_scale(12), _scale(8), _scale(12), _scale(8))
+        cuts_layout.setSpacing(_scale(6))
 
-            cuts_header = QLabel(
-                translate_text(
-                    "Coupures et variations de rythme détectées ({count}) :",
-                    count=self.current_calibration.cuts_count,
-                )
+        cuts_header = QLabel(
+            translate_text(
+                "Coupures et variations de rythme détectées ({count}) :",
+                count=self.current_calibration.cuts_count,
             )
-            cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: #e5a50a;")
-            cuts_layout.addWidget(cuts_header)
+        )
+        cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: #e5a50a;")
+        cuts_layout.addWidget(cuts_header)
 
-            segments = self.current_calibration.segments
-            self.cuts_table: QTableWidget | None = QTableWidget(len(segments), 4, self)
-            self.cuts_table.setStyleSheet(_table_style())
-            self.cuts_table.setHorizontalHeaderLabels([
-                translate_text("Segment"),
-                translate_text("Position"),
-                translate_text("Décalage"),
-                translate_text("Saut relatif"),
-            ])
-            self.cuts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-            self.cuts_table.verticalHeader().setVisible(False)
-            self.cuts_table.setShowGrid(True)
-            self.cuts_table.setAlternatingRowColors(True)
-            self.cuts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-            self.cuts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        segments = self.current_calibration.segments
+        table_class = ContentTableWidget if self._embedded else QTableWidget
+        self.cuts_table: QTableWidget = table_class(len(segments), 4, self)
+        self.cuts_table.setStyleSheet(_table_style())
+        self.cuts_table.setHorizontalHeaderLabels([
+            translate_text("Segment"),
+            translate_text("Position"),
+            translate_text("Décalage"),
+            translate_text("Saut relatif"),
+        ])
+        self.cuts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.cuts_table.verticalHeader().setVisible(False)
+        self.cuts_table.setShowGrid(True)
+        self.cuts_table.setAlternatingRowColors(True)
+        self.cuts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.cuts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        if not self._embedded:
             self.cuts_table.setMaximumHeight(_scale(120))
-            self.cuts_table.cellClicked.connect(self._on_cuts_cell_clicked)
-            self._update_cuts_table()
-            cuts_layout.addWidget(self.cuts_table)
-            vbox.addWidget(cuts_card)
-        else:
-            self.cuts_table = None
+        self.cuts_table.cellClicked.connect(self._on_cuts_cell_clicked)
+        self._update_cuts_table()
+        cuts_layout.addWidget(self.cuts_table)
+        vbox.addWidget(cuts_card)
+        self._cuts_card = cuts_card
+        cuts_card.setVisible(self.current_calibration.cuts_count > 0)
 
         # ── Boutons de dialogue ────────────────────────────────────────────────
-        btn_bar = QHBoxLayout()
-        btn_bar.addStretch()
-
-        cancel_btn = _secondary_button(translate_text("Annuler"))
-        cancel_btn.clicked.connect(self.reject)
-        btn_bar.addWidget(cancel_btn)
-
-        apply_btn = _primary_button(translate_text("Appliquer la synchronisation"))
-        apply_btn.clicked.connect(self.accept)
-        btn_bar.addWidget(apply_btn)
-
-        vbox.addLayout(btn_bar)
+        if not self._embedded:
+            btn_bar = QHBoxLayout()
+            btn_bar.addStretch()
+            cancel_btn = _secondary_button(translate_text("Annuler"))
+            cancel_btn.clicked.connect(self.reject)
+            btn_bar.addWidget(cancel_btn)
+            apply_btn = _primary_button(translate_text("Appliquer la synchronisation"))
+            apply_btn.clicked.connect(self.accept)
+            btn_bar.addWidget(apply_btn)
+            vbox.addLayout(btn_bar)
 
     def _activate_segment(self, idx: int) -> None:
         """Rend le segment `idx` éditable (spin, navigation, tableau)."""
@@ -549,6 +591,7 @@ class SyncStudioDialog(QDialog):
         total = len(self.current_calibration.segments)
         if idx < 0 or idx >= total:
             return
+        self._stop_playback()
         self._activate_segment(idx)
         seg = self.current_calibration.segments[idx]
 
@@ -567,6 +610,7 @@ class SyncStudioDialog(QDialog):
 
         self._current_start_s = start_s
         self._current_cut_ms = cut_ms
+        self._update_timeline(seg.start_ms)
 
         self._load_segment_audio_async(idx, start_s, cut_ms)
 
@@ -597,7 +641,33 @@ class SyncStudioDialog(QDialog):
         self.listen_status.setText("")
         self._current_start_s = start_s
         self._current_cut_ms = cut_ms
+        self._update_timeline(target_ms)
         self._load_segment_audio_async(idx, start_s, cut_ms)
+
+    def _on_duration_ready(self, duration_s: float) -> None:
+        if self._closing:
+            return
+        self._duration_ms = round(duration_s * 1000)
+        self.timeline.blockSignals(True)
+        self.timeline.setRange(0, self._duration_ms)
+        self.timeline.blockSignals(False)
+        self.timeline.setEnabled(self._duration_ms > 0)
+        if not self._duration_ms:
+            self.timeline_label.setText(translate_text("Durée indisponible"))
+        self._update_timeline(self._current_start_s * 1000)
+
+    def _update_timeline(self, position_ms: float) -> None:
+        self.timeline.blockSignals(True)
+        self.timeline.setValue(round(position_ms))
+        self.timeline.blockSignals(False)
+        if self._duration_ms:
+            self.timeline_label.setText(
+                f"{SyncCalibration.format_timestamp(position_ms)} / {SyncCalibration.format_timestamp(self._duration_ms)}"
+            )
+
+    def _seek_timeline(self, position_ms: int) -> None:
+        self.goto_edit.setText(SyncCalibration.format_timestamp(position_ms))
+        self._goto_timestamp()
 
     def _prev_segment(self) -> None:
         if self._current_segment_index > 0:
@@ -666,6 +736,7 @@ class SyncStudioDialog(QDialog):
             self.cuts_table.selectRow(self._current_segment_index)
 
     def _on_shift_spin_changed(self, value: float) -> None:
+        self._stop_playback()
         self.waveform.set_shift(value)
         old_shift = self.current_calibration.segments[self._current_segment_index].shift_ms
         delta = value - old_shift
@@ -681,17 +752,33 @@ class SyncStudioDialog(QDialog):
         self.current_calibration = replace(self.current_calibration, segments=tuple(new_segments))
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._update_cuts_table()
+        self.calibration_changed.emit(self.current_calibration)
 
     def _reset_shifts(self) -> None:
+        self._stop_playback()
         self.current_calibration = self._initial_calibration
+        self._current_shift_ms = self.current_calibration.segments[0].shift_ms
+        self._current_segment_index = min(self._current_segment_index, len(self.current_calibration.segments) - 1)
         seg = self.current_calibration.segments[self._current_segment_index]
         self.spin_shift.blockSignals(True)
         self.spin_shift.setValue(seg.shift_ms)
         self.spin_shift.blockSignals(False)
         self.waveform.set_shift(seg.shift_ms)
+        self._refresh_segment_controls()
+        self._select_segment(self._current_segment_index)
+        self.calibration_changed.emit(self.current_calibration)
+
+    def _refresh_segment_controls(self) -> None:
+        multi = self.current_calibration.cuts_count > 0
+        self._cuts_card.setVisible(multi)
+        self.btn_prev_seg.setVisible(multi)
+        self.btn_next_seg.setVisible(multi)
+        self.cuts_table.setRowCount(len(self.current_calibration.segments))
         self._update_cuts_table()
 
     def _load_segment_audio_async(self, idx: int, start_s: float, cut_ms: float | None) -> None:
+        if self._closing:
+            return
         key = round(start_s * 1000.0)
         if key in self._audio_cache:
             ref_samples, tgt_samples = self._audio_cache[key]
@@ -705,6 +792,8 @@ class SyncStudioDialog(QDialog):
             else translate_text("Extraction audio du segment {idx}…", idx=idx + 1)
         )
         self.waveform.set_loading(loading_msg)
+        read_duration = not self._duration_requested and self.target_source_path.is_file()
+        self._duration_requested = True
 
         def _worker() -> None:
             try:
@@ -714,7 +803,9 @@ class SyncStudioDialog(QDialog):
                 # Extraction des sous-titres si applicable
                 if (is_tgt_sub or is_ref_sub) and (not self._tgt_cues and not self._ref_cues):
                     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-                    sub_scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                    sub_scanner = SubtitleSyncScanner(
+                        self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event,
+                    )
                     new_ref_cues = []
                     new_tgt_cues = []
                     if is_ref_sub and self.reference_source_path is not None and self.reference_stream_index is not None:
@@ -727,10 +818,19 @@ class SyncStudioDialog(QDialog):
                             new_tgt_cues = sub_scanner.extract_cues(self.target_source_path, self.target_stream_index)
                         except Exception:
                             new_tgt_cues = []
-                    self._subtitles_ready.emit(new_ref_cues, new_tgt_cues)
+                    if not self._closing:
+                        self._subtitles_ready.emit(new_ref_cues, new_tgt_cues)
 
                 # Échantillons audio
-                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
+                if read_duration:
+                    try:
+                        duration = scanner.duration(AudioSyncTrack(self.target_source_path, self.target_stream_index))
+                        if not self._closing:
+                            self._duration_ready.emit(duration)
+                    except (ValueError, KeyError, RuntimeError, TypeError):
+                        if not self._closing:
+                            self._duration_ready.emit(0.0)
                 ref_samples = np.array([], dtype=np.float32)
                 tgt_samples = np.array([], dtype=np.float32)
 
@@ -744,11 +844,13 @@ class SyncStudioDialog(QDialog):
                     tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
                     tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
 
-                self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
+                if not self._closing:
+                    self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
             except Exception as exc:
-                self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
+                if not self._closing:
+                    self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
     def _on_subtitles_ready(self, ref_cues, tgt_cues) -> None:
         if getattr(self, "_closing", False):
@@ -760,7 +862,7 @@ class SyncStudioDialog(QDialog):
         self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
     def _run_auto_subtitle_sync(self) -> None:
-        if self._is_sub_sync_running:
+        if self._closing or self._is_sub_sync_running:
             return
         self._is_sub_sync_running = True
         if hasattr(self, "btn_auto_sub_sync"):
@@ -771,7 +873,7 @@ class SyncStudioDialog(QDialog):
         def _worker() -> None:
             try:
                 from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-                scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = SubtitleSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
                 is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
                 ref_src = self.reference_source_path or self.target_source_path
                 ref_idx = self.reference_stream_index if self.reference_stream_index is not None else 0
@@ -783,11 +885,13 @@ class SyncStudioDialog(QDialog):
                     is_ref_sub=is_ref_sub,
                     detect_cuts=True,
                 )
-                self._auto_sub_sync_ready.emit(cal)
+                if not self._closing:
+                    self._auto_sub_sync_ready.emit(cal)
             except Exception as exc:
-                self._auto_sub_sync_failed.emit(str(exc))
+                if not self._closing:
+                    self._auto_sub_sync_failed.emit(str(exc))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
     def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
         if getattr(self, "_closing", False):
@@ -804,9 +908,7 @@ class SyncStudioDialog(QDialog):
         self.spin_shift.blockSignals(False)
         self.waveform.set_shift(first_shift)
 
-        if cal.cuts_count > 0 and self.cuts_table is not None:
-            self.cuts_table.setRowCount(len(cal.segments))
-            self._update_cuts_table()
+        self._refresh_segment_controls()
 
         conf_pct = f"{cal.confidence:.0%}" if cal.confidence is not None else "100%"
         offset_label = f"{first_shift:+.1f}"
@@ -818,6 +920,7 @@ class SyncStudioDialog(QDialog):
             )
         )
         self._select_segment(0)
+        self.calibration_changed.emit(self.current_calibration)
 
     def _on_auto_sub_sync_failed(self, err: str) -> None:
         if getattr(self, "_closing", False):
@@ -859,6 +962,8 @@ class SyncStudioDialog(QDialog):
             self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
     def _toggle_listen(self) -> None:
+        if self._closing:
+            return
         if self._is_playing:
             self._stop_playback()
             return
@@ -867,11 +972,15 @@ class SyncStudioDialog(QDialog):
         self.listen_status.setText(translate_text("Génération de l'extrait audio calé…"))
 
         is_sub = self.target_entry.is_subtitle
+        self._preview_token += 1
+        token = self._preview_token
+        start_s = self._current_start_s
+        calibration = self.current_calibration
 
         def _worker() -> None:
             try:
                 out_path = Path(self._temp_dir.name) / f"{uuid.uuid4().hex}.wav"
-                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin)
+                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
 
                 if is_sub:
                     # Pour les sous-titres, extraire l'audio de référence à écouter
@@ -883,7 +992,7 @@ class SyncStudioDialog(QDialog):
                         "-v",
                         "error",
                         "-ss",
-                        str(max(0.0, self._current_start_s)),
+                        str(max(0.0, start_s)),
                         "-i",
                         str(audio_source),
                         "-map",
@@ -897,14 +1006,16 @@ class SyncStudioDialog(QDialog):
                         str(out_path),
                     ]
                 else:
-                    graph = audio_filter(self.current_calibration, crossfade_ms=80).replace(
-                        "[0:a:0]", f"[0:{self.target_stream_index}]"
+                    from core.workflows.common.sync_rewrite import SYNC_AUDIO_ORIGIN_FILTER
+                    graph = audio_filter(calibration, crossfade_ms=self.crossfade_ms).replace(
+                        "[0:a:0]", f"[0:{self.target_stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},"
                     )
                     cmd = [
                         self.ffmpeg_bin,
                         "-nostdin",
                         "-v",
                         "error",
+                        "-copyts",
                         "-i",
                         str(self.target_source_path),
                         "-filter_complex",
@@ -912,7 +1023,7 @@ class SyncStudioDialog(QDialog):
                         "-map",
                         "[out]",
                         "-ss",
-                        str(max(0.0, self._current_start_s)),
+                        str(max(0.0, start_s)),
                         "-t",
                         "15",
                         "-ac",
@@ -924,14 +1035,16 @@ class SyncStudioDialog(QDialog):
                 res = scanner._run(cmd, timeout=30, **subprocess_text_kwargs())
                 if res.returncode != 0:
                     raise RuntimeError(res.stderr)
-                self._preview_ready.emit(str(out_path))
+                if not self._closing:
+                    self._preview_ready.emit(token, str(out_path))
             except Exception as exc:
-                self._preview_error.emit(str(exc))
+                if not self._closing:
+                    self._preview_error.emit(token, str(exc))
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._executor.submit(_worker)
 
-    def _on_preview_ready(self, path: str) -> None:
-        if getattr(self, "_closing", False):
+    def _on_preview_ready(self, token: int, path: str) -> None:
+        if getattr(self, "_closing", False) or token != self._preview_token:
             return
         self.listen_btn.setEnabled(True)
         try:
@@ -984,8 +1097,8 @@ class SyncStudioDialog(QDialog):
             if active and active[0]:
                 self.listen_status.setText(f"💬 {active[0]}")
 
-    def _on_preview_error(self, message: str) -> None:
-        if getattr(self, "_closing", False):
+    def _on_preview_error(self, token: int, message: str) -> None:
+        if getattr(self, "_closing", False) or token != self._preview_token:
             return
         self.listen_btn.setEnabled(True)
         self.listen_status.setText(translate_text("Erreur lors de la pré-écoute : {err}", err=message))
@@ -999,6 +1112,8 @@ class SyncStudioDialog(QDialog):
             pass
 
     def _stop_playback(self) -> None:
+        self._preview_token += 1
+        self.listen_btn.setEnabled(True)
         if self._player is not None:
             try:
                 self._player.stop()
@@ -1023,20 +1138,47 @@ class SyncStudioDialog(QDialog):
             self.current_calibration,
             cadence_audio_method=new_method,
         )
+        self.calibration_changed.emit(self.current_calibration)
 
     def result_calibration(self) -> tuple[SyncCalibration, int]:
         return self.current_calibration, round(self.current_calibration.segments[0].shift_ms)
 
+    def keyPressEvent(self, event) -> None:
+        if self._embedded and event.key() == Qt.Key.Key_Escape:
+            self._stop_playback()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _begin_shutdown(self) -> Shutdown:
+        if self._shutdown is None:
+            self._closing = True
+            self.setEnabled(False)
+            self._cancel_event.set()
+            self._stop_playback()
+            if self._player is not None:
+                self._player.setSource(QUrl())
+            self._shutdown = Shutdown(executors=(self._executor,))
+        return self._shutdown
+
+    def _finish_done_when_ready(self) -> None:
+        if self._shutdown is None or not self._shutdown.done.is_set():
+            return
+        self._done_timer.stop()
+        self._temp_dir.cleanup()
+        if self._pending_result is not None:
+            super().done(self._pending_result)
+
     def done(self, r: int) -> None:
-        self._closing = True
-        self._stop_playback()
-        super().done(r)
+        self._pending_result = r
+        self._begin_shutdown()
+        self._finish_done_when_ready()
+        if self._shutdown is not None and not self._shutdown.done.is_set():
+            self._done_timer.start()
 
     def closeEvent(self, event) -> None:
-        self._closing = True
-        self._stop_playback()
-        try:
-            self._temp_dir.cleanup()
-        except Exception:  # nosec B110
-            pass
+        shutdown = self._begin_shutdown()
+        if defer_close(self, event, ready=shutdown.done.is_set()):
+            return
+        self._temp_dir.cleanup()
         super().closeEvent(event)

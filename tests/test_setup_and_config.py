@@ -1208,8 +1208,9 @@ def test_setup_config_ini_path_uses_xdg_on_non_windows(tmp_path):
     assert path == xdg_dir / "muxiveo" / "config.ini"
 
 
-def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
+def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path, monkeypatch):
     import core.config as cfg_mod
+    monkeypatch.delenv("MUXIVEO_CONFIG_HOME", raising=False)
 
     appdata = tmp_path / "Roaming"
     with patch.object(cfg_mod.sys, "platform", "win32"), \
@@ -1220,8 +1221,9 @@ def test_core_config_ini_path_uses_appdata_for_windows_frozen(tmp_path):
     assert path == appdata / "muxiveo" / "config.ini"
 
 
-def test_core_config_ini_path_uses_project_root_for_windows_dev():
+def test_core_config_ini_path_uses_project_root_for_windows_dev(monkeypatch):
     import core.config as cfg_mod
+    monkeypatch.delenv("MUXIVEO_CONFIG_HOME", raising=False)
 
     with patch.object(cfg_mod.sys, "platform", "win32"), \
          patch.object(cfg_mod.sys, "frozen", False, create=True):

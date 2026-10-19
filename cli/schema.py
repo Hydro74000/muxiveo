@@ -78,6 +78,7 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "mkv_tid": {"type": "integer"},
             "stream": {"type": "integer"},
             "enabled": {"type": "boolean"},
+            "remove_closed_captions": {"type": "boolean"},
             "language": {"type": "string"},
             "title": {"type": "string"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},

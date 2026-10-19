@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from core.workflows.common.audio_timestamps import adjust_input_timestamp, input_timestamp_offset_args
 from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
@@ -97,10 +98,11 @@ def build_remux_command(
     cmd: list[str] = [ffmpeg_bin, "-hide_banner", "-y"]
     cmd.extend(ffmpeg_progress_args)
     cmd.extend(ffmpeg_thread_args)
-
     for source in config.sources:
+        cmd.extend(input_timestamp_offset_args(config.input_timestamp_offsets.get(source.path, 0.0)))
         append_ffmpeg_input_args(cmd, source.path, cli_path=cli_path)
     for index, path in enumerate(sync_inputs or []):
+        cmd.extend(input_timestamp_offset_args(config.input_timestamp_offsets.get(Path(path), 0.0)))
         fmt = (sync_input_formats or [])[index] if sync_input_formats and index < len(sync_input_formats) else "matroska"
         cmd.extend(["-f", fmt, "-i", cli_path(path)])
     for path in (extra_inputs or []):
@@ -115,6 +117,12 @@ def build_remux_command(
         start_input_index=len(config.sources) + sync_count + extra_count,
         cli_path=cli_path,
     )
+    adjusted_inputs: set[int] = set()
+    for spec in offset_specs:
+        index = offset_remap[spec.map_key][0]
+        if index not in adjusted_inputs:
+            adjust_input_timestamp(cmd, index, config.input_timestamp_offsets.get(Path(spec.input_path), 0.0))
+            adjusted_inputs.add(index)
 
     for mapped_track in mapped_tracks:
         map_key = (

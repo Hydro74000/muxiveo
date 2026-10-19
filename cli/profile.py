@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -96,7 +97,12 @@ def _refresh_sources_tracks(sources: list[SourceInput], tracks: list[TrackEntry]
     for track in tracks:
         by_file_id.setdefault(track.file_id, []).append(track)
     for source in sources:
-        source.tracks = by_file_id.get(f"src{source.file_index}", source.tracks)
+        # L'ordre de sortie est porté par track_order. Les sélecteurs exact-job
+        # comptent les pistes dans leur ordre d'origine dans le fichier source.
+        source.tracks = sorted(
+            by_file_id.get(f"src{source.file_index}", source.tracks),
+            key=lambda track: (track.mkv_tid, track.is_new),
+        )
 
 
 def _track_order(tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
@@ -136,11 +142,33 @@ def build_profile_remux_config(
     logger: Logger,
     preview: bool = False,
     metadata_job: dict[str, Any] | None = None,
+    select_tracks: Callable[[list[SourceInput]], None] | None = None,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
+    """Applique les heuristiques puis le profil aux candidats bornés par select_tracks."""
     if not cli_inputs:
         raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
     job = {"sources": [{"path": value} for value in cli_inputs]}
     sources, _infos, tracks = inspect_sources(job, config, options, logger)
+    if select_tracks is not None:
+        # Le témoin borne les candidats du profil, sans perdre les pistes
+        # d'origine nécessaires aux sélecteurs exact-job et à la synchro.
+        select_tracks(sources)
+        tracks = [track for source in sources for track in source.tracks if track.enabled]
+    candidate_ids = {track.entry_id for track in tracks}
+    excluded = [track for source in sources for track in source.tracks if track.entry_id not in candidate_ids]
+    from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
+    # Enrichir les flags avant les règles : elles peuvent les utiliser pour
+    # nommer/sélectionner les pistes, puis surcharger les décisions automatiques.
+    classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
+        all_audio_languages=True)
+    if options.auto_forced_subs:
+        order = forced_first([
+            (source.file_index, track.mkv_tid, track.entry_id)
+            for source in sources for track in source.tracks if track.entry_id in candidate_ids
+        ], sources)
+        positions = {item[2]: index for index, item in enumerate(order)}
+        tracks.sort(key=lambda track: positions[track.entry_id])
     source_index_by_file_id = {f"src{source.file_index}": source.file_index for source in sources}
     result = apply_decision_profile(
         profile,
@@ -149,10 +177,11 @@ def build_profile_remux_config(
     )
     if not result.report.get("valid", True):
         raise CliError(json.dumps(result.report, ensure_ascii=False, default=json_default), EXIT_VALIDATION)
-    _refresh_sources_tracks(sources, result.tracks)
-    from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
-    classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
-        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
+    _refresh_sources_tracks(sources, [*excluded, *result.tracks])
+    if options.remove_closed_captions is not None:
+        for track in result.tracks:
+            if track.is_video and track.has_closed_captions:
+                track.remove_closed_captions = options.remove_closed_captions
     metadata = metadata_job or {}
     tmdb_title = ""
     tmdb_tags = None
@@ -167,8 +196,6 @@ def build_profile_remux_config(
             source_title=_infos[0].title if _infos else "",
         )
     final_track_order = _track_order(result.tracks)
-    if options.auto_forced_subs:
-        final_track_order = forced_first(final_track_order, sources)
     output = resolve_final_output(
         cli_output=cli_output,
         job=metadata,

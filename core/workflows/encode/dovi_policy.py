@@ -44,6 +44,14 @@ class DoviPlan:
     error: str = ""
     #: Effets à annoncer (bandeau du panneau, journal).
     notes: tuple[str, ...] = ()
+    bake_fel: bool = False
+
+
+def wants_fel_bake(choice: bool | None, sub_profile: DoviSubProfile, codec: str = "libx265") -> bool:
+    """Activation explicite uniquement ; le profil P7 n'est pas une confirmation FEL."""
+    if codec == "copy":
+        return False
+    return choice is True
 
 
 def sub_profile_from_value(value: str | None) -> DoviSubProfile:
@@ -80,6 +88,7 @@ def resolve_dovi_plan(
     copy_dv: bool,
     dovi_profile: str | None,
     sub_profile: DoviSubProfile,
+    bake_dovi_fel: bool | None = False,
 ) -> DoviPlan:
     """Matrice V30 : Auto / Normaliser × sous-profil × Copy / réencodage."""
     normalize = str(dovi_profile or "0").strip() == NORMALIZE_P81
@@ -97,11 +106,14 @@ def resolve_dovi_plan(
         return DoviPlan(sub_profile=sub_profile, normalize_copy=True, output_profile="8.1", notes=notes)
 
     color_convert = sub_profile == DoviSubProfile.P5
+    bake = wants_fel_bake(bake_dovi_fel, sub_profile, codec)
     notes_list: list[str] = []
+    if bake:
+        notes_list.append("Reconstruction FEL demandée (extension mvo-fel), à confirmer au lancement.")
     if color_convert:
         notes_list.append("P5 : couleurs IPT converties en HDR10 BT.2020/PQ (libplacebo).")
     if not copy_dv:
-        return DoviPlan(sub_profile=sub_profile, color_convert=color_convert, notes=tuple(notes_list))
+        return DoviPlan(sub_profile=sub_profile, color_convert=color_convert, notes=tuple(notes_list), bake_fel=bake)
     if normalize and sub_profile in _NON_P81_BASE:
         return DoviPlan(
             sub_profile=sub_profile,
@@ -110,7 +122,8 @@ def resolve_dovi_plan(
         )
     output = _REENCODE_OUTPUT_PROFILE.get(sub_profile, "8.1")
     if sub_profile in {DoviSubProfile.P7_FEL, DoviSubProfile.P7_MEL}:
-        notes_list.append("P7 → P8.1 : couche d'amélioration perdue au réencodage.")
+        notes_list.append("P7 → P8.1 : apport FEL intégré aux pixels si confirmé." if bake else
+                          "P7 → P8.1 : couche d'amélioration perdue au réencodage.")
     elif sub_profile == DoviSubProfile.P5:
         notes_list.append("P5 → P8.1 (RPU converti, repli HDR10 compatible).")
     return DoviPlan(
@@ -118,6 +131,7 @@ def resolve_dovi_plan(
         color_convert=color_convert,
         output_profile=output,
         notes=tuple(notes_list),
+        bake_fel=bake,
     )
 
 
@@ -147,6 +161,22 @@ def dovi_output_compat_id_for(video: object) -> int | None:
     return dovi_output_compat_id(plan.output_profile) if not plan.error else None
 
 
+def rpu_extract_mode(video: object) -> str | None:
+    """Mode ``dovi_tool -m`` de l'extraction du RPU d'une piste réencodée (image de base seule).
+
+    P7 (FEL/MEL) et reconstruction FEL : ``2`` (RPU P8.1) ; P5 converti : ``3``.
+    ``-m`` est ignoré par ``inject-rpu`` : la conversion se fait à l'extraction.
+    """
+    if getattr(video, "fel_context", None) is not None:
+        return "2"
+    if getattr(video, "p5_to_hdr10", False):
+        return "3"
+    if str(getattr(video, "codec", "") or "") == "copy":
+        return None
+    sub_profile = sub_profile_from_value(str(getattr(video, "dovi_source_profile", "") or ""))
+    return "2" if sub_profile in {DoviSubProfile.P7_FEL, DoviSubProfile.P7_MEL} else None
+
+
 def dovi_transfer_error(output_profile: str, output_transfer: str) -> str:
     """Cohérence profil DV / transfert de l'image de base ("" si cohérent ou inconnu)."""
     if output_profile == "8.1" and output_transfer == "hlg":
@@ -167,6 +197,7 @@ __all__ = [
     "dovi_output_compat_id_for",
     "dovi_transfer_error",
     "resolve_dovi_plan",
+    "rpu_extract_mode",
     "sub_profile_from_track",
     "sub_profile_from_value",
 ]

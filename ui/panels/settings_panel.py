@@ -41,6 +41,7 @@ from ui.panels.encode_panel.theme import (
     _separator,
 )
 from ui.design_system import font_px as _font_px, scale as _scale
+from ui.styles import _slider_style
 
 
 def _spin_style() -> str:
@@ -50,22 +51,6 @@ def _spin_style() -> str:
         f"padding:{_scale(4)}px {_scale(10)}px;font-size:{_font_px(11)}px;}}"
         f"QSpinBox:focus{{border-color:{_C.ACCENT};}}"
         f"QSpinBox::up-button,QSpinBox::down-button{{width:{_scale(18)}px;border:none;background:{_C.BG_HOVER};}}"
-    )
-
-
-def _slider_style() -> str:
-    handle = _scale(16)
-    groove_h = _scale(6)
-    radius = _scale(3)
-    margin = _scale(6)
-    return (
-        f"QSlider::groove:horizontal{{background:{_C.BG_CARD};height:{groove_h}px;"
-        f"border:1px solid {_C.BORDER};border-radius:{radius}px;}}"
-        f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:{radius}px;}}"
-        f"QSlider::add-page:horizontal{{background:{_C.BG_ACTIVE};border-radius:{radius}px;}}"
-        f"QSlider::handle:horizontal{{background:{_C.TEXT_PRI};width:{handle}px;height:{handle}px;"
-        f"margin:-{margin}px 0;border-radius:{_scale(8)}px;border:1px solid {_C.BORDER_LT};}}"
-        f"QSlider::handle:horizontal:hover{{border-color:{_C.ACCENT};}}"
     )
 
 
@@ -91,6 +76,7 @@ class SettingsPanel(QWidget):
         self._field_widgets: dict[tuple[str, str], QWidget] = {}
         self._slider_value_labels: dict[tuple[str, str], QLabel] = {}
         self._status_label: QLabel | None = None
+        self._scroll: QScrollArea | None = None
         self._build_ui()
         self._load_from_config()
         self._sync_dependent_field_states()
@@ -106,6 +92,7 @@ class SettingsPanel(QWidget):
         root.setSpacing(0)
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet(

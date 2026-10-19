@@ -26,6 +26,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 |---|---|
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | génère un template JSON de départ |
+| `inspect --hdr static\|dynamic\|measure` | inspection HDR (HDR Studio) : contrôles, métadonnées, courbes ; comparaison et rapport HTML/JSON |
 | `schema` | affiche le schéma JSON public du contrat CLI |
 | `tools` | affiche en JSON les chemins d'outils effectivement résolus par Muxiveo |
 | `version [--check] [--channel stable\|unstable]` | affiche la version ; `--check` la compare à la dernière release du canal (stable = `main`, unstable = pré-versions `devel-cli`) |
@@ -46,6 +47,9 @@ Exemples :
 ```bash
 Muxiveo-cli inspect source.mkv
 Muxiveo-cli inspect source.mkv --config-template --output sortie.mkv
+Muxiveo-cli inspect film.mkv --hdr dynamic --hdr-report film.hdr.html
+Muxiveo-cli inspect web.mkv bluray.mkv --hdr dynamic --hdr-compare --hdr-report comparaison.html
+Muxiveo-cli inspect --hdr static --hdr-fail-on warn *.mkv
 Muxiveo-cli schema --output Muxiveo-cli.schema.json
 Muxiveo-cli schema --version decision-profile
 Muxiveo-cli tools
@@ -870,4 +874,20 @@ Muxiveo-cli shift-subs \
   --calibration "calibration_film1.json"
 ```
 
+## Inspection HDR (`inspect --hdr`)
+
+Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "comparison": ...}`) :
+
+| Option | Effet |
+|---|---|
+| `--hdr static` | en-têtes seuls (MDCV, MaxCLL/MaxFALL, enregistrement Dolby Vision), instantané |
+| `--hdr dynamic` | + RPU Dolby Vision et HDR10+ lus en entier (sans décodage), contrôles de cohérence |
+| `--hdr measure` | + mesure de chaque image (extension mvo-fel ≥ 0.4.0) : MaxCLL/MaxFALL réels |
+| `--hdr-track N` | index ffprobe de la piste vidéo (défaut : première) |
+| `--hdr-report fichier` | rapport HTML autonome (`.html`) ou JSON (autre extension) |
+| `--hdr-compare` | compare la seconde source à la première (alignement automatique sur les plans) |
+| `--hdr-offset N` | décalage imposé de B, en images |
+| `--hdr-fail-on warn\|error` | code de sortie 3 si un contrôle atteint ce niveau (contrôle qualité en lot) |
+| `--hdr-fast` | avec `measure` : mesure rapide (images clés, mvo-fel ≥ 0.5.0) ; estimation, MaxFALL souvent sous-estimée |
+| `--hdr-no-cache` | relit les fichiers au lieu des résultats en cache |
 

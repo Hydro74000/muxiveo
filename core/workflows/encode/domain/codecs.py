@@ -1232,13 +1232,19 @@ def build_vf(video: VideoEncodeSettings) -> str:
     if not video.tonemap_to_sdr:
         return ",".join(chain)
     algo = video.tonemap_algorithm or "hable"
+    # FEL : images RGB reconstruites, tramées et sous-échantillonnées à la position chroma du BL,
+    # puis marquées (zscale ne le fait pas : un filtre aval rééchantillonnerait depuis « left »).
+    fel = video.fel_context
+    dither = f":dither=error_diffusion:chromal={fel.chroma_location}" if fel is not None else ""
+    mark = f"setparams=chroma_location={fel.chroma_location}," if fel is not None and fel.chroma_setparams else ""
     chain.append(
         "zscale=transfer=linear:npl=100,"
         "format=gbrpf32le,"
         "zscale=primaries=bt709,"
         f"tonemap=tonemap={algo}:desat=0,"
-        "zscale=transfer=bt709:matrix=bt709:range=tv,"
+        f"zscale=transfer=bt709:matrix=bt709:range=tv{dither},"
         "format=yuv420p,"
+        f"{mark}"
         # Les métadonnées HDR de frame traversent tonemap : l'encodeur les
         # réécrirait en SEI dans un flux SDR.
         "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,"

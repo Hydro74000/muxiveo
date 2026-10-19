@@ -132,9 +132,16 @@ class TmdbSearchModal(QDialog):
 
     Attribut public après accept() :
         fetched_details — MediaDetails | None
+        selected_result — MediaSearchResult | None (identifiant et type TMDB)
     """
 
     fetched_details: MediaDetails | None = None
+
+    @property
+    def selected_result(self) -> MediaSearchResult | None:
+        """Résultat choisi, y compris son ID TMDB même si les détails renvoient une URL IMDb."""
+        row = self._results_list.currentRow()
+        return self._results[row] if 0 <= row < len(self._results) else None
 
     def __init__(
         self,

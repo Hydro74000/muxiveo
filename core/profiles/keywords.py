@@ -511,7 +511,9 @@ def track_field_values(
     width, height = resolution or (0, 0)
     resolution_text = f"{resolution[0]}x{resolution[1]}" if resolution else ""
     video_flags = video_characteristic_flags(track)
-    flags = {name: flag_value(track, name, original=True) for name in FLAG_NAMES}
+    # Les règles et les titres lisent l'état courant (détection, édition et
+    # règles précédentes). Les sélecteurs exact-job gardent seuls l'état source.
+    flags = {name: flag_value(track, name, original=False) for name in FLAG_NAMES}
     codec = str(track.orig_codec or track.codec or "").strip().upper()
     values: dict[str, Any] = {
         "type": track.track_type,

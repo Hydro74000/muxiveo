@@ -12,6 +12,8 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
 from core.matroska import ebml
 from core.matroska.assembly import (
     MatroskaAssemblyPlan,
@@ -33,7 +35,7 @@ from core.matroska.reader import (
     MatroskaBlock, MatroskaReader, MatroskaTrack, iter_children,
     payload_children, read_element,
 )
-from core.matroska.writer import MatroskaWriter
+from core.matroska.writer import MatroskaWriteCancelled, MatroskaWriter
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 
 
@@ -709,3 +711,105 @@ def test_native_extra_attachment_cover_is_canonical(tmp_path: Path) -> None:
     MatroskaWriter().write(plan)
     names = [attachment.name for attachment in MatroskaReader(output).attachments()]
     assert names == ["cover.jpg"]
+
+
+def test_assembly_reads_media_only_once_and_starts_with_progress(tmp_path, monkeypatch):
+    """Régression : le calcul des statistiques ne bloque plus avant écriture."""
+    source = tmp_path / "src.mkv"
+    _write_source_with_bcp47(source)
+    original = MatroskaReader.blocks
+    reads = []
+    events = []
+
+    def blocks(reader, **kwargs):
+        # Une progression doit précéder la première lecture de média.
+        assert events and events[0].packets_written == 0
+        reads.append((reader.path, kwargs.get("read_payload", True)))
+        yield from original(reader, **kwargs)
+
+    monkeypatch.setattr(MatroskaReader, "blocks", blocks)
+    plan = _compiled_plan(source, tmp_path / "out.mkv", language_value=None)
+    assert reads == []
+    MatroskaWriter().write(plan, progress_cb=events.append)
+    assert reads == [(source, True)]
+    assert events[-1].percent == 100
+
+
+@pytest.mark.parametrize("mode,encoded", [
+    (1, b"\x01\x01abb"),  # Xiph : 1 + 2 octets média
+    (2, b"\x01aabb"),     # fixed : 2 + 2 octets média
+    (3, b"\x01\x81abb"),  # EBML : 1 + 2 octets média
+])
+@pytest.mark.parametrize("offset_ms", [-40, 25])
+def test_streaming_statistics_keep_laces_offsets_and_indexed_tail_tags(
+    tmp_path, mode, encoded, offset_ms,
+):
+    source, output = tmp_path / "src.mkv", tmp_path / "out.mkv"
+    audio = _track(
+        1, 11, "A_AAC", 2,
+        extra=ebml.uint_element(DEFAULT_DURATION_ID, 20_000_000),
+    )
+    MatroskaWriter().write(MatroskaMuxPlan(
+        source, (MatroskaMuxTrack(source, audio, 1, 11),),
+        tuple(MatroskaMuxPacket(1, MatroskaBlock(
+            1, pts, 0x80 | (mode << 1), b"a", lace_count=2,
+            encoded_frames_payload=encoded,
+        )) for pts in (0, 40, 80)),
+        duration_ns=9_000_000_000,  # estimation source volontairement fausse
+    ))
+    assembly = MatroskaAssemblyPlan(
+        output=output,
+        ordered_tracks=(MatroskaAssemblyTrack(source, 0, "test", time_shift_ms=offset_ms),),
+        tag_overrides={"TITLE": "Conservé"},
+    )
+    contract = assembly_output_contract(assembly)
+    plan = compile_assembly_plan(replace(assembly, expected_output_contract=contract))
+    events = []
+    MatroskaWriter().write(plan, progress_cb=events.append)
+    reader = MatroskaReader(output)
+    frames = list(reader.blocks())
+    frame_count = 4 if offset_ms < 0 else 6
+    assert len(frames) == frame_count
+    assert sum(len(block.payload) for block in frames) == frame_count // 2 * (4 if mode == 2 else 3)
+    statistics = next(dict(tag.values) for tag in reader.tags() if "NUMBER_OF_FRAMES" in dict(tag.values))
+    assert statistics["NUMBER_OF_FRAMES"] == str(frame_count)
+    assert statistics["NUMBER_OF_BYTES"] == str(sum(len(block.payload) for block in frames))
+    assert statistics["DURATION"] == ("00:00:00.080000000" if offset_ms < 0 else "00:00:00.120000000")
+    assert reader.segment_duration_ns() == (120 + offset_ms) * 1_000_000
+    assert events[-1].packets_written == frame_count
+    assert events[-1].percent == 100
+    assert any(dict(tag.values).get("TITLE") == "Conservé" for tag in reader.tags())
+    # Les deux éléments Tags, avant et après les Clusters, sont indexés.
+    tag_offsets = {item.offset for item in reader.top_level() if item.element_id == TAGS_ID}
+    head = next(item for item in reader.top_level() if item.element_id == SEEK_HEAD_ID)
+    indexed = {reader.segment().payload_offset + pos for key, pos in reader._seek_entries(head) if key == TAGS_ID}
+    assert tag_offsets == indexed
+    assert len(tag_offsets) == 2
+    from core.matroska.validation import validate_matroska_output
+    assert not validate_matroska_output(output, contract)
+
+
+def test_streaming_assembly_cancellation_cleans_candidate_and_leaves_source(tmp_path):
+    source, output = tmp_path / "src.mkv", tmp_path / "out.mkv"
+    _write_source_with_bcp47(source)
+    source_bytes = source.read_bytes()
+    plan = _compiled_plan(source, output, language_value=None)
+    events = []
+    with pytest.raises(MatroskaWriteCancelled):
+        MatroskaWriter().write(plan, progress_cb=events.append, cancel_cb=lambda: bool(events))
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+    assert source.read_bytes() == source_bytes
+
+
+def test_streaming_duration_can_replace_source_estimate_with_zero(tmp_path):
+    source, output = tmp_path / "src.mkv", tmp_path / "out.mkv"
+    track = _track(1, 11, "V_MPEG4/ISO/AVC", 1)
+    MatroskaWriter().write(MatroskaMuxPlan(
+        source, (MatroskaMuxTrack(source, track, 1, 11),),
+        (MatroskaMuxPacket(1, MatroskaBlock(1, 0, 0x80, b"frame")),),
+        duration_ns=9_000_000_000,
+    ))
+    plan = _compiled_plan(source, output, language_value=None)
+    MatroskaWriter().write(plan)
+    assert MatroskaReader(output).segment_duration_ns() == 0

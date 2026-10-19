@@ -29,6 +29,7 @@ from core.workflows.encode.planning.track_assembly import (
     build_track_input_paths,
     resolve_track_assembly,
 )
+from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.planning.subtitles import resolve_subtitle_tracks_for_encode
 from core.workflows.encode.planning.sync_plan import (
@@ -74,6 +75,54 @@ def test_resolve_source_layout_dedupes_all_encode_inputs(tmp_path):
 
     assert layout.sources == (src, alt)
     assert layout.source_idx == {src: 0, alt: 1}
+
+
+@pytest.mark.parametrize("mode", ["shared", "synced_audio", "synced_subtitle", "no_audio", "no_subtitles", "wildcard"])
+def test_prepared_mux_isolates_only_shared_subtitle_readers(tmp_path, mode):
+    src, alt = tmp_path / "src.mkv", tmp_path / "alt.mkv"
+    cfg = _make_config(
+        src, tmp_path / "out.mkv",
+        audio_tracks=[] if mode == "no_audio" else [
+            AudioTrackSettings(stream_index=1, codec="copy", source_path=path) for path in (src, alt)
+        ],
+        subtitle_tracks=[] if mode in {"no_subtitles", "wildcard"} else [(src, 2), (alt, 3), (alt, 4)],
+        copy_subtitles=mode == "wildcard",
+    )
+    plan = build_encode_plan(
+        cfg, probe_subtitle_indices=lambda *_args: None,
+        resolve_global_tags=lambda _cfg: {},
+        video_tracks=lambda config: list(config.video_tracks),
+        video_source_from_settings=lambda config, video: video.source_path or config.source,
+        video_source_path=lambda config: config.source,
+        video_stream_index=lambda config: 0,
+        video_map_key=lambda config: (config.source, 0, "video"),
+    )
+    sync_remap = {}
+    if mode == "synced_audio":
+        sync_remap[(alt, 1, "audio")] = (3, 0)
+    elif mode == "synced_subtitle":
+        sync_remap[(alt, 3, "subtitle")] = (3, 0)
+    original_remap = dict(sync_remap)
+    result = plan_isolated_subtitle_inputs(
+        cfg, plan, source_idx={src: 1, alt: 2}, sync_remap=sync_remap, start_input_index=4,
+    )
+    assert sync_remap == original_remap
+    assert all(result.remap[key] == value for key, value in original_remap.items())
+    if mode in {"no_audio", "no_subtitles"}:
+        assert result.paths == ()
+        assert result.copy_input_indices == (1, 2)
+    elif mode == "synced_audio":
+        assert result.paths == (src,)
+        assert result.remap[(src, 2, "subtitle")] == (4, 2)
+        assert (alt, 3, "subtitle") not in result.remap
+    else:
+        assert result.paths == (src, alt)
+        assert result.copy_input_indices == (4, 5)
+        if mode != "wildcard":
+            assert result.remap[(src, 2, "subtitle")] == (4, 2)
+            assert result.remap[(alt, 4, "subtitle")] == (5, 4)
+        else:
+            assert result.remap == {}
 
 
 def test_build_encode_plan_aggregates_static_encode_resolution(tmp_path):

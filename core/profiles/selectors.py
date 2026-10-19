@@ -598,6 +598,8 @@ def resolve_track_selector(
 
 
 def apply_track_spec(track: TrackEntry, spec: Mapping[str, Any]) -> None:
+    if "remove_closed_captions" in spec:
+        track.remove_closed_captions = bool(spec["remove_closed_captions"])
     if "enabled" in spec:
         track.enabled = bool(spec["enabled"])
     if "language" in spec:
@@ -674,7 +676,16 @@ def remux_config_to_exact_job(
         }
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
+        if track.is_video and track.remove_closed_captions is not None:
+            payload["remove_closed_captions"] = track.remove_closed_captions
         if track.is_new:
+            # Une variante a sa propre identité ; les métadonnées au moment
+            # du clonage peuvent déjà avoir été modifiées par un profil.
+            payload["selector"] = {
+                "source": source_index_by_file_id.get(track.file_id),
+                "type": track.track_type,
+                "entry_id": track.entry_id,
+            }
             payload["entry_id"] = track.entry_id
             payload["codec"] = track.codec
             bitrate = audio_bitrate_kbps_from_display_info(track.display_info)

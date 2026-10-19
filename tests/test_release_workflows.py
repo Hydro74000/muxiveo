@@ -231,3 +231,48 @@ def test_generate_release_notes_includes_installer_links(tmp_path):
     downloads_pos = content.index("### 📥 Téléchargements / Direct Downloads")
     changes_pos = content.index("## Changes since previous release")
     assert downloads_pos < changes_pos
+
+
+def _jobs(filename):
+    """Jobs du workflow : (needs, condition if) lus sans dépendance YAML."""
+    text = (_WORKFLOWS / filename).read_text(encoding="utf-8")
+    body = text.split("\njobs:\n", 1)[1]
+    jobs = {}
+    for match in re.finditer(r"^  ([A-Za-z0-9_-]+):\n((?:    .*\n|\n)*)", body, re.MULTILINE):
+        block = match.group(2)
+        inline = re.search(r"^    needs: \[(.*)\]", block, re.MULTILINE)
+        if inline:
+            needs = [n.strip() for n in inline.group(1).split(",") if n.strip()]
+        else:
+            listed = re.search(r"^    needs:\n((?:      - .*\n)+)", block, re.MULTILINE)
+            single = re.search(r"^    needs: ([A-Za-z0-9_-]+)$", block, re.MULTILINE)
+            needs = re.findall(r"- ([A-Za-z0-9_-]+)", listed.group(1)) if listed else ([single.group(1)] if single else [])
+        condition = re.search(r"^    if: (.*)$", block, re.MULTILINE)
+        jobs[match.group(1)] = (needs, condition.group(1) if condition else "")
+    return jobs
+
+
+def test_jobs_downstream_of_optional_jobs_are_not_skipped():
+    """Formule et tap Homebrew : un job amont sauté (canal sans publication) ne doit pas les faire sauter."""
+    jobs = _jobs("release.yml")
+    for name in ("homebrew-formula", "publish-homebrew-tap", "release"):
+        condition = jobs[name][1]
+        assert "!cancelled()" in condition or "always()" in condition, name
+
+def test_pinned_extensions_checked_first_and_gate_every_build():
+    """Extensions épinglées : contrôle au départ (sans dépendance), avant tout paquet."""
+    jobs = _jobs("release.yml")
+    needs, condition = jobs["plugins-state"]
+    assert needs == [] and condition == ""
+    for name in ("build-linux", "build-windows", "build-macos"):
+        assert "plugins-state" in jobs[name][0], name
+
+
+def test_real_media_regressions_are_required_before_publication():
+    """Un gate média rouge ou sauté interdit la publication même si le build réussit."""
+    jobs = _jobs("release.yml")
+    needs, condition = jobs["release"]
+    assert "media-regressions" in needs
+    assert "needs.media-regressions.result == 'success'" in condition
+    body = (_WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+    assert "uses: ./.github/workflows/ci-media-regressions.yml" in body

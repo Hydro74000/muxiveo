@@ -25,11 +25,29 @@ from typing import Callable
 
 from ..editors.dovi import DolbyVisionConfigRecord
 from ..ids import (
+    ATTACHMENTS_ID,
     BLOCK_ADDITION_MAPPING_ID,
+    CHAPTERS_ID,
+    TAGS_ID,
     CODEC_PRIVATE_ID,
     MAX_BLOCK_ADDITION_ID_ID,
+    COLOUR_ID,
+    LUMINANCE_MAX_ID,
+    LUMINANCE_MIN_ID,
+    MASTERING_METADATA_ID,
+    MAX_CLL_ID,
+    MAX_FALL_ID,
+    PRIMARY_B_CHROMATICITY_X_ID,
+    PRIMARY_B_CHROMATICITY_Y_ID,
+    PRIMARY_G_CHROMATICITY_X_ID,
+    PRIMARY_G_CHROMATICITY_Y_ID,
+    PRIMARY_R_CHROMATICITY_X_ID,
+    PRIMARY_R_CHROMATICITY_Y_ID,
+    VIDEO_ID,
+    WHITE_POINT_CHROMATICITY_X_ID,
+    WHITE_POINT_CHROMATICITY_Y_ID,
 )
-from ..ebml import binary_element, element, uint_element
+from ..ebml import binary_element, element, float_element, uint_element
 from .access_units import (
     DEFAULT_HEVC_CHUNK_SIZE,
     HevcAccessUnit,
@@ -151,16 +169,56 @@ def _first_access_unit(injected_hevc: Path, chunk_size: int) -> HevcAccessUnit |
     return None
 
 
+#: MasteringMetadata : chromaticités R, G, B, point blanc (x, y) puis luminances max. et min. (nits).
+MasteringColour = tuple[float, float, float, float, float, float, float, float, float, float]
+_MASTERING_IDS = (PRIMARY_R_CHROMATICITY_X_ID, PRIMARY_R_CHROMATICITY_Y_ID, PRIMARY_G_CHROMATICITY_X_ID,
+                  PRIMARY_G_CHROMATICITY_Y_ID, PRIMARY_B_CHROMATICITY_X_ID, PRIMARY_B_CHROMATICITY_Y_ID,
+                  WHITE_POINT_CHROMATICITY_X_ID, WHITE_POINT_CHROMATICITY_Y_ID, LUMINANCE_MAX_ID, LUMINANCE_MIN_ID)
+
+
+def _with_light_levels(video_payload: bytes, light_levels: tuple[int, int] | None,
+                       mastering: MasteringColour | None = None) -> bytes:
+    """Video → Colour : MaxCLL/MaxFALL et MasteringMetadata remplacés (ou ajoutés), autres éléments inchangés."""
+    replaced: set[bytes] = set()
+    added = b""
+    if light_levels is not None:
+        replaced |= {MAX_CLL_ID, MAX_FALL_ID}
+        added += uint_element(MAX_CLL_ID, light_levels[0]) + uint_element(MAX_FALL_ID, light_levels[1])
+    if mastering is not None:
+        replaced.add(MASTERING_METADATA_ID)
+        added += element(MASTERING_METADATA_ID, b"".join(
+            float_element(element_id, float(value)) for element_id, value in zip(_MASTERING_IDS, mastering)))
+    children: list[bytes] = []
+    found = False
+    for element_id, payload in payload_children(video_payload):
+        if element_id == COLOUR_ID:
+            colour = b"".join(element(child_id, child) for child_id, child in payload_children(payload)
+                              if child_id not in replaced)
+            children.append(element(COLOUR_ID, colour + added))
+            found = True
+            continue
+        children.append(element(element_id, payload))
+    if not found:
+        children.append(element(COLOUR_ID, added))
+    return b"".join(children)
+
+
 def _patched_raw_entry(
     raw_entry: bytes,
     *,
     codec_private: bytes | None,
     dovi_mapping: bytes | None,
+    light_levels: tuple[int, int] | None = None,
+    mastering: MasteringColour | None = None,
 ) -> bytes:
-    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté."""
+    """Reconstruit le payload TrackEntry : CodecPrivate remplacé, mapping DoVi ajouté, Colour (MaxCLL/MaxFALL,
+    écran de mastering) posé."""
     children: list[bytes] = []
     has_max_block_add_id = False
     for element_id, payload in payload_children(raw_entry):
+        if element_id == VIDEO_ID and (light_levels is not None or mastering is not None):
+            children.append(element(VIDEO_ID, _with_light_levels(payload, light_levels, mastering)))
+            continue
         if element_id == CODEC_PRIVATE_ID and codec_private is not None:
             children.append(binary_element(CODEC_PRIVATE_ID, codec_private))
             continue
@@ -196,8 +254,11 @@ class MatroskaHevcPayloadRewriter:
         cancel_cb: Callable[[], bool] | None = None,
         progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
         external_validator: Callable[[Path, MatroskaPacketValidation], None] | None = None,
+        light_levels: tuple[int, int] | None = None,
     ) -> HevcPayloadRewriteResult:
         """Écrit ``output`` : blocs du MKV encodé, payloads du flux injecté.
+
+        ``light_levels`` : MaxCLL/MaxFALL posés dans l'élément Colour de la piste.
 
         L'ordre de décodage, les PTS, durées, keyframes et références des
         blocs encodés sont conservés à l'identique ; seul le payload change.
@@ -236,6 +297,7 @@ class MatroskaHevcPayloadRewriter:
             video.raw_entry,
             codec_private=updated_codec_private,
             dovi_mapping=dovi_mapping,
+            light_levels=light_levels,
         )
         rewritten_track = replace(
             video,
@@ -317,8 +379,97 @@ class MatroskaHevcPayloadRewriter:
         )
 
 
+def rewrite_file_video_payloads(
+    *,
+    source: Path,
+    track_index: int,
+    injected_hevc: Path,
+    output: Path,
+    light_levels: tuple[int, int] | None = None,
+    mastering: MasteringColour | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
+    progress_cb: Callable[[MatroskaWriteProgress], None] | None = None,
+    chunk_size: int = DEFAULT_HEVC_CHUNK_SIZE,
+) -> HevcPayloadRewriteResult:
+    """Fichier complet : payloads de la piste vidéo ``track_index`` (rang dans Tracks) remplacés.
+
+    Les access units du flux injecté remplacent les blocs vidéo un pour un (ordre de décodage,
+    PTS, durées, keyframes conservés) ; autres pistes, chapitres, pièces jointes et tags recopiés.
+    Correction de métadonnées sans réencodage (RPU, HDR10+, SEI statiques). ``light_levels`` :
+    MaxCLL/MaxFALL, ``mastering`` : MasteringMetadata, posés dans l'élément Colour de la piste.
+    """
+    reader = MatroskaReader(source)
+    reader.segment()
+    muxing_app, writing_app = reader.segment_info_apps()
+    tracks = reader.tracks()
+    if not 0 <= track_index < len(tracks) or tracks[track_index].track_type != _TRACK_TYPE_VIDEO:
+        raise HevcPayloadAlignmentError(f"Piste vidéo #{track_index} absente du fichier source.")
+    video = tracks[track_index]
+    first_au = _first_access_unit(injected_hevc, max(64 * 1024, int(chunk_size)))
+    if first_au is None:
+        raise HevcPayloadAlignmentError(f"Aucun access unit HEVC dans le flux injecté {injected_hevc.name}.")
+    components = _extract_hvcc_components(first_au)
+    length_size = _hvcc_length_size(video.codec_private)
+    codec_private: bytes | None = None
+    if video.codec_private and components.sps:
+        codec_private = _updated_hvcc(video.codec_private, components)
+        if codec_private == video.codec_private:
+            codec_private = None
+    rewritten_video = replace(
+        video,
+        raw_entry=_patched_raw_entry(video.raw_entry, codec_private=codec_private, dovi_mapping=None,
+                                     light_levels=light_levels, mastering=mastering),
+        codec_private=codec_private or video.codec_private,
+    )
+    mux_tracks = tuple(
+        MatroskaMuxTrack(source, rewritten_video if track is video else track, track.number, track.uid,
+                         patch_language=False, patch_name=False, patch_flags=False)
+        for track in tracks
+    )
+    frames = {"count": 0}
+
+    def _packets() -> Iterator[MatroskaMuxPacket]:
+        au_iter = iter_hevc_access_units(injected_hevc, max(64 * 1024, int(chunk_size)), cancel_cb=cancel_cb)
+        for index, block in enumerate(reader.blocks(first_lace_only=True)):
+            if block.track_number == video.number:
+                if block.lace_count > 1 or block.lacing_mode:
+                    raise HevcPayloadAlignmentError(f"Bloc vidéo lacé non pris en charge (bloc #{frames['count'] + 1}).")
+                access_unit = next(au_iter, None)
+                if access_unit is None:
+                    raise HevcPayloadAlignmentError(
+                        f"Désalignement : plus de blocs vidéo que d'access units injectés (bloc #{frames['count'] + 1}).")
+                payload = _au_to_block_payload(access_unit, length_size)
+                if not payload:
+                    raise HevcPayloadAlignmentError(
+                        f"Access unit injecté sans payload utilisable (bloc #{frames['count'] + 1}).")
+                block = replace(block, payload=payload)
+                frames["count"] += 1
+            yield MatroskaMuxPacket(block.track_number, block, index)
+        if next(au_iter, None) is not None:
+            raise HevcPayloadAlignmentError(
+                f"Désalignement : plus d'access units injectés que de blocs vidéo ({frames['count']} bloc(s)).")
+
+    plan = MatroskaMuxPlan(
+        output, mux_tracks, _packets(),
+        timestamp_scale_ns=reader.timestamp_scale_ns(),
+        duration_ns=reader.segment_duration_ns() or 0,
+        opaque_top_level=tuple(raw for kind in (ATTACHMENTS_ID, CHAPTERS_ID, TAGS_ID)
+                               for raw in reader.raw_top_level(kind)),
+        title=reader.segment_title(), regenerate_statistics=True,
+        muxing_app=muxing_app or "Muxiveo", writing_app=writing_app or "Muxiveo",
+    )
+    MatroskaWriter().write(plan, cancel_cb=cancel_cb, progress_cb=progress_cb)
+    return HevcPayloadRewriteResult(
+        output=output,
+        frames_rewritten=frames["count"],
+        codec_private_updated=codec_private is not None,
+        dovi_mapping_written=False,
+    )
+
+
 __all__ = [
     "HevcPayloadAlignmentError",
     "HevcPayloadRewriteResult",
     "MatroskaHevcPayloadRewriter",
+    "rewrite_file_video_payloads",
 ]

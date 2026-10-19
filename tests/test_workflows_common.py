@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from core.workflows.common.attachments import (
     attachment_filename_from_meta,
     extension_for_mime,
@@ -131,6 +133,11 @@ class TestCommonTimelineSync:
 
 
 class TestCommonSyncRewrite:
+    @pytest.fixture(autouse=True)
+    def _simulated_output_timestamps(self, monkeypatch):
+        # Les commandes de cette classe produisent des fichiers factices.
+        monkeypatch.setattr(SyncRewriteService, "_output_timestamp_offset", lambda *_args: 0.0)
+
     def test_shift_srt_positive_and_negative_clamps_or_drops(self):
         text = (
             "1\n00:00:00,200 --> 00:00:00,800\nA\n\n"
@@ -237,7 +244,7 @@ class TestCommonSyncRewrite:
         monkeypatch.setattr(
             service,
             "_probe_stream",
-            lambda _source, _stream_index: {
+            lambda _source, _stream_index, **_kwargs: {
                 "codec_name": "eac3",
                 "codec_long_name": "E-AC-3",
                 "profile": "",
@@ -283,7 +290,7 @@ class TestCommonSyncRewrite:
             "tags": {},
         }
         disabled = SyncRewriteService(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
-        monkeypatch.setattr(disabled, "_probe_stream", lambda _source, _stream_index: probe)
+        monkeypatch.setattr(disabled, "_probe_stream", lambda _source, _stream_index, **_kwargs: probe)
         monkeypatch.setattr(
             disabled,
             "_run_checked",
@@ -306,7 +313,7 @@ class TestCommonSyncRewrite:
             ffprobe_bin="ffprobe",
             advanced_audio_enabled=True,
         )
-        monkeypatch.setattr(enabled, "_probe_stream", lambda _source, _stream_index: probe)
+        monkeypatch.setattr(enabled, "_probe_stream", lambda _source, _stream_index, **_kwargs: probe)
         seen: dict[str, object] = {}
 
         def fake_run(cmd, destination, _error_prefix, **_kwargs):
@@ -339,7 +346,7 @@ class TestCommonSyncRewrite:
         monkeypatch.setattr(
             service,
             "_probe_stream",
-            lambda _source, _stream_index: {
+            lambda _source, _stream_index, **_kwargs: {
                 "codec_name": "eac3",
                 "codec_long_name": "E-AC-3",
                 "profile": "",
@@ -374,7 +381,7 @@ class TestCommonSyncRewrite:
         assert prepared.codec == "aac"
         assert prepared.bitrate_kbps == 384
         cmd = cast(list[str], seen["cmd"])
-        assert "atrim=start=0.500,asetpts=PTS-STARTPTS" in cmd
+        assert "aresample=async=1:first_pts=0,atrim=start=0.500,asetpts=PTS-STARTPTS" in cmd
         assert cmd[cmd.index("-c:a") + 1] == "aac"
         assert cmd[cmd.index("-b:a") + 1] == "384k"
         assert cmd[cmd.index("-f") + 1] == "matroska"
@@ -421,7 +428,7 @@ class TestCommonSyncRewrite:
         monkeypatch.setattr(
             service,
             "_probe_stream",
-            lambda _source, _stream_index: {
+            lambda _source, _stream_index, **_kwargs: {
                 "codec_name": "eac3",
                 "codec_long_name": "E-AC-3",
                 "profile": "",

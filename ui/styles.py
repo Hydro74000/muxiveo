@@ -15,17 +15,41 @@ from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 
 
+def workflow_icon(name: str, color: str | None = None, size: int = 20) -> QIcon:
+    """Icônes vectorielles cohérentes, indépendantes des polices emoji."""
+    paths = {
+        "brand": '<path d="M4 18 10 6M10 21 16 9M16 16 22 4" stroke-width="2.8"/>',
+        "media": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 4v5m8-5v5"/>',
+        "hybrid": '<path d="M3 5h6l6 14h6M3 19h6L15 5h6m-3-3 3 3-3 3m0 8 3 3-3 3"/>',
+        "merge_dovi": '<path d="m12 3 9 5-9 5-9-5Zm-9 9 9 5 9-5m-18 5 9 5 9-5"/>',
+        "play": f'<path d="m7 4 14 8-14 8Z" fill="{color or _C.TEXT_SEC}"/>',
+        "down": '<path d="m6 9 6 6 6-6"/>',
+        "home": '<path d="m3 10 9-7 9 7v10H3Zm6 10v-7h6v7"/>',
+        "encode": '<path d="m13 2-9 12h7l-1 8 10-13h-7Z"/>',
+        "settings": '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
+        "extensions": '<path d="M8 3v5m8-5v5M6 8h12v3a6 6 0 0 1-12 0ZM12 17v5"/>',
+        "hdr": f'<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="{color or _C.TEXT_SEC}"/>',
+    }
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color or _C.TEXT_SEC}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{paths.get(name, paths["media"])}</svg>'
+    pix = QPixmap(_scale(size), _scale(size))
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    QSvgRenderer(svg.encode()).render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
 def _section_label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet(f"color:{_C.TEXT_DIM};font-size:{_font_px(9)}px;font-weight:700;"
+    lbl.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(9)}px;font-weight:700;"
                       f"letter-spacing:{_scale(2)}px;background:transparent;")
     return lbl
 
 
 def _card(parent: QWidget | None = None) -> QWidget:
     w = QWidget(parent)
-    w.setStyleSheet(f"QWidget{{background:{_C.BG_CARD};border:1px solid {_C.BORDER};"
-                    f"border-radius:6px;}}")
+    w.setProperty("surfaceCard", True)
+    w.setStyleSheet(f'QWidget[surfaceCard="true"]{{background:{_C.BG_PANEL};border:1px solid {_C.BORDER};border-radius:{_scale(8)}px;}}')
     return w
 
 
@@ -122,6 +146,22 @@ def _input_style() -> str:
             f"QLineEdit:focus{{border-color:{_C.ACCENT};}}"
             f"QLineEdit:disabled{{background:{_C.BG_DEEP};color:{_C.TEXT_DIM};"
             f"border-color:{_C.BORDER};}}")
+
+
+def _slider_style() -> str:
+    handle = _scale(16)
+    groove_h = _scale(6)
+    radius = _scale(3)
+    margin = _scale(6)
+    return (
+        f"QSlider::groove:horizontal{{background:{_C.BG_CARD};height:{groove_h}px;"
+        f"border:1px solid {_C.BORDER};border-radius:{radius}px;}}"
+        f"QSlider::sub-page:horizontal{{background:{_C.ACCENT};border-radius:{radius}px;}}"
+        f"QSlider::add-page:horizontal{{background:{_C.BG_ACTIVE};border-radius:{radius}px;}}"
+        f"QSlider::handle:horizontal{{background:{_C.TEXT_PRI};width:{handle}px;height:{handle}px;"
+        f"margin:-{margin}px 0;border-radius:{_scale(8)}px;border:1px solid {_C.BORDER_LT};}}"
+        f"QSlider::handle:horizontal:hover{{border-color:{_C.ACCENT};}}"
+    )
 
 
 def _combo_style() -> str:

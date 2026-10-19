@@ -17,7 +17,7 @@ import hashlib
 import heapq
 import mimetypes
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import gcd
 from pathlib import Path
 
@@ -39,12 +39,11 @@ from .mux_plan import (
     deterministic_uid,
     deterministic_uid128,
 )
-from .reader import MatroskaAttachment, MatroskaReader
+from .reader import MatroskaAttachment, MatroskaReader, MatroskaTrack
 from .validation import TRACK_TYPE_LABELS
 from .writer import (
     build_attachments_element,
     build_chapters_element,
-    build_track_statistics_tags_element,
     build_tags_element,
     rewrite_tag_target_uids,
 )
@@ -95,6 +94,46 @@ class MatroskaAssemblyTrack:
     #: Provenance complémentaire pour reconstruire les UIDs de façon stable
     #: (ex. ``"audio:2:aac"`` pour une variante matérialisée).
     provenance: str = ""
+    #: Piste d'origine (artefact Matroska, index) remplacée par ``artifact``
+    #: (audio réencodé, sync réelle) : langue, nom et flags non fixés en
+    #: sont repris, et ses tags ciblés suivent la piste de sortie.
+    origin: tuple[Path, int] | None = None
+    remove_closed_captions: bool = False
+
+
+def _origin_track(track: MatroskaAssemblyTrack, tracks_of) -> MatroskaTrack | None:
+    """TrackEntry d'origine d'une piste remplacée (``None`` si aucune)."""
+    if track.origin is None:
+        return None
+    origin_path, origin_index = track.origin
+    origin_tracks = tracks_of(origin_path)
+    if not 0 <= origin_index < len(origin_tracks):
+        raise ValueError(f"Piste d'origine introuvable : {origin_path} #{origin_index}")
+    return origin_tracks[origin_index]
+
+
+def _with_origin_metadata(track: MatroskaAssemblyTrack, origin: MatroskaTrack | None) -> MatroskaAssemblyTrack:
+    """Langue, nom et flags non fixés repris explicitement de la piste d'origine."""
+    if origin is None:
+        return track
+    return replace(
+        track,
+        language_value=(
+            track.language_value
+            if track.language_value is not None
+            else (origin.language_bcp47 or origin.language or None)
+        ),
+        name=track.name if track.name is not None else origin.name,
+        flags=track.flags if track.flags is not None else MatroskaTrackFlags(
+            enabled=origin.flag_enabled,
+            default=origin.flag_default,
+            forced=origin.flag_forced,
+            hearing_impaired=origin.flag_hearing_impaired,
+            visual_impaired=origin.flag_visual_impaired,
+            original=origin.flag_original,
+            commentary=origin.flag_commentary,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -155,6 +194,9 @@ def assembly_output_contract(
                 f"Piste d'assemblage introuvable : {track.artifact} #{track.artifact_track_index}"
             )
         source_track = native_tracks[track.artifact_track_index]
+        track = _with_origin_metadata(track, _origin_track(
+            track, lambda path: readers.setdefault(path, MatroskaReader(path)).tracks(),
+        ))
         track_type = TRACK_TYPE_LABELS.get(source_track.track_type, str(source_track.track_type))
         types.append(track_type)
         flags = track.flags
@@ -268,8 +310,18 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         timestamp_scale_ns = gcd(timestamp_scale_ns, abs(int(track.time_shift_ms or 0)) * 1_000_000)
     timestamp_scale_ns = timestamp_scale_ns or 1_000_000
 
+    origin_tracks: dict[Path, list[MatroskaTrack]] = {}
+
+    def _tracks_of(path: Path) -> list[MatroskaTrack]:
+        # Pistes d'origine lues hors ``readers`` : aucun effet sur la fusion
+        # des paquets ni sur le TimestampScale de sortie.
+        if path in native_tracks:
+            return native_tracks[path]
+        if path not in origin_tracks:
+            origin_tracks[path] = MatroskaReader(path).tracks()
+        return origin_tracks[path]
+
     output_tracks: list[MatroskaMuxTrack] = []
-    statistics_sources: list[tuple[int, Path, int, int, int, int]] = []
     track_uid_maps: dict[Path, dict[int, int]] = {}
     # artefact → numéro de piste source → [(piste sortie, offset ms)].
     packet_routes: dict[Path, dict[int, list[tuple[int, int]]]] = {}
@@ -280,6 +332,8 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
                 f"Piste d'assemblage introuvable : {track.artifact} #{track.artifact_track_index}"
             )
         source_track = artifact_tracks[track.artifact_track_index]
+        origin_track = _origin_track(track, _tracks_of)
+        track = _with_origin_metadata(track, origin_track)
         identity = (
             f"{track.source_identity}:{track.provenance}"
             if track.provenance
@@ -294,10 +348,13 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         uid_default = track.flags.default if track.flags is not None else source_track.flag_default
         uid_forced = track.flags.forced if track.flags is not None else source_track.flag_forced
         uid = deterministic_uid(
-            identity, source_track.uid, output_index,
+            identity, (origin_track or source_track).uid, output_index,
             uid_language, uid_name, uid_default, uid_forced,
         )
         track_uid_maps.setdefault(track.artifact, {})[source_track.uid] = uid
+        if track.origin is not None and origin_track is not None:
+            # Tags de la source ciblant la piste remplacée : suivent la sortie.
+            track_uid_maps.setdefault(track.origin[0], {}).setdefault(origin_track.uid, uid)
 
         if track.language_value is not None:
             legacy_language = matroska_legacy_language(track.language_value)
@@ -330,27 +387,20 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             patch_language=patch_language,
             patch_name=track.name is not None,
             patch_flags=track.flags is not None,
+            remove_closed_captions=track.remove_closed_captions,
         ))
         offset = int(track.time_shift_ms or 0)
-        statistics_sources.append((
-            uid,
-            track.artifact,
-            source_track.number,
-            offset * 1_000_000,
-            source_track.default_duration_ns,
-            source_track.track_type,
-        ))
         packet_routes.setdefault(track.artifact, {}).setdefault(
             source_track.number, []).append((output_index, offset))
 
     def artifact_packet_stream(artifact: Path) -> Iterator[MatroskaMuxPacket]:
         """Une passe streaming sur les blocks d'un artefact (mémoire bornée)."""
         routes = packet_routes.get(artifact, {})
-        for source_sequence, block in enumerate(readers[artifact].blocks(track_numbers=set(routes.keys()))):
+        for source_sequence, block in enumerate(readers[artifact].blocks(
+            track_numbers=set(routes.keys()), first_lace_only=True,
+        )):
             targets = routes.get(block.track_number)
             if not targets:
-                continue
-            if block.lace_count > 1 and block.lace_index > 0:
                 continue
             source_timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
             for output_index, offset_ms in targets:
@@ -438,85 +488,11 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             if title_tag:
                 opaque.append(title_tag)
 
-    # Regenerate BPS, DURATION, NUMBER_OF_FRAMES and NUMBER_OF_BYTES from the
-    # selected output packets:
-    # source values are stale after selection, offsets or a track remap.  This
-    # remains a bounded streaming pass and does not materialize packet data.
-    statistics_routes: dict[Path, dict[int, list[tuple[int, int, int, int]]]] = {}
-    statistics: dict[int, dict[str, int]] = {}
-    for output_uid, source_path, source_track_number, offset_ns, default_duration_ns, track_type in statistics_sources:
-        statistics_routes.setdefault(source_path, {}).setdefault(
-            source_track_number, [],
-        ).append((output_uid, offset_ns, default_duration_ns, track_type))
-        statistics[output_uid] = {
-            "frame_count": 0,
-            "payload_bytes": 0,
-            "duration_ns": 0,
-            "first_timestamp_ns": -1,
-            "last_timestamp_ns": -1,
-            "last_delta_ns": 0,
-        }
-    for source_path, routes in statistics_routes.items():
-        for block in readers[source_path].blocks(
-            track_numbers=set(routes.keys()),
-            read_payload=False,
-        ):
-            targets = routes.get(block.track_number)
-            if not targets:
-                continue
-            timestamp_ns = (
-                block.timestamp_ns
-                if block.timestamp_ns is not None
-                else block.timestamp_ms * 1_000_000
-            )
-            explicit_duration_ns = (
-                block.duration_ns
-                if block.duration_ns is not None
-                else ((block.duration_ms or 0) * 1_000_000 if block.duration_ms is not None else None)
-            )
-            for output_uid, offset_ns, default_duration_ns, track_type in targets:
-                shifted_timestamp_ns = timestamp_ns + offset_ns
-                if shifted_timestamp_ns < 0:
-                    continue
-                stats = statistics[output_uid]
-                if stats["first_timestamp_ns"] < 0 or shifted_timestamp_ns < stats["first_timestamp_ns"]:
-                    stats["first_timestamp_ns"] = shifted_timestamp_ns
-                stats["frame_count"] += 1
-                stats["payload_bytes"] += block.payload_bytes if block.payload_bytes else len(block.payload)
-                previous_timestamp_ns = stats["last_timestamp_ns"]
-                if shifted_timestamp_ns > previous_timestamp_ns >= 0:
-                    stats["last_delta_ns"] = shifted_timestamp_ns - previous_timestamp_ns
-                stats["last_timestamp_ns"] = shifted_timestamp_ns
-                duration_ns = explicit_duration_ns
-                if duration_ns is None and default_duration_ns:
-                    duration_ns = default_duration_ns * max(1, block.lace_count)
-                if duration_ns is None:
-                    if track_type in (1, 2):
-                        duration_ns = min(stats["last_delta_ns"], 1_000_000_000)
-                    else:
-                        duration_ns = 0
-                stats["duration_ns"] = max(
-                    stats["duration_ns"], shifted_timestamp_ns + duration_ns,
-                )
     # La date de génération des statistiques varie à chaque muxage. Elle ne
     # doit pas rendre le SegmentUID instable pour un plan sémantiquement
     # identique ; les données de piste et les autres métadonnées sont déjà
     # couvertes par ce digest.
     opaque_digest = hashlib.sha256(b"".join(opaque)).hexdigest()
-    # DURATION = durée de la piste (fin - premier paquet), pas l'instant de fin :
-    # MediaInfo en déduit cadence (NUMBER_OF_FRAMES / DURATION) et débit, faux
-    # d'autant plus que la piste démarre tard.
-    statistics_tags = build_track_statistics_tags_element({
-        output_uid: (
-            values["frame_count"],
-            values["payload_bytes"],
-            values["duration_ns"] - max(0, values["first_timestamp_ns"]),
-        )
-        for output_uid, values in statistics.items()
-    }, writing_app=f"Muxiveo {APP_VERSION_LABEL.removeprefix('v')}")
-    if statistics_tags:
-        opaque.append(statistics_tags)
-
     info_source = plan.segment_info_source or plan.ordered_tracks[0].artifact
     info_reader = readers[info_source]
     segment_title = (
@@ -535,21 +511,25 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         opaque_digest,
         timestamp_scale_ns,
     )
-    total_packets = sum(v["frame_count"] for v in statistics.values())
-    total_payload_bytes = sum(v["payload_bytes"] for v in statistics.values())
-    max_duration_ns = max((v["duration_ns"] for v in statistics.values()), default=0)
+    # Estimation pour la progression seulement : aucun bloc n'est lu pendant
+    # la compilation. Le writer calcule la durée et les statistiques exactes
+    # dans l'unique passe d'écriture (sélection, lacing et offsets compris).
+    max_duration_ns = max((
+        max(0, duration + int(track.time_shift_ms or 0) * 1_000_000)
+        for track in plan.ordered_tracks
+        if (duration := readers[track.artifact].segment_duration_ns()) is not None
+    ), default=0)
     return MatroskaMuxPlan(
         plan.output, tuple(output_tracks), packet_stream,
         duration_ms=round(max_duration_ns / 1_000_000),
         duration_ns=max_duration_ns,
-        total_packets=total_packets,
-        total_payload_bytes=total_payload_bytes,
         timestamp_scale_ns=timestamp_scale_ns,
         segment_uid=segment_uid,
         muxing_app=f"Muxiveo {APP_VERSION_LABEL.removeprefix('v')}",
         writing_app=plan.writing_app or WRITING_APPLICATION_TAG,
         title=segment_title,
         opaque_top_level=tuple(opaque),
+        regenerate_statistics=True,
     )
 
 

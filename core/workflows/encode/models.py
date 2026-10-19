@@ -16,6 +16,7 @@ from enum import Enum
 from fractions import Fraction
 from pathlib import Path
 from typing import Protocol
+from core.fel.context import FelExecution
 
 from core.workflows.common.track_types import TrackMetaEdit, TrackTimeOffset
 
@@ -265,20 +266,32 @@ class VideoFilterSettings:
 class FrameInterpolationSettings:
     """Interpolation d'images RIFE (muxiveo-rife) : multiplication de la cadence."""
     enabled: bool = False
-    factor: int = 2                   # multiplicateur entier de cadence (2 = 29,97 -> 59,94)
+    factor: float = 2                 # multiplicateur de cadence (2,5 = 24 -> 60)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | light (modèle RIFE ; « max » : ancien preset)
+    quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
+    feature_cache: bool = False       # cache optionnel des caractéristiques, avec réserve VRAM automatique
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 
+    def __post_init__(self) -> None:
+        # Ancien préréglage « max » (presets enregistrés) → « quality ».
+        if self.quality == "max":
+            self.quality = "quality"
+
     def is_active(self) -> bool:
-        return bool(self.enabled) and (bool(self.target_fps) or int(self.factor) > 1)
+        return bool(self.enabled) and (bool(self.target_fps) or self.factor > 1)
 
     def fast_mode(self) -> bool:
-        """Mode Fast effectif : choisi, ou imposé par le préréglage Light."""
+        """Mode Fast effectif : choisi, ou imposé par le préréglage Light (jamais en Ultra)."""
+        if self.quality == "ultra":
+            return False
         return self.mode == "fast" or self.quality == "light"
+
+    def tta_passes(self) -> int:
+        """Passes TTA effectives (Ultra : 1, muxiveo-rife refuse --ultra avec --tta)."""
+        return 1 if self.quality == "ultra" else max(1, int(self.tta))
 
     def ratio(self, source_rate: str | None = None) -> Fraction:
         """Rapport cadence de sortie / cadence source (``target_fps`` exige ``source_rate``)."""
@@ -288,11 +301,16 @@ class FrameInterpolationSettings:
                 return Fraction(str(self.target_fps)) / source if source > 0 else Fraction(1)
             except (TypeError, ValueError, ZeroDivisionError):
                 return Fraction(1)
-        return Fraction(max(1, int(self.factor)))
+        return max(Fraction(1), Fraction(str(self.factor)))
 
     @classmethod
     def from_value(cls, value: object) -> "FrameInterpolationSettings":
         return _dataclass_from_value(cls, value)
+
+
+def fel_hdr10plus_choice(value: object) -> str:
+    """HDR10+ d'une sortie FEL : « recompute » (défaut) ou « source » ; valeur inconnue → défaut."""
+    return value if isinstance(value, str) and value in {"recompute", "source"} else "recompute"
 
 
 def migrate_bit_depth(value: str | None, force_8bit: bool = False, force_10bit: bool = False) -> str:
@@ -349,6 +367,13 @@ class VideoEncodeSettings:
     static_hdr_metadata_analysis_request: str = ""
     # HDR dynamique
     copy_dv:          bool         = False
+    bake_dovi_fel:    bool | None  = None  # None/absent : désactivé ; True : demande explicite.
+    fel_device: str = "auto"  # auto | cpu | UUID Vulkan stable.
+    fel_precision: str = "exact"  # exact (Lent, recommandé) | standard | fast.
+    # HDR10+ d'une sortie FEL intégré (copie HDR10+ active, HEVC) : « recompute » mesuré sur l'image
+    # reconstruite (plugin ≥ 0.3.0, MaxCLL/MaxFALL exacts) ; « source » : celui de la source (BL).
+    fel_hdr10plus: str = "recompute"
+    fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
@@ -387,6 +412,10 @@ class VideoEncodeSettings:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        from core.fel.devices import device_choice, precision_choice
+        self.fel_device = device_choice(self.fel_device)
+        self.fel_precision = precision_choice(self.fel_precision)
+        self.fel_hdr10plus = fel_hdr10plus_choice(self.fel_hdr10plus)
         if not isinstance(self.quality_mode, QualityMode):
             self.quality_mode = QualityMode(str(self.quality_mode))
         if self.rate_control:
@@ -610,6 +639,10 @@ class EncodePreset:
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
     interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
     inject_hdr_meta:            bool = False
+    fel_device: str = "auto"
+    fel_precision: str = "exact"  # Profils antérieurs : Lent (recommandé).
+    fel_hdr10plus: str = "recompute"  # Profils antérieurs : HDR10+ recalculé (recommandé).
+    bake_dovi_fel:              bool | None = None  # Même défaut désactivé pour les anciens profils.
     master_display:             str  = ""
     max_cll:                    str  = ""
     tonemap_to_sdr:             bool = False
@@ -623,6 +656,10 @@ class EncodePreset:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        from core.fel.devices import device_choice, precision_choice
+        self.fel_device = device_choice(self.fel_device)
+        self.fel_precision = precision_choice(self.fel_precision)
+        self.fel_hdr10plus = fel_hdr10plus_choice(self.fel_hdr10plus)
         # Ancien preset logique NVENC « safe » (retiré de l'interface) → p5, son équivalent.
         if self.preset == "safe" and self.codec.endswith("_nvenc"):
             self.preset = "p5"
@@ -644,6 +681,10 @@ class EncodePreset:
             filters=self.filters,
             interpolation=self.interpolation,
             inject_hdr_meta=self.inject_hdr_meta,
+            bake_dovi_fel=self.bake_dovi_fel,
+            fel_device=self.fel_device,
+            fel_precision=self.fel_precision,
+            fel_hdr10plus=self.fel_hdr10plus,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,

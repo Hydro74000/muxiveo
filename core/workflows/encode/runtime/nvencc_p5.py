@@ -62,6 +62,8 @@ def nvencc_features(nvencc_bin: str) -> dict[str, bool]:
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return {}
+    if result.returncode != 0:
+        return {}
     return parse_check_features((result.stdout or "") + "\n" + (result.stderr or ""))
 
 

@@ -5,13 +5,13 @@ Architecture :
     ┌────────────────────────────────────────────────────────────┐
     │  MainWindow (QMainWindow)                               │
     │  ┌──────────┬────────────────────────────────────────┐  │
-    │  │ Sidebar  │  QScrollArea                           │  │
-    │  │          │   └─ QStackedWidget (pages)            │  │
+    │  │ Sidebar  │  QStackedWidget                        │  │
+    │  │          │   └─ Pages à défilement interne       │  │
     │  │          │      ─ DashboardPage      (index 0)    │  │
     │  │          │      ─ MergeDoviPanel     (index 1)    │  │
     │  │          │      ─ EncodePanel        (index 2)    │  │
     │  │          │      ─ RemuxPanel         (index 3)    │  │
-    │  │          │      ─ SettingsPanel      (index 4)    │  │
+    │  │          │      ─ SettingsPanel      (index 5)    │  │
     │  └──────────┴────────────────────────────────────────┘  │
     │  ┌────────────────────────────────────────────────────┐  │
     │  │ Action bar globale : état, progression, exécuter, │  │
@@ -35,29 +35,29 @@ Signal exposé :
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QColor, QFont, QGuiApplication, QTextCharFormat, QTextCursor,
+    QGuiApplication,
 )
 from PySide6.QtWidgets import (
-    QApplication,
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QStackedWidget, QTextEdit,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox,
+    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
+    QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from core.config import AppConfig
+from core.config import AppConfig, write_ini_settings
 from core.matroska.progress import native_mux_progress_label
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
@@ -99,8 +99,14 @@ from ui.panels.encode_panel.theme import (
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
+from ui.panels.hdr_studio import HdrStudio
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.panels.extensions_panel import ExtensionsPanel
+from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
+from ui.operation_bar import OperationBar, OperationState
+from ui.styles import workflow_icon
+from ui.widgets.log_panel import LogPanel, split_log_source
 from ui.desktop import open_external
 from ui.design_system import DesignSystem, colors as _Colors, font_px as _font_px, scale as _scale
 
@@ -441,228 +447,6 @@ def _select_multi_encode_label(
 # LogPanel
 # ---------------------------------------------------------------------------
 
-class _LogHeader(QWidget):
-    """Barre d'en-tête cliquable du panneau de logs."""
-    clicked = Signal()
-
-    def mousePressEvent(self, event) -> None:
-        self.clicked.emit()
-        super().mousePressEvent(event)
-
-
-class LogPanel(QWidget):
-    """
-    Panneau de logs à niveaux colorés.
-
-    Usage :
-        panel.log("Vérification des dépendances...", LogLevel.INFO)
-        panel.log("Toutes les dépendances sont présentes.", LogLevel.OK)
-        panel.log("Différence de 2 frames tolérée.", LogLevel.WARN)
-        panel.log("Fichier introuvable.", LogLevel.ERROR)
-    """
-
-    collapse_toggled = Signal(bool)   # True = collapsed
-
-    def __init__(self, max_lines: int = 2000, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._max_lines = max_lines
-        self._collapsed = False
-        self._build_ui()
-        # Buffer batching : ffmpeg/nvenc peut émettre 200+ lignes/s. Insérer
-        # chaque ligne dans le QTextEdit bloque l'event loop. On accumule et
-        # on flushe via QTimer pour garder l'UI réactive.
-        self._pending: list[tuple[str, LogLevel, str]] = []
-        self._flush_timer = QTimer(self)
-        self._flush_timer.setSingleShot(True)
-        self._flush_timer.setInterval(50)
-        self._flush_timer.timeout.connect(self._flush_pending)
-
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # En-tête cliquable
-        header = _LogHeader()
-        header.setFixedHeight(_scale(32))
-        header.setCursor(Qt.CursorShape.PointingHandCursor)
-        header.setStyleSheet(f"""
-            _LogHeader {{
-                background: {_Colors.BG_PANEL};
-                border-top: 1px solid {_Colors.BORDER};
-                border-bottom: 1px solid {_Colors.BORDER};
-            }}
-        """)
-        h_layout = QHBoxLayout(header)
-        h_layout.setContentsMargins(_scale(12), 0, _scale(8), 0)
-        h_layout.setSpacing(_scale(8))
-
-        title = QLabel("LOGS")
-        title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        title.setStyleSheet(f"""
-            color: {_Colors.TEXT_DIM};
-            font-size: {_font_px(10)}px;
-            font-weight: 700;
-            letter-spacing: {_scale(2)}px;
-            background: transparent;
-            border: none;
-        """)
-        h_layout.addWidget(title)
-        h_layout.addStretch()
-
-        # Bouton collapse (▲/▼)
-        self._collapse_btn = QPushButton("▲")
-        self._collapse_btn.setFixedSize(_scale(20), _scale(20))
-        self._collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._collapse_btn.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._collapse_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_Colors.TEXT_DIM};
-                border: none;
-                font-size: {_font_px(10)}px;
-                padding: 0;
-            }}
-        """)
-        h_layout.addWidget(self._collapse_btn)
-
-        # Bouton clear
-        clear_btn = QPushButton("Effacer")
-        clear_btn.setFixedHeight(_scale(20))
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                color: {_Colors.TEXT_DIM};
-                border: 1px solid {_Colors.BORDER};
-                border-radius: 3px;
-                font-size: {_font_px(10)}px;
-                padding: 0 {_scale(8)}px;
-            }}
-            QPushButton:hover {{
-                color: {_Colors.TEXT_SEC};
-                border-color: {_Colors.BORDER_LT};
-            }}
-        """)
-        clear_btn.clicked.connect(self.clear)
-        h_layout.addWidget(clear_btn)
-
-        header.clicked.connect(self._toggle)
-        layout.addWidget(header)
-
-        # Zone de texte
-        self._text = QTextEdit()
-        self._text.setReadOnly(True)
-        self._text.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-        mono = QFont("JetBrains Mono", _font_px(9))
-        mono.setStyleHint(QFont.StyleHint.Monospace)
-        self._text.setFont(mono)
-        self._text.setStyleSheet(f"""
-            QTextEdit {{
-                background: {_Colors.LOG_BG};
-                color: {_Colors.TEXT_PRI};
-                border: none;
-                padding: {_scale(8)}px {_scale(12)}px;
-                selection-background-color: {_Colors.ACCENT_DIM};
-            }}
-            QScrollBar:vertical {{
-                background: {_Colors.BG_DEEP};
-                width: {_scale(8)}px;
-                border: none;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {_Colors.BORDER_LT};
-                border-radius: {_scale(4)}px;
-                min-height: {_scale(20)}px;
-            }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-                height: 0;
-            }}
-        """)
-        self._text.setMinimumHeight(0)
-        layout.addWidget(self._text)
-
-    # ------------------------------------------------------------------
-    # API publique
-    # ------------------------------------------------------------------
-
-    def log(self, message: str, level: LogLevel = LogLevel.INFO) -> None:
-        """Met une ligne de log en file, flush via QTimer pour ne pas bloquer l'UI."""
-        ts = datetime.now().strftime("%H:%M:%S")
-        self._pending.append((ts, level, translate_text(message)))
-        if not self._flush_timer.isActive():
-            self._flush_timer.start()
-
-    def _flush_pending(self) -> None:
-        if not self._pending:
-            return
-        batch = self._pending
-        self._pending = []
-
-        cursor = self._text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-
-        ts_fmt = QTextCharFormat()
-        ts_fmt.setForeground(QColor(_Colors.LOG_TS))
-        label_fmt = QTextCharFormat()
-        label_fmt.setFontWeight(QFont.Weight.Bold)
-        msg_fmt = QTextCharFormat()
-        msg_fmt.setFontWeight(QFont.Weight.Normal)
-
-        # setUpdatesEnabled(False) évite des repaint intermédiaires sur le batch.
-        self._text.setUpdatesEnabled(False)
-        try:
-            for ts, level, message in batch:
-                color = _level_color(level)
-                label = _LEVEL_LABELS[level]
-                cursor.insertText(f"{ts}  ", ts_fmt)
-                label_fmt.setForeground(QColor(color))
-                cursor.insertText(label, label_fmt)
-                msg_fmt.setForeground(
-                    QColor(color if level != LogLevel.INFO else _Colors.TEXT_PRI)
-                )
-                cursor.insertText(f"  {message}\n", msg_fmt)
-
-            self._text.setTextCursor(cursor)
-
-            doc = self._text.document()
-            excess = doc.blockCount() - self._max_lines
-            if excess > 0:
-                cur = QTextCursor(doc)
-                cur.movePosition(QTextCursor.MoveOperation.Start)
-                for _ in range(excess):
-                    cur.select(QTextCursor.SelectionType.BlockUnderCursor)
-                    cur.removeSelectedText()
-                    cur.deleteChar()
-        finally:
-            self._text.setUpdatesEnabled(True)
-        self._text.ensureCursorVisible()
-
-    def info(self, message: str)  -> None: self.log(message, LogLevel.INFO)
-    def ok(self, message: str)    -> None: self.log(message, LogLevel.OK)
-    def warn(self, message: str)  -> None: self.log(message, LogLevel.WARN)
-    def error(self, message: str) -> None: self.log(message, LogLevel.ERROR)
-
-    def clear(self) -> None:
-        self._pending.clear()
-        self._flush_timer.stop()
-        self._text.clear()
-
-    def is_collapsed(self) -> bool:
-        return self._collapsed
-
-    def set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = bool(collapsed)
-        self._text.setVisible(not self._collapsed)
-        self._collapse_btn.setText("▼" if self._collapsed else "▲")
-
-    def _toggle(self) -> None:
-        self.set_collapsed(not self._collapsed)
-        self.collapse_toggled.emit(self._collapsed)
-
-
 # ---------------------------------------------------------------------------
 # Page placeholder (remplacée en Phase 2 par des pages réelles)
 # ---------------------------------------------------------------------------
@@ -703,6 +487,21 @@ class _PlaceholderPage(QWidget):
 # Dashboard
 # ---------------------------------------------------------------------------
 
+class _ClickableBadge(QLabel):
+    """Badge de tableau de bord cliquable (extensions : interpolation, accélération NVIDIA)."""
+
+    clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class DashboardPage(QWidget):
     """Page d'accueil — résumé des outils disponibles et raccourcis."""
 
@@ -711,6 +510,12 @@ class DashboardPage(QWidget):
     _vulkan_detected = Signal(str, object)
     # Réémis depuis le thread principal (après le câblage de la fenêtre) vers les panneaux.
     vulkan_ready = Signal(str, object)
+    # GpuAcceleration : flux optique NVIDIA (badge informatif) et TensorRT, sondés en une fois.
+    _accel_detected = Signal(object)
+    # TrtCapability : compatibilité de l'accélération NVIDIA (TensorRT), pour le contrôleur d'extension.
+    trt_capability = Signal(object)
+    trt_badge_clicked = Signal()
+    rife_badge_clicked = Signal()       # badge muxiveo-rife → page Extensions
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
@@ -743,7 +548,11 @@ class DashboardPage(QWidget):
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
+        self._accel_detected.connect(self._on_accel_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_badge: QLabel | None = None
+        self._nvof_badge: QLabel | None = None
+        self._trt_badge: _ClickableBadge | None = None
+        self._rife_badge: _ClickableBadge | None = None
         self._build_ui()
         self._start_hw_detection()
 
@@ -795,7 +604,14 @@ class DashboardPage(QWidget):
 
         availability = self._config.all_tools_available()
         for tool_name, available in availability.items():
-            badge = self._make_tool_badge(tool_name, available)
+            if tool_name == "muxiveo-rife":
+                # Moteur de l'extension Interpolation : badge cliquable vers la page Extensions.
+                self._rife_badge = _ClickableBadge()
+                self._rife_badge.clicked.connect(self.rife_badge_clicked.emit)
+                badge = self._make_tool_badge(tool_name, available, self._rife_badge)
+                badge.setToolTip(translate_text("Interpolation d'images (extension MVO-RIFE) : page Extensions."))
+            else:
+                badge = self._make_tool_badge(tool_name, available)
             grid_layout.addWidget(badge)
 
         root.addWidget(tools_grid)
@@ -871,12 +687,13 @@ class DashboardPage(QWidget):
             rl.addStretch()
             root.addWidget(row)
 
-    def _make_tool_badge(self, name: str, available: bool) -> QLabel:
+    def _make_tool_badge(self, name: str, available: bool, lbl: QLabel | None = None) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
         bg     = _Colors.BADGE_OK_BG if available else _Colors.BADGE_ERROR_BG
         border = _Colors.BADGE_OK_BORDER if available else _Colors.BADGE_ERROR_BORDER
         symbol = "●"             if available else "○"
-        lbl = QLabel(f" {symbol}  {name} ")
+        lbl = lbl if lbl is not None else QLabel()
+        lbl.setText(f" {symbol}  {name} ")
         lbl.setStyleSheet(f"""
             QLabel {{
                 background: {bg};
@@ -971,6 +788,14 @@ class DashboardPage(QWidget):
         row, rl = _row("Filtres GPU")
         self._vulkan_badge = self._make_encoder_badge("Vulkan", "pending")
         rl.addWidget(self._vulkan_badge)
+        # Flux optique NVIDIA (CUDA) de l'interpolation hybride, sondé par muxiveo-rife.
+        self._nvof_badge = self._make_encoder_badge("NVOF·CUDA", "pending")
+        rl.addWidget(self._nvof_badge)
+        # Extension d'accélération NVIDIA (TensorRT) : visible seulement sur machine compatible ou si installée.
+        self._trt_badge = _ClickableBadge()
+        self._trt_badge.clicked.connect(self.trt_badge_clicked.emit)
+        self._trt_badge.hide()
+        rl.addWidget(self._trt_badge)
         rl.addStretch()
         root.addWidget(row)
 
@@ -1037,9 +862,12 @@ class DashboardPage(QWidget):
             self._apply_encoder_badge_state(badge, label, "pending")
         if self._vulkan_badge is not None:
             self._apply_encoder_badge_state(self._vulkan_badge, "Vulkan", "pending")
+        if self._nvof_badge is not None:
+            self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "pending")
         self._executor.submit(self._run_sw_detection)
         self._executor.submit(self._run_hw_detection)
         self._executor.submit(self._run_vulkan_detection)
+        self._executor.submit(self._run_accel_detection)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
@@ -1086,6 +914,103 @@ class DashboardPage(QWidget):
             translate_text("NLMeans 10 bits sur le GPU (nlmeans_vulkan) : {device}", device=device or "?")
             if ok
             else translate_text("Vulkan indisponible pour FFmpeg : {reason}", reason=reason or "?")
+        )
+
+    def _run_accel_detection(self) -> None:
+        """Thread worker : flux optique NVIDIA et TensorRT sur le GPU de muxiveo-rife (``--list-gpus``)."""
+        from core import plugins
+        from core.workflows.encode import interpolation
+
+        rife = getattr(self._config, "tool_muxiveo_rife", None) or ""
+        installed = plugins.installed_plugin(plugins.TRT)
+        self._accel_detected.emit(
+            interpolation.detect_gpu_acceleration(str(rife), trt_plugin=str(installed.path) if installed else "")
+        )
+
+    def start_accel_detection(self) -> None:
+        """Nouvelle sonde des accélérations NVIDIA (après installation ou suppression de l'extension)."""
+        if self._nvof_badge is not None:
+            self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "pending")
+        self._executor.submit(self._run_accel_detection)
+
+    def _on_accel_detected(self, acceleration: object) -> None:
+        """Slot Qt (thread principal) : badge NVOF, puis compatibilité TensorRT au contrôleur d'extension."""
+        self._on_nvof_detected(getattr(acceleration, "nvof", None))
+        trt = getattr(acceleration, "trt", None)
+        if trt is not None:
+            self.trt_capability.emit(trt)
+
+    def set_rife_state(self, state: object) -> None:
+        """Badge muxiveo-rife selon l'extension Interpolation (RifeState) : disponible, téléchargement."""
+        badge = self._rife_badge
+        if badge is None:
+            return
+        busy = str(getattr(state, "busy", "") or "")
+        progress = int(getattr(state, "progress", -1))
+        self._make_tool_badge("muxiveo-rife", bool(getattr(state, "ready", False)), badge)
+        if busy in {"install", "update"}:
+            badge.setText(f" ○  muxiveo-rife {progress} % " if progress >= 0 else " ○  muxiveo-rife … ")
+
+    def set_trt_state(self, state: object) -> None:
+        """Badge « TensorRT » selon l'état de l'extension (TrtState)."""
+        badge = self._trt_badge
+        if badge is None:
+            return
+        if not getattr(state, "visible", False):
+            badge.hide()
+            return
+        badge.show()
+        capability = getattr(state, "capability", None)
+        device = str(getattr(capability, "device", "") or "")
+        installed = getattr(state, "installed", None)
+        busy = str(getattr(state, "busy", "") or "")
+        if busy:
+            progress = int(getattr(state, "progress", -1))
+            label = f"TensorRT {progress} %" if busy in {"install", "update"} and progress >= 0 else "TensorRT …"
+            self._apply_encoder_badge_state(badge, label, "pending")
+            badge.setToolTip(translate_text("Accélération NVIDIA (TensorRT) : opération en cours."))
+        elif installed is None:
+            self._apply_encoder_badge_state(badge, "TensorRT +", "pending")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) disponible pour {device} : cliquez pour l'installer.",
+                device=device or "?",
+            ))
+        elif getattr(state, "update_available", False):
+            self._apply_encoder_badge_state(badge, "TensorRT ↑", "pending")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) : mise à jour disponible. Cliquez pour ouvrir les extensions."
+            ))
+        elif getattr(state, "ready", False):
+            self._apply_encoder_badge_state(badge, "TensorRT", "available")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) active : interpolation MVO-RIFE sur {device}.", device=device or "?",
+            ))
+        else:
+            reason = str(getattr(capability, "reason", "") or "?")
+            self._apply_encoder_badge_state(badge, "TensorRT", "unavailable")
+            badge.setToolTip(translate_text(
+                "Accélération NVIDIA (TensorRT) installée mais inutilisable : {reason}. L'interpolation reste sur Vulkan.",
+                reason=reason,
+            ))
+
+    def _on_nvof_detected(self, capability: object) -> None:
+        """Slot Qt (thread principal) : badge NVOF et info-bulle (information seulement)."""
+        if self._nvof_badge is None:
+            return
+        ok = bool(getattr(capability, "available", False))
+        self._apply_encoder_badge_state(self._nvof_badge, "NVOF·CUDA", "available" if ok else "unavailable")
+        device = str(getattr(capability, "device", "") or "")
+        reason = str(getattr(capability, "reason", "") or "")
+        self._nvof_badge.setToolTip(
+            translate_text(
+                "Flux optique NVIDIA utilisé par l'interpolation hybride (préréglages Équilibré et Qualité) : {device}",
+                device=device or "?",
+            )
+            if ok
+            else translate_text(
+                "Flux optique NVIDIA indisponible : {reason}. L'interpolation hybride reste disponible sur le GPU Vulkan seul.",
+                reason=reason or "?",
+            )
         )
 
     def _on_hw_detected(self, available: set[str]) -> None:
@@ -1145,12 +1070,13 @@ class _NavButton(QWidget):
     ) -> None:
         super().__init__()
         self.page_index = page_index
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self._checked  = False
         self._is_sub   = is_sub
         self._compact  = compact
         self._icon_char = icon_char
         self._full_height = _scale(36 if is_sub else 40)
-        self._compact_height = max(self._full_height * 2, _scale(76))
+        self._compact_height = _scale(56)
         self.setFixedHeight(self._compact_height if compact else self._full_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1183,6 +1109,10 @@ class _NavButton(QWidget):
         full_lay.addWidget(self._full_icon_lbl)
         full_lay.addWidget(self._text_lbl)
         full_lay.addStretch()
+        self._ready_dot = QLabel("●")
+        self._ready_dot.setStyleSheet(f"color:{_Colors.OK};font-size:{_font_px(8)}px;background:transparent;border:none;")
+        self._ready_dot.hide()
+        full_lay.addWidget(self._ready_dot)
         self._stack.addWidget(full_page)
 
         compact_page = QWidget()
@@ -1243,6 +1173,7 @@ class _NavButton(QWidget):
                 border-right: none;
                 border-top: none;
                 border-bottom: none;
+                border-radius: {_scale(6)}px;
             }}
             _NavButton:hover {{
                 background: {_Colors.BG_HOVER};
@@ -1257,6 +1188,10 @@ class _NavButton(QWidget):
         )
         self._full_icon_lbl.setStyleSheet(icon_style_full)
         self._compact_icon_lbl.setStyleSheet(icon_style_compact)
+        key = {0: "home", 1: "merge_dovi", 2: "encode", 3: "media", 4: "hybrid", 5: "settings", 6: "extensions",
+               7: "hdr"}[self.page_index]
+        self._full_icon_lbl.setPixmap(workflow_icon(key, icon_c).pixmap(_scale(18), _scale(18)))
+        self._compact_icon_lbl.setPixmap(workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26)))
         font_size = f"{_font_px(11 if self._is_sub else 12)}px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
@@ -1281,14 +1216,16 @@ class _Sidebar(QWidget):
 
     _NAV_ITEMS = [
         ("Tableau de bord", "⌂", 0, False),
-        ("Conteneur",       "⊞", 3, False),
-        ("Encodage",        "▶", 2, True),    # sous-menu de Conteneur
-        ("Hybridation",     "⧉", 4, False),
-        ("DoVi / HDR10+",   "◈", 1, False),
-        ("Paramètres",      "⚙", 5, False),
+        ("Conteneur", "⊞", 3, False),
+        ("Encodage", "▶", 2, True),
+        ("Hybrid Studio", "⧉", 4, False),
+        ("HDR Studio", "◐", 7, False),
+        ("Merge DoVi / HDR10+", "◈", 1, False),
+        ("Paramètres", "⚙", 5, False),
+        ("Extensions", "⊕", 6, False),
     ]
-    _FULL_WIDTH = 200
-    _COMPACT_WIDTH = 96
+    _FULL_WIDTH = 208
+    _COMPACT_WIDTH = 72
 
     def __init__(self, parent: QWidget | None = None, *, compact: bool = False) -> None:
         super().__init__(parent)
@@ -1302,6 +1239,7 @@ class _Sidebar(QWidget):
             }}
         """)
         self._buttons: list[_NavButton] = []
+        self._group_labels: list[QLabel] = []
         self._build_ui()
         self.set_compact(self._compact)
 
@@ -1312,7 +1250,7 @@ class _Sidebar(QWidget):
 
         # Logo / App name
         logo_area = QWidget()
-        logo_area.setFixedHeight(_scale(56))
+        logo_area.setFixedHeight(_scale(38))
         logo_area.setStyleSheet(f"""
             QWidget {{
                 background: {_Colors.BG_SIDEBAR};
@@ -1324,14 +1262,14 @@ class _Sidebar(QWidget):
         la.setContentsMargins(_scale(12), 0, _scale(8), 0)
         la.setSpacing(_scale(8))
 
-        self._logo_icon = QLabel("▣")
+        self._logo_icon = QLabel("≡")
         self._logo_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._logo_icon.setToolTip("Muxiveo")
         self._logo_icon.setStyleSheet(
             f"color: {_Colors.ACCENT}; font-size: {_font_px(18)}px; background: transparent; border: none;"
         )
         la.addWidget(self._logo_icon)
-        self._logo_text = QLabel("Muxiveo")
+        self._logo_text = QLabel(translate_text("ESPACE DE TRAVAIL"))
         self._logo_text.setStyleSheet(f"""
             color: {_Colors.TEXT_PRI};
             font-size: {_font_px(13)}px;
@@ -1365,7 +1303,7 @@ class _Sidebar(QWidget):
         layout.addWidget(logo_area)
 
         # Navigation
-        self._nav_label = QLabel("NAVIGATION")
+        self._nav_label = QLabel(translate_text("TRAITEMENT MÉDIA"))
         self._nav_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._nav_label.setContentsMargins(_scale(16), _scale(16), 0, _scale(8))
         self._nav_label.setStyleSheet(f"""
@@ -1376,15 +1314,25 @@ class _Sidebar(QWidget):
             background: transparent;
             border: none;
         """)
-        layout.addWidget(self._nav_label)
+        self._group_labels.append(self._nav_label)
 
         for label, icon, idx, is_sub in self._NAV_ITEMS:
+            if idx == 3:
+                layout.addWidget(self._nav_label)
+            elif idx == 4:
+                group_label = QLabel(translate_text("STUDIOS"))
+                group_label.setContentsMargins(_scale(16), _scale(18), 0, _scale(8))
+                group_label.setStyleSheet(self._nav_label.styleSheet())
+                self._group_labels.append(group_label)
+                layout.addWidget(group_label)
+            elif idx == 5:
+                layout.addStretch()
             btn = _NavButton(label, icon, idx, is_sub, compact=self._compact)
             btn.clicked.connect(lambda b=btn: self._on_nav_click(b))
             self._buttons.append(btn)
             layout.addWidget(btn)
 
-        layout.addStretch()
+        layout.addSpacing(_scale(12))
 
         # Version
         self._version_lbl = QLabel(APP_VERSION_LABEL)
@@ -1425,7 +1373,9 @@ class _Sidebar(QWidget):
         self._compact = compact
         self.setFixedWidth(_scale(self._COMPACT_WIDTH if compact else self._FULL_WIDTH))
         self._logo_text.setVisible(not compact)
-        self._nav_label.setVisible(not compact)
+        self._logo_text.setStyleSheet(f"color:{_Colors.TEXT_SEC};font-size:{_font_px(9)}px;letter-spacing:1px;background:transparent;border:none;")
+        for label in self._group_labels:
+            label.setVisible(not compact)
         for btn in self._buttons:
             btn.set_compact(compact)
 
@@ -1440,6 +1390,10 @@ class _Sidebar(QWidget):
             self._version_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self._version_lbl.setContentsMargins(_scale(16), 0, 0, _scale(12))
         self._refresh_version_label()
+
+    def set_ready_operations(self, pages: set[int]) -> None:
+        for button in self._buttons:
+            button._ready_dot.setVisible(button.page_index in pages)
 
     def set_update_available(self, info: UpdateInfo | None) -> None:
         """Affiche une nouvelle version, ou efface le badge si elle est obsolète."""
@@ -1493,6 +1447,8 @@ class MainWindow(QMainWindow):
         "container": 3,
         "hybrid": 4,
         "settings": 5,
+        "extensions": 6,
+        "hdr": 7,
     }
 
     @property
@@ -1508,6 +1464,9 @@ class MainWindow(QMainWindow):
         set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
         if callable(set_operation_running):
             set_operation_running(self._running_flag)
+        timer = getattr(self, "_operation_refresh_timer", None)
+        if timer is not None:
+            timer.start()
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -1515,6 +1474,8 @@ class MainWindow(QMainWindow):
         DesignSystem.set_theme(config.theme)
         self._running   = False
         self._update_info: UpdateInfo | None = None
+        self._last_operation_result: tuple[str, str, str] | None = None
+        self._last_operation_signature: object = None
         self._signals: TaskSignals | None = None
         self._op_start: float = 0.0
         self._op_mode: str = ""   # "remux", "encode", "extract", "audio_sync" ou "merge_dovi"
@@ -1555,12 +1516,17 @@ class MainWindow(QMainWindow):
         self._prep_progress_timer = QTimer(self)
         self._prep_progress_timer.setInterval(120)
         self._prep_progress_timer.timeout.connect(self._tick_prep_progress)
+        self._operation_refresh_timer = QTimer(self)
+        self._operation_refresh_timer.setSingleShot(True)
+        self._operation_refresh_timer.setInterval(60)
+        self._operation_refresh_timer.timeout.connect(self._refresh_operation_bar)
         self._setup_window()
         self._build_ui()
         self._apply_startup_panel()
         self._restore_geometry()
         self._connect_signals()
         self._apply_locale()
+        self._refresh_operation_bar()
         self._post_init_log()
         self._schedule_update_check()
 
@@ -1608,6 +1574,29 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        workspace_header = QWidget()
+        workspace_header.setObjectName("workspaceHeader")
+        workspace_header.setFixedHeight(_scale(52))
+        workspace_header.setStyleSheet(f"QWidget#workspaceHeader{{background:{_Colors.BG_PANEL};border-bottom:1px solid {_Colors.BORDER};}}QLabel{{background:transparent;border:none;}}")
+        header = QHBoxLayout(workspace_header)
+        header.setContentsMargins(_scale(24), 0, _scale(24), 0)
+        brand_icon = QLabel()
+        brand_icon.setPixmap(workflow_icon("brand", _Colors.ACCENT, 25).pixmap(_scale(25), _scale(25)))
+        header.addWidget(brand_icon)
+        brand = QLabel("Muxiveo")
+        brand.setStyleSheet(f"color:{_Colors.TEXT_PRI};font-size:{_font_px(18)}px;font-weight:800;")
+        header.addWidget(brand)
+        self._workspace_title = QLabel(translate_text("Espace de travail"))
+        self._workspace_title.setMinimumWidth(0)
+        self._workspace_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._workspace_title.setStyleSheet(f"color:{_Colors.TEXT_SEC};font-size:{_font_px(11)}px;padding-left:16px;")
+        header.addWidget(self._workspace_title, 1)
+        header.addStretch()
+        self._ready_badge = QLabel()
+        self._ready_badge.setStyleSheet(f"color:{_Colors.OK};background:{_Colors.BADGE_OK_BG};border:1px solid {_Colors.BADGE_OK_BORDER};border-radius:5px;padding:5px 10px;font-size:{_font_px(10)}px;")
+        header.addWidget(self._ready_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        main_layout.addWidget(workspace_header)
+
         # ── Splitter vertical : (sidebar + stack + action bar) / log panel ──
         self._vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit = self._vsplit
@@ -1639,12 +1628,22 @@ class MainWindow(QMainWindow):
         # Stack de pages
         self._stack = QStackedWidget()
         self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
-        self._stack.setMinimumHeight(0)
-        self._stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._stack.setMinimumSize(0, 0)
+        self._stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+        # Extensions (interpolation, accélération NVIDIA) : état partagé par tableau de bord, page Extensions et Encodage.
+        self._rife_controller = RifePluginController(self._config, self)
+        self._fel_controller = FelPluginController(self._config, self)
+        self._trt_controller = TrtPluginController(self._config, self)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
-        self._stack.addWidget(self._dashboard)
+        self._dashboard_scroll = QScrollArea()
+        self._dashboard_scroll.setWidgetResizable(True)
+        self._dashboard_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._dashboard_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._dashboard_scroll.setWidget(self._dashboard)
+        self._stack.addWidget(self._dashboard_scroll)
 
         # Page 1 — DoVi / HDR10+ (fonctionnelle)
         self._dovi_panel = MergeDoviPanel(self._config)
@@ -1672,18 +1671,20 @@ class MainWindow(QMainWindow):
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
 
+        # Page 6 — Extensions (installation, mise à jour, suppression)
+        self._extensions_panel = ExtensionsPanel(self._config)
+        self._stack.addWidget(self._extensions_panel)
+
+        # Page 7 — HDR Studio (inspection HDR à la demande)
+        self._hdr_panel = HdrStudio(self._config)
+        self._stack.addWidget(self._hdr_panel)
+
         self._install_source_drop_targets(self._dashboard)
         self._install_source_drop_targets(self._encode_panel)
 
-        self._page_area = QScrollArea()
-        self._page_area.setWidgetResizable(True)
-        self._page_area.setFrameShape(QFrame.Shape.NoFrame)
-        self._page_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._page_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._page_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        self._page_area.setWidget(self._stack)
-
-        top_layout.addWidget(self._page_area, stretch=1)
+        # Chaque panneau possède déjà son défilement. Une enveloppe autour
+        # du stack ajoutait une seconde barre verticale et scrollait le panneau.
+        top_layout.addWidget(self._stack, stretch=1)
         top_vbox.addWidget(content_widget, stretch=1)
 
         # ── Barre d'action globale ───────────────────────────────────────────
@@ -1705,87 +1706,16 @@ class MainWindow(QMainWindow):
         return cls.WRITING_APPLICATION
 
     def _build_action_bar(self) -> QWidget:
-        """Construit la barre d'action globale avec bouton unique 'Exécuter l'opération'."""
-        bar = QWidget()
-        bar.setStyleSheet(
-            f"QWidget{{background:{_Colors.BG_PANEL};"
-            f"border-top:1px solid {_Colors.BORDER};}}"
-        )
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(_scale(28), _scale(10), _scale(28), _scale(10))
-        layout.setSpacing(_scale(12))
-
-        # Zone progress (barre fine + légende)
-        self._prog_widget = QWidget()
-        self._prog_widget.setStyleSheet("background:transparent;")
-        pv = QVBoxLayout(self._prog_widget)
-        pv.setContentsMargins(0, _scale(4), 0, _scale(4))
-        pv.setSpacing(_scale(4))
-
-        self._prog_bar = QProgressBar()
-        self._prog_bar.setRange(0, 100)
-        self._prog_bar.setValue(0)
-        self._prog_bar.setFixedHeight(_scale(6))
-        self._prog_bar.setTextVisible(False)
-        self._prog_bar.setStyleSheet(self._progress_bar_stylesheet(_Colors.ACCENT))
-        pv.addWidget(self._prog_bar)
-
-        self._prog_lbl = QLabel("")
-        self._prog_lbl.setStyleSheet(
-            f"color:{_Colors.TEXT_DIM};font-size:{_font_px(10)}px;"
-            f"font-family:'JetBrains Mono',monospace;background:transparent;"
-        )
-        pv.addWidget(self._prog_lbl)
-
-        self._prog_widget.setVisible(False)
-        layout.addWidget(self._prog_widget, stretch=1)
-
-        self._status_lbl = QLabel("")
-        self._status_lbl.setMinimumWidth(0)
-        self._status_lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._status_lbl.setStyleSheet(
-            f"color:{_Colors.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;"
-        )
-        layout.addWidget(self._status_lbl)
-        layout.addSpacing(_scale(4))
-
-        # Bouton principal unique
-        self._run_btn = QPushButton("▶  Exécuter l'opération")
-        self._run_btn.setFixedHeight(_scale(36))
-        self._run_btn.setMinimumWidth(_scale(180))
-        self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._run_btn.setEnabled(False)
-        self._run_btn.setStyleSheet(f"""
-            QPushButton{{
-                background:{_Colors.ACCENT};color:#ffffff;
-                border:none;border-radius:6px;
-                font-size:{_font_px(12)}px;font-weight:700;padding:0 {_scale(20)}px;
-            }}
-            QPushButton:hover{{background:#6070f8;}}
-            QPushButton:pressed{{background:{_Colors.ACCENT_DIM};}}
-            QPushButton:disabled{{background:{_Colors.BG_CARD};
-                color:{_Colors.TEXT_DIM};border:1px solid {_Colors.BORDER};}}
-        """)
-        self._run_btn.clicked.connect(self._on_run)
-        layout.addWidget(self._run_btn)
-
-        # Bouton annulation
-        self._cancel_btn = QPushButton("✕  Annuler")
-        self._cancel_btn.setMinimumWidth(_scale(96))
-        self._cancel_btn.setFixedHeight(_scale(36))
-        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._cancel_btn.setStyleSheet(f"""
-            QPushButton{{background:{_Colors.BG_CARD};color:#f5c842;
-                border:1px solid #f5c842;border-radius:6px;
-                font-size:{_font_px(12)}px;font-weight:600;padding:0 {_scale(14)}px;}}
-            QPushButton:hover{{background:#2a2010;border-color:#f0b030;color:#f0b030;}}
-            QPushButton:pressed{{background:#1a1608;}}
-        """)
-        self._cancel_btn.setVisible(False)
-        self._cancel_btn.clicked.connect(self._on_cancel_op)
-        layout.addWidget(self._cancel_btn)
-
-        return bar
+        self._action_bar = OperationBar(self)
+        self._run_btn = self._action_bar.run_button
+        self._cancel_btn = self._action_bar.cancel_button
+        self._prog_widget = self._action_bar.progress_widget
+        self._prog_bar = self._action_bar.progress_bar
+        self._prog_lbl = self._action_bar.progress_label
+        self._status_lbl = self._action_bar.status_label
+        self._action_bar.launch_requested.connect(self._launch_operation)
+        self._action_bar.cancel_requested.connect(self._on_cancel_op)
+        return self._action_bar
 
     @staticmethod
     def _progress_bar_stylesheet(chunk_color: str) -> str:
@@ -1842,6 +1772,9 @@ class MainWindow(QMainWindow):
     def _sync_prep_progress_from_log(self, message: str) -> None:
         if not self._running:
             return
+        message = split_log_source(message)[1]
+        if self._op_mode == "hybrid":
+            message = re.sub(r"^\[[^]]+\]\s*", "", message)
         match = _STEP_PROGRESS_RE.match(message.strip())
         if match is None:
             return
@@ -1871,6 +1804,7 @@ class MainWindow(QMainWindow):
 
     def _apply_startup_log_panel_state(self) -> None:
         logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
+        self._log_panel.set_startup_expanded(logs_expanded)
         self._log_panel.set_collapsed(not logs_expanded)
         if logs_expanded:
             self._vsplit.setSizes([620, 180])
@@ -1881,6 +1815,31 @@ class MainWindow(QMainWindow):
         container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
         self._stack.setCurrentIndex(container_index)
         self._sidebar.select_page(container_index)
+
+    def _open_hdr_studio(self, path: Path, stream_index: int) -> None:
+        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
+        index = self._PAGE_INDEX_BY_PANEL_KEY["hdr"]
+        self._sidebar.select_page(index)
+        self._stack.setCurrentIndex(index)
+        self._hdr_panel.load_source(Path(path), int(stream_index))
+
+    def _open_fel_analyzer(self, path: Path, stream_index: int) -> None:
+        """HDR Studio sur l'onglet FEL de la piste (bouton du panneau Encodage)."""
+        self._open_hdr_studio(path, stream_index)
+        self._hdr_panel.show_fel_tab()
+
+    def _apply_hdr_levels_to_encode(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> None:
+        """MaxCLL/MaxFALL choisis dans HDR Studio, appliqués à la piste du panneau Encodage."""
+        if self._encode_panel.apply_static_light_levels(Path(path), int(stream_index), max_cll, max_fall):
+            self.log_requested.emit("OK", "[HDR] " + translate_text(
+                "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.", cll=max_cll, fall=max_fall))
+            index = self._PAGE_INDEX_BY_PANEL_KEY["encoding"]
+            self._sidebar.select_page(index)
+            self._stack.setCurrentIndex(index)
+            return
+        self.log_requested.emit("WARN", "[HDR] " + translate_text(
+            "Piste absente du panneau Encodage (ajouter la source dans Conteneur) "
+            "ou codec sans métadonnées HDR10 modifiables."))
 
     def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
         self._open_container_panel()
@@ -1994,38 +1953,65 @@ class MainWindow(QMainWindow):
         self._dovi_panel.set_operation_start_guard(self._can_start_operation)
         self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
+        self._stack.currentChanged.connect(self._on_active_page_changed)
+        self._hybrid_panel.set_operation_start_guard(self._can_start_operation)
+        self._hybrid_panel.use_global_controls()
+        self._dovi_panel.use_global_controls()
+        self._hybrid_panel.ready_changed.connect(self._on_ready_changed)
+        self._dovi_panel.ready_changed.connect(self._on_ready_changed)
+        self._hybrid_panel.op_state_changed.connect(self._on_hybrid_op_state)
+        self._hybrid_panel.op_progress.connect(self._on_hybrid_progress)
+        self._hybrid_panel.op_progress_pct.connect(self._on_hybrid_progress_pct)
+        self._encode_panel.operation_changed.connect(self._request_operation_refresh)
+        self._remux_panel.operation_changed.connect(self._request_operation_refresh)
         self.log_requested.connect(self._on_log_requested)
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
+        self._log_panel.startup_expanded_changed.connect(self._on_log_startup_changed)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
         self._dovi_panel.log_message.connect(
-            self.log_requested, Qt.ConnectionType.QueuedConnection
+            lambda level, message: self.log_requested.emit(level, "[DOVI] " + message),
+            Qt.ConnectionType.QueuedConnection,
         )
         # MergeDoviPanel → bandeau de progression global (barre indéterminée jaune
         # + libellé d'étape, faute de progression chiffrée native sur ce workflow)
-        self._dovi_panel.op_state_changed.connect(
-            self._on_dovi_op_state, Qt.ConnectionType.QueuedConnection
-        )
+        self._dovi_panel.op_state_changed.connect(self._on_dovi_op_state)
         # Pourcentage des outils dovi_tool / hdr10plus_tool → barre globale.
         # Reset implicite à 0 émis par le panel à chaque step_started.
         self._dovi_panel.op_progress_pct.connect(
             self._on_dovi_op_progress_pct, Qt.ConnectionType.QueuedConnection
         )
-        self._dovi_panel.op_progress.connect(
-            self._on_op_progress, Qt.ConnectionType.QueuedConnection
-        )
+        self._dovi_panel.op_progress.connect(self._on_dovi_progress, Qt.ConnectionType.QueuedConnection)
+        self._dovi_panel.tool_output.connect(self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection)
         # EncodePanel → LogPanel global
         self._encode_panel.log_message.connect(
-            self.log_requested, Qt.ConnectionType.QueuedConnection
+            lambda level, message: self.log_requested.emit(level, "[ENCODE] " + message),
+            Qt.ConnectionType.QueuedConnection,
         )
         # RemuxPanel → LogPanel global
         self._remux_panel.log_message.connect(
-            self.log_requested, Qt.ConnectionType.QueuedConnection
+            lambda level, message: self.log_requested.emit(level, "[REMUX] " + message),
+            Qt.ConnectionType.QueuedConnection,
         )
         # HybridStudio → LogPanel global
         self._hybrid_panel.log_message.connect(
-            self.log_requested, Qt.ConnectionType.QueuedConnection
+            lambda level, message: self.log_requested.emit(level, "[HYBRID] " + message),
+            Qt.ConnectionType.QueuedConnection,
         )
         self._hybrid_panel.open_in_remux.connect(self._on_hybrid_open_in_remux)
+        # HDR Studio → LogPanel global ; clic droit « Inspecter le HDR… » des panneaux
+        self._hdr_panel.log_message.connect(
+            lambda level, message: self.log_requested.emit(level, "[HDR] " + message),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._remux_panel.hdr_studio_requested.connect(self._open_hdr_studio)
+        self._hdr_panel.apply_to_encode_requested.connect(self._apply_hdr_levels_to_encode)
+        # HDR Studio → barre d'exécution (écriture du fichier corrigé) ; sortie des outils → journal verbose
+        self._hdr_panel.op_state_changed.connect(lambda state, label: self._on_studio_op_state("hdr", state, label))
+        self._hdr_panel.op_progress_pct.connect(self._on_hdr_progress_pct)
+        self._hdr_panel.ready_changed.connect(self._on_ready_changed)
+        self._hdr_panel.tool_output.connect(self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection)
+        self._encode_panel.fel_analysis_requested.connect(self._open_fel_analyzer)
+        self._encode_panel.hdr_studio_requested.connect(self._open_hdr_studio)
         self._remux_panel.tool_output.connect(
             self._on_tool_output_requested, Qt.ConnectionType.QueuedConnection
         )
@@ -2037,6 +2023,7 @@ class MainWindow(QMainWindow):
         # RemuxPanel → EncodePanel : pistes partagées + chemin de sortie commun
         self._remux_panel.video_tracks_changed.connect(self._encode_panel.set_video_tracks)
         self._dashboard.vulkan_ready.connect(self._encode_panel.set_vulkan_capability)
+        self._wire_extensions()
         self._remux_panel.audio_tracks_changed.connect(self._encode_panel.set_audio_tracks)
         self._remux_panel.sources_reset.connect(self._encode_panel.reset)
         self._encode_panel.video_tracks_encoding_changed.connect(self._remux_panel.update_video_track_encoding)
@@ -2059,6 +2046,111 @@ class MainWindow(QMainWindow):
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
 
+    def _wire_extensions(self) -> None:
+        """Extensions : sonde → contrôleurs → badges, page Extensions, encodages ; flux des versions lu en tâche de fond."""
+        rife, trt, fel = self._rife_controller, self._trt_controller, self._fel_controller
+        panel = self._extensions_panel
+        for ctrl in (rife, trt, fel):
+            ctrl.probe_requested.connect(self._dashboard.start_accel_detection)
+            ctrl.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
+        rife.state_changed.connect(self._dashboard.set_rife_state)
+        rife.state_changed.connect(panel.set_rife_state)
+        fel.state_changed.connect(panel.set_fel_state)
+        fel.state_changed.connect(lambda _: self._encode_panel._sync_dovi_profile_options())
+        rife.state_changed.connect(self._encode_panel.set_rife_state)
+        rife.workflow_changed.connect(self._encode_panel.refresh_rife_tool)
+        self._dashboard.rife_badge_clicked.connect(self.show_extensions_page)
+        self._dashboard.trt_capability.connect(trt.set_capability)
+        self._dashboard.trt_badge_clicked.connect(self._on_trt_badge_clicked)
+        trt.state_changed.connect(self._dashboard.set_trt_state)
+        trt.state_changed.connect(panel.set_trt_state)
+        trt.state_changed.connect(self._on_trt_state_changed)
+        trt.workflow_changed.connect(self._apply_trt_plugin_to_encode)
+        panel.install_requested.connect(self._on_extension_install_requested)
+        panel.update_requested.connect(lambda plugin_id: self._extension_controller(plugin_id).update())
+        panel.remove_requested.connect(self._on_extension_remove_requested)
+        panel.trt_enabled_toggled.connect(trt.set_enabled)
+        panel.auto_update_toggled.connect(trt.set_auto_update)
+        panel.set_rife_state(rife.state())
+        panel.set_fel_state(fel.state())
+        panel.set_trt_state(trt.state())
+        self._dashboard.set_rife_state(rife.state())
+        self._encode_panel.rife_install_requested.connect(rife.install)
+        self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
+        self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
+        self._apply_trt_plugin_to_encode()
+        for ctrl in (rife, trt, fel):
+            ctrl.cleanup()
+            ctrl.refresh_feed()
+
+    def _extension_controller(self, plugin_id: str) -> PluginController:
+        return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
+
+    def _on_extension_install_requested(self, plugin_id: str) -> None:
+        if plugin_id == self._trt_controller.spec.id:
+            self._open_trt_install_dialog()
+        else:
+            self._extension_controller(plugin_id).install()
+
+    def _on_extension_remove_requested(self, plugin_id: str) -> None:
+        if plugin_id == self._fel_controller.spec.id:
+            self._fel_controller.remove()
+            return
+        if plugin_id == self._trt_controller.spec.id:
+            self._on_trt_remove_requested()
+            return
+        answer = QMessageBox.question(
+            self,
+            translate_text("Interpolation d'images (MVO-RIFE)"),
+            translate_text(
+                "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à "
+                "l'encodage ; l'extension peut être réinstallée à tout moment."
+            ),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._rife_controller.remove()
+
+    def _apply_trt_plugin_to_encode(self) -> None:
+        self._encode_panel.set_trt_plugin(self._trt_controller.plugin_dir())
+
+    def _on_trt_state_changed(self, state: object) -> None:
+        self._encode_panel.set_trt_state(state)
+
+    def _on_trt_badge_clicked(self) -> None:
+        state = self._trt_controller.state()
+        if state.installed is None and state.compatible and not state.busy:
+            self._open_trt_install_dialog()
+            return
+        self.show_extensions_page()
+
+    def show_extensions_page(self) -> None:
+        """Ouvre la page Extensions (badges du tableau de bord, liens des fonctions)."""
+        index = self._PAGE_INDEX_BY_PANEL_KEY["extensions"]
+        self._stack.setCurrentIndex(index)
+        self._sidebar.select_page(index)
+
+    def _open_trt_install_dialog(self) -> None:
+        from ui.dialogs.plugin_install_dialog import PluginInstallDialog
+
+        state = self._trt_controller.state()
+        if state.busy or state.installed is not None:
+            return
+        device = str(getattr(state.capability, "device", "") or "")
+        if PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted:
+            self._trt_controller.install()
+
+    def _on_trt_remove_requested(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            translate_text("Accélération NVIDIA (TensorRT)"),
+            translate_text(
+                "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU "
+                "(Vulkan) ; l'extension peut être réinstallée à tout moment."
+            ),
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._trt_controller.remove()
+
     def _apply_locale(self) -> None:
         set_current_language(self._config.language)
         apply_translations(self)
@@ -2069,10 +2161,126 @@ class MainWindow(QMainWindow):
 
     _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
 
+    def _request_operation_refresh(self, *_args) -> None:
+        if hasattr(self, "_shutdown"):
+            return
+        if not self._operation_refresh_timer.isActive():
+            self._operation_refresh_timer.start()
+
+    def _operation_signature(self, owner: str) -> object:
+        """Configuration effective, indépendante des sondes et de l'état occupé."""
+        if owner == "hybrid":
+            panel = self._hybrid_panel
+            return (
+                panel._settings_signature(),
+                tuple((episode.master_file, tuple((source.path if source else None, path)
+                       for source, path in episode.donor_files)) for episode in panel.matrix_episodes),
+                tuple(sorted(panel.jobs.items())),
+            )
+        if owner == "hdr":
+            return repr(self._hdr_panel._editor.readiness()[0])
+        if owner == "merge_dovi":
+            dovi_panel = self._dovi_panel
+            section = dovi_panel._config_section
+            return (dovi_panel._file_section.film1, dovi_panel._file_section.film2, section.dovi_profile,
+                    section.metadata_adjustment, section.work_dir, section.output_dir)
+        return (self._encode_panel.collect_config(), self._remux_panel.collect_config())
+
+    def _remember_operation_result(self, owner: str, status: str, message: str) -> None:
+        self._last_operation_result = (owner, status, message)
+        # Les pistes et calibrations sont mutables : une copie permet de
+        # distinguer une édition réelle d'une simple notification de readiness.
+        self._last_operation_signature = copy.deepcopy(self._operation_signature(owner))
+
     def _on_ready_changed(self, _ready: bool) -> None:
-        """Met à jour l'état du bouton selon la disponibilité des deux panneaux."""
-        enabled = (self._remux_panel.is_ready() or self._encode_panel.collect_config() is not None)
-        self._run_btn.setEnabled(enabled and not self._running)
+        self._request_operation_refresh()
+
+    def _on_active_page_changed(self, page: int) -> None:
+        self._sidebar.select_page(page)
+        self._refresh_operation_bar()
+
+    def _operation_states(self) -> list[OperationState]:
+        encode = self._encode_panel.collect_config()
+        encoding = encode is not None and not self._encode_panel.is_pure_copy(encode)
+        remux = self._remux_panel.collect_config()
+        config = encode if encoding else remux
+        ready = config is not None
+        output = config.output if config is not None else None
+        media = OperationState(
+            "media", 2 if encoding else 3,
+            translate_text("Remux & Encode"),
+            str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
+            ready, translate_text("Ajoutez une source et renseignez le fichier de sortie."),
+        )
+        return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
+                self._hdr_panel.operation_state()]
+
+    def _refresh_operation_bar(self) -> None:
+        if not hasattr(self, "_action_bar"):
+            return
+        operations = self._operation_states()
+        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid", 7: "hdr"}.get(self._stack.currentIndex())
+        label = ""
+        if self._running:
+            active = {"encode": "media", "remux": "media", "extract": "media", "audio_sync": "media"}.get(self._op_mode, self._op_mode)
+            label = translate_text({
+                "hybrid": "Hybridation en cours…", "merge_dovi": "Fusion DoVi en cours…",
+                "hdr": "Correction HDR en cours…",
+                "encode": "Encodage en cours…", "remux": "Remuxage en cours…",
+                "extract": "Extraction en cours…", "audio_sync": "Synchronisation en cours…",
+            }.get(self._op_mode, "Opération en cours…"))
+        current = next((op for op in operations if op.key == active and op.ready), None)
+        project = Path(current.summary.split(" ← ", 1)[0]).name if current else ""
+        result = self._last_operation_result
+        if result is not None and not self._running:
+            if self._operation_signature(result[0]) != self._last_operation_signature:
+                self._last_operation_result = result = None
+        if not self._running and result is not None:
+            key, status, message = result
+            if key == active:
+                retry_label = translate_text({"hybrid": "Relancer l’hybridation", "merge_dovi": "Relancer la fusion", "hdr": "Relancer la correction",
+                                            "media": "Relancer l’opération"}.get(key, "Relancer l’opération"))
+                operations = [replace(op, summary=message, label=retry_label if status == "failed" else op.label) if op.key == key else op for op in operations]
+        self._action_bar.set_operations(operations, active, label)
+        if not self._running:
+            self._prog_widget.setVisible(result is not None and result[0] == active and result[1] == "finished")
+        # Les studios de recalage modaux possèdent leur propre annulation.
+        if self._running and self._op_mode == "audio_sync" and self._signals is None:
+            self._cancel_btn.hide()
+        count = sum(op.ready for op in operations)
+        self._ready_badge.setText(translate_text("Opération en cours") if self._running else
+                                  translate_text("1 opération prête") if count == 1 else
+                                  translate_text("{count} opérations prêtes", count=count))
+        self._workspace_title.setText(translate_text("Espace de travail") + (f" · {project}" if project else ""))
+        self._sidebar.set_ready_operations({op.page for op in operations if op.ready})
+
+    def _launch_operation(self, key: str) -> None:
+        if self._running:
+            return
+        operation = next((op for op in self._operation_states() if op.key == key), None)
+        if operation is None or not operation.ready:
+            self._refresh_operation_bar()
+            return
+        if not (key == "media" and self._stack.currentIndex() in (2, 3)):
+            self._stack.setCurrentIndex(operation.page)
+        self._last_operation_result = None
+        self._expand_log_panel()
+        if key == "hybrid":
+            self._hybrid_panel.run()
+        elif key == "merge_dovi":
+            self._dovi_panel._on_run()
+        elif key == "hdr":
+            self._hdr_panel.run()
+        else:
+            self._run_media_operation()
+        self._refresh_operation_bar()
+
+    def _on_run(self) -> None:
+        active = {1: "merge_dovi", 2: "media", 3: "media", 4: "hybrid", 7: "hdr"}.get(self._stack.currentIndex())
+        if active is None:
+            self._action_bar.open_menu()
+        else:
+            self._launch_operation(active)
 
     def _on_remux_extract_started(self, task_signals: object, metadata: object) -> None:
         if not isinstance(task_signals, TaskSignals):
@@ -2169,7 +2377,7 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _on_run(self) -> None:
+    def _run_media_operation(self) -> None:
         if not self._can_start_operation():
             return
         self._ffmpeg_version_logged = False
@@ -2202,7 +2410,7 @@ class MainWindow(QMainWindow):
                 return
             self._op_mode = "encode"
             self._op_encode_config = encode_cfg
-            self.log_requested.emit("INFO", f"Encodage → {encode_cfg.output.name}")
+            self.log_requested.emit("INFO", f"[MEDIA] Encodage → {encode_cfg.output.name}")
             try:
                 signals = self._encode_panel.run_operation(encode_cfg)
             except EncodeError as exc:
@@ -2218,7 +2426,7 @@ class MainWindow(QMainWindow):
             if not confirm_overwrite(self, remux_cfg.output):
                 return
             self._op_mode = "remux"
-            self.log_requested.emit("INFO", f"Remuxage → {remux_cfg.output.name}")
+            self.log_requested.emit("INFO", f"[MEDIA] Remuxage → {remux_cfg.output.name}")
             try:
                 signals = self._remux_panel.run_operation(remux_cfg)
             except RemuxError as exc:
@@ -2226,7 +2434,7 @@ class MainWindow(QMainWindow):
                 return
 
         else:
-            self.log_requested.emit("WARN", "Aucune opération configurée.")
+            self.log_requested.emit("WARN", "[MEDIA] Aucune opération configurée.")
             return
 
         # ── Connexion des signaux de progression ────────────────────────────
@@ -2235,6 +2443,8 @@ class MainWindow(QMainWindow):
         self._signals  = signals
         self._run_btn.setEnabled(False)
         self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
+        self._expand_log_panel()
         self._op_encode_fps = None
         self._op_encode_frame = None
         self._eta_tracker_video.reset()
@@ -2424,7 +2634,7 @@ class MainWindow(QMainWindow):
             return True
 
         if raw_line.startswith("$ "):
-            self.log_requested.emit("INFO", raw_line)
+            self.log_requested.emit("INFO", f"[MEDIA] {raw_line}")
             return True
 
         fps_m = _FPS_RE.search(raw_line)
@@ -2460,7 +2670,7 @@ class MainWindow(QMainWindow):
         if self._is_debug_tool_line(raw_line):
             self._log_debug_only(raw_line, label=label)
             return True
-        self.log_requested.emit("INFO", raw_line)
+        self.log_requested.emit("INFO", f"[MEDIA] {raw_line}")
         return True
 
     def _on_op_progress_pct(self, pct: int) -> None:
@@ -2494,7 +2704,7 @@ class MainWindow(QMainWindow):
                 self._ffmpeg_version_logged = True
                 # Extraire "ffmpeg version 7.1.3" jusqu'au premier "Copyright".
                 short = line.split(" Copyright", 1)[0].strip()
-                self.log_requested.emit("INFO", short)
+                self.log_requested.emit("INFO", f"[MEDIA] {short}")
             return
         if _is_ffmpeg_info_noise(line):
             return
@@ -2507,7 +2717,7 @@ class MainWindow(QMainWindow):
         if self._op_mode == "extract":
             if line.startswith("$ "):
                 self._stop_prep_progress()
-                self.log_requested.emit("INFO", line)
+                self.log_requested.emit("INFO", f"[MEDIA] {line}")
                 return
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
@@ -2525,12 +2735,12 @@ class MainWindow(QMainWindow):
                 return
             if _is_encode_progress_noise(line):
                 return
-            self.log_requested.emit("INFO", line)
+            self.log_requested.emit("INFO", f"[MEDIA] {line}")
             return
         if self._op_mode == "remux":
             if line.startswith("$ "):
                 self._stop_prep_progress()
-                self.log_requested.emit("INFO", line)
+                self.log_requested.emit("INFO", f"[MEDIA] {line}")
                 return
             elapsed_video = ffmpeg_progress_seconds(line)
             if elapsed_video is not None:
@@ -2547,7 +2757,7 @@ class MainWindow(QMainWindow):
                 return
             if _is_encode_progress_noise(line):
                 return
-            self.log_requested.emit("INFO", line)
+            self.log_requested.emit("INFO", f"[MEDIA] {line}")
         else:
             if self._handle_encode_internal_progress(line):
                 return
@@ -2574,7 +2784,7 @@ class MainWindow(QMainWindow):
                 self._op_encode_frame = None
                 self._eta_tracker_video.reset()
                 self._eta_tracker_frame.reset()
-                self.log_requested.emit("INFO", line)
+                self.log_requested.emit("INFO", f"[MEDIA] {line}")
                 return
             rife_progress_line = parse_rife_progress(line) is not None
             if self._is_debug_tool_line(line):
@@ -2645,7 +2855,7 @@ class MainWindow(QMainWindow):
                 if pct_label or fps_str or eta_str:
                     self._prog_lbl.setText(self._format_progress_label(pct_label, fps_str, eta_str))
                 if progress_event.should_log:
-                    self.log_requested.emit("INFO", progress_event.raw_line)
+                    self.log_requested.emit("INFO", f"[MEDIA] {progress_event.raw_line}")
                 return
             fps_m = _FPS_RE.search(line)
             if fps_m:
@@ -2726,7 +2936,7 @@ class MainWindow(QMainWindow):
                     self._stop_prep_progress()
                 self._op_stage_label = line.strip()
                 self._prog_lbl.setText(line)
-            self.log_requested.emit("INFO", line)
+            self.log_requested.emit("INFO", f"[MEDIA] {line}")
 
     def _expand_log_panel(self) -> None:
         """Déplie le panneau de logs (erreur à lire) sans attendre une action de l'utilisateur."""
@@ -2737,7 +2947,7 @@ class MainWindow(QMainWindow):
     def _report_blocking_errors(self, errors: list[str]) -> None:
         """Erreurs empêchant le lancement : journal, logs dépliés et boîte récapitulative."""
         for error in errors:
-            self.log_requested.emit("ERROR", error)
+            self.log_requested.emit("ERROR", f"[MEDIA] {error}")
         self._expand_log_panel()
         self._status_lbl.setText(translate_text("Configuration invalide."))
         shown = "\n".join(f"• {translate_text(error)}" for error in errors[:8])
@@ -2753,53 +2963,112 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if reply == QMessageBox.StandardButton.Yes and self._signals is not None:
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._cancel_btn.setEnabled(False)
+        if self._op_mode == "hybrid":
+            self._hybrid_panel.cancel()
+        elif self._op_mode == "merge_dovi":
+            self._dovi_panel._on_cancel()
+        elif self._op_mode == "hdr":
+            self._hdr_panel.cancel()
+        elif self._signals is not None:
             self._signals.cancel()
 
-    def _on_dovi_op_state(self, state: str, label: str) -> None:
-        """
-        Pilote le bandeau de progression global pour le workflow MergeDovi.
+    def _on_hybrid_op_state(self, state: str, label: str) -> None:
+        self._on_studio_op_state("hybrid", state, label)
 
-        Comme dovi_tool/hdr10plus_tool n'émettent pas de pourcentage exploitable
-        (et pas du tout sous Windows faute de pty), on affiche une barre jaune
-        indéterminée pendant toute l'opération, avec le libellé de l'étape en
-        cours.
-        """
+    def _on_dovi_op_state(self, state: str, label: str) -> None:
+        self._on_studio_op_state("merge_dovi", state, label)
+
+    def _on_studio_op_state(self, owner: str, state: str, label: str) -> None:
         if state == "started":
-            self._running = True
+            self._op_mode = owner
             self._op_start = time.monotonic()
-            self._op_mode = "merge_dovi"
-            self._dovi_step_label = label
-            self._prog_widget.setVisible(True)
-            self._prog_bar.setRange(0, 100)
-            self._prog_bar.setValue(0)
+            self._op_encode_config = None
+            self._signals = None
+            self._running = True
+            self._op_stage_label = label
+            self._cancel_btn.setEnabled(True)
+            self._prog_widget.show()
+            self._prog_bar.setRange(0, 0)
             self._prog_lbl.setText(label)
-            self._status_lbl.setText(label)
-            self._start_prep_progress()
+            self._expand_log_panel()
+        elif self._op_mode != owner:
+            return
         elif state == "step":
+            self._stop_prep_progress()
+            self._op_stage_label = label
+            self._prog_bar.setRange(0, 0)
             self._prog_lbl.setText(label)
+            if owner == "hybrid":
+                self._hybrid_episode_label = label
+        else:
+            self._stop_prep_progress()
+            self._running = False
+            self._prog_bar.setRange(0, 100)
+            self._prog_bar.setValue(100 if state == "finished" else 0)
+            self._prog_lbl.setText(label)
+            self._status_lbl.setText(label)
+            self._cancel_btn.setEnabled(True)
+            self._cancel_btn.hide()
+            self.log_requested.emit("OK" if state == "finished" else "WARN" if state == "cancelled" else "ERROR",
+                                    f"[{ {'hybrid': 'HYBRID', 'hdr': 'HDR'}.get(owner, 'DOVI') }] {label}")
+            if state == "failed":
+                self._expand_log_panel()
+            self._op_mode = ""
+            self._remember_operation_result(owner, state, label)
+        if owner == "merge_dovi":
             self._dovi_step_label = label
-            # Nouvelle étape : repart en prep jaune indéterminée. Si l'outil
-            # émet un % (dovi_tool / hdr10plus_tool), la barre bascule en
-            # chiffré via _on_dovi_op_progress_pct.
-            self._prog_bar.setValue(0)
-            self._start_prep_progress()
-        elif state == "finished":
+        self._refresh_operation_bar()
+
+    def _on_dovi_progress(self, line: str) -> None:
+        if self._op_mode != "merge_dovi":
+            return
+        if native_mux_progress_label(line) is not None:
+            self._on_op_progress(line)
+            self._prog_lbl.setText(self._format_progress_label(native_mux_progress_label(line) or ""))
+        else:
+            self._prog_lbl.setText(self._format_progress_label(line[:180]))
+
+    def _on_hdr_progress_pct(self, pct: int) -> None:
+        """Progression de la correction HDR : étape en cours (barre d'exécution) et pourcentage global."""
+        if self._op_mode != "hdr":
+            return
+        self._stop_prep_progress()
+        clamped = max(0, min(100, int(pct)))
+        self._prog_bar.setRange(0, 100)
+        self._prog_bar.setValue(clamped)
+        step = getattr(self, "_op_stage_label", "") or ""
+        self._prog_lbl.setText(f"{step}  ·  {clamped}%" if step else f"{clamped}%")
+
+    def _on_hybrid_progress_pct(self, pct: int) -> None:
+        if self._op_mode == "hybrid":
+            self._on_op_progress_pct(pct)
+
+    def _on_hybrid_progress(self, line: str) -> None:
+        if self._op_mode != "hybrid":
+            return
+        self._capture_verbose_progress_line(line)
+        label = native_mux_progress_label(line)
+        if label is not None:
             self._stop_prep_progress()
-            self._prog_bar.setRange(0, 100)
-            self._prog_bar.setValue(100)
-            self._prog_lbl.setText(translate_text("100%  ·  terminé"))
-            self._status_lbl.setText(label)
-            self._running = False
-            self._op_mode = ""
-        elif state in ("failed", "cancelled"):
-            self._stop_prep_progress()
-            self._prog_widget.setVisible(False)
-            self._prog_bar.setRange(0, 100)
-            self._prog_lbl.setText("")
-            self._status_lbl.setText(label)
-            self._running = False
-            self._op_mode = ""
+            match = re.search(r"(\d+)%", label)
+            if match:
+                self._prog_bar.setRange(0, 100)
+                self._prog_bar.setValue(int(match[1]))
+            else:
+                self._prog_bar.setRange(0, 0)
+            self._prog_lbl.setText(self._format_progress_label(label))
+        elif line.startswith(_PCT_SENTINEL):
+            try:
+                self._on_op_progress_pct(int(line[len(_PCT_SENTINEL):].strip()))
+            except ValueError:
+                pass
+        else:
+            stage = _parse_sync_rewrite_stage_progress(line)
+            if stage is not None:
+                self._prog_lbl.setText(self._format_progress_label(_sync_rewrite_stage_label(*stage)))
 
     def _on_dovi_op_progress_pct(self, pct: int) -> None:
         """
@@ -2830,7 +3099,10 @@ class MainWindow(QMainWindow):
         self._prog_bar.setRange(0, 100)
         self._prog_lbl.setText("")
         self._status_lbl.setText(translate_text("Annulé."))
-        self.log_requested.emit("WARN", "Opération annulée.")
+        self.log_requested.emit("WARN", "[MEDIA] Opération annulée.")
+        self._cancel_btn.setEnabled(True)
+        self._last_operation_result = None
+        self._request_operation_refresh()
 
     def _on_op_finished(self, success: bool, error: str = "") -> None:
         self._running = False
@@ -2842,6 +3114,8 @@ class MainWindow(QMainWindow):
         self._stop_prep_progress()
         self._run_btn.setEnabled(True)
         self._cancel_btn.setVisible(False)
+        self._cancel_btn.setEnabled(True)
+        self._remember_operation_result("media", "finished" if success else "failed", translate_text("Terminé.") if success else error)
         self._prog_bar.setRange(0, 100)
         if success:
             self._prog_bar.setValue(100)
@@ -2854,7 +3128,7 @@ class MainWindow(QMainWindow):
                 "audio_sync": "Synchronisation audio terminée",
                 "remux": "Remuxage terminé",
             }.get(finished_mode, "Opération terminée")
-            self.log_requested.emit("OK", translate_text(label))
+            self.log_requested.emit("OK", f"[MEDIA] {translate_text(label)}")
         else:
             self._prog_widget.setVisible(False)
             self._prog_lbl.setText("")
@@ -2867,7 +3141,7 @@ class MainWindow(QMainWindow):
             self._status_lbl.setToolTip(str(error or ""))
             self._expand_log_panel()
             if error:
-                self.log_requested.emit("ERROR", error)
+                self.log_requested.emit("ERROR", f"[MEDIA] {error}")
 
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()
@@ -2886,6 +3160,7 @@ class MainWindow(QMainWindow):
             app.setFont(current_font)
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
+        self._log_panel.set_startup_expanded(self._config.startup_logs_expanded)
         self._encode_panel.refresh_runtime_settings()
         self._remux_panel.refresh_runtime_settings()
         self._sidebar.set_compact(self._config.startup_menu_compact)
@@ -2961,10 +3236,23 @@ class MainWindow(QMainWindow):
     def _on_log_collapsed(self, collapsed: bool) -> None:
         total = self._vsplit.height()
         if collapsed:
-            self._vsplit.setSizes([total - 32, 32])
+            height = _scale(38)
+            self._vsplit.setSizes([max(0, total - height), height])
         else:
-            log_h = max(total // 5, 120)
+            log_h = max(total // 5, _scale(150))
             self._vsplit.setSizes([total - log_h, log_h])
+
+    def _on_log_startup_changed(self, expanded: bool) -> None:
+        try:
+            write_ini_settings({"ui": {"startup_logs_expanded": "true" if expanded else "false"}})
+        except OSError as exc:
+            self.log_error(translate_text("Impossible d'enregistrer les paramètres : {error}", error=str(exc)))
+            return
+        self._config.startup_logs_expanded = expanded
+        self._log_panel.set_startup_expanded(expanded)
+        checkbox = self._settings_panel.widget_for("ui", "startup_logs_expanded")
+        if isinstance(checkbox, QCheckBox):
+            checkbox.setChecked(expanded)
 
     # ------------------------------------------------------------------
     # Logging
@@ -3077,7 +3365,17 @@ class MainWindow(QMainWindow):
 
     def _on_log_requested(self, level: str, message: str) -> None:
         """Slot connecté au signal public log_requested(str, str)."""
+        if message.startswith("[MEDIA]") and self._op_mode in {"encode", "remux", "extract"}:
+            message = f"[{self._op_mode.upper()}]" + message[len("[MEDIA]"):]
         self._sync_prep_progress_from_log(message)
+        if self._op_mode == "hybrid" and "STEP " in message:
+            stage = _STEP_PROGRESS_RE.search(re.sub(r"^\[HYBRID\]\s*\[[^]]+\]\s*", "", message))
+            if stage:
+                self._stop_prep_progress()
+                self._prog_bar.setRange(0, 0)
+                episode = getattr(self, "_hybrid_episode_label", "")
+                self._op_stage_label = f"{episode} · {stage[1]}" if episode else stage[1]
+                self._prog_lbl.setText(self._op_stage_label)
         lv = parse_log_level(level)
         self._emit_log_entry(message, lv)
 
@@ -3113,13 +3411,17 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
-            for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer"):
+            for name in ("_rife_controller", "_trt_controller", "_fel_controller"):
+                controller = getattr(self, name, None)
+                if controller is not None:
+                    controller.shutdown()
+            for name in ("_prep_progress_timer", "_op_encode_multi_reselect_timer", "_operation_refresh_timer"):
                 timer = getattr(self, name, None)
                 if timer is not None:
                     timer.stop()
             self._shutdown_pages = [
                 page for name in ("_dashboard", "_encode_panel", "_remux_panel",
-                                  "_dovi_panel", "_hybrid_panel", "_settings_panel")
+                                  "_dovi_panel", "_hybrid_panel", "_hdr_panel", "_settings_panel")
                 if (page := getattr(self, name, None)) is not None
             ]
         # Chaque panneau annule et rejoint ses propres workers. Un panneau qui

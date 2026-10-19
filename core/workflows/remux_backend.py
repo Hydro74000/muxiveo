@@ -162,6 +162,7 @@ def remux_assembly_plan(config: RemuxConfig) -> MatroskaAssemblyPlan:
                 commentary=track.flag_commentary,
             ),
             time_shift_ms=int(track.time_shift_ms or 0),
+            remove_closed_captions=bool(track.remove_closed_captions) if track.is_video else False,
         ))
 
     attachments = tuple(
@@ -295,7 +296,8 @@ def run_native_remux(
             if config.sync_mode == "physical":
                 from core.workflows.physical_sync import prepare_physical
                 prepared_config = prepare_physical(
-                    runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log
+                    runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log,
+                    ffprobe=ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
                 )
             execution_plan = (plan if prepared_config is runtime_config else None) or plan_remux(
                 prepared_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
@@ -461,6 +463,8 @@ def run_native_remux(
                 run_config, output_contract=output_contract,
             )
             log_step(4, "Écriture Matroska native multi-pistes")
+            if any(track.remove_closed_captions for track in plan_matroska.tracks):
+                log("INFO", "Retrait ciblé des sous-titres embarqués EIA-608/708 (sans réencodage)")
 
             def validate_partial(path: Path, packet_validation: MatroskaPacketValidation) -> None:
                 errors = validate_matroska_output(

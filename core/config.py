@@ -25,6 +25,7 @@ from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
+from core import plugins
 from core.lang_tags import Rfc5646LanguageTags
 from core.subprocess_utils import subprocess_text_kwargs
 from core.ui_language import system_ui_language
@@ -809,9 +810,18 @@ UI_STARTUP_PANEL_CHOICES: tuple[tuple[str, str], ...] = (
     ("container", "Conteneur"),
     ("encoding", "Encodage"),
     ("hybrid", "Hybridation"),
+    ("hdr", "HDR Studio"),
     ("dovi", "DoVi / HDR10+"),
+    ("extensions", "Extensions"),
     ("settings", "Paramètres"),
 )
+
+def normalize_display_peak_nits(value: int | None) -> int:
+    """Pic de l'écran borné à une plage plausible (100 à 10 000 nits), 1000 par défaut."""
+    if value is None or value <= 0:
+        return 1000
+    return max(100, min(10000, int(value)))
+
 
 def _normalize_startup_panel(value: str | None) -> str:
     if not value:
@@ -828,11 +838,15 @@ def _normalize_startup_panel(value: str | None) -> str:
         "encodage": "encoding",
         "hybrid": "hybrid",
         "hybridation": "hybrid",
+        "hdr": "hdr",
+        "hdr studio": "hdr",
         "dovi": "dovi",
         "dovi / hdr10+": "dovi",
         "settings": "settings",
         "parametres": "settings",
         "paramètres": "settings",
+        "extensions": "extensions",
+        "plugins": "extensions",
     }
     return aliases.get(raw, "dashboard")
 
@@ -891,7 +905,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
-            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images RIFE (Vulkan) livrée avec Muxiveo — multiplication de cadence à l'encodage."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire."},
         ),
     },
     {
@@ -916,6 +930,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
             {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
             {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
+            {"key": "display_peak_nits", "attr": "display_peak_nits", "kind": "int", "label": "Luminosité maximale de mon écran (nits)", "description": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis."},
         ),
     },
     {
@@ -1017,7 +1032,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "fields": (
             {"key": "tmdb_api_key", "attr": "tmdb_api_key", "kind": "text", "label": "Clé API TMDB", "description": "Clé API TMDB v3 (gratuite sur https://www.themoviedb.org/settings/api)."},
             {"key": "tmdb_bearer_token", "attr": "tmdb_bearer_token", "kind": "text", "label": "Token Bearer TMDB", "description": f"Token v4 TMDB optionnel. Utilisé si la clé API est vide. Peut aussi être défini via {APP_ENV_PREFIX}_TMDB_BEARER_TOKEN."},
-            {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo (même nom que le MKV) contenant la sortie brute de mediainfo après chaque workflow réussi."},
+            {"key": "generate_nfo", "attr": "generate_nfo", "kind": "bool", "label": "Générer un fichier .nfo après remux/encodage", "description": "Crée automatiquement un fichier .nfo après chaque workflow réussi. Les chemins sont réduits aux noms de fichiers, sauf demande explicite de les conserver."},
         ),
     },
 )
@@ -1192,6 +1207,26 @@ class AppConfig:
             self._detected_ini_tools.setdefault(ini_key, resolved)
         return resolved
 
+    def _resolve_rife_tool(self) -> str:
+        """
+        muxiveo-rife (interpolation) : extension mvo-rife installée dans le dossier utilisateur en priorité ;
+        sinon, transitoire, binaire embarqué (paquets hors ligne), config.ini ou PATH.
+        """
+        extension = plugins.rife_executable()
+        if extension is not None:
+            return str(extension)
+        return self._resolve_tool_value(
+            "muxiveo_rife",
+            "tools/muxiveo_rife",
+            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
+        )
+
+    def refresh_rife_tool(self) -> str:
+        """Nouvelle résolution de muxiveo-rife après installation ou suppression de l'extension mvo-rife."""
+        self.tool_muxiveo_rife = self._resolve_rife_tool()
+        self.refresh_tool_versions()
+        return self.tool_muxiveo_rife
+
     # ------------------------------------------------------------------
     # Chargement
     # ------------------------------------------------------------------
@@ -1248,12 +1283,7 @@ class AppConfig:
                 if fallback:
                     resolved = fallback
             self.tool_nvencc = resolved
-        # muxiveo-rife : binaire Muxiveo (native/muxiveo-rife), optionnel.
-        self.tool_muxiveo_rife = self._resolve_tool_value(
-            "muxiveo_rife",
-            "tools/muxiveo_rife",
-            "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
-        )
+        self.tool_muxiveo_rife = self._resolve_rife_tool()
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
@@ -1261,6 +1291,8 @@ class AppConfig:
         )
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
+        self.display_peak_nits = normalize_display_peak_nits(
+            self._resolve_int("hdr", "display_peak_nits", "hdr/display_peak_nits", 1000))
 
         self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
@@ -1401,6 +1433,10 @@ class AppConfig:
             "",
         )
         self.generate_nfo = self._resolve_bool("metadata", "generate_nfo", "metadata/generate_nfo", True)
+        # Extensions (core/plugins.py) : accélération NVIDIA TensorRT de MVO-RIFE.
+        self.trt_enabled = self._resolve_bool("plugins", "tensorrt_enabled", "plugins/tensorrt_enabled", True)
+        self.plugins_auto_update = self._resolve_bool("plugins", "auto_update", "plugins/auto_update", True)
+        self.trt_hint_shown = str(self._settings.value("plugins/tensorrt_hint_shown", "false") or "").lower() == "true"
 
     def reload(self) -> None:
         self._ini = _load_ini()
@@ -1432,6 +1468,7 @@ class AppConfig:
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
+        s.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
@@ -1480,6 +1517,9 @@ class AppConfig:
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
         s.setValue("metadata/tmdb_bearer_token", self.tmdb_bearer_token)
         s.setValue("metadata/generate_nfo", "true" if self.generate_nfo else "false")
+        s.setValue("plugins/tensorrt_enabled", "true" if self.trt_enabled else "false")
+        s.setValue("plugins/auto_update", "true" if self.plugins_auto_update else "false")
+        s.setValue("plugins/tensorrt_hint_shown", "true" if self.trt_hint_shown else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
 
@@ -1659,6 +1699,7 @@ class AppConfig:
             "hdr": {
                 "dovi_profile": self.dovi_profile,
                 "dovi_compat_id": self.dovi_compat_id,
+                "display_peak_nits": self.display_peak_nits,
             },
             "encoding": {
                 "ram_buffer_enabled": self.ram_buffer_enabled,
@@ -1693,6 +1734,10 @@ class AppConfig:
                 "tmdb_api_key": self.tmdb_api_key,
                 "tmdb_bearer_token": self.tmdb_bearer_token,
                 "generate_nfo": self.generate_nfo,
+            },
+            "plugins": {
+                "tensorrt_enabled": self.trt_enabled,
+                "auto_update": self.plugins_auto_update,
             },
         }
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from core.fel.engine import FelSource
 
 
 class PipelineCommand(list[str]):
@@ -19,15 +20,17 @@ class PipelineCommand(list[str]):
     ``ToolRunner._run_cmd`` exécute l'ensemble des étages.
     """
 
-    def __init__(self, final: Iterable[str], upstream: Sequence[Sequence[str]]) -> None:
+    def __init__(self, final: Iterable[str], upstream: Sequence[Sequence[str]], *, producer: FelSource | None = None) -> None:
         super().__init__(final)
         self.upstream: list[list[str]] = [list(stage) for stage in upstream]
+        self.producer = producer
 
     def stages(self) -> list[list[str]]:
         return [*self.upstream, list(self)]
 
     def display(self) -> str:
-        return " | ".join(" ".join(stage) for stage in self.stages())
+        prefix = f"[{self.producer.describe()}] → " if self.producer else ""
+        return prefix + " | ".join(" ".join(stage) for stage in self.stages())
 
 
 def command_stages(cmd: Sequence[str]) -> list[list[str]]:

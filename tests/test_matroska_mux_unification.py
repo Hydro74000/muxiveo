@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.workflows.common.track_types import TrackMetaPatch, TrackOffset
-from core.matroska.ebml import ascii_element, element, uint_element
+from core.matroska.ebml import ascii_element, element, string_element, uint_element
 from core.matroska import reader as reader_module
 from core.workflows.encode.models import (
     AudioTrackSettings,
@@ -62,7 +62,8 @@ from core.matroska.assembly import (
 )
 from core.matroska.ids import (
     CHAPTERS_ID, CLUSTER_ID, CODEC_ID_ID, EBML_HEADER_ID, SEGMENT_ID,
-    SIMPLE_BLOCK_ID, TAGS_ID, TIMESTAMP_ID, TRACKS_ID, TRACK_ENTRY_ID,
+    SIMPLE_BLOCK_ID, SIMPLE_TAG_ID, TAG_ID, TAG_NAME_ID, TAG_STRING_ID, TAG_TRACK_UID_ID,
+    TAGS_ID, TARGETS_ID, TIMESTAMP_ID, TRACKS_ID, TRACK_ENTRY_ID,
     TRACK_NUMBER_ID, TRACK_TYPE_ID, TRACK_UID_ID,
 )
 from core.matroska.reader import MatroskaAttachment, MatroskaReader
@@ -590,6 +591,62 @@ class TestRemuxPreviewPlanningCost:
 # =============================================================================
 
 class TestNativeEncodeAssembly:
+
+    @pytest.mark.parametrize("codec_id", ["A_AAC", "A_AC3", "A_EAC3", "A_TRUEHD", "A_FLAC"])
+    def test_simple_copy_never_extracts_audio(self, tmp_path, monkeypatch, codec_id):
+        source = _write_mkv(
+            tmp_path / "source.mkv",
+            [_entry_bytes(1, 1, "V_MPEGH/ISO/HEVC"), _entry_bytes(2, 2, codec_id)],
+            clusters=_simple_cluster(1) + _simple_cluster(2, payload=b"audio"),
+        )
+        remux = RemuxConfig(
+            sources=[SourceInput(source, 0, [
+                TrackEntry(0, "video", "HEVC", "", "und", ""),
+                TrackEntry(1, "audio", codec_id.removeprefix("A_"), "", "und", ""),
+            ])],
+            output=tmp_path / "remux.mkv", track_order=[(0, 0), (0, 1)],
+            keep_chapters=False, mux_backend="native",
+        )
+        execution = plan_remux(remux)
+        assert execution.selected_backend == "native"
+        assert not execution.audio_variants
+        assert not any(action.command for action in execution.preparation_actions)
+        config = _encode_config(
+            tmp_path, source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+            copy_subtitles=False, keep_chapters=False,
+        )
+        commands = []
+        identity_paths = []
+        monkeypatch.setattr(
+            "core.workflows.encode.runtime.native_mux.deterministic_source_identity",
+            lambda path: identity_paths.append(path) or "stable-identity",
+        )
+        output = assemble_encode_output_native(
+            config, video_artifacts=[NativeVideoArtifactRef(source)],
+            work_dir=tmp_path, signals=None,
+            run_cmd=self._fake_run_cmd(commands), log=lambda *_args: None,
+        )
+        assert [command[0] for command in commands] == ["ffprobe"]
+        assert MatroskaReader(output).tracks()[1].codec_id == codec_id
+        assert [block.payload for block in MatroskaReader(output).blocks(track_numbers={2})] == [b"audio"]
+        assert not list(tmp_path.glob("native_audio_*"))
+        assert identity_paths == [source]
+
+    def test_truehd_core_is_materialized_only_when_explicitly_requested(self, tmp_path):
+        from core.workflows.encode.runtime.native_mux import materialize_audio_artifacts
+
+        source, _artifact = self._sources(tmp_path)
+        config = _encode_config(tmp_path, source=source, audio_tracks=[AudioTrackSettings(
+            stream_index=0, codec="copy", extract_truehd_core=True,
+        )])
+        commands = []
+        materialize_audio_artifacts(
+            config, work_dir=tmp_path, ffmpeg_bin="ffmpeg",
+            run_cmd=self._fake_run_cmd(commands),
+        )
+        assert len(commands) == 1
+        assert "truehd_core" in commands[0]
 
     def test_extra_cover_contract_uses_writer_canonical_name(self, tmp_path: Path) -> None:
         """Le contrat natif doit attendre le nom réellement écrit."""
@@ -1329,3 +1386,251 @@ class TestExternalAuditFixes:
         )
         reasons = encode_native_mux_blockers(config, pipeline=PIPELINE_FFMPEG_DIRECT)
         assert not any("second.mp4" in reason for reason in reasons)
+
+
+# =============================================================================
+# 2.8 — Sync réelle dans l'assemblage natif encode
+# =============================================================================
+
+class TestNativeSyncRewrite:
+    """La sync réelle (réécriture audio/sous-titres) s'applique aussi au natif."""
+
+    @pytest.fixture(autouse=True)
+    def _probe(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.workflows.encode.runtime.native_mux.probe_source_streams",
+            lambda _path, _ffprobe: {
+                0: ProbedStream("audio", "eac3"),
+                1: ProbedStream("subtitle", "subrip"),
+            },
+        )
+
+    def _sources(self, tmp_path: Path) -> tuple[Path, Path]:
+        source = _write_mkv(
+            tmp_path / "src.mkv",
+            [_entry_bytes(1, 2, "A_EAC3"), _entry_bytes(2, 17, "S_TEXT/UTF8")],
+            clusters=_simple_cluster(1) + _simple_cluster(2, payload=b"Original"),
+        )
+        artifact = _write_mkv(
+            tmp_path / "video_artifact.mkv",
+            [_entry_bytes(1, 1, "V_MPEGH/ISO/HEVC")],
+            clusters=_simple_cluster(1),
+        )
+        return source, artifact
+
+    @staticmethod
+    def _service(calls: list[dict]) -> MagicMock:
+        from core.workflows.common.sync_rewrite import SyncRewritePreparedInput
+
+        def _materialize(**kwargs):
+            calls.append(kwargs)
+            subtitle = kwargs["track_type"] == "subtitle"
+            out = _write_mkv(
+                Path(kwargs["tmp_dir"]) / f"sync_rewrite_{kwargs['token']}.mk{'s' if subtitle else 'a'}",
+                [_entry_bytes(1, 17 if subtitle else 2, "S_TEXT/UTF8" if subtitle else "A_EAC3")],
+                clusters=_simple_cluster(1, payload=b"Rewritten"),
+            )
+            return SyncRewritePreparedInput(
+                path=out, input_idx=0, track_type=kwargs["track_type"], codec="", mode_label="Sync réelle",
+            )
+
+        service = MagicMock()
+        service.maybe_materialize.side_effect = _materialize
+        return service
+
+    def _assemble(self, config: EncodeConfig, artifact: Path, tmp_path: Path, service, commands=None) -> Path:
+        recorded = commands if commands is not None else []
+        return assemble_encode_output_native(
+            config,
+            video_artifacts=[NativeVideoArtifactRef(artifact)],
+            work_dir=tmp_path,
+            signals=None,
+            run_cmd=lambda cmd, _label: recorded.append(list(cmd)) or "ok",
+            log=lambda *_args: None,
+            sync_rewrite=service,
+        )
+
+    def test_subtitle_offset_is_rewritten(self, tmp_path: Path) -> None:
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source, subtitle_tracks=[(source, 1)],
+            track_time_offsets=[TrackOffset("subtitle", source, 1, offset_ms=-5340)],
+        )
+        calls: list[dict] = []
+        output = self._assemble(config, artifact, tmp_path, self._service(calls))
+        assert [(call["track_type"], call["offset_ms"], call["codec"]) for call in calls] == [
+            ("subtitle", -5340, "subrip"),
+        ]
+        reader = MatroskaReader(output)
+        subtitle = next(track for track in reader.tracks() if track.track_type == 17)
+        assert [block.payload for block in reader.blocks(track_numbers={subtitle.number})] == [b"Rewritten"]
+        assert not list(tmp_path.glob("sync_rewrite_*"))
+
+    def test_copied_audio_rewrite_replaces_source_without_extra_encode(self, tmp_path: Path) -> None:
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy")],
+            track_time_offsets=[TrackOffset("audio", source, 0, offset_ms=250)],
+        )
+        calls: list[dict] = []
+        commands: list[list[str]] = []
+        output = self._assemble(config, artifact, tmp_path, self._service(calls), commands)
+        assert calls[0]["preserve_source_audio_params"] is True
+        assert not any("native_audio_0.mkv" in str(cmd[-1]) for cmd in commands)
+        reader = MatroskaReader(output)
+        audio = next(track for track in reader.tracks() if track.track_type == 2)
+        assert [block.payload for block in reader.blocks(track_numbers={audio.number})] == [b"Rewritten"]
+
+    def test_offset_mode_keeps_time_shift(self, tmp_path: Path) -> None:
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source, subtitle_tracks=[(source, 1)],
+            track_time_offsets=[TrackOffset("subtitle", source, 1, offset_ms=500, sync_rewrite_mode="offset")],
+        )
+        service = self._service([])
+        self._assemble(config, artifact, tmp_path, service)
+        service.maybe_materialize.assert_not_called()
+
+    def test_disabled_rewrite_refuses_calibration(self, tmp_path: Path) -> None:
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source, subtitle_tracks=[(source, 1)],
+            track_time_offsets=[TrackOffset("subtitle", source, 1, offset_ms=500, calibration={"segments": []})],
+        )
+        with pytest.raises(EncodeError, match="réécriture sync réelle est requise"):
+            self._assemble(config, artifact, tmp_path, None)
+
+    def test_reencoded_audio_keeps_offset_without_rewrite(self, tmp_path: Path) -> None:
+        from core.workflows.encode.runtime.native_mux import build_encode_assembly_plan
+
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="aac")],
+            track_time_offsets=[TrackOffset("audio", source, 0, offset_ms=120)],
+        )
+        plan = build_encode_assembly_plan(
+            config,
+            video_artifacts=[NativeVideoArtifactRef(artifact)],
+            materialized_audio={0: tmp_path / "native_audio_0.mkv"},
+            resolved_subtitles=[],
+            track_metadata=(),
+        )
+        assert plan.ordered_tracks[1].time_shift_ms == 120
+
+    def test_rewritten_mp4_subtitle_keeps_canonical_metadata(self, tmp_path: Path) -> None:
+        """Sous-titre MP4 réécrit : langue, nom et flags repris de l'artefact canonique."""
+        from core.matroska.ids import FLAG_DEFAULT_ID, FLAG_FORCED_ID, LANGUAGE_ID, NAME_ID
+
+        mp4 = tmp_path / "subs.mp4"
+        mp4.write_bytes(b"mp4")
+        _source, artifact = self._sources(tmp_path)
+        canonical_entry = element(TRACK_ENTRY_ID, b"".join((
+            uint_element(TRACK_NUMBER_ID, 1), uint_element(TRACK_UID_ID, 1),
+            uint_element(TRACK_TYPE_ID, 17), ascii_element(CODEC_ID_ID, "S_TEXT/UTF8"),
+            ascii_element(LANGUAGE_ID, "fre"), string_element(NAME_ID, "French forced"),
+            uint_element(FLAG_DEFAULT_ID, 1), uint_element(FLAG_FORCED_ID, 1),
+        )))
+
+        def _run(cmd: list[str], label: str) -> str:
+            if label.startswith("ffmpeg-native-canonical-source"):
+                _write_mkv(Path(cmd[-1]), [canonical_entry], clusters=_simple_cluster(1, payload=b"Original"))
+            return "ok"
+
+        config = _encode_config(
+            tmp_path, source=artifact, subtitle_tracks=[(mp4, 1)],
+            track_time_offsets=[TrackOffset("subtitle", mp4, 1, offset_ms=-5340)],
+        )
+        calls: list[dict] = []
+        output = assemble_encode_output_native(
+            config, video_artifacts=[NativeVideoArtifactRef(artifact)], work_dir=tmp_path,
+            signals=None, run_cmd=_run, log=lambda *_args: None, sync_rewrite=self._service(calls),
+            resolved_subtitles=[(mp4, 1)],
+        )
+        # Réécriture lue depuis l'artefact canonique, pas depuis le MP4.
+        assert calls[0]["source_path"].name == "native_source_0.mkv"
+        subtitle = next(track for track in MatroskaReader(output).tracks() if track.track_type == 17)
+        assert subtitle.language == "fre"
+        assert subtitle.name == "French forced"
+        assert subtitle.flag_default and subtitle.flag_forced
+
+    def test_rewritten_audio_keeps_source_track_tags(self, tmp_path: Path) -> None:
+        simple = element(
+            SIMPLE_TAG_ID, string_element(TAG_NAME_ID, "COMMENT") + string_element(TAG_STRING_ID, "VO"),
+        )
+        tags = element(TAGS_ID, element(TAG_ID, element(TARGETS_ID, uint_element(TAG_TRACK_UID_ID, 1)) + simple))
+        source = _write_mkv(
+            tmp_path / "src.mkv",
+            [_entry_bytes(1, 2, "A_EAC3")],
+            clusters=_simple_cluster(1),
+            extra_top_level=tags,
+        )
+        artifact = _write_mkv(
+            tmp_path / "video_artifact.mkv",
+            [_entry_bytes(1, 1, "V_MPEGH/ISO/HEVC")],
+            clusters=_simple_cluster(1),
+        )
+        config = _encode_config(
+            tmp_path, source=source,
+            audio_tracks=[AudioTrackSettings(stream_index=0, codec="copy")],
+            track_time_offsets=[TrackOffset("audio", source, 0, offset_ms=250)],
+            tag_sources=[source], tag_overrides=None,
+        )
+        output = self._assemble(config, artifact, tmp_path, self._service([]))
+        reader = MatroskaReader(output)
+        audio = next(track for track in reader.tracks() if track.track_type == 2)
+        raw_tags = b"".join(reader.raw_top_level(TAGS_ID))
+        assert b"COMMENT" in raw_tags
+        assert uint_element(TAG_TRACK_UID_ID, audio.uid) in raw_tags
+
+    def test_reencoded_audio_rewrite_uses_normalized_bitrate(self, tmp_path: Path) -> None:
+        from core.workflows.encode.models import normalize_audio_bitrate_kbps
+
+        source, artifact = self._sources(tmp_path)
+        audio = AudioTrackSettings(stream_index=0, codec="eac3", bitrate_kbps=4096, input_channels=2)
+        config = _encode_config(
+            tmp_path, source=source, audio_tracks=[audio],
+            track_time_offsets=[TrackOffset("audio", source, 0, offset_ms=250)],
+        )
+        calls: list[dict] = []
+        commands: list[list[str]] = []
+        self._assemble(config, artifact, tmp_path, self._service(calls), commands)
+        expected = normalize_audio_bitrate_kbps("eac3", 4096, 2, None, None)
+        assert expected < 4096
+        assert calls[0]["preserve_source_audio_params"] is False
+        assert calls[0]["audio_target_bitrate_kbps"] == expected
+        assert not any("native_audio_0.mkv" in str(cmd[-1]) for cmd in commands)
+
+    def test_non_rewritable_target_is_encoded_after_rewrite(self, tmp_path: Path) -> None:
+        """Cible hors codecs réécrivables (FLAC) : réécriture au format source puis encodage habituel."""
+        source, artifact = self._sources(tmp_path)
+        config = _encode_config(
+            tmp_path, source=source, audio_tracks=[AudioTrackSettings(stream_index=0, codec="flac")],
+            track_time_offsets=[TrackOffset("audio", source, 0, offset_ms=250)],
+        )
+        calls: list[dict] = []
+        commands: list[list[str]] = []
+
+        def _run(cmd: list[str], label: str) -> str:
+            commands.append(list(cmd))
+            if label.startswith("ffmpeg-native-audio"):
+                _write_mkv(Path(cmd[-1]), [_entry_bytes(1, 2, "A_FLAC")], clusters=_simple_cluster(1))
+            return "ok"
+
+        assemble_encode_output_native(
+            config, video_artifacts=[NativeVideoArtifactRef(artifact)], work_dir=tmp_path,
+            signals=None, run_cmd=_run, log=lambda *_args: None, sync_rewrite=self._service(calls),
+        )
+        assert calls[0]["preserve_source_audio_params"] is True
+        encode = next(cmd for cmd in commands if "native_audio_0.mkv" in str(cmd[-1]))
+        assert "sync_rewrite_" in encode[encode.index("-i") + 1]
+        assert "flac" in encode
+
+    def test_calibration_no_longer_blocks_native(self, tmp_path: Path) -> None:
+        source = tmp_path / "src.mkv"
+        config = _encode_config(
+            tmp_path, mux_backend="native",
+            track_time_offsets=[TrackOffset("audio", source, 1, offset_ms=40, calibration={"segments": []})],
+        )
+        assert not encode_native_mux_blockers(config, pipeline=PIPELINE_FFMPEG_DIRECT)

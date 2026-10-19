@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
 from core.bluray import append_ffmpeg_input_args
+from core.workflows.common.audio_timestamps import adjust_input_timestamp, preroll_input_offset, probe_timestamp_payload
 from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
     subprocess_text_kwargs,
@@ -119,14 +120,13 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS as _INTERPOLATION_FACTORS,
     INTERPOLATION_MODELS as _INTERPOLATION_MODELS,
     INTERPOLATION_MODES as _INTERPOLATION_MODES,
-    RIFE_MIN_VERSION as _RIFE_MIN_VERSION,
-    RIFE_TTA_MIN_VERSION as _RIFE_TTA_MIN_VERSION,
     INTERPOLATION_TTA_LEVELS as _INTERPOLATION_TTA_LEVELS,
-    rife_model_available as _rife_model_available,
+    interpolation_preset as _interpolation_preset,
+    rife_capabilities as _rife_capabilities,
+    rife_support_errors as _rife_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     parse_rife_progress as _parse_rife_progress,
-    rife_version as _rife_version,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
 from core.workflows.encode.runtime.metadata_inject import (
@@ -443,6 +443,8 @@ class EncodeWorkflow(QObject):
         self._nvencc_bin: str | None = nvencc_bin
         # muxiveo-rife (interpolation d'images) : optionnel, None = indisponible.
         self._rife_bin: str | None = rife_bin
+        self._rife_trt_plugin = ""
+        self._rife_trt_cache = ""
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -553,6 +555,25 @@ class EncodeWorkflow(QObject):
         """Met à jour le chemin vers muxiveo-rife (None = interpolation indisponible)."""
         self._rife_bin = rife_bin or None
 
+    def set_rife_trt_plugin(self, plugin_dir: str | Path | None, cache_dir: str | Path | None = None) -> None:
+        """Extension d'accélération NVIDIA (TensorRT) de MVO-RIFE (None = Vulkan seul).
+
+        Transmise seulement à un muxiveo-rife qui prend en charge --trt-plugin ; il revient seul sur Vulkan si elle est
+        inutilisable (GPU, pilote), l'encodage n'échoue jamais à cause d'elle.
+        """
+        self._rife_trt_plugin = str(plugin_dir) if plugin_dir else ""
+        self._rife_trt_cache = str(cache_dir) if plugin_dir and cache_dir else ""
+
+    def _rife_trt_args(self) -> tuple[str, str]:
+        """(dossier de l'extension, cache) à passer à muxiveo-rife, ("", "") si non applicable."""
+        plugin = self._rife_trt_plugin
+        if not plugin or not self._rife_bin:
+            return "", ""
+        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin))
+        if capabilities is None or not capabilities.supports("trt-plugin"):
+            return "", ""
+        return plugin, self._rife_trt_cache
+
     def set_generate_nfo(self, generate_nfo: bool) -> None:
         self._generate_nfo = generate_nfo
 
@@ -656,9 +677,12 @@ class EncodeWorkflow(QObject):
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
             return cls._wants_dovi_profile_normalization(config)
-        if _is_nvencc_codec_runtime(EncodeWorkflow._primary_video_settings(config).codec):
+        video = EncodeWorkflow._primary_video_settings(config)
+        if _is_nvencc_codec_runtime(video.codec):
             return False
-        return cls._wants_dynamic_hdr_copy(config)
+        # FEL intégré : MaxCLL/MaxFALL exacts de l'image reconstruite, connus seulement après l'encodage.
+        from core.fel.hdr10plus import deferred_light_levels
+        return cls._wants_dynamic_hdr_copy(config) or deferred_light_levels(video)
 
     @staticmethod
     def _video_source_path(config: EncodeConfig) -> Path:
@@ -1036,16 +1060,20 @@ class EncodeWorkflow(QObject):
             raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
+        trt_plugin, trt_cache = self._rife_trt_args()
         rife = _build_rife_stage(
             self._rife_bin,
-            factor=int(settings.factor),
+            factor=settings.factor,
             target_fps=settings.target_fps,
             quality=settings.quality,
             source=info,
             scene_threshold=settings.scene_threshold,
             gpu=settings.gpu,
             mode=settings.mode,
-            tta=settings.tta,
+            tta=settings.tta_passes(),
+            feature_cache=settings.feature_cache,
+            trt_plugin=trt_plugin,
+            trt_cache=trt_cache,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
 
@@ -1137,6 +1165,7 @@ class EncodeWorkflow(QObject):
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
             ffprobe_bin=self._ffprobe_path(),
+            sync_rewrite=self._native_sync_rewrite(signals),
         )
 
     def _native_assemble_multi(
@@ -1176,6 +1205,7 @@ class EncodeWorkflow(QObject):
             log=self.log_message.emit,
             ffmpeg_bin=self._ffmpeg,
             ffprobe_bin=self._ffprobe_path(),
+            sync_rewrite=self._native_sync_rewrite(signals),
         )
 
     def _build_encode_plan(self, config: EncodeConfig) -> _EncodePlan:
@@ -1451,6 +1481,22 @@ class EncodeWorkflow(QObject):
             encode_plan=plan,
         )
 
+    def _sync_rewrite_service(self, signals: TaskSignals | None) -> SyncRewriteService:
+        """Service de réécriture sync réelle (audio coupé/complété, sous-titres réhorodatés)."""
+        return SyncRewriteService(
+            ffmpeg_bin=self._ffmpeg,
+            ffprobe_bin=self._ffprobe_path(),
+            ffmpeg_progress_args=self._ffmpeg_progress_args(),
+            ffmpeg_thread_args=self._ffmpeg_thread_args(None),
+            audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
+            log_cb=lambda message: self.log_message.emit("INFO", message),
+            progress_cb=(signals.progress.emit if signals is not None else None),
+        )
+
+    def _native_sync_rewrite(self, signals: TaskSignals | None) -> SyncRewriteService | None:
+        """Réécriture sync réelle de l'assemblage natif ; ``None`` si désactivée."""
+        return self._sync_rewrite_service(signals) if self._sync_rewrite_enabled else None
+
     def _resolve_track_assembly_and_offset_remap(
         self,
         *,
@@ -1482,6 +1528,7 @@ class EncodeWorkflow(QObject):
         offset_mode_lookup = _track_time_offset_mode_lookup_plan(config)
         calibration_lookup = _track_time_offset_calibration_lookup_plan(config)
         rewrite_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
+        timestamp_offsets: dict[Path, float] = {}
         if calibration_lookup and allow_sync_rewrite and not self._sync_rewrite_enabled:
             raise EncodeError(
                 "Synchronisation multi-segments : la réécriture sync réelle est requise "
@@ -1493,15 +1540,8 @@ class EncodeWorkflow(QObject):
                 (Path(audio.source_path or config.source), int(audio.stream_index), "audio"): audio
                 for audio in config.audio_tracks
             }
-            rewrite_service = SyncRewriteService(
-                ffmpeg_bin=self._ffmpeg,
-                ffprobe_bin=self._ffprobe_path(),
-                ffmpeg_progress_args=self._ffmpeg_progress_args(),
-                ffmpeg_thread_args=self._ffmpeg_thread_args(None),
-                audio_bitrate_per_channel=self._sync_rewrite_audio_bitrates,
-                log_cb=lambda message: self.log_message.emit("INFO", message),
-                progress_cb=(signals.progress.emit if signals is not None else None),
-            )
+            rewrite_service = self._sync_rewrite_service(signals)
+            adjusted_sources: set[Path] = set()
             work_dir = sync_rewrite_work_dir or config.work_dir or config.source.parent
             for map_key, input_path, input_stream_index in track_assembly.track_mappings:
                 source_path, source_stream_index, track_type = map_key
@@ -1560,19 +1600,47 @@ class EncodeWorkflow(QObject):
                             f"({track_type} #{int(source_stream_index)}) : synchronisation interrompue.",
                         )
                     continue
-                cmd.extend(["-f", "matroska", "-i", str(prepared.path)])
+                if prepared.source_timestamp_offset_s and input_path_obj not in adjusted_sources:
+                    index = next((i for i, path in enumerate(track_input_paths) if path == input_path),
+                                 source_idx.get(input_path_obj))
+                    if index is not None:
+                        adjust_input_timestamp(cmd, index, prepared.source_timestamp_offset_s)
+                if track_type == "audio":
+                    adjusted_sources.add(input_path_obj)
+                    timestamp_offsets[input_path_obj] = prepared.source_timestamp_offset_s
+                cmd.extend(prepared.ffmpeg_input_args())
                 rewrite_remap[map_key] = (next_input_index, 0)
                 offset_lookup.pop((track_type, Path(source_path), int(source_stream_index)), None)
                 next_input_index += 1
+            if any(key[2] == "audio" for key in rewrite_remap):
+                # La vidéo peut venir d'une autre source qui porte son propre
+                # pré-roll audio, même si cet audio n'est pas sélectionné.
+                for source, index in source_idx.items():
+                    if source not in adjusted_sources:
+                        payload = probe_timestamp_payload(
+                            source, self._ffprobe_path(),
+                            cancel_cb=signals._cancel_event.is_set if signals is not None else None,
+                        )
+                        timestamp_offsets[source] = preroll_input_offset(payload)
+                        adjust_input_timestamp(cmd, index, timestamp_offsets[source])
+        offset_specs = _build_offset_specs_plan(
+            config,
+            track_mappings=list(track_assembly.track_mappings),
+            offset_lookup=offset_lookup,
+        )
         _next_input_index, offset_remap = self._append_offset_aux_inputs(
             cmd,
-            _build_offset_specs_plan(
-                config,
-                track_mappings=list(track_assembly.track_mappings),
-                offset_lookup=offset_lookup,
-            ),
+            offset_specs,
             start_input_index=next_input_index,
         )
+        # Une piste en mode offset rouvre sa source ; elle doit recevoir la
+        # même compensation de pré-roll que l'entrée originale, une seule fois.
+        adjusted_inputs: set[int] = set()
+        for spec in offset_specs:
+            index = offset_remap[spec.map_key][0]
+            if index not in adjusted_inputs:
+                adjust_input_timestamp(cmd, index, timestamp_offsets.get(Path(spec.input_path), 0.0))
+                adjusted_inputs.add(index)
         _ = _next_input_index
         return track_assembly, {**rewrite_remap, **offset_remap}
 
@@ -1859,6 +1927,7 @@ class EncodeWorkflow(QObject):
                 size_to_bitrate_kbps_for_video=self._size_to_bitrate_kbps_for_video,
                 rife_bin=self._rife_bin,
                 interpolation_source=self._interpolation_source,
+                rife_trt_args=self._rife_trt_args,
             )
         )
 
@@ -2127,6 +2196,15 @@ class EncodeWorkflow(QObject):
                 "les artefacts ou servent de référence."
             )
         primary = self._primary_video_settings(config)
+        from core.fel.preparation import requested as fel_requested
+        for index, candidate in enumerate(self._video_tracks(config), start=1):
+            if fel_requested(candidate):
+                header.append(
+                    f"Piste vidéo #{index} : reconstruction FEL interne par mvo-fel → pipe NUT RGB PQ, "
+                    "avant filtres et encodage ; FEL et disponibilité du moteur confirmés au lancement. "
+                    "Les commandes source ci-dessous décrivent le parcours BL de repli ; "
+                    "le producteur natif n'est pas une commande shell."
+                )
         if _is_nvencc_codec_runtime(primary.codec) and primary.has_video_transform():
             # V18b : moteur réel des filtres et conversions couleur.
             try:
@@ -2211,6 +2289,22 @@ class EncodeWorkflow(QObject):
         request: EncodePreviewRequest,
         signals: TaskSignals,
     ) -> EncodePreviewResult:
+        from core.fel.preparation import requested
+        resolved = self.resolve_dovi_sources(config)
+        if not requested(self._primary_video_settings(resolved)):
+            return self._run_image_preview_prepared(config, request, signals)
+        directory = self._preview_output_dir(config)
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="fel_preview_", dir=directory) as work:
+            prepared = self.prepare_dovi_sources(resolved, work_dir=Path(work), signals=signals)
+            return self._run_image_preview_prepared(prepared, request, signals)
+
+    def _run_image_preview_prepared(
+        self,
+        config: EncodeConfig,
+        request: EncodePreviewRequest,
+        signals: TaskSignals,
+    ) -> EncodePreviewResult:
         preview_dir = self._preview_output_dir(config)
         preview_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2260,14 +2354,16 @@ class EncodeWorkflow(QObject):
                 stream_index=source_stream,
                 hdr_kind=hdr_kind,
             )
-            self._runner._run_cmd(
-                extract_cmd,
-                cwd=preview_dir,
-                label=f"ffmpeg-preview-image-{idx:02d}",
-                progress_cb=lambda line: signals.progress.emit(line),
-                progress_pct_cb=lambda _pct: None,
-                signals=signals,
-            )
+            from core.fel.pipeline import with_fel_input
+            from core.fel.engine import FelError
+            command = with_fel_input(extract_cmd, source_video)
+            try:
+                self._runner._run_cmd(command, cwd=preview_dir, label=f"ffmpeg-preview-image-{idx:02d}",
+                    progress_cb=signals.progress.emit, progress_pct_cb=lambda _pct: None, signals=signals)
+            except FelError as exc:
+                warning = f"Reconstruction FEL indisponible ({exc}) : aperçu BL."
+                signals.progress.emit(f"[WARN] {warning}")
+                self._runner._run_cmd(extract_cmd, cwd=preview_dir, label="ffmpeg-preview-bl", signals=signals)
             self._check_cancelled(signals)
             if image_path.exists():
                 captures.append(EncodePreviewCapture(
@@ -2719,6 +2815,7 @@ class EncodeWorkflow(QObject):
             dir_writable=_is_dir_writable_plan,
         )
         errors.extend(_video_settings_errors_plan(self._video_tracks(config)))
+        errors.extend(self._sync_rewrite_errors(config))
         # Chaque backend présent valide la configuration : une piste NVEncC
         # secondaire ne doit pas échapper à ses contrôles.
         for backend in self._backends_for_config(config):
@@ -2861,6 +2958,7 @@ class EncodeWorkflow(QObject):
             copy_dv=video.copy_dv,
             dovi_profile=video.dovi_profile,
             sub_profile=_sub_profile_from_value(video.dovi_source_profile),
+            bake_dovi_fel=video.bake_dovi_fel,
         )
 
     def _dovi_policy_errors(self, config: EncodeConfig) -> list[str]:
@@ -3023,6 +3121,16 @@ class EncodeWorkflow(QObject):
         tracks = self._video_tracks(config)
         resolved: list[VideoEncodeSettings] = []
         changed = False
+        from core.fel.engine import FelEngine
+        from core.fel.preparation import prepare_fel
+        fel_engine: FelEngine | None = None
+
+        def load_fel_engine() -> FelEngine:
+            nonlocal fel_engine
+            if fel_engine is None:
+                fel_engine = FelEngine.installed()
+            return fel_engine
+
         for index, video in enumerate(tracks, start=1):
             needs_static = bool(
                 video.inject_hdr_meta
@@ -3031,6 +3139,16 @@ class EncodeWorkflow(QObject):
                 and not str(video.static_hdr_metadata_analysis_request or "").strip()
                 and (not video.master_display.strip() or not video.max_cll.strip())
             )
+            prepared_fel = prepare_fel(
+                video, source=self._video_source_from_settings(config, video), work_dir=work_dir, index=index,
+                ffmpeg=self._ffmpeg, dovi=dovi_bin, threads=max(1, self._ffmpeg_threads), run=run, capture=run_capture,
+                ffprobe=self._ffprobe_path(),
+                cancelled=(signals._cancel_event.is_set if signals is not None else lambda: False),
+                log=self.log_message.emit,
+                engine_loader=load_fel_engine,
+            )
+            changed = changed or prepared_fel is not video
+            video = prepared_fel
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
                 resolved.append(video)
                 continue
@@ -3078,6 +3196,9 @@ class EncodeWorkflow(QObject):
             changed = True
         if changed:
             config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
+        errors = self.validate(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
         return config
 
     def _stream_is_vfr(self, source: Path, stream_index: int) -> bool:
@@ -3293,7 +3414,7 @@ class EncodeWorkflow(QObject):
                     # dynamiques non étendues, contrôle du nombre de trames faussé).
                     errors.append(
                         f"Interpolation d'images : cadence de {source.name} inconnue ; "
-                        "choisir un facteur (x2, x3, x4) plutôt qu'une cadence cible."
+                        "choisir un facteur (x2, x2,5, x3, x4) plutôt qu'une cadence cible."
                     )
                 elif settings.ratio(info.decode_rate) <= video.filters.field_rate_multiplier():
                     errors.append(
@@ -3301,7 +3422,7 @@ class EncodeWorkflow(QObject):
                         f"celle de {source.name}"
                         + (" après désentrelacement (une image par champ)." if video.filters.field_rate_multiplier() > 1 else ".")
                     )
-            elif int(settings.factor) not in _INTERPOLATION_FACTORS:
+            elif settings.factor not in _INTERPOLATION_FACTORS:
                 errors.append(
                     f"Interpolation d'images : facteur x{settings.factor} non supporté "
                     f"(valeurs : {', '.join(f'x{f}' for f in _INTERPOLATION_FACTORS)})."
@@ -3318,30 +3439,16 @@ class EncodeWorkflow(QObject):
             rife_bin = self._rife_bin
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
-                    "Interpolation d'images : outil muxiveo-rife introuvable "
-                    "(Paramètres > Outils externes, ou relancer le setup)."
+                    "Interpolation d'images : moteur muxiveo-rife introuvable "
+                    "(installer l'extension Interpolation depuis la page Extensions)."
                 )
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
-                version = _rife_version(resolved)
-                model = _INTERPOLATION_MODELS.get(settings.quality, "")
-                if version is not None and version < _RIFE_MIN_VERSION:
-                    errors.append(
-                        "Interpolation d'images : muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_MIN_VERSION))} ou plus récent requis "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif version is not None and int(settings.tta) > 1 and version < _RIFE_TTA_MIN_VERSION:
-                    errors.append(
-                        "Interpolation d'images : le TTA requiert muxiveo-rife "
-                        f"{'.'.join(map(str, _RIFE_TTA_MIN_VERSION))} ou plus récent "
-                        f"(installé : {'.'.join(map(str, version))}) ; relancer le setup."
-                    )
-                elif version is not None and model and not _rife_model_available(resolved, model):
-                    errors.append(
-                        f"Interpolation d'images : modèle RIFE « {model} » absent de "
-                        f"{Path(resolved).resolve().parent / 'rife-models'} ; relancer le setup."
-                    )
+                errors.extend(_rife_support_errors(
+                    _rife_capabilities(resolved), _interpolation_preset(settings.quality, resolved),
+                    tta=settings.tta_passes(), rife_bin=resolved,
+                    feature_cache=settings.feature_cache,
+                ))
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):
@@ -3369,6 +3476,10 @@ class EncodeWorkflow(QObject):
         après encodage : la commande FFmpeg directe (toutes pistes en une passe) est
         remplacée par l'encode vidéo seul suivi de l'assemblage du pipeline multi-pistes.
         """
+        from core.fel.preparation import requested
+        primary = self._primary_video_settings(config)
+        if requested(primary) and not _is_nvencc_codec_runtime(primary.codec):
+            return True
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
@@ -3577,11 +3688,24 @@ class EncodeWorkflow(QObject):
         validate: bool,
         prep_signals: TaskSignals | None = None,
     ) -> TaskSignals:
+        # Ce prérequis reste obligatoire pour run(validate=False), avant
+        # préparation et encodage des artefacts vidéo.
+        errors = self._sync_rewrite_errors(config)
+        if errors:
+            raise EncodeError("\n".join(errors))
         return self._preparation_runner().run_with_preparation(
             config,
             validate=validate,
             prep_signals=prep_signals,
         )
+
+    def _sync_rewrite_errors(self, config: EncodeConfig) -> list[str]:
+        if not self._sync_rewrite_enabled and _track_time_offset_calibration_lookup_plan(config):
+            return [
+                "Synchronisation multi-segments : la réécriture sync réelle est requise "
+                "(activer sync.rewrite_enabled)."
+            ]
+        return []
 
     def _preparation_runner(self) -> _EncodePreparationRunner:
         return _EncodePreparationRunner(
@@ -3724,6 +3848,7 @@ class EncodeWorkflow(QObject):
                 self._check_cancelled(signals)
                 if commands:
                     self._log_step(5, "Encodage de l'artefact vidéo Matroska natif")
+                    signals.progress.emit("Encodage vidéo…")
                     for index, command in enumerate(commands, start=1):
                         self._runner._run_cmd(
                             command,
@@ -3749,6 +3874,7 @@ class EncodeWorkflow(QObject):
                     log=self.log_message.emit,
                     ffmpeg_bin=self._ffmpeg,
                     ffprobe_bin=self._ffprobe_path(),
+                    sync_rewrite=self._native_sync_rewrite(signals),
                 )
                 signals.finished.emit(str(config.output))
             except TaskCancelledError:

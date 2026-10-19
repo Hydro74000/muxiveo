@@ -69,7 +69,15 @@ def _is_raw_hevc(path: Path) -> bool:
 
 
 class FrameCountAuditError(RuntimeError):
-    """Erreur fatale d'alignement de frames — abort de l'injection."""
+    """Erreur fatale d'alignement de frames — abort de l'injection.
+
+    ``missing`` : trames de métadonnées manquantes par flux (``rpu``, ``hdr10p``)
+    quand le refus vient de métadonnées plus courtes que la vidéo.
+    """
+
+    def __init__(self, message: str, *, missing: dict[str, int] | None = None) -> None:
+        super().__init__(message)
+        self.missing: dict[str, int] = dict(missing or {})
 
 
 class MetadataAdjustment(Enum):
@@ -385,7 +393,7 @@ class FrameCountGuard:
                 name, value, target, adjustment=adjustment, tolerance=self._tolerance,
             )
             if reason is not None:
-                raise FrameCountAuditError(reason)
+                raise FrameCountAuditError(reason, missing={name: target - value} if value < target else None)
 
         if all(value is None or value == target for value in counts.values()):
             if on_info:
