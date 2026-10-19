@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -111,13 +112,14 @@ def test_mastering_display_rewritten_without_reencoding(tmp_path):
     edit = MasteringEdit("BT.2020", 0.005, 4000)
     assert patcher.run(PatchPlan(source, 0, output, static=StaticEdit(mastering=edit))) == output
     frame = _first_frame_side_data(output, "Mastering display metadata")
-    assert frame["max_luminance"] == "40000000/10000" and frame["min_luminance"] == "50/10000"
-    assert frame["red_x"] == "35400/50000" and frame["green_y"] == "39850/50000"
+    # Fractions comparées par valeur : selon la version, ffprobe les réduit (4000/1) ou non (40000000/10000).
+    assert Fraction(frame["max_luminance"]) == 4000 and Fraction(frame["min_luminance"]) == Fraction(50, 10000)
+    assert Fraction(frame["red_x"]) == Fraction(35400, 50000) and Fraction(frame["green_y"]) == Fraction(39850, 50000)
     assert _first_frame_cll(output) == (1000, 400)  # CLL non demandé : conservé
     streams = _probe(output, "-show_streams")["streams"]
     container = {d["side_data_type"]: d for d in streams[0].get("side_data_list") or ()}
     mastering = container["Mastering display metadata"]
-    assert mastering["max_luminance"].split("/")[0] in ("4000", "40000000") and mastering["red_x"].startswith("177")
+    assert Fraction(mastering["max_luminance"]) == 4000 and mastering["red_x"].startswith("177")
     source_container = {d["side_data_type"] for d in _probe(source, "-show_streams")["streams"][0].get("side_data_list") or ()}
     assert ("Content light level metadata" in container) == ("Content light level metadata" in source_container)
     assert _md5(output, "0:a:0") == _md5(source, "0:a:0")

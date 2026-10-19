@@ -276,8 +276,8 @@ def _collect_signals(signals: TaskSignals, timeout: float = 5.0) -> dict:
         done[0] = True
 
     signals.progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
-    signals.finished.connect(on_finished, Qt.ConnectionType.QueuedConnection)
-    signals.failed.connect(on_failed, Qt.ConnectionType.QueuedConnection)
+    # Fin livrée même si la tâche s'est terminée avant l'abonnement (exécutable absent : échec immédiat).
+    signals.connect_terminal(finished=on_finished, failed=on_failed)
 
     deadline = time.monotonic() + timeout
     while not done[0] and time.monotonic() < deadline:

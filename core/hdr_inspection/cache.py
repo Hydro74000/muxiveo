@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import asdict, fields
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -95,7 +96,7 @@ class InspectionCache:
                 arrays.update({f"{name}.{k}": v for k, v in parts.items()})
         buffer = io.BytesIO()
         arrays["meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
-        np.savez_compressed(buffer, **arrays)
+        np.savez_compressed(buffer, **cast(dict[str, Any], arrays))  # stubs numpy récents : allow_pickle typé
         try:
             self._root.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(self._root / f"{key}.npz", buffer.getvalue())
