@@ -27,6 +27,7 @@ from core.hdr_inspection.fel_analyzer import (
     frame_metrics,
     pooled_jnd,
     recommendation,
+    sample_levels,
     sample_times,
     summarise,
     survival,
@@ -227,7 +228,8 @@ def test_thumbnails_and_analyse_with_fake_capture():
     report = analyse(capture, [1.0, 2.0, 8.0, 4.0], progress=progress.append, moments=2)
     assert len(report.samples) == 4 and progress[-1] == 1.0
     assert [m.time_s for m in report.moments] == [4.0, 8.0]
-    assert report.samples[2].metrics["tone"] == pytest.approx(8, abs=0.3)
+    assert [s.time_s for s in report.samples] == [1.0, 2.0, 4.0, 8.0]  # instants triés
+    assert report.samples[3].metrics["tone"] == pytest.approx(8, abs=0.3)
     assert report.samples[0].metrics["temporal"] == pytest.approx(0.5, abs=0.05)
     moment = report.moments[0]
     assert moment.mapped.dtype == np.uint8 and moment.mapped.shape[2] == 3
@@ -240,8 +242,13 @@ def test_thumbnails_and_analyse_with_fake_capture():
 
 def test_sample_times_and_survival():
     times = sample_times(3600, 60)
-    assert len(times) == 59 and 5 < times[0] < 70 and times[-1] < 3595
+    assert len(times) == 60 and times[0] == 5.0 and times[-1] == 3545.0
     assert sample_times(4, 60) == [2.0]
+    # Grilles emboîtées : 60 s ⊂ 30 s ⊂ 10 s, passes sans doublon de la plus grossière à la plus fine.
+    assert set(sample_times(3600, 60)) <= set(sample_times(3600, 30)) <= set(sample_times(3600, 10))
+    levels = sample_levels(3600, 10)
+    assert [len(level) for level in levels] == [60, 60, 240] and sorted(sum(levels, [])) == sample_times(3600, 10)
+    assert sample_levels(3600, 60) == [sample_times(3600, 60)] and len(sample_levels(3600, 20)) == 2
     m = _base()
     rng = np.random.default_rng(3)
     r = [_frame(m + 6 + rng.normal(0, 2, m.shape)) for _ in range(3)]
@@ -379,7 +386,7 @@ def test_panel_fel_analysis_flow(qt_app, tmp_path, monkeypatch):
     monkeypatch.setattr(panel_module, "FileInspector", Inspector)
     monkeypatch.setattr(analyzer_module, "plugin_capture", lambda *a, **k: (lambda layer, t, n: []))
     report = _fel_report()
-    monkeypatch.setattr(analyzer_module, "analyse", lambda *a, **k: report)
+    monkeypatch.setattr(analyzer_module, "analyse_progressive", lambda *a, **k: report)
     monkeypatch.setattr(fel_layer, "scan_layers", lambda *a, **k: report.facts)
     config = AppConfig()
     config.app_data_dir = tmp_path / "appdata"
@@ -627,3 +634,98 @@ def test_run_survival_keeps_the_burst_inside_short_sources():
     finally:
         module.encode_round_trip = original
     assert requests[0] == ("reconstructed", 0.008, 5)  # extrait de 7 images : rafale raccourcie
+
+
+
+# ── Mesures exactes accélérées ───────────────────────────────────────────────
+def _scene(seed: int, h: int = 270, w: int = 480) -> tuple[Frame, Frame]:
+    """Paire réaliste : aplats, zone sombre, hautes lumières, texture et grain ; FEL décalé et texturé."""
+    rng = np.random.default_rng(seed)
+    base = np.full((h, w), 420.0)
+    base[: h // 3, : w // 2] = 180  # ombres
+    base[h // 2:, w // 2:] = 760 + rng.normal(0, 30, (h - h // 2, w - w // 2))  # hautes lumières texturées
+    base[h // 3: h // 2] += np.sin(np.arange(w) / 3.0) * 40  # détail
+    mapped = np.clip(base + rng.normal(0, 1.5, (h, w)), 64, 1019).round()
+    recon = np.clip(mapped + 6 + rng.normal(0, 2.5, (h, w)) + (mapped > 700) * 25, 64, 1019).round()
+    cb_m = rng.integers(480, 545, (h // 2, w // 2))
+    cr_m = rng.integers(480, 545, (h // 2, w // 2))
+    shift = rng.integers(-3, 4, (h // 2, w // 2))
+    return (Frame(recon.astype(np.uint16), (cb_m + shift).astype(np.uint16), (cr_m - shift).astype(np.uint16)),
+            Frame(mapped.astype(np.uint16), cb_m.astype(np.uint16), cr_m.astype(np.uint16)))
+
+
+def test_parallel_metrics_equal_the_reference():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.fel_metrics_reference import reference_frame_metrics
+
+    with ThreadPoolExecutor(4) as pool:
+        for seed in range(4):
+            recon, mapped = _scene(seed)
+            for rows in (slice(0, 270), slice(31, 241), slice(1, 268)):
+                expected = reference_frame_metrics(recon, mapped, rows)
+                for executor in (None, pool):
+                    got = frame_metrics(recon, mapped, rows, pool=executor)
+                    assert got.keys() == expected.keys()
+                    for key, value in expected.items():
+                        assert got[key] == pytest.approx(value, rel=1e-12, abs=1e-12), (seed, rows, key)
+
+
+def test_histogram_percentile_matches_numpy():
+    from core.hdr_inspection.fel_analyzer import _hist_percentile
+
+    rng = np.random.default_rng(7)
+    for size in (1, 2, 7, 1000, 12345):
+        values = rng.integers(0, 1024, size)
+        histogram = np.bincount(values, minlength=1024)
+        for q in (0.0, 1.0, 50.0, 99.9, 100.0):
+            assert _hist_percentile(histogram, q) == pytest.approx(float(np.percentile(values, q)), abs=1e-9)
+
+
+def test_parallel_survival_equals_the_reference():
+    from tests.fel_metrics_reference import reference_survival
+
+    rng = np.random.default_rng(11)
+    pairs = [_scene(seed) for seed in range(3)]
+    reconstructed = [p[0] for p in pairs]
+    mapped = [p[1] for p in pairs]
+    encoded = [Frame(np.clip(r.y.astype(np.int32) + rng.integers(-3, 4, r.y.shape), 0, 1023).astype(np.uint16),
+                     r.cb, r.cr) for r in reconstructed]
+    rows = slice(10, 260)
+    expected = reference_survival(reconstructed, mapped, encoded, encoder="x", bitrate_kbps=1, rows=rows)
+    got = survival(reconstructed, mapped, encoded, encoder="x", bitrate_kbps=1, rows=rows)
+    for name in ("tone_kept", "detail_kept", "encode_error", "detail"):
+        assert getattr(got, name) == pytest.approx(getattr(expected, name), rel=1e-12), name
+
+
+def test_progressive_analysis_reuses_cache_and_reports_partial_verdicts(tmp_path):
+    from core.hdr_inspection.cache import InspectionCache
+    from core.hdr_inspection.fel_analyzer import analyse_progressive
+
+    m = _base(h=64, w=96)
+    captured: list[float] = []
+
+    def capture(layer: str, time_s: float, count: int) -> list[Frame]:
+        if layer == "reconstructed":
+            captured.append(time_s)
+        return [_frame(m + (5 if layer == "reconstructed" else 0))] * count
+
+    partials: list[int] = []
+    facts = LayerFacts(100, 4.0, 4_000_000, 1_000_000, 10_000, (1920, 1080))
+    report = analyse_progressive(capture, 130.0, 10, facts=lambda: facts,
+                                 partial=lambda r: partials.append(len(r.samples)))
+    times = sample_times(130.0, 10)
+    assert [s.time_s for s in report.samples] == times and sorted(captured) == times
+    assert partials == [3, 5] and report.facts == facts  # passes 60 s puis 30 s, verdict provisoire
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    cache = InspectionCache(tmp_path / "cache")
+    cache.store_fel(media, 0, report)
+    cached = cache.load_fel(media, 0)
+    assert cached is not None and cached.facts == facts and len(cached.moments) == len(report.moments)
+    assert [s.metrics for s in cached.samples] == [s.metrics for s in report.samples]
+    # Densité plus grossière : tout vient du cache, aucune capture.
+    captured.clear()
+    coarse = analyse_progressive(capture, 130.0, 60, cached=cached)
+    assert captured == [] and [s.time_s for s in coarse.samples] == sample_times(130.0, 60)
+    assert coarse.facts == facts

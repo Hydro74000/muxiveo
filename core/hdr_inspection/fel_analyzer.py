@@ -8,11 +8,13 @@ provisoires (à étalonner sur le corpus FEL) ; survie à l'encodage mesurée pa
 """
 from __future__ import annotations
 
+import dataclasses
+import os
 import subprocess
 import sys
 import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -66,6 +68,10 @@ LEVELS = ("faible", "moyen", "fort")
 _BLACK, _RANGE = 64.0, 876.0
 #: Hautes lumières mesurées seulement si le percentile 99,9 % atteint ce niveau.
 _HIGHLIGHT_NITS = 100.0
+#: Bandes de lignes des mesures (traitées en parallèle) : mémoire bornée et tous les cœurs occupés.
+_BANDS = 16
+#: Version des formules de mesure : un changement invalide les analyses en cache.
+FEL_METRICS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -154,36 +160,110 @@ def active_rows(frame: Frame, area: tuple[int, int, int, int] | None = None) -> 
     return slice(int(bright[0]), int(bright[-1]) + 1) if bright.size else slice(0, height)
 
 
-def frame_metrics(reconstructed: Frame, mapped: Frame, rows: slice) -> dict[str, float]:
-    """Mesures d'une paire d'images (même instant)."""
-    r = reconstructed.y[rows].astype(np.float64)
-    m = mapped.y[rows].astype(np.float64)
-    d = r - m
-    low = _box(d, 8)
+def _band_box_sums(image: np.ndarray, radius: int, lo: int, hi: int, dtype: type) -> np.ndarray:
+    """Sommes (2r+1)² des lignes [lo, hi) d'une image entière, bords répliqués (comme ``_box``), exactes."""
+    height, width = image.shape
+    k = 2 * radius + 1
+    vertical = np.cumsum(image[np.clip(np.arange(lo - radius, hi + radius), 0, height - 1)], axis=0, dtype=dtype)
+    window = vertical[k - 1:].copy()
+    window[1:] -= vertical[:-k]
+    horizontal = np.cumsum(window[:, np.clip(np.arange(-radius, width + radius), 0, width - 1)], axis=1, dtype=dtype)
+    sums = horizontal[:, k - 1:].copy()
+    sums[:, 1:] -= horizontal[:, :-k]
+    return sums
+
+
+def _hist_percentile(histogram: np.ndarray, q: float) -> float:
+    """``np.percentile`` (interpolation linéaire) de valeurs entières, exact, depuis leur histogramme."""
+    count = int(histogram.sum())
+    position = (count - 1) * q / 100.0
+    below = int(np.floor(position))
+    cumulative = np.cumsum(histogram)
+    low = int(np.searchsorted(cumulative, below + 1))
+    high = int(np.searchsorted(cumulative, min(below + 2, count)))
+    return low + (high - low) * (position - below)
+
+
+def _merged_std(parts: list[tuple[int, float, float]]) -> float:
+    """Écart type de l'union de groupes (effectif, moyenne, somme des carrés des écarts) : algorithme de Chan."""
+    count = sum(n for n, _mean, _m2 in parts)
+    if count == 0:
+        return 0.0
+    mean = sum(n * mu for n, mu, _m2 in parts) / count
+    m2 = sum(m2 + n * (mu - mean) ** 2 for n, mu, m2 in parts)
+    return float(np.sqrt(m2 / count))
+
+
+def _moments(values: np.ndarray) -> tuple[int, float, float]:
+    if not values.size:
+        return 0, 0.0, 0.0
+    mean = float(values.mean())
+    return int(values.size), mean, float(((values - mean) ** 2).sum())
+
+
+def frame_metrics(reconstructed: Frame, mapped: Frame, rows: slice, *,
+                  pool: Executor | None = None) -> dict[str, float]:
+    """Mesures d'une paire d'images (même instant).
+
+    Moyennes glissantes en sommes entières exactes, bandes de lignes traitées en parallèle (``pool``) et
+    percentiles tirés d'histogrammes : mêmes valeurs que le calcul en float64 sur l'image entière, à
+    l'ordre des additions près (≈ 1e-16 relatif).
+    """
+    r_full = reconstructed.y[rows].astype(np.int32)
+    m_full = mapped.y[rows].astype(np.int32)
+    d_full = r_full - m_full
+    m2_full = m_full.astype(np.int64) ** 2
+    height = r_full.shape[0]
+    bands = max(1, min(_BANDS, height // 32))
+    bounds = np.linspace(0, height, bands + 1, dtype=int)
+    codes = int(max(r_full.max(initial=0), m_full.max(initial=0))) + 1
+
+    def band(index: int) -> dict:
+        lo, hi = int(bounds[index]), int(bounds[index + 1])
+        r, m, d = r_full[lo:hi], m_full[lo:hi], d_full[lo:hi]
+        low = _band_box_sums(d_full, 8, lo, hi, np.int32) / 289.0
+        sum_r = _band_box_sums(r_full, 2, lo, hi, np.int32)
+        sum_m = _band_box_sums(m_full, 2, lo, hi, np.int32)
+        high = d - (sum_r - sum_m) / 25.0  # box(d) = box(r) − box(m), sommes entières exactes
+        mean_m = sum_m / 25.0
+        flat = _band_box_sums(m2_full, 2, lo, hi, np.int64) / 25.0 - mean_m ** 2 < 36.0
+        dark = m < 300
+        abs_low = np.abs(low)
+        return {"tone": float(abs_low.sum()), "detail": float((high * high).sum()), "mean": int(d.sum(dtype=np.int64)),
+                "r_hist": np.bincount(r.ravel(), minlength=codes), "m_hist": np.bincount(m.ravel(), minlength=codes),
+                "flat": int(flat.sum()), "noise_r": _moments((r - sum_r / 25.0)[flat]),
+                "noise_m": _moments((m - mean_m)[flat]), "dark": int(dark.sum()),
+                "shadows": float(abs_low[dark].sum())}
+
+    parts = list(pool.map(band, range(bands)) if pool is not None else map(band, range(bands)))
+    size = d_full.size
     metrics = {
-        "tone": float(np.abs(low).mean()),
-        "detail": float(np.sqrt(((d - _box(d, 2)) ** 2).mean())),
-        "mean": float(d.mean()),
+        "tone": sum(p["tone"] for p in parts) / size,
+        "detail": float(np.sqrt(sum(p["detail"] for p in parts) / size)),
+        "mean": sum(p["mean"] for p in parts) / size,
     }
     # Hautes lumières : percentile 99,9 % de la luma, en nits (images sans hautes lumières écartées).
-    pr, pm = float(_nits(np.percentile(r, 99.9))), float(_nits(np.percentile(m, 99.9)))
+    r_hist, m_hist = sum(p["r_hist"] for p in parts), sum(p["m_hist"] for p in parts)
+    pr, pm = float(_nits(_hist_percentile(r_hist, 99.9))), float(_nits(_hist_percentile(m_hist, 99.9)))
     metrics["highlights"] = 100.0 * (pr - pm) / pm if pm >= _HIGHLIGHT_NITS else 0.0
     # Grain : bruit haute fréquence dans les aplats (faible variance locale de la couche mapped).
-    mean_m = _box(m, 2)
-    variance = _box(m * m, 2) - mean_m ** 2
-    flat = variance < 36.0
-    if flat.mean() > 0.05:
-        noise_r = float(np.std((r - _box(r, 2))[flat]))
-        noise_m = float(np.std((m - mean_m)[flat]))
+    if sum(p["flat"] for p in parts) / size > 0.05:
+        noise_r = _merged_std([p["noise_r"] for p in parts])
+        noise_m = _merged_std([p["noise_m"] for p in parts])
         metrics["grain"] = 100.0 * (noise_r / noise_m - 1.0) if noise_m > 0.05 else 0.0
     else:
         metrics["grain"] = 0.0
     chroma_rows = slice(rows.start // 2, (rows.stop + 1) // 2)
-    colour = [float(np.abs(_box(a[chroma_rows].astype(np.float64) - b[chroma_rows].astype(np.float64), 4)).mean())
-              for a, b in ((reconstructed.cb, mapped.cb), (reconstructed.cr, mapped.cr))]
-    metrics["colour"] = sum(colour) / 2
-    dark = m < 300  # ≈ 10 nits en PQ 10 bits plage limitée
-    metrics["shadows"] = float(np.abs(low[dark]).mean()) if dark.mean() > 0.02 else 0.0
+
+    def colour(pair: tuple[np.ndarray, np.ndarray]) -> float:
+        a, b = pair
+        diff = a[chroma_rows].astype(np.int32) - b[chroma_rows].astype(np.int32)
+        return float(np.abs(_band_box_sums(diff, 4, 0, diff.shape[0], np.int32)).sum()) / (81.0 * diff.size)
+
+    pairs = ((reconstructed.cb, mapped.cb), (reconstructed.cr, mapped.cr))
+    metrics["colour"] = sum(pool.map(colour, pairs) if pool is not None else map(colour, pairs)) / 2
+    dark = sum(p["dark"] for p in parts)
+    metrics["shadows"] = sum(p["shadows"] for p in parts) / dark if dark / size > 0.02 else 0.0
     return metrics
 
 
@@ -447,17 +527,26 @@ def plugin_capture(engine: object, path: Path, stream: int, *, ffmpeg_bin: str, 
 def analyse(capture: CaptureLayer, times: Sequence[float], *,
             area: Callable[[float], tuple[int, int, int, int] | None] = lambda _t: None,
             facts: LayerFacts | None = None, progress: Callable[[float], None] | None = None,
-            cancelled: Callable[[], bool] | None = None, moments: int = 5) -> FelReport:
-    """Mesure chaque instant (rafale de deux images par couche) ; vignettes des moments les plus marqués."""
-    samples: list[FelSample] = []
+            cancelled: Callable[[], bool] | None = None, moments: int = 5,
+            previous: FelReport | None = None) -> FelReport:
+    """Mesure chaque instant (rafale de deux images par couche) ; vignettes des moments les plus marqués.
+
+    ``previous`` : instants déjà mesurés (cache, passe plus grossière de la grille emboîtée), repris tels
+    quels et complétés par ``times``.
+    """
+    samples: list[FelSample] = list(previous.samples) if previous is not None else []
     # Vignettes calculées dès l'entrée d'un instant parmi les plus marqués (images pleines libérées).
-    kept: list[Moment] = []
+    kept: list[Moment] = sorted(previous.moments, key=lambda item: -item.score) if previous is not None else []
 
     def pair(time_s: float) -> tuple[list[Frame], list[Frame]]:
+        both = getattr(capture, "pair", None)
+        if callable(both):  # plugin capable de livrer les deux couches d'un seul décodage
+            return both(time_s, 2)
         return capture("reconstructed", time_s, 2), capture("mapped", time_s, 2)
 
-    # Capture de l'instant suivant pendant les mesures de l'instant courant.
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fel-capture") as prefetch:
+    # Capture de l'instant suivant pendant les mesures (parallèles) de l'instant courant.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fel-capture") as prefetch, \
+            ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="fel-mesure") as pool:
         pending = prefetch.submit(pair, times[0]) if times else None
         for index, time_s in enumerate(times):
             if cancelled is not None and cancelled():
@@ -467,7 +556,7 @@ def analyse(capture: CaptureLayer, times: Sequence[float], *,
             assert pending is not None
             reconstructed, mapped = pending.result()
             pending = prefetch.submit(pair, times[index + 1]) if index + 1 < len(times) else None
-            metrics, score, rows = _sample_metrics(reconstructed, mapped, area(time_s))
+            metrics, score, rows = _sample_metrics(reconstructed, mapped, area(time_s), pool)
             samples.append(FelSample(time_s, metrics))
             if len(kept) < moments or score > kept[-1].score:
                 recon, mapped_frame = reconstructed[0], mapped[0]
@@ -476,17 +565,68 @@ def analyse(capture: CaptureLayer, times: Sequence[float], *,
                 kept = sorted(kept, key=lambda item: -item.score)[:moments]
             if progress is not None:
                 progress((index + 1) / max(1, len(times)))
+    samples.sort(key=lambda item: item.time_s)
+    if facts is None and previous is not None:
+        facts = previous.facts
     return FelReport(facts, tuple(samples), summarise(samples), tuple(sorted(kept, key=lambda m: m.time_s)))
 
 
-def _sample_metrics(reconstructed: list[Frame], mapped: list[Frame],
-                    area: tuple[int, int, int, int] | None) -> tuple[dict[str, float], float, slice]:
+def analyse_progressive(capture: CaptureLayer, duration_s: float, interval_s: float, *,
+                        area: Callable[[float], tuple[int, int, int, int] | None] = lambda _t: None,
+                        cached: FelReport | None = None,
+                        facts: Callable[[], LayerFacts | None] | None = None,
+                        progress: Callable[[float], None] | None = None,
+                        partial: Callable[[FelReport], None] | None = None,
+                        cancelled: Callable[[], bool] | None = None, moments: int = 5) -> FelReport:
+    """Analyse par passes emboîtées (60 s, 30 s, puis la densité demandée) : instants en cache repris.
+
+    ``partial`` reçoit le verdict provisoire après chaque passe sauf la dernière ; ``facts`` (relevé
+    des couches, lancé en parallèle par l'appelant) n'est attendu qu'à la fin.
+    """
+    levels = sample_levels(duration_s, interval_s)
+    grid = {time_s for level in levels for time_s in level}
+    known = {s.time_s: s for s in (cached.samples if cached is not None else ()) if s.time_s in grid}
+    reused = sorted(known.values(), key=lambda s: s.time_s)
+    report = FelReport(None, tuple(reused), summarise(reused),
+                       tuple(m for m in (cached.moments if cached is not None else ()) if m.time_s in grid))
+    total = sum(1 for level in levels for time_s in level if time_s not in known)
+    done = 0
+    for index, level in enumerate(levels):
+        todo = [time_s for time_s in level if time_s not in known]
+        if todo:
+            offset = done
+
+            def level_progress(fraction: float, offset: int = offset, size: int = len(todo)) -> None:
+                if progress is not None:
+                    progress((offset + fraction * size) / max(1, total))
+
+            report = analyse(capture, todo, area=area, previous=report, progress=level_progress,
+                             cancelled=cancelled, moments=moments)
+            done += len(todo)
+        # Verdict provisoire seulement s'il reste des instants à mesurer (rien à attendre sinon).
+        if partial is not None and report.samples and done < total:
+            partial(report)
+    layer_facts = facts() if facts is not None else None
+    if layer_facts is None and cached is not None:
+        layer_facts = cached.facts
+    if progress is not None:
+        progress(1.0)
+    return dataclasses.replace(report, facts=layer_facts)
+
+
+def _workers() -> int:
+    return max(2, min(_BANDS, os.cpu_count() or 4))
+
+
+def _sample_metrics(reconstructed: list[Frame], mapped: list[Frame], area: tuple[int, int, int, int] | None,
+                    pool: Executor | None = None) -> tuple[dict[str, float], float, slice]:
     """Mesures d'un instant (première image de la rafale) et indice des moments marquants."""
     rows = active_rows(mapped[0], area)
-    first = frame_metrics(reconstructed[0], mapped[0], rows)
+    first = frame_metrics(reconstructed[0], mapped[0], rows, pool=pool)
     metrics = {key: first[key] for key in first if key != "mean"}
     # Stabilité : variation de l'écart moyen d'une image à la suivante (pompage corrigé par le FEL).
-    following = float((reconstructed[1].y[rows].astype(np.float64) - mapped[1].y[rows].astype(np.float64)).mean())
+    following_diff = reconstructed[1].y[rows].astype(np.int64) - mapped[1].y[rows].astype(np.int64)
+    following = float(following_diff.sum()) / following_diff.size
     metrics["temporal"] = abs(following - first["mean"])
     score = (metrics["tone"] / _STRONG["tone"] + metrics["detail"] / _STRONG["detail"]
              + abs(metrics["highlights"]) / _STRONG["highlights"])
@@ -517,12 +657,34 @@ def nothing_to_measure(dovi: DoviAnalysis) -> str | None:
     return "MEL" if dovi.el_type == "MEL" else translate_text("FEL vide")
 
 
+#: Densités emboîtées : la grille de 10 s contient celle de 30 s, qui contient celle de 60 s.
+COARSE_INTERVALS = (60, 30)
+
+
 def sample_times(duration_s: float, interval_s: float, margin_s: float = 5.0) -> list[float]:
-    """Instants répartis sur le film (marges du début et de la fin écartées)."""
+    """Instants de la grille ``marge + k × intervalle`` (marges du début et de la fin écartées).
+
+    Grilles de même origine : celle d'un intervalle multiple d'un autre en est un sous-ensemble, ce qui
+    permet de reprendre les instants déjà mesurés (cache, passe plus grossière).
+    """
     if duration_s <= 2 * margin_s:
         return [max(0.0, duration_s / 2)]
-    count = max(1, int((duration_s - 2 * margin_s) // max(1.0, interval_s)))
-    return [margin_s + (index + 0.5) * (duration_s - 2 * margin_s) / count for index in range(count)]
+    step = max(1.0, float(interval_s))
+    count = max(1, int((duration_s - 2 * margin_s) // step) + 1)
+    return [round(margin_s + index * step, 3) for index in range(count)]
+
+
+def sample_levels(duration_s: float, interval_s: float, margin_s: float = 5.0) -> list[list[float]]:
+    """Passes de la plus grossière à la plus fine : instants nouveaux de chaque densité emboîtée."""
+    intervals = [coarse for coarse in COARSE_INTERVALS if coarse > interval_s and coarse % interval_s == 0]
+    seen: set[float] = set()
+    levels: list[list[float]] = []
+    for step in [*intervals, interval_s]:
+        level = [time_s for time_s in sample_times(duration_s, step, margin_s) if time_s not in seen]
+        seen.update(level)
+        if level:
+            levels.append(level)
+    return levels
 
 
 # ── Survie à l'encodage ──────────────────────────────────────────────────────
@@ -675,19 +837,34 @@ def survival(reconstructed: Sequence[Frame], mapped: Sequence[Frame], encoded: S
     count = min(len(reconstructed), len(mapped), len(encoded))
     if count == 0:
         raise ValueError("Aucune image décodée après l'encodage de test.")
-    for r_frame, m_frame, e_frame in zip(reconstructed, mapped, encoded):
-        r = r_frame.y[rows].astype(np.float64)
-        m = m_frame.y[rows].astype(np.float64)
-        e = e_frame.y[rows].astype(np.float64)
-        contribution, kept = r - m, e - m
-        low_c, low_k = _box(contribution, 8), _box(kept, 8)
-        high_c, high_k = contribution - _box(contribution, 2), kept - _box(kept, 2)
-        tone_num += float((low_c * low_k).sum())
-        tone_den += float((low_c * low_c).sum())
-        detail_num += float((high_c * high_k).sum())
-        detail_den += float((high_c * high_c).sum())
-        # Bruit d'encodage haute fréquence : (E − R) filtré = high_k − high_c (filtre linéaire).
-        error += float(np.sqrt(((high_k - high_c) ** 2).mean()))
+    with ThreadPoolExecutor(max_workers=_workers(), thread_name_prefix="fel-survie") as pool:
+        for r_frame, m_frame, e_frame in zip(reconstructed, mapped, encoded):
+            m = m_frame.y[rows].astype(np.int32)
+            contribution = r_frame.y[rows].astype(np.int32) - m
+            kept = e_frame.y[rows].astype(np.int32) - m
+            height = contribution.shape[0]
+            bands = max(1, min(_BANDS, height // 32))
+            bounds = np.linspace(0, height, bands + 1, dtype=int)
+
+            def band(index: int, contribution: np.ndarray = contribution, kept: np.ndarray = kept,
+                     bounds: np.ndarray = bounds) -> tuple[float, float, float, float, float]:
+                # Sommes entières exactes (même filtre que ``_box``), produits en float64.
+                lo, hi = int(bounds[index]), int(bounds[index + 1])
+                low_c = _band_box_sums(contribution, 8, lo, hi, np.int32) / 289.0
+                low_k = _band_box_sums(kept, 8, lo, hi, np.int32) / 289.0
+                high_c = contribution[lo:hi] - _band_box_sums(contribution, 2, lo, hi, np.int32) / 25.0
+                high_k = kept[lo:hi] - _band_box_sums(kept, 2, lo, hi, np.int32) / 25.0
+                noise = high_k - high_c
+                return (float((low_c * low_k).sum()), float((low_c * low_c).sum()),
+                        float((high_c * high_k).sum()), float((high_c * high_c).sum()), float((noise * noise).sum()))
+
+            parts = list(pool.map(band, range(bands)))
+            tone_num += sum(p[0] for p in parts)
+            tone_den += sum(p[1] for p in parts)
+            detail_num += sum(p[2] for p in parts)
+            detail_den += sum(p[3] for p in parts)
+            # Bruit d'encodage haute fréquence : (E − R) filtré = high_k − high_c (filtre linéaire).
+            error += float(np.sqrt(sum(p[4] for p in parts) / contribution.size))
     detail = float(np.sqrt(detail_den / (count * reconstructed[0].y[rows].size)))
     return Survival(encoder, bitrate_kbps,
                     tone_kept=max(0.0, min(1.0, tone_num / tone_den)) if tone_den > 0 else 1.0,

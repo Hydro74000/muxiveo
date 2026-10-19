@@ -133,11 +133,12 @@ def _measure(config: AppConfig, report: InspectionReport, threads: int, work_roo
 
 
 def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: int,
-                  survival: tuple[str, int] | None, ffmpeg: str, threads: int, logger: Logger) -> FelReport:
+                  survival: tuple[str, int] | None, ffmpeg: str, threads: int, logger: Logger,
+                  cache: InspectionCache | None = None) -> FelReport:
     """FEL Analyzer d'une source P7 (mêmes mesures que l'onglet FEL) ; MEL ou FEL vide : rien à capturer."""
     from core.fel.engine import FelEngine, FelError, layers_supported
     from core.hdr_inspection.fel_analyzer import (
-        analyse,
+        analyse_progressive,
         area_at,
         nothing_to_measure,
         plugin_capture,
@@ -145,7 +146,7 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
         sample_times,
         summarise,
     )
-    from core.hdr_inspection.fel_layer import scan_layers
+    from core.hdr_inspection.fel_layer import scan_in_background
 
     snapshot, dovi = report.snapshot, report.dovi
     if dovi is None or dovi.el_type is None:
@@ -174,31 +175,35 @@ def _fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: in
 
     area = area_at(dovi, fps)
     try:
-        facts = None
-        if Path(snapshot.path).suffix.lower() == ".mkv":
-            logger.emit("info", "FEL Analyzer : relevé des couches BL / EL…")
-            reported = [0]
-
-            def scanned(fraction: float) -> None:
-                if int(fraction * 10) > reported[0]:
-                    reported[0] = int(fraction * 10)
-                    logger.emit("info", f"FEL Analyzer : relevé des couches {reported[0] * 10} %")
-
-            facts = scan_layers(Path(snapshot.path), snapshot.stream_index, progress=scanned)
+        path = Path(snapshot.path)
+        cached = cache.load_fel(path, snapshot.stream_index) if cache is not None else None
+        known = cached.facts if cached is not None else None
+        # Relevé des couches (lecture complète du fichier) pendant l'échantillonnage, sauf s'il est en cache.
+        facts = (lambda: known) if known is not None else \
+            scan_in_background(path, snapshot.stream_index, cancelled=cancel.is_set)
         duration = snapshot.duration_s or (snapshot.frames or 0) / fps
         times = sample_times(duration, interval_s)
-        step = max(1, len(times) // 10)
-        logger.emit("info", f"FEL Analyzer : {len(times)} instants (une image toutes les {interval_s} s)")
+        reused = sum(1 for s in (cached.samples if cached is not None else ()) if s.time_s in set(times))
+        logger.emit("info", f"FEL Analyzer : {len(times)} instants (une image toutes les {interval_s} s)"
+                    + (f", dont {reused} en cache" if reused else ""))
+        reported = [-1]
 
         def progress(fraction: float) -> None:
-            done = int(round(fraction * len(times)))
-            if done % step == 0 or done == len(times):
-                logger.emit("info", f"FEL Analyzer : {done}/{len(times)} instants")
+            if int(fraction * 10) > reported[0]:
+                reported[0] = int(fraction * 10)
+                logger.emit("info", f"FEL Analyzer : {reported[0] * 10} %")
+
+        def partial(report: FelReport) -> None:
+            _code, title, _detail = verdict(report)
+            logger.emit("info", f"FEL Analyzer : verdict provisoire ({len(report.samples)} instants) — {title}")
 
         try:
-            result = analyse(capture_on("cpu"), times, area=area, facts=facts, progress=progress)
+            result = analyse_progressive(capture_on("cpu"), duration, interval_s, area=area, cached=cached,
+                                         facts=facts, progress=progress, partial=partial, cancelled=cancel.is_set)
         except (RuntimeError, FelError) as exc:
             raise CliError(f"FEL Analyzer : capture impossible ({exc}).", EXIT_TOOL) from exc
+        if cache is not None:
+            cache.store_fel(path, snapshot.stream_index, result)
         if survival is not None:
             encoder, bitrate = survival
             logger.emit("info", f"FEL Analyzer : test de survie {encoder} à {bitrate} kbit/s")
@@ -259,7 +264,8 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
                                                                  measurement))
         if fel_interval is not None:
             fel_reports.append(_fel_analysis(config, report, interval_s=fel_interval, survival=args.hdr_fel_survival,
-                                             ffmpeg=ffmpeg, threads=threads, logger=logger))
+                                             ffmpeg=ffmpeg, threads=threads, logger=logger,
+                                             cache=None if args.hdr_no_cache else cache))
         sides.append(Side(report, measurement))
     comparison = compare(sides[0], sides[1], args.hdr_offset) if args.hdr_compare else None
     fels: list[FelReport | None] = list(fel_reports) if fel_reports else [None] * len(sides)

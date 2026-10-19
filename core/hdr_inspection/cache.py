@@ -13,6 +13,8 @@ import numpy as np
 
 from core.atomic_io import atomic_write_bytes
 from core.hdr_inspection.dovi import ActiveArea, DoviAnalysis, L6Set
+from core.hdr_inspection.fel_analyzer import FEL_METRICS_VERSION, FelReport, FelSample, Moment, summarise
+from core.hdr_inspection.fel_layer import LayerFacts
 from core.hdr_inspection.hdr10p import Hdr10PlusAnalysis
 from core.hdr_inspection.measure import ImageMeasurement
 
@@ -147,6 +149,64 @@ class InspectionCache:
             self._root.mkdir(parents=True, exist_ok=True)
             suffix = "-keyframes" if measurement.is_estimate else ""
             atomic_write_bytes(self._root / f"{key}.{measurement.layer}{suffix}.npz", buffer.getvalue())
+            self._prune()
+        except OSError:
+            pass
+
+    def load_fel(self, path: Path, stream_index: int) -> FelReport | None:
+        """Instants du FEL Analyzer déjà mesurés (toutes densités confondues), sans test de survie."""
+        key = self.key(path, stream_index)
+        entry = self._root / f"{key}.fel.npz" if key else None
+        if entry is None or not entry.is_file():
+            return None
+        try:
+            with np.load(entry, allow_pickle=False) as data:
+                meta = json.loads(bytes(data["meta"]).decode("utf-8"))
+                if meta.get("version") != CACHE_VERSION or meta.get("metrics_version") != FEL_METRICS_VERSION:
+                    return None
+                names = list(meta["metrics"])
+                samples = [FelSample(float(time_s), {name: float(value) for name, value in zip(names, row)})
+                           for time_s, row in zip(data["times"], data["values"])]
+                moments = tuple(Moment(float(item["time_s"]), float(item["score"]), data[f"moment{i}.mapped"],
+                                       data[f"moment{i}.reconstructed"], data[f"moment{i}.difference"])
+                                for i, item in enumerate(meta["moments"]))
+            facts = LayerFacts(**{**meta["facts"], "el_size": _tuple(meta["facts"]["el_size"]) or None}) \
+                if meta.get("facts") else None
+            os.utime(entry)
+            return FelReport(facts, tuple(samples), summarise(samples), moments)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def store_fel(self, path: Path, stream_index: int, report: FelReport, *, moments: int = 5) -> None:
+        """Ajoute les instants de ``report`` à ceux déjà en cache (mêmes instants : nouvelle mesure retenue)."""
+        key = self.key(path, stream_index)
+        if key is None or not report.samples:
+            return
+        previous = self.load_fel(path, stream_index)
+        by_time = {s.time_s: s for s in (previous.samples if previous is not None else ())}
+        by_time.update({s.time_s: s for s in report.samples})
+        samples = sorted(by_time.values(), key=lambda s: s.time_s)
+        names = sorted({name for s in samples for name in s.metrics})
+        kept = {m.time_s: m for m in (previous.moments if previous is not None else ())}
+        kept.update({m.time_s: m for m in report.moments})
+        best = sorted(kept.values(), key=lambda m: -m.score)[:moments]
+        facts = report.facts or (previous.facts if previous is not None else None)
+        meta = {"version": CACHE_VERSION, "metrics_version": FEL_METRICS_VERSION, "metrics": names,
+                "moments": [{"time_s": m.time_s, "score": m.score} for m in best],
+                "facts": None if facts is None else asdict(facts)}
+        arrays: dict[str, np.ndarray] = {
+            "times": np.array([s.time_s for s in samples], dtype=np.float64),
+            "values": np.array([[s.metrics.get(name, 0.0) for name in names] for s in samples], dtype=np.float64)}
+        for index, moment in enumerate(best):
+            arrays[f"moment{index}.mapped"] = moment.mapped
+            arrays[f"moment{index}.reconstructed"] = moment.reconstructed
+            arrays[f"moment{index}.difference"] = moment.difference
+        arrays["meta"] = np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8)
+        buffer = io.BytesIO()
+        np.savez_compressed(buffer, **cast(dict[str, Any], arrays))
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(self._root / f"{key}.fel.npz", buffer.getvalue())
             self._prune()
         except OSError:
             pass
