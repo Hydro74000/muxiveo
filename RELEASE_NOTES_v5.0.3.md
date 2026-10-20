@@ -18,6 +18,8 @@
 * **Analyse continue plus rapide** : les deux pistes sont décodées en parallèle.
 * **Synchro Studio : coupes et silences manuels.** Un clic droit sur la forme d'onde crée une section. On l'ajuste en glissant ses bords ou avec les champs Début / Fin (hh:mm:ss.mmm). « Couper (supprimer) » retire le contenu de la cible ; « Allonger (ajout de silence) » insère un silence de la même durée et repousse la suite. Une coupure se retire par clic droit, sur la forme d'onde ou dans le tableau des coupures. La cible est dessinée telle qu'elle sortira (morceaux décalés, coupes, silences, cadence) ; pour une piste de sous-titres, le texte des répliques est affiché.
 * **Synchro Studio : boutons « Synchro rapide » et « Synchro approfondie »** pour une piste audio. La référence de la dernière synchro est reprise.
+* **Conteneur : réinitialisation sur les sources.** Le bouton ↺ à côté de « Appliquer profil » remet les pistes (langue, titre, flags, sélection, ordre), les variantes audio, la synchronisation et les chapitres dans l'état des fichiers sources, sans les réinspecter. Pièces jointes, balises, titre et fichier de sortie sont conservés, ainsi que les réglages du panneau Encodage des pistes d'origine.
+* **Conteneur : case « tout cocher » dans l'en-tête** de la colonne de sélection, à la place des boutons « Tout activer » / « Tout désactiver ». Elle est grisée quand seules certaines pistes sont cochées.
 * **Décalage négligeable** : un décalage constant de 5 ms ou moins n'est plus appliqué, la piste n'est donc pas réencodée. Le journal l'indique.
 * **Hybrid Studio** : les épisodes nommés « S01.E02 », « S01_E02 » ou « 1x02 » sont reconnus.
 * **Langues** : « VFQ » dans le titre d'une piste donne fr-CA. Les profils et sélecteurs enregistrés en fr-FR continuent de s'appliquer à ces pistes.
@@ -27,6 +29,8 @@
 
 ## 2. Correctifs
 
+* **Profils appliqués dans le panneau Conteneur** : le profil part de l'état du tableau (langues, titres et flags édités, ou déjà modifiés par un profil précédent), y compris pour les critères de titre et de langue source, qui lisaient jusqu'ici le fichier d'origine. L'aperçu de l'éditeur de profils suit la même règle.
+* **Chapitres** : après une édition, revenir aux chapitres d'une source (changement de source de chapitres, réinitialisation) redonnait les valeurs éditées au lieu de celles du fichier.
 * **Synchronisation, méthode `asetrate`** : la vitesse obtenue était fausse sur une piste qui n'est pas en 48 kHz (44,1 kHz, 96 kHz…). Le débit réel de la piste est désormais utilisé.
 * **Synchronisation, cadence** : dans le panneau Conteneur, l'écart de cadence vidéo entre les sources (PAL ↔ cinéma) est transmis à l'analyse, selon le réglage « Appliquer automatiquement la conversion PAL ↔ Cinéma ». Un écart de plus de 5 % (télécinéma 29,97 ↔ 23,976, images doublées 50 ↔ 25) n'est plus pris pour un changement de vitesse de l'audio.
 * **Synchronisation avec coupures ou conversion de cadence** : la calibration est conservée pour toute la source. L'annuler sur une piste l'annule pour toutes les pistes de la source, et le journal les liste. Les chapitres de la source suivent la calibration complète, pas seulement le décalage de départ ; un chapitre situé dans une partie coupée est placé à la reprise.
@@ -54,6 +58,8 @@
 * **Faster continuous analysis**: both tracks are decoded in parallel.
 * **Sync Studio: manual cuts and silences.** Right-click the waveform to create a section. Adjust it by dragging its edges or with the Start / End fields (hh:mm:ss.mmm). "Cut (remove)" removes the target content; "Extend (add silence)" inserts a silence of the same length and pushes the rest back. A cut is removed by right-clicking it, on the waveform or in the cuts table. The target is drawn as it will be output (shifted pieces, cuts, silences, frame rate); for a subtitle track, the line text is shown.
 * **Sync Studio: "Quick sync" and "In-depth sync" buttons** for an audio track. The reference of the last sync is reused.
+* **Container: reset to sources.** The ↺ button next to "Apply profile" returns tracks (language, title, flags, selection, order), audio variants, synchronization and chapters to the state of the source files, without inspecting them again. Attachments, tags, title and output file are kept, as are the Encoding panel settings of the original tracks.
+* **Container: "check all" box in the header** of the selection column, replacing the "Enable all" / "Disable all" buttons. It is greyed out when only some tracks are checked.
 * **Negligible offset**: a constant offset of 5 ms or less is no longer applied, so the track is not re-encoded. The log says so.
 * **Hybrid Studio**: episodes named "S01.E02", "S01_E02" or "1x02" are recognized.
 * **Languages**: "VFQ" in a track title gives fr-CA. Profiles and selectors saved with fr-FR still apply to these tracks.
@@ -63,6 +69,8 @@
 
 ## 2. Fixes
 
+* **Profiles applied in the Container panel**: the profile starts from the state of the table (edited languages, titles and flags, or ones already changed by a previous profile), including for source title and source language criteria, which so far read the original file. The profile editor preview follows the same rule.
+* **Chapters**: after an edit, going back to a source's chapters (changing the chapter source, reset) brought back the edited values instead of the file's.
 * **Sync, `asetrate` method**: the resulting speed was wrong for a track that is not 48 kHz (44.1 kHz, 96 kHz…). The track's actual sample rate is now used.
 * **Sync, frame rate**: in the Container panel, the video frame rate difference between sources (PAL ↔ film) is passed to the analysis, according to the "Automatically apply PAL ↔ Film conversion" setting. A difference above 5 % (telecine 29.97 ↔ 23.976, doubled frames 50 ↔ 25) is no longer taken as an audio speed change.
 * **Sync with cuts or frame rate conversion**: the calibration is kept for the whole source. Cancelling it on one track cancels it for every track of the source, and the log lists them. The source's chapters follow the full calibration, not only the start offset; a chapter inside a removed part is placed where playback resumes.
