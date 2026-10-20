@@ -183,6 +183,8 @@ def _checkbox_style() -> str:
         f"QCheckBox::indicator:hover {{ border-color: {_C.ACCENT}; }}"
         f"QCheckBox::indicator:checked {{ background: {_C.ACCENT}; border-color: {_C.ACCENT}; image: url('{CHECK_ICON_PATH}'); }}"
         f"QCheckBox::indicator:disabled {{ border-color: {_C.BORDER}; background: {_C.BG_DEEP}; }}"
+        f"QCheckBox::indicator:checked:disabled {{ background: {_C.TEXT_DIM}; border-color: {_C.TEXT_DIM}; "
+        f"image: url('{CHECK_ICON_PATH}'); }}"
         f"QCheckBox:disabled {{ color: {_C.TEXT_DIM}; }}"
     )
 

@@ -5,6 +5,7 @@ import os
 import plistlib
 import subprocess
 import struct
+import sys
 import zlib
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1141,3 +1142,19 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     assert nsis_calls == ["Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe"]
     assert tools_bundled == [True]
     assert portable_built == [True]
+
+
+def test_appimage_bundles_ui_assets(tmp_path, monkeypatch):
+    """Les icônes Qt (coche des cases) doivent être embarquées dans l'AppImage."""
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        seen.append([str(part) for part in cmd])
+        raise SystemExit(0)
+
+    monkeypatch.setattr(package_appimage_mod, "DIST_DIR", tmp_path)
+    monkeypatch.setattr(package_appimage_mod, "run", fake_run)
+    with pytest.raises(SystemExit):
+        package_appimage_mod.build_onedir()
+    sep = ";" if sys.platform == "win32" else ":"
+    assert f"--add-data={package_appimage_mod.ROOT / 'ui' / 'assets'}{sep}ui/assets" in seen[0]

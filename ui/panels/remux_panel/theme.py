@@ -164,6 +164,11 @@ def _checkbox_style() -> str:
             border-color: {_C.BORDER};
             background: {_C.BG_DEEP};
         }}
+        QCheckBox::indicator:checked:disabled {{
+            background: {_C.TEXT_DIM};
+            border-color: {_C.TEXT_DIM};
+            image: url('{CHECK_ICON_PATH}');
+        }}
         QCheckBox:disabled {{
             color: {_C.TEXT_DIM};
         }}
