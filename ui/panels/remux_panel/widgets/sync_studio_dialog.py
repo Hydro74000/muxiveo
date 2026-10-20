@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QRadioButton,
     QScrollBar,
     QSlider,
@@ -59,6 +60,8 @@ if TYPE_CHECKING:
 
 # Demi-fenêtre affichée autour d'un instant saisi manuellement (20 s au total).
 _GOTO_HALF_WINDOW_S = 10.0
+# Longueur proposée quand une section n'a qu'un bord défini.
+_DEFAULT_SECTION_MS = 1000.0
 
 
 def _parse_timestamp_ms(text: str) -> float | None:
@@ -135,6 +138,8 @@ class SyncStudioDialog(QDialog):
             self._initial_calibration = SyncCalibration.linear(target_entry.time_shift_ms or 0)
 
         self.current_calibration = self._initial_calibration
+        # Section éditée à la main (axe de la forme d'onde, ms).
+        self._section: tuple[float, float] | None = None
         self._initial_shift_ms = float(self._initial_calibration.segments[0].shift_ms)
         self._current_shift_ms = self._initial_shift_ms
 
@@ -176,6 +181,7 @@ class SyncStudioDialog(QDialog):
         self._duration_ready.connect(self._on_duration_ready)
 
         self._init_ui()
+        self._push_waveform_calibration()
         self._select_segment(0)
         if self.quick_validated:
             self.listen_status.setText(translate_text(
@@ -429,6 +435,8 @@ class SyncStudioDialog(QDialog):
         )
         self.waveform.set_shift(self._current_shift_ms)
         self.waveform.set_loading(translate_text("Chargement des signaux audio..."))
+        self.waveform.context_requested.connect(self._on_waveform_context)
+        self.waveform.section_changed.connect(lambda start, end: self._set_section(start, end))
         wc_layout.addWidget(self.waveform)
 
         # Barre de défilement horizontal synchronisée avec le zoom / pan
@@ -458,7 +466,10 @@ class SyncStudioDialog(QDialog):
 
         # Astuce d'interaction
         hint_lbl = QLabel(
-            "💡 " + translate_text("Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler la forme d'onde")
+            "💡 " + translate_text(
+                "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler • "
+                "Clic droit pour créer une section à couper ou allonger, bords à glisser"
+            )
         )
         hint_lbl.setStyleSheet(f"color: {_C.TEXT_DIM}; font-size: {_font_px(10)}px;")
         wc_layout.addWidget(hint_lbl)
@@ -538,20 +549,68 @@ class SyncStudioDialog(QDialog):
         cc_layout.addWidget(self.listen_status)
         vbox.addWidget(ctrl_card)
 
+        # ── Carte 3b : Coupe / allongement manuel ─────────────────────────────
+        edit_card = _card(self)
+        ec_layout = QVBoxLayout(edit_card)
+        ec_layout.setContentsMargins(_scale(12), _scale(8), _scale(12), _scale(8))
+        ec_layout.setSpacing(_scale(6))
+        ec_layout.addWidget(_section_label(translate_text("COUPE / ALLONGEMENT MANUEL")))
+        edit_row = QHBoxLayout()
+        edit_row.setSpacing(_scale(8))
+        timeline_tip = translate_text(
+            "Instant sur l'axe de la forme d'onde (sortie calée sur la référence), format hh:mm:ss.mmm."
+        )
+        self.section_start_edit = QLineEdit(self)
+        self.section_end_edit = QLineEdit(self)
+        for label, edit in ((translate_text("Début :"), self.section_start_edit),
+                            (translate_text("Fin :"), self.section_end_edit)):
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
+            edit_row.addWidget(lbl)
+            edit.setStyleSheet(_input_style())
+            edit.setPlaceholderText("hh:mm:ss.mmm")
+            edit.setFixedWidth(_scale(110))
+            edit.setToolTip(timeline_tip)
+            edit.editingFinished.connect(self._on_section_fields_edited)
+            edit_row.addWidget(edit)
+        self.section_length_lbl = QLabel("")
+        self.section_length_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
+        edit_row.addWidget(self.section_length_lbl)
+        self.bg_section_kind = QButtonGroup(self)
+        self.rb_section_cut = QRadioButton(translate_text("Couper (supprimer)"))
+        self.rb_section_cut.setToolTip(translate_text("Retire le contenu de la cible situé dans la section."))
+        self.rb_section_silence = QRadioButton(translate_text("Allonger (ajout de silence)"))
+        self.rb_section_silence.setToolTip(translate_text(
+            "Insère un silence de la longueur de la section ; la suite de la cible est repoussée d'autant."
+        ))
+        for rb in (self.rb_section_cut, self.rb_section_silence):
+            rb.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            self.bg_section_kind.addButton(rb)
+            edit_row.addWidget(rb)
+        self.rb_section_cut.setChecked(True)
+        self.bg_section_kind.buttonClicked.connect(
+            lambda _btn: self.waveform.set_section_kind("silence" if self.rb_section_silence.isChecked() else "cut")
+        )
+        edit_row.addStretch()
+        self.btn_apply_section = _secondary_button(translate_text("Ajouter à la calibration"), padding_h=10)
+        self.btn_apply_section.clicked.connect(self._apply_section_edit)
+        edit_row.addWidget(self.btn_apply_section)
+        self.btn_clear_section = _secondary_button(translate_text("Effacer"), padding_h=8)
+        self.btn_clear_section.clicked.connect(self._clear_section)
+        edit_row.addWidget(self.btn_clear_section)
+        ec_layout.addLayout(edit_row)
+        vbox.addWidget(edit_card)
+        self._sync_section_controls()
+
         # ── Carte 4 : Coupures / Multi-segments (si applicable) ────────────────
         cuts_card = _card(self)
         cuts_layout = QVBoxLayout(cuts_card)
         cuts_layout.setContentsMargins(_scale(12), _scale(8), _scale(12), _scale(8))
         cuts_layout.setSpacing(_scale(6))
 
-        cuts_header = QLabel(
-            translate_text(
-                "Coupures et variations de rythme détectées ({count}) :",
-                count=self.current_calibration.cuts_count,
-            )
-        )
-        cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: #e5a50a;")
-        cuts_layout.addWidget(cuts_header)
+        self.cuts_header = QLabel()
+        self.cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: #e5a50a;")
+        cuts_layout.addWidget(self.cuts_header)
 
         segments = self.current_calibration.segments
         table_class = ContentTableWidget if self._embedded else QTableWidget
@@ -572,6 +631,8 @@ class SyncStudioDialog(QDialog):
         if not self._embedded:
             self.cuts_table.setMaximumHeight(_scale(120))
         self.cuts_table.cellClicked.connect(self._on_cuts_cell_clicked)
+        self.cuts_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.cuts_table.customContextMenuRequested.connect(self._on_cuts_table_menu)
         self._update_cuts_table()
         cuts_layout.addWidget(self.cuts_table)
         vbox.addWidget(cuts_card)
@@ -731,6 +792,9 @@ class SyncStudioDialog(QDialog):
         if self.cuts_table is None:
             return
         segments = self.current_calibration.segments
+        self.cuts_header.setText(translate_text(
+            "Coupures et variations de rythme ({count}) :", count=self.current_calibration.cuts_count,
+        ))
         prev_shift = 0.0
         for i, s in enumerate(segments):
             ts = SyncCalibration.format_timestamp(s.start_ms)
@@ -739,7 +803,10 @@ class SyncStudioDialog(QDialog):
                 if i == 0
                 else translate_text("Coupure à {ts}", ts=ts)
             )
-            delta_label = "-" if i == 0 else f"{s.shift_ms - prev_shift:+.1f} ms"
+            jump = s.shift_ms - prev_shift
+            delta_label = "-" if i == 0 else (
+                f"{jump:+.1f} ms ({translate_text('silence') if jump > 0 else translate_text('coupe')})"
+            )
 
             item_seg = QTableWidgetItem(f"Segment {i + 1}")
             item_pos = QTableWidgetItem(pos_label)
@@ -775,6 +842,7 @@ class SyncStudioDialog(QDialog):
         self.current_calibration = replace(self.current_calibration, segments=tuple(new_segments))
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._update_cuts_table()
+        self._push_waveform_calibration()
         self.calibration_changed.emit(self.current_calibration)
 
     def _reset_shifts(self) -> None:
@@ -790,6 +858,7 @@ class SyncStudioDialog(QDialog):
         self._refresh_segment_controls()
         self._select_segment(self._current_segment_index)
         self.calibration_changed.emit(self.current_calibration)
+        self._clear_section()
 
     def _refresh_segment_controls(self) -> None:
         multi = self.current_calibration.cuts_count > 0
@@ -798,6 +867,152 @@ class SyncStudioDialog(QDialog):
         self.btn_next_seg.setVisible(multi)
         self.cuts_table.setRowCount(len(self.current_calibration.segments))
         self._update_cuts_table()
+        self._push_waveform_calibration()
+
+    def _push_waveform_calibration(self) -> None:
+        """Cible dessinée telle qu'elle sortira : morceaux décalés, coupes et silences, jonctions."""
+        calibration = self.current_calibration
+        ranges = calibration.output_ranges()
+        pieces = [(start, stop, calibration.segments[index].shift_ms) for start, stop, index in ranges]
+        junctions = [(start, index) for start, _stop, index in ranges if index > 0]
+        ratio = calibration.cadence_mismatch.time_stretch_ratio if calibration.cadence_mismatch else 1.0
+        self.waveform.set_calibration_view(pieces, junctions, ratio)
+
+    # ── Édition manuelle : sections à couper ou allonger ─────────────────────
+    def _set_section(self, start_ms: float | None, end_ms: float | None, *, update_fields: bool = True) -> None:
+        if start_ms is None or end_ms is None:
+            self._section = None
+        else:
+            start, end = sorted((round(max(0.0, float(start_ms)), 3), round(max(0.0, float(end_ms)), 3)))
+            self._section = (start, max(end, start + 1.0))
+        self.waveform.set_section(*(self._section or (None, None)))
+        if update_fields:
+            for edit, value in zip(
+                (self.section_start_edit, self.section_end_edit), self._section or (None, None),
+            ):
+                edit.setText(SyncCalibration.format_timestamp(value) if value is not None else "")
+        self._sync_section_controls()
+
+    def _sync_section_controls(self) -> None:
+        has_section = self._section is not None
+        self.btn_apply_section.setEnabled(has_section)
+        self.btn_clear_section.setEnabled(has_section)
+        self.section_length_lbl.setText(
+            translate_text("Durée : {length} s", length=f"{(self._section[1] - self._section[0]) / 1000.0:.3f}")
+            if self._section is not None
+            else ""
+        )
+
+    def _clear_section(self) -> None:
+        self._set_section(None, None)
+
+    def _on_section_fields_edited(self) -> None:
+        start_text, end_text = self.section_start_edit.text().strip(), self.section_end_edit.text().strip()
+        if not start_text and not end_text:
+            self._set_section(None, None, update_fields=False)
+            return
+        start = _parse_timestamp_ms(start_text) if start_text else None
+        end = _parse_timestamp_ms(end_text) if end_text else None
+        if (start_text and start is None) or (end_text and end is None):
+            self.listen_status.setText(translate_text("Instant invalide (format attendu : hh:mm:ss.mmm)."))
+            return
+        if start is None and end is not None:
+            start = max(0.0, end - _DEFAULT_SECTION_MS)
+        if end is None and start is not None:
+            end = start + _DEFAULT_SECTION_MS
+        if start is not None and end is not None and end <= start:
+            self.listen_status.setText(translate_text("La fin de la section doit suivre son début."))
+            return
+        self._set_section(start, end)
+
+    @staticmethod
+    def _exec_menu(menu: QMenu, global_pos):
+        return menu.exec(global_pos)
+
+    def _on_waveform_context(self, time_ms: float, global_pos) -> None:
+        if self._closing:
+            return
+        time_ms = max(0.0, float(time_ms))
+        menu = QMenu(self)
+        action_start = menu.addAction(translate_text("Début de section ici"))
+        action_end = menu.addAction(translate_text("Fin de section ici"))
+        menu.addSeparator()
+        action_cut = menu.addAction(translate_text("Couper la section (supprimer)"))
+        action_silence = menu.addAction(translate_text("Allonger la section (ajout de silence)"))
+        action_clear = menu.addAction(translate_text("Effacer la section"))
+        for action in (action_cut, action_silence, action_clear):
+            action.setEnabled(self._section is not None)
+        junction = self.waveform.junction_near(self.waveform.x_at_time(time_ms))
+        action_remove = None
+        if junction is not None:
+            menu.addSeparator()
+            action_remove = menu.addAction(translate_text("Supprimer la coupure {idx}", idx=junction + 1))
+        chosen = self._exec_menu(menu, global_pos)
+        if chosen is action_start:
+            end = self._section[1] if self._section and self._section[1] > time_ms else time_ms + _DEFAULT_SECTION_MS
+            self._set_section(time_ms, end)
+        elif chosen is action_end:
+            start = self._section[0] if self._section and self._section[0] < time_ms else time_ms - _DEFAULT_SECTION_MS
+            self._set_section(start, time_ms)
+        elif chosen is action_cut or chosen is action_silence:
+            (self.rb_section_silence if chosen is action_silence else self.rb_section_cut).setChecked(True)
+            self.waveform.set_section_kind("silence" if chosen is action_silence else "cut")
+            self._apply_section_edit()
+        elif chosen is action_clear:
+            self._clear_section()
+        elif action_remove is not None and chosen is action_remove and junction is not None:
+            self._remove_junction(junction)
+
+    def _apply_section_edit(self) -> None:
+        """Ajoute la section à la calibration : coupe (contenu cible retiré) ou silence inséré."""
+        if self._section is None:
+            return
+        silence = self.rb_section_silence.isChecked()
+        start, end = self._section
+        try:
+            calibration = self.current_calibration.with_edit(start, end, silence=silence)
+        except ValueError as exc:
+            self.listen_status.setText(translate_text(str(exc)))
+            return
+        donor_ms = self.current_calibration.donor_time_ms(start)
+        self.current_calibration = calibration
+        self.quick_validated = False
+        self._current_shift_ms = calibration.segments[0].shift_ms
+        junction_ms = round(max(donor_ms, 1.0), 3) + 1e-6
+        index = max(i for i, segment in enumerate(calibration.segments) if i == 0 or segment.start_ms <= junction_ms)
+        self._clear_section()
+        self._refresh_segment_controls()
+        self._select_segment(index)
+        length = f"{(end - start) / 1000.0:.3f}"
+        position = SyncCalibration.format_timestamp(start)
+        self.listen_status.setText(
+            translate_text("Silence de {length} s ajouté à {ts}.", length=length, ts=position)
+            if silence
+            else translate_text("Coupe de {length} s ajoutée à {ts}.", length=length, ts=position)
+        )
+        self.calibration_changed.emit(self.current_calibration)
+
+    def _remove_junction(self, index: int) -> None:
+        try:
+            calibration = self.current_calibration.without_junction(index)
+        except ValueError:
+            return
+        self.current_calibration = calibration
+        self.quick_validated = False
+        self._current_shift_ms = calibration.segments[0].shift_ms
+        self._refresh_segment_controls()
+        self._select_segment(max(0, index - 1))
+        self.listen_status.setText(translate_text("Coupure {idx} supprimée.", idx=index + 1))
+        self.calibration_changed.emit(self.current_calibration)
+
+    def _on_cuts_table_menu(self, pos) -> None:
+        row = self.cuts_table.rowAt(pos.y())
+        if row < 1:
+            return
+        menu = QMenu(self)
+        action_remove = menu.addAction(translate_text("Supprimer la coupure {idx}", idx=row + 1))
+        if self._exec_menu(menu, self.cuts_table.viewport().mapToGlobal(pos)) is action_remove:
+            self._remove_junction(row)
 
     def _load_segment_audio_async(self, idx: int, start_s: float, cut_ms: float | None) -> None:
         if self._closing:

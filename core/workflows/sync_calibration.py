@@ -1,7 +1,7 @@
 """Contrat temporel commun : temps donneur (ms) -> temps référence (ms)."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import math
 from typing import Any
 
@@ -98,6 +98,78 @@ class SyncCalibration:
     @property
     def cuts_count(self) -> int:
         return max(0, len(self.segments) - 1)
+
+    def _stretch_ratio(self) -> float:
+        return self.cadence_mismatch.time_stretch_ratio if self.cadence_mismatch else 1.0
+
+    def output_ranges(self) -> list[tuple[float, float, int]]:
+        """Plages de sortie (ms) effectivement occupées par chaque segment : (début, fin, index).
+
+        Même règle que `physical_sync.audio_filter` : après un saut négatif, le début du
+        segment suivant est retiré ; après un saut positif, l'intervalle reste en silence.
+        """
+        ratio = self._stretch_ratio()
+        ranges: list[tuple[float, float, int]] = []
+        previous_end = -math.inf
+        for index, segment in enumerate(self.segments):
+            start = segment.start_ms * ratio + segment.shift_ms
+            stop = (self.segments[index + 1].start_ms * ratio + segment.shift_ms
+                    if index + 1 < len(self.segments) else math.inf)
+            effective = max(start, previous_end)
+            if stop > effective:
+                ranges.append((effective, stop, index))
+            previous_end = max(previous_end, stop)
+        return ranges
+
+    def donor_time_ms(self, output_ms: float) -> float:
+        """Instant de la piste cible placé à `output_ms` dans la sortie (borné à son segment)."""
+        ratio = self._stretch_ratio()
+        index = 0
+        for start, _stop, segment_index in self.output_ranges():
+            if start <= output_ms:
+                index = segment_index
+        segment = self.segments[index]
+        donor = (output_ms - segment.shift_ms) / ratio
+        upper = self.segments[index + 1].start_ms if index + 1 < len(self.segments) else math.inf
+        return max(segment.start_ms, min(upper, donor))
+
+    def with_edit(self, output_start_ms: float, output_end_ms: float, *, silence: bool) -> SyncCalibration:
+        """Ajoute une coupe (contenu cible de la section supprimé) ou un silence de la longueur de la section.
+
+        La section est exprimée sur l'axe de sortie (référence). Les segments suivants sont
+        décalés d'autant, comme lors d'un réglage du décalage : les sauts relatifs sont conservés.
+        """
+        length = float(output_end_ms) - float(output_start_ms)
+        if not math.isfinite(length) or length <= 0:
+            raise ValueError("La fin de la section doit suivre son début.")
+        start = round(self.donor_time_ms(float(output_start_ms)), 3)
+        delta = length if silence else -length
+        if not silence:
+            # Une coupe au tout début garde une jonction (le segment 1 commence à 0 ms).
+            start = max(start, 1.0)
+            stop = start + length / self._stretch_ratio()
+            if any(start < segment.start_ms < stop for segment in self.segments[1:]):
+                raise ValueError("La coupe chevauche une jonction existante.")
+        segments = [
+            segment if segment.start_ms < start else SyncSegment(segment.start_ms, segment.shift_ms + delta)
+            for segment in self.segments
+        ]
+        if start > 0 and all(segment.start_ms != start for segment in self.segments):
+            previous = [segment for segment in self.segments if segment.start_ms < start][-1]
+            segments.append(SyncSegment(start, previous.shift_ms + delta))
+            segments.sort(key=lambda segment: segment.start_ms)
+        return replace(self, segments=tuple(segments), quick_check=False)
+
+    def without_junction(self, index: int) -> SyncCalibration:
+        """Retire la jonction `index` (≥ 1) ; les segments suivants perdent son saut."""
+        if not 1 <= index < len(self.segments):
+            raise ValueError("Jonction inexistante.")
+        jump = self.segments[index].shift_ms - self.segments[index - 1].shift_ms
+        segments = [
+            *self.segments[:index],
+            *(SyncSegment(segment.start_ms, segment.shift_ms - jump) for segment in self.segments[index + 1:]),
+        ]
+        return replace(self, segments=tuple(segments), quick_check=False)
 
     @staticmethod
     def format_timestamp(ms: float) -> str:

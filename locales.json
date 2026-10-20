@@ -4439,6 +4439,118 @@
     "fra": "Synchronisation rapide en cours…",
     "eng": "Quick synchronization in progress…"
   },
+  "La coupe chevauche une jonction existante.": {
+    "fra": "La coupe chevauche une jonction existante.",
+    "eng": "The cut overlaps an existing junction."
+  },
+  "La fin de la section doit suivre son début.": {
+    "fra": "La fin de la section doit suivre son début.",
+    "eng": "The section end must follow its start."
+  },
+  "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler • Clic droit pour créer une section à couper ou allonger, bords à glisser": {
+    "fra": "Astuce : Ctrl + Molette pour zoomer • Glisser pour faire défiler • Clic droit pour créer une section à couper ou allonger, bords à glisser",
+    "eng": "Tip: Ctrl + Wheel to zoom • Drag to scroll • Right-click to create a section to cut or extend, drag its edges"
+  },
+  "Instant sur l'axe de la forme d'onde (sortie calée sur la référence), format hh:mm:ss.mmm.": {
+    "fra": "Instant sur l'axe de la forme d'onde (sortie calée sur la référence), format hh:mm:ss.mmm.",
+    "eng": "Time on the waveform axis (output aligned on the reference), hh:mm:ss.mmm format."
+  },
+  "COUPE / ALLONGEMENT MANUEL": {
+    "fra": "COUPE / ALLONGEMENT MANUEL",
+    "eng": "MANUAL CUT / EXTENSION"
+  },
+  "Début :": {
+    "fra": "Début :",
+    "eng": "Start:"
+  },
+  "Fin :": {
+    "fra": "Fin :",
+    "eng": "End:"
+  },
+  "Couper (supprimer)": {
+    "fra": "Couper (supprimer)",
+    "eng": "Cut (remove)"
+  },
+  "Retire le contenu de la cible situé dans la section.": {
+    "fra": "Retire le contenu de la cible situé dans la section.",
+    "eng": "Removes the target content inside the section."
+  },
+  "Allonger (ajout de silence)": {
+    "fra": "Allonger (ajout de silence)",
+    "eng": "Extend (add silence)"
+  },
+  "Insère un silence de la longueur de la section ; la suite de la cible est repoussée d'autant.": {
+    "fra": "Insère un silence de la longueur de la section ; la suite de la cible est repoussée d'autant.",
+    "eng": "Inserts a silence as long as the section; the rest of the target is pushed back accordingly."
+  },
+  "Ajouter à la calibration": {
+    "fra": "Ajouter à la calibration",
+    "eng": "Add to calibration"
+  },
+  "Coupures et variations de rythme ({count}) :": {
+    "fra": "Coupures et variations de rythme ({count}) :",
+    "eng": "Cuts and timing variations ({count}):"
+  },
+  "silence": {
+    "fra": "silence",
+    "eng": "silence"
+  },
+  "coupe": {
+    "fra": "coupe",
+    "eng": "cut"
+  },
+  "Durée : {length} s": {
+    "fra": "Durée : {length} s",
+    "eng": "Length: {length} s"
+  },
+  "Début de section ici": {
+    "fra": "Début de section ici",
+    "eng": "Section start here"
+  },
+  "Fin de section ici": {
+    "fra": "Fin de section ici",
+    "eng": "Section end here"
+  },
+  "Couper la section (supprimer)": {
+    "fra": "Couper la section (supprimer)",
+    "eng": "Cut the section (remove)"
+  },
+  "Allonger la section (ajout de silence)": {
+    "fra": "Allonger la section (ajout de silence)",
+    "eng": "Extend the section (add silence)"
+  },
+  "Effacer la section": {
+    "fra": "Effacer la section",
+    "eng": "Clear the section"
+  },
+  "Supprimer la coupure {idx}": {
+    "fra": "Supprimer la coupure {idx}",
+    "eng": "Remove cut {idx}"
+  },
+  "Silence de {length} s ajouté à {ts}.": {
+    "fra": "Silence de {length} s ajouté à {ts}.",
+    "eng": "{length} s silence added at {ts}."
+  },
+  "Coupe de {length} s ajoutée à {ts}.": {
+    "fra": "Coupe de {length} s ajoutée à {ts}.",
+    "eng": "{length} s cut added at {ts}."
+  },
+  "Coupure {idx} supprimée.": {
+    "fra": "Coupure {idx} supprimée.",
+    "eng": "Cut {idx} removed."
+  },
+  "Silence {length} s": {
+    "fra": "Silence {length} s",
+    "eng": "Silence {length} s"
+  },
+  "Coupe {length} s": {
+    "fra": "Coupe {length} s",
+    "eng": "Cut {length} s"
+  },
+  "hh:mm:ss.mmm": {
+    "fra": "hh:mm:ss.mmm",
+    "eng": "hh:mm:ss.mmm"
+  },
   "Synchronisation automatique…": {
     "fra": "Synchronisation automatique…",
     "eng": "Automatic synchronization…"

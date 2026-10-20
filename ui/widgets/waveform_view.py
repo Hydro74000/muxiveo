@@ -16,7 +16,11 @@ from PySide6.QtCore import QLineF, QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
+from core.i18n import translate_text
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+
+# Distance (px) sous laquelle un bord de section ou une jonction est « attrapé » à la souris.
+_GRAB_PX = 6
 
 
 def _format_time_tick(ms: float, is_subsecond: bool) -> str:
@@ -62,6 +66,10 @@ class WaveformView(QWidget):
     zoom_changed = Signal(float, float)
     pan_changed = Signal(float, float, float)
     mode_changed = Signal(str)
+    # Clic droit : instant de l'axe de sortie (ms), position globale (QPoint).
+    context_requested = Signal(float, object)
+    # Section déplacée à la souris : début, fin (ms, axe de sortie).
+    section_changed = Signal(float, float)
 
     def __init__(
         self,
@@ -105,6 +113,16 @@ class WaveformView(QWidget):
         self._is_dragging: bool = False
         self._drag_start_x: float = 0.0
         self._drag_start_pan: float = 0.0
+
+        # Calibration multi-segments : morceaux (début, fin, décalage) sur l'axe de sortie,
+        # jonctions (instant de sortie, index du segment). Vide : décalage unique `shift_ms`.
+        self._pieces: tuple[tuple[float, float, float], ...] = ()
+        self._junctions: tuple[tuple[float, int], ...] = ()
+        self.stretch_ratio: float = 1.0
+        # Section en cours d'édition (axe de sortie) et nature : "cut" (coupe) ou "silence".
+        self.section: tuple[float, float] | None = None
+        self.section_kind: str = "cut"
+        self._drag_edge: int | None = None
 
         self.loading_text: str = ""
         self.setMouseTracking(True)
@@ -177,6 +195,54 @@ class WaveformView(QWidget):
     def set_shift(self, shift_ms: float) -> None:
         self.shift_ms = float(shift_ms)
         self.update()
+
+    def set_calibration_view(
+        self,
+        pieces: list[tuple[float, float, float]] | tuple[tuple[float, float, float], ...],
+        junctions: list[tuple[float, int]] | tuple[tuple[float, int], ...] = (),
+        stretch_ratio: float = 1.0,
+    ) -> None:
+        """Dessine la cible morceau par morceau : coupes et silences de la calibration visibles."""
+        self._pieces = tuple((float(a), float(b), float(shift)) for a, b, shift in pieces)
+        self._junctions = tuple((float(t), int(index)) for t, index in junctions)
+        self.stretch_ratio = float(stretch_ratio) if stretch_ratio > 0 else 1.0
+        self.update()
+
+    def set_section(self, start_ms: float | None, end_ms: float | None = None) -> None:
+        if start_ms is None or end_ms is None:
+            self.section = None
+        else:
+            start, end = sorted((float(start_ms), float(end_ms)))
+            self.section = (start, end)
+        self.update()
+
+    def set_section_kind(self, kind: str) -> None:
+        self.section_kind = "silence" if kind == "silence" else "cut"
+        self.update()
+
+    def time_at_x(self, x: float) -> float:
+        """Instant de l'axe de sortie (ms) sous l'abscisse `x`."""
+        return self.start_time_ms + self.pan_offset_ms + x / max(1, self.width()) * self.visible_duration_ms
+
+    def x_at_time(self, time_ms: float) -> float:
+        return (time_ms - self.start_time_ms - self.pan_offset_ms) / self.visible_duration_ms * self.width()
+
+    def junction_near(self, x: float) -> int | None:
+        """Index du segment dont la jonction est sous l'abscisse `x`, sinon None."""
+        near = [(abs(self.x_at_time(t) - x), index) for t, index in self._junctions]
+        near = [item for item in near if item[0] <= _scale(_GRAB_PX)]
+        return min(near)[1] if near else None
+
+    def _section_edge_near(self, x: float) -> int | None:
+        if self.section is None:
+            return None
+        distances = [abs(self.x_at_time(edge) - x) for edge in self.section]
+        best = min(range(2), key=lambda i: distances[i])
+        return best if distances[best] <= _scale(_GRAB_PX) else None
+
+    def contextMenuEvent(self, event) -> None:
+        self.context_requested.emit(self.time_at_x(event.pos().x()), event.globalPos())
+        event.accept()
 
     def set_playhead_pos_ms(self, pos_ms: float | None) -> None:
         self._playhead_ms = float(pos_ms) if pos_ms is not None else None
@@ -279,6 +345,11 @@ class WaveformView(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            edge = self._section_edge_near(event.position().x())
+            if edge is not None:
+                self._drag_edge = edge
+                event.accept()
+                return
             self._drag_start_x = event.position().x()
             self._drag_start_pan = self.pan_offset_ms
             self._is_dragging = True
@@ -288,6 +359,25 @@ class WaveformView(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_edge is not None and self.section is not None:
+            bounds = list(self.section)
+            bounds[self._drag_edge] = self.time_at_x(event.position().x())
+            start, end = bounds
+            if end - start < 1.0:
+                # Bords croisés : l'autre bord prend le relais.
+                self._drag_edge = 1 - self._drag_edge
+                start, end = sorted(bounds)
+            self.section = (start, max(end, start + 1.0))
+            self.section_changed.emit(*self.section)
+            self.update()
+            event.accept()
+            return
+        if not self._is_dragging:
+            near_edge = self._section_edge_near(event.position().x()) is not None
+            if near_edge:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            else:
+                self.setCursor(Qt.CursorShape.OpenHandCursor if self.zoom_factor > 1.0 else Qt.CursorShape.ArrowCursor)
         if self._is_dragging:
             dx = event.position().x() - self._drag_start_x
             dt_ms = -dx * (self.visible_duration_ms / max(1, self.width()))
@@ -297,6 +387,10 @@ class WaveformView(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_edge is not None:
+            self._drag_edge = None
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._is_dragging:
             self._is_dragging = False
             self.setCursor(Qt.CursorShape.OpenHandCursor if self.zoom_factor > 1.0 else Qt.CursorShape.ArrowCursor)
@@ -346,6 +440,56 @@ class WaveformView(QWidget):
             # Cas d'un zoom extrême : interpolation pour couvrir tous les pixels
             indices = np.linspace(0, n - 1, width_px).astype(int)
             return np.abs(chunk[indices])
+
+    def _piecewise_target_peaks(self, t_start_ms: float, t_end_ms: float, width_px: int) -> Any:
+        """Crêtes de la cible telle qu'elle sortira : chaque morceau avec son décalage, rien dans les silences."""
+        if np is None:
+            return []
+        peaks = np.zeros(max(1, width_px), dtype=np.float32)
+        visible = max(1e-9, t_end_ms - t_start_ms)
+        for out_a, out_b, shift in self._pieces:
+            a, b = max(out_a, t_start_ms), min(out_b, t_end_ms)
+            if b <= a:
+                continue
+            xa = max(0, int(round((a - t_start_ms) / visible * width_px)))
+            xb = min(width_px, int(round((b - t_start_ms) / visible * width_px)))
+            if xb <= xa:
+                continue
+            ratio = self.stretch_ratio
+            peaks[xa:xb] = self._extract_column_peaks(
+                self._tgt_samples, (a - shift) / ratio, (b - shift) / ratio, xb - xa,
+            )
+        return peaks
+
+    def _draw_section_label(self, painter: QPainter, w: int, h: int, is_overlay: bool) -> None:
+        """Nature et longueur de la section, sur fond, au-dessus des formes d'onde."""
+        if self.section is None:
+            return
+        x1 = int(self.x_at_time(self.section[0]))
+        if x1 > w or int(self.x_at_time(self.section[1])) < 0:
+            return
+        is_silence = self.section_kind == "silence"
+        length = f"{(self.section[1] - self.section[0]) / 1000.0:.3f}"
+        text = (
+            translate_text("Silence {length} s", length=length)
+            if is_silence
+            else translate_text("Coupe {length} s", length=length)
+        )
+        font = QFont()
+        font.setPixelSize(_font_px(9))
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        pad = _scale(4)
+        box_w, box_h = metrics.horizontalAdvance(text) + 2 * pad, metrics.height() + pad
+        y_center = h - _scale(34) if is_overlay else int(h * 0.50)
+        box = QRect(max(0, min(w - box_w, x1 + pad)), y_center - box_h // 2, box_w, box_h)
+        background = QColor(_C.BG_DEEP)
+        background.setAlpha(225)
+        painter.setPen(QPen(QColor(_C.OK if is_silence else _C.ERROR), _scale(1.0)))
+        painter.setBrush(QBrush(background))
+        painter.drawRoundedRect(box, _scale(3), _scale(3))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
@@ -436,8 +580,40 @@ class WaveformView(QWidget):
                 painter.drawText(x + _scale(3), h - _scale(3), label)
             cur_tick += step_ms
 
+        # Section éditée : coupe (rouge) ou silence inséré (vert), bords à glisser.
+        if self.section is not None:
+            x1 = int(self.x_at_time(self.section[0]))
+            x2 = int(self.x_at_time(self.section[1]))
+            if x2 >= 0 and x1 <= w:
+                is_silence = self.section_kind == "silence"
+                base = QColor(_C.OK if is_silence else _C.ERROR)
+                fill = QColor(base)
+                fill.setAlpha(55)
+                painter.fillRect(QRect(x1, 0, max(1, x2 - x1), h - _scale(16)), fill)
+                painter.setPen(QPen(base, _scale(2.0)))
+                for x_edge in (x1, x2):
+                    painter.drawLine(x_edge, 0, x_edge, h - _scale(16))
+
+        # Jonctions de la calibration (positions de sortie).
+        if self._junctions:
+            pen_junction = QPen(QColor("#e5a50a"))
+            pen_junction.setStyle(Qt.PenStyle.DashDotLine)
+            pen_junction.setWidthF(_scale(1.8))
+            font_cut = QFont()
+            font_cut.setPixelSize(_font_px(9))
+            font_cut.setBold(True)
+            painter.setFont(font_cut)
+            for t_junction, index in self._junctions:
+                if not t_start_ms <= t_junction <= t_end_ms:
+                    continue
+                x_cut = int(self.x_at_time(t_junction))
+                painter.setPen(pen_junction)
+                painter.drawLine(x_cut, 0, x_cut, h)
+                painter.setPen(QColor("#e5a50a"))
+                painter.drawText(x_cut + _scale(4), _scale(16), f"✂ {index + 1} ({_format_time_tick(t_junction, True)})")
+
         # Marqueur vertical de coupure (si présent dans la plage visible)
-        if self.cut_time_ms is not None and t_start_ms <= self.cut_time_ms <= t_end_ms:
+        if not self._junctions and self.cut_time_ms is not None and t_start_ms <= self.cut_time_ms <= t_end_ms:
             x_cut = int((self.cut_time_ms - t_start_ms) / self.visible_duration_ms * w)
             pen_cut = QPen(QColor("#e5a50a"))
             pen_cut.setStyle(Qt.PenStyle.DashDotLine)
@@ -485,9 +661,12 @@ class WaveformView(QWidget):
 
             # 2. Forme d'onde Cible (VF) avec décalage interactif
             # Le calage de shift_ms décale temporellement la piste cible
-            tgt_t_start = t_start_ms - self.shift_ms
-            tgt_t_end = t_end_ms - self.shift_ms
-            peaks_tgt = self._extract_column_peaks(self._tgt_samples, tgt_t_start, tgt_t_end, w)
+            if self._pieces:
+                peaks_tgt = self._piecewise_target_peaks(t_start_ms, t_end_ms, w)
+            else:
+                tgt_t_start = t_start_ms - self.shift_ms
+                tgt_t_end = t_end_ms - self.shift_ms
+                peaks_tgt = self._extract_column_peaks(self._tgt_samples, tgt_t_start, tgt_t_end, w)
             scale_tgt = max(float(np.max(peaks_tgt)), 1e-4) if len(peaks_tgt) > 0 else 1.0
 
             pen_tgt = QPen(color_tgt)
@@ -576,6 +755,9 @@ class WaveformView(QWidget):
                             painter.setPen(QColor("#ffffff"))
                             text_r = r.adjusted(_scale(3), 0, -_scale(3), 0)
                             elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
+        if self.section is not None:
+            self._draw_section_label(painter, w, h, is_overlay)
+
         # ── Curseur de tête de lecture (Playhead) ─────────────────────────
         if self._playhead_ms is not None:
             x_play = int((self._playhead_ms - t_start_ms) / self.visible_duration_ms * w)
