@@ -7,6 +7,8 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 
 <div align="center">
 
+**Français** | [English](README_EN.md)
+
 [![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Plateformes](https://img.shields.io/badge/plateformes-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-téléchargement--installation-rapide)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-green.svg?style=flat-square)](LICENSE)
@@ -115,7 +117,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 ### 🌈 HDR Studio & Dolby Vision
 *Inspection, audit, mesure réelle et manipulation des flux HDR statiques et dynamiques.*
 
-![HDR Studio - Aperçu et audit des métadonnées HDR](docs/assets/img/Muxiveo-fr-hdr-overview.png)
+![HDR Studio : Vue d'ensemble, Luminance et FEL Analyzer](docs/assets/img/Muxiveo-fr-hdr-montage.png)
 
 * **Audit complet des métadonnées** : Visualisation instantanée des paramètres de mastering HDR10 (MDCV, MaxCLL/MaxFALL) et des métadonnées dynamiques Dolby Vision (RPU) et HDR10+. Détection des anomalies (comptages de trames incohérents, métadonnées génériques).
 * **Mesure réelle sur l'image** : Calcul du MaxCLL et MaxFALL réels du métrage par analyse des pixels (mode rapide sur images clés en ~20 s, ou analyse intégrale).
