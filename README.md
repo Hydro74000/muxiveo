@@ -1,1098 +1,232 @@
 # 🎬 Muxiveo
 
-FULL Vibecoded App for Proof of Concept - no human code, only human prompts and eyes.
+Suite logicielle complète de préparation, remuxage sans perte et encodage vidéo/audio pour conteneurs MKV et MP4, intégrant la synchronisation acoustique multi-sources et un studio d'inspection et d'injection HDR / Dolby Vision.
 
-Interface graphique pour préparer des fichiers vidéo, remuxer sans perte, réencoder avec `ffmpeg` (et `NVencC` en option pour NVidia), et fusionner des métadonnées Dolby Vision / HDR10+.
+<div align="center">
 
-[Soutenir le développement de Muxiveo avec un don via PayPal](https://paypal.me/muxiveo).
+[![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
+[![Plateformes](https://img.shields.io/badge/plateformes-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-téléchargement--installation-rapide)
+[![Licence](https://img.shields.io/badge/licence-GPL--3.0-green.svg?style=flat-square)](LICENSE)
+[![Documentation Wiki](https://img.shields.io/badge/Documentation-Wiki-orange?style=flat-square&logo=gitbook&logoColor=white)](https://github.com/Hydro74000/Muxiveo/wiki)
+[![Discord](https://img.shields.io/badge/Discord-Rejoindre%20la%20communaut%C3%A9-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/YGAjNjZHQC)
+[![Faire un don](https://img.shields.io/badge/Soutenir-PayPal-00457C?style=flat-square&logo=paypal&logoColor=white)](https://paypal.me/muxiveo)
 
-Cette documentation correspond à **Muxiveo v4.2.1**.
-
-## Sommaire
-
-- [Vue rapide](#vue-rapide)
-- [Installation](#installation)
-  - [Prérequis](#prérequis)
-  - [Cloner le dépôt](#cloner-le-dépôt)
-  - [Installer les dépendances et les outils](#installer-les-dépendances-et-les-outils)
-  - [Lancer l'application](#lancer-lapplication)
-- [Interface et usage](#interface-et-usage)
-  - [Tableau de bord](#tableau-de-bord)
-  - [Conteneur & Encodage](#conteneur--encodage)
-  - [Profils](#profils)
-  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10)
-  - [Paramètres](#paramètres)
-- [Thèmes](#thèmes)
-- [Localisation](#localisation)
-- [Configuration](#configuration)
-  - [Priorité des réglages](#priorité-des-réglages)
-  - [Paramètres principaux](#paramètres-principaux)
-  - [Buffer RAM](#buffer-ram)
-  - [Outils configurables](#outils-configurables)
-- [Workflows](#workflows)
-  - [Conteneur & Encodage — Routage global](#conteneur--encodage--routage-global)
-  - [Backends remux Matroska — Branches internes](#backends-remux-matroska--branches-internes)
-  - [Encode workflow — Branches internes](#encode-workflow--branches-internes)
-  - [Fusion DoVi / HDR10+](#fusion-dovi--hdr10-1)
-  - [Inspection d'un fichier (ffprobe + mediainfo)](#inspection-dun-fichier-ffprobe--mediainfo)
-- [Outils externes](#outils-externes)
-- [Troubleshooting windows](#troubleshooting-windows)
-  - [Windows Security / Controlled Folder Access](#windows-security--controlled-folder-access)
-- [Hybridation & Synchronisation](#hybridation--synchronisation)
-
-## Vue rapide
-
-| Outil | Usage | Qualité |
-|-------|-------|---------|
-| **Studio d'Hybridation** | apparier automatiquement vidéo de référence et donneur audio/subs, synchronisation acoustique FFT, calibration des coupures pub et conversion de cadence | sans perte (Zero Delay) |
-| **Conteneur & Encodage** | sélectionner les pistes, les réordonner, éditer langue/titre/flags, gérer titre/tags/chapitres/pièces jointes, enrichir les tags via TMDB/IMDb, puis copier ou réencoder | copie = sans perte, encodage = avec recompression |
-| **Fusion DoVi / HDR10+** | injecter les métadonnées HDR d'un fichier source dans le flux vidéo HEVC d'un autre fichier | sans perte |
-
-![Studio d'Hybridation Muxiveo](docs/assets/img/Muxiveo-fr-11.png)
-
-> Les panneaux **Remuxage** et **Encodage** forment un seul workflow. Le panneau Remuxage prépare le conteneur ; le panneau Encodage décide comment traiter la vidéo et l'audio.
-
-**Drag-and-drop global** : n'importe quel fichier média peut être déposé directement sur la fenêtre principale, quelle que soit la page active. Les formats sources supportés sont centralisés dans `core/file_types.py` (MKV, MP4, MOV, M4V, AVI, TS, M2TS, WEBM, HEVC brut, SRT, etc.).
-
-**Ouverture système** : l'application se déclare comme candidate dans les menus "Ouvrir avec..." sur Linux (AppImage), Windows (.exe) et macOS (.app), sans devenir l'application par défaut. Quand elle est lancée avec un fichier, celui-ci est chargé automatiquement comme source.
-
-## Installation
-
-### Prérequis
-
-- **Python 3.10+**
-
-`setup.py` installe ensuite **tous les autres prérequis** pour **Windows**, **Linux Fedora / RHEL**, **Linux Debian / Ubuntu** et **macOS**, y compris **PySide6** et les outils externes nécessaires.
-
-Les dépendances sont définies dans `requirements.txt` et adaptées au Python utilisé.
-PySide6 6.12.0 est exclue sous Python 3.10 et 3.11 à cause d'un défaut de gestion
-des références de `None` ; elle reste autorisée à partir de Python 3.12.
-
-### Installation avec binaires (recommandée)
-
-Depuis les releases, récupérer le binaire associé à votre OS.
-
-AppImage Linux : un gestionnaire type Gear Lever est recommandé pour maintenir les applications à jour. 
-L'appimage AllInc inclue toutes les dépendances.
-
-| Cible | Binaire | 
-|-------|----------|
-| AppImage Linux | Muxiveo-x86_64_allinc-<version>.AppImage` + `dist/releases/Muxiveo-x86_64_allinc-<version>.AppImage.zsync` |
-| Package macOS natif | `Muxiveo-<version>.dmg` (Homebrew requis au premier lancement pour installer les outils système) |
-| Installateur Windows | `dist/releases/Muxiveo-Setup-<version>.exe` |
-| Release Homebrew Linux/macOS (preview)| `brew tap Hydro74000/muxiveo && brew install muxiveo` |
-
-
-### Cloner le dépôt
-
-```bash
-git clone <url-du-depot>
-cd Muxiveo
-```
-
-### Installer les dépendances et les outils
-
-Le script `setup.py` installe automatiquement :
-
-| Catégorie | Installé par `setup.py` |
-|-----------|-------------------------|
-| Dépendance Python | `PySide6` |
-| Outils système | `ffmpeg`, `ffprobe`, `mediainfo` |
-| Outils GitHub | `dovi_tool`, `hdr10plus_tool` |
-| Notes plateforme | Debian/Ubuntu via `apt`, Fedora/RHEL via `dnf`, macOS via Homebrew, Windows via `winget` + binaires locaux |
-
-> `setup.py` renseigne `config.ini` avec les chemins détectés.  
-> Emplacement de `config.ini` : Linux/macOS `~/.config/muxiveo/config.ini` (XDG), Windows dev `./config.ini`, Windows packagé `%APPDATA%\muxiveo\config.ini`.
-
-| Plateforme | Commande | Détails |
-|------------|----------|---------|
-| Linux Debian / Ubuntu | `python3 setup.py` | installe `ffmpeg`, `mediainfo` via `apt`, puis `dovi_tool` et `hdr10plus_tool` depuis GitHub |
-| Linux Fedora / RHEL | `python3 setup.py` | active RPM Fusion si nécessaire, installe `ffmpeg`, `mediainfo` via `dnf`, puis les outils GitHub |
-| macOS | `python3 setup.py` | nécessite Homebrew ; installe `ffmpeg`, `mediainfo` via Homebrew, puis `dovi_tool` et `hdr10plus_tool` |
-| Windows | `py setup.py` | installe `ffmpeg` et `mediainfo` via `winget`, place `dovi_tool` et `hdr10plus_tool` dans `Muxiveo\tools`, puis renseigne `config.ini` avec les chemins détectés |
-
-Options utiles du script :
-
-| Option | Effet |
-|--------|-------|
-| `--dry-run` | affiche les actions sans les exécuter |
-| `--no-github` | n'installe pas `dovi_tool` ni `hdr10plus_tool` |
-| `--prefix PATH` | change le dossier d'installation des binaires GitHub |
-| `--force` | relance les installations et régénère les chemins Windows dans `config.ini` |
-
-`eac3to` est optionnel et non installable automatiquement. Il reste utile sous Windows pour certains traitements audio avancés.
-
-Dans le binaire Windows, chaque lancement vérifie `ffmpeg`, `ffprobe`, `mediainfo`,
-`dovi_tool` et `hdr10plus_tool`. Si l'un est absent, Muxiveo tente de le réparer
-automatiquement avant de démarrer, puis réessaie au lancement suivant en cas d'échec.
-`NVEncC` suit le même mécanisme uniquement lorsqu'un GPU NVIDIA est détecté ; `eac3to`
-reste hors de cette vérification.
-
-### Lancer l'application
-
-```bash
-python3 main.py
-```
-
-Sous Windows, utilisez `py main.py`.
-
-### Installation via Homebrew
-
-Une distribution Homebrew est prévue pour Linux et macOS via le tap `Hydro74000/Muxiveo`.
-
-```bash
-brew tap Hydro74000/Muxiveo
-brew install Muxiveo
-```
-
-Sur Linux, la formule installe l’AppImage all-inclusive. Sur macOS, elle installe `Muxiveo.app`, déclare `ffmpeg` et `mediainfo` comme dépendances Homebrew, et embarque `dovi_tool` / `hdr10plus_tool`.
-
-## Interface et usage
-
-### Tableau de bord
-
-![Tableau de bord Muxiveo](docs/assets/img/Muxiveo-fr-01.png)
-
-Le tableau de bord affiche :
-
-- l'état des outils externes détectés
-- les dossiers configurés (travail, sortie, app data)
-- les encodeurs logiciels vus par `ffmpeg -encoders`
-- les encodeurs matériels réellement testés au runtime (`NVENC`, `AMF`, `VAAPI`, `QSV`)
-- les filtres GPU et accélérations NVIDIA de l'interpolation : `Vulkan`, `NVOF·CUDA` et, sur carte NVIDIA compatible seulement, l'extension `TensorRT`
-- les plans d'encodage et badges utiles pour visualiser plus clairement les traitements prepares
-
-> Les encodeurs matériels ne sont pas marqués disponibles simplement parce qu'ils apparaissent dans `ffmpeg`. L'application lance un probe réel pour confirmer qu'ils fonctionnent. Les probes sont exécutés en parallèle pour minimiser le délai au démarrage.
-
-### Conteneur & Encodage
-
-![Tableau des pistes Remux et synchronisation](docs/assets/img/Muxiveo-fr-03.png)
-
-Le workflow unifié permet de :
-
-- ajouter une ou plusieurs sources MKV / MP4 / SRT
-- inspecter vidéo, audio, sous-titres, chapitres, pièces jointes et tags MKV
-- activer, exclure et réordonner les pistes
-- éditer langue, titre et flags de chaque piste
-- créer des variantes audio indépendantes depuis l'onglet Encodage, sans modifier la piste d'origine
-- réordonner ou supprimer ces variantes sans perdre leur lien avec le workflow
-- visualiser dans le panel remux le codec et le bitrate cibles lorsqu'une piste audio sera réencodée
-- extraire une piste de sous-titre depuis le menu contextuel du tableau des pistes
-- synchroniser automatiquement une piste audio multi-source par analyse du contenu audio, avec choix d'une piste de référence et application directe du décalage calculé
-- définir le titre du conteneur, les balises globales, les chapitres et les pièces jointes
-- ouvrir une fenêtre de recherche **TMDB** depuis le panneau balises pour rechercher film/série (préremplissage auto depuis titre/nom de fichier)
-- détecter automatiquement les motifs de série (`SxxExx`, `x`) pour préremplir saison/épisode et positionner la recherche sur **Séries** si pertinent
-- injecter les métadonnées TMDB dans les tags MKV (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SUBTITLE`, `SYNOPSIS`, `COUNTRY`, `URL`, `DESCRIPTION`, `COLLECTION`, `SEASON`, `EPISODE`)
-- préparer une cover TMDB en mode différé (URL + nom de fichier) ; le téléchargement réel est fait au lancement du workflow
-- remplacer automatiquement le **titre du conteneur** par le titre formaté TMDB lors de la validation (film : `Titre (Année)`, série : `Titre - SxxExx - Titre épisode`)
-- choisir pour chaque piste audio un mode `copy`, `aac`, `eac3` ou `flac`
-- definir plusieurs traitements video lorsqu'un projet demande une preparation multi-pistes plus fine
-- choisir pour la vidéo `copy`, `libx265`, `libx264`, `libsvtav1`, `NVENC`, `AMF`, `VAAPI` ou `QSV` — avec support complet **HEVC**, **H.264** et **AV1** sur chaque famille matérielle
-- presets dédiés par famille matérielle : `NVENC_PRESETS` (p1-p7 + slow/medium/fast/hp/hq), `VAAPI_PRESETS` (compression_level 0-7), `QSV_PRESETS` (veryslow → veryfast), `AMF_PRESETS` (quality/balanced/speed)
-- **offload matériel complet** : décodage GPU activé automatiquement quand un encodeur matériel compatible est sélectionné (`cuda` pour NVENC, `qsv` pour QSV, `vaapi` pour VAAPI, `d3d11va` pour AMF Windows) — le CPU n'est plus sollicité pour le décodage en chemin pur hardware
-- configuration VAAPI optimisée : `rc_mode CQP/VBR` selon le mode qualité, `compression_level` exposé via preset, `async_depth 4` pour maximiser le pipeline GPU
-- precheck `force-8bit` pour les cibles **H.264** afin d'eviter certains chemins incompatibles
-- backend de remux configurable : `ffmpeg` par défaut, ou writer Matroska natif via `auto` / `native`
-
-Modes d'exécution :
-
-| Condition | Mode | Outils utilisés |
-|-----------|------|-----------------|
-| plan compatible natif | **Remuxage Matroska natif** | lecteur/writer EBML interne ; FFmpeg intervient seulement pour canonicaliser ou préparer une source si nécessaire |
-| fonction non transposable en mode `auto` | **Repli compatible** | backend `ffmpeg`, avec motif explicite dans les logs |
-| backend `native` forcé et fonction non transposable | **Échec strict** | aucune sortie finale et suppression du fichier `.partial` |
-| encodage demandé | **Encodage** | FFmpeg ou l'encodeur choisi prépare les pistes ; le plan de conteneur reste distinct |
-
-Les fichiers **SRT** peuvent être ajoutés comme sources séparées de sous-titres. Ils sont détectés automatiquement et intégrés dans le remux final avec le format correct (`srt`).
-
-Synchronisation audio automatisée en multi-source :
-
-- disponible lorsqu'un projet contient des pistes audio issues d'au moins deux sources différentes
-- pensée pour aligner une piste audio cible sur une source de référence, par exemple VF/VO provenant d'un autre fichier, autre édition, autre plateforme ou autre remux
-- accessible depuis le bouton de synchronisation dans la ligne d'une piste audio ; Muxiveo propose alors les pistes 5.1/7.1 compatibles des autres sources comme références
-- analyse le contenu réel avec `ffmpeg` / `ffprobe`, extrait une signature depuis les canaux surround/LFE, détecte les moments clés communs entre la piste cible et les pistes de la source de référence, puis applique automatiquement l'offset signé en millisecondes
-- affiche l'offset dans la colonne Info (`Δt +125 ms`, `Δt -320 ms`, etc.) et conserve cette valeur dans la configuration de remux
-- remet la piste de référence à `0 ms` quand un offset est appliqué à la cible, afin de garder une seule piste déplacée et une timeline plus lisible
-- échoue volontairement si la piste est trop courte, si la corrélation est trop faible, ou si les canaux disponibles ne permettent pas une analyse fiable
-
-Cette synchronisation audio est un outil utilisateur pour **calculer le bon décalage entre sources**. Elle complète la synchronisation timeline interne du backend `ffmpeg`, qui intervient plus tard pendant l'exécution pour sécuriser le muxage multi-source et les offsets déjà définis.
-
-Backend remux Matroska natif (par défaut via `auto`) :
-
-- écrit exclusivement des sorties `.mkv` multi-pistes avec ordre, timecodes et payloads conservés ;
-- conserve les propriétés imbriquées des pistes, le lacing, les BlockGroups, HDR10/HDR10+/Dolby Vision, chapitres, tags ciblés et pièces jointes lorsque le plan les sélectionne ;
-- produit des UIDs stables et écrit d'abord `sortie.mkv.partial`, validé par le lecteur interne et `ffprobe`, avant renommage atomique ;
-- ne dépend d'aucun muxeur Matroska externe ;
-- canonicalise les conteneurs non Matroska en MKV temporaire par copie de flux avec FFmpeg ;
-- en mode `auto`, replie sur FFmpeg lorsque le diagnostic natif annonce une fonction non transposable ; `native` interdit ce repli.
-
-Backend remux `ffmpeg` (forçable avec `mux_backend: "ffmpeg"`) :
-
-- sortie limitée à `MKV`
-- écrit la langue de piste en BCP47 sur `language` (ex. `fr-FR`) et purge le champ legacy `language-ietf` pour éviter les doublons incohérents
-- corrige au besoin les tags de langue Matroska en post-action, sans outil externe
-- permet la recopie ou l'édition des chapitres
-- permet d'écrire les tags globaux choisis
-- permet de recopier les pièces jointes source sélectionnées et d'ajouter des fichiers externes (cover incluse)
-- peut générer un fichier `.nfo` MediaInfo à côté du MKV final après un remux ou un encodage réussi
-- télécharge la cover TMDB différée juste avant l'exécution (dans le dossier temporaire du process), puis nettoie ce dossier en fin de run
-- purge explicitement les balises techniques source `ENCODER` et `CREATION_TIME` avant écriture des métadonnées de sortie
-- n'écrit plus le tag libre `MUXING_APPLICATION` via `-metadata`
-- applique un patch binaire post-action sur le header Matroska pour écrire **MuxingApp** (`0x4D80`) à la valeur unique `Muxiveo {version}` ; **WritingApp** (`0x5741`) reste intact
-
-Limites diagnostiquées :
-
-- une piste chiffrée, une structure EBML illisible ou un sous-titre nécessitant OCR est refusé en `native` ;
-- une réécriture de synchronisation avancée encore matérialisée par FFmpeg déclenche le repli en `auto` ;
-- le backend FFmpeg historique ne garantit pas les structures avancées de tags ciblés ni `track-enabled` ;
-- l'équivalence annoncée avec les muxeurs de référence est sémantique, jamais octet à octet.
-
-Le script autonome `scripts/concat_video.py` est l'unique exception : `--mkvmerge`
-force MKVToolNix et, sans option, la sélection est Muxiveo puis `mkvmerge` puis
-FFmpeg. Cette compatibilité standalone n'ajoute aucune dépendance MKVToolNix au
-runtime ou au packaging de Muxiveo. Voir [le contrat détaillé](docs/remux-native.md).
-
-![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-08.png)
-
-Les options HDR disponibles côté encodage sont :
-
-- injection de métadonnées HDR10 statiques
-- tone mapping HDR vers SDR
-- copie DoVi / HDR10+ depuis la source avec workflow multi-étapes
-
-Ergonomie du panneau :
-
-- aperçu **cover** cliquable avec modale zoom plein écran (cover TMDB, cover Matroska extraite via `core/matroska_attachment_extractor.py`, pièces jointes image)
-- **barre de progression à rattrapage exact** : tant que `ffmpeg -progress` n'émet pas encore `out_time`, la progression est estimée via `frame=` et le nombre total d'images du fichier source ; dès que `out_time` devient disponible, la valeur exacte prend le relais
-- progression "la plus lente" pour les preparations video multi-pistes, avec suivi plus detaille par traitement disponible
-- **suppression de source accélérée** via suivi incrémental (pas de rescan global à chaque retrait)
-- covers TMDB cliquables dans les résultats de recherche (aperçu grand format avant validation)
-
-### Interpolation d'images (MVO-RIFE)
-
-La ligne **MVO-RIFE** du panneau Encodage multiplie la cadence (×2, ×3, ×4) ou vise 59,94 / 60 i/s.
-
-L'interpolation est une **extension** (`mvo-rife` : moteur, modèles, poids du sélecteur, préréglages), installée depuis
-la page **Extensions** ou directement depuis la ligne MVO-RIFE (« Interpolation non installée — Installer… »), dans le
-dossier utilisateur (Linux, Windows x86-64, macOS Apple Silicon). Elle évolue sans nouvelle version de Muxiveo :
-Muxiveo installe la version la plus récente compatible avec lui (nouveaux modèles, réglages des préréglages),
-vérifiée par SHA-256. Les paquets all-inclusive (AppImage, Setup-AllInc, zip portable) l'embarquent préinstallée ;
-une extension installée dans le dossier utilisateur reste prioritaire. Préréglages :
-
-| Préréglage | Traitement | Temps de calcul |
-|---|---|---|
-| Rapide | RIFE v4.6 seul. Le plus rapide ; les motifs fins répétitifs (barreaux, grilles en panoramique) peuvent onduler. | référence |
-| Équilibré (défaut) | Moteur hybride avec RIFE v4.6 : pour chaque zone de l'image, un sélecteur appris mélange RIFE, la compensation de mouvement par blocs (barreaux et motifs répétitifs gardés droits), RIFE à flux demi-résolution sur les grands mouvements (flou de bougé, panoramiques rapides) et le flux optique NVIDIA s'il est disponible. | ≈ 2 × Rapide |
-| Qualité | Même moteur hybride, avec RIFE v4.15 affiné par Muxiveo : plus précis sur les mouvements complexes, les occultations (objet qui passe devant un autre), les détails fins et les textes incrustés. | ≈ 3 × Rapide |
-| Ultra | Qualité, plus une seconde passe RIFE calculée dans le sens inverse et proposée au sélecteur comme candidat supplémentaire : moins d'artefacts dans les scènes difficiles. Mode Normal, sans TTA. | ≈ 1,5 × Qualité |
-| Light | RIFE v4.15 lite en mode Fast : le moins gourmand en mémoire GPU, pour les petites cartes graphiques. | ≈ Rapide |
-
-Temps mesurés en 4K sur GPU Vulkan ; ils varient selon la scène (la passe des grands mouvements ne se déclenche que
-lorsqu'elle est utile).
-
-Le calcul se fait sur le GPU (Vulkan, toutes marques). Sur carte NVIDIA, le moteur hybride utilise en plus le flux
-optique matériel (NVOF) quand il est disponible, comme candidat du sélecteur. Le sélecteur choisit, pour chaque
-zone de l'image, le mélange des candidats le plus fidèle ; il a été appris sur un corpus de films et de séries de la
-SD à la 4K (tailles de zone proportionnelles à la largeur de l'image, jusqu'à la 8K).
-
-#### Accélération NVIDIA (TensorRT)
-
-Extension facultative pour les cartes NVIDIA Turing (RTX 20xx, GTX 16xx) ou plus récentes, sous Linux et Windows :
-l'inférence RIFE passe par NVIDIA TensorRT for RTX, nettement plus rapide, avec des images identiques à l'œil.
-
-- **Page Extensions** (barre latérale) : installation, mise à jour et suppression ; sur une machine incompatible,
-  l'extension est rangée sous « Non compatibles avec cette machine » avec la raison. Badge `TensorRT +` du tableau de
-  bord et indication unique sur la ligne MVO-RIFE (« Installer… », « Gérer les extensions »).
-- **Installation en un clic** après acceptation de la licence NVIDIA : téléchargement vérifié (SHA-256 publié par
-  GitHub, puis empreinte de chaque fichier), préparation des moteurs pour la carte, sans redémarrage.
-- **Mises à jour automatiques** (désactivables, communes à toutes les extensions) dès qu'une version compatible plus
-  récente est publiée ; l'ancienne version reste utilisée jusqu'à la bascule. L'extension Interpolation est requise.
-- **Repli automatique** : sans extension, extension désactivée, pilote trop ancien ou erreur, l'interpolation continue
-  sur Vulkan ; un encodage n'échoue jamais à cause d'elle.
-- **Emplacements** des extensions, hors du paquet de l'application (donc conservés lors des mises à jour, AppImage
-  comprise) : `$XDG_DATA_HOME/muxiveo/plugins` et `~/.cache/muxiveo/trt-engines` sous Linux,
-  `%LOCALAPPDATA%\Muxiveo\plugins` et `%LOCALAPPDATA%\Muxiveo\cache\trt-engines` sous Windows,
-  `~/Library/Application Support/Muxiveo/plugins` sous macOS.
-- **Désinstallation** : bouton **Supprimer** de la page Extensions ou `muxiveo --cli plugins remove <extension>` ; le
-  désinstalleur Windows retire aussi ces dossiers.
-- Sans interface : `muxiveo --cli plugins list`, `install mvo-rife`, `install mvo-rife-trt --accept-license`,
-  `update [extension]`, `remove <extension>`.
-
-Le code des extensions (moteur MVO-RIFE compris) est publié dans
-[muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
-
-### Profils
-
-Les profils permettent de réutiliser un traitement sans devoir refaire les mêmes choix à la main sur chaque fichier. Muxiveo distingue deux usages.
-
-| Besoin | Format | Usage |
-|--------|--------|-------|
-| Refaire exactement un traitement | `exact-job` | CLI, preview, run, batch strict |
-| Réappliquer des décisions à d'autres sources | `decision-profile` | GUI low-code, CLI `--profile`, batch par dossier |
-
-Un **exact job** contient sources, sortie et sélecteurs stricts. Il est adapté aux épisodes ou fichiers construits de la même façon.  
-Un **decision profile** ne contient ni source ni sortie : il décrit comment retrouver, choisir, renommer et ordonner les pistes sur d'autres fichiers.
-
-#### Profils décisionnels
-
-Un profil décisionnel `version: 1` peut couvrir :
-
-- sélection vidéo au plus proche : résolution, HDR, HDR10, HDR10+, Dolby Vision, HLG
-- sélection audio et sous-titres par type, langue, codec, canaux, titre, flags
-- renommage des titres de pistes par keywords
-- flags MKV : défaut, forcé, malentendant, malvoyant, original, commentaire
-- ordre des pistes
-- tags temporaires de pistes pour chaîner des règles
-- création de variantes audio, par exemple une compatibilité AC3 depuis une piste TrueHD
-
-Les profils GUI sont enregistrés ici :
-
-```text
-<dossier de config muxiveo>/profiles/decision/
-```
-
-#### Éditeur low-code
-
-![Éditeur de Profils de décision](docs/assets/img/Muxiveo-fr-14.png)
-
-Dans le panneau Remux, **Éditer profil** ouvre une fenêtre dédiée :
-
-- panneau gauche : groupes et règles
-- panneau central : critères, actions, priorité, mode d'écriture, tags, patterns
-- panneau droit : preview piste par piste
-- bouton **Insérer keyword** sous la preview : menu par catégories pour remplir le champ actif sans afficher toute la liste en permanence
-- clic droit dans un champ compatible : entrée **Insérer keyword** avec les mêmes catégories
-- keywords affichés comme badges lorsque le champ n'est pas en cours d'édition
-- critères obligatoires ou préférés : un préféré donne un bonus de priorité sans bloquer le fallback
-- sélecteur pour charger un profil existant, l'éditer ou le supprimer après confirmation
-
-Deux départs sont possibles :
-
-- **Profil vide** : construire les règles à la main
-- **Capturer l'état courant** : partir de la table de pistes actuelle puis ajuster
-
-Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
-
-#### Comprendre une règle
-
-Une règle répond toujours à trois questions :
-
-- **Quelles pistes regarder ?** Ce sont les critères : type, langue, codec, titre, flags, largeur, hauteur, HDR, Dolby Vision, etc.
-- **Combien de pistes appliquer ?** C'est la **portée** : `best`, `first` ou `all`.
-- **Que faire sur ces pistes ?** Ce sont les actions : activer, désactiver, renommer, changer la langue, écrire des flags, créer une variante audio, ou donner une priorité d'ordre.
-
-Un critère peut être **obligatoire** ou **préféré**.
-
-- **Obligatoire** : si la piste ne respecte pas ce critère, elle est exclue.
-- **Préféré** : la piste peut quand même être choisie, mais celle qui respecte le critère marque plus de points.
-
-Exemple : pour une piste audio française en EAC3, avec Atmos si disponible :
-
-- langue `fr-FR` : obligatoire
-- codec `EAC3` : obligatoire
-- keyword préféré `{atmos}` : bonus si une piste Atmos existe
-
-Si aucune piste Atmos n'existe, Muxiveo peut quand même garder la meilleure piste française EAC3.
-
-#### Expressions de critères
-
-Les champs texte de critères acceptent une mini-syntaxe commune au GUI et au CLI :
-
-- `&` signifie **AND**
-- `|` signifie **OR**
-- `!` ou `NOT(...)` signifie **NOT**
-- les parenthèses fixent la priorité
-
-Exemples :
-
-```text
-VFQ | VFF
-(VFQ | VFF) & Forced
-!(Commentary | Descriptive)
-NOT({flag_forced} | {flag_commentary})
-EAC3 | AC3
-{atmos} | {dtsx}
-```
-
-Les champs de critères restent combinés entre eux par AND : si vous renseignez `type = audio` et `codec = EAC3 | AC3`, la piste doit être audio et avoir l'un des deux codecs.
-
-Pour chercher un caractère `&`, `|`, `(` ou `)` comme texte réel, utilisez des guillemets ou un échappement :
-
-```text
-"A | B"
-Dolby \& DTS
-\(VFQ\)
-```
-
-`!` doit toucher directement l'élément exclu : `!Commentary` ou `!(A | B)` sont valides, `! Commentary` ne l'est pas.
-
-Le keyword `{none}` permet de chercher une valeur vide dans le champ courant. Dans le champ **Flags**, `{none}` cible les pistes sans flag actif.
-
-Les expressions invalides bloquent la sauvegarde du profil et s'affichent dans la preview au lieu de faire planter l'éditeur.
-
-#### Portée des règles
-
-La portée détermine combien de pistes une règle va modifier.
-
-| Portée | Effet | Usage typique |
-|--------|-------|---------------|
-| `best` | choisit la piste qui a le meilleur score | choisir une seule vidéo, une seule VF principale, une seule VO principale |
-| `first` | choisit la première piste compatible dans l'ordre des sources | faire confiance à l'ordre du fichier source |
-| `all` | applique la règle à toutes les pistes compatibles | renommer toutes les pistes audio, désactiver tous les commentaires, tagger tous les sous-titres forcés |
-
-`best` est le choix le plus courant pour une sélection intelligente. Le moteur additionne les points des critères compatibles : langue, codec, canaux, Atmos/DTS:X, flags, résolution, HDR, etc. S'il y a une égalité impossible à départager, le GUI le signale dans l'aperçu. Pour la vidéo, si plusieurs pistes ont exactement le même score, Muxiveo garde la première source/index.
-
-`first` est plus simple : il prend la première piste compatible. C'est pratique quand les fichiers sont toujours construits pareil, par exemple “prendre la première audio française”.
-
-`all` est fait pour les actions de masse. Exemple : “renommer toutes les pistes audio avec `{lang_name} {codec} {channels}`” ou “désactiver toutes les pistes dont le titre contient commentary”.
-
-#### Écriture et conflits
-
-Si deux règles écrivent le même champ d'une même piste, Muxiveo utilise le **mode d'écriture** de la règle :
-
-- **Priorité** : mode recommandé. La règle la plus prioritaire gagne pour le champ concerné. Les autres règles peuvent toujours écrire d'autres champs.
-- **Remplacer** : la règle écrase la valeur déjà proposée, même si une règle plus prioritaire est passée avant.
-- **Compléter** : la règle n'écrase pas la valeur déjà proposée. Pour un titre, elle ajoute le fragment rendu au titre déjà construit.
-
-Une égalité de priorité avec deux valeurs différentes reste un conflit : le GUI le signale, et la CLI bloque avec un rapport JSON.
-
-Dans l'éditeur, le nombre **Priorité** sert aussi à savoir quelle règle passe avant une autre. **Plus le nombre est grand, plus la règle est prioritaire** : `999` passe avant `1`.
-
-Le moteur trie les règles du plus grand au plus petit. Si vous utilisez les groupes, la priorité du groupe compte d'abord, puis la priorité de la règle :
-
-```text
-priorité effective = priorité du groupe, puis priorité de la règle
-```
-
-Par exemple, une règle priorité `1` dans un groupe priorité `300` passe avant une règle priorité `999` dans un groupe priorité `200`, car le groupe est plus prioritaire.
-
-En mode **Priorité**, le plus grand gagne aussi pour les conflits d'écriture. Une règle priorité `999` peut écrire un titre en premier ; si une règle priorité `1` passe ensuite et propose un autre titre en mode **Priorité**, elle ne remplace pas le titre déjà choisi. Les boutons de déplacement des règles ajustent cette priorité.
-
-Le mode **Remplacer** est différent : c'est un choix volontaire pour forcer une exception. Une règle moins prioritaire en mode **Remplacer** peut donc écraser une valeur écrite par une règle plus prioritaire.
-
-Exemple :
-
-- règle A, priorité 100 : titre = `French DDP 5.1`
-- règle B, priorité 50 : titre = `VF`
-- en mode **Priorité**, le titre reste `French DDP 5.1`
-- en mode **Remplacer** sur la règle B, le titre devient `VF`
-- en mode **Compléter** sur la règle B, le titre devient `French DDP 5.1 VF`
-
-La priorité règle donc l'ordre d'évaluation et les écritures concurrentes. Elle ne déplace pas les pistes à elle seule.
-
-#### Ordonner les pistes
-
-L'ordre de sortie se règle avec le modèle/action **Ordre**. Cette action donne une priorité d'ordre à la piste matchée :
-
-- plus la valeur est basse, plus la piste remonte : `1` sort en premier, `999` sort après
-- les pistes sans priorité d'ordre gardent leur ordre relatif
-- si deux pistes ont la même priorité d'ordre, leur ordre relatif reste stable
-
-Dans l'éditeur, le champ **Ordre** des actions écrit cette priorité. Si plusieurs règles donnent un ordre à la même piste, les priorités de groupe puis de règle déterminent la valeur gardée. Au moment du traitement, la table réordonnée est exportée avec les `entry_id` des pistes pour distinguer correctement les pistes dupliquées ou variantes.
-
-Une façon simple de construire un profil d'ordre :
-
-| Règle | Portée | Critères | Action d'ordre |
-|-------|--------|----------|----------------|
-| Vidéo principale | `best` | type vidéo, 2160p/HDR/Dolby Vision préférés | `1` |
-| Audio FR principale | `best` | langue `fr-FR`, codec voulu, Atmos préféré | `2` |
-| Audio VO principale | `best` | langue `en-US`, codec voulu, Atmos préféré | `3` |
-| Sous-titres FR forcés | `all` | langue `fr-FR`, flag forced | `10` |
-| Sous-titres FR complets | `best` | langue `fr-FR`, non forced | `20` |
-
-Pour ordonner proprement, séparez souvent les intentions :
-
-- une règle choisit ou désactive les pistes
-- une règle renomme les titres
-- une règle donne les priorités d'ordre
-
-Ce découpage rend l'aperçu plus lisible et évite qu'une règle fasse trop de choses à la fois.
-
-#### Keywords
-
-Les keywords servent à trois choses :
-
-- renommer une piste avec un pattern de titre
-- identifier une piste dans les critères du profil, par exemple `{flag_visual_impaired}` ou `{codec_atmos}`
-- compléter certains champs d'action, par exemple garder la langue courante avec `{language}`
-
-Dans les actions, `!flag` retire un flag MKV (`default, !forced`) et `!tag` retire un tag temporaire (`vf_main, !old_tag`). Les retraits de tags sont appliqués avant les ajouts de la même règle.
-
-#### Variables
-
-Un profil peut contenir des variables éditables. Le bouton **Aliases** de l'éditeur permet de définir des remplacements de rendu pour les keywords :
-
-```text
-EAC3=DDP
-AC3=Dolby Digital
-lang_name:French=Français
-codec:TRUEHD=Dolby TrueHD
-```
-
-Ensuite :
-
-- `EAC3=DDP` est un alias global, utilisable par tous les keywords rendus
-- `lang_name:French=Français` ne s'applique qu'au keyword `{lang_name}`
-- un alias ciblé gagne sur un alias global
-- les aliases sont insensibles à la casse et aux espaces de bord
-- les aliases changent le rendu des titres et templates de sortie, pas les critères de matching
-- `{codec_raw}` garde toujours le nom technique, par exemple `EAC3`
-- les anciens profils avec `variables.codec_names` restent lus pour compatibilité
-
-Exemple de pattern :
-
-```text
-{lang_name} {codec} {channels}
-```
-
-Avec `EAC3=DDP`, le titre devient `French DDP 5.1`.
-
-Le keyword `{lang_name}` affiche le nom de langue sans région quand il s'agit de la variante d'origine, et garde la région entre parenthèses pour les variantes non standard :
-
-| Langue | `{lang_name}` |
-|--------|---------------|
-| `fr-FR` | `French` |
-| `fr-CA` | `French (Canada)` |
-| `pt-PT` | `Portuguese` |
-| `pt-BR` | `Portuguese (Brazil)` |
-
-Une action de titre peut utiliser un pattern :
-
-```text
-{lang_name} {codec} {channels} {audio_object}
-```
-
-Exemples :
-
-- `VF {codec} {channels}` -> `VF DDP 5.1` si `EAC3=DDP`, sinon `VF EAC3 5.1`
-- `{lang_name} {codec} {channels} {flag_forced}` -> `French PGS Forced`
-- `{lang_name} {codec_raw} {channels} {audio_object}` -> `French EAC3 5.1 Atmos`
-
-Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
-
-Keywords disponibles au premier lot :
-
-```text
-{type} {source_index} {track_index}
-{language} {lang} {lang_name} {source_language}
-{title} {source_title}
-{codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object}
-{atmos} {dtsx} {codec_atmos} {codec_dtsx}
-{resolution} {width} {height} {hdr} {video_flags_hex}
-{video_hdr} {video_hdr10} {video_hdr10plus}
-{video_dolby_vision} {video_hlg} {video_sdr}
-{flags} {flag_enabled} {flag_default} {flag_forced}
-{flag_hearing_impaired} {flag_visual_impaired}
-{flag_original} {flag_commentary}
-{track_tags} {none}
-```
-
-Pour la vidéo, `width` et `height` sont indépendants : vous pouvez renseigner seulement la largeur, seulement la hauteur, les deux, ou aucun des deux. La profondeur couleur, quand elle est détectée, est prise en compte dans les caractéristiques techniques internes (`video_flags_hex`) mais n'a pas de champ dédié dans l'éditeur simple.
-
-Exemple : pour garder une piste audio française en EAC3 et préférer Atmos si elle existe, indiquez `fr-FR` en langue, `EAC3` en codec avec **Obligatoire**, puis `{atmos}` dans **Keywords préférés**.
-
-#### Application
-
-Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un aperçu, puis applique après confirmation.
-
-En CLI :
-
-```bash
-muxiveo --cli validate --profile profil.json
-muxiveo --cli preview --profile profil.json -i source.mkv --json
-muxiveo --cli run --profile profil.json -i source.mkv -o sortie.mkv
-```
-
-Vous pouvez donner un chemin complet ou simplement le nom d'un profil sauvegardé dans le dossier utilisateur. L'extension `.json` est optionnelle : `--profile BestOfAll` cherchera aussi `BestOfAll.json` dans `<dossier de config muxiveo>/profiles/decision/`.
-
-En batch dossier :
-
-```bash
-muxiveo --cli batch \
-  --profile profil.json \
-  --input-dir "Serie" \
-  --recursive \
-  --output-dir "out" \
-  --auto-tmdb \
-  --dry-run
-```
-
-`--auto-tmdb` peut être ajouté aux traitements CLI pour récupérer les tags TMDB et la cover. La CLI déduit automatiquement saison/épisode depuis les noms de fichiers du type `S01E02` ou `01x02`. Utilisez `--tmdb-id` pour forcer une fiche, `--no-cover` pour garder les tags sans cover, et `--no-attach` pour ne sortir aucun attachment.
-
-La CLI n'ouvre pas de dialogue interactif. Si un conflit ou une ambiguïté ne peut pas être résolu automatiquement, elle retourne un rapport JSON et bloque l'application.
-
-#### Exact jobs
-
-**Exporter JSON CLI** produit un job exact destiné aux traitements stricts.
-
-Il est adapté aux épisodes ou fichiers construits de la même façon :
-
-```bash
-muxiveo --cli validate --config exact-job.json
-muxiveo --cli preview --config exact-job.json
-muxiveo --cli run --config exact-job.json
-muxiveo --cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
-```
-
-Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.
-
-### Fusion DoVi / HDR10+
-
-![Fusion Dolby Vision et HDR10+](docs/assets/img/Muxiveo-fr-09.png)
-
-Ce panneau prend :
-
-- **Film 1** : la vidéo cible à enrichir (`.mkv` ou `.hevc`)
-- **Film 2** : la source HDR contenant Dolby Vision et/ou HDR10+ (`.mkv` ou `.hevc`)
-
-Règles importantes :
-
-- Film 1 et Film 2 doivent contenir de la **vidéo HEVC**
-- Film 2 doit contenir **Dolby Vision** et/ou **HDR10+**
-- les métadonnées de Film 2 doivent avoir **exactement** le nombre de trames de Film 1 ; en option, un
-  surplus de 4 trames au plus est retiré **en fin de flux** (Film 2 plus long). Des métadonnées plus courtes
-  sont toujours refusées
-- le remux final conserve l'audio et les sous-titres de Film 1
-
-FFmpeg prépare les flux (extraction HEVC en Annex B, conversions) ; l'assemblage final est écrit par le
-**muxer Matroska natif** de Muxiveo, puis relu et validé avant de remplacer la sortie.
-
-Profils Dolby Vision proposés :
-
-| Profil | Effet |
-|--------|-------|
-| **Profile 8.1** | normalise l'injection en profil 8.1, recommandé pour les remux UHD |
-| **Mode 0** | conserve le profil source sans réécriture |
-
-### Paramètres
-
-![Paramètres et configuration](docs/assets/img/Muxiveo-fr-settings.png)
-
-Le panneau **Paramètres** est un éditeur complet de `config.ini` intégré à l'interface. Il regroupe :
-
-- **Interface** : thème (`dark` / `light`), langue, nombre maximal de lignes de log, panneau affiché au démarrage
-- **Chemins** : dossier de travail, dossier de sortie, dossier app data
-- **Remux** : backend `ffmpeg` (nominal)
-- **Outils externes** : chemins explicites pour chaque outil (`ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, etc.)
-- **Encodage** : profil DoVi, compat-id, buffer RAM
-- **Logs** : niveau de verbosite, journal fichier, rotation et capture des sorties outils dans les options
-- **Métadonnées** : auth TMDB via clé API v3 (`tmdb_api_key`) ou token Bearer v4 (`tmdb_bearer_token`), génération optionnelle de `.nfo` (`generate_nfo`)
-
-Les changements sont appliqués section par section ou en une seule fois via le bouton **Sauvegarder toute la configuration**. Un rechargement depuis `config.ini` est possible sans redémarrer l'application.
-
-## Thèmes
-
-L'application supporte deux thèmes visuels, sélectionnables dans le panneau Paramètres :
-
-| Thème | Description |
-|-------|-------------|
-| `dark` (défaut) | fond sombre, accents bleus |
-| `light` | fond clair, contrastes adaptés |
-
-Le changement de thème est appliqué immédiatement sans redémarrage.
-
-## Localisation
-
-L'interface est traduite en **français** et **anglais**. La langue active est détectée automatiquement depuis la locale système au premier lancement, puis peut être modifiée dans le panneau Paramètres.
-
-Les textes de l'application sont centralisés dans `locales.json`.
-
-Les tags de langue saisis (pistes audio, sous-titres) utilisent des codes RFC 5646 / BCP47 (ex. `fr`, `fr-FR`, `en-US`). Les libellés non standards comme `French` ne sont pas acceptés.
-
-## Configuration
-
-### Priorité des réglages
-
-L'application résout ses paramètres dans cet ordre :
-
-1. `config.ini` (Linux/macOS : `~/.config/muxiveo/config.ini` ; Windows dev : racine du projet ; Windows packagé : `%APPDATA%\muxiveo\config.ini`)
-2. les valeurs persistées par l'interface (`QSettings`)
-3. les valeurs par défaut internes
-
-Sous Windows, `setup.py` et le démarrage de l'application peuvent auto-détecter les outils et renseigner automatiquement la section `[tools]` de `config.ini`.
-
-### Paramètres principaux
-
-| Paramètre | Défaut | Description |
-|-----------|--------|-------------|
-| `work_dir` | `/tmp/Muxiveo_work` sur Linux/macOS, `%TEMP%\Muxiveo_work` sur Windows | dossier des fichiers temporaires |
-| `output_dir` | dossier Vidéos de l'OS | dossier de sortie par défaut |
-| `theme` | `dark` | thème visuel (`dark` ou `light`) |
-| `language` | auto-détecté | langue de l'interface (`fra` ou `eng`) |
-| `startup_panel` | `dashboard` | panneau ouvert au démarrage (`dashboard`, `container`, `encoding`, `dovi`, `settings`) |
-| `mux_backend` (section `[matroska]`) | `ffmpeg` | backend de muxage (`ffmpeg`, `auto` ou `native`) |
-| `tmdb_api_key` | vide | clé API TMDB v3 utilisée par la recherche IMDb/TMDB |
-| `tmdb_bearer_token` | vide | token Bearer TMDB v4 (utilisé si `tmdb_api_key` est vide, ou via `MUXIVEO_TMDB_BEARER_TOKEN`) |
-| `generate_nfo` | `true` | génère un fichier `.nfo` MediaInfo à côté du MKV final après workflow réussi |
-| `ram_buffer_enabled` | `true` | autorise l'usage de `/dev/shm` pour les HEVC intermédiaires si disponible |
-| `ram_buffer_threshold_pct` | `15` | pourcentage minimal de RAM libre à conserver pour activer ce buffer |
-
-### Buffer RAM
-
-Le workflow d'encodage peut placer les fichiers HEVC temporaires en RAM pour limiter les E/S disque.
-
-Conditions d'utilisation :
-
-- `ram_buffer_enabled = true`
-- un répertoire RAM-backed disponible et inscriptible (`/dev/shm`)
-- après allocation estimée, la RAM libre reste au-dessus du seuil `ram_buffer_threshold_pct`
-
-Comportement :
-
-- si toutes les conditions sont remplies, les intermédiaires HEVC sont écrits en RAM
-- sinon, fallback automatique vers le dossier temporaire sur disque (`work_dir` ou temporaire système)
-- la décision est réévaluée à chaque allocation
-
-Limite Windows :
-
-- l'application ne s'appuie pas sur un backend RAM standard sur Windows
-- le chemin par défaut reste donc disque pour garantir un comportement stable et compatible avec les outils externes (`ffmpeg`, `dovi_tool`, `hdr10plus_tool`) qui attendent des chemins de fichiers classiques
-
-### Outils configurables
-
-Vous pouvez définir explicitement dans `config.ini` :
-
-- `ffmpeg`, `ffprobe`
-- `mediainfo`
-- `dovi_tool`, `hdr10plus_tool`
-- `eac3to`
-
-Exemple :
-
-```ini
-[paths]
-output_dir = /mnt/nas/videos
-
-[tools]
-ffmpeg = /opt/ffmpeg/bin/ffmpeg
-dovi_tool = /usr/local/bin/dovi_tool
-
-[matroska]
-mux_backend = ffmpeg
-
-[ui]
-theme = light
-language = eng
-startup_panel = container
-
-[metadata]
-tmdb_api_key = <VOTRE_CLE_API_TMDB_V3>
-tmdb_bearer_token = <VOTRE_TOKEN_BEARER_TMDB_V4>
-generate_nfo = true
-```
-
-## Workflows
-
-### Conteneur & Encodage — Routage global
-
-```mermaid
-flowchart TD
-    A[Sources] --> B[Inspection FFprobe et MediaInfo bornée]
-    B --> C{Traitement demandé}
-    C -->|Conteneur| R[Remux : FFmpeg ou writer Matroska natif]
-    C -->|Encodage| E[Encodage FFmpeg ou NVEncC]
-    R --> V[Candidat unique, validation, publication]
-    E --> V
-    V --> Z[Sortie MKV]
-```
-
-### Backends remux Matroska — Branches internes
-
-```mermaid
-flowchart TD
-    A[Configuration et plan] --> B[Réservation de la destination]
-    B --> C[Workspace propre au job, cover et pièces jointes]
-    C --> D[Préparations et synchronisation des pistes si nécessaire]
-    D --> E{Backend retenu}
-    E -->|FFmpeg| F[Remux vers le candidat réservé]
-    E -->|Natif| G[Assemblage par le writer Matroska]
-    F --> H[Post-actions et validation du candidat]
-    G --> H
-    H --> I[Publication puis nettoyage du workspace]
-    I --> Z[Sortie MKV]
-```
-
-En mode `auto`, le plan choisit le writer natif lorsque les opérations sont
-transposables, sinon FFmpeg. En mode `native`, une opération non transposable
-est refusée. La synchronisation physique peut préparer des flux audio ou
-sous-titres avant l'assemblage, quel que soit le backend.
-
-### Encode workflow — Branches internes
-
-```mermaid
-flowchart TD
-    A[Configuration et validation] --> B[Destination réservée et workspace du job]
-    B --> C[Normalisation HDR et préparation des pistes]
-    C --> D{Interpolation RIFE demandée ?}
-    D -->|Oui| E[Pipe direct : FFmpeg vers RIFE vers encodeur]
-    D -->|Non| F[Encodage FFmpeg ou NVEncC, ou copie vidéo]
-    E --> G{Métadonnées dynamiques à réinjecter ?}
-    F --> G
-    G -->|Oui| H[Extraction et ajustement par trame, puis injection]
-    G -->|Non| I[Assemblage des pistes vidéo, audio et sous-titres]
-    H --> I
-    I --> J[Candidat final : backend natif ou FFmpeg selon le plan]
-    J --> K[Post-actions, validation, publication et nettoyage]
-    K --> Z[Sortie MKV]
-```
-
-- Le transfert FFmpeg → RIFE → encodeur reste direct, sans fichier ajouté entre ces étapes.
-- L'injection fichier dépend du codec, des métadonnées retenues et du routage de la piste ; la copie vidéo peut préserver ses métadonnées sans réencodage.
-- La taille cible porte sur le fichier complet en **Mio**, avec une seule valeur partagée par les pistes en mode taille. Les postes estimés ou inconnus sont signalés ; seuls les postes connus peuvent prouver une cible impossible.
-- Le mode taille utilise deux passes avec x264, x265 et SVT-AV1, y compris dans les préparations vidéo des chemins injection et multi-piste ; les encodeurs matériels utilisent une passe à débit demandé.
-- La cover TMDB est résolue en URL lors de la recherche puis téléchargée dans le workspace du job au lancement.
-
-### Fusion DoVi / HDR10+
-
-```mermaid
-flowchart TD
-    A[Film 1 et Film 2] --> B[Validation des sources HEVC et des outils]
-    B --> C[Réservation de la destination et workspace du job]
-    C --> D[Comptages exacts et politique de métadonnées]
-    D --> E[Préparation de la vidéo Film 1 et extraction RPU ou HDR10+ Film 2]
-    E --> F[Ajustement autorisé : retrait du surplus en fin de flux]
-    F --> G[Injection DoVi ou HDR10+ dans la vidéo Film 1]
-    G --> H[Contrôle des métadonnées et des comptages]
-    H --> I[Assemblage Matroska natif : vidéo injectée et pistes Film 1]
-    I --> J[Validation du candidat, publication et nettoyage]
-    J --> Z[Sortie MKV]
-```
-
-Par défaut, les comptages doivent être identiques. L'option explicite de retrait
-permet de supprimer au plus quatre trames de métadonnées excédentaires **en fin
-de flux** ; une source de métadonnées plus courte est toujours refusée.
-L'assemblage final utilise le writer Matroska natif. FFmpeg sert aux préparations
-nécessaires, notamment à la lecture Annex B des sources incompatibles avec le
-lecteur direct des outils HDR. Des comptages égaux ne prouvent pas à eux seuls
-l'alignement temporel des deux films.
-
-### Protection des fichiers
-
-Chaque traitement possède un workspace marqué et verrouillé. Un job actif est
-exclu du nettoyage, y compris lorsqu'une seconde instance partage le workdir.
-Les anciens dossiers marqués sans verrou restent nettoyables ; l'utilisation
-simultanée d'une ancienne version et d'une nouvelle sur le même workdir n'est
-pas couverte par cette protection.
-
-Le candidat final est unique et placé à côté de la sortie pour garder une
-publication atomique sur le même volume. Une sortie initialement absente est
-publiée sans écrasement. Pour une sortie existante dont le remplacement a été
-accepté, l'état est revérifié avant le remplacement ; un changement détecté
-conserve la sortie et le candidat. Le verrou exclut les autres jobs Muxiveo du
-même utilisateur ; il n'empêche pas un logiciel externe de modifier le fichier.
-Si le système de fichiers ne permet aucune publication atomique sans écrasement,
-le résultat est conservé comme candidat et son chemin est indiqué dans l'erreur.
-Les collisions internes d'un batch sont refusées avant son premier traitement,
-y compris avec `--force`.
-
-### Inspection d'un fichier (ffprobe + mediainfo)
-
-```mermaid
-flowchart TD
-    A([Fichier à inspecter]) --> B{Fichier accessible ?}
-    B -->|Non| X[Arrêt avec erreur]
-    B -->|Oui| C[Analyse de base avec ffprobe]
-
-    C --> D{Analyse exploitable ?}
-    D -->|Non| Y[Arrêt avec erreur]
-    D -->|Oui| E[Création de la fiche média<br/>en une seule lecture ffprobe<br/>pistes chapitres attachments<br/>infos globales et tags]
-
-    E --> F[Tentative d'enrichissement mediainfo<br/>en une seule lecture<br/>frame count et détails HDR DoVi]
-    F --> H{Frame count encore absent ?}
-    H -->|Oui| H1[Nouvelle tentative simple<br/>via mediainfo]
-    H -->|Non| I
-    H1 --> I
-
-    I --> J{Fichier Matroska ou WebM ?}
-    J -->|Oui| J1[Enrichissement MKV<br/>langues detaillees language-ietf<br/>et comptage des tags]
-    J -->|Non| K
-    J1 --> K[Normalisation des langues<br/>pour obtenir des valeurs cohérentes]
-
-    K --> L{Vidéo principale présente ?}
-    L -->|Non| Z[Fiche finale retournée]
-    L -->|Oui| M[Détection HDR]
-
-    M --> N{Métadonnées HDR visibles<br/>directement dans ffprobe ?}
-    N -->|Oui| Q[Détermination du type HDR]
-    N -->|Non ou incomplet| O[Essai d'enrichissement HDR<br/>avec mediainfo]
-    O --> P{Réponse suffisante ?}
-    P -->|Oui| Q
-    P -->|Non| R[Dernier recours<br/>analyse plus fine par images]
-    R --> Q
-
-    Q --> S[Classement final<br/>Dolby Vision + HDR10+<br/>Dolby Vision<br/>HDR10+<br/>HDR10<br/>HLG<br/>SDR]
-    S --> T[Mise à jour de la vidéo principale]
-    T --> Z[Fiche finale retournée<br/>prête pour affichage et workflows]
-```
-
-| Fiche media produite par l inspection |
-|---|
-| **Identité générale** : chemin du fichier, format du conteneur, durée totale, taille, débit global, titre du conteneur, tags globaux utiles.<br><br>**Pistes vidéo** : index, codec, résolution, framerate, profondeur de couleur, infos colorimétriques, type HDR détecté, détails Dolby Vision si disponibles, langue, titre, durée, débit.<br><br>**Pistes audio** : index, codec, nombre de canaux, layout `stereo/5.1/7.1`, fréquence d'échantillonnage, débit, langue, titre, durée, indicateurs utiles comme Atmos ou DTS:X quand ils peuvent être déduits.<br><br>**Pistes de sous-titres** : index, codec, langue, titre, drapeaux `forced` et `default`.<br><br>**Chapitres** : liste des chapitres avec position temporelle et nom.<br><br>**Attachments** : cover, polices et autres ressources embarquées avec nom, type MIME, taille si disponible, et indication `attached_pic` pour les images de couverture intégrées comme flux vidéo.<br><br>**Enrichissement MKV/WebM** : comptage des tags globaux, récupération prioritaire des langues détaillées `language-ietf` quand elles existent, avec repli sur `language` sinon.<br><br>**Normalisation finale** : harmonisation des langues vers une forme plus cohérente et exploitable dans l'interface et les workflows suivants.<br><br>**Enrichissement optionnel via mediainfo** : frame count si disponible, confirmation ou enrichissement des métadonnées HDR, et détails Dolby Vision supplémentaires quand `ffprobe` ne les expose pas assez. |
-
-## CLI headless
-
-Muxiveo peut être lancé en mode CLI sans initialiser l'interface graphique :
-
-```bash
-python3 main.py --cli --help
-./muxiveo --cli --help
-```
-
-Sous-commandes disponibles :
-
-| Commande | Usage |
-|----------|-------|
-| `inspect` | inspecte une ou plusieurs sources et sort du JSON |
-| `inspect --config-template` | génère un template JSON de remux copiant tout |
-| `schema` | affiche le schéma JSON public du contrat CLI |
-| `tools` | affiche en JSON les chemins d'outils résolus par Muxiveo |
-| `version` | affiche la version ou compare aux releases avec `--check` |
-| `validate` | valide un job/template JSON sans exécuter FFmpeg |
-| `preview` | affiche la commande FFmpeg prévue |
-| `remux` / `run` | exécute un remux headless (avec synchronisation optionnelle) |
-| `batch` | applique un template ou profil à plusieurs entrées / dossiers |
-| `profile` | valide, prévisualise ou applique un profil décisionnel |
-| `plugins` | extensions facultatives (accélération NVIDIA TensorRT) : `list`, `install --accept-license`, `update`, `remove` |
-| `sync-scan` | analyse le calage acoustique FFT ou par sous-titres |
-| `shift-subs` | décale physiquement des sous-titres (SRT, ASS) |
-| `hybrid` | assemble automatiquement une référence vidéo et un donneur audio/subs |
-
-![Muxiveo CLI Headless v4 en Terminal](docs/assets/img/Muxiveo-cli-terminal.png)
-
-Exemples concrets :
-
-```bash
-# Remux simple avec métadonnées TMDB et profil de renommage
-muxiveo --cli remux -i film1.mkv -o film1_propre.mkv --profile "MonProfil" --auto-tmdb
-
-# Remux multi-sources avec calage acoustique automatique, détection des coupures et cadence
-muxiveo --cli remux -i film1_video.mkv -i film1_audio.mkv -o film1_synchro.mkv \
-  --auto-sync --detect-cuts --cadence-auto --cadence-method auto --sync-mode physical
-
-# Remux avec calibration manuelle préétablie
-muxiveo --cli remux -i film1_video.mkv -i film1_audio.mkv -o film1_calibre.mkv \
-  --calibration calibration_film1.json --sync-mode physical
-
-# Batch d'une saison complète avec template et détection TMDB
-muxiveo --cli batch --template serie1.exact-job.json --input-dir "serie1/Saison 01" \
-  --output-dir "sorties/serie1/Saison 01" --recursive --auto-tmdb --dry-run
-
-# Hybridation automatique (Vidéo 4K de référence + Audio/Subs d'un donneur)
-muxiveo --cli hybrid --ref film1_ref.mkv --donor film1_donor.mkv -o "sorties/film1" \
-  --auto-sync --detect-cuts --cadence-auto --tag "MVO"
-
-# Hybridation d'une saison complète de série
-muxiveo --cli hybrid --ref-dir "serie1_ref_2160p" --donor-dir "serie1_donor_1080p" \
-  -o "sorties/serie1_hybride" --auto-sync --detect-cuts --cadence-auto
-```
-
-Le CLI est non interactif : une sortie existante est refusée sauf `--force`. Les chemins d'outils sont lus depuis `config.ini`, avec overrides `--ffmpeg`, `--ffprobe`, `--mediainfo`, `--work-dir` et `--threads`.
-
-La documentation complète du CLI avec diagrammes et cas concrets détaillés est disponible dans [docs/cli/README.md](docs/cli/README.md).
-
-Dans les artefacts packagés, il n'y a pas de binaire CLI séparé : utilisez `muxiveo --cli ...` sur Linux/AppImage/macOS, ou `Muxiveo.exe --cli ...` sur Windows. En environnement source, utilisez `./muxiveo --cli ...` ou `python3 main.py --cli ...`.
-
-## Outils externes
-
-| Outil | Rôle principal |
-|-------|----------------|
-| `ffprobe` | analyse des flux, chapitres et métadonnées |
-| `mediainfo` | frame count et informations HDR fines |
-| `ffmpeg` | encodage, remux, copie de flux, extraction de sous-titres, écriture metadata/chapitres/tags, patch binaire MuxingApp |
-| `dovi_tool` | extraction, injection et vérification Dolby Vision |
-| `hdr10plus_tool` | extraction et injection HDR10+ |
-| `nvidia-smi` | fallback de détection NVENC sous Linux |
-
-## Troubleshooting windows
-
-Cette notice ne concerne que les lancement depuis Muxiveo.exe
-
-Le lancement via python (py main.py) n'est pas concerné.
-
-### Windows Security / Controlled Folder Access
-
-Sous Windows, les bibliothèques utilisateur comme **Videos**, **Documents**, **Pictures** et dossiers similaires peuvent être protégées par **Windows Security** via **Controlled Folder Access**.
-
-Quand cette protection est active, Muxiveo peut être empêché d'écrire directement dans ces dossiers, même si :
-
-- le dossier existe ;
-- vous pouvez y accéder manuellement depuis l'Explorateur ;
-- le chemin affiché dans l'application est correct.
-
-Symptômes fréquents :
-
-- popup **Sécurité Windows** indiquant que `Muxiveo.exe` ou un outil comme `ffmpeg.exe` a été bloqué ;
-- erreur `No such file or directory` lors d'un export vers `Videos` ou `Documents` ;
-- succès de l'export vers un autre dossier non protégé, comme `Desktop` ou `%TEMP%`.
-
-Au premier setup Windows, Muxiveo peut proposer d'ajouter ses exécutables à l'allowlist de Windows Security afin de pouvoir enregistrer directement dans ces bibliothèques protégées. Cette exception concerne l'application elle-même et `ffmpeg`, l'outil qui écrit effectivement les fichiers de sortie.
-
-Sans cette exception, les exports directs vers **Videos**, **Documents**, **Pictures**, etc. peuvent rester bloqués.
-
-Si vous refusez l'exception ou si vous devez la configurer manuellement :
-
-1. Ouvrez **Sécurité Windows**.
-2. Allez dans **Protection contre les virus et menaces**.
-3. Ouvrez **Protection contre les ransomwares** puis **Gérer la protection contre les ransomwares**.
-4. Entrez dans **Autoriser une application via l'accès contrôlé aux dossiers**.
-5. Ajoutez `Muxiveo.exe`.
-6. Si nécessaire, ajoutez aussi `ffmpeg.exe`.
-
-Après ajout à l'allowlist, redémarrez Muxiveo avant de retester un export vers `Videos` ou `Documents`.
+</div>
 
 ---
 
-## Licence Information
+## 🧭 Guide d'orientation rapide
 
-The packaged distributions (Linux AppImage and Windows All-in-One) include FFmpeg as a separate command-line executable.
-FFmpeg is licensed under LGPLv2.1+ or GPL depending on the build.
-These packages include a GPL-compatible FFmpeg build compiled without `--enable-nonfree`.
-The corresponding FFmpeg source code and build configuration are available at: [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg)
-and [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds). See `NOTICE`, `SOURCES.md`, and `LICENSES/` for third-party licenses and attribution.
+| Votre objectif | Module Muxiveo | Traitement | Guide dédié |
+|---|---|---|---|
+| **Agencer un fichier MKV** (pistes, langues, titres, chapitres, sous-titres) | **Conteneur** | Copie sans perte (*Copy*) | [Guide Conteneur & Remux](https://github.com/Hydro74000/Muxiveo/wiki/Interface-et-usage#conteneur--encodage) |
+| **Compresser, changer de codec ou convertir le son** | **Encodage** | Encodage GPU / CPU | [Guide Encodage vidéo et HDR](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR) |
+| **Marier une vidéo 4K et l'audio/subs d'une autre édition** | **Studio d'Hybridation** | Calage acoustique FFT (*Zero Delay*) | [Guide Hybridation & Synchro](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) |
+| **Inspecter, mesurer ou corriger le HDR (MaxCLL, DoVi)** | **HDR Studio** | Analyse et édition sans réencodage | [Guide HDR Studio](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) |
+| **Transférer Dolby Vision / HDR10+ entre deux fichiers** | **Fusion DoVi / HDR10+** | Injection de métadonnées sans perte | [Guide Fusion DoVi](https://github.com/Hydro74000/Muxiveo/wiki/Interface-et-usage#fusion-dovi--hdr10) |
+| **Fluidifier les mouvements (24 → 60 i/s)** | **MVO-RIFE** (Extension) | Interpolation neuronale GPU | [Guide MVO-RIFE](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) |
+| **Automatiser les choix sur une série ou un lot** | **Profils** / **CLI** | Profils décisionnels & scripts | [Guide Profils](https://github.com/Hydro74000/Muxiveo/wiki/Profils) & [Guide CLI](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless) |
 
-*Muxiveo v4.2.1*
+---
 
-## Hybridation & Synchronisation
+## 📦 Téléchargement & Installation rapide
 
-L'hybridation introduite dans **Muxiveo v4** permet d'associer le meilleur de plusieurs sources : par exemple, combiner une image vidéo UHD 4K ou Blu-ray (la **référence**) avec la piste audio française et les sous-titres d'une autre édition ou diffusion TV (le **donneur**).
+Des paquets autonomes intégrant l'ensemble des dépendances et outils nécessaires (`ffmpeg`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`) sont disponibles sur la page des [Releases](https://github.com/Hydro74000/Muxiveo/releases) :
 
-Muxiveo analyse acoustiquement les flux audio, calcule le décalage temporel à la milliseconde près, compense les écarts de cadence (ex: PAL 25 FPS ↔ 23.976 Cinema) et gère les coupures publicitaires sans désynchronisation.
+| Système | Format recommandé | Instructions de démarrage |
+|---|---|---|
+| **Linux** | **`Muxiveo-x86_64_allinc-*.AppImage`** | Rendre exécutable (`chmod +x`) et lancer. Tous les outils sont intégrés. Compatible avec *Gear Lever*. |
+| **Windows** | **`Muxiveo-Setup-*.exe`** | Installateur complet. Détecte et configure automatiquement l'environnement et les outils. |
+| **macOS** | **`Muxiveo-*.dmg`** | Paquet pour macOS (Intel et Apple Silicon). Outils système installés automatiquement via Homebrew si absents. |
+| **Homebrew** | Formule Linux / macOS | `brew tap Hydro74000/muxiveo && brew install muxiveo` |
 
-### Studio d'Hybridation par lots
+> [!TIP]
+> **Intégration système** : Sur Linux, Windows et macOS, Muxiveo s'intègre automatiquement au menu contextuel *"Ouvrir avec..."* de votre explorateur de fichiers.
+>
+> 📖 Pour le détail des prérequis ou la résolution des accès dossiers Windows, consultez le [Guide d'installation complet](https://github.com/Hydro74000/Muxiveo/wiki/Installation) et le [Dépannage Windows](https://github.com/Hydro74000/Muxiveo/wiki/Troubleshooting-windows).
 
-Conçu pour traiter automatiquement des saisons entières de séries ou des collections de films :
+---
 
-![Studio d'Hybridation - Matrice d'appariement par lots](docs/assets/img/Muxiveo-fr-11.png)
+## 🎛️ Usage principal : Remuxage & Encodage au quotidien
 
-- **Appariement automatique** des épisodes par reconnaissance des motifs de saison/épisode (`S01E01`, etc.).
-- **Diagnostic audio en direct** : détection acoustique FFT, analyse de pitch/cadence F0 et détection des coupures.
-- **Workflow par lots** : calibration complète de la saison en un clic avant de lancer la production.
+Muxiveo unifie la préparation du conteneur et les traitements d'encodage au sein d'un pipeline cohérent : le panneau **Conteneur** prépare l'organisation des flux, le panneau **Encodage** configure les transformations vidéo et audio nécessaires, et le bouton d'action au-dessus du journal lance l'opération.
 
-### Synchro Studio & Formes d'ondes
+![Tableau des pistes et Remuxage dans Muxiveo](docs/assets/img/Muxiveo-fr-03.png)
 
-Pour inspecter ou affiner le calage à la milliseconde :
+### 1. Remuxage sans perte (*Zero-Loss*)
+Le remuxage prépare un fichier MKV propre en quelques secondes, sans aucune recompression :
+
+* **Glisser-déposer universel** : Déposez un ou plusieurs fichiers (MKV, MP4, MOV, TS, sous-titres `.srt` / `.ass`, pistes audio séparées) directement dans la fenêtre.
+* **Sélection et réordonnancement** : Activez ou désactivez les pistes en un clic, et déplacez-les pour définir l'ordre exact du conteneur final.
+* **Normalisation des métadonnées de pistes** : Édition des langues avec sélection normalisée BCP47 (ex: `fr-FR`, `en-US`), renommage des titres de pistes et attribution des drapeaux Matroska (*Par défaut*, *Forcé*, *Malentendant*, *Commentaire*, *Original*).
+* **Moteur Matroska natif** : Muxiveo embarque son propre multiplexeur EBML natif pour assembler les flux sans intermédiaire, préserver les structures de tags complexes et maximiser la rapidité, avec repli transparent sur FFmpeg si le traitement l'exige.
+* **Nettoyage des sous-titres EIA-608/708** : Détection et élimination des sous-titres incrustés obsolètes (*Closed Captions*) sans décompresser la vidéo ni toucher aux métadonnées HDR.
+* **Extraction rapide** : Export direct d'une piste audio ou d'un flux de sous-titres par clic droit dans la table.
+
+### 2. Encodage sur-mesure & Accélération matérielle
+Dès qu'une recompression ou une réduction de taille est requise, le panneau Encodage applique les réglages par piste :
+
+![Panneau Encodage - Traitements vidéo et audio](docs/assets/img/Muxiveo-fr-08.png)
+
+* **Pipeline matériel GPU complet** :
+  * Décodage et encodage matériel sans solliciter le processeur principal : `cuda` pour NVENC, `qsv` pour Intel QuickSync, `vaapi` pour Linux VAAPI, `d3d11va` pour AMD AMF.
+  * Prise en charge des architectures **NVIDIA NVENC / NVEncC** (préréglages P1 à P7, modes CQP/VBR), **Intel QSV**, **AMD AMF** et **VAAPI** sous Linux (avec gestion fine des modes CQP et du niveau de compression).
+* **Encodeurs logiciels de référence** : Intégration de `libx265`, `libx264` et `libsvtav1` (AV1) pour une efficacité d'encodage maximale.
+* **Gestion du débit et de la taille finale** :
+  * **Qualité constante** : Facteur de compression constant (CRF pour x264/x265/SVT-AV1, CQP pour NVENC/VAAPI).
+  * **Taille cible (Mio)** : Définissez la taille exacte désirée pour le fichier complet. La calculatrice intégrée répartit automatiquement le budget débit entre la vidéo et l'audio, en distinguant les postes mesurés et estimés.
+  * **Double passe** : Automatiquement activée en ciblage de taille pour les encodeurs logiciels (`x264`, `x265`, `SVT-AV1`).
+* **Flexibilité audio avancée** :
+  * Recopie sans perte (*passthrough*) des formats haute fidélité : Dolby TrueHD avec métadonnées spatiales Dolby Atmos, DTS-HD MA, DTS:X, FLAC.
+  * Transcodage multicanal de haute qualité en **E-AC-3**, **AAC** ou **FLAC**.
+  * **Variantes audio indépendantes** : Générez par exemple une piste stéréo ou un flux de compatibilité AC-3 5.1 à partir d'un master TrueHD Atmos sans modifier la piste source d'origine.
+
+> 📖 Pour approfondir les options d'encodage, les filtres et les profils de compression, consultez le [Guide de l'encodage vidéo et HDR sur le Wiki](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR).
+
+---
+
+## 🔬 Modules spécialisés
+
+### 🎙️ Studio d'Hybridation & Synchronisation acoustique
+*Associez la meilleure source vidéo (ex: master UHD 4K) avec les pistes audio et sous-titres d'une autre édition (ex: VF d'un Blu-ray ou d'une diffusion TV).*
 
 ![Synchro Studio - Visualiseur de formes d'ondes acoustiques](docs/assets/img/Muxiveo-fr-12.png)
 
-- **Double forme d'onde superposée** (référence VO en vert, donneur VF en bleu).
-- **Zoom temporel et repères** permettant d'identifier immédiatement les transitoires et attaques de parole communes.
-- **Micro-ajustement** par paliers de ±10 ms et ±100 ms avec bouton de **Pré-écoute** instantanée.
+* **Alignement acoustique par corrélation FFT** : Muxiveo analyse le signal audio réel des deux sources pour calculer le décalage temporel exact à la milliseconde près, sans se fier aux métadonnées des conteneurs.
+* **Visualiseur de formes d'ondes superposées** : Forme d'onde bicolore zoomable (référence VO en vert, donneur VF en bleu), navigation temporelle sur les transitoires sonores et pré-écoute instantanée pour valider le calage à l'oreille.
+* **Compensation de cadence** : Détection et conversion automatique des écarts de vitesse de défilement (ex: conversion PAL 25 i/s vers cinéma 23.976 i/s par rééchantillonnage de débit audio).
+* **Détection des coupures & Calibration multi-segments** : Localisation des coupures publicitaires ou variantes de montage TV avec découpage de la timeline en segments indépendants recalés séparément.
+* **Synchronisation physique (*Zero Delay*)** : Décalage physique réel du flux audio (insertion de silence ou découpe au paquet près) et réalignement des sous-titres texte (SRT, ASS, VTT). Cette méthode évite les désynchronisations constatées sur les téléviseurs et barres de son qui ignorent les tags de décalage virtuel de conteneur.
+* **Hybridation par lots** : Appariement automatique des fichiers d'une saison entière par détection des motifs d'épisodes (`S01E01`), avec calibration et traitement groupé.
 
-### Détection des coupures & Calibration multi-segments
+> 📖 Consultez le [Guide d'hybridation et synchronisation](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) ainsi que la page [Qualité et dépannage audio](https://github.com/Hydro74000/Muxiveo/wiki/Synchronisation-qualite).
 
-Lorsque la piste audio donneuse provient d'une diffusion télévisée avec des coupures publicitaires, un simple décalage global ne suffit pas. Muxiveo découpe la timeline en segments indépendants :
+---
 
-![Détection des coupures et calibration multi-segments](docs/assets/img/Muxiveo-fr-13.png)
+### 🌈 HDR Studio & Dolby Vision
+*Inspection, audit, mesure réelle et manipulation des flux HDR statiques et dynamiques.*
 
-- **Identification des points de rupture** (transitions publicitaires ou variantes de montage).
-- **Recalage différentiel par segment** avec compensation automatique des dérives temporelles.
-- **Export et import de calibration JSON** réutilisable en CLI pour l'automatisation en masse.
+![HDR Studio - Aperçu et audit des métadonnées HDR](docs/assets/img/Muxiveo-fr-hdr-overview.png)
 
-### Synchronisation physique (*Zero Delay*)
+* **Audit complet des métadonnées** : Visualisation instantanée des paramètres de mastering HDR10 (MDCV, MaxCLL/MaxFALL) et des métadonnées dynamiques Dolby Vision (RPU) et HDR10+. Détection des anomalies (comptages de trames incohérents, métadonnées génériques).
+* **Mesure réelle sur l'image** : Calcul du MaxCLL et MaxFALL réels du métrage par analyse des pixels (mode rapide sur images clés en ~20 s, ou analyse intégrale).
+* **Luminance et simulation d'affichage TV** : Courbes de luminance zoomables et simulation du rendu sur un téléviseur au pic réglable (100 à 10 000 nits) pour visualiser l'écrêtage et l'assombrissement.
+* **Édition sans réencodage** : Correction des balises statiques HDR10, réalignement des blocs Dolby Vision L6/L11 et conversion du Profil 7 vers le Profil 8.1 universel.
+* **FEL Analyzer & Intégration FEL (Extension mvo-fel)** :
+  * Analyse de l'apport réel de la couche d'extension Full Enhancement Layer (Profil 7 FEL) par catégorie (ton, hautes lumières, détail, grain).
+  * Comparateur avant/après en pleine résolution avec loupe et carte des écarts.
+  * Reconstruction complète de l'image (Base Layer + Enhancement Layer) lors d'un réencodage pour ne perdre aucun détail du master original.
+* **Fusion DoVi / HDR10+** : Injection des métadonnées dynamiques d'une édition vers le flux HEVC d'une autre édition avec validation de trames.
 
-Au lieu de se limiter à un offset virtuel dans les métadonnées du conteneur (fréquemment ignoré par les téléviseurs, barres de son ou certains lecteurs comme Plex), Muxiveo applique par défaut une **synchronisation physique** :
-- Injection d'un silence propre au début du flux ou suppression de l'excédent (trim exact).
-- Recalage physique synchronisé des sous-titres texte (SRT, ASS, VTT).
-- Respect absolu des flux audio HD et objets spatiaux (Dolby Atmos / TrueHD, DTS:X).
+> 📖 Pour découvrir l'ensemble des contrôles et des outils de mesure, consultez le [Guide HDR Studio](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) et le [Guide de l'extension Merge FEL](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-Merge-FEL).
 
-Pour en savoir plus, consultez le [guide d'hybridation complet](docs/hybridization-guide.md) ainsi que la section dédiée dans la [documentation CLI](docs/cli/README.md).
+---
+
+### 🏎️ Fluidification d'image IA (MVO-RIFE)
+*Multiplication de la cadence d'images par réseau de neurones avec accélération GPU.*
+
+* **Cadences cibles** : Facteurs fixes (×2, ×3, ×4) ou normalisation cinéma vers haute cadence (23,976/24 → 59,94/60 i/s via facteur ×2.5).
+* **Moteur hybride** : Associe le modèle d'interpolation RIFE v4, la compensation de mouvement par blocs et le flux optique matériel NVIDIA (NVOF). Un sélecteur entraîné choisit pour chaque zone de l'image le meilleur candidat afin d'éliminer les déformations sur les textures répétitives et les mouvements rapides.
+* **Accélération TensorRT** : Extension optionnelle exploitant les cœurs Tensor des cartes NVIDIA RTX pour décupler la cadence d'inférence.
+
+> 📖 Consultez le [Guide de l'interpolation MVO-RIFE](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) et l'[Accélération TensorRT](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-TensorRT).
+
+---
+
+### 🏷️ Métadonnées TMDB & Fichiers NFO
+* **Recherche intégrée TMDB** : Interrogation directe de la base The Movie Database pour films et séries avec détection automatique des saisons et épisodes.
+* **Tags Matroska normalisés** : Renseignement automatique des champs officiels (`DATE_RELEASED`, `GENRE`, `DIRECTOR`, `CAST`, `SYNOPSIS`, `SEASON`, `EPISODE`).
+* **Jaquettes haute résolution** : Téléchargement et intégration des affiches officielles sous forme de pièces jointes MKV.
+* **Génération de fichiers `.nfo`** : Création automatique d'une fiche technique au format standard à côté du fichier exporté, compatible Plex, Jellyfin et Kodi.
+
+---
+
+### 🎯 Profils décisionnels & Automatisation
+*Automatisez l'application de vos règles sur des dossiers complets.*
+
+![Éditeur de profils décisionnels dans Muxiveo](docs/assets/img/Muxiveo-fr-14.png)
+
+* **Règles conditionnelles réutilisables** : Définissez vos critères de sélection (ex: *"Sélectionner la meilleure VO Atmos et la meilleure VF EAC3/AC3, exclure les pistes de commentaires, activer le drapeau forcé sur les sous-titres appropriés"*).
+* **Renommage par gabarits** : Formatez automatiquement les titres de pistes selon vos motifs personnalisés (ex: `{lang_name} {codec} {channels}`).
+* **Éditeur visuel low-code** : Créez et ajustez vos profils directement dans l'interface avec prévisualisation en direct piste par piste, ou appliquez-les par lot en ligne de commande.
+
+> 📖 Consultez le [Guide complet des profils](https://github.com/Hydro74000/Muxiveo/wiki/Profils).
+
+---
+
+## 💻 Utilisation en ligne de commande (CLI Headless)
+
+Muxiveo intègre une CLI complète sans interface graphique, adaptée aux serveurs NAS, aux conteneurs et aux scripts d'automatisation :
+
+![Muxiveo CLI en terminal](docs/assets/img/Muxiveo-cli-terminal.png)
+
+```bash
+# Remuxage simple avec métadonnées TMDB et profil décisionnel
+muxiveo --cli remux -i source.mkv -o sortie_propre.mkv --profile "Standard" --auto-tmdb
+
+# Hybridation automatique de deux sources avec calage acoustique FFT
+muxiveo --cli hybrid --ref video_4k.mkv --donor audio_vf.mkv -o sorties/ --auto-sync
+
+# Traitement par lots sur un dossier complet de série
+muxiveo --cli batch --profile "Series" --input-dir "Saison 01" --output-dir "Sorties" --recursive --auto-tmdb
+
+# Inspection détaillée du HDR et analyse de la couche Dolby Vision FEL
+muxiveo --cli inspect master.mkv --hdr measure --hdr-fel
+```
+
+> 📖 Pour la liste complète des sous-commandes, arguments et schémas JSON, consultez la [Documentation de la CLI Headless](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
+
+---
+
+## 🛠️ Exécution depuis les sources
+
+Pour exécuter ou contribuer au projet directement depuis les sources Python :
+
+```bash
+# 1. Cloner le dépôt
+git clone https://github.com/Hydro74000/Muxiveo.git
+cd Muxiveo
+
+# 2. Installer les dépendances Python et vérifier les outils système
+python3 setup.py
+
+# 3. Lancer l'application
+python3 main.py
+```
+
+*Prérequis : Python 3.10+ et PySide6 6.6.0+.*
+
+---
+
+## 💬 Communauté & Soutien
+
+Muxiveo est un projet indépendant, **100 % gratuit, open source et développé sans aucune publicité**.
+
+<div align="center">
+
+### Rejoindre la communauté Discord
+
+Pour poser vos questions, échanger sur les méthodes de remuxage et d'encodage, ou partager vos profils décisionnels :
+
+[![Rejoindre le Discord](https://img.shields.io/badge/Discord-Rejoindre%20la%20communaut%C3%A9-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/YGAjNjZHQC)
+
+---
+
+### Soutenir le projet
+
+Si Muxiveo vous fait gagner du temps au quotidien et que vous souhaitez encourager son développement continu :
+
+[![Faire un don via PayPal](https://img.shields.io/badge/Soutenir%20via-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/muxiveo)
+
+<a href="https://paypal.me/muxiveo">
+  <img src="https://raw.githubusercontent.com/stefan-niedermann/paypal-donate-button/master/paypal-donate-button.png" alt="Soutenir avec PayPal" width="160" />
+</a>
+
+</div>
+
+---
+
+## 📄 Licence & Crédits
+
+Projet distribué sous licence **GNU General Public License v3.0**. Consultez le fichier [LICENSE](LICENSE) pour plus de détails.  
+Muxiveo s'appuie sur des composants libres essentiels : `FFmpeg`, `MediaInfo`, `dovi_tool`, `hdr10plus_tool`, `NVEncC` et `PySide6`. Voir `NOTICE` et `SOURCES.md`.
