@@ -8,6 +8,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 from array import array
 from collections import Counter
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from core.bluray import append_ffmpeg_input_args
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,10 @@ class _SignalStatsSample:
 class _FrameLuminance:
     peak_nits: float
     average_nits: float
+
+
+# Fin de stderr conservée pour le message d'erreur (le reste est lu puis abandonné).
+_STDERR_TAIL_BYTES = 64 * 1024
 
 
 class StaticHdrEstimateService:
@@ -669,30 +674,58 @@ class StaticHdrEstimateService:
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            **subprocess_windows_no_window_kwargs(),
         )
+        stderr_tail = bytearray()
+        cancelled = threading.Event()
+        finished = threading.Event()
+
+        def drain_stderr() -> None:
+            # Lu en continu : un outil bavard ne reste jamais bloqué sur un tube stderr plein.
+            stream = proc.stderr
+            if stream is None:
+                return
+            for block in iter(lambda: stream.read(65536), b""):
+                stderr_tail.extend(block)
+                del stderr_tail[:-_STDERR_TAIL_BYTES]
+
+        def watch_cancel() -> None:
+            # Annulation surveillée hors des lectures bloquantes : l'arrêt du processus les débloque.
+            while not finished.wait(0.2):
+                if cancel_cb is not None and cancel_cb():
+                    cancelled.set()
+                    self._stop_process(proc)
+                    return
+
+        workers = [
+            threading.Thread(target=drain_stderr, name="hdr-estimate-stderr", daemon=True),
+            threading.Thread(target=watch_cancel, name="hdr-estimate-cancel", daemon=True),
+        ]
+        for worker in workers:
+            worker.start()
         frames: list[_FrameLuminance] = []
         try:
             assert proc.stdout is not None
-            while True:
-                self._check_cancelled(cancel_cb, proc=proc)
+            while not cancelled.is_set():
+                # Lecture tamponnée : rend une image complète, ou moins à la fin du flux.
                 chunk = proc.stdout.read(frame_size)
-                if not chunk:
-                    break
-                while len(chunk) < frame_size:
-                    more = proc.stdout.read(frame_size - len(chunk))
-                    if not more:
-                        break
-                    chunk += more
                 if len(chunk) != frame_size:
                     break
                 frames.append(self._linear_frame_luminance_from_bytes(chunk))
+        except BaseException:
+            self._stop_process(proc)
+            raise
         finally:
             if proc.stdout is not None:
                 proc.stdout.close()
-        stderr_raw = proc.stderr.read() if proc.stderr is not None else b""
-        returncode = proc.wait()
+            returncode = proc.wait()
+            finished.set()
+            for worker in workers:
+                worker.join(timeout=5)
+        if cancelled.is_set():
+            raise RuntimeError("Analyse HDR10 estimée annulée.")
         if returncode != 0:
-            stderr = stderr_raw.decode("utf-8", errors="replace")
+            stderr = bytes(stderr_tail).decode("utf-8", errors="replace")
             raise RuntimeError(f"Commande échouée ({returncode}) : {' '.join(cmd)}\n{stderr}")
         return frames
 
@@ -895,14 +928,21 @@ class StaticHdrEstimateService:
         proc: subprocess.Popen | None = None,
     ) -> None:
         if cancel_cb is not None and cancel_cb():
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                deadline = time.monotonic() + 2.0
-                while proc.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                if proc.poll() is None:
-                    proc.kill()
+            if proc is not None:
+                StaticHdrEstimateService._stop_process(proc)
             raise RuntimeError("Analyse HDR10 estimée annulée.")
+
+    @staticmethod
+    def _stop_process(proc: subprocess.Popen) -> None:
+        """Arrêt poli puis forcé (2 s) d'un processus encore actif."""
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        deadline = time.monotonic() + 2.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if proc.poll() is None:
+            proc.kill()
 
     @staticmethod
     def _emit(progress_cb: Callable[[str], None] | None, message: str) -> None:

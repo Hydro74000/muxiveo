@@ -31,12 +31,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.i18n import translate_text
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.physical_sync import audio_filter
 from core.workflows.remux_models import TrackEntry
-from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, SyncSegment
+from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, SyncSegment, effective_calibration
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import (
     _card,
@@ -256,7 +256,7 @@ class SyncStudioDialog(QDialog):
         tgt_info = f"{self.target_source_path.name} (piste #{self.target_stream_index})"
 
         info_lbl = QLabel(
-            f"<b>{translate_text('Référence :')}</b> <span style='color: #20c997;'>{ref_info}</span><br>"
+            f"<b>{translate_text('Référence :')}</b> <span style='color: {_C.WAVE_REF};'>{ref_info}</span><br>"
             f"<b>{translate_text('Cible :')}</b> <span style='color: {_C.ACCENT};'>{tgt_info}</span>"
         )
         info_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
@@ -295,11 +295,13 @@ class SyncStudioDialog(QDialog):
                 c_ate = getattr(pitch, "spectral_corr_atempo", 0.0) or (pitch.get("spectral_corr_atempo", 0.0) if isinstance(pitch, dict) else 0.0)
                 best_method = getattr(pitch, "selected_method", "atempo") or (pitch.get("selected_method", "atempo") if isinstance(pitch, dict) else "atempo")
 
-                metric_lbl = QLabel(
-                    f"Pitch : {shift_semi:+.2f} demi-ton (F0 : {f0_ref:.0f} Hz vs {f0_don:.0f} Hz) "
-                    f"• Corr. spectrale : asetrate {c_ase:.2f} | atempo {c_ate:.2f} "
-                    f"• Recommandé : <b>{best_method}</b>"
-                )
+                metric_lbl = QLabel(translate_text(
+                    "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) "
+                    "• Corr. spectrale : asetrate {asetrate} | atempo {atempo} "
+                    "• Recommandé : <b>{method}</b>",
+                    shift=f"{shift_semi:+.2f}", f0_ref=f"{f0_ref:.0f}", f0_donor=f"{f0_don:.0f}",
+                    asetrate=f"{c_ase:.2f}", atempo=f"{c_ate:.2f}", method=best_method,
+                ))
                 metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
                 top_row.addWidget(metric_lbl)
 
@@ -621,7 +623,7 @@ class SyncStudioDialog(QDialog):
         cuts_layout.setSpacing(_scale(6))
 
         self.cuts_header = QLabel()
-        self.cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: #e5a50a;")
+        self.cuts_header.setStyleSheet(f"font-weight: 700; font-size: {_font_px(11)}px; color: {_C.SYNC_CUT};")
         cuts_layout.addWidget(self.cuts_header)
 
         segments = self.current_calibration.segments
@@ -1154,7 +1156,7 @@ class SyncStudioDialog(QDialog):
                     self._segment_audio_ready.emit(key, ref_samples, tgt_chunks, start_s, cut_ms)
             except Exception as exc:
                 if not self._closing:
-                    self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
+                    self._waveform_loading.emit(translate_text("Aperçu non disponible : {error}", error=exc))
 
         self._executor.submit(_worker)
 
@@ -1249,7 +1251,8 @@ class SyncStudioDialog(QDialog):
         self._set_auto_sync_buttons_enabled(True)
 
         measured_ms = cal.segments[0].shift_ms
-        negligible = len(cal.segments) <= 1 and abs(measured_ms) <= NEGLIGIBLE_SYNC_MS
+        # Décalage constant seul : une conversion de cadence reste à appliquer, quel que soit le départ.
+        negligible = effective_calibration(cal) is None and abs(measured_ms) <= NEGLIGIBLE_SYNC_MS
         if negligible:
             cal = replace(cal, segments=(SyncSegment(0, 0.0),), quick_check=False)
         self.quick_validated = bool(getattr(cal, "quick_check", False))
@@ -1288,7 +1291,7 @@ class SyncStudioDialog(QDialog):
             return
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
-        self.listen_status.setText(f"Échec de l'auto-synchronisation : {err}")
+        self.listen_status.setText(translate_text("Échec de l'auto-synchronisation : {error}", error=err))
         self.waveform.set_loading("")
 
     def _on_waveform_loading(self, text: str) -> None:
@@ -1441,7 +1444,9 @@ class SyncStudioDialog(QDialog):
                 ffplay = Path(self.ffmpeg_bin).parent / "ffplay"
                 if ffplay.exists():
                     # nosemgrep
-                    subprocess.Popen([str(ffplay), "-nodisp", "-autoexit", path])  # nosec B603 B607
+                    subprocess.Popen(  # nosec B603 B607
+                        [str(ffplay), "-nodisp", "-autoexit", path], **subprocess_windows_no_window_kwargs(),
+                    )
                     self.listen_status.setText(translate_text("Lecture externe ffplay lancée."))
             except Exception as err:
                 self.listen_status.setText(str(err))

@@ -273,3 +273,75 @@ def test_waveform_reads_target_chunk_at_its_own_origin(qt_app):
     peaks = view._piecewise_target_peaks(3_600_000.0, 3_620_000.0, 1000)
     assert peaks.min() == 1
     view.close()
+
+
+def test_output_time_follows_cuts_silences_and_cadence():
+    calibration = SyncCalibration((SyncSegment(0, 100), SyncSegment(5000, -900)))
+    assert calibration.output_time_ms(1000) == 1100
+    # Cible 5–6 s coupée : un chapitre à 5,5 s tombe sur la jonction (5,1 s de sortie).
+    assert calibration.output_time_ms(5500) == 5100
+    assert calibration.output_time_ms(8000) == 7100
+    silence = SyncCalibration.linear(0).with_edit(5000, 6000, silence=True)
+    assert silence.output_time_ms(7000) == 8000
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    pal = SyncCalibration((SyncSegment(0, 0),), cadence_mismatch=mismatch)
+    assert pal.output_time_ms(3_600_000) == pytest.approx(3_600_000 * mismatch.time_stretch_ratio)
+
+
+def test_studio_keeps_cadence_when_auto_offset_is_negligible(qt_app, tmp_path, monkeypatch):
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    _mod, dialog = _studio(tmp_path, monkeypatch)
+    dialog._on_auto_sub_sync_ready(SyncCalibration((SyncSegment(0, -3.0),), 0.95, cadence_mismatch=mismatch))
+    calibration, offset = dialog.result_calibration()
+    # Conversion de cadence conservée avec son départ mesuré : rien n'est « non appliqué ».
+    assert (offset, calibration.cadence_mismatch) == (-3, mismatch)
+    assert "(≤ 5 ms)" not in dialog.listen_status.text()
+    dialog.close()
+
+
+def test_chapter_in_fully_cut_segment_lands_on_the_resume_after_kept_silence():
+    """Audit Codex C1 : coupe débutant dans un silence de 55 s, chapitre dans l'audio retiré."""
+    base = SyncCalibration((SyncSegment(0, 0), SyncSegment(5000, 60000)))
+    cut = base.with_edit(60000, 66000, silence=False)
+    assert [(a, b) for a, b, _i in cut.output_ranges()] == [(0, 5000), (60000, float("inf"))]
+    assert cut.output_time_ms(5500) == 60000
+    assert cut.output_time_ms(6500) == 60500
+
+
+def test_waveform_target_cues_follow_cuts_silences_and_cadence(qt_app):
+    from ui.widgets.waveform_view import WaveformView
+
+    view = WaveformView()
+    # Cible 5–6 s coupée : sortie 0–5 s (décalage 0) puis reprise à 5 s (décalage −1 s).
+    view.set_calibration_view([(0.0, 5000.0, 0.0), (5000.0, float("inf"), -1000.0)])
+    assert view._target_cue_intervals(5200, 5800) == []
+    assert view._target_cue_intervals(4500, 6500) == [(4500.0, 5000.0), (5000.0, 5500.0)]
+    view.set_calibration_view([(0.0, float("inf"), 40.0)], stretch_ratio=25.0 / 24.0)
+    assert view._target_cue_intervals(24_000, 48_000) == [(25_040.0, 50_040.0)]
+    view.set_calibration_view([])
+    view.set_shift(300)
+    assert view._target_cue_intervals(1000, 2000) == [(1300.0, 2300.0)]
+    view.close()
+
+
+def test_waveform_draws_target_cue_text(qt_app, monkeypatch):
+    import numpy as np
+    from PySide6.QtGui import QPainter
+    import ui.widgets.waveform_view as waveform
+
+    drawn: list[str] = []
+
+    class _Painter(QPainter):
+        def drawText(self, *args):  # noqa: N802
+            if isinstance(args[-1], str):
+                drawn.append(args[-1])
+            return super().drawText(*args)
+
+    monkeypatch.setattr(waveform, "QPainter", _Painter)
+    view = waveform.WaveformView()
+    view.resize(1000, 200)
+    view.set_audio_data(np.ones(16000 * 10, dtype=np.float32), np.ones(16000 * 10, dtype=np.float32))
+    view.set_subtitle_cues([], [(1000, 6000, "REPLIQUE CIBLE")])
+    view.grab()
+    assert any(text.startswith("REPL") for text in drawn)
+    view.close()

@@ -828,3 +828,42 @@ def test_capture_reapplies_all_track_flags_including_mkv_enabled():
 
     assert target_audio.flag_enabled is False
     assert target_audio.flag_default is True
+
+
+def test_saved_vfq_rule_still_applies_after_region_detection():
+    """Règle « fr-FR + titre VFQ » écrite avant la détection de VFQ (fr-CA) : toujours appliquée."""
+    from core.profiles.decision import apply_decision_profile
+    profile = {
+        "kind": "decision-profile", "version": 1, "name": "VFQ",
+        "rules": [{
+            "id": "vfq", "label": "VFQ", "scope": "all", "write_mode": "priority",
+            "match": {"all": [
+                {"field": "type", "op": "is", "value": "audio", "required": True},
+                {"field": "language", "op": "is", "value": "fr-FR", "required": True},
+                {"field": "source_title", "op": "contains", "value": "VFQ", "required": True},
+            ]},
+            "actions": [{"type": "set_title", "value": "Français (Québec)"}],
+        }],
+    }
+    for language in ("fra", "fr-CA"):  # étiquette brute, ou déjà régionalisée par l'inspection
+        vff = _audio(1, language="fr-FR" if language == "fr-CA" else language, title="VFF")
+        vfq = _audio(2, language=language, title="VFQ")
+        result = apply_decision_profile(profile, [vff, vfq])
+        assert result.report["applied_rules"] == 1
+        assert (vff.title, vfq.title) == ("VFF", "Français (Québec)")
+
+
+def test_fr_ca_condition_targets_only_quebec_tracks():
+    from core.profiles.decision import apply_decision_profile
+    profile = {
+        "kind": "decision-profile", "version": 1, "name": "QC",
+        "rules": [{
+            "id": "qc", "label": "QC", "scope": "all", "write_mode": "priority",
+            "match": {"all": [{"field": "language", "op": "is", "value": "fr-CA", "required": True}]},
+            "actions": [{"type": "set_title", "value": "Québec"}],
+        }],
+    }
+    vff = _audio(1, language="fr-FR", title="VFF")
+    vfq = _audio(2, language="fr-CA", title="VFQ")
+    apply_decision_profile(profile, [vff, vfq])
+    assert (vff.title, vfq.title) == ("VFF", "Québec")

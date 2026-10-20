@@ -245,7 +245,7 @@ class _ChapterPanel(QFrame):
                 font-weight: 600;
                 padding: 0 {_scale(10)}px;
             }}
-            QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: #ffffff; }}
+            QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: {_C.TEXT_PRI}; }}
             QPushButton:disabled {{
                 color: {_C.TEXT_DIM};
                 border-color: {_C.BORDER};
@@ -313,7 +313,7 @@ class _ChapterPanel(QFrame):
             QComboBox QAbstractItemView {{
                 background: {_C.BG_DEEP};
                 color: {_C.TEXT_PRI};
-                selection-background-color: {_C.ACCENT_DIM};
+                selection-background-color: {_C.ACCENT_DIM}; selection-color: {_C.TEXT_PRI};
             }}
         """)
         self._src_combo.currentIndexChanged.connect(self._on_source_changed)
@@ -607,7 +607,7 @@ class _ChapterPanel(QFrame):
             QPushButton:hover {{
                 color: {_C.ERROR};
                 border-color: {_C.ERROR};
-                background: #1f0e0e;
+                background: {_C.BADGE_ERROR_BG};
             }}
         """)
         del_btn.clicked.connect(lambda _=None, r=row: self._delete_row(r))

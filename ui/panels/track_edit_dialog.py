@@ -116,7 +116,7 @@ class TrackEditDialog(QDialog):
             QComboBox QAbstractItemView {{
                 background: {_C.BG_CARD};
                 color: {_C.TEXT_PRI};
-                selection-background-color: {_C.ACCENT_DIM};
+                selection-background-color: {_C.ACCENT_DIM}; selection-color: {_C.TEXT_PRI};
                 border: 1px solid {_C.BORDER_LT};
             }}
             QGroupBox {{
@@ -173,11 +173,11 @@ class TrackEditDialog(QDialog):
             }}
             QDialogButtonBox QPushButton[text="OK"] {{
                 background: {_C.ACCENT};
-                color: #ffffff;
+                color: {_C.ON_ACCENT};
                 border: none;
             }}
             QDialogButtonBox QPushButton[text="OK"]:hover {{
-                background: #6070f0;
+                background: {_C.ACCENT_HOVER};
             }}
         """)
         self._build_ui()

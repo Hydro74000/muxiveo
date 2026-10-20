@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.bluray import ffprobe_input_args
+from core.subprocess_utils import subprocess_text_kwargs
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
 from core.i18n import apply_translations, current_language, set_current_language, translate_text
@@ -690,7 +691,7 @@ class EncodePanel(QWidget):
             f"QListWidget{{background:{_C.BG_CARD};border:none;border-radius:6px;"
             f"color:{_C.TEXT_PRI};font-size:11px;font-family:'JetBrains Mono',monospace;}}"
             f"QListWidget::item{{padding:8px 12px;border-bottom:1px solid {_C.BORDER};}}"
-            f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
+            f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};color:{_C.TEXT_PRI};}}"
             f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
             f"QScrollBar:vertical{{background:{_C.BG_CARD};width:6px;border:none;}}"
             f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};"
@@ -1745,7 +1746,7 @@ class EncodePanel(QWidget):
         spin = QSpinBox()
         spin.setRange(0, 4096)
         spin.setPrefix(prefix + " ")
-        spin.setToolTip(f"Recadrage {prefix.lower()} de la piste vidéo active.")
+        spin.setToolTip(translate_text("Recadrage {side} de la piste vidéo active.", side=translate_text(prefix).lower()))
         spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         spin.setStyleSheet(
@@ -2375,9 +2376,9 @@ class EncodePanel(QWidget):
         try:
             result = subprocess.run(
                 cmd,
-                capture_output=True, check=False, timeout=20, text=True,
+                capture_output=True, check=False, timeout=20, **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return "", ""
         if result.returncode != 0:
             return "", ""
@@ -2437,9 +2438,9 @@ class EncodePanel(QWidget):
         try:
             result = subprocess.run(
                 [self._config.tool_mediainfo, "--Output=JSON", str(source_path)],
-                capture_output=True, check=False, text=True,
+                capture_output=True, check=False, timeout=60, **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             return "", ""
         if result.returncode != 0:
             return "", ""
@@ -3137,9 +3138,10 @@ class EncodePanel(QWidget):
         mode_label = self._static_hdr_estimate_mode_label(mode)
         self.log_message.emit(
             "INFO",
-            (
-                f"Analyse HDR10 estimée P5→P8.1 {mode_label} programmée. "
-                "Elle sera exécutée et suivie dans le workflow d’encodage."
+            translate_text(
+                "Analyse HDR10 estimée P5→P8.1 {mode} programmée. "
+                "Elle sera exécutée et suivie dans le workflow d’encodage.",
+                mode=mode_label,
             ),
         )
 
@@ -3195,10 +3197,10 @@ class EncodePanel(QWidget):
             detail_parts.append(f"crop {estimate_obj.active_crop}")
         self.log_message.emit(
             "WARN",
-            (
-                "HDR10 statique estimé depuis analyse P5→P8.1 "
-                f"{mode_label} ({', '.join(detail_parts)}): "
-                f"{estimate_obj.max_cll}.{warning_suffix}"
+            translate_text(
+                "HDR10 statique estimé depuis analyse P5→P8.1 {mode} ({details}): {max_cll}.{suffix}",
+                mode=mode_label, details=", ".join(detail_parts),
+                max_cll=estimate_obj.max_cll, suffix=warning_suffix,
             ),
         )
         self._rebuild_preview()
@@ -3748,15 +3750,16 @@ class EncodePanel(QWidget):
         if captures:
             self._show_preview_capture(0)
             count = len(captures)
-            label = "image" if mode == "image" else "vignette"
-            plural = "s" if count > 1 else ""
-            scene_text = f"{count} {label}{plural} disponible{plural}"
+            if mode == "image":
+                scene_text = translate_text("{count} image(s) disponible(s)", count=count)
+                ready_text = translate_text("Preview image prête : {count} image(s).", count=count)
+            else:
+                scene_text = translate_text("{count} vignette(s) disponible(s)", count=count)
+                ready_text = translate_text("Preview vidéo prête : {count} vignette(s).", count=count)
             if warning:
                 scene_text += f" · {warning}"
             self._preview_scene_status.setText(scene_text)
-            self._preview_status.setText(
-                f"Preview {'image' if mode == 'image' else 'vidéo'} prête : {count} {label}{plural}."
-            )
+            self._preview_status.setText(ready_text)
         else:
             self._preview_image.setText("Aucune image générée")
             self._preview_image.setPixmap(QPixmap())
@@ -3856,7 +3859,7 @@ class EncodePanel(QWidget):
         self._preview_image.resize(scaled.size())
 
     def _on_preview_failed(self, message: str, _exc: object) -> None:
-        self._preview_status.setText(f"Preview échouée : {message}")
+        self._preview_status.setText(translate_text("Preview échouée : {message}", message=message))
         self._set_preview_running(False)
 
     def _on_preview_cancelled(self) -> None:
@@ -5393,7 +5396,10 @@ class EncodePanel(QWidget):
             if top == 0 and bottom == 0 and left == 0 and right == 0:
                 self.log_message.emit(
                     "INFO",
-                    f"Auto-crop : aucune bande noire détectée ({dimensions[0]}×{dimensions[1]}).",
+                    translate_text(
+                        "Auto-crop : aucune bande noire détectée ({width}×{height}).",
+                        width=dimensions[0], height=dimensions[1],
+                    ),
                 )
                 self._apply_crop_settings(VideoCropSettings(enabled=False, unit="px"))
             else:
@@ -5410,16 +5416,16 @@ class EncodePanel(QWidget):
                 )
                 self._apply_crop_settings(new_crop)
                 mult_desc = (
-                    "multiple de 32 (NVENC+DV)"
+                    translate_text("multiple de 32 (NVENC+DV)")
                     if (is_nvenc_hevc(codec) and copy_dv)
-                    else "multiple de 2"
+                    else translate_text("multiple de 2")
                 )
                 self.log_message.emit(
                     "INFO",
-                    (
-                        f"Auto-crop appliqué [{mult_desc}] : "
-                        f"Haut={top}px, Bas={bottom}px, Gauche={left}px, Droite={right}px "
-                        f"→ Résolution active {act_w}×{act_h}"
+                    translate_text(
+                        "Auto-crop appliqué [{mode}] : Haut={top}px, Bas={bottom}px, Gauche={left}px, "
+                        "Droite={right}px → Résolution active {width}×{height}",
+                        mode=mult_desc, top=top, bottom=bottom, left=left, right=right, width=act_w, height=act_h,
                     ),
                 )
             self._save_current_video_state()
@@ -5485,20 +5491,21 @@ class EncodePanel(QWidget):
 
             dlg = QMessageBox(parent or self)
             dlg.setIcon(QMessageBox.Icon.Information)
-            dlg.setWindowTitle("Alignement géométrique Dolby Vision (NVENC)")
-            dlg.setText(
+            dlg.setWindowTitle(translate_text("Alignement géométrique Dolby Vision (NVENC)"))
+            dlg.setText(translate_text(
                 "<h3>Alignement matériel requis pour Dolby Vision</h3>"
                 "<p>Pour garantir la compatibilité Dolby Vision avec NVENC et éviter le basculement "
                 "en SDR sur téléviseur ou box Android TV (lié à la fenêtre de conformité HEVC SPS), "
                 "la résolution encodée doit être un <b>multiple de 32</b> pixels.</p>"
-                f"<p><b>Résolution recommandée :</b> {act_w} × {act_h} (multiple de 32)<br>"
-                f"<b>Recadrage calculé :</b> Haut: {req_top} px, Bas: {req_bottom} px, "
-                f"Gauche: {req_left} px, Droite: {req_right} px</p>"
+                "<p><b>Résolution recommandée :</b> {width} × {height} (multiple de 32)<br>"
+                "<b>Recadrage calculé :</b> Haut: {top} px, Bas: {bottom} px, "
+                "Gauche: {left} px, Droite: {right} px</p>"
                 "<p>Souhaitez-vous appliquer automatiquement ce recadrage dans l'onglet 'Géométrie / Filtres' "
-                "et continuer l'encodage ?</p>"
-            )
-            apply_btn = dlg.addButton("Appliquer et continuer", QMessageBox.ButtonRole.AcceptRole)
-            dlg.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+                "et continuer l'encodage ?</p>",
+                width=act_w, height=act_h, top=req_top, bottom=req_bottom, left=req_left, right=req_right,
+            ))
+            apply_btn = dlg.addButton(translate_text("Appliquer et continuer"), QMessageBox.ButtonRole.AcceptRole)
+            dlg.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
             dlg.setDefaultButton(apply_btn)
             dlg.exec()
 

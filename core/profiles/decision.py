@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from core.lang_tags import Rfc5646LanguageTags
 from core.profile_store import ProfileLoadError, ProfileStore
 from core.profiles import keywords as keyword_registry
 from core.profiles.expressions import (
@@ -522,6 +523,14 @@ def _condition_leaf_result(
         matched = _compare_value(actual, op, expected) or (
             similarity > 0 and op not in {"not_is", "ne", "!=", "not_contains", "not_in"}
         )
+    elif field == "language":
+        similarity = 0
+        # Forme d'avant la détection de « VFQ » (fr-FR) : une règle déjà enregistrée
+        # (« fr-FR » + titre VFQ) s'applique toujours ; « fr-CA » ne vise que les VFQ.
+        candidates = {actual, *Rfc5646LanguageTags.legacy_track_languages(track.language, track.title)}
+        results = [_compare_value(candidate, op, expected) for candidate in candidates]
+        negative = op in {"not_is", "ne", "!=", "not_in", "not_contains"}
+        matched = all(results) if negative else any(results)
     else:
         similarity = 0
         matched = _compare_value(actual, op, expected)

@@ -97,9 +97,9 @@ class _FileRow(QWidget):
             QPushButton:hover {{
                 color: {_C.ERROR};
                 border-color: {_C.ERROR};
-                background: #1f0e0e;
+                background: {_C.BADGE_ERROR_BG};
             }}
-            QPushButton:pressed {{ background: #2a0f0f; }}
+            QPushButton:pressed {{ background: {_C.ERROR_PRESSED_BG}; }}
         """)
         remove_btn.clicked.connect(lambda: self.remove_clicked.emit(self._file_id))
         lay.addWidget(remove_btn)
@@ -232,7 +232,7 @@ class _FileListWidget(QFrame):
                 font-size: {_font_px(11)}px;
                 font-weight: 600;
             }}
-            QPushButton:hover {{ color: #8090ff; }}
+            QPushButton:hover {{ color: {_C.ACCENT_HOVER}; }}
         """)
         add_btn.clicked.connect(self._browse)
         add_bar_lay.addWidget(add_btn)

@@ -140,6 +140,20 @@ class SyncCalibration:
         segment = self.segments[index]
         return segment.start_ms * self._stretch_ratio() + segment.shift_ms
 
+    def output_time_ms(self, donor_ms: float) -> float:
+        """Instant de sortie d'un instant de la cible (chapitres) ; dans une partie coupée, la reprise qui suit."""
+        index = max(i for i, segment in enumerate(self.segments) if i == 0 or segment.start_ms <= donor_ms)
+        segment = self.segments[index]
+        placed = donor_ms * self._stretch_ratio() + segment.shift_ms
+        ranges = self.output_ranges()
+        own = next((start for start, _stop, i in ranges if i == index), None)
+        if own is not None:
+            # Début du segment retiré (saut négatif, avant 0) : son premier instant joué.
+            return max(0.0, placed, own)
+        # Segment entièrement coupé : la reprise après la coupe, au-delà d'un éventuel silence conservé.
+        following = [start for start, _stop, i in ranges if i > index]
+        return max(0.0, min(following)) if following else max(0.0, placed)
+
     def donor_time_ms(self, output_ms: float) -> float:
         """Instant de la piste cible placé à `output_ms` dans la sortie (borné à son segment)."""
         index = self.segment_index_at(output_ms)

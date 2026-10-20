@@ -39,7 +39,7 @@ def _primary_button(text: str) -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
-            color: #ffffff;
+            color: {_C.ON_ACCENT};
             border: none;
             border-radius: 6px;
             font-size: {_font_px(12)}px;
@@ -47,8 +47,8 @@ def _primary_button(text: str) -> QPushButton:
             padding: 0 {_scale(16)}px;
             text-align: center;
         }}
-        QPushButton:hover  {{ background: #6070f0; }}
-        QPushButton:pressed {{ background: #3a52c0; }}
+        QPushButton:hover  {{ background: {_C.ACCENT_HOVER}; }}
+        QPushButton:pressed {{ background: {_C.ACCENT_PRESSED}; }}
         QPushButton:disabled {{
             background: {_C.BG_ACTIVE};
             color: {_C.TEXT_DIM};
@@ -260,7 +260,7 @@ def _convert_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#f0b429"
+    color = color or _C.WARN
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -281,7 +281,7 @@ def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _scissors_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#e5a50a"
+    color = color or _C.SYNC_CUT
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -304,7 +304,7 @@ def _scissors_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _waveform_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#6070f8"
+    color = color or _C.ACCENT
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'

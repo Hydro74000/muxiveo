@@ -158,6 +158,10 @@ def parse_framerate_fraction(value: str | float | int | Fraction | None) -> Frac
         return None
 
 
+# Écart de vitesse maximal d'une vraie conversion de cadence (PAL ↔ cinéma : 4,1 % ; 1000/1001 : 0,1 %).
+MAX_CADENCE_SPEED_CHANGE = 0.05
+
+
 def detect_cadence_from_metadata(
     master_fps_val: str | float | Fraction | None,
     donor_fps_val: str | float | Fraction | None,
@@ -179,6 +183,10 @@ def detect_cadence_from_metadata(
     # Ratio exact calculé directement à la volée depuis les cadences des sources (target / source) :
     speed_ratio = m_frac / d_frac
     speed_factor = float(speed_ratio)
+    # Au-delà de quelques pour cent, l'écart vient de la structure de la vidéo (télécinéma 29,97 ↔ 23,976,
+    # images entrelacées ou doublées 50 ↔ 25) : l'audio garde sa vitesse, aucune conversion n'est due.
+    if abs(speed_factor - 1.0) > MAX_CADENCE_SPEED_CHANGE:
+        return None
 
     # Catégorisation pour l'enum et l'UX
     cadence_type = CadenceType.CUSTOM
@@ -299,14 +307,21 @@ def detect_cadence_from_acoustic_samples(
 def build_cadence_audio_filter(
     mismatch: CadenceMismatch,
     method: CadenceAudioMethod | str = CadenceAudioMethod.AUTO,
-    sample_rate: int = 48000,
+    sample_rate: int | None = None,
 ) -> str:
-    """Génère la chaîne de filtres FFmpeg adaptée selon la méthode choisie (atempo vs asetrate vs auto)."""
+    """Génère la chaîne de filtres FFmpeg adaptée selon la méthode choisie (atempo vs asetrate vs auto).
+
+    ``asetrate`` réinterprète le débit des échantillons : il exige le débit réel de la piste
+    (``sample_rate``, conservé en sortie). Inconnu : la piste est d'abord ramenée à 48 kHz,
+    la vitesse reste exacte quel que soit son débit (44,1 kHz, 96 kHz…).
+    """
     method_str = method.value if isinstance(method, CadenceAudioMethod) else str(method).lower()
     speed = mismatch.speed_factor
 
     if method_str == "asetrate":
         # Modification de cadence avec pitch shift proportionnel
+        if sample_rate is None or sample_rate <= 0:
+            return f"aresample=48000,asetrate={round(48000 * speed)},aresample=48000"
         target_rate = round(sample_rate * speed)
         return f"asetrate={target_rate},aresample={sample_rate}"
 

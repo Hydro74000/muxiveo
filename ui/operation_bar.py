@@ -77,13 +77,13 @@ class OperationBar(QWidget):
         split = QHBoxLayout()
         split.setSpacing(0)
         self.run_button = QPushButton()
-        self.run_button.setIcon(workflow_icon("play", "#ffffff"))
+        self.run_button.setIcon(workflow_icon("play", C.ON_ACCENT))
         self.run_button.setMinimumWidth(scale(215))
         self.run_button.setFixedHeight(scale(42))
         self.run_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_button.clicked.connect(self._run)
         self.arrow_button = QPushButton()
-        self.arrow_button.setIcon(workflow_icon("down", "#ffffff", 14))
+        self.arrow_button.setIcon(workflow_icon("down", C.ON_ACCENT, 14))
         self.arrow_button.setFixedSize(scale(38), scale(42))
         self.arrow_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.arrow_button.setAccessibleName(translate_text("Autres opérations prêtes"))
@@ -91,8 +91,8 @@ class OperationBar(QWidget):
         self.arrow_button.clicked.connect(self.open_menu)
         for button in (self.run_button, self.arrow_button):
             button.setStyleSheet(f"""
-                QPushButton{{background:{C.ACCENT};color:white;border:none;font-size:{font_px(12)}px;font-weight:700;padding:0 {scale(16)}px;border-radius:6px;}}
-                QPushButton:hover{{background:#6070f8;}}
+                QPushButton{{background:{C.ACCENT};color:{C.ON_ACCENT};border:none;font-size:{font_px(12)}px;font-weight:700;padding:0 {scale(16)}px;border-radius:6px;}}
+                QPushButton:hover{{background:{C.ACCENT_HOVER};}}
                 QPushButton:disabled{{background:{C.BG_CARD};color:{C.TEXT_SEC};}}
                 QPushButton[hasMenu="true"]{{border-top-right-radius:0;border-bottom-right-radius:0;}}
             """)

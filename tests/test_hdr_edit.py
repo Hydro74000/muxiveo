@@ -396,6 +396,27 @@ def test_patcher_removes_hdr10plus_and_cancels(tmp_path):
     assert not output.exists() and not list(tmp_path.glob("*.partial"))
 
 
+def test_patcher_keeps_result_when_publication_is_refused(tmp_path):
+    """Audit Codex G2 : destination apparue pendant le traitement ; le fichier corrigé est conservé."""
+    from core.output_commit import OutputChangedError
+
+    source = tmp_path / "film.hevc"
+    source.write_bytes(b"\x00" * 32)
+    output = tmp_path / "out.hevc"
+
+    class _ToolsCreatingOutput(_FakeTools):
+        def __call__(self, cmd):
+            result = super().__call__(cmd)
+            output.write_bytes(b"autre logiciel")  # destination créée pendant le job
+            return result
+
+    with pytest.raises(OutputChangedError) as exc:
+        _patcher(tmp_path, _ToolsCreatingOutput(tmp_path / "unused.json")).run(
+            PatchPlan(source, 0, output, hdr10plus=Hdr10PlusEdit(remove=True)))
+    assert output.read_bytes() == b"autre logiciel"
+    assert exc.value.candidate.is_file() and exc.value.candidate.read_bytes() == source.read_bytes()
+
+
 def test_patcher_checks_free_space(tmp_path, monkeypatch):
     import core.hdr_inspection.patch as patch_module
 

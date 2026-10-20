@@ -22,8 +22,11 @@ from core.workflows.common.sync_rewrite import (
 )
 
 
-def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
-    """Fondus de bord sans chevauchement : la durée et les ancrages restent exacts."""
+def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int | None = None) -> str:
+    """Fondus de bord sans chevauchement : la durée et les ancrages restent exacts.
+
+    ``sample_rate`` : débit réel de la piste, requis par la conversion de cadence ``asetrate``.
+    """
     from core.workflows.cadence import CadenceType, build_cadence_audio_filter
 
     segments = calibration.segments
@@ -34,6 +37,7 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80) -> str:
         cadence_str = build_cadence_audio_filter(
             calibration.cadence_mismatch,
             getattr(calibration, "cadence_audio_method", "atempo"),
+            sample_rate=sample_rate,
         )
         if len(segments) > 1:
             split_labels = "".join(f"[cin{i}]" for i in range(len(segments)))
@@ -78,8 +82,12 @@ def track_calibration(config, mapped):
     return SyncCalibration.from_dict(payload) if payload else SyncCalibration.linear(mapped.track.time_shift_ms)
 
 
-def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None):
-    """Décrit chaque piste transformée ; le même contrat sert à la preview."""
+def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None,
+                         sample_rates: Mapping[tuple[Path, int], int] | None = None):
+    """Décrit chaque piste transformée ; le même contrat sert à la preview.
+
+    ``sample_rates`` : débits des pistes audio (source, index), connus après la sonde du lancement.
+    """
     result: list[tuple[Any, Path, list[str], SyncCalibration]] = []
     root = Path(root)
     if config.sync_mode != "physical":
@@ -128,7 +136,8 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
                 if codec not in {"aac", "ac3", "eac3", "flac"} or track_has_object_audio_metadata(
                         codec=track.codec, title=track.title, display_info=track.display_info):
                     raise RemuxError("Synchronisation physique : codec immersif/non encodable ; choisir explicitement une variante AAC, AC3, EAC3 ou FLAC.")
-                graph = audio_filter(calibration, config.crossfade_ms).replace(
+                rate = (sample_rates or {}).get((Path(mapped.source_path), int(mapped.stream_index)))
+                graph = audio_filter(calibration, config.crossfade_ms, sample_rate=rate).replace(
                     "[0:a:0]", f"[0:{mapped.stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},",
                 )
                 command = base[:-2] + ["-filter_complex", graph, "-map", "[out]", "-c:a", codec]
@@ -168,7 +177,15 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
         offset = preroll_input_offset(payload)
         if offset:
             timestamp_offsets.setdefault(path, offset)
-    for mapped, output, command, calibration in preparation_commands(config, root, ffmpeg, source_origins=origins):
+    sample_rates: dict[tuple[Path, int], int] = {}
+    for path, payload in payloads.items():
+        streams = payload.get("streams")
+        for stream in streams if isinstance(streams, list) else []:
+            if (isinstance(stream, dict) and str(stream.get("index", "")).isdigit()
+                    and str(stream.get("sample_rate", "")).isdigit()):
+                sample_rates[(path, int(stream["index"]))] = int(stream["sample_rate"])
+    for mapped, output, command, calibration in preparation_commands(
+            config, root, ffmpeg, source_origins=origins, sample_rates=sample_rates):
         if log is not None:
             track = mapped.track
             segments = calibration.segments

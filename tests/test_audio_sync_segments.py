@@ -235,6 +235,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         _scan_cancel=threading.Event(),
         _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_cadence=lambda *_a: None,
         _audio_sync_reference_choices=lambda _entry: [reference],
         _audio_sync_track=lambda entry: entry,
         _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
@@ -443,6 +444,7 @@ def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
         _scan_cancel=threading.Event(),
         _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_cadence=lambda *_a: None,
         _audio_sync_track=lambda entry: entry,
         _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
         log_message=SimpleNamespace(emit=lambda *_a: None),
@@ -454,3 +456,36 @@ def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
                                               reference_entry=cast(Any, reference))
     assert seen == [expected]
     assert dialogs == []
+
+
+def test_remux_panel_passes_detected_cadence_to_scan(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from ui.panels.remux_panel import panel
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.cadence import CadenceMismatch, CadenceType
+
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    target = SimpleNamespace(track_type="audio", mkv_tid=2, entry_id="target")
+    reference = SimpleNamespace(mkv_tid=1, entry_id="reference")
+    seen = []
+
+    def scan(_scanner, *_a, **kwargs):
+        seen.append((kwargs.get("cadence_mismatch"), kwargs.get("cadence_audio_method")))
+        raise AudioSyncError("arrêt")
+
+    monkeypatch.setattr(AudioSyncScanner, "scan", scan)
+    fake = SimpleNamespace(
+        _scan_cancel=threading.Event(),
+        _can_start_auxiliary_operation=lambda: True,
+        _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_cadence=lambda *_a: mismatch,
+        _audio_sync_track=lambda entry: entry,
+        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe", sync_cadence_audio_method="asetrate"),
+        log_message=SimpleNamespace(emit=lambda *_a: None),
+        audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
+        _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
+        _executor=SimpleNamespace(submit=lambda callback: callback()),
+    )
+    panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target), reference_entry=cast(Any, reference))
+    assert seen == [(mismatch, "asetrate")]

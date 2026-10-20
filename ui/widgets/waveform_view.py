@@ -23,6 +23,13 @@ from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 _GRAB_PX = 6
 
 
+def _alpha(color: str, alpha: int) -> QColor:
+    """Couleur du thème avec transparence."""
+    qcolor = QColor(color)
+    qcolor.setAlpha(alpha)
+    return qcolor
+
+
 def _format_time_tick(ms: float, is_subsecond: bool) -> str:
     total_sec = max(0.0, ms / 1000.0)
     hours = int(total_sec // 3600)
@@ -488,6 +495,20 @@ class WaveformView(QWidget):
                 peaks[xa:xb] = self._extract_column_peaks(chunk[1], donor_a, donor_b, xb - xa, origin_ms=chunk[0])
         return peaks
 
+    def _target_cue_intervals(self, start_ms: float, end_ms: float) -> list[tuple[float, float]]:
+        """Plages de sortie d'une réplique cible (instants cible) d'après la calibration dessinée."""
+        if not self._pieces:
+            return [(start_ms + self.shift_ms, end_ms + self.shift_ms)]
+        ratio = self.stretch_ratio
+        intervals = []
+        for out_a, out_b, shift in self._pieces:
+            donor_a = (out_a - shift) / ratio
+            donor_b = (out_b - shift) / ratio
+            low, high = max(start_ms, donor_a), min(end_ms, donor_b)
+            if high > low:
+                intervals.append((low * ratio + shift, high * ratio + shift))
+        return intervals
+
     def _target_chunk_for(self, donor_a: float, donor_b: float) -> tuple[float, Any] | None:
         """Extrait de la cible recouvrant le mieux la plage cible [donor_a, donor_b] (ms)."""
         best, best_overlap = None, 0.0
@@ -593,7 +614,7 @@ class WaveformView(QWidget):
 
         # Grille verticale et axe temporel
         step_ms, is_subsec = _choose_time_step(self.visible_duration_ms)
-        pen_grid = QPen(QColor("#242b38"))
+        pen_grid = QPen(QColor(_C.BORDER))
         pen_grid.setStyle(Qt.PenStyle.DotLine)
 
         font_tick = QFont()
@@ -633,7 +654,7 @@ class WaveformView(QWidget):
 
         # Jonctions de la calibration (positions de sortie).
         if self._junctions:
-            pen_junction = QPen(QColor("#e5a50a"))
+            pen_junction = QPen(QColor(_C.SYNC_CUT))
             pen_junction.setStyle(Qt.PenStyle.DashDotLine)
             pen_junction.setWidthF(_scale(1.8))
             font_cut = QFont()
@@ -646,13 +667,13 @@ class WaveformView(QWidget):
                 x_cut = int(self.x_at_time(t_junction))
                 painter.setPen(pen_junction)
                 painter.drawLine(x_cut, 0, x_cut, h)
-                painter.setPen(QColor("#e5a50a"))
+                painter.setPen(QColor(_C.SYNC_CUT))
                 painter.drawText(x_cut + _scale(4), _scale(16), f"✂ {index + 1} ({_format_time_tick(t_junction, True)})")
 
         # Marqueur vertical de coupure (si présent dans la plage visible)
         if not self._junctions and self.cut_time_ms is not None and t_start_ms <= self.cut_time_ms <= t_end_ms:
             x_cut = int((self.cut_time_ms - t_start_ms) / self.visible_duration_ms * w)
-            pen_cut = QPen(QColor("#e5a50a"))
+            pen_cut = QPen(QColor(_C.SYNC_CUT))
             pen_cut.setStyle(Qt.PenStyle.DashDotLine)
             pen_cut.setWidthF(_scale(1.8))
             painter.setPen(pen_cut)
@@ -660,7 +681,7 @@ class WaveformView(QWidget):
 
             # Badge de coupure
             cut_lbl = f"✂ Coupure ({_format_time_tick(self.cut_time_ms, True)})"
-            painter.setPen(QColor("#e5a50a"))
+            painter.setPen(QColor(_C.SYNC_CUT))
             font_cut = QFont()
             font_cut.setPixelSize(_font_px(9))
             font_cut.setBold(True)
@@ -668,15 +689,19 @@ class WaveformView(QWidget):
             painter.drawText(x_cut + _scale(4), _scale(16), cut_lbl)
 
         # Repère central vertical (réticule d'alignement)
-        pen_reticule = QPen(QColor("#3d4b60"))
+        pen_reticule = QPen(QColor(_C.BORDER_LT))
         pen_reticule.setStyle(Qt.PenStyle.DashLine)
         pen_reticule.setWidthF(_scale(1.0))
         painter.setPen(pen_reticule)
         painter.drawLine(int(w * 0.5), 0, int(w * 0.5), h)
 
         # Rendu des formes d'onde
-        color_ref = QColor(32, 201, 151, 190) if is_overlay else QColor("#20c997")
-        color_tgt = QColor(120, 140, 255, 190) if is_overlay else QColor(_C.ACCENT)
+        color_ref = QColor(_C.WAVE_REF)
+        if is_overlay:
+            color_ref.setAlpha(190)
+        color_tgt = QColor(_C.ACCENT)
+        if is_overlay:
+            color_tgt.setAlpha(190)
         stroke_w = _scale(1.2) if is_overlay else _scale(1.0)
 
         if has_audio:
@@ -758,17 +783,17 @@ class WaveformView(QWidget):
                     x2 = int((e_ms - t_start_ms) / self.visible_duration_ms * w)
                     if x2 >= 0 and x1 <= w:
                         cue_w = max(_scale(4), x2 - x1)
-                        painter.setPen(QPen(QColor(32, 201, 151, 220), _scale(1.0)))
-                        painter.setBrush(QBrush(QColor(32, 201, 151, 70)))
+                        painter.setPen(QPen(_alpha(_C.WAVE_REF, 220), _scale(1.0)))
+                        painter.setBrush(QBrush(_alpha(_C.WAVE_REF, 70)))
                         r = QRect(x1, sub_ref_y, cue_w, sub_ref_h)
                         painter.drawRoundedRect(r, _scale(3), _scale(3))
                         if cue_w > _scale(35) and txt:
-                            painter.setPen(QColor("#ffffff"))
+                            painter.setPen(QColor(_C.TEXT_PRI))
                             text_r = r.adjusted(_scale(3), 0, -_scale(3), 0)
                             elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
                             painter.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
 
-            # 2. Sous-titres de la cible (décalés dynamiquement selon shift_ms)
+            # 2. Sous-titres de la cible (placés selon la calibration dessinée)
             if self._tgt_cues:
                 if is_overlay:
                     sub_tgt_y = int(h * 0.74)
@@ -778,20 +803,23 @@ class WaveformView(QWidget):
                     sub_tgt_h = int(_scale(15)) if has_audio else int(_scale(24))
 
                 for s_ms, e_ms, txt in self._tgt_cues:
-                    s_shifted = s_ms + self.shift_ms
-                    e_shifted = e_ms + self.shift_ms
-                    x1 = int((s_shifted - t_start_ms) / self.visible_duration_ms * w)
-                    x2 = int((e_shifted - t_start_ms) / self.visible_duration_ms * w)
-                    if x2 >= 0 and x1 <= w:
-                        cue_w = max(_scale(4), x2 - x1)
-                        painter.setPen(QPen(QColor(120, 140, 255, 230), _scale(1.0)))
-                        painter.setBrush(QBrush(QColor(120, 140, 255, 80)))
-                        r = QRect(x1, sub_tgt_y, cue_w, sub_tgt_h)
+                    # Placée comme à la réécriture : morceaux coupés retirés, silences et cadence suivis.
+                    rects = []
+                    for out_start, out_end in self._target_cue_intervals(s_ms, e_ms):
+                        x1 = int((out_start - t_start_ms) / self.visible_duration_ms * w)
+                        x2 = int((out_end - t_start_ms) / self.visible_duration_ms * w)
+                        if x2 >= 0 and x1 <= w:
+                            rects.append(QRect(x1, sub_tgt_y, max(_scale(4), x2 - x1), sub_tgt_h))
+                    painter.setPen(QPen(_alpha(_C.ACCENT, 230), _scale(1.0)))
+                    painter.setBrush(QBrush(_alpha(_C.ACCENT, 80)))
+                    for r in rects:
                         painter.drawRoundedRect(r, _scale(3), _scale(3))
-                        if cue_w > _scale(35) and txt:
-                            painter.setPen(QColor("#ffffff"))
-                            text_r = r.adjusted(_scale(3), 0, -_scale(3), 0)
-                            elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
+                    widest = max(rects, key=lambda rect: rect.width(), default=None)
+                    if widest is not None and widest.width() > _scale(35) and txt:
+                        painter.setPen(QColor(_C.TEXT_PRI))
+                        text_r = widest.adjusted(_scale(3), 0, -_scale(3), 0)
+                        elided = painter.fontMetrics().elidedText(txt, Qt.TextElideMode.ElideRight, text_r.width())
+                        painter.drawText(text_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
         if self.section is not None:
             self._draw_section_label(painter, w, h, is_overlay)
 
@@ -818,7 +846,7 @@ class WaveformView(QWidget):
         painter.setFont(font_lbl)
 
         # Légende Référence
-        painter.setPen(QColor("#20c997"))
+        painter.setPen(QColor(_C.WAVE_REF))
         painter.drawText(_scale(8), _scale(15), f"● {self.reference_label}")
 
         # Légende Cible avec décalage

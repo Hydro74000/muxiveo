@@ -85,8 +85,8 @@ def _primary_button(text: str) -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton{{background:{_C.ACCENT};color:#fff;border:none;border-radius:6px;
                      font-size:{_font_px(12)}px;font-weight:700;padding:0 {_scale(20)}px;}}
-        QPushButton:hover{{background:#6070f0;}}
-        QPushButton:pressed{{background:#3a52c0;}}
+        QPushButton:hover{{background:{_C.ACCENT_HOVER};}}
+        QPushButton:pressed{{background:{_C.ACCENT_PRESSED};}}
         QPushButton:disabled{{background:{_C.BG_ACTIVE};color:{_C.TEXT_DIM};}}
     """)
     return btn
@@ -171,7 +171,7 @@ def _combo_style() -> str:
             f"padding:{_scale(3)}px {_scale(8)}px;font-size:{_font_px(11)}px;}}"
             f"QComboBox:focus{{border-color:{_C.ACCENT};}}"
             f"QComboBox QAbstractItemView{{background:{_C.BG_CARD};"
-            f"color:{_C.TEXT_PRI};selection-background-color:{_C.ACCENT_DIM};}}")
+            f"color:{_C.TEXT_PRI};selection-background-color:{_C.ACCENT_DIM}; selection-color: {_C.TEXT_PRI};}}")
 
 
 def _checkbox_style() -> str:

@@ -263,7 +263,7 @@ class DecisionProfileEditorDialog(QDialog):
                 padding: {_scale(5)}px {_scale(7)}px;
                 font-size: {_font_px(11)}px;
             }}
-            QListWidget::item:selected {{ background: {_C.ACCENT_DIM}; }}
+            QListWidget::item:selected {{ background: {_C.ACCENT_DIM}; color: {_C.TEXT_PRI}; }}
             QGroupBox {{
                 color: {_C.TEXT_DIM};
                 border: 1px solid {_C.BORDER};

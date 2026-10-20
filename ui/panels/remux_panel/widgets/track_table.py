@@ -590,7 +590,7 @@ class _TrackTable(QTableWidget):
             )
             cuts_btn = self._make_action_button(
                 tooltip=tip,
-                icon=_scissors_icon("#e5a50a", 13),
+                icon=_scissors_icon(_C.SYNC_CUT, 13),
             )
             cuts_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
             layout.addWidget(cuts_btn)
@@ -602,7 +602,7 @@ class _TrackTable(QTableWidget):
             )
             studio_btn = self._make_action_button(
                 tooltip=tip,
-                icon=_waveform_icon("#6070f8", 13),
+                icon=_waveform_icon(_C.ACCENT, 13),
             )
             studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
             layout.addWidget(studio_btn)
@@ -626,7 +626,7 @@ class _TrackTable(QTableWidget):
         elif entry.track_type == "subtitle" and self._audio_sync_available:
             sync_btn = self._make_action_button(
                 tooltip=translate_text("Synchroniser cette piste de sous-titres"),
-                icon=_refresh_icon("#5dcc8a", 13),
+                icon=_refresh_icon(_C.OK, 13),
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
             layout.addWidget(sync_btn)

@@ -8,6 +8,7 @@ import re
 import subprocess
 from typing import Any
 
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
 from core.workflows.hybrid import HybridPair, episode_key, pair_directories
@@ -53,7 +54,7 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
             str(path),
         ]
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)  # nosec B603
+        res = subprocess.run(cmd, capture_output=True, timeout=10, **subprocess_text_kwargs())  # nosec B603
         output = res.stdout.strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output

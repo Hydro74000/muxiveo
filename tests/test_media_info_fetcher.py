@@ -5,6 +5,8 @@ import zlib
 from pathlib import Path
 from typing import Literal
 
+import pytest
+
 from core.media_info_fetcher import (
     MediaDetails,
     MediaSearchResult,
@@ -395,3 +397,16 @@ def test_media_details_subtitle_and_container_title_formats():
     assert episode.formatted_subtitle_tag() == (
         "Daredevil: Born Again - S02E01 - The Northern Star"
     )
+
+
+@pytest.mark.parametrize("name, title, year", [
+    ("Blade.Runner.2049.2017.2160p.UHD.BluRay.mkv", "Blade Runner 2049", "2017"),
+    ("Blade.Runner.2049.mkv", "Blade Runner 2049", ""),
+    ("2001.A.Space.Odyssey.1968.2160p.mkv", "2001 A Space Odyssey", "1968"),
+    ("1917.2019.1080p.mkv", "1917", "2019"),
+    ("2012.1080p.mkv", "2012", ""),
+    ("Show.2019.S01E02.mkv", "Show", "2019"),
+])
+def test_release_year_is_the_last_plausible_year_after_a_title(name, title, year):
+    from core.media_info_fetcher import clean_filename_for_search, extract_year_from_filename
+    assert (clean_filename_for_search(Path(name)), extract_year_from_filename(Path(name))) == (title, year)

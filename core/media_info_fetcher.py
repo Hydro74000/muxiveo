@@ -8,6 +8,7 @@ Authentification TMDB via :
 """
 from __future__ import annotations
 
+import datetime
 import json
 import mimetypes
 import os
@@ -60,6 +61,22 @@ _SEASON_EP_RE = re.compile(
 _BRACKETS_RE = re.compile(r"[\[\](){}]")
 
 
+def _release_year_match(text: str) -> re.Match[str] | None:
+    """Année de sortie : la dernière année plausible précédée d'un titre.
+
+    Les nombres du titre (« Blade Runner 2049 », « 2001 A Space Odyssey »,
+    « 1917 ») en font partie : une année qui ouvre le nom ou qui est future
+    n'est pas une année de sortie.
+    """
+    latest = datetime.date.today().year + 2
+    for match in reversed(list(_YEAR_RE.finditer(text))):
+        if int(match.group()) > latest:
+            continue
+        if re.search(r"[^\W_]", _BRACKETS_RE.sub(" ", text[: match.start()])):
+            return match
+    return None
+
+
 def clean_text_for_search(text: str) -> str:
     """
     Nettoie un texte libre pour une recherche TMDB.
@@ -77,7 +94,7 @@ def clean_text_for_search(text: str) -> str:
 
     cut_positions: list[int] = []
 
-    year_match = _YEAR_RE.search(title)
+    year_match = _release_year_match(title)
     if year_match:
         cut_positions.append(year_match.start())
 
@@ -102,7 +119,7 @@ def extract_year_from_text(text: str) -> str:
     Retourne '' si aucune année n'est détectée.
     """
     normalized = re.sub(r"[._\-]", " ", (text or "").strip())
-    m = _YEAR_RE.search(normalized)
+    m = _release_year_match(normalized)
     return m.group() if m else ""
 
 

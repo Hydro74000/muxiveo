@@ -26,7 +26,8 @@ SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sub", ".sup"}
 ALL_MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
 
 # Expressions rationnelles pour extraire (saison, épisode)
-_REGEX_SXX_EXX = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})e(\d{1,3})(?!\d)")
+# S01E02, S01.E02, S01 E02 : la saison suit l'épisode même séparé (sinon « E02 » seul = saison 1).
+_REGEX_SXX_EXX = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})[\s._-]?e(\d{1,3})(?!\d)")
 _REGEX_NXN = re.compile(r"(?i)(?<![a-z0-9])(\d{1,2})x(\d{1,3})(?!\d)")
 _REGEX_EP_STANDALONE = re.compile(r"(?i)(?<![a-z0-9])(?:ep|e)(\d{1,3})(?!\d)")
 _REGEX_ANIME_NUM = re.compile(r"(?i)(?:[-_\s]|\[)(\d{2,3})(?:[-_\s\.]|\])")

@@ -217,7 +217,7 @@ class TmdbSearchModal(QDialog):
             QComboBox::drop-down {{ border: none; }}
             QComboBox QAbstractItemView {{
                 background: {_C.BG_PANEL}; color: {_C.TEXT_PRI};
-                selection-background-color: {_C.ACCENT_DIM};
+                selection-background-color: {_C.ACCENT_DIM}; selection-color: {_C.TEXT_PRI};
             }}
         """)
         self._kind_combo.currentIndexChanged.connect(self._on_kind_changed)
@@ -232,7 +232,7 @@ class TmdbSearchModal(QDialog):
                 border: none; border-radius: {_scale(4)}px;
                 font-size: {_font_px(11)}px; font-weight: 600; padding: 0 {_scale(14)}px;
             }}
-            QPushButton:hover {{ background: #6070f8; }}
+            QPushButton:hover {{ background: {_C.ACCENT_HOVER}; }}
             QPushButton:disabled {{ background: {_C.BG_PANEL}; color: {_C.TEXT_DIM}; }}
         """)
         self._search_btn.clicked.connect(self._on_search)
@@ -249,7 +249,7 @@ class TmdbSearchModal(QDialog):
             }}
             QListWidget::item {{ padding: {_scale(6)}px {_scale(10)}px; border-bottom: 1px solid {_C.BORDER}; }}
             QListWidget::item:selected {{
-                background: {_C.ACCENT_DIM}; color: #fff;
+                background: {_C.ACCENT_DIM}; color: {_C.TEXT_PRI};
             }}
             QListWidget::item:hover:!selected {{ background: {_C.BG_PANEL}; }}
         """)

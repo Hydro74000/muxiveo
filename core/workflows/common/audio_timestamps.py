@@ -76,7 +76,7 @@ def probe_timestamp_payload(
 
     command = [
         ffprobe, "-v", "error", "-show_entries",
-        "format=start_time:stream=initial_padding,sample_rate", "-of", "json",
+        "format=start_time:stream=index,initial_padding,sample_rate", "-of", "json",
         *ffprobe_input_args(source),
     ]
     try:

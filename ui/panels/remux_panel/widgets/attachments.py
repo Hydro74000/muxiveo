@@ -99,7 +99,7 @@ class _TagEditDialog(QDialog):
                 font-weight: 600;
                 padding: 0 {_scale(12)}px;
             }}
-            QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: #fff; }}
+            QPushButton:hover {{ background: {_C.ACCENT_DIM}; color: {_C.TEXT_PRI}; }}
         """)
         add_btn.clicked.connect(self._add_new_row)
         root.addWidget(add_btn)
@@ -183,7 +183,7 @@ class _TagEditDialog(QDialog):
             QComboBox QAbstractItemView {{
                 background: {_C.BG_PANEL};
                 color: {_C.TEXT_PRI};
-                selection-background-color: {_C.ACCENT_DIM};
+                selection-background-color: {_C.ACCENT_DIM}; selection-color: {_C.TEXT_PRI};
             }}
         """)
         h.addWidget(name_combo)
@@ -211,7 +211,7 @@ class _TagEditDialog(QDialog):
                 border: 1px solid {_C.BORDER}; border-radius: {_scale(3)}px;
                 font-size: {_font_px(9)}px; font-weight: 700;
             }}
-            QPushButton:hover {{ color: {_C.ERROR}; border-color: {_C.ERROR}; background: #1f0e0e; }}
+            QPushButton:hover {{ color: {_C.ERROR}; border-color: {_C.ERROR}; background: {_C.BADGE_ERROR_BG}; }}
         """)
         btn.clicked.connect(lambda: self._remove_row(row, name_w, val_edit))
         return btn
@@ -848,7 +848,7 @@ class _AttachmentItemWidget(QWidget):
                 QPushButton:hover {{
                     color: {_C.ERROR};
                     border-color: {_C.ERROR};
-                    background: #1f0e0e;
+                    background: {_C.BADGE_ERROR_BG};
                 }}
             """)
             rm_btn.clicked.connect(lambda: self.remove_clicked.emit(self))
@@ -1065,7 +1065,7 @@ class _AttachmentPanel(QFrame):
             }}
             QPushButton:hover {{
                 background: {_C.ACCENT_DIM};
-                color: #ffffff;
+                color: {_C.TEXT_PRI};
             }}
         """)
         self._imdb_btn.clicked.connect(self._open_media_search)
@@ -1111,7 +1111,7 @@ class _AttachmentPanel(QFrame):
             }}
             QPushButton:hover {{
                 background: {_C.ACCENT_DIM};
-                color: #ffffff;
+                color: {_C.TEXT_PRI};
             }}
         """)
         add_btn.clicked.connect(self._browse_add)

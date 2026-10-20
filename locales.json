@@ -4551,6 +4551,90 @@
     "fra": "hh:mm:ss.mmm",
     "eng": "hh:mm:ss.mmm"
   },
+  "Recadrage {side} de la piste vidéo active.": {
+    "fra": "Recadrage {side} de la piste vidéo active.",
+    "eng": "{side} crop of the active video track."
+  },
+  "Analyse HDR10 estimée P5→P8.1 {mode} programmée. Elle sera exécutée et suivie dans le workflow d’encodage.": {
+    "fra": "Analyse HDR10 estimée P5→P8.1 {mode} programmée. Elle sera exécutée et suivie dans le workflow d’encodage.",
+    "eng": "Estimated HDR10 analysis P5→P8.1 {mode} scheduled. It will run and be tracked in the encoding workflow."
+  },
+  "HDR10 statique estimé depuis analyse P5→P8.1 {mode} ({details}): {max_cll}.{suffix}": {
+    "fra": "HDR10 statique estimé depuis analyse P5→P8.1 {mode} ({details}): {max_cll}.{suffix}",
+    "eng": "Static HDR10 estimated from P5→P8.1 analysis {mode} ({details}): {max_cll}.{suffix}"
+  },
+  "{count} image(s) disponible(s)": {
+    "fra": "{count} image(s) disponible(s)",
+    "eng": "{count} image(s) available"
+  },
+  "Preview image prête : {count} image(s).": {
+    "fra": "Preview image prête : {count} image(s).",
+    "eng": "Image preview ready: {count} image(s)."
+  },
+  "{count} vignette(s) disponible(s)": {
+    "fra": "{count} vignette(s) disponible(s)",
+    "eng": "{count} thumbnail(s) available"
+  },
+  "Preview vidéo prête : {count} vignette(s).": {
+    "fra": "Preview vidéo prête : {count} vignette(s).",
+    "eng": "Video preview ready: {count} thumbnail(s)."
+  },
+  "Preview échouée : {message}": {
+    "fra": "Preview échouée : {message}",
+    "eng": "Preview failed: {message}"
+  },
+  "Auto-crop : aucune bande noire détectée ({width}×{height}).": {
+    "fra": "Auto-crop : aucune bande noire détectée ({width}×{height}).",
+    "eng": "Auto-crop: no black bars detected ({width}×{height})."
+  },
+  "multiple de 32 (NVENC+DV)": {
+    "fra": "multiple de 32 (NVENC+DV)",
+    "eng": "multiple of 32 (NVENC+DV)"
+  },
+  "multiple de 2": {
+    "fra": "multiple de 2",
+    "eng": "multiple of 2"
+  },
+  "Auto-crop appliqué [{mode}] : Haut={top}px, Bas={bottom}px, Gauche={left}px, Droite={right}px → Résolution active {width}×{height}": {
+    "fra": "Auto-crop appliqué [{mode}] : Haut={top}px, Bas={bottom}px, Gauche={left}px, Droite={right}px → Résolution active {width}×{height}",
+    "eng": "Auto-crop applied [{mode}]: Top={top}px, Bottom={bottom}px, Left={left}px, Right={right}px → Active resolution {width}×{height}"
+  },
+  "<h3>Alignement matériel requis pour Dolby Vision</h3><p>Pour garantir la compatibilité Dolby Vision avec NVENC et éviter le basculement en SDR sur téléviseur ou box Android TV (lié à la fenêtre de conformité HEVC SPS), la résolution encodée doit être un <b>multiple de 32</b> pixels.</p><p><b>Résolution recommandée :</b> {width} × {height} (multiple de 32)<br><b>Recadrage calculé :</b> Haut: {top} px, Bas: {bottom} px, Gauche: {left} px, Droite: {right} px</p><p>Souhaitez-vous appliquer automatiquement ce recadrage dans l'onglet 'Géométrie / Filtres' et continuer l'encodage ?</p>": {
+    "fra": "<h3>Alignement matériel requis pour Dolby Vision</h3><p>Pour garantir la compatibilité Dolby Vision avec NVENC et éviter le basculement en SDR sur téléviseur ou box Android TV (lié à la fenêtre de conformité HEVC SPS), la résolution encodée doit être un <b>multiple de 32</b> pixels.</p><p><b>Résolution recommandée :</b> {width} × {height} (multiple de 32)<br><b>Recadrage calculé :</b> Haut: {top} px, Bas: {bottom} px, Gauche: {left} px, Droite: {right} px</p><p>Souhaitez-vous appliquer automatiquement ce recadrage dans l'onglet 'Géométrie / Filtres' et continuer l'encodage ?</p>",
+    "eng": "<h3>Hardware alignment required for Dolby Vision</h3><p>To keep Dolby Vision compatible with NVENC and avoid falling back to SDR on TVs or Android TV boxes (caused by the HEVC SPS conformance window), the encoded resolution must be a <b>multiple of 32</b> pixels.</p><p><b>Recommended resolution:</b> {width} × {height} (multiple of 32)<br><b>Computed crop:</b> Top: {top} px, Bottom: {bottom} px, Left: {left} px, Right: {right} px</p><p>Apply this crop automatically in the 'Geometry / Filters' tab and continue encoding?</p>"
+  },
+  "Appliquer et continuer": {
+    "fra": "Appliquer et continuer",
+    "eng": "Apply and continue"
+  },
+  "Fichier : {name}": {
+    "fra": "Fichier : {name}",
+    "eng": "File: {name}"
+  },
+  "Échec de l'auto-synchronisation : {error}": {
+    "fra": "Échec de l'auto-synchronisation : {error}",
+    "eng": "Auto-synchronization failed: {error}"
+  },
+  "Aperçu non disponible : {error}": {
+    "fra": "Aperçu non disponible : {error}",
+    "eng": "Preview unavailable: {error}"
+  },
+  "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>": {
+    "fra": "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>",
+    "eng": "Pitch: {shift} semitone (F0: {f0_ref} Hz vs {f0_donor} Hz) • Spectral corr.: asetrate {asetrate} | atempo {atempo} • Recommended: <b>{method}</b>"
+  },
+  "Différence de cadence détectée : {description} — méthode audio : {method}.": {
+    "fra": "Différence de cadence détectée : {description} — méthode audio : {method}.",
+    "eng": "Frame-rate mismatch detected: {description} — audio method: {method}."
+  },
+  "Conversion de cadence appliquée : {description} (méthode {method}).": {
+    "fra": "Conversion de cadence appliquée : {description} (méthode {method}).",
+    "eng": "Frame-rate conversion applied: {description} (method {method})."
+  },
+  "Synchronisation annulée pour toute la source « {src} » (pistes {tracks}) : ses coupures ou sa conversion de cadence valent pour toutes ses pistes.": {
+    "fra": "Synchronisation annulée pour toute la source « {src} » (pistes {tracks}) : ses coupures ou sa conversion de cadence valent pour toutes ses pistes.",
+    "eng": "Synchronization cancelled for the whole source “{src}” (tracks {tracks}): its cuts or frame-rate conversion apply to all its tracks."
+  },
   "Synchronisation automatique…": {
     "fra": "Synchronisation automatique…",
     "eng": "Automatic synchronization…"

@@ -89,10 +89,20 @@ def test_pairing_case_order_and_missing(tmp_path):
         pair_directories(ref, donor)
 
 
-@pytest.mark.parametrize("name", ["S01E01E02.mkv", "S01E01-E02.mkv", "movie.mkv", "S01E01.S01E02.mkv"])
+@pytest.mark.parametrize("name", [
+    "S01E01E02.mkv", "S01E01-E02.mkv", "movie.mkv", "S01E01.S01E02.mkv", "Show.S01E01E02v2.mkv",
+])
 def test_pairing_rejects_ambiguous_names(name):
     with pytest.raises(ValueError):
         episode_key(name)
+
+
+def test_pairing_refuses_multi_episode_donor_with_version_suffix(tmp_path):
+    ref, donor = tmp_path / "ref", tmp_path / "donor"
+    ref.mkdir(); donor.mkdir()
+    (ref / "Show.S01E01.mkv").touch(); (donor / "Show.S01E01E02v2.mkv").touch()
+    with pytest.raises(ValueError, match="ambigu"):
+        pair_directories(ref, donor)
 
 
 def test_portable_workflow_windows_source(tmp_path):
@@ -1216,3 +1226,32 @@ def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
 
 
 
+
+
+@pytest.mark.parametrize("name, key", [
+    ("Show.S01E02.1080p.mkv", (1, 2)), ("Show.1x02.mkv", (1, 2)), ("Show.S01.E02.mkv", (1, 2)),
+    ("Show S01 E02.mkv", (1, 2)), ("Show.S02_E05.mkv", (2, 5)), ("Show.1920x1080.S01E03.mkv", (1, 3)),
+    ("Show.S01E01E02.mkv", None), ("Show.S01.E01.E02.mkv", None), ("Show.1x01-1x02.mkv", None),
+    ("Show.1x01-02.mkv", None), ("Show.S01E02.1x02.mkv", None),
+    # Audit Codex C2 : suffixe de résolution après un tiret, pas un second épisode.
+    ("Show.1x02-1080p.mkv", (1, 2)), ("Show.S01.E02-1080p.mkv", (1, 2)), ("Show.S01E02-2160p.mkv", (1, 2)),
+    ("Show.S01E01-E02.mkv", None), ("Show.S01E01-02.1080p.mkv", None),
+    # Audit Codex R1 : second marqueur suivi d'un suffixe de version ou de release.
+    ("Show.S01E01E02v2.mkv", None), ("Show.S01E01E02REPACK.mkv", None), ("Show.S01E01-E02v2.mkv", None),
+    ("Show.1x01-02v2.mkv", None), ("Show.1x01-1x02REPACK.mkv", None), ("Show.S01E01+E02.mkv", None),
+    ("Show.S01E02-720p.mkv", (1, 2)), ("Show.S01E02v2.mkv", (1, 2)), ("Show.S01E02-Extended.mkv", (1, 2)),
+])
+def test_episode_key_formats_and_ambiguity(name, key):
+    from pathlib import Path
+    if key is None:
+        with pytest.raises(ValueError, match="ambigu"):
+            episode_key(Path(name))
+    else:
+        assert episode_key(Path(name)) == key
+
+
+def test_matrix_episode_key_keeps_season_of_separated_marker():
+    from core.workflows.hybrid_matrix import parse_episode_key
+    # Avant : « E05 » seul était lu, saison 1 supposée.
+    assert parse_episode_key("Show.S02.E05.1080p.mkv") == (2, 5)
+    assert parse_episode_key("Show S03 E01.mkv") == (3, 1)

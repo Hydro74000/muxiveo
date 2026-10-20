@@ -1717,6 +1717,57 @@ class TestTrackTableUpdateAudioMeta:
                 panel.close()
             set_current_language(prev_lang)
 
+    def test_cadence_calibration_is_kept_and_detected_from_sources(self, qt_app, tmp_path):
+        from core.workflows.cadence import CadenceMismatch, CadenceType
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+        from ui.panels.remux_panel.models import SourceFile
+
+        panel = RemuxPanel(AppConfig())
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._source_files = [
+            SourceFile("reference", tmp_path / "ref.mkv", _COLOR_B, _file_info(tmp_path / "ref.mkv", [_video(0, frame_rate="24000/1001")]), [reference]),
+            SourceFile("target", tmp_path / "tgt.mkv", _COLOR_A, _file_info(tmp_path / "tgt.mkv", [_video(0, frame_rate="25/1")]), [target]),
+        ]
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        detected = panel._audio_sync_cadence(reference, target)
+        assert detected is not None and detected.cadence_type == CadenceType.PAL_TO_FILM_23976
+
+        mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+        # Un seul segment, à moins de 5 ms : la conversion de cadence doit rester appliquée.
+        calibration = SyncCalibration((SyncSegment(0, 3.0),), 0.95, cadence_mismatch=mismatch, cadence_audio_method="atempo")
+        panel._on_audio_sync_done(target.entry_id, reference.entry_id, 3, 0.95, calibration)
+        assert target.sync_calibration is not None and target.sync_calibration["cadence_mismatch"]
+        assert panel._workflow_options["sync_calibrations"]["1"]["cadence_mismatch"]
+        panel.close()
+
+    def test_cancelling_one_track_cancels_source_wide_calibration(self, qt_app, tmp_path):
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+        from ui.panels.remux_panel.models import SourceFile
+
+        panel = RemuxPanel(AppConfig())
+        first = _track(1, "audio", file_id="target")
+        second = _track(2, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._source_files = [SourceFile("reference", tmp_path / "ref.mkv", _COLOR_B, None, [reference]),
+                               SourceFile("target", tmp_path / "tgt.mkv", _COLOR_A, None, [first, second])]
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        panel._track_table.append_tracks(_COLOR_A, [first, second])
+        calibration = SyncCalibration((SyncSegment(0, -320.0), SyncSegment(600_000, 680.0)), 0.95)
+        panel._on_audio_sync_done(first.entry_id, reference.entry_id, -320, 0.95, calibration)
+        assert second.time_shift_ms == -320 and second.sync_calibration
+        emitted: list[tuple[str, str]] = []
+        panel.log_message.connect(lambda level, message: emitted.append((level, message)))
+
+        panel._on_auto_sync_cancel_requested(first)
+
+        # Aucune piste ne garde le décalage de départ sans ses coupures.
+        assert [(t.time_shift_ms, t.sync_calibration) for t in (first, second)] == [(0, None), (0, None)]
+        assert panel._workflow_options.get("sync_calibrations", {}) == {}
+        assert any("tgt.mkv" in message and "#1, #2" in message for _level, message in emitted)
+        panel.close()
+
     def test_cancelling_audio_sync_forgets_reference(self, qt_app, tmp_path):
         from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
@@ -1788,6 +1839,42 @@ class TestTrackTableUpdateAudioMeta:
         chapters = panel.current_chapter_overrides()
         assert chapters is not None
         assert [round(entry.timecode_s, 2) for entry in chapters] == [0.0, 9.68]
+        panel.close()
+
+    def test_synced_chapters_follow_multi_segment_calibration(self, qt_app, tmp_path):
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+        panel = RemuxPanel(AppConfig())
+        target_src, reference_src = tmp_path / "target.mkv", tmp_path / "reference.mkv"
+        target_src.touch()
+        reference_src.touch()
+        target_audio = _track(1, "audio", file_id="target")
+        reference_audio = _track(1, "audio", file_id="reference")
+        target_info = _file_info(path=target_src, videos=[_video(index=0)], audios=[_audio(index=1)])
+        target_info.chapters = ChapterInfo([
+            ChapterEntry(0.2, "Intro"), ChapterEntry(10.0, "Main"), ChapterEntry(700.0, "Fin"),
+        ])
+        reference_info = _file_info(path=reference_src, audios=[_audio(index=1)])
+        panel._source_files = [
+            SourceFile(id="target", path=target_src, color=_COLOR_A, info=target_info, tracks=[target_audio]),
+            SourceFile(id="reference", path=reference_src, color=_COLOR_B, info=reference_info, tracks=[reference_audio]),
+        ]
+        panel._source_colors = {"target": _COLOR_A, "reference": _COLOR_B}
+        panel._track_table.append_tracks(_COLOR_A, [target_audio])
+        panel._track_table.append_tracks(_COLOR_B, [reference_audio])
+        panel._update_chapters_from_sources()
+
+        # -320 ms puis +680 ms après la jonction de 600 s (une seconde ajoutée dans la cible).
+        calibration = SyncCalibration((SyncSegment(0, -320.0), SyncSegment(600_000, 680.0)), 0.95)
+        panel._on_audio_sync_done(target_audio.entry_id, reference_audio.entry_id, -320, 0.95, calibration)
+
+        chapters = panel.current_chapter_overrides()
+        assert chapters is not None
+        # Le chapitre au-delà de la jonction suit son segment, pas le seul décalage de départ.
+        assert [round(entry.timecode_s, 2) for entry in chapters] == [0.0, 9.68, 700.68]
+
+        panel._on_global_sync_cancel_requested()
+        assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.2, 10.0, 700.0]
         panel.close()
 
     def test_audio_sync_cancel_resets_only_requested_track(self, qt_app, tmp_path):
