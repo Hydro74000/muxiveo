@@ -9,11 +9,16 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 
 [Français](README.md) | **English**
 
+[![Official Website](https://img.shields.io/badge/Website-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://www.muxiveo.fr/)
 [![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-quick-download--installation)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg?style=flat-square)](LICENSE)
 [![Wiki Documentation](https://img.shields.io/badge/Documentation-Wiki-orange?style=flat-square&logo=gitbook&logoColor=white)](https://github.com/Hydro74000/Muxiveo/wiki)
-[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/YGAjNjZHQC)
+
+<br/>
+
+💬 **Discord Community: [https://discord.gg/YGAjNjZHQC](https://discord.gg/YGAjNjZHQC)**  
+🌐 **Official Website: [https://www.muxiveo.fr/](https://www.muxiveo.fr/)**
 
 <br/>
 
@@ -40,7 +45,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 
 ## 📦 Quick Download & Installation
 
-Standalone packages bundling all required external tools (`ffmpeg`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`) are available on the [Releases page](https://github.com/Hydro74000/Muxiveo/releases):
+Standalone packages bundling all required external tools (`ffmpeg`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`) are hosted and available for download exclusively on GitHub via the [Releases page](https://github.com/Hydro74000/Muxiveo/releases):
 
 | Operating System | Recommended Package | Getting Started |
 |---|---|---|
@@ -141,6 +146,25 @@ When recompression, codec conversion, or size reduction is needed, the Encoding 
 * **TensorRT Acceleration**: Optional plugin harnessing NVIDIA RTX Tensor Cores for high-speed inference.
 
 > 📖 See the [MVO-RIFE Interpolation Guide](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) and [TensorRT Acceleration](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-TensorRT).
+
+---
+
+### 🧩 Extension Ecosystem (muxiveo-plugins)
+*Independent distribution and lifecycle management of specialized modules.*
+
+Advanced specialized features (including the **MVO-RIFE** frame interpolation engine, **NVIDIA TensorRT** acceleration, and the **Merge FEL** 12-bit reconstruction pipeline) are developed and maintained as modular extensions.
+
+* **Official Repository**: All extensions are packaged, versioned, and hosted on the dedicated GitHub repository [Hydro74000/muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
+* **Integrated One-Click Management**: From the **Extensions** page in Muxiveo's sidebar, you can install, update, or remove these modules directly inside the GUI without restarting the application. Muxiveo automatically validates hardware compatibility and checks binary integrity using SHA-256 signatures.
+* **CLI Management**:
+  ```bash
+  muxiveo --cli plugins list
+  muxiveo --cli plugins install mvo-rife
+  muxiveo --cli plugins install mvo-rife-trt --accept-license
+  muxiveo --cli plugins update
+  ```
+
+> 📖 See the [Complete Plugins & Extensions Guide on the Wiki](https://github.com/Hydro74000/Muxiveo/wiki/Plugins).
 
 ---
 
