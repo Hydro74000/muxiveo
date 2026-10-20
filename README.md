@@ -2,6 +2,9 @@
 
 Suite logicielle complète de préparation, remuxage sans perte et encodage vidéo/audio pour conteneurs MKV et MP4, intégrant la synchronisation acoustique multi-sources et un studio d'inspection et d'injection HDR / Dolby Vision.
 
+> **La force de Muxiveo : le pipeline unifié en un seul clic.**  
+> Là où le traitement vidéo impose d'ordinaire d'enchaîner 4 ou 5 logiciels différents (un outil de remuxage, un éditeur audio pour calculer les décalages, un encodeur vidéo, un injecteur Dolby Vision, un script d'interpolation), Muxiveo centralise l'ensemble du flux de production : **vous pouvez remuxer, réordonner vos pistes, éditer les métadonnées, synchroniser acoustiquement vos flux audio, injecter ou reconstruire le Dolby Vision / HDR10+, réencoder (GPU / CPU) et interpoler par IA en une seule et même exécution** — tout comme utiliser chacun de ces modules séparément selon votre besoin immédiat.
+
 <div align="center">
 
 [![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
@@ -9,7 +12,11 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-green.svg?style=flat-square)](LICENSE)
 [![Documentation Wiki](https://img.shields.io/badge/Documentation-Wiki-orange?style=flat-square&logo=gitbook&logoColor=white)](https://github.com/Hydro74000/Muxiveo/wiki)
 [![Discord](https://img.shields.io/badge/Discord-Rejoindre%20la%20communaut%C3%A9-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/YGAjNjZHQC)
-[![Faire un don](https://img.shields.io/badge/Soutenir-PayPal-00457C?style=flat-square&logo=paypal&logoColor=white)](https://paypal.me/muxiveo)
+
+<br/>
+
+[![Soutenir via PayPal](https://img.shields.io/badge/Soutenir%20le%20projet-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/muxiveo)  
+*Muxiveo est 100 % gratuit, open source et sans publicité. Vos dons soutiennent son développement indépendant.*
 
 </div>
 
@@ -47,9 +54,11 @@ Des paquets autonomes intégrant l'ensemble des dépendances et outils nécessai
 
 ---
 
-## 🎛️ Usage principal : Remuxage & Encodage au quotidien
+## 🎛️ Usage principal : Un pipeline unifié ou des outils à la carte
 
-Muxiveo unifie la préparation du conteneur et les traitements d'encodage au sein d'un pipeline cohérent : le panneau **Conteneur** prépare l'organisation des flux, le panneau **Encodage** configure les transformations vidéo et audio nécessaires, et le bouton d'action au-dessus du journal lance l'opération.
+Muxiveo vous laisse une liberté totale d'exécution selon vos projets :
+* **En une seule opération complète** : Préparez l'agencement des pistes dans **Conteneur**, définissez les traitements dans **Encodage**, ajustez le calage d'une piste audio par FFT ou appliquez une injection Dolby Vision, et lancez la totalité du flux en **un seul clic** via le bouton d'action unifié.
+* **Ou séparément selon vos besoins** : Réalisez un simple remux sans perte en quelques secondes sans toucher à l'image, extrayez une piste de sous-titre, convertissez une piste audio de compatibilité, ou inspectez le HDR d'une vidéo de manière totalement autonome.
 
 ![Tableau des pistes et Remuxage dans Muxiveo](docs/assets/img/Muxiveo-fr-03.png)
 
