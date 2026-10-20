@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import re
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
 # Marge de pré-roll avant la fenêtre ; le découpage exact précède les filtres
 # de cadence pour conserver les coordonnées temporelles de la source.
 _SEEK_PREROLL_S = 5.0
+
+# Vérification rapide : confiance minimale de chacune des mesures ponctuelles
+# pour se passer de l'analyse continue quand le décalage est constant.
+_QUICK_CHECK_MIN_CONFIDENCE = 0.9
 
 # Noms des canaux d'ambiance des dispositions que FFmpeg expose via ffprobe.
 # Les 7.1 « wide » placent aussi des canaux avant après c3 : le nombre de
@@ -47,14 +52,27 @@ def _seek_args(start: float) -> tuple[list[str], list[str]]:
     )
 
 
+def quick_check_enabled(options: Any, config: Any) -> bool:
+    """Vérification rapide : option explicite (CLI), sinon réglage `[sync] quick_audio_check`."""
+    value = getattr(options, "quick_sync_check", None)
+    if value is None:
+        value = getattr(config, "sync_quick_audio_check", False)
+    return bool(value)
+
+
 class AudioSyncScanner:
-    def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None):
+    def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None,
+                 quick_check=False):
+        """`quick_check` : décalage constant et mesures sûres → pas d'analyse continue
+        (les écarts qui se compensent entre deux mesures ne sont alors pas vus)."""
         self.ffmpeg, self.ffprobe = str(ffmpeg), str(ffprobe)
         self.window_s, self.max_offset_s = window_s, max_offset_s
         self.cancel_event = cancel_event
+        self.quick_check = bool(quick_check)
 
-    def _run(self, command: list[str], *, timeout: float, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-        """Interrompt aussi les extractions FFmpeg lorsque l'utilisateur annule."""
+    def _run(self, command: list[str], *, timeout: float, abort: threading.Event | None = None,
+             **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        """Interrompt aussi les extractions FFmpeg lorsque l'utilisateur annule ou que `abort` est levé."""
         kwargs.pop("capture_output", None)
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
@@ -63,6 +81,8 @@ class AudioSyncScanner:
             while True:
                 if self.cancel_event is not None and self.cancel_event.is_set():
                     raise AudioSyncError("Analyse annulée.")
+                if abort is not None and abort.is_set():
+                    raise AudioSyncError("Analyse interrompue.")
                 if time.monotonic() >= deadline:
                     raise AudioSyncError("Délai d'analyse dépassé.")
                 try:
@@ -143,7 +163,8 @@ class AudioSyncScanner:
     def _dialogue_free_downmixes(self, reference, donor) -> tuple[str, str] | None:
         return self.dialogue_free_downmixes(self.channel_layout(reference), self.channel_layout(donor))
 
-    def envelope(self, track, cadence_filter=None, downmix: str | None = None) -> ndarray:
+    def envelope(self, track, cadence_filter=None, downmix: str | None = None, *,
+                 abort: threading.Event | None = None) -> ndarray:
         """Décode une fois la piste en enveloppe 1 kHz (4 Mo par 1000 s).
 
         Le sous-échantillonnage suit le redressement, après le mixage mono
@@ -159,10 +180,36 @@ class AudioSyncScanner:
             self.ffmpeg, "-nostdin", "-v", "error", "-i", str(track.source_path),
             "-map", f"0:{track.stream_index}", "-af", ",".join(filters),
             "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
-        ], timeout=max(120, self.duration(track) * 2), **subprocess_windows_no_window_kwargs())
+        ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
         if result.returncode:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         return np.frombuffer(result.stdout, dtype="<f4")
+
+    def _envelopes(self, reference, donor, cadence_filter=None,
+                   downmixes: tuple[str, str] | None = None) -> tuple[ndarray, ndarray]:
+        """Décode les deux enveloppes en parallèle (deux FFmpeg simultanés).
+
+        Le premier échec interrompt l'autre décodage ; c'est lui qui est remonté.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        abort = threading.Event()
+        failures: list[BaseException] = []
+        reference_mix, donor_mix = downmixes or (None, None)
+
+        def decode(track, cadence, downmix):
+            try:
+                return self.envelope(track, cadence, downmix=downmix, abort=abort)
+            except BaseException as exc:
+                failures.append(exc)
+                abort.set()
+                raise
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio-envelope") as pool:
+            reference_future = pool.submit(decode, reference, None, reference_mix)
+            donor_future = pool.submit(decode, donor, cadence_filter, donor_mix)
+        if failures:
+            raise failures[0]
+        return reference_future.result(), donor_future.result()
 
     def pitch_samples(self, track, start, duration, cadence_filter: str | None = None) -> ndarray:
         """Extrait les échantillons audio sans filtre passe-bande agressif pour l'analyse F0 et spectrale."""
@@ -381,14 +428,23 @@ class AudioSyncScanner:
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
 
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
-        if spread <= drift_threshold_ms and not detect_cuts:
+        weakest = min(s["confidence"] for s in samples)
+        quick = detect_cuts and self.quick_check and spread <= drift_threshold_ms
+        if quick and weakest < _QUICK_CHECK_MIN_CONFIDENCE:
+            log(f"Vérification rapide écartée : confiance minimale {weakest:.2f} < {_QUICK_CHECK_MIN_CONFIDENCE:.2f}.")
+            quick = False
+        if spread <= drift_threshold_ms and (not detect_cuts or quick):
+            if quick:
+                log(f"Vérification rapide : {len(samples)} mesures concordantes (écart {spread:.1f} ms), "
+                    "analyse continue ignorée.")
             return SyncCalibration(
                 (SyncSegment(0, float(np.median([s["shift_ms"] for s in samples]))),),
-                min(s["confidence"] for s in samples),
+                weakest,
                 tuple(samples),
                 cadence_mismatch=cadence_mismatch,
                 cadence_audio_method=active_cadence_method,
                 cadence_pitch_analysis=pitch_analysis,
+                quick_check=quick,
             )
 
         from core.workflows.cadence import detect_cadence_from_acoustic_samples
@@ -422,20 +478,17 @@ class AudioSyncScanner:
         max_offset_ms = round(self.max_offset_s * 1000)
         check_cancelled = self._check_cancelled
 
-        def scan(reference_envelope: ndarray, donor_envelope: ndarray):
+        def scan(envelopes: tuple[ndarray, ndarray]):
             return scan_envelopes(
-                reference_envelope, donor_envelope,
+                *envelopes,
                 max_offset_ms=max_offset_ms, tolerance_ms=drift_threshold_ms,
                 speed_factor=speed_factor, check_cancelled=check_cancelled, log=log,
             )
         if _downmixes is not None:
-            segments, confidence, anchors = scan(
-                self.envelope(reference, downmix=_downmixes[0]),
-                self.envelope(donor, filter_str, downmix=_downmixes[1]))
+            segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str, _downmixes))
         else:
             try:
-                segments, confidence, anchors = scan(
-                    self.envelope(reference), self.envelope(donor, filter_str))
+                segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str))
             except AudioSyncError as exc:
                 self._check_cancelled()
                 # Pistes de langues différentes : les dialogues masquent la musique
@@ -444,9 +497,7 @@ class AudioSyncScanner:
                 if downmixes is None:
                     raise
                 log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                segments, confidence, anchors = scan(
-                    self.envelope(reference, downmix=downmixes[0]),
-                    self.envelope(donor, filter_str, downmix=downmixes[1]))
+                segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str, downmixes))
         return SyncCalibration(
             segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,

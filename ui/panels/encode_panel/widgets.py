@@ -412,7 +412,7 @@ class _AudioSourceDialog(QDialog):
         self._tracks = tracks
         self._config = config
         self._result_track:       AudioTrack | None = None
-        self._result_color:       str = "#ffffff"
+        self._result_color:       str = _C.TEXT_PRI
         self._result_source_path = None   # Path | None
         self._result_track_entry: TrackEntry | None = None
         self._setup_ui()
@@ -452,7 +452,7 @@ class _AudioSourceDialog(QDialog):
             f"font-family:'JetBrains Mono',monospace;}}"
             f"QListWidget::item{{padding:{_scale(10)}px {_scale(12)}px;"
             f"border-bottom:1px solid {_C.BORDER};}}"
-            f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};}}"
+            f"QListWidget::item:selected{{background:{_C.ACCENT_DIM};color:{_C.TEXT_PRI};}}"
             f"QListWidget::item:hover{{background:{_C.BG_HOVER};}}"
         )
         for entry in self._tracks:
@@ -661,7 +661,7 @@ class _AudioTable(QTableWidget):
                                    border:none;padding:4px 8px;font-size:9px;
                                    font-weight:700;letter-spacing:1px;}}
             QTableWidget::item{{padding:4px 8px;border:none;}}
-            QTableWidget::item:selected{{background:{_C.ACCENT_DIM};}}
+            QTableWidget::item:selected{{background:{_C.ACCENT_DIM};color:{_C.TEXT_PRI};}}
         """)
 
     _MAX_VISIBLE_ROWS = 10
@@ -861,8 +861,8 @@ class _AudioTable(QTableWidget):
             QPushButton{{background:transparent;color:{_C.ERROR};
                          border:1px solid {_C.ERROR};border-radius:4px;
                          font-size:10px;font-weight:700;padding:0;}}
-            QPushButton:hover{{background:#2a1010;}}
-            QPushButton:pressed{{background:#1a0808;}}
+            QPushButton:hover{{background:{_C.BADGE_ERROR_BG};}}
+            QPushButton:pressed{{background:{_C.ERROR_PRESSED_BG};}}
             QPushButton:disabled{{color:{_C.TEXT_DIM};border-color:{_C.TEXT_DIM};}}
         """)
         del_btn.clicked.connect(self._make_delete_handler(del_btn))

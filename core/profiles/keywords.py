@@ -504,7 +504,13 @@ def track_field_values(
     variables: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     lang = normalize_lang(track.language, track.title)
-    source_lang = normalize_lang(track.orig_language or track.language, track.orig_title or track.title)
+    if track.working_source is not None:
+        # Profil appliqué depuis le tableau : son état au départ fait foi, même vide.
+        source_language, source_title = track.working_source
+        source_lang = normalize_lang(source_language, source_title)
+    else:
+        source_title = track.orig_title or track.title
+        source_lang = normalize_lang(track.orig_language or track.language, source_title)
     channels = channels_from_display(track.orig_display_info or track.display_info)
     audio_object = audio_object_from_display(track.orig_display_info or track.display_info)
     resolution = video_resolution(track)
@@ -524,7 +530,7 @@ def track_field_values(
         "lang_name": lang_name(lang),
         "source_language": source_lang,
         "title": track.title,
-        "source_title": track.orig_title or track.title,
+        "source_title": source_title,
         "codec": codec,
         "codec_raw": codec,
         "codec_name": codec_name(codec, variables),

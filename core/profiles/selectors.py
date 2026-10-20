@@ -402,8 +402,15 @@ def _matches_selector(
 
     languages = _selector_languages(selector)
     if languages:
-        track_lang = normalize_lang(track.orig_language or track.language, track.orig_title or track.title)
-        if track_lang not in languages and normalize_lang(track.language, track.title) not in languages:
+        candidates = {
+            normalize_lang(track.orig_language or track.language, track.orig_title or track.title),
+            normalize_lang(track.language, track.title),
+            # Forme d'avant la détection de « VFQ » : un sélecteur déjà enregistré retrouve sa piste.
+            *Rfc5646LanguageTags.legacy_track_languages(
+                track.orig_language or track.language, track.orig_title or track.title,
+            ),
+        }
+        if not candidates & languages:
             return False
 
     if "channels" in selector:

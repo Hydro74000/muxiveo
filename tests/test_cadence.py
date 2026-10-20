@@ -176,6 +176,30 @@ def test_build_cadence_audio_filter_asetrate():
     f_asetrate = build_cadence_audio_filter(mismatch, CadenceAudioMethod.ASETRATE, sample_rate=48000)
     target_rate = round(48000 * (24000.0 / 25025.0))
     assert f_asetrate == f"asetrate={target_rate},aresample=48000"
+    # Débit réel conservé ; inconnu : piste ramenée à 48 kHz avant asetrate (vitesse exacte).
+    assert build_cadence_audio_filter(mismatch, CadenceAudioMethod.ASETRATE, sample_rate=44100) == (
+        f"asetrate={round(44100 * 24000 / 25025)},aresample=44100")
+    assert build_cadence_audio_filter(mismatch, CadenceAudioMethod.ASETRATE) == (
+        f"aresample=48000,asetrate={target_rate},aresample=48000")
+
+
+@pytest.mark.parametrize("rate, known", [(44100, True), (96000, True), (44100, False), (96000, False)])
+def test_asetrate_cadence_duration_is_exact_for_any_sample_rate(tmp_path, rate, known):
+    """10 s PAL → 23,976 : 10 × 25025/24000 s, quel que soit le débit de la piste."""
+    import json
+    import shutil
+    import subprocess
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        pytest.skip("ffmpeg absent")
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    graph = build_cadence_audio_filter(mismatch, CadenceAudioMethod.ASETRATE, sample_rate=rate if known else None)
+    out = tmp_path / "out.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate={rate}:duration=10",
+                    "-af", graph, str(out)], check=True)
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=sample_rate",
+                                       "-of", "json", str(out)], capture_output=True, text=True, check=True).stdout)
+    assert float(probe["format"]["duration"]) == pytest.approx(10 * 25025 / 24000, abs=0.01)
+    assert int(probe["streams"][0]["sample_rate"]) == (rate if known else 48000)
 
 
 # ── 5. SyncCalibration serialization & time stretch ───────────────────────────
@@ -308,6 +332,15 @@ def test_physical_sync_commands_forces_reencode_on_cadence():
     assert "-filter_complex" in cmd
     assert "-c:a" in cmd
     assert "copy" not in cmd
+
+    # Débit de la piste (sonde du lancement) : asetrate le conserve au lieu de supposer 48 kHz.
+    asetrate = SyncCalibration(segments=(SyncSegment(0.0, 0.0),), cadence_mismatch=mismatch, cadence_audio_method="asetrate")
+    config.sync_calibrations = {"1": asetrate.to_dict()}
+    _, _, cmd, _ = preparation_commands(
+        config, Path("/tmp"), "ffmpeg", sample_rates={(Path("dummy_donor.mkv"), 1): 44100},
+    )[0]
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert f"asetrate={round(44100 * 24000 / 25025)},aresample=44100" in graph
 
 
 # ── 8. audio_sync_scan with acoustic slope detection fallback ─────────────────
@@ -448,7 +481,7 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
     ref_values[600500:1200500] = donor_values[600000:]
     envelope_calls = []
 
-    def envelope(track, cadence_filter=None):
+    def envelope(track, cadence_filter=None, downmix=None, abort=None):
         envelope_calls.append(cadence_filter)
         return ref_values if "ref" in track.source_path.name else donor_values
 
@@ -468,7 +501,8 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     assert len(calib.segments) == 2
     assert calib.segments[1].start_ms == pytest.approx(600000 * mismatch.speed_factor, abs=50)
-    assert envelope_calls == [None, "atempo=24000/25025"]
+    # Décodages parallèles : ordre d'appel libre.
+    assert sorted(envelope_calls, key=str) == [None, "atempo=24000/25025"]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
     # Vérifier que speed_factor et filter ont bien été transmis à measure
@@ -492,18 +526,11 @@ def test_parse_framerate_fraction_canonical_and_custom():
 
 
 def test_detect_cadence_from_metadata_on_the_fly_custom_rates():
-    from fractions import Fraction
     from core.workflows.cadence import detect_cadence_from_metadata, build_cadence_audio_filter
 
-    # Ratio calculé à la volée entre NTSC 29.970 (30000/1001) et PAL 25.0 (25/1)
-    mismatch = detect_cadence_from_metadata("25/1", "30000/1001")
-    assert mismatch is not None
-    # 25 / (30000/1001) = 25025 / 30000 = 1001 / 1200
-    expected_ratio = Fraction(25, 1) / Fraction(30000, 1001)
-    assert math.isclose(mismatch.speed_factor, float(expected_ratio))
-    assert mismatch.speed_ratio == "1001/1200"
-    f = build_cadence_audio_filter(mismatch)
-    assert f == "atempo=1001/1200"
+    # NTSC 29,970 ↔ PAL 25 : télécinéma (4,1 % réels) ou vidéo native (aucun écart) ; les cadences
+    # seules ne le disent pas, aucune conversion n'est supposée (et jamais 1001/1200 = 16,6 %).
+    assert detect_cadence_from_metadata("25/1", "30000/1001") is None
 
     # Ratio calculé à la volée entre 23.976 (24000/1001) et 24.0 (24/1)
     mismatch_film = detect_cadence_from_metadata("24/1", "24000/1001")
@@ -545,3 +572,28 @@ def test_audio_sync_scanner_auto_falls_back_to_asetrate_when_atempo_never_correl
 
     assert calib.cadence_audio_method == "asetrate"
     assert any("repli automatique" in line for line in logs)
+
+
+def test_physical_audio_filter_uses_track_sample_rate_for_asetrate():
+    from core.workflows.physical_sync import audio_filter
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    calibration = SyncCalibration((SyncSegment(0, 120),), cadence_mismatch=mismatch, cadence_audio_method="asetrate")
+    assert f"asetrate={round(96000 * 24000 / 25025)},aresample=96000" in audio_filter(calibration, sample_rate=96000)
+    assert "aresample=48000,asetrate=" in audio_filter(calibration)
+
+
+@pytest.mark.parametrize("master, donor", [
+    ("24000/1001", "30000/1001"),  # télécinéma NTSC : même vitesse audio
+    ("25", "50"),                  # entrelacé / images doublées
+    ("30000/1001", "60000/1001"),
+])
+def test_structural_frame_rate_differences_are_not_speed_changes(master, donor):
+    from core.workflows.cadence import detect_cadence_from_metadata
+    assert detect_cadence_from_metadata(master, donor) is None
+
+
+def test_real_speed_changes_are_still_detected():
+    from core.workflows.cadence import detect_cadence_from_metadata
+    assert detect_cadence_from_metadata("24000/1001", "25").cadence_type == CadenceType.PAL_TO_FILM_23976
+    assert detect_cadence_from_metadata("24", "24000/1001").speed_factor == pytest.approx(1.001)

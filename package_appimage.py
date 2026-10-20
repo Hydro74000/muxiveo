@@ -334,6 +334,8 @@ def build_onedir() -> Path:
         # Données non-Python à embarquer dans le bundle
         f"--add-data={ROOT / 'locales.json'}{sep}.",
         f"--add-data={ROOT / 'requirements.txt'}{sep}.",
+        # Icônes Qt (coche des cases, logo TMDB) : sans elles, une case cochée grisée paraît vide.
+        f"--add-data={ROOT / 'ui' / 'assets'}{sep}ui/assets",
         # collect-data uniquement : inclut les plugins Qt (plateforme, imageformats…)
         # sans aspirer les binaires QML Wayland/NFC qui causent des warnings
         "--collect-data=PySide6",

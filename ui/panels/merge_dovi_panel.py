@@ -43,6 +43,7 @@ from ui.desktop import open_external
 from ui.operation_bar import OperationState
 from ui.widgets.surface import CollapsibleCard
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
+from ui.styles import _checkbox_style
 
 
 class _StringSignal(Protocol):
@@ -77,7 +78,7 @@ def _primary_button(text: str) -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
-            color: #ffffff;
+            color: {_C.ON_ACCENT};
             border: none;
             border-radius: {_scale(6)}px;
             font-size: {_font_px(13)}px;
@@ -85,7 +86,7 @@ def _primary_button(text: str) -> QPushButton:
             padding: 0 {_scale(24)}px;
         }}
         QPushButton:hover {{
-            background: #6070f8;
+            background: {_C.ACCENT_HOVER};
         }}
         QPushButton:pressed {{
             background: {_C.ACCENT_DIM};
@@ -488,9 +489,8 @@ class _ConfigSection(QWidget):
             "Aucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\n"
             "Un comptage identique ne prouve pas l'alignement temporel."
         )
-        self._trim_tail_cb.setStyleSheet(
-            f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent; border: none;"
-        )
+        # Style commun : indicateur visible (coché, grisé) dans les deux thèmes.
+        self._trim_tail_cb.setStyleSheet(_checkbox_style())
         cl.addWidget(self._trim_tail_cb)
 
         # État HDR des deux films + conséquence du profil choisi
@@ -767,12 +767,12 @@ class _ResultSection(QWidget):
         layout.setSpacing(8)
 
         card = _card()
-        card.setStyleSheet("""
-            QWidget {
-                background: #0f2318;
-                border: 1px solid #1a4a2e;
+        card.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BADGE_OK_BG};
+                border: 1px solid {_C.BADGE_OK_BORDER};
                 border-radius: 6px;
-            }
+            }}
         """)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(16, 14, 16, 14)
@@ -850,12 +850,12 @@ class _ErrorSection(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         card = _card()
-        card.setStyleSheet("""
-            QWidget {
-                background: #1f0e0e;
-                border: 1px solid #3a1515;
+        card.setStyleSheet(f"""
+            QWidget {{
+                background: {_C.BADGE_ERROR_BG};
+                border: 1px solid {_C.BADGE_ERROR_BORDER};
                 border-radius: 6px;
-            }
+            }}
         """)
         cl = QVBoxLayout(card)
         cl.setContentsMargins(16, 12, 16, 12)
@@ -873,8 +873,8 @@ class _ErrorSection(QWidget):
 
         self._msg_lbl = QLabel("")
         self._msg_lbl.setWordWrap(True)
-        self._msg_lbl.setStyleSheet("""
-            color: #f09090;
+        self._msg_lbl.setStyleSheet(f"""
+            color: {_C.ERROR};
             font-size: 11px;
             font-family: 'JetBrains Mono', monospace;
             background: transparent;

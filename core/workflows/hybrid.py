@@ -16,7 +16,15 @@ from core.workflows.hybrid_matrix import (
     prepare_matrix_episode,
 )
 
-_EPISODE = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})e(\d{1,3})(?!\d)")
+# S01E02, S01.E02, S01 E02, S01_E02 ; 1x02. Plusieurs épisodes dans un nom : refusé (ambigu).
+_EPISODE = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})[\s._-]?e(\d{1,3})(?!\d)")
+_EPISODE_X = re.compile(r"(?i)(?<![a-z0-9])(\d{1,2})x(\d{2,3})(?![a-z0-9])")
+# Second marqueur explicite (E02, 1x02) : suffixe accolé admis (« E02v2 », « E02REPACK ») ;
+# numéro nu : seul un suffixe de version, « S01E02-1080p » / « 1x02-2160p » restent un épisode.
+_MULTI_EPISODE = re.compile(
+    r"(?i)s\d+[\s._-]?e\d+(?:[\s._+-]?e\d{1,3}(?!\d)|[-+]\d{1,3}(?:v\d{1,2})?(?![a-z0-9]))"
+    r"|(?<![a-z0-9])\d{1,2}x\d{2,3}[-+](?:\d{1,2}x\d{2,3}(?!\d)|\d{2,3}(?:v\d{1,2})?(?![a-z0-9]))"
+)
 _VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".m2ts", ".webm"}
 
 
@@ -29,8 +37,9 @@ class HybridPair:
 
 
 def episode_key(path):
-    matches = list(_EPISODE.finditer(Path(path).stem))
-    if len(matches) != 1 or re.search(r"(?i)s\d+e\d+(?:e\d+|[-+]e?\d+)", Path(path).stem):
+    stem = Path(path).stem
+    matches = [*_EPISODE.finditer(stem), *_EPISODE_X.finditer(stem)]
+    if len(matches) != 1 or _MULTI_EPISODE.search(stem):
         raise ValueError(f"Épisode absent ou ambigu : {Path(path).name}")
     return tuple(map(int, matches[0].groups()))
 

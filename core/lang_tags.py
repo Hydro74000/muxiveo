@@ -361,7 +361,8 @@ class Rfc5646LanguageTags:
     # Les mots-clés sont recherchés en minuscules dans le titre normalisé.
     _TITLE_REGION_HINTS: dict[str, list[tuple[tuple[str, ...], str]]] = {
         'fr': [
-            (('canad', 'québec', 'quebec'),                      'fr-CA'),
+            # VFQ : version française québécoise (convention des sorties francophones).
+            (('canad', 'québec', 'quebec', 'vfq'),               'fr-CA'),
             (('belgi', 'belgique'),                              'fr-BE'),
             (('swiss', 'suisse', 'schweiz', 'switzerland'),      'fr-CH'),
             (('luxembourg',),                                    'fr-LU'),
@@ -519,6 +520,19 @@ class Rfc5646LanguageTags:
             return None
         cls._ensure_short_regional_index()
         return cls._IETF_SHORT_TO_REGIONAL_IETF.get(code.lower())
+
+    @classmethod
+    def legacy_track_languages(cls, tag: str | None, title: str | None = None) -> set[str]:
+        """Formes données à cette piste avant la détection de « VFQ » (fr-FR), pour les profils enregistrés.
+
+        Seule une piste classée fr-CA par le seul « VFQ » de son titre en reçoit une ;
+        l'inspection écrit déjà la forme régionale, l'étiquette brute n'est plus disponible.
+        """
+        current = cls.regionalize_track_language(str(tag or ""), title) if tag else None
+        text = (title or "").lower()
+        if current == "fr-CA" and "vfq" in text and not any(hint in text for hint in ("canad", "québec", "quebec")):
+            return {"fr-FR"}
+        return set()
 
     @classmethod
     def regionalize_track_language(cls, tag: str, title: str | None = None) -> str | None:

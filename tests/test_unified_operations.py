@@ -199,7 +199,7 @@ def test_single_calibration_refreshes_offset_and_waveform(window, tmp_path, monk
         assert not panel._wave_section.body.isEnabled()
     finally:
         release.set()
-    _wait_until(qt_app, lambda: not panel.busy and panel._sync_editor is not None and len(panel._sync_editor.waveform._tgt_samples) > 0)
+    _wait_until(qt_app, lambda: not panel.busy and panel._sync_editor is not None and bool(panel._sync_editor.waveform._tgt_chunks))
     assert not window._running
     assert panel._sync_editor.spin_shift.value() == 125
     assert panel._sync_editor.waveform.shift_ms == 125

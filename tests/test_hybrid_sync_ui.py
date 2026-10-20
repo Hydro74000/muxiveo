@@ -150,8 +150,9 @@ def test_embedded_studio_navigates_cuts_and_the_complete_track(panel, tmp_path):
     assert editor.cuts_table.rowCount() == 3
     editor._next_segment()
     assert editor._current_segment_index == 1
-    assert editor._current_start_s == pytest.approx(237.738)
-    assert editor._current_cut_ms == 239738
+    # Fenêtre sur l'axe de sortie : jonction 239 738 − 67 ms, 2 s avant.
+    assert editor._current_start_s == pytest.approx(237.671)
+    assert editor._current_cut_ms == 239671
     editor._on_duration_ready(3600)
     editor.timeline.setValue(900000)
     assert editor._current_segment_index == 2
@@ -284,11 +285,13 @@ def test_reset_restores_navigation_after_the_calibration_structure_changed(panel
     editor = panel._sync_editor
     editor._on_auto_sub_sync_ready(SyncCalibration((SyncSegment(0, 10), SyncSegment(100000, 25))))
     editor._next_segment()
-    assert editor._current_start_s == 98
+    # Jonction en sortie : 100 000 + 25 ms (saut positif de 15 ms), fenêtre 2 s avant.
+    assert editor._current_start_s == pytest.approx(98.025)
     editor._reset_shifts()
     assert editor._current_segment_index == 1
-    assert editor._current_start_s == pytest.approx(237.738)
-    assert editor._current_cut_ms == 239738
+    # Fenêtre sur l'axe de sortie : jonction 239 738 − 67 ms, 2 s avant.
+    assert editor._current_start_s == pytest.approx(237.671)
+    assert editor._current_cut_ms == 239671
     assert editor.cuts_table.rowCount() == 3
     assert editor.spin_shift.value() == -180
     assert editor.btn_next_seg.isEnabled()

@@ -21,7 +21,7 @@ from core.hdr_inspection.json_stream import iter_json_array, read_json_head
 from core.hdr_inspection.pq import nits_to_pq
 from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
-from core.output_commit import OutputReservation, reserve_candidate
+from core.output_commit import OutputCommitError, OutputReservation, reserve_candidate
 from core.runner import TaskCancelledError
 
 if TYPE_CHECKING:
@@ -447,6 +447,7 @@ class MetadataPatcher:
                 span = weights["write"] / total_weight
                 self._step(translate_text("Écriture du fichier corrigé…"), position, span)
                 candidate = reserve_candidate(output)
+                keep_candidate = False
                 total = source.stat().st_size
                 report = self._progress
                 start = position
@@ -465,9 +466,16 @@ class MetadataPatcher:
                         shutil.copyfile(current, candidate)
                     if self._cancelled():
                         raise PatchCancelled
-                    reservation.publish(candidate)
+                    try:
+                        reservation.publish(candidate)
+                    except OutputCommitError:
+                        # Publication refusée (destination apparue ou modifiée) : le fichier corrigé
+                        # reste à côté de la sortie ; l'erreur en donne le chemin pour le récupérer.
+                        keep_candidate = True
+                        raise
                 except BaseException:
-                    candidate.unlink(missing_ok=True)
+                    if not keep_candidate:
+                        candidate.unlink(missing_ok=True)
                     raise
             return output
         except TaskCancelledError as exc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
@@ -98,6 +99,57 @@ def test_rules_and_title_keywords_use_current_flags_without_changing_source_iden
     apply_decision_profile(profile, [track])
     assert track.title == "Visual Impaired Commentary"
     assert not track.orig_flag_visual_impaired and not track.orig_flag_commentary
+
+
+def test_profile_from_current_state_reads_edited_values_as_source_and_keeps_file_origins():
+    """Valeurs éditées = source de travail ; origines du fichier intactes pour le mux."""
+    track = _audio(1, language="fr-CA", title="VFQ")
+    # Éditions du panneau Conteneur : la piste est en réalité une VFF.
+    track.language, track.title = "fr-FR", "VFF"
+    track.flag_hearing_impaired = True
+    profile = {"version": 1, "kind": "decision-profile", "name": "Source de travail", "rules": [{
+        "id": "vfq", "priority": 20, "scope": "all", "match": {"all": [
+            {"field": "source_title", "op": "contains", "value": "VFQ"},
+        ]}, "actions": [{"type": "set_language", "value": "fr-CA"}],
+    }, {
+        "id": "vff", "priority": 10, "scope": "all", "match": {"all": [
+            {"field": "source_language", "op": "is", "value": "fr-FR"},
+            {"field": "source_title", "op": "contains", "value": "VFF"},
+        ]}, "actions": [{"type": "set_title", "pattern": "{lang_name} {flag_hearing_impaired}"}],
+    }]}
+    edited = copy.deepcopy(track)
+
+    apply_decision_profile(profile, [edited], from_current_state=True)
+    apply_decision_profile(profile, [track])
+
+    assert (edited.language, edited.title) == ("fr-FR", "French Hearing Impaired")
+    # Valeurs d'origine du fichier intactes : le mux voit toujours les modifications.
+    origins = (edited.orig_language, edited.orig_title, edited.orig_flag_hearing_impaired)
+    assert origins == ("fr-CA", "VFQ", False)
+    assert edited.working_source is None
+    # Sans état de travail, les critères « source » lisent le fichier.
+    assert (track.language, track.title) == ("fr-CA", "VFF")
+
+
+def test_profile_from_current_state_freezes_cleared_source_title():
+    """Titre effacé : le titre source reste vide malgré les écritures des règles."""
+    track = _audio(1, title="Original")
+    track.title = ""  # Titre effacé dans le tableau.
+    profile = {"version": 1, "kind": "decision-profile", "name": "Instantané", "rules": [{
+        "id": "rename", "priority": 20, "scope": "all", "match": {"all": [
+            {"field": "type", "op": "is", "value": "audio"},
+        ]}, "actions": [{"type": "set_title", "value": "Auto"}],
+    }, {
+        "id": "drop_auto", "priority": 10, "scope": "all", "match": {"all": [
+            {"field": "source_title", "op": "is", "value": "Auto"},
+        ]}, "actions": [{"type": "set_enabled", "value": False}],
+    }]}
+
+    result = apply_decision_profile(profile, [track], from_current_state=True)
+
+    # La source de travail reste le titre vide du tableau, pas le titre écrit par la règle.
+    assert track.title == "Auto" and track.enabled
+    assert [rule["rule_id"] for rule in result.report["missing_rules"]] == ["drop_auto"]
 
 
 def test_lang_name_keeps_region_only_for_non_default_variants():
@@ -828,3 +880,42 @@ def test_capture_reapplies_all_track_flags_including_mkv_enabled():
 
     assert target_audio.flag_enabled is False
     assert target_audio.flag_default is True
+
+
+def test_saved_vfq_rule_still_applies_after_region_detection():
+    """Règle « fr-FR + titre VFQ » écrite avant la détection de VFQ (fr-CA) : toujours appliquée."""
+    from core.profiles.decision import apply_decision_profile
+    profile = {
+        "kind": "decision-profile", "version": 1, "name": "VFQ",
+        "rules": [{
+            "id": "vfq", "label": "VFQ", "scope": "all", "write_mode": "priority",
+            "match": {"all": [
+                {"field": "type", "op": "is", "value": "audio", "required": True},
+                {"field": "language", "op": "is", "value": "fr-FR", "required": True},
+                {"field": "source_title", "op": "contains", "value": "VFQ", "required": True},
+            ]},
+            "actions": [{"type": "set_title", "value": "Français (Québec)"}],
+        }],
+    }
+    for language in ("fra", "fr-CA"):  # étiquette brute, ou déjà régionalisée par l'inspection
+        vff = _audio(1, language="fr-FR" if language == "fr-CA" else language, title="VFF")
+        vfq = _audio(2, language=language, title="VFQ")
+        result = apply_decision_profile(profile, [vff, vfq])
+        assert result.report["applied_rules"] == 1
+        assert (vff.title, vfq.title) == ("VFF", "Français (Québec)")
+
+
+def test_fr_ca_condition_targets_only_quebec_tracks():
+    from core.profiles.decision import apply_decision_profile
+    profile = {
+        "kind": "decision-profile", "version": 1, "name": "QC",
+        "rules": [{
+            "id": "qc", "label": "QC", "scope": "all", "write_mode": "priority",
+            "match": {"all": [{"field": "language", "op": "is", "value": "fr-CA", "required": True}]},
+            "actions": [{"type": "set_title", "value": "Québec"}],
+        }],
+    }
+    vff = _audio(1, language="fr-FR", title="VFF")
+    vfq = _audio(2, language="fr-CA", title="VFQ")
+    apply_decision_profile(profile, [vff, vfq])
+    assert (vff.title, vfq.title) == ("VFF", "Québec")

@@ -91,7 +91,7 @@ def _primary_button(text: str) -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
-            color: #ffffff;
+            color: {_C.ON_ACCENT};
             border: none;
             border-radius: {_scale(5)}px;
             font-size: {_font_px(11)}px;
@@ -99,7 +99,7 @@ def _primary_button(text: str) -> QPushButton:
             padding: 0 {_scale(16)}px;
         }}
         QPushButton:hover {{
-            background: {_C.ACCENT_HOVER if hasattr(_C, 'ACCENT_HOVER') else '#6070f8'};
+            background: {_C.ACCENT_HOVER};
         }}
         QPushButton:pressed {{
             background: {_C.ACCENT_DIM};
@@ -265,12 +265,12 @@ class ProfileSelector(QWidget):
             for p in mgr.load_all():
                 name = str(p.get("name", "")).strip()
                 if name:
-                    self.combo.addItem(f"Profil : {name}", name)
+                    self.combo.addItem(translate_text("Profil : {name}", name=name), name)
         except Exception:  # nosec B110
             pass
 
         if self._custom_path:
-            label = f"Fichier : {Path(self._custom_path).name}"
+            label = translate_text("Fichier : {name}", name=Path(self._custom_path).name)
             self.combo.addItem(label, self._custom_path)
 
         if current_data:
@@ -304,11 +304,11 @@ class ProfileSelector(QWidget):
             return
         for i in range(self.combo.count()):
             data = self.combo.itemData(i)
-            if data == target or self.combo.itemText(i) == target or f"Profil : {target}" == self.combo.itemText(i):
+            if data == target or self.combo.itemText(i) == target or translate_text("Profil : {name}", name=target) == self.combo.itemText(i):
                 self.combo.setCurrentIndex(i)
                 return
         self._custom_path = target
-        self.combo.addItem(f"Fichier : {Path(target).name}", target)
+        self.combo.addItem(translate_text("Fichier : {name}", name=Path(target).name), target)
         self.combo.setCurrentIndex(self.combo.count() - 1)
 
     def setEnabled(self, enabled: bool) -> None:

@@ -751,6 +751,7 @@ Muxiveo-cli remux \
 
 * `--auto-sync` : Compare automatiquement les pistes audio pour identifier le décalage temporel initial.
 * `--detect-cuts` : Détecte les ruptures temporelles (coupures ou insertions) et scinde le calage en plusieurs segments.
+* `--quick-sync-check` / `--no-quick-sync-check` : Avec `--detect-cuts`, saute l'analyse continue des pistes quand les six mesures ponctuelles donnent le même décalage (confiance ≥ 0,90) ; un décalage variable ou une confiance plus faible la déclenchent automatiquement. Un écart qui se compense entre deux mesures (scène déplacée, ajout puis retrait de même durée) n'est vu qu'avec `--no-quick-sync-check`. Défaut : `[sync] quick_audio_check` (activé).
 * `--drift-threshold-ms 25` : Seuil de décalage (en ms) à partir duquel une discontinuité temporelle est considérée comme une coupure.
 * `--cadence-auto` : Détecte un éventuel écart de cadence (ex: source TV à 25 FPS PAL vs source vidéo à 23.976 FPS Cinéma).
 * `--cadence-method auto` : Analyse acoustique de la hauteur tonale (F0) pour appliquer `atempo` (préservation du timbre) ou `asetrate` (hauteur naturelle).

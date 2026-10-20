@@ -8,8 +8,9 @@ import re
 import subprocess
 from typing import Any
 
+from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.audio_sync import AudioSyncTrack
-from core.workflows.audio_sync_scan import AudioSyncScanner
+from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
 from core.workflows.hybrid import HybridPair, episode_key, pair_directories
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.workflow_store import atomic_write_text, save_workflow
@@ -27,7 +28,9 @@ def _write_json(path, value):
 
 
 def scanner(args, config):
-    return AudioSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe, cancel_event=getattr(args, "cancel_event", None))
+    return AudioSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe,
+                            cancel_event=getattr(args, "cancel_event", None),
+                            quick_check=quick_check_enabled(args, config))
 
 
 def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio") -> str:
@@ -51,7 +54,7 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
             str(path),
         ]
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)  # nosec B603
+        res = subprocess.run(cmd, capture_output=True, timeout=10, **subprocess_text_kwargs())  # nosec B603
         output = res.stdout.strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output
@@ -207,6 +210,7 @@ def perform_dynamic_sync(
         audio_scanner = AudioSyncScanner(
             getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
             getattr(options, "ffprobe", None) or config.tool_ffprobe,
+            quick_check=quick_check_enabled(options, config),
         )
         return audio_scanner.scan(
             AudioSyncTrack(ref_source.path, ref_audio.mkv_tid),

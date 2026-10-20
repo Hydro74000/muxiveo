@@ -63,6 +63,13 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "BADGE_PENDING_BORDER": "#252a3a",
         "CHECKBOX_BORDER": "#4a5578",
         "CHECKBOX_BG": "#0d0f14",
+        "ACCENT_HOVER": "#6070f8",
+        "ACCENT_PRESSED": "#3a52c0",
+        "ON_ACCENT": "#ffffff",
+        "ERROR_PRESSED_BG": "#2a0f0f",
+        "SYNC_CUT": "#e5a50a",
+        "WAVE_REF": "#20c997",
+        "HDR10P_TEXT": "#4fc3f7",
     },
     "light": {
         "BG_DEEP": "#f4f6fb",
@@ -107,6 +114,13 @@ _THEMES: Final[dict[str, ThemeMap]] = {
         "BADGE_PENDING_BORDER": "#d6ddea",
         "CHECKBOX_BORDER": "#9aa5b8",
         "CHECKBOX_BG": "#f4f6fb",
+        "ACCENT_HOVER": "#4c72ee",
+        "ACCENT_PRESSED": "#2848b8",
+        "ON_ACCENT": "#ffffff",
+        "ERROR_PRESSED_BG": "#f8dcdc",
+        "SYNC_CUT": "#a86f00",
+        "WAVE_REF": "#0f8f6a",
+        "HDR10P_TEXT": "#0b7fb3",
     },
 }
 

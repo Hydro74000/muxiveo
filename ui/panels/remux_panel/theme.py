@@ -39,7 +39,7 @@ def _primary_button(text: str) -> QPushButton:
     btn.setStyleSheet(f"""
         QPushButton {{
             background: {_C.ACCENT};
-            color: #ffffff;
+            color: {_C.ON_ACCENT};
             border: none;
             border-radius: 6px;
             font-size: {_font_px(12)}px;
@@ -47,8 +47,8 @@ def _primary_button(text: str) -> QPushButton:
             padding: 0 {_scale(16)}px;
             text-align: center;
         }}
-        QPushButton:hover  {{ background: #6070f0; }}
-        QPushButton:pressed {{ background: #3a52c0; }}
+        QPushButton:hover  {{ background: {_C.ACCENT_HOVER}; }}
+        QPushButton:pressed {{ background: {_C.ACCENT_PRESSED}; }}
         QPushButton:disabled {{
             background: {_C.BG_ACTIVE};
             color: {_C.TEXT_DIM};
@@ -164,6 +164,11 @@ def _checkbox_style() -> str:
             border-color: {_C.BORDER};
             background: {_C.BG_DEEP};
         }}
+        QCheckBox::indicator:checked:disabled {{
+            background: {_C.TEXT_DIM};
+            border-color: {_C.TEXT_DIM};
+            image: url('{CHECK_ICON_PATH}');
+        }}
         QCheckBox:disabled {{
             color: {_C.TEXT_DIM};
         }}
@@ -199,6 +204,27 @@ def _refresh_icon(color: str | None = None, size: int = 14) -> QIcon:
         '<path d="M3 3v5h5"/>'
         '<path d="M3 12a9 9 0 0 0 15.5 6.3L21 16"/>'
         '<path d="M21 21v-5h-5"/>'
+        '</svg>'
+    )
+    renderer = QSvgRenderer(svg.encode())
+    icon_size = _scale(size)
+    pix = QPixmap(icon_size, icon_size)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pix)
+
+
+def _reset_icon(color: str | None = None, size: int = 14) -> QIcon:
+    """Picto « revenir à l'état initial » (flèche anti-horaire)."""
+    color = color or _C.TEXT_SEC
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="none" stroke="{color}" stroke-width="2.2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>'
+        '<path d="M3 3v5h5"/>'
         '</svg>'
     )
     renderer = QSvgRenderer(svg.encode())
@@ -255,7 +281,7 @@ def _convert_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#f0b429"
+    color = color or _C.WARN
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -276,7 +302,7 @@ def _warning_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _scissors_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#e5a50a"
+    color = color or _C.SYNC_CUT
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'
@@ -299,7 +325,7 @@ def _scissors_icon(color: str | None = None, size: int = 14) -> QIcon:
 
 
 def _waveform_icon(color: str | None = None, size: int = 14) -> QIcon:
-    color = color or "#6070f8"
+    color = color or _C.ACCENT
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
         f' fill="none" stroke="{color}" stroke-width="2.2"'

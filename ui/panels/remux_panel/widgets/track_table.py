@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -46,7 +46,6 @@ from ui.panels.remux_panel.theme import (
     _pencil_icon,
     _refresh_icon,
     _scissors_icon,
-    _warning_icon,
     _waveform_icon,
     _x_icon,
 )
@@ -175,10 +174,86 @@ class _TrackInfoDelegate(QStyledItemDelegate):
 
         painter.restore()
 
+
+class _CheckAllHeader(QHeaderView):
+    """En-tête horizontal : la colonne des cases porte une case « tout cocher » à trois états."""
+
+    check_all_requested = Signal(bool)  # True : tout cocher, False : tout décocher
+
+    def __init__(self, check_column: int, table: QTableWidget) -> None:
+        super().__init__(Qt.Orientation.Horizontal, table)
+        self._check_column = check_column
+        self._table = table
+        # Comportement de l'en-tête par défaut de QTableView.
+        self.setSectionsClickable(True)
+        self.setHighlightSections(True)
+
+    def check_state(self) -> Qt.CheckState:
+        """Cochée si toutes les pistes le sont, partielle si certaines seulement."""
+        states = {
+            item.checkState()
+            for row in range(self._table.rowCount())
+            if (item := self._table.item(row, self._check_column)) is not None
+        }
+        if states == {Qt.CheckState.Checked}:
+            return Qt.CheckState.Checked
+        if Qt.CheckState.Checked in states:
+            return Qt.CheckState.PartiallyChecked
+        return Qt.CheckState.Unchecked
+
+    def paintSection(self, painter: QPainter, rect, logical_index: int) -> None:
+        super().paintSection(painter, rect, logical_index)
+        if logical_index != self._check_column or self._table.rowCount() == 0:
+            return
+        style = self._table.style()
+        option = QStyleOptionViewItem()
+        option.initFrom(self._table)
+        width = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self._table)
+        height = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorHeight, None, self._table)
+        option.rect = QRect(self._indicator_left(rect, width), rect.center().y() - height // 2, width, height)
+        option.state = QStyle.StateFlag.State_Enabled | {
+            Qt.CheckState.Checked: QStyle.StateFlag.State_On,
+            Qt.CheckState.PartiallyChecked: QStyle.StateFlag.State_NoChange,
+        }.get(self.check_state(), QStyle.StateFlag.State_Off)
+        painter.save()
+        # Même primitive que les cases des lignes : rendu identique dans les deux thèmes.
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck, option, painter, self._table)
+        painter.restore()
+
+    def _indicator_left(self, section: QRect, width: int) -> int:
+        """Abscisse des cases des lignes de la colonne (marges du style et de la feuille de style)."""
+        style = self._table.style()
+        for row in range(self._table.rowCount()):
+            cell = self._table.visualRect(self._table.model().index(row, self._check_column))
+            if not cell.isValid():
+                continue
+            option = QStyleOptionViewItem()
+            option.initFrom(self._table)
+            option.rect = cell
+            option.features = QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+            check = style.subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, option, self._table)
+            if check.isValid():
+                return section.left() + check.left() - cell.left()
+        return section.center().x() - width // 2
+
+    def mousePressEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._table.rowCount()
+            and self.logicalIndexAt(event.position().toPoint()) == self._check_column
+        ):
+            self.check_all_requested.emit(self.check_state() != Qt.CheckState.Checked)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class _TrackTable(QTableWidget):
     order_changed = Signal()
+    check_all_requested = Signal(bool)  # case « tout cocher » de l'en-tête
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
+    audio_deep_sync_requested = Signal(object)  # TrackEntry — analyse continue forcée
     subtitle_sync_requested = Signal(object)  # TrackEntry
     sync_studio_requested = Signal(object)  # TrackEntry
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
@@ -247,7 +322,17 @@ class _TrackTable(QTableWidget):
         self.customContextMenuRequested.connect(self._on_context_menu)
 
     def _setup_ui(self) -> None:
+        header = _CheckAllHeader(self.COL_CHECK, self)
+        self.setHorizontalHeader(header)
+        header.check_all_requested.connect(self.check_all_requested)
         self.setHorizontalHeaderLabels(self._HEADERS)
+        check_header = self.horizontalHeaderItem(self.COL_CHECK)
+        if check_header is not None:
+            check_header.setToolTip(translate_text("Tout cocher / tout décocher"))
+        # État de la case d'en-tête suivi même quand les signaux du tableau sont bloqués.
+        model = self.model()
+        for model_signal in (model.dataChanged, model.rowsInserted, model.rowsRemoved, model.modelReset):
+            model_signal.connect(lambda *_args: header.updateSection(self.COL_CHECK))
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
@@ -580,16 +665,6 @@ class _TrackTable(QTableWidget):
         layout.setSpacing(_scale(3))
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        preview = self._sync_rewrite_preview(entry)
-        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
-            warning_btn = self._make_action_button(
-                tooltip=translate_text(preview.warning_tooltip),
-                icon=_warning_icon("#f0b429", 13),
-            )
-            warning_btn.setCursor(Qt.CursorShape.ArrowCursor)
-            warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            layout.addWidget(warning_btn)
-
         if entry.cuts_count > 0 and entry.sync_calibration:
             lines = format_calibration_summary(entry.sync_calibration)
             summary_text = "\n".join(f"• {line}" for line in lines)
@@ -600,7 +675,7 @@ class _TrackTable(QTableWidget):
             )
             cuts_btn = self._make_action_button(
                 tooltip=tip,
-                icon=_scissors_icon("#e5a50a", 13),
+                icon=_scissors_icon(_C.SYNC_CUT, 13),
             )
             cuts_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
             layout.addWidget(cuts_btn)
@@ -612,7 +687,7 @@ class _TrackTable(QTableWidget):
             )
             studio_btn = self._make_action_button(
                 tooltip=tip,
-                icon=_waveform_icon("#6070f8", 13),
+                icon=_waveform_icon(_C.ACCENT, 13),
             )
             studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
             layout.addWidget(studio_btn)
@@ -636,7 +711,7 @@ class _TrackTable(QTableWidget):
         elif entry.track_type == "subtitle" and self._audio_sync_available:
             sync_btn = self._make_action_button(
                 tooltip=translate_text("Synchroniser cette piste de sous-titres"),
-                icon=_refresh_icon("#5dcc8a", 13),
+                icon=_refresh_icon(_C.OK, 13),
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
             layout.addWidget(sync_btn)
@@ -772,6 +847,10 @@ class _TrackTable(QTableWidget):
                         summary=summary_text,
                     )
                 )
+        preview = self._sync_rewrite_preview(entry)
+        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
+            # Hors de la colonne d'actions : studio, annulation et édition seulement.
+            tooltips.insert(0, "⚠ " + translate_text(preview.warning_tooltip))
         if self._can_toggle_sync_rewrite(entry):
             tooltips.append(
                 translate_text("Cliquer pour basculer entre sync réelle et sync offset")
@@ -1175,6 +1254,7 @@ class _TrackTable(QTableWidget):
             menu = QMenu(self)
             action_studio = None
             action_sync = None
+            action_deep = None
             action_cancel = None
 
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
@@ -1182,6 +1262,7 @@ class _TrackTable(QTableWidget):
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
             elif self._audio_sync_available:
                 action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
+                action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             if not menu.isEmpty():
@@ -1192,6 +1273,8 @@ class _TrackTable(QTableWidget):
                     self.auto_sync_cancel_requested.emit(entry)
                 elif action_sync is not None and chosen is action_sync:
                     self.audio_sync_requested.emit(entry)
+                elif action_deep is not None and chosen is action_deep:
+                    self.audio_deep_sync_requested.emit(entry)
 
     def _find_row_for_entry(self, entry: TrackEntry) -> int | None:
         for row in range(self.rowCount()):

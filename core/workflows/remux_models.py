@@ -97,6 +97,9 @@ class TrackEntry:
     remove_closed_captions: bool | None = None
     #: Ligne virtuelle UI, liée à une vidéo ; jamais une piste muxable.
     embedded_caption_parent_id: str = field(default="", repr=False)
+    #: (langue, titre) du tableau figés pendant l'application d'un profil depuis l'état courant :
+    #: valeurs « source » du profil, même vides. None hors application.
+    working_source: tuple[str, str] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.orig_codec:

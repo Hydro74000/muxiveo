@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from core.lang_tags import Rfc5646LanguageTags
 from core.profile_store import ProfileLoadError, ProfileStore
 from core.profiles import keywords as keyword_registry
 from core.profiles.expressions import (
@@ -522,6 +523,14 @@ def _condition_leaf_result(
         matched = _compare_value(actual, op, expected) or (
             similarity > 0 and op not in {"not_is", "ne", "!=", "not_contains", "not_in"}
         )
+    elif field == "language":
+        similarity = 0
+        # Forme d'avant la détection de « VFQ » (fr-FR) : une règle déjà enregistrée
+        # (« fr-FR » + titre VFQ) s'applique toujours ; « fr-CA » ne vise que les VFQ.
+        candidates = {actual, *Rfc5646LanguageTags.legacy_track_languages(track.language, track.title)}
+        results = [_compare_value(candidate, op, expected) for candidate in candidates]
+        negative = op in {"not_is", "ne", "!=", "not_in", "not_contains"}
+        matched = all(results) if negative else any(results)
     else:
         similarity = 0
         matched = _compare_value(actual, op, expected)
@@ -1237,8 +1246,41 @@ def apply_decision_profile(
     *,
     source_index_by_file_id: Mapping[str, int] | None = None,
     conflict_choices: Mapping[str, str] | None = None,
+    from_current_state: bool = False,
 ) -> DecisionProfileResult:
-    """Apply a decision profile v1 to an in-memory track list."""
+    """Apply a decision profile v1 to an in-memory track list.
+
+    ``from_current_state`` : l'état courant des pistes (éditions du panneau Conteneur, profil
+    déjà appliqué) est la source de travail du profil, y compris pour les critères « source »
+    (titre, langue), figés au départ : les écritures des règles ne les modifient pas.
+    """
+    if not from_current_state:
+        return _apply_decision_profile_rules(
+            profile, tracks, source_index_by_file_id=source_index_by_file_id, conflict_choices=conflict_choices,
+        )
+    for track in tracks:
+        if not track.is_new:
+            track.working_source = (track.language, track.title)
+    try:
+        result = _apply_decision_profile_rules(
+            profile, tracks, source_index_by_file_id=source_index_by_file_id, conflict_choices=conflict_choices,
+        )
+    finally:
+        for track in tracks:
+            track.working_source = None
+    # Variantes clonées pendant l'application.
+    for track in result.tracks:
+        track.working_source = None
+    return result
+
+
+def _apply_decision_profile_rules(
+    profile: Mapping[str, Any],
+    tracks: list[TrackEntry],
+    *,
+    source_index_by_file_id: Mapping[str, int] | None,
+    conflict_choices: Mapping[str, str] | None,
+) -> DecisionProfileResult:
     validate_decision_profile(profile)
     working = list(tracks)
     original_tracks = [track for track in working if not track.is_new]

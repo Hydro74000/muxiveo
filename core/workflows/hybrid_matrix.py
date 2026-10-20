@@ -26,7 +26,8 @@ SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sub", ".sup"}
 ALL_MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | SUBTITLE_EXTENSIONS
 
 # Expressions rationnelles pour extraire (saison, épisode)
-_REGEX_SXX_EXX = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})e(\d{1,3})(?!\d)")
+# S01E02, S01.E02, S01 E02 : la saison suit l'épisode même séparé (sinon « E02 » seul = saison 1).
+_REGEX_SXX_EXX = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,3})[\s._-]?e(\d{1,3})(?!\d)")
 _REGEX_NXN = re.compile(r"(?i)(?<![a-z0-9])(\d{1,2})x(\d{1,3})(?!\d)")
 _REGEX_EP_STANDALONE = re.compile(r"(?i)(?<![a-z0-9])(?:ep|e)(\d{1,3})(?!\d)")
 _REGEX_ANIME_NUM = re.compile(r"(?i)(?:[-_\s]|\[)(\d{2,3})(?:[-_\s\.]|\])")
@@ -717,7 +718,7 @@ def prepare_matrix_episode(
     from cli.remux_config import build_remux_config
     from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
-    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
 
     if not episode.master_file:
@@ -803,7 +804,9 @@ def prepare_matrix_episode(
     ffmpeg_bin = getattr(options, "ffmpeg", None) or config.tool_ffmpeg
     ffprobe_bin = getattr(options, "ffprobe", None) or config.tool_ffprobe
     cancel_event = getattr(options, "cancel_event", None)
-    audio_scanner = AudioSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if recipe.sync_strategy == "auto" else None
+    audio_scanner = AudioSyncScanner(
+        ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event, quick_check=quick_check_enabled(options, config),
+    ) if recipe.sync_strategy == "auto" else None
     sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if recipe.sync_strategy == "auto" else None
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):

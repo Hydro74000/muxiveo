@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -87,10 +89,20 @@ def test_pairing_case_order_and_missing(tmp_path):
         pair_directories(ref, donor)
 
 
-@pytest.mark.parametrize("name", ["S01E01E02.mkv", "S01E01-E02.mkv", "movie.mkv", "S01E01.S01E02.mkv"])
+@pytest.mark.parametrize("name", [
+    "S01E01E02.mkv", "S01E01-E02.mkv", "movie.mkv", "S01E01.S01E02.mkv", "Show.S01E01E02v2.mkv",
+])
 def test_pairing_rejects_ambiguous_names(name):
     with pytest.raises(ValueError):
         episode_key(name)
+
+
+def test_pairing_refuses_multi_episode_donor_with_version_suffix(tmp_path):
+    ref, donor = tmp_path / "ref", tmp_path / "donor"
+    ref.mkdir(); donor.mkdir()
+    (ref / "Show.S01E01.mkv").touch(); (donor / "Show.S01E01E02v2.mkv").touch()
+    with pytest.raises(ValueError, match="ambigu"):
+        pair_directories(ref, donor)
 
 
 def test_portable_workflow_windows_source(tmp_path):
@@ -425,6 +437,61 @@ def test_sync_studio_dialog_construction_and_spin_change(qt_app, tmp_path):
     dialog.close()
 
 
+def test_sync_studio_offers_quick_and_deep_audio_sync(qt_app, tmp_path, monkeypatch):
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    seen: list[bool] = []
+
+    def scan(scanner, *_a, **_k):
+        seen.append(scanner.quick_check)
+        return SyncCalibration((SyncSegment(0, -320.0),), 0.95, quick_check=scanner.quick_check)
+
+    monkeypatch.setattr(AudioSyncScanner, "scan", scan)
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VFF", time_shift_ms=-320, file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1", "eng", "VO", file_id="src0")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target_track, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=ref_track, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+        quick_validated=True,
+    )
+    dialog._executor = cast(Any, SimpleNamespace(submit=lambda callback: callback(), shutdown=lambda **_k: None))
+    assert dialog.listen_status.text() == mod.translate_text(
+        "Synchro actuelle validée par la vérification rapide (mesures ponctuelles)."
+    )
+
+    dialog.btn_deep_audio_sync.click()
+    qt_app.processEvents()
+    assert seen == [False]
+    assert dialog.quick_validated is False
+    assert dialog.spin_shift.value() == -320.0
+
+    dialog.btn_quick_audio_sync.click()
+    qt_app.processEvents()
+    assert seen == [False, True]
+    assert dialog.quick_validated is True
+    dialog.close()
+
+
+def test_sync_studio_ignores_negligible_auto_offset(qt_app, tmp_path, monkeypatch):
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VFF", file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1", "eng", "VO", file_id="src0")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target_track, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=ref_track, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+    )
+    dialog._on_auto_sub_sync_ready(SyncCalibration((SyncSegment(0, -4.0),), 0.95, quick_check=True))
+    cal, offset = dialog.result_calibration()
+    assert (offset, cal.segments[0].shift_ms) == (0, 0.0)
+    assert dialog.quick_validated is False
+    assert "-4.0 ms (≤ 5 ms)" in dialog.listen_status.text()
+    dialog.close()
+
+
 def test_sync_studio_goto_timestamp_loads_window_around_time(qt_app, tmp_path, monkeypatch):
     from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
     loads = []
@@ -444,7 +511,8 @@ def test_sync_studio_goto_timestamp_loads_window_around_time(qt_app, tmp_path, m
     )
     dialog.goto_edit.setText("00:04:05")
     dialog._goto_timestamp()
-    assert loads[-1] == (1, 235.0, 239738)
+    # Jonction sur l'axe de sortie : 239 738 ms cible − 67 ms du segment précédent.
+    assert loads[-1] == (1, 235.0, 239671)
     assert dialog._current_segment_index == 1
     assert dialog.spin_shift.value() == -180.0
 
@@ -733,7 +801,8 @@ def test_sync_studio_dialog_multi_segment_navigation_and_zoom(qt_app, tmp_path):
     dialog._next_segment()
     assert dialog._current_segment_index == 1
     assert dialog.spin_shift.value() == -180.0
-    assert dialog._current_cut_ms == 239738.0
+    # Jonction sur l'axe de sortie (saut négatif : sortie continue après le segment 1).
+    assert dialog._current_cut_ms == 239671.0
 
     # Navigate to next segment (Segment 3 at 00:13:58.566)
     dialog._next_segment()
@@ -1157,3 +1226,32 @@ def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
 
 
 
+
+
+@pytest.mark.parametrize("name, key", [
+    ("Show.S01E02.1080p.mkv", (1, 2)), ("Show.1x02.mkv", (1, 2)), ("Show.S01.E02.mkv", (1, 2)),
+    ("Show S01 E02.mkv", (1, 2)), ("Show.S02_E05.mkv", (2, 5)), ("Show.1920x1080.S01E03.mkv", (1, 3)),
+    ("Show.S01E01E02.mkv", None), ("Show.S01.E01.E02.mkv", None), ("Show.1x01-1x02.mkv", None),
+    ("Show.1x01-02.mkv", None), ("Show.S01E02.1x02.mkv", None),
+    # Audit Codex C2 : suffixe de résolution après un tiret, pas un second épisode.
+    ("Show.1x02-1080p.mkv", (1, 2)), ("Show.S01.E02-1080p.mkv", (1, 2)), ("Show.S01E02-2160p.mkv", (1, 2)),
+    ("Show.S01E01-E02.mkv", None), ("Show.S01E01-02.1080p.mkv", None),
+    # Audit Codex R1 : second marqueur suivi d'un suffixe de version ou de release.
+    ("Show.S01E01E02v2.mkv", None), ("Show.S01E01E02REPACK.mkv", None), ("Show.S01E01-E02v2.mkv", None),
+    ("Show.1x01-02v2.mkv", None), ("Show.1x01-1x02REPACK.mkv", None), ("Show.S01E01+E02.mkv", None),
+    ("Show.S01E02-720p.mkv", (1, 2)), ("Show.S01E02v2.mkv", (1, 2)), ("Show.S01E02-Extended.mkv", (1, 2)),
+])
+def test_episode_key_formats_and_ambiguity(name, key):
+    from pathlib import Path
+    if key is None:
+        with pytest.raises(ValueError, match="ambigu"):
+            episode_key(Path(name))
+    else:
+        assert episode_key(Path(name)) == key
+
+
+def test_matrix_episode_key_keeps_season_of_separated_marker():
+    from core.workflows.hybrid_matrix import parse_episode_key
+    # Avant : « E05 » seul était lu, saison 1 supposée.
+    assert parse_episode_key("Show.S02.E05.1080p.mkv") == (2, 5)
+    assert parse_episode_key("Show S03 E01.mkv") == (3, 1)

@@ -108,6 +108,15 @@ class EmptySubtitleRewrite(RemuxError):
     """La transformation a supprimé tous les événements de la piste."""
 
 
+def _positive_int(value: object) -> int | None:
+    """Entier strictement positif (champ ffprobe texte ou nombre), sinon None."""
+    try:
+        number = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def normalized_rewrite_codec(codec: str) -> str:
     raw = str(codec or "").strip().lower()
     compact = re.sub(r"[\s_./+]+", "-", raw)
@@ -593,6 +602,7 @@ class SyncRewriteService:
                     calibration=calib,
                     crossfade_ms=crossfade_ms,
                     source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
+                    sample_rate=_positive_int(probe.get("sample_rate")),
                 )
                 bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
@@ -821,6 +831,7 @@ class SyncRewriteService:
         calibration: SyncCalibration | None = None,
         crossfade_ms: int = 80,
         source_origin_s: float = 0.0,
+        sample_rate: int | None = None,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(codec_key, channels)
@@ -834,7 +845,7 @@ class SyncRewriteService:
         append_ffmpeg_input_args(cmd, source)
         if calibration is not None:
             from core.workflows.physical_sync import audio_filter as calibrated_audio_filter
-            graph = calibrated_audio_filter(calibration, crossfade_ms).replace(
+            graph = calibrated_audio_filter(calibration, crossfade_ms, sample_rate=sample_rate).replace(
                 "[0:a:0]", f"[0:{stream_index}]{SYNC_AUDIO_ORIGIN_FILTER},",
             )
             cmd.extend(["-filter_complex", graph, "-map", "[out]", *self._thread_args])

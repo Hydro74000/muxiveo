@@ -545,3 +545,14 @@ def test_remux_config_to_exact_job_separates_new_audio_variants(tmp_path):
     assert variant_payload["source_selector"]["type"] == "audio"
     # Les pistes d'origine restent dans tracks_payload
     assert all(not payload.get("codec") for payload in job["tracks"])
+
+
+@pytest.mark.parametrize("language", ["fra", "fr-CA"])
+def test_vfq_track_matches_saved_and_regional_selectors(language):
+    # « fr-CA » : forme écrite par l'inspection, l'étiquette brute n'étant plus conservée.
+    vff = _audio(1, language="fra", title="VFF")
+    vfq = _audio(2, language=language, title="VFQ")
+    # Sélecteur enregistré avant la détection de « VFQ » (fr-FR) : la piste reste trouvable.
+    assert resolve_track_selector({"type": "audio", "language": "fr-FR", "title": "VFQ"}, [vff, vfq]) is vfq
+    # Nouveau sélecteur régional : la seule piste québécoise.
+    assert resolve_track_selector({"type": "audio", "language": "fr-CA"}, [vff, vfq]) is vfq
