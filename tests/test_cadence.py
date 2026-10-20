@@ -448,7 +448,7 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
     ref_values[600500:1200500] = donor_values[600000:]
     envelope_calls = []
 
-    def envelope(track, cadence_filter=None):
+    def envelope(track, cadence_filter=None, downmix=None, abort=None):
         envelope_calls.append(cadence_filter)
         return ref_values if "ref" in track.source_path.name else donor_values
 
@@ -468,7 +468,8 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     assert len(calib.segments) == 2
     assert calib.segments[1].start_ms == pytest.approx(600000 * mismatch.speed_factor, abs=50)
-    assert envelope_calls == [None, "atempo=24000/25025"]
+    # Décodages parallèles : ordre d'appel libre.
+    assert sorted(envelope_calls, key=str) == [None, "atempo=24000/25025"]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
     # Vérifier que speed_factor et filter ont bien été transmis à measure

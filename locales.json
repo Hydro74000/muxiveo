@@ -2135,6 +2135,14 @@
     "fra": "Active des stratégies expérimentales pour TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, formats lossless et formats lossy. Selon le codec, la piste peut être recopiée par blocs, réencodée, convertie en lossless/lossy, ou rester en sync offset si l'opération n'est pas sûre. Les pistes objet Atmos/DTS:X ne sont pas réencodées.",
     "eng": "Enables experimental strategies for TrueHD/MLP, DTS/DTS-HD/DTS:X, EAC3+JOC/Atmos, PCM/LPCM, lossless formats, and lossy formats. Depending on the codec, the track may be block-copied, re-encoded, converted to lossless/lossy, or left as sync offset when the operation is not safe. Atmos/DTS:X object tracks are not re-encoded."
   },
+  "Vérification rapide de la synchronisation audio": {
+    "fra": "Vérification rapide de la synchronisation audio",
+    "eng": "Quick audio sync check"
+  },
+  "Si les six mesures ponctuelles donnent le même décalage avec une confiance d'au moins 0,90, l'analyse continue des pistes est ignorée ; un décalage variable ou une confiance plus faible la déclenchent automatiquement. Un écart qui se compense entre deux mesures (scène déplacée, ajout puis retrait de même durée) n'est vu que par l'analyse approfondie (Synchro Studio, ou clic droit sur une piste non synchronisée). Activée par défaut.": {
+    "fra": "Si les six mesures ponctuelles donnent le même décalage avec une confiance d'au moins 0,90, l'analyse continue des pistes est ignorée ; un décalage variable ou une confiance plus faible la déclenchent automatiquement. Un écart qui se compense entre deux mesures (scène déplacée, ajout puis retrait de même durée) n'est vu que par l'analyse approfondie (Synchro Studio, ou clic droit sur une piste non synchronisée). Activée par défaut.",
+    "eng": "If the six spot measurements give the same offset with a confidence of at least 0.90, the continuous track analysis is skipped; a varying offset or a lower confidence triggers it automatically. A deviation that cancels out between two measurements (moved scene, insertion then removal of the same length) is only seen by the in-depth analysis (Sync Studio, or right-click on a track not yet synchronized). Enabled by default."
+  },
   "Interface": {
     "fra": "Interface",
     "eng": "Interface"
@@ -4378,6 +4386,58 @@
   "Synchro Studio…": {
     "fra": "Synchro Studio…",
     "eng": "Sync Studio…"
+  },
+  "Synchronisation audio approfondie : piste #{target} vs référence #{reference}…": {
+    "fra": "Synchronisation audio approfondie : piste #{target} vs référence #{reference}…",
+    "eng": "In-depth audio synchronization: track #{target} vs reference #{reference}…"
+  },
+  "Synchronisation audio appliquée (vérification rapide) : {offset} ms (confiance {confidence}).": {
+    "fra": "Synchronisation audio appliquée (vérification rapide) : {offset} ms (confiance {confidence}).",
+    "eng": "Audio synchronization applied (quick check): {offset} ms (confidence {confidence})."
+  },
+  "Synchronisation approfondie…": {
+    "fra": "Synchronisation approfondie…",
+    "eng": "In-depth synchronization…"
+  },
+  "Analyse continue des pistes possible : Synchro Studio → « Synchro approfondie ».": {
+    "fra": "Analyse continue des pistes possible : Synchro Studio → « Synchro approfondie ».",
+    "eng": "Continuous track analysis available: Sync Studio → “In-depth sync”."
+  },
+  "Décalage mesuré {offset} ms (≤ {limit} ms) : synchronisation non appliquée, piste #{idx} non modifiée. Ajuster manuellement dans le Synchro Studio si souhaité.": {
+    "fra": "Décalage mesuré {offset} ms (≤ {limit} ms) : synchronisation non appliquée, piste #{idx} non modifiée. Ajuster manuellement dans le Synchro Studio si souhaité.",
+    "eng": "Measured offset {offset} ms (≤ {limit} ms): synchronization not applied, track #{idx} unchanged. Adjust manually in Sync Studio if desired."
+  },
+  "Décalage mesuré {offset} ms (≤ {limit} ms) : synchronisation non appliquée. Ajuster manuellement si souhaité.": {
+    "fra": "Décalage mesuré {offset} ms (≤ {limit} ms) : synchronisation non appliquée. Ajuster manuellement si souhaité.",
+    "eng": "Measured offset {offset} ms (≤ {limit} ms): synchronization not applied. Adjust manually if desired."
+  },
+  "Synchro actuelle validée par la vérification rapide (mesures ponctuelles).": {
+    "fra": "Synchro actuelle validée par la vérification rapide (mesures ponctuelles).",
+    "eng": "Current sync validated by the quick check (spot measurements)."
+  },
+  "Synchro rapide": {
+    "fra": "Synchro rapide",
+    "eng": "Quick sync"
+  },
+  "Synchro approfondie": {
+    "fra": "Synchro approfondie",
+    "eng": "In-depth sync"
+  },
+  "Six mesures ponctuelles ; l'analyse continue se lance d'elle-même si elles divergent ou manquent de confiance.": {
+    "fra": "Six mesures ponctuelles ; l'analyse continue se lance d'elle-même si elles divergent ou manquent de confiance.",
+    "eng": "Six spot measurements; the continuous analysis starts on its own if they diverge or lack confidence."
+  },
+  "Analyse continue des pistes et validation des jonctions : repère aussi les écarts qui se compensent entre deux mesures.": {
+    "fra": "Analyse continue des pistes et validation des jonctions : repère aussi les écarts qui se compensent entre deux mesures.",
+    "eng": "Continuous track analysis and junction validation: also finds deviations that cancel out between two measurements."
+  },
+  "Synchronisation approfondie en cours…": {
+    "fra": "Synchronisation approfondie en cours…",
+    "eng": "In-depth synchronization in progress…"
+  },
+  "Synchronisation rapide en cours…": {
+    "fra": "Synchronisation rapide en cours…",
+    "eng": "Quick synchronization in progress…"
   },
   "Synchronisation automatique…": {
     "fra": "Synchronisation automatique…",

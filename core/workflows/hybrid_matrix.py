@@ -717,7 +717,7 @@ def prepare_matrix_episode(
     from cli.remux_config import build_remux_config
     from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
-    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
 
     if not episode.master_file:
@@ -803,7 +803,9 @@ def prepare_matrix_episode(
     ffmpeg_bin = getattr(options, "ffmpeg", None) or config.tool_ffmpeg
     ffprobe_bin = getattr(options, "ffprobe", None) or config.tool_ffprobe
     cancel_event = getattr(options, "cancel_event", None)
-    audio_scanner = AudioSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if recipe.sync_strategy == "auto" else None
+    audio_scanner = AudioSyncScanner(
+        ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event, quick_check=quick_check_enabled(options, config),
+    ) if recipe.sync_strategy == "auto" else None
     sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if recipe.sync_strategy == "auto" else None
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):

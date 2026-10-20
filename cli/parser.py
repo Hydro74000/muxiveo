@@ -23,6 +23,13 @@ def _add_sync_options(parser):
     parser.add_argument("--auto-sync", action="store_true", help="Analyser et recalibrer automatiquement les sources dynamiquement.")
     parser.add_argument("--calibration", help="Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).")
     parser.add_argument("--detect-cuts", action="store_true", help="Détecter les coupures et ruptures temporelles (multi-segments).")
+    parser.add_argument(
+        "--quick-sync-check",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Avec --detect-cuts : pas d'analyse continue si les mesures ponctuelles concordent "
+             "(confiance ≥ 0,90). Défaut : [sync] quick_audio_check.",
+    )
     parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
     parser.add_argument(
         "--cadence-auto",

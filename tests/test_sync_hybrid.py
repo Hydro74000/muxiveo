@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from types import SimpleNamespace
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -422,6 +424,61 @@ def test_sync_studio_dialog_construction_and_spin_change(qt_app, tmp_path):
     assert cal.segments[0].shift_ms == -100.0
     # Relative delta was -113 ms, so segment 1 is -100 + (-113) = -213 ms
     assert cal.segments[1].shift_ms == pytest.approx(-213.0)
+    dialog.close()
+
+
+def test_sync_studio_offers_quick_and_deep_audio_sync(qt_app, tmp_path, monkeypatch):
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    seen: list[bool] = []
+
+    def scan(scanner, *_a, **_k):
+        seen.append(scanner.quick_check)
+        return SyncCalibration((SyncSegment(0, -320.0),), 0.95, quick_check=scanner.quick_check)
+
+    monkeypatch.setattr(AudioSyncScanner, "scan", scan)
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VFF", time_shift_ms=-320, file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1", "eng", "VO", file_id="src0")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target_track, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=ref_track, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+        quick_validated=True,
+    )
+    dialog._executor = cast(Any, SimpleNamespace(submit=lambda callback: callback(), shutdown=lambda **_k: None))
+    assert dialog.listen_status.text() == mod.translate_text(
+        "Synchro actuelle validée par la vérification rapide (mesures ponctuelles)."
+    )
+
+    dialog.btn_deep_audio_sync.click()
+    qt_app.processEvents()
+    assert seen == [False]
+    assert dialog.quick_validated is False
+    assert dialog.spin_shift.value() == -320.0
+
+    dialog.btn_quick_audio_sync.click()
+    qt_app.processEvents()
+    assert seen == [False, True]
+    assert dialog.quick_validated is True
+    dialog.close()
+
+
+def test_sync_studio_ignores_negligible_auto_offset(qt_app, tmp_path, monkeypatch):
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    target_track = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VFF", file_id="src1")
+    ref_track = TrackEntry(1, "audio", "DTS-HD MA", "5.1", "eng", "VO", file_id="src0")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target_track, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=ref_track, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+    )
+    dialog._on_auto_sub_sync_ready(SyncCalibration((SyncSegment(0, -4.0),), 0.95, quick_check=True))
+    cal, offset = dialog.result_calibration()
+    assert (offset, cal.segments[0].shift_ms) == (0, 0.0)
+    assert dialog.quick_validated is False
+    assert "-4.0 ms (≤ 5 ms)" in dialog.listen_status.text()
     dialog.close()
 
 

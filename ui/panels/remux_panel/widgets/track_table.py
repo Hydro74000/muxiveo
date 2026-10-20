@@ -46,7 +46,6 @@ from ui.panels.remux_panel.theme import (
     _pencil_icon,
     _refresh_icon,
     _scissors_icon,
-    _warning_icon,
     _waveform_icon,
     _x_icon,
 )
@@ -179,6 +178,7 @@ class _TrackTable(QTableWidget):
     order_changed = Signal()
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
+    audio_deep_sync_requested = Signal(object)  # TrackEntry — analyse continue forcée
     subtitle_sync_requested = Signal(object)  # TrackEntry
     sync_studio_requested = Signal(object)  # TrackEntry
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
@@ -580,16 +580,6 @@ class _TrackTable(QTableWidget):
         layout.setSpacing(_scale(3))
         layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        preview = self._sync_rewrite_preview(entry)
-        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
-            warning_btn = self._make_action_button(
-                tooltip=translate_text(preview.warning_tooltip),
-                icon=_warning_icon("#f0b429", 13),
-            )
-            warning_btn.setCursor(Qt.CursorShape.ArrowCursor)
-            warning_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            layout.addWidget(warning_btn)
-
         if entry.cuts_count > 0 and entry.sync_calibration:
             lines = format_calibration_summary(entry.sync_calibration)
             summary_text = "\n".join(f"• {line}" for line in lines)
@@ -772,6 +762,10 @@ class _TrackTable(QTableWidget):
                         summary=summary_text,
                     )
                 )
+        preview = self._sync_rewrite_preview(entry)
+        if preview.is_advanced and preview.warning_tooltip and not sync_rewrite_forced_offset(entry):
+            # Hors de la colonne d'actions : studio, annulation et édition seulement.
+            tooltips.insert(0, "⚠ " + translate_text(preview.warning_tooltip))
         if self._can_toggle_sync_rewrite(entry):
             tooltips.append(
                 translate_text("Cliquer pour basculer entre sync réelle et sync offset")
@@ -1175,6 +1169,7 @@ class _TrackTable(QTableWidget):
             menu = QMenu(self)
             action_studio = None
             action_sync = None
+            action_deep = None
             action_cancel = None
 
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
@@ -1182,6 +1177,7 @@ class _TrackTable(QTableWidget):
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
             elif self._audio_sync_available:
                 action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
+                action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             if not menu.isEmpty():
@@ -1192,6 +1188,8 @@ class _TrackTable(QTableWidget):
                     self.auto_sync_cancel_requested.emit(entry)
                 elif action_sync is not None and chosen is action_sync:
                     self.audio_sync_requested.emit(entry)
+                elif action_deep is not None and chosen is action_deep:
+                    self.audio_deep_sync_requested.emit(entry)
 
     def _find_row_for_entry(self, entry: TrackEntry) -> int | None:
         for row in range(self.rowCount()):

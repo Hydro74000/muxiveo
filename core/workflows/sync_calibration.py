@@ -7,6 +7,10 @@ from typing import Any
 
 from core.workflows.cadence import CadenceMismatch, CadenceType
 
+# Décalage constant mesuré jusqu'auquel (inclus) l'interface n'applique pas la synchro :
+# un réencodage audio pour quelques millisecondes n'apporte rien.
+NEGLIGIBLE_SYNC_MS = 5
+
 
 @dataclass(frozen=True)
 class SyncSegment:
@@ -22,6 +26,8 @@ class SyncCalibration:
     cadence_mismatch: CadenceMismatch | None = None
     cadence_audio_method: str = "atempo"
     cadence_pitch_analysis: Any | None = None
+    # Validée par les seules mesures ponctuelles (analyse continue ignorée) ; non sérialisé.
+    quick_check: bool = False
 
     def __post_init__(self):
         if not self.segments or self.segments[0].start_ms != 0:

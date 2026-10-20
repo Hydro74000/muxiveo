@@ -984,6 +984,13 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "description": "Algorithme appliqué pour modifier la cadence audio. 'auto' discrimine acoustiquement le pitch et la hauteur spectrale (recommandé) ; 'atempo' préserve la tonalité existante ; 'asetrate' applique la variation de vitesse naturelle (puriste PAL).",
                 "options": (("auto", "Détection automatique du pitch (auto - recommandé)"), ("atempo", "Préservation de la tonalité (atempo)"), ("asetrate", "Variation de vitesse naturelle (asetrate - puriste PAL)")),
             },
+            {
+                "key": "quick_audio_check",
+                "attr": "sync_quick_audio_check",
+                "kind": "bool",
+                "label": "Vérification rapide de la synchronisation audio",
+                "description": "Si les six mesures ponctuelles donnent le même décalage avec une confiance d'au moins 0,90, l'analyse continue des pistes est ignorée ; un décalage variable ou une confiance plus faible la déclenchent automatiquement. Un écart qui se compense entre deux mesures (scène déplacée, ajout puis retrait de même durée) n'est vu que par l'analyse approfondie (Synchro Studio, ou clic droit sur une piste non synchronisée). Activée par défaut.",
+            },
         ),
     },
     {
@@ -1331,6 +1338,9 @@ class AppConfig:
             "sync/cadence_audio_method",
             "auto",
         )
+        self.sync_quick_audio_check = self._resolve_bool(
+            "sync", "quick_audio_check", "sync/quick_audio_check", True
+        )
         # [matroska] mux_backend — réglage global unique pilotant le muxage
         # final des workflows remux ET encode. Priorité : choix explicite du
         # job/panel/CLI > ce réglage > ffmpeg. Migration : l'ancien
@@ -1486,6 +1496,7 @@ class AppConfig:
             "true" if self.sync_cadence_auto_apply else "false",
         )
         s.setValue("sync/cadence_audio_method", self.sync_cadence_audio_method)
+        s.setValue("sync/quick_audio_check", "true" if self.sync_quick_audio_check else "false")
         s.setValue("matroska/mux_backend", self.matroska_mux_backend)
         s.setValue(
             "matroska/regenerate_statistics",
@@ -1711,6 +1722,7 @@ class AppConfig:
                 "advanced_audio_rewrite_enabled": self.sync_advanced_audio_rewrite_enabled,
                 "cadence_auto_apply": self.sync_cadence_auto_apply,
                 "cadence_audio_method": self.sync_cadence_audio_method,
+                "quick_audio_check": self.sync_quick_audio_check,
             },
             "matroska": {
                 "mux_backend": self.matroska_mux_backend,

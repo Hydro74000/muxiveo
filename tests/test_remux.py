@@ -986,7 +986,7 @@ class TestTrackTable:
 
         assert emitted == [t]
 
-    def test_advanced_sync_track_shows_warning_icon_tooltip(self, table):
+    def test_advanced_sync_track_shows_warning_in_info_tooltip(self, table):
         table.set_sync_rewrite_enabled(True, advanced_audio_enabled=True)
         t = _track(1, "audio", file_id="fid", codec="TRUEHD")
         t.time_shift_ms = 125
@@ -995,8 +995,10 @@ class TestTrackTable:
         info_item = table.item(0, _TrackTable.COL_INFO)
         assert info_item is not None
         assert info_item.data(_TRACK_INFO_SYNC_LABEL_ROLE) == "Sync réelle · audio avancé"
-        tooltips = [button.toolTip() for button in _action_buttons(table, 0)]
-        warning_tip = next(tip for tip in tooltips if "Sync réelle audio avancée" in tip)
+        # Colonne d'actions réservée au studio, à l'annulation et à l'édition.
+        assert all("Sync réelle audio avancée" not in button.toolTip() for button in _action_buttons(table, 0))
+        warning_tip = info_item.toolTip()
+        assert "Sync réelle audio avancée" in warning_tip
         assert "TrueHD" in warning_tip
         assert "Δt +125 ms" in warning_tip
         assert "non bit-perfect" in warning_tip
@@ -1013,7 +1015,7 @@ class TestTrackTable:
         info_item = table.item(0, _TrackTable.COL_INFO)
         assert info_item is not None
         assert info_item.data(_TRACK_INFO_SYNC_LABEL_ROLE) == "Sync offset"
-        assert all("Sync réelle audio avancée" not in button.toolTip() for button in _action_buttons(table, 0))
+        assert "Sync réelle audio avancée" not in info_item.toolTip()
 
     def test_info_column_uses_custom_delegate(self, table):
         delegate = table.itemDelegateForColumn(_TrackTable.COL_INFO)
@@ -1645,6 +1647,92 @@ class TestTrackTableUpdateAudioMeta:
             if panel is not None:
                 panel.close()
             set_current_language(prev_lang)
+
+    def test_quick_audio_sync_keeps_three_row_actions(self, qt_app, tmp_path):
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+        prev_lang = current_language()
+        panel = None
+        try:
+            set_current_language("fra")
+            panel = RemuxPanel(AppConfig())
+            target = _track(1, "audio", file_id="target")
+            reference = _track(1, "audio", file_id="reference")
+            panel._track_table.append_tracks(_COLOR_A, [target])
+            panel._track_table.append_tracks(_COLOR_B, [reference])
+            emitted: list[tuple[str, str]] = []
+            panel.log_message.connect(lambda level, message: emitted.append((level, message)))
+
+            quick = SyncCalibration((SyncSegment(0, -320.0),), 0.95, quick_check=True)
+            panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.95, quick)
+
+            assert ("OK", "Synchronisation audio appliquée (vérification rapide) : -320 ms (confiance 0.95).") in emitted
+            assert panel._audio_sync_results == {target.entry_id: (reference.entry_id, True)}
+            row = panel._track_table._find_row_for_entry(target)
+            assert row is not None
+            cell = panel._track_table.cellWidget(row, panel._track_table.COL_EDIT)
+            assert cell is not None
+            # Synchro faite : Synchro Studio, annulation, édition.
+            assert len(cell.findChildren(QPushButton)) == 3
+
+            requests: list[tuple[Any, dict[str, Any]]] = []
+            panel._on_audio_sync_requested = lambda entry, **kwargs: requests.append((entry, kwargs))  # type: ignore[method-assign]
+            panel._on_audio_deep_sync_requested(target)
+            assert requests == [(target, {"deep": True, "reference_entry": reference})]
+            assert panel._last_audio_sync_reference(target) is reference
+        finally:
+            if panel is not None:
+                panel.close()
+            set_current_language(prev_lang)
+
+    def test_negligible_audio_offset_is_not_applied(self, qt_app, tmp_path):
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+        prev_lang = current_language()
+        panel = None
+        try:
+            set_current_language("fra")
+            panel = RemuxPanel(AppConfig())
+            target = _track(1, "audio", file_id="target")
+            reference = _track(1, "audio", file_id="reference")
+            panel._track_table.append_tracks(_COLOR_A, [target])
+            panel._track_table.append_tracks(_COLOR_B, [reference])
+            panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.95)
+            emitted: list[tuple[str, str]] = []
+            panel.log_message.connect(lambda level, message: emitted.append((level, message)))
+
+            panel._on_audio_sync_done(
+                target.entry_id, reference.entry_id, -5, 0.95, SyncCalibration((SyncSegment(0, -5.0),), 0.95),
+            )
+
+            assert target.time_shift_ms == 0
+            assert panel._audio_sync_results == {}
+            assert [level for level, _message in emitted] == ["INFO"]
+            assert "non appliquée" in emitted[0][1]
+
+            panel._on_audio_sync_done(target.entry_id, reference.entry_id, 6, 0.95)
+            assert target.time_shift_ms == 6
+        finally:
+            if panel is not None:
+                panel.close()
+            set_current_language(prev_lang)
+
+    def test_cancelling_audio_sync_forgets_reference(self, qt_app, tmp_path):
+        from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+        panel = RemuxPanel(AppConfig())
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        quick = SyncCalibration((SyncSegment(0, -320.0),), 0.95, quick_check=True)
+        panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.95, quick)
+
+        panel._on_auto_sync_cancel_requested(target)
+
+        assert panel._audio_sync_results == {}
+        assert panel._last_audio_sync_reference(target) is None
+        panel.close()
 
     def test_audio_sync_done_clears_reference_offset(self, qt_app, tmp_path):
         panel = RemuxPanel(AppConfig())

@@ -35,6 +35,7 @@ class CommonOptions:
     auto_sync: bool = False
     calibration: str | None = None
     detect_cuts: bool = False
+    quick_sync_check: bool | None = None
     drift_threshold_ms: int = 25
     cadence_auto: bool = True
     cadence_method: str = "auto"
@@ -64,6 +65,7 @@ class CommonOptions:
             auto_sync=bool(getattr(args, "auto_sync", False)),
             calibration=getattr(args, "calibration", None),
             detect_cuts=bool(getattr(args, "detect_cuts", False)),
+            quick_sync_check=getattr(args, "quick_sync_check", None),
             drift_threshold_ms=getattr(args, "drift_threshold_ms", 25),
             cadence_auto=getattr(args, "cadence_auto", True) if getattr(args, "cadence_auto", None) is not None else True,
             cadence_method=str(getattr(args, "cadence_method", "auto") or "auto"),

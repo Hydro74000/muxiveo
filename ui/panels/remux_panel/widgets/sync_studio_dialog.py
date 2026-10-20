@@ -35,7 +35,7 @@ from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.physical_sync import audio_filter
 from core.workflows.remux_models import TrackEntry
-from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, SyncSegment
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import (
     _card,
@@ -105,8 +105,11 @@ class SyncStudioDialog(QDialog):
         parent: QWidget | None = None,
         embedded: bool = False,
         crossfade_ms: int = 80,
+        quick_validated: bool = False,
     ) -> None:
+        """`quick_validated` : synchro actuelle validée par la seule vérification rapide."""
         super().__init__(parent)
+        self.quick_validated = bool(quick_validated)
         self._embedded = embedded
         self.crossfade_ms = crossfade_ms
         if embedded:
@@ -174,6 +177,10 @@ class SyncStudioDialog(QDialog):
 
         self._init_ui()
         self._select_segment(0)
+        if self.quick_validated:
+            self.listen_status.setText(translate_text(
+                "Synchro actuelle validée par la vérification rapide (mesures ponctuelles)."
+            ))
 
     def _shift_label_text(self) -> str:
         if len(self.current_calibration.segments) <= 1:
@@ -501,6 +508,22 @@ class SyncStudioDialog(QDialog):
             self.btn_auto_sub_sync.setToolTip(translate_text("Lancer l'alignement automatique des sous-titres"))
             self.btn_auto_sub_sync.clicked.connect(self._run_auto_subtitle_sync)
             ctrl_row.addWidget(self.btn_auto_sub_sync)
+        elif self.reference_entry is not None and not self.reference_entry.is_subtitle:
+            self.btn_quick_audio_sync = _secondary_button(translate_text("Synchro rapide"), padding_h=10)
+            self.btn_quick_audio_sync.setIcon(_bolt_icon())
+            self.btn_quick_audio_sync.setToolTip(translate_text(
+                "Six mesures ponctuelles ; l'analyse continue se lance d'elle-même "
+                "si elles divergent ou manquent de confiance."
+            ))
+            self.btn_quick_audio_sync.clicked.connect(lambda: self._run_auto_audio_sync(deep=False))
+            ctrl_row.addWidget(self.btn_quick_audio_sync)
+            self.btn_deep_audio_sync = _secondary_button(translate_text("Synchro approfondie"), padding_h=10)
+            self.btn_deep_audio_sync.setToolTip(translate_text(
+                "Analyse continue des pistes et validation des jonctions : "
+                "repère aussi les écarts qui se compensent entre deux mesures."
+            ))
+            self.btn_deep_audio_sync.clicked.connect(lambda: self._run_auto_audio_sync(deep=True))
+            ctrl_row.addWidget(self.btn_deep_audio_sync)
 
         # Bouton Pré-écoute
         self.listen_btn = _secondary_button(translate_text("Pré-écoute calée (15s)"), padding_h=12)
@@ -861,12 +884,49 @@ class SyncStudioDialog(QDialog):
             self._tgt_cues = tgt_cues
         self.waveform.set_subtitle_cues(self._ref_cues, self._tgt_cues)
 
+    def _set_auto_sync_buttons_enabled(self, enabled: bool) -> None:
+        for name in ("btn_auto_sub_sync", "btn_quick_audio_sync", "btn_deep_audio_sync"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.setEnabled(enabled)
+
+    def _run_auto_audio_sync(self, deep: bool) -> None:
+        """Synchro rapide (bascule seule vers l'analyse continue) ou approfondie, reprise dans le studio."""
+        if self._closing or self._is_sub_sync_running:
+            return
+        if self.reference_source_path is None or self.reference_stream_index is None:
+            return
+        self._is_sub_sync_running = True
+        self._set_auto_sync_buttons_enabled(False)
+        text = (
+            translate_text("Synchronisation approfondie en cours…")
+            if deep
+            else translate_text("Synchronisation rapide en cours…")
+        )
+        self.waveform.set_loading(text)
+        self.listen_status.setText(text)
+        reference = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
+        target = AudioSyncTrack(self.target_source_path, self.target_stream_index)
+
+        def _worker() -> None:
+            try:
+                scanner = AudioSyncScanner(
+                    self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event, quick_check=not deep,
+                )
+                cal = scanner.scan(reference, target, detect_cuts=True)
+                if not self._closing:
+                    self._auto_sub_sync_ready.emit(cal)
+            except Exception as exc:
+                if not self._closing:
+                    self._auto_sub_sync_failed.emit(str(exc))
+
+        self._executor.submit(_worker)
+
     def _run_auto_subtitle_sync(self) -> None:
         if self._closing or self._is_sub_sync_running:
             return
         self._is_sub_sync_running = True
-        if hasattr(self, "btn_auto_sub_sync"):
-            self.btn_auto_sub_sync.setEnabled(False)
+        self._set_auto_sync_buttons_enabled(False)
         self.waveform.set_loading(translate_text("Synchronisation automatique des sous-titres en cours…"))
         self.listen_status.setText(translate_text("Synchronisation automatique des sous-titres en cours…"))
 
@@ -897,9 +957,13 @@ class SyncStudioDialog(QDialog):
         if getattr(self, "_closing", False):
             return
         self._is_sub_sync_running = False
-        if hasattr(self, "btn_auto_sub_sync"):
-            self.btn_auto_sub_sync.setEnabled(True)
+        self._set_auto_sync_buttons_enabled(True)
 
+        measured_ms = cal.segments[0].shift_ms
+        negligible = len(cal.segments) <= 1 and abs(measured_ms) <= NEGLIGIBLE_SYNC_MS
+        if negligible:
+            cal = replace(cal, segments=(SyncSegment(0, 0.0),), quick_check=False)
+        self.quick_validated = bool(getattr(cal, "quick_check", False))
         self.current_calibration = cal
         first_shift = cal.segments[0].shift_ms
         self._current_shift_ms = first_shift
@@ -912,22 +976,29 @@ class SyncStudioDialog(QDialog):
 
         conf_pct = f"{cal.confidence:.0%}" if cal.confidence is not None else "100%"
         offset_label = f"{first_shift:+.1f}"
-        self.listen_status.setText(
-            translate_text(
-                "Synchronisation automatique terminée ({offset} ms, confiance {conf}).",
-                offset=offset_label,
-                conf=conf_pct,
-            )
-        )
         self._select_segment(0)
+        if negligible:
+            self.listen_status.setText(translate_text(
+                "Décalage mesuré {offset} ms (≤ {limit} ms) : synchronisation non appliquée. "
+                "Ajuster manuellement si souhaité.",
+                offset=f"{measured_ms:+.1f}",
+                limit=NEGLIGIBLE_SYNC_MS,
+            ))
+        else:
+            self.listen_status.setText(
+                translate_text(
+                    "Synchronisation automatique terminée ({offset} ms, confiance {conf}).",
+                    offset=offset_label,
+                    conf=conf_pct,
+                )
+            )
         self.calibration_changed.emit(self.current_calibration)
 
     def _on_auto_sub_sync_failed(self, err: str) -> None:
         if getattr(self, "_closing", False):
             return
         self._is_sub_sync_running = False
-        if hasattr(self, "btn_auto_sub_sync"):
-            self.btn_auto_sub_sync.setEnabled(True)
+        self._set_auto_sync_buttons_enabled(True)
         self.listen_status.setText(f"Échec de l'auto-synchronisation : {err}")
         self.waveform.set_loading("")
 
