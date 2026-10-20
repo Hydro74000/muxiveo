@@ -119,6 +119,9 @@ class WaveformView(QWidget):
         self._pieces: tuple[tuple[float, float, float], ...] = ()
         self._junctions: tuple[tuple[float, int], ...] = ()
         self.stretch_ratio: float = 1.0
+        # Extraits de la cible (instant cible d'origine en ms, échantillons) : un par plage
+        # de la piste cible nécessaire à la fenêtre (coupes, silences et cadence compris).
+        self._tgt_chunks: list[tuple[float, Any]] = []
         # Section en cours d'édition (axe de sortie) et nature : "cut" (coupe) ou "silence".
         self.section: tuple[float, float] | None = None
         self.section_kind: str = "cut"
@@ -151,6 +154,7 @@ class WaveformView(QWidget):
         else:
             self._ref_samples = []
             self._tgt_samples = []
+        self._tgt_chunks = []
         self.loading_text = ""
         self.update()
 
@@ -161,8 +165,14 @@ class WaveformView(QWidget):
         sample_rate: int = 16000,
         start_time_ms: float = 0.0,
         cut_time_ms: float | None = None,
+        target_chunks: list[tuple[float, Any]] | None = None,
+        window_duration_ms: float | None = None,
     ) -> None:
-        """Définit les échantillons 16kHz haute précision pour un zoom au millimètre."""
+        """Définit les échantillons 16kHz haute précision pour un zoom au millimètre.
+
+        `target_chunks` : extraits de la cible repérés par leur instant cible (ms), à la place
+        de `tgt_samples` lu au même instant que la référence.
+        """
         if np is not None:
             self._ref_samples = (
                 np.asarray(ref_samples, dtype=np.float32)
@@ -180,9 +190,19 @@ class WaveformView(QWidget):
         self.sample_rate = max(1, sample_rate)
         self.start_time_ms = float(start_time_ms)
         self.cut_time_ms = float(cut_time_ms) if cut_time_ms is not None else None
+        if target_chunks is not None and np is not None:
+            self._tgt_chunks = [
+                (float(origin), np.asarray(samples, dtype=np.float32))
+                for origin, samples in target_chunks
+                if samples is not None and len(samples) > 0
+            ]
+        else:
+            self._tgt_chunks = [(self.start_time_ms, self._tgt_samples)] if len(self._tgt_samples) > 0 else []
 
         max_len = max(len(self._ref_samples), len(self._tgt_samples))
-        if max_len > 0:
+        if window_duration_ms is not None and window_duration_ms > 0:
+            self.window_duration_ms = float(window_duration_ms)
+        elif max_len > 0:
             self.window_duration_ms = float(max_len / self.sample_rate * 1000.0)
         else:
             self.window_duration_ms = 20000.0
@@ -398,17 +418,23 @@ class WaveformView(QWidget):
             return
         super().mouseReleaseEvent(event)
 
-    def _extract_column_peaks(self, raw_samples: Any, t_start_ms: float, t_end_ms: float, width_px: int) -> Any:
-        """Calcule les crêtes d'amplitude échantillonnées pour chaque colonne de pixels."""
+    def _extract_column_peaks(
+        self, raw_samples: Any, t_start_ms: float, t_end_ms: float, width_px: int, origin_ms: float | None = None,
+    ) -> Any:
+        """Calcule les crêtes d'amplitude échantillonnées pour chaque colonne de pixels.
+
+        `origin_ms` : instant du premier échantillon (défaut : début de la fenêtre).
+        """
         if np is None:
             return []
         if len(raw_samples) == 0 or width_px <= 0:
             return np.zeros(max(1, width_px), dtype=np.float32)
 
         sr = self.sample_rate
+        origin = self.start_time_ms if origin_ms is None else float(origin_ms)
         # Indices dans le tampon raw_samples
-        idx_start = int((t_start_ms - self.start_time_ms) / 1000.0 * sr)
-        idx_end = int((t_end_ms - self.start_time_ms) / 1000.0 * sr)
+        idx_start = int((t_start_ms - origin) / 1000.0 * sr)
+        idx_end = int((t_end_ms - origin) / 1000.0 * sr)
 
         total_samples = len(raw_samples)
         # Gestion des débordements avec padding à zéro
@@ -456,10 +482,21 @@ class WaveformView(QWidget):
             if xb <= xa:
                 continue
             ratio = self.stretch_ratio
-            peaks[xa:xb] = self._extract_column_peaks(
-                self._tgt_samples, (a - shift) / ratio, (b - shift) / ratio, xb - xa,
-            )
+            donor_a, donor_b = (a - shift) / ratio, (b - shift) / ratio
+            chunk = self._target_chunk_for(donor_a, donor_b)
+            if chunk is not None:
+                peaks[xa:xb] = self._extract_column_peaks(chunk[1], donor_a, donor_b, xb - xa, origin_ms=chunk[0])
         return peaks
+
+    def _target_chunk_for(self, donor_a: float, donor_b: float) -> tuple[float, Any] | None:
+        """Extrait de la cible recouvrant le mieux la plage cible [donor_a, donor_b] (ms)."""
+        best, best_overlap = None, 0.0
+        for origin, samples in self._tgt_chunks:
+            end = origin + len(samples) / self.sample_rate * 1000.0
+            overlap = min(end, donor_b) - max(origin, donor_a)
+            if overlap > best_overlap:
+                best, best_overlap = (origin, samples), overlap
+        return best
 
     def _draw_section_label(self, painter: QPainter, w: int, h: int, is_overlay: bool) -> None:
         """Nature et longueur de la section, sur fond, au-dessus des formes d'onde."""
@@ -506,7 +543,7 @@ class WaveformView(QWidget):
             return
 
         # Message d'attente / chargement
-        has_audio = (len(self._ref_samples) > 0 or len(self._tgt_samples) > 0)
+        has_audio = (len(self._ref_samples) > 0 or len(self._tgt_samples) > 0 or bool(self._tgt_chunks))
         has_series = (self.series and any(self.series))
         has_subtitles = (len(self._ref_cues) > 0 or len(self._tgt_cues) > 0)
         if self.loading_text and not has_audio and not has_series and not has_subtitles:

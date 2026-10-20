@@ -44,8 +44,44 @@ def test_cut_over_existing_junction_is_refused():
 
 def test_edit_at_start():
     assert _shifts(SyncCalibration.linear(40).with_edit(0, 500, silence=True)) == [(0, 540)]
-    # Coupe dès le début : jonction à 1 ms, le segment 1 doit commencer à 0 ms.
-    assert _shifts(SyncCalibration.linear(0).with_edit(0, 500, silence=False)) == [(0, 0), (1.0, -500)]
+    # Coupe dès le début : la sortie démarre sur l'audio cible situé à 500 ms.
+    assert _shifts(SyncCalibration.linear(0).with_edit(0, 500, silence=False)) == [(0, -500)]
+    # Le silence de tête (40 ms) est retiré avant l'audio.
+    assert _shifts(SyncCalibration.linear(40).with_edit(0, 500, silence=False)) == [(0, -460)]
+
+
+def test_cut_starting_inside_silence_keeps_remaining_silence():
+    """Audit : silence 5–6 s, coupe 5,5–6,5 s → 500 ms de silence gardés, 500 ms d'audio retirés."""
+    calibration = SyncCalibration.linear(0).with_edit(5000, 6000, silence=True).with_edit(5500, 6500, silence=False)
+    assert _shifts(calibration) == [(0, 0), (5000, -500), (5500, 0)]
+    assert list(calibration.intervals(0, 10_000)) == [(0, 5000), (5500, 10_000)]
+    graph = audio_filter(calibration, crossfade_ms=0)
+    assert "[seg1]" not in graph and "atrim=start=5.500000" in graph and "adelay=500.000000" in graph
+
+
+def test_cut_inside_silence_only_shortens_it():
+    calibration = SyncCalibration.linear(0).with_edit(5000, 6000, silence=True).with_edit(5200, 5700, silence=False)
+    assert _shifts(calibration) == [(0, 0), (5000, 500)]
+
+
+def test_cut_at_segment_start_after_silence_keeps_the_silence():
+    calibration = SyncCalibration.linear(0).with_edit(5000, 6000, silence=True).with_edit(6000, 6500, silence=False)
+    # Cible 5,5–10 s rejouée à partir de 6 s : seconde de silence intacte, 500 ms d'audio retirées.
+    assert list(calibration.intervals(0, 10_000)) == [(0, 5000), (6000, 10_500)]
+    assert calibration.donor_time_ms(6000) == 5500
+
+
+def test_cut_up_to_next_junction():
+    base = SyncCalibration((SyncSegment(0, 0), SyncSegment(10_000, 500)))
+    calibration = base.with_edit(8000, 10_000, silence=False)
+    # Cible 8–10 s retirée ; la suite (10 s) rejouée à 8,5 s, le saut de +500 ms conservé.
+    assert list(calibration.intervals(0, 12_000)) == [(0, 8000), (8500, 10_500)]
+
+
+def test_cut_from_silence_beyond_next_segment_is_refused():
+    base = SyncCalibration((SyncSegment(0, 0), SyncSegment(5000, 1000), SyncSegment(8000, 1000 - 200)))
+    with pytest.raises(ValueError, match="jonction"):
+        base.with_edit(5500, 9500, silence=False)
 
 
 def test_donor_time_follows_cuts_gaps_and_cadence():
@@ -55,6 +91,7 @@ def test_donor_time_follows_cuts_gaps_and_cadence():
     assert calibration.donor_time_ms(6000) == 6900
     gap = SyncCalibration((SyncSegment(0, 0), SyncSegment(5000, 1000)))
     assert gap.donor_time_ms(5500) == 5000
+    assert (gap.segment_index_at(5500), gap.output_start_ms(1)) == (1, 6000)
     pal = SyncCalibration(
         (SyncSegment(0, 0),),
         cadence_mismatch=CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0),
@@ -159,4 +196,80 @@ def test_waveform_draws_target_piecewise_and_drags_section_edge(qt_app):
     QTest.mouseMove(view, QPoint(400, 50))
     QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=QPoint(400, 50))
     assert view.section == (5000.0, pytest.approx(8000.0))
+    view.close()
+
+
+def test_studio_invalid_field_blocks_previous_section(qt_app, tmp_path, monkeypatch):
+    _mod, dialog = _studio(tmp_path, monkeypatch)
+    dialog._set_section(1022, 2022)
+    assert dialog.btn_apply_section.isEnabled()
+    dialog.section_end_edit.setText("00:00:xx")
+    dialog._on_section_fields_edited()
+    assert dialog._section is None and dialog.waveform.section is None
+    assert not dialog.btn_apply_section.isEnabled()
+    # Champ modifié sans validation (pas d'editingFinished) : rien n'est appliqué sur l'ancienne plage.
+    dialog._set_section(1022, 2022)
+    dialog.section_start_edit.setText("abc")
+    dialog._apply_section_edit()
+    assert _shifts(dialog.current_calibration) == [(0, 22)]
+    dialog.close()
+
+
+def test_studio_relaunch_keeps_cadence_and_method(qt_app, tmp_path, monkeypatch):
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from types import SimpleNamespace
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    calibration = SyncCalibration((SyncSegment(0, 0),), cadence_mismatch=mismatch, cadence_audio_method="asetrate")
+    _mod, dialog = _studio(tmp_path, monkeypatch, calibration)
+    dialog._executor = SimpleNamespace(submit=lambda callback: callback(), shutdown=lambda **_k: None)
+    seen = []
+
+    def scan(_scanner, *_a, **kwargs):
+        seen.append((kwargs.get("cadence_mismatch"), kwargs.get("cadence_audio_method")))
+        return calibration
+
+    monkeypatch.setattr(AudioSyncScanner, "scan", scan)
+    dialog.btn_deep_audio_sync.click()
+    qt_app.processEvents()
+    assert seen == [(mismatch, "asetrate")]
+    dialog.close()
+
+
+def test_studio_target_ranges_follow_cadence_and_previous_cuts(qt_app, tmp_path, monkeypatch):
+    mismatch = CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000.0 / 25025.0)
+    ratio = mismatch.time_stretch_ratio
+    pal = SyncCalibration((SyncSegment(0, 0),), cadence_mismatch=mismatch)
+    _mod, dialog = _studio(tmp_path, monkeypatch, pal)
+    (lo, hi), = dialog._target_ranges(3600.0)
+    # À une heure, la cible jouée est lue ~144 s plus tôt (conversion 25 → 23,976).
+    assert lo == pytest.approx(3_600_000 / ratio - 2000, abs=1)
+    assert hi == pytest.approx(3_620_000 / ratio + 2000, abs=1)
+    dialog.close()
+
+    # Coupe de 30 s à 10 min : plus loin, la cible garde ce décalage cumulé.
+    cut = SyncCalibration.linear(0).with_edit(600_000, 630_000, silence=False)
+    _mod, dialog = _studio(tmp_path, monkeypatch, cut)
+    assert dialog._target_ranges(3600.0) == ((3_628_000, 3_652_000),)
+    dialog._current_start_s = 3600.0
+    dialog._loaded_target_ranges = dialog._target_ranges(3600.0)
+    dialog._activate_segment(1)
+    dialog.spin_shift.setValue(dialog.spin_shift.value() - 5000)
+    assert dialog._reload_timer.isActive()
+    dialog.close()
+
+
+def test_waveform_reads_target_chunk_at_its_own_origin(qt_app):
+    import numpy as np
+    from ui.widgets.waveform_view import WaveformView
+
+    view = WaveformView()
+    view.resize(1000, 200)
+    # Fenêtre de sortie à 1 h ; extrait cible lu 144 s plus tôt.
+    view.set_audio_data(
+        np.ones(16000 * 20, dtype=np.float32), None, start_time_ms=3_600_000,
+        target_chunks=[(3_456_000.0, np.ones(16000 * 21, dtype=np.float32))], window_duration_ms=20_000,
+    )
+    view.set_calibration_view([(0.0, float("inf"), 144_000.0)])
+    peaks = view._piecewise_target_peaks(3_600_000.0, 3_620_000.0, 1000)
+    assert peaks.min() == 1
     view.close()

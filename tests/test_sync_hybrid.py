@@ -501,7 +501,8 @@ def test_sync_studio_goto_timestamp_loads_window_around_time(qt_app, tmp_path, m
     )
     dialog.goto_edit.setText("00:04:05")
     dialog._goto_timestamp()
-    assert loads[-1] == (1, 235.0, 239738)
+    # Jonction sur l'axe de sortie : 239 738 ms cible − 67 ms du segment précédent.
+    assert loads[-1] == (1, 235.0, 239671)
     assert dialog._current_segment_index == 1
     assert dialog.spin_shift.value() == -180.0
 
@@ -790,7 +791,8 @@ def test_sync_studio_dialog_multi_segment_navigation_and_zoom(qt_app, tmp_path):
     dialog._next_segment()
     assert dialog._current_segment_index == 1
     assert dialog.spin_shift.value() == -180.0
-    assert dialog._current_cut_ms == 239738.0
+    # Jonction sur l'axe de sortie (saut négatif : sortie continue après le segment 1).
+    assert dialog._current_cut_ms == 239671.0
 
     # Navigate to next segment (Segment 3 at 00:13:58.566)
     dialog._next_segment()

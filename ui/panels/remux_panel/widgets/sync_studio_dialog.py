@@ -62,6 +62,10 @@ if TYPE_CHECKING:
 _GOTO_HALF_WINDOW_S = 10.0
 # Longueur proposée quand une section n'a qu'un bord défini.
 _DEFAULT_SECTION_MS = 1000.0
+# Fenêtre affichée (s, axe de sortie) et marge des extraits cibles autour de leur plage (ms) :
+# un réglage du décalage dans cette marge ne recharge rien.
+_WINDOW_S = 20.0
+_TARGET_MARGIN_MS = 2000.0
 
 
 def _parse_timestamp_ms(text: str) -> float | None:
@@ -85,7 +89,7 @@ class SyncStudioDialog(QDialog):
     """Éditeur d'inspection et d'ajustement acoustique partagé par Remux et Hybrid."""
 
     _waveform_loading = Signal(str)
-    _segment_audio_ready = Signal(int, object, object, float, object)
+    _segment_audio_ready = Signal(object, object, object, float, object)
     _subtitles_ready = Signal(object, object)
     _auto_sub_sync_ready = Signal(object)
     _auto_sub_sync_failed = Signal(str)
@@ -148,7 +152,10 @@ class SyncStudioDialog(QDialog):
         self._current_start_s: float = 0.0
         self._current_cut_ms: float | None = None
         # Cache des extraits audio, indexé par position de début (ms).
-        self._audio_cache: dict[int, tuple[object, object]] = {}
+        # Extraits par fenêtre : (début de fenêtre ms, plages cibles) → (référence, extraits cibles).
+        self._audio_cache: dict[object, tuple[object, object]] = {}
+        self._window_key: object = None
+        self._loaded_target_ranges: tuple[tuple[float, float], ...] = ()
         self._duration_requested = False
         self._duration_ms = 0
 
@@ -170,6 +177,11 @@ class SyncStudioDialog(QDialog):
         self._done_timer = QTimer(self)
         self._done_timer.setInterval(50)
         self._done_timer.timeout.connect(self._finish_done_when_ready)
+        # Rechargement différé quand le décalage réglé sort des extraits cibles chargés.
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(300)
+        self._reload_timer.timeout.connect(self._reload_current_window)
 
         self._waveform_loading.connect(self._on_waveform_loading)
         self._segment_audio_ready.connect(self._on_segment_audio_ready)
@@ -689,12 +701,13 @@ class SyncStudioDialog(QDialog):
             start_s = 0.0
             cut_ms = None
         else:
-            start_s = max(0.0, (seg.start_ms - 2000.0) / 1000.0)
-            cut_ms = seg.start_ms
+            # Jonction sur l'axe de sortie : décalages des coupes et silences précédents compris.
+            cut_ms = self.current_calibration.output_start_ms(idx)
+            start_s = max(0.0, (cut_ms - 2000.0) / 1000.0)
 
         self._current_start_s = start_s
         self._current_cut_ms = cut_ms
-        self._update_timeline(seg.start_ms)
+        self._update_timeline(cut_ms if cut_ms is not None else 0.0)
 
         self._load_segment_audio_async(idx, start_s, cut_ms)
 
@@ -705,13 +718,15 @@ class SyncStudioDialog(QDialog):
             self.listen_status.setText(translate_text("Instant invalide (format attendu : hh:mm:ss.mmm)."))
             return
         self._stop_playback()
-        segments = self.current_calibration.segments
-        idx = max(i for i, s in enumerate(segments) if i == 0 or s.start_ms <= target_ms)
+        calibration = self.current_calibration
+        segments = calibration.segments
+        idx = calibration.segment_index_at(target_ms)
         self._activate_segment(idx)
 
         start_s = max(0.0, target_ms / 1000.0 - _GOTO_HALF_WINDOW_S)
         window_end_ms = start_s * 1000.0 + 2 * _GOTO_HALF_WINDOW_S * 1000.0
-        cuts = [s.start_ms for s in segments[1:] if start_s * 1000.0 <= s.start_ms <= window_end_ms]
+        junctions = [calibration.output_start_ms(i) for i in range(1, len(segments))]
+        cuts = [t for t in junctions if start_s * 1000.0 <= t <= window_end_ms]
         cut_ms = min(cuts, key=lambda c: abs(c - target_ms)) if cuts else None
 
         self.seg_indicator.setText(
@@ -843,6 +858,8 @@ class SyncStudioDialog(QDialog):
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._update_cuts_table()
         self._push_waveform_calibration()
+        if not self._target_ranges_loaded(self._current_start_s):
+            self._reload_timer.start()
         self.calibration_changed.emit(self.current_calibration)
 
     def _reset_shifts(self) -> None:
@@ -914,6 +931,7 @@ class SyncStudioDialog(QDialog):
         start = _parse_timestamp_ms(start_text) if start_text else None
         end = _parse_timestamp_ms(end_text) if end_text else None
         if (start_text and start is None) or (end_text and end is None):
+            self._set_section(None, None, update_fields=False)
             self.listen_status.setText(translate_text("Instant invalide (format attendu : hh:mm:ss.mmm)."))
             return
         if start is None and end is not None:
@@ -921,9 +939,18 @@ class SyncStudioDialog(QDialog):
         if end is None and start is not None:
             end = start + _DEFAULT_SECTION_MS
         if start is not None and end is not None and end <= start:
+            self._set_section(None, None, update_fields=False)
             self.listen_status.setText(translate_text("La fin de la section doit suivre son début."))
             return
         self._set_section(start, end)
+
+    def _section_fields_match(self) -> bool:
+        """Les champs affichent exactement la section qui serait appliquée."""
+        if self._section is None:
+            return False
+        return (self.section_start_edit.text().strip(), self.section_end_edit.text().strip()) == tuple(
+            SyncCalibration.format_timestamp(value) for value in self._section
+        )
 
     @staticmethod
     def _exec_menu(menu: QMenu, global_pos):
@@ -965,6 +992,9 @@ class SyncStudioDialog(QDialog):
 
     def _apply_section_edit(self) -> None:
         """Ajoute la section à la calibration : coupe (contenu cible retiré) ou silence inséré."""
+        if not self._section_fields_match():
+            # Champs modifiés sans validation : la plage appliquée est celle affichée, ou rien.
+            self._on_section_fields_edited()
         if self._section is None:
             return
         silence = self.rb_section_silence.isChecked()
@@ -974,12 +1004,10 @@ class SyncStudioDialog(QDialog):
         except ValueError as exc:
             self.listen_status.setText(translate_text(str(exc)))
             return
-        donor_ms = self.current_calibration.donor_time_ms(start)
         self.current_calibration = calibration
         self.quick_validated = False
         self._current_shift_ms = calibration.segments[0].shift_ms
-        junction_ms = round(max(donor_ms, 1.0), 3) + 1e-6
-        index = max(i for i, segment in enumerate(calibration.segments) if i == 0 or segment.start_ms <= junction_ms)
+        index = calibration.segment_index_at(start)
         self._clear_section()
         self._refresh_segment_controls()
         self._select_segment(index)
@@ -1014,13 +1042,52 @@ class SyncStudioDialog(QDialog):
         if self._exec_menu(menu, self.cuts_table.viewport().mapToGlobal(pos)) is action_remove:
             self._remove_junction(row)
 
+    def _target_ranges(self, start_s: float, margin_ms: float = _TARGET_MARGIN_MS) -> tuple[tuple[float, float], ...]:
+        """Plages de la piste cible (ms) jouées dans la fenêtre de sortie, fusionnées.
+
+        Chaque morceau de sortie garde le décalage cumulé des coupes et silences précédents,
+        et la cadence : plus loin dans le film, la cible est lue là où elle sera réellement.
+        """
+        calibration = self.current_calibration
+        ratio = calibration.cadence_mismatch.time_stretch_ratio if calibration.cadence_mismatch else 1.0
+        window_start, window_end = start_s * 1000.0, (start_s + _WINDOW_S) * 1000.0
+        ranges: list[list[float]] = []
+        for out_start, out_stop, index in calibration.output_ranges():
+            lo, hi = max(out_start, window_start), min(out_stop, window_end)
+            if hi <= lo:
+                continue
+            shift = calibration.segments[index].shift_ms
+            ranges.append([max(0.0, (lo - shift) / ratio - margin_ms), (hi - shift) / ratio + margin_ms])
+        merged: list[list[float]] = []
+        for lo, hi in sorted(ranges):
+            if merged and lo <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        return tuple((round(lo), round(hi)) for lo, hi in merged if hi > lo)
+
+    def _target_ranges_loaded(self, start_s: float) -> bool:
+        if self.target_entry.is_subtitle:
+            return True
+        needed = self._target_ranges(start_s, margin_ms=0.0)
+        return all(
+            any(lo >= loaded_lo - 1 and hi <= loaded_hi + 1 for loaded_lo, loaded_hi in self._loaded_target_ranges)
+            for lo, hi in needed
+        )
+
+    def _reload_current_window(self) -> None:
+        if not self._closing:
+            self._load_segment_audio_async(self._current_segment_index, self._current_start_s, self._current_cut_ms)
+
     def _load_segment_audio_async(self, idx: int, start_s: float, cut_ms: float | None) -> None:
         if self._closing:
             return
-        key = round(start_s * 1000.0)
+        target_ranges = () if self.target_entry.is_subtitle else self._target_ranges(start_s)
+        key = (round(start_s * 1000.0), target_ranges)
+        self._window_key = key
         if key in self._audio_cache:
-            ref_samples, tgt_samples = self._audio_cache[key]
-            self._apply_audio_to_waveform(idx, ref_samples, tgt_samples, start_s, cut_ms)
+            ref_samples, tgt_chunks = self._audio_cache[key]
+            self._apply_audio_to_waveform(idx, ref_samples, tgt_chunks, start_s, cut_ms)
             return
 
         is_sub = self.target_entry.is_subtitle
@@ -1070,20 +1137,21 @@ class SyncStudioDialog(QDialog):
                         if not self._closing:
                             self._duration_ready.emit(0.0)
                 ref_samples = np.array([], dtype=np.float32)
-                tgt_samples = np.array([], dtype=np.float32)
+                tgt_chunks: list[tuple[float, object]] = []
 
-                # 1. Échantillons de référence
+                # 1. Échantillons de référence (axe de sortie)
                 if self.reference_source_path is not None and self.reference_stream_index is not None and not is_ref_sub:
                     ref_track = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
-                    ref_samples = scanner.samples(ref_track, start_s, 20.0)
+                    ref_samples = scanner.samples(ref_track, start_s, _WINDOW_S)
 
-                # 2. Échantillons de la cible
+                # 2. Extraits de la cible, aux instants cibles joués dans la fenêtre
                 if not is_tgt_sub:
                     tgt_track = AudioSyncTrack(self.target_source_path, self.target_stream_index)
-                    tgt_samples = scanner.samples(tgt_track, start_s, 20.0)
+                    for lo, hi in target_ranges:
+                        tgt_chunks.append((float(lo), scanner.samples(tgt_track, lo / 1000.0, (hi - lo) / 1000.0)))
 
                 if not self._closing:
-                    self._segment_audio_ready.emit(key, ref_samples, tgt_samples, start_s, cut_ms)
+                    self._segment_audio_ready.emit(key, ref_samples, tgt_chunks, start_s, cut_ms)
             except Exception as exc:
                 if not self._closing:
                     self._waveform_loading.emit(f"Aperçu non disponible : {exc}")
@@ -1122,13 +1190,19 @@ class SyncStudioDialog(QDialog):
         self.listen_status.setText(text)
         reference = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
         target = AudioSyncTrack(self.target_source_path, self.target_stream_index)
+        # Correction de cadence existante et méthode audio choisie dans le studio.
+        cadence_mismatch = self.current_calibration.cadence_mismatch
+        cadence_method = self.current_calibration.cadence_audio_method or "auto"
 
         def _worker() -> None:
             try:
                 scanner = AudioSyncScanner(
                     self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event, quick_check=not deep,
                 )
-                cal = scanner.scan(reference, target, detect_cuts=True)
+                cal = scanner.scan(
+                    reference, target, detect_cuts=True,
+                    cadence_mismatch=cadence_mismatch, cadence_audio_method=cadence_method,
+                )
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
             except Exception as exc:
@@ -1222,26 +1296,32 @@ class SyncStudioDialog(QDialog):
             return
         self.waveform.set_loading(text)
 
-    def _on_segment_audio_ready(self, key: int, ref_samples, tgt_samples, start_s: float, cut_ms: float | None) -> None:
+    def _on_segment_audio_ready(self, key, ref_samples, tgt_chunks, start_s: float, cut_ms: float | None) -> None:
         if getattr(self, "_closing", False):
             return
-        self._audio_cache[key] = (ref_samples, tgt_samples)
+        self._audio_cache[key] = (ref_samples, tgt_chunks)
         # Ignorer un extrait obsolète si l'utilisateur a déjà navigué ailleurs.
-        if round(self._current_start_s * 1000.0) == key and self._current_cut_ms == cut_ms:
+        if key == self._window_key:
             self._apply_audio_to_waveform(
-                self._current_segment_index, ref_samples, tgt_samples, start_s, cut_ms
+                self._current_segment_index, ref_samples, tgt_chunks, start_s, cut_ms
             )
 
-    def _apply_audio_to_waveform(self, idx: int, ref_samples, tgt_samples, start_s: float, cut_ms: float | None) -> None:
+    def _apply_audio_to_waveform(self, idx: int, ref_samples, tgt_chunks, start_s: float, cut_ms: float | None) -> None:
         if getattr(self, "_closing", False):
             return
         seg = self.current_calibration.segments[idx]
+        chunks = list(tgt_chunks or [])
+        self._loaded_target_ranges = tuple(
+            (origin, origin + len(samples) / 16.0) for origin, samples in chunks  # 16 échantillons par ms
+        )
         self.waveform.set_audio_data(
             ref_samples=ref_samples,
-            tgt_samples=tgt_samples,
+            tgt_samples=None,
             sample_rate=16000,
             start_time_ms=start_s * 1000.0,
             cut_time_ms=cut_ms,
+            target_chunks=chunks,
+            window_duration_ms=_WINDOW_S * 1000.0,
         )
         self.waveform.set_shift(seg.shift_ms)
         if self._ref_cues or self._tgt_cues:
