@@ -278,6 +278,10 @@ profil s'appliquent aussi aux keywords rendus dans `--output-template`.
 ## Application
 
 Depuis le GUI, **Appliquer profil** charge un profil enregistré, affiche un aperçu, puis applique après confirmation.
+Le profil part de l'état du tableau des pistes du panneau Conteneur : langues, titres et flags édités, ou déjà
+modifiés par un profil précédent, sont sa source de travail, y compris pour `source_language` et `source_title`.
+Ses actions peuvent ensuite les remplacer. Le bouton ↺ à côté de **Appliquer profil** remet pistes, ordre,
+synchronisation et chapitres dans l'état des fichiers sources, sans les réinspecter.
 
 En CLI :
 

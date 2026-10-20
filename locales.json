@@ -1031,14 +1031,6 @@
     "fra": "Supprimer ce chapitre",
     "eng": "Delete this chapter"
   },
-  "Tout activer": {
-    "fra": "Tout activer",
-    "eng": "Enable all"
-  },
-  "Tout désactiver": {
-    "fra": "Tout désactiver",
-    "eng": "Disable all"
-  },
   "Titre du conteneur MKV (balise Title)": {
     "fra": "Titre du conteneur MKV (balise Title)",
     "eng": "MKV container title (Title tag)"
@@ -9038,5 +9030,25 @@
   "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.": {
     "fra": "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.",
     "eng": "Frame audit: encoded frame count unreadable, RPU coverage cannot be verified."
+  },
+  "Réinitialiser sur les sources : pistes, ordre, éditions, profils appliqués, synchronisation et chapitres reviennent à l'état des fichiers sources.": {
+    "fra": "Réinitialiser sur les sources : pistes, ordre, éditions, profils appliqués, synchronisation et chapitres reviennent à l'état des fichiers sources.",
+    "eng": "Reset to sources: tracks, order, edits, applied profiles, synchronization and chapters return to the state of the source files."
+  },
+  "Réinitialiser sur les sources": {
+    "fra": "Réinitialiser sur les sources",
+    "eng": "Reset to sources"
+  },
+  "Revenir à l'état des sources ? Les éditions de pistes, l'ordre, les variantes audio, les profils appliqués, la synchronisation et les chapitres modifiés seront perdus.\nPièces jointes, balises, titre et fichier de sortie sont conservés.": {
+    "fra": "Revenir à l'état des sources ? Les éditions de pistes, l'ordre, les variantes audio, les profils appliqués, la synchronisation et les chapitres modifiés seront perdus.\nPièces jointes, balises, titre et fichier de sortie sont conservés.",
+    "eng": "Return to the state of the sources? Track edits, order, audio variants, applied profiles, synchronization and modified chapters will be lost.\nAttachments, tags, title and output file are kept."
+  },
+  "Pistes, synchronisation et chapitres réinitialisés sur les sources.": {
+    "fra": "Pistes, synchronisation et chapitres réinitialisés sur les sources.",
+    "eng": "Tracks, synchronization and chapters reset to the sources."
+  },
+  "Tout cocher / tout décocher": {
+    "fra": "Tout cocher / tout décocher",
+    "eng": "Check all / uncheck all"
   }
 }

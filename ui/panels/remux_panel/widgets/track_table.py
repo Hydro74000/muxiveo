@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -174,8 +174,83 @@ class _TrackInfoDelegate(QStyledItemDelegate):
 
         painter.restore()
 
+
+class _CheckAllHeader(QHeaderView):
+    """En-tête horizontal : la colonne des cases porte une case « tout cocher » à trois états."""
+
+    check_all_requested = Signal(bool)  # True : tout cocher, False : tout décocher
+
+    def __init__(self, check_column: int, table: QTableWidget) -> None:
+        super().__init__(Qt.Orientation.Horizontal, table)
+        self._check_column = check_column
+        self._table = table
+        # Comportement de l'en-tête par défaut de QTableView.
+        self.setSectionsClickable(True)
+        self.setHighlightSections(True)
+
+    def check_state(self) -> Qt.CheckState:
+        """Cochée si toutes les pistes le sont, partielle si certaines seulement."""
+        states = {
+            item.checkState()
+            for row in range(self._table.rowCount())
+            if (item := self._table.item(row, self._check_column)) is not None
+        }
+        if states == {Qt.CheckState.Checked}:
+            return Qt.CheckState.Checked
+        if Qt.CheckState.Checked in states:
+            return Qt.CheckState.PartiallyChecked
+        return Qt.CheckState.Unchecked
+
+    def paintSection(self, painter: QPainter, rect, logical_index: int) -> None:
+        super().paintSection(painter, rect, logical_index)
+        if logical_index != self._check_column or self._table.rowCount() == 0:
+            return
+        style = self._table.style()
+        option = QStyleOptionViewItem()
+        option.initFrom(self._table)
+        width = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, None, self._table)
+        height = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorHeight, None, self._table)
+        option.rect = QRect(self._indicator_left(rect, width), rect.center().y() - height // 2, width, height)
+        option.state = QStyle.StateFlag.State_Enabled | {
+            Qt.CheckState.Checked: QStyle.StateFlag.State_On,
+            Qt.CheckState.PartiallyChecked: QStyle.StateFlag.State_NoChange,
+        }.get(self.check_state(), QStyle.StateFlag.State_Off)
+        painter.save()
+        # Même primitive que les cases des lignes : rendu identique dans les deux thèmes.
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck, option, painter, self._table)
+        painter.restore()
+
+    def _indicator_left(self, section: QRect, width: int) -> int:
+        """Abscisse des cases des lignes de la colonne (marges du style et de la feuille de style)."""
+        style = self._table.style()
+        for row in range(self._table.rowCount()):
+            cell = self._table.visualRect(self._table.model().index(row, self._check_column))
+            if not cell.isValid():
+                continue
+            option = QStyleOptionViewItem()
+            option.initFrom(self._table)
+            option.rect = cell
+            option.features = QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+            check = style.subElementRect(QStyle.SubElement.SE_ItemViewItemCheckIndicator, option, self._table)
+            if check.isValid():
+                return section.left() + check.left() - cell.left()
+        return section.center().x() - width // 2
+
+    def mousePressEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._table.rowCount()
+            and self.logicalIndexAt(event.position().toPoint()) == self._check_column
+        ):
+            self.check_all_requested.emit(self.check_state() != Qt.CheckState.Checked)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class _TrackTable(QTableWidget):
     order_changed = Signal()
+    check_all_requested = Signal(bool)  # case « tout cocher » de l'en-tête
     extract_requested = Signal(object)  # TrackEntry
     audio_sync_requested = Signal(object)  # TrackEntry
     audio_deep_sync_requested = Signal(object)  # TrackEntry — analyse continue forcée
@@ -247,7 +322,17 @@ class _TrackTable(QTableWidget):
         self.customContextMenuRequested.connect(self._on_context_menu)
 
     def _setup_ui(self) -> None:
+        header = _CheckAllHeader(self.COL_CHECK, self)
+        self.setHorizontalHeader(header)
+        header.check_all_requested.connect(self.check_all_requested)
         self.setHorizontalHeaderLabels(self._HEADERS)
+        check_header = self.horizontalHeaderItem(self.COL_CHECK)
+        if check_header is not None:
+            check_header.setToolTip(translate_text("Tout cocher / tout décocher"))
+        # État de la case d'en-tête suivi même quand les signaux du tableau sont bloqués.
+        model = self.model()
+        for model_signal in (model.dataChanged, model.rowsInserted, model.rowsRemoved, model.modelReset):
+            model_signal.connect(lambda *_args: header.updateSection(self.COL_CHECK))
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)

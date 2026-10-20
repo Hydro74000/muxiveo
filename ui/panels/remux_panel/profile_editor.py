@@ -1511,7 +1511,9 @@ class DecisionProfileEditorDialog(QDialog):
             return
         before = {track.entry_id: copy.deepcopy(track) for track in self._current_tracks}
         tracks = copy.deepcopy(self._current_tracks)
-        result = apply_decision_profile(profile, tracks, source_index_by_file_id=self._source_index_by_file_id)
+        result = apply_decision_profile(
+            profile, tracks, source_index_by_file_id=self._source_index_by_file_id, from_current_state=True,
+        )
         lines = [
             translate_text("Règles appliquées : {count}", count=int(result.report.get("applied_rules", 0) or 0)),
             translate_text("Conflits : {count}", count=len(result.report.get("conflicts", []))),

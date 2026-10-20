@@ -54,6 +54,7 @@ from core.workflows.remux_models import (
     SourceInput,
     TrackEntry,
     clone_track_entry,
+    tracks_from_file_info,
 )
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.remux_panel.functions import chapters as chapter_functions
@@ -64,6 +65,7 @@ from ui.panels.remux_panel.theme import (
     _C,
     _card,
     _input_style,
+    _reset_icon,
     _secondary_button,
     _section_label,
     _separator,
@@ -366,22 +368,24 @@ class RemuxPanel(QWidget):
         track_header.addWidget(_section_label("PISTES"))
         track_header.addStretch()
 
-        btn_all = _secondary_button("Tout activer")
-        btn_none = _secondary_button("Tout désactiver")
-        btn_all.clicked.connect(lambda: self._set_all_tracks(True))
-        btn_none.clicked.connect(lambda: self._set_all_tracks(False))
-        track_header.addWidget(btn_all)
-        track_header.addWidget(btn_none)
-
         from ui.panels.remux_panel.functions.workflow import setup
         workflow_btn = setup(self)
         save_profile_btn = _secondary_button("Éditer profil")
         save_profile_btn.clicked.connect(self._save_decision_profile)
         apply_profile_btn = _secondary_button("Appliquer profil")
         apply_profile_btn.clicked.connect(self._apply_decision_profile_dialog)
+        reset_btn = _secondary_button("", fixed_width=28)
+        reset_btn.setIcon(_reset_icon(_C.TEXT_SEC, 14))
+        reset_btn.setIconSize(QSize(_scale(14), _scale(14)))
+        reset_btn.setToolTip(translate_text(
+            "Réinitialiser sur les sources : pistes, ordre, éditions, profils appliqués, "
+            "synchronisation et chapitres reviennent à l'état des fichiers sources."
+        ))
+        reset_btn.clicked.connect(self._reset_to_sources)
         track_header.addWidget(workflow_btn)
         track_header.addWidget(save_profile_btn)
         track_header.addWidget(apply_profile_btn)
+        track_header.addWidget(reset_btn)
 
         self._filter_btn = QPushButton("Sélectionnées seulement")
         self._filter_btn.setCheckable(True)
@@ -432,6 +436,7 @@ class RemuxPanel(QWidget):
         self._track_table = _TrackTable()
         self._track_table.itemChanged.connect(self._on_table_changed)
         self._track_table.order_changed.connect(self._on_track_order_changed)
+        self._track_table.check_all_requested.connect(self._set_all_tracks)
         self._track_table.extract_requested.connect(self._on_extract_track)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
         self._track_table.audio_deep_sync_requested.connect(self._on_audio_deep_sync_requested)
@@ -1042,10 +1047,12 @@ class RemuxPanel(QWidget):
         if not all_tracks:
             return [], {"valid": True, "applied_rules": 0}
         source_index_by_file_id = {sf.id: index for index, sf in enumerate(self._source_files)}
+        # Le profil part de l'état du tableau (éditions, profil précédent), pas des fichiers bruts.
         result = apply_decision_profile_v1(
             profile,
             all_tracks,
             source_index_by_file_id=source_index_by_file_id,
+            from_current_state=True,
         )
         return result.tracks, result.report
 
@@ -1154,6 +1161,53 @@ class RemuxPanel(QWidget):
                 entry.sync_calibration = calibrations[str(source_idx)]
             else:
                 entry.sync_calibration = None
+
+    def _reset_to_sources(self) -> None:
+        """Pistes, synchronisation et chapitres remis dans l'état des sources, sans réinspection.
+
+        Les pistes d'origine gardent leur identité : le panneau Encodage conserve leurs réglages.
+        Pièces jointes, balises, titre et sortie ne changent pas.
+        """
+        if not self._has_ready_files() or not self._can_start_auxiliary_operation():
+            return
+        answer = QMessageBox.question(
+            self,
+            translate_text("Réinitialiser sur les sources"),
+            translate_text(
+                "Revenir à l'état des sources ? Les éditions de pistes, l'ordre, les variantes audio, "
+                "les profils appliqués, la synchronisation et les chapitres modifiés seront perdus.\n"
+                "Pièces jointes, balises, titre et fichier de sortie sont conservés."
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        previous_ids = {
+            (track.file_id, track.mkv_tid): track.entry_id
+            for track in self._track_table.current_tracks()
+            if not track.is_new
+        }
+        self._source_sync_offsets_ms.clear()
+        self._auto_sync_entry_ids.clear()
+        self._audio_sync_results.clear()
+        self._chapter_sync_cancelled_source_ids.clear()
+        self._workflow_options.get("sync_calibrations", {}).clear()
+        self._track_table.clear_all()
+        for source in self._source_files:
+            if source.info is None:
+                continue
+            source.tracks = tracks_from_file_info(source.info, file_id=source.id)
+            for track in source.tracks:
+                track.entry_id = previous_ids.get((source.id, track.mkv_tid), track.entry_id)
+            self._track_table.append_tracks(self._source_colors.get(source.id, _C.BORDER), source.tracks)
+        self._chapter_panel.clear_all()
+        self._update_chapters_from_sources()
+        self._sync_entry_calibrations()
+        self._refresh_audio_sync_buttons()
+        self._refresh_sync_action_buttons()
+        self._track_table.refresh_filter()
+        self._rebuild_preview()
+        self._emit_signals()
+        self.log_message.emit("INFO", translate_text("Pistes, synchronisation et chapitres réinitialisés sur les sources."))
 
     def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
         self._sync_entry_calibrations(tracks)
