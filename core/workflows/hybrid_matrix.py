@@ -713,8 +713,10 @@ def prepare_matrix_episode(
     logger: Any,
     detect_cuts: bool = True,
     drift_threshold_ms: int = 25,
+    *,
+    calibrate: bool = True,
 ) -> tuple[RemuxConfig, SyncCalibration | None]:
-    """Construit la configuration remux et effectue la calibration synchro pour un épisode multi-sources."""
+    """Construit le plan ; calibrate=False diffère la synchro automatique de la GUI."""
     from cli.remux_config import build_remux_config
     from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
@@ -793,7 +795,7 @@ def prepare_matrix_episode(
     calibrations: dict[str, SyncCalibration] = {}
     primary_calibration: SyncCalibration | None = None
     supplied_calibration = None
-    if recipe.sync_strategy == "auto" and getattr(options, "calibration", None):
+    if calibrate and recipe.sync_strategy == "auto" and getattr(options, "calibration", None):
         import json
         if len(episode.donor_files) != 1:
             raise ValueError("Un fichier de calibration unique nécessite un seul donneur par épisode.")
@@ -806,8 +808,8 @@ def prepare_matrix_episode(
     cancel_event = getattr(options, "cancel_event", None)
     audio_scanner = AudioSyncScanner(
         ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event, quick_check=quick_check_enabled(options, config),
-    ) if recipe.sync_strategy == "auto" else None
-    sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if recipe.sync_strategy == "auto" else None
+    ) if calibrate and recipe.sync_strategy == "auto" else None
+    sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if calibrate and recipe.sync_strategy == "auto" else None
 
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
@@ -816,8 +818,8 @@ def prepare_matrix_episode(
         cadence_auto_apply = getattr(recipe, "cadence_auto_apply", True)
         cadence_audio_method = getattr(recipe, "cadence_audio_method", "auto") or "auto"
 
-        m_fps = _extract_source_video_fps(master_source) if recipe.sync_strategy == "auto" else None
-        d_fps = _extract_source_video_fps(donor_source) if recipe.sync_strategy == "auto" else None
+        m_fps = _extract_source_video_fps(master_source) if audio_scanner is not None else None
+        d_fps = _extract_source_video_fps(donor_source) if audio_scanner is not None else None
         if m_fps and d_fps:
             from core.workflows.cadence import detect_cadence_from_metadata
             cadence_mismatch = detect_cadence_from_metadata(m_fps, d_fps)

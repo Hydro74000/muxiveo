@@ -74,6 +74,28 @@ def assembly(tmp_path, monkeypatch):
     return episode, recipe, sources
 
 
+def test_season_analysis_prepares_tracks_and_metadata_without_sync(assembly, tmp_path, monkeypatch):
+    episode, recipe, _ = assembly
+    recipe.sync_strategy = "auto"
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("L'analyse de saison ne doit pas démarrer de scanner de synchro")
+
+    monkeypatch.setattr("core.workflows.audio_sync_scan.AudioSyncScanner", forbidden)
+    monkeypatch.setattr("core.workflows.subtitle_sync_scan.SubtitleSyncScanner", forbidden)
+    result, calibration = prepare_matrix_episode(
+        episode, recipe, tmp_path, AppConfig(),
+        SimpleNamespace(**vars(CommonOptions(calibration="deferred.json")), output_template="{season_episode}"), Logger(),
+        calibrate=False,
+    )
+    assert calibration is None and result.sync_calibrations == {}
+    assert result.output.name == "S01E01.mkv"
+    assert result.track_order
+    assert result.sources[0].tracks
+    assert any(t.enabled and t.is_audio for t in result.sources[1].tracks)
+    assert recipe.sync_strategy == "auto"
+
+
 @pytest.mark.parametrize("use_profile", [False, True])
 def test_witness_selection_survives_profile_and_exact_job_roundtrip(assembly, tmp_path, use_profile):
     episode, recipe, _ = assembly

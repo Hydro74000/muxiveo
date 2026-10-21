@@ -581,17 +581,18 @@ jobs:
           git fetch --tags --force
 
           previous_tag=""
+          # Brouillons exclus : une release republiée (tag supprimé) n'est pas la précédente.
           # Tags de l'app uniquement (muxiveo-rife-v*, muxiveo-mvtools-v*… ont leurs propres releases).
           if [ "$CHANNEL" = "unstable" ]; then
-            previous_tag="$(gh release list --limit 100 --json tagName,isPrerelease \
+            previous_tag="$(gh release list --exclude-drafts --limit 100 --json tagName,isPrerelease \
               --jq '[.[] | select(.isPrerelease == true and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-unstable\\.")))][0].tagName // ""')"
           else
-            previous_tag="$(gh release list --exclude-pre-releases --limit 100 --json tagName \
+            previous_tag="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName \
               --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].tagName // ""')"
           fi
 
           if [ -z "$previous_tag" ]; then
-            previous_tag="$(gh release list --limit 100 --json tagName \
+            previous_tag="$(gh release list --exclude-drafts --limit 100 --json tagName \
               --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+"))][0].tagName // ""')"
           fi
 

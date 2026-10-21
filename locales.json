@@ -1,4 +1,32 @@
 {
+  "Vérifier la synchronisation audio": {
+    "fra": "Vérifier la synchronisation audio",
+    "eng": "Check audio synchronization"
+  },
+  "Les sources ont changé. Analysez à nouveau la saison.": {
+    "fra": "Les sources ont changé. Analysez à nouveau la saison.",
+    "eng": "The sources have changed. Analyze the season again."
+  },
+  "Analyse terminée. Voulez-vous lancer la vérification de concordance audio pour les {count} épisodes appariés ?": {
+    "fra": "Analyse terminée. Voulez-vous lancer la vérification de concordance audio pour les {count} épisodes appariés ?",
+    "eng": "Analysis complete. Do you want to check audio synchronization for the {count} matched episodes?"
+  },
+  "Synchro audio à vérifier": {
+    "fra": "Synchro audio à vérifier",
+    "eng": "Audio synchronization pending"
+  },
+  "Vérifiez la synchronisation audio pour ouvrir le Sync Studio.": {
+    "fra": "Vérifiez la synchronisation audio pour ouvrir le Sync Studio.",
+    "eng": "Check audio synchronization to open Sync Studio."
+  },
+  "Préparation impossible pour {count} épisode(s) : {names}": {
+    "fra": "Préparation impossible pour {count} épisode(s) : {names}",
+    "eng": "Preparation failed for {count} episode(s): {names}"
+  },
+  "Analyse terminée : {count} épisode(s) en échec ({names}).": {
+    "fra": "Analyse terminée : {count} épisode(s) en échec ({names}).",
+    "eng": "Analysis complete: {count} episode(s) failed ({names})."
+  },
   "Soutenir": {
     "fra": "Soutenir",
     "eng": "Support"

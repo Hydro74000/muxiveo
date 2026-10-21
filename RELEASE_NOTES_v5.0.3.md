@@ -22,6 +22,7 @@
 * **Conteneur : case « tout cocher » dans l'en-tête** de la colonne de sélection, à la place des boutons « Tout activer » / « Tout désactiver ». Elle est grisée quand seules certaines pistes sont cochées.
 * **Décalage négligeable** : un décalage constant de 5 ms ou moins n'est plus appliqué, la piste n'est donc pas réencodée. Le journal l'indique.
 * **Hybrid Studio** : les épisodes nommés « S01.E02 », « S01_E02 » ou « 1x02 » sont reconnus.
+* **Hybrid Studio : analyse de saison en deux temps.** « Analyser la saison » prépare d'abord les appariements et les pistes de tous les épisodes, sans synchro audio, puis propose la vérification de concordance audio. Le bouton « Vérifier la synchronisation audio » la lance plus tard sur toutes les paires complètes du tableau. Le lancement et la sauvegarde des workflows vérifient d'abord les paires restantes.
 * **Langues** : « VFQ » dans le titre d'une piste donne fr-CA. Les profils et sélecteurs enregistrés en fr-FR continuent de s'appliquer à ces pistes.
 * **Documentation** : README refondu, désormais aussi en anglais (`README_EN.md`).
 
@@ -36,6 +37,7 @@
 * **Synchronisation avec coupures ou conversion de cadence** : la calibration est conservée pour toute la source. L'annuler sur une piste l'annule pour toutes les pistes de la source, et le journal les liste. Les chapitres de la source suivent la calibration complète, pas seulement le décalage de départ ; un chapitre situé dans une partie coupée est placé à la reprise.
 * **Synchro Studio** : une coupe qui commence dans un silence conserve le reste du silence. Une saisie invalide efface la section et bloque l'application. « Synchro rapide » et « Synchro approfondie » transmettent la cadence et la méthode audio.
 * **Hybrid Studio, appariement des épisodes** : « S01E02-1080p » n'est plus compté comme deux épisodes. « S01E01E02v2 », « S01E01-E02REPACK » ou « 1x01-02v2 » sont refusés comme ambigus, au lieu d'être appariés au seul premier épisode.
+* **Hybrid Studio, saison** : un épisode en échec n'interrompt plus l'analyse ; il est marqué « Échec » (cause en info-bulle et dans le journal) et les suivants sont traités. Le lancement et la sauvegarde des workflows restent refusés tant qu'une paire complète n'a pas de plan. La sauvegarde des workflows ne recalcule plus les épisodes déjà synchronisés (réglages du Sync Studio conservés).
 * **Estimation HDR10 (sources Dolby Vision P5)** : l'analyse ne se bloque plus quand l'outil écrit beaucoup de messages. L'annulation est effective, et la fin du journal de l'outil est rapportée en cas d'échec.
 * **HDR Studio** : si la publication du fichier corrigé est refusée (destination apparue ou modifiée entre-temps), le fichier corrigé est conservé à côté de la sortie ; le message d'erreur donne son chemin.
 * **TMDB** : un nombre du titre (« Blade Runner 2049 », « 1917 », « 2001 A Space Odyssey ») n'est plus pris pour l'année de sortie.
@@ -62,6 +64,7 @@
 * **Container: "check all" box in the header** of the selection column, replacing the "Enable all" / "Disable all" buttons. It is greyed out when only some tracks are checked.
 * **Negligible offset**: a constant offset of 5 ms or less is no longer applied, so the track is not re-encoded. The log says so.
 * **Hybrid Studio**: episodes named "S01.E02", "S01_E02" or "1x02" are recognized.
+* **Hybrid Studio: two-step season analysis.** "Analyze the season" first prepares the pairings and tracks of every episode, without audio sync, then offers the audio synchronization check. The "Check audio synchronization" button runs it later on every complete pair of the table. Running and saving workflows first check the remaining pairs.
 * **Languages**: "VFQ" in a track title gives fr-CA. Profiles and selectors saved with fr-FR still apply to these tracks.
 * **Documentation**: README rewritten, now also available in English (`README_EN.md`).
 
@@ -76,6 +79,7 @@
 * **Sync with cuts or frame rate conversion**: the calibration is kept for the whole source. Cancelling it on one track cancels it for every track of the source, and the log lists them. The source's chapters follow the full calibration, not only the start offset; a chapter inside a removed part is placed where playback resumes.
 * **Sync Studio**: a cut that starts inside a silence keeps the rest of the silence. Invalid input clears the section and blocks applying it. "Quick sync" and "In-depth sync" pass the frame rate and audio method.
 * **Hybrid Studio, episode pairing**: "S01E02-1080p" is no longer counted as two episodes. "S01E01E02v2", "S01E01-E02REPACK" or "1x01-02v2" are rejected as ambiguous, instead of being paired with the first episode only.
+* **Hybrid Studio, season**: a failing episode no longer stops the analysis; it is marked "Failed" (cause in the tooltip and the log) and the next episodes are processed. Running and saving workflows stay refused while a complete pair has no plan. Saving workflows no longer recomputes episodes that are already synchronized (Sync Studio adjustments are kept).
 * **HDR10 estimation (Dolby Vision P5 sources)**: the analysis no longer hangs when the tool writes many messages. Cancellation works, and the end of the tool's log is reported on failure.
 * **HDR Studio**: if publishing the corrected file is refused (destination created or modified in the meantime), the corrected file is kept next to the output; the error message gives its path.
 * **TMDB**: a number in the title ("Blade Runner 2049", "1917", "2001 A Space Odyssey") is no longer taken as the release year.
