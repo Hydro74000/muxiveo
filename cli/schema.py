@@ -378,6 +378,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "sync": {"type": "boolean"},
             "detect_cuts": {"type": "boolean"},
             "drift_threshold_ms": {"type": "integer", "minimum": 1},
+            "output_template": {"type": "string"},
             "variables": {
                 **_variables_schema(),
             },

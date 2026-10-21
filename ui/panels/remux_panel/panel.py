@@ -38,6 +38,7 @@ from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska.reader import MatroskaReader
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
+from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
 from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
@@ -58,7 +59,7 @@ from core.workflows.remux_models import (
 )
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.remux_panel.functions import chapters as chapter_functions
-from ui.panels.remux_panel.functions import config_builder, inspection, signals, tmdb
+from ui.panels.remux_panel.functions import config_builder, inspection, output_name, signals, tmdb
 from ui.panels.remux_panel.models import SourceFile
 from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, effective_calibration
 from ui.panels.remux_panel.theme import (
@@ -224,6 +225,8 @@ class RemuxPanel(QWidget):
         self._mux_backend_combo: QComboBox
         self._cmd_preview: QPlainTextEdit
         self._workflow_options: dict[str, Any] = {}
+        self._tmdb_details: MediaDetails | None = None
+        self._profile_output: output_name.ProfileOutputName | None = None
         self._preview_generation = 0
         self._preview_dirty = False
         self._preview_copy_pending = False
@@ -785,6 +788,7 @@ class RemuxPanel(QWidget):
     def _apply_rebuild_preview(self) -> None:
         if self._closing:
             return
+        output_name.refresh_profile_output(self)
         generation = self._preview_generation
         config = self._current_config()
         if config is None:
@@ -984,6 +988,7 @@ class RemuxPanel(QWidget):
             current_config=config,
             current_tracks=current_tracks,
             source_index_by_file_id=source_index_by_file_id,
+            output_context=lambda tracks, variables: output_name.output_context(self, tracks, variables),
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1033,14 +1038,17 @@ class RemuxPanel(QWidget):
                 str(exc),
             )
             return
-        if not self._confirm_decision_profile_application(name, tracks, report):
+        rendered_name = output_name.render_profile_output_name(self, profile, tracks)
+        if not self._confirm_decision_profile_application(name, tracks, report, output_file_name=rendered_name):
             return
         self._commit_decision_profile_result(tracks)
+        output_name.track_profile_output(self, profile)
         self.log_message.emit("OK", translate_text("Profil appliqué : {name}", name=name))
 
     def _apply_decision_profile(self, profile: dict) -> None:
         tracks, _report = self._build_decision_profile_result(profile)
         self._commit_decision_profile_result(tracks)
+        output_name.track_profile_output(self, profile)
 
     def _build_decision_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
         all_tracks = copy.deepcopy(self._track_table.current_tracks())
@@ -1074,6 +1082,8 @@ class RemuxPanel(QWidget):
         name: str,
         tracks: list[TrackEntry],
         report: dict,
+        *,
+        output_file_name: str = "",
     ) -> bool:
         before_tracks = self._track_table.current_tracks()
         before_by_id = {track.entry_id: track for track in before_tracks}
@@ -1107,6 +1117,8 @@ class RemuxPanel(QWidget):
         ]
         if before_order != after_order:
             lines.append(translate_text("Ordre des pistes modifié."))
+        if output_file_name:
+            lines.append(translate_text("Nom de sortie : {name}", name=output_file_name))
         created_count = len(report.get("created_variants", []) if isinstance(report.get("created_variants"), list) else [])
         if created_count:
             lines.append(translate_text("Pistes audio créées : {count}", count=created_count))
@@ -1181,6 +1193,7 @@ class RemuxPanel(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        output_name.stop_profile_output(self)
         previous_ids = {
             (track.file_id, track.mkv_tid): track.entry_id
             for track in self._track_table.current_tracks()

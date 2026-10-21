@@ -11,6 +11,7 @@ Muxiveo distingue deux usages :
 
 Un **exact job** contient sources, sortie et sélecteurs stricts.  
 Un **decision profile** ne contient ni source ni sortie : il décrit comment retrouver, choisir, renommer et ordonner les pistes.
+Il peut porter un modèle de nom de sortie (`output_template`), rendu sur les pistes finales de chaque source.
 
 ## Profils décisionnels
 
@@ -42,6 +43,7 @@ Dans le panneau Remux, **Éditer profil** ouvre une fenêtre dédiée :
 - les keywords apparaissent comme des badges lorsque le champ n'est pas en cours d'édition.
 - les critères peuvent être obligatoires ou préférés : un préféré donne un bonus de priorité sans bloquer le fallback.
 - un sélecteur permet de charger un profil existant pour l'éditer, ou de le supprimer après confirmation.
+- champ **Nom de sortie** (facultatif) : modèle du nom de fichier, clic droit pour insérer un champ ; l'aperçu le rend sur les pistes de la source chargée, après les règles du profil.
 
 Deux départs sont possibles :
 
@@ -274,6 +276,35 @@ groupe pour lever les ambiguïtés, par exemple `{audio-lang:all}`,
 Les décisions de nommage utilisent les pistes finales activées; `--output-all`
 force les keywords pistes à lister toutes les valeurs trouvées. Les aliases du
 profil s'appliquent aussi aux keywords rendus dans `--output-template`.
+
+## Nom de sortie
+
+Le champ `output_template` du profil reprend la syntaxe de `--output-template`
+(tokens et règles : `docs/cli/README.md`, section `output_template`) :
+
+```json
+{
+  "version": 1,
+  "kind": "decision-profile",
+  "name": "Release FR",
+  "output_template": "{title:release}.{season_episode}.{episode_title:release}.{year}.{video-resolution:first}.{audio-multi}.{audio-fr-tag}.{audio-codec-release:best}.{audio-channels:best}.{audio-immersive}.{video-source}.{video-hdr:best}.{video-dolby-vision}.{video-codec-release:best}-{group}",
+  "rules": []
+}
+```
+
+- **GUI** : à l'application du profil, le nom rendu remplace le nom du chemin de
+  sortie (dossier conservé, sinon dossier de sortie des Paramètres) et figure dans
+  l'aperçu de confirmation. Il suit ensuite les changements de pistes et la fiche
+  TMDB choisie dans les pièces jointes, jusqu'à ce que le chemin soit modifié à la
+  main ou que le tableau soit réinitialisé sur les sources.
+- **CLI** : utilisé quand `--output-template` est absent. Priorité :
+  `-o fichier` > `--output-template` > `output_template` du profil. `-o dossier/`
+  sert de dossier au nom rendu ; `batch --profile` le résout dans `--output-dir`.
+- Les tokens TMDB (`{title}`, `{year}`, `{episode_title}`, `{season_episode}`…)
+  restent vides sans fiche TMDB (GUI : recherche dans les pièces jointes ; CLI :
+  `--auto-tmdb`).
+- Les keywords de pistes décrivent les pistes du conteneur : un réencodage du
+  panneau Encodage (codec vidéo ou audio changé) n'est pas reflété dans le nom.
 
 ## Application
 

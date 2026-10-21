@@ -2327,7 +2327,7 @@ class TestRemuxPanelDecisionProfiles:
         panel = self._panel_with_tracks(qt_app, tmp_path, [video, audio])
 
         class FakeDialog:
-            def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None):
+            def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None, output_context=None):
                 assert current_config is not None
                 self._manager = manager
                 self._profile = remux_config_to_decision_profile(current_config, name="Auto VF")
@@ -2414,6 +2414,68 @@ class TestRemuxPanelDecisionProfiles:
         applied = next(track for track in track_table.current_tracks() if track.mkv_tid == 1)
         assert (applied.language, applied.title) == ("fr-FR", "French")
         assert (applied.orig_language, applied.orig_title) == ("fr-CA", "VFQ")
+        panel.close()
+
+    def test_profile_output_template_names_output_until_edited_by_hand(self, qt_app, tmp_path):
+        """Le nom du profil suit pistes et fiche TMDB, puis s'efface devant une saisie manuelle."""
+        from ui.panels.remux_panel.functions import output_name, tmdb
+
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+            _track(1, "audio", file_id="fid", language="fra"),
+            _track(2, "audio", file_id="fid", language="eng", orig_language="eng"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        profile = {"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                   "output_template": "{title:release}.{audio-multi}.{video-codec:best}"}
+
+        panel._apply_decision_profile(profile)
+        assert panel._output_edit.text() == str(out_dir / "MULTi.HEVC.mkv")
+
+        def set_english(state: Qt.CheckState) -> None:
+            english = next(track for track in panel._track_table.current_tracks() if track.mkv_tid == 2)
+            row = panel._track_table._find_row_for_entry(english)
+            assert row is not None
+            item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+            assert item is not None
+            item.setCheckState(state)
+            output_name.refresh_profile_output(panel)
+
+        tmdb.on_tmdb_details_selected(panel, MediaDetails(title="Le Film"))
+        set_english(Qt.CheckState.Unchecked)
+        assert panel._output_edit.text() == str(out_dir / "Le.Film.HEVC.mkv")
+
+        panel._output_edit.setText(str(out_dir / "manuel.mkv"))
+        output_name.refresh_profile_output(panel)
+        set_english(Qt.CheckState.Checked)
+        assert panel._output_edit.text() == str(out_dir / "manuel.mkv")
+        assert panel._profile_output is None
+        panel.close()
+
+    def test_profile_editor_keeps_output_template_and_previews_it(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.functions import output_name
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        dialog = DecisionProfileEditorDialog(
+            manager=DecisionProfileManager(tmp_path / "profiles"),
+            current_tracks=panel._track_table.current_tracks(),
+            source_index_by_file_id={"fid": 0},
+            profile={"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                     "output_template": "{source_name}.{video-codec:best}"},
+            output_context=lambda tracks, variables: output_name.output_context(panel, tracks, variables),
+        )
+        assert dialog._output_template_edit.text() == "{source_name}.{video-codec:best}"
+        assert dialog._output_preview.name.text() == "fid.HEVC.mkv"
+        assert dialog.profile()["output_template"] == "{source_name}.{video-codec:best}"
+
+        dialog._output_template_edit.setText("  ")
+        assert "output_template" not in dialog.profile()
+        dialog.close()
         panel.close()
 
     def test_reset_to_sources_restores_inspected_tracks_and_keeps_entry_ids(

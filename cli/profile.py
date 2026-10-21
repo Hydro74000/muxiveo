@@ -14,6 +14,7 @@ from core.profiles.decision import (
     DecisionProfileError,
     DecisionProfileManager,
     apply_decision_profile,
+    profile_output_template,
     validate_decision_profile,
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, normalize_mux_backend
@@ -182,7 +183,14 @@ def build_profile_remux_config(
         for track in result.tracks:
             if track.is_video and track.has_closed_captions:
                 track.remove_closed_captions = options.remove_closed_captions
-    metadata = metadata_job or {}
+    metadata = dict(metadata_job or {})
+    # Template du profil seulement sans --output-template ; -o fichier reste prioritaire,
+    # -o dossier sert de base au nom rendu.
+    template = str(metadata.get("output_template") or "").strip() or profile_output_template(profile)
+    if template:
+        metadata["output_template"] = template
+        if cli_output and (str(cli_output).endswith(("/", "\\")) or Path(cli_output).expanduser().is_dir()):
+            metadata["output"], cli_output = cli_output, None
     tmdb_title = ""
     tmdb_tags = None
     tmdb_cover = None
@@ -405,6 +413,7 @@ def profile_batch(
     if not output_dir:
         raise CliError("`profile batch` requiert `--output-dir`.", EXIT_ARGS)
     profile = load_decision_profile(profile_path, config)
+    output_template = output_template or profile_output_template(profile)
     metadata_template: dict[str, Any] = {}
     apply_metadata_overrides(
         metadata_template,

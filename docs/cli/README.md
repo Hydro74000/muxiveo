@@ -559,7 +559,8 @@ Tokens disponibles :
 
 Règles :
 
-- **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output` direct (job/JSON).
+- **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output_template` du profil
+  (`--profile`) > `output` direct (job/JSON). Avec un template, `-o dossier/` sert de dossier au nom rendu.
 - **Texte libre** mélangeable avec les tokens : `"{title}.{year}.texte libre.{group}"`.
 - **Keywords pistes** : les préfixes canoniques sont `video-*`, `audio-*`,
   `sub-*`; `subtitle-*` et les variantes `_` sont acceptés en alias.

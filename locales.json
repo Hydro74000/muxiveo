@@ -1,4 +1,28 @@
 {
+  "Nom de sortie": {
+    "fra": "Nom de sortie",
+    "eng": "Output name"
+  },
+  "Nom de sortie : {name}": {
+    "fra": "Nom de sortie : {name}",
+    "eng": "Output name: {name}"
+  },
+  "Chargez une source pour voir le nom rendu.": {
+    "fra": "Chargez une source pour voir le nom rendu.",
+    "eng": "Load a source to see the rendered name."
+  },
+  "Sans fiche TMDB, titre, année et épisode restent vides.": {
+    "fra": "Sans fiche TMDB, titre, année et épisode restent vides.",
+    "eng": "Without a TMDB entry, title, year and episode stay empty."
+  },
+  "Nom de sortie du profil : sélectionnez la fiche TMDB pour renseigner titre, année et épisode.": {
+    "fra": "Nom de sortie du profil : sélectionnez la fiche TMDB pour renseigner titre, année et épisode.",
+    "eng": "Profile output name: select the TMDB entry to fill in title, year and episode."
+  },
+  "Nom de sortie du profil ignoré : {err}": {
+    "fra": "Nom de sortie du profil ignoré : {err}",
+    "eng": "Profile output name ignored: {err}"
+  },
   "Vérifier la synchronisation audio": {
     "fra": "Vérifier la synchronisation audio",
     "eng": "Check audio synchronization"

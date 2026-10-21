@@ -39,6 +39,8 @@ def reset_empty_state(panel: "RemuxPanel") -> None:
     panel._chapter_panel.clear_all()
     panel._filter_btn.setChecked(False)
     panel._file_title_edit.clear()
+    panel._tmdb_details = None
+    panel._profile_output = None
     panel._output_edit.clear()
     panel._refresh_sync_action_buttons()
     panel._sync_tmdb_suggested_title()

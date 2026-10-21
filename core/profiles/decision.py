@@ -191,6 +191,8 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
         errors.append("kind: expected decision-profile")
     if not str(profile.get("name") or "").strip():
         errors.append("name: required")
+    if not isinstance(profile.get("output_template", ""), str):
+        errors.append("output_template: expected string")
     rules = profile.get("rules", [])
     if rules is not None and not isinstance(rules, list):
         errors.append("rules: expected array")
@@ -215,6 +217,12 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
     if errors:
         raise DecisionProfileError("; ".join(errors))
     return errors
+
+
+def profile_output_template(profile: Mapping[str, Any]) -> str:
+    """Template du nom de sortie porté par le profil (vide si absent)."""
+    value = profile.get("output_template")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _validate_condition(condition: Any, path: str, errors: list[str]) -> None:
