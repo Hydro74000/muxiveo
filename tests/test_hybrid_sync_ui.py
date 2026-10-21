@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 import time
 
 import pytest
-from PySide6.QtWidgets import QDialog, QGroupBox, QScrollArea, QTableWidgetItem
+from PySide6.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QTableWidgetItem
 
 from core.config import AppConfig
+from core.i18n import translate_text
 from core.inspector import FileInfo, SubtitleTrack
-from core.workflows.hybrid_matrix import MatrixEpisode
+from core.workflows.hybrid_matrix import MatrixEpisode, MatrixSource
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 from ui.panels.hybrid_studio import HybridStudio
@@ -61,6 +63,201 @@ def _select_job(panel, job):
     panel.table.setRowCount(1)
     panel.table.setItem(0, 3, QTableWidgetItem("Prêt"))
     panel.table.selectRow(0)
+
+
+@pytest.fixture
+def season(panel, tmp_path, monkeypatch):
+    panel.reference.setText(str(tmp_path / "masters"))
+    panel.donor.setText(str(tmp_path / "donors"))
+    panel.output.setText(str(tmp_path / "out"))
+    source = MatrixSource("donor", tmp_path / "donors")
+    episodes = [MatrixEpisode(
+        season=1, episode=i + 1, master_file=tmp_path / f"master{i}.mkv",
+        donor_files=[(source, tmp_path / f"donor{i}.mkv")] if i != 1 else [],
+    ) for i in range(4)]
+    monkeypatch.setattr(panel, "_build_matrix", lambda: panel.matrix)
+    monkeypatch.setattr(panel.matrix, "scan", lambda: episodes)
+    calls = []
+
+    def prepare(episode, recipe, *_args, calibrate=True, **_kwargs):
+        calls.append((episode.episode, calibrate))
+        config, calibration = _job(tmp_path)
+        config.output = tmp_path / "out" / f"episode{episode.episode}.mkv"
+        if not calibrate:
+            config.sync_calibrations.clear()
+            calibration = None
+        return config, calibration
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
+    return calls
+
+
+@pytest.mark.parametrize("accept", [False, True])
+def test_season_analysis_prompts_only_after_all_pairs_are_prepared(panel, season, monkeypatch, qt_app, accept):
+    prompts = []
+
+    def question(*_args):
+        prompts.append(list(season))
+        assert not panel.busy
+        assert panel._pending_sync_rows == {0, 2, 3}
+        assert panel._sync_editor is None
+        return QMessageBox.StandardButton.Yes if accept else QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    analysis = [(1, False), (3, False), (4, False)]
+    assert prompts == [analysis]
+    assert season == analysis + ([(1, True), (3, True), (4, True)] if accept else [])
+    assert set(panel.jobs) == {0, 2, 3}
+    assert panel._pending_sync_rows == (set() if accept else {0, 2, 3})
+    assert panel.verify_audio_button.isEnabled()
+    assert panel.sync_episode.count() == (3 if accept else 0)
+
+
+def test_audio_button_rechecks_every_pair_and_preserves_manual_pairing(panel, season, monkeypatch, qt_app, tmp_path):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    reassigned = panel.matrix_episodes[2]
+    reassigned.donor_files[0] = (reassigned.donor_files[0][0], tmp_path / "manually_assigned.mkv")
+    panel._on_donor_reassigned(2, reassigned)
+    panel.table.selectRow(3)
+    monkeypatch.setattr(panel.matrix, "scan", lambda: pytest.fail("Le plan ne doit pas être rescanné"))
+    for _ in range(2):
+        season.clear()
+        panel.verify_audio_button.click()
+        assert panel.busy and not panel.verify_audio_button.isEnabled()
+        _wait(qt_app, lambda: not panel.busy)
+        assert season == [(1, True), (3, True), (4, True)]
+        assert panel.matrix_episodes[2] is reassigned
+        assert reassigned.donor_files[0][1].name == "manually_assigned.mkv"
+        assert not panel._pending_sync_rows
+
+
+@pytest.mark.parametrize("action", ["run", "export"])
+def test_run_and_export_calibrate_all_pending_episodes(panel, season, monkeypatch, qt_app, tmp_path, action):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    season.clear()
+    completed = []
+
+    def finish(*_args):
+        completed.append(set(panel.jobs))
+        assert not panel._pending_sync_rows
+        panel._finish_operation("finished", "test")
+
+    if action == "run":
+        monkeypatch.setattr(panel, "run_next", finish)
+        panel.run()
+    else:
+        monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+        monkeypatch.setattr(panel, "_save_jobs", finish)
+        panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert completed == [{0, 2, 3}]
+    assert season == [(1, True), (3, True), (4, True)]
+
+
+def test_cancelled_season_analysis_does_not_offer_audio_verification(panel, season, monkeypatch, qt_app, tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return _job(tmp_path)
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: pytest.fail("Analyse annulée : aucune confirmation"))
+    try:
+        panel.scan_button.click()
+        _wait(qt_app, entered.is_set)
+        panel.cancel()
+    finally:
+        release.set()
+    _wait(qt_app, lambda: not panel.busy)
+    assert not panel.jobs and not panel._pending_sync_rows
+    assert not panel._defer_audio_sync
+
+
+def test_season_with_no_complete_pair_does_not_offer_audio_verification(panel, season, monkeypatch, qt_app):
+    for episode in panel.matrix.scan():
+        episode.donor_files.clear()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: pytest.fail("Aucune paire à vérifier"))
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    assert not season and not panel.jobs
+    assert not panel.verify_audio_button.isEnabled()
+
+
+def _fail_episode(monkeypatch, number, *, calibrated_only=False):
+    import ui.panels.hybrid_studio as studio
+    base = studio.prepare_matrix_episode
+
+    def prepare(episode, *args, calibrate=True, **kwargs):
+        if episode.episode == number and (calibrate or not calibrated_only):
+            raise RuntimeError(f"Épisode {number} illisible")
+        return base(episode, *args, calibrate=calibrate, **kwargs)
+
+    monkeypatch.setattr(studio, "prepare_matrix_episode", prepare)
+
+
+def test_failing_episode_does_not_stop_season_analysis(panel, season, monkeypatch, qt_app):
+    _fail_episode(monkeypatch, 3)
+    prompts = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: prompts.append(set(panel._pending_sync_rows))
+                        or QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    assert season == [(1, False), (4, False)]
+    assert set(panel.jobs) == {0, 3} and prompts == [{0, 3}]
+    assert panel.table.item(2, 3).text() == translate_text("Échec")
+    assert "illisible" in panel.table.item(2, 3).toolTip()
+    assert panel.status.text() == translate_text("Analyse terminée : {count} épisode(s) en échec ({names}).",
+                                                 count=1, names=panel.matrix_episodes[2].display_name)
+
+
+@pytest.mark.parametrize("action", ["verify", "run"])
+def test_failing_audio_check_still_covers_the_rest_of_the_season(panel, season, monkeypatch, qt_app, action):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    season.clear()
+    _fail_episode(monkeypatch, 3, calibrated_only=True)
+    executions = []
+    monkeypatch.setattr(panel, "run_next", lambda: executions.append(True))
+    (panel.verify_audio if action == "verify" else panel.run)()
+    _wait(qt_app, lambda: not panel.busy)
+    assert season == [(1, True), (4, True)]
+    assert set(panel.jobs) == {0, 3} and not panel._pending_sync_rows
+    assert not executions and not panel._operation_active
+    message = ("Analyse terminée : {count} épisode(s) en échec ({names})." if action == "verify"
+               else "Préparation impossible pour {count} épisode(s) : {names}")
+    assert panel.status.text() == translate_text(message, count=1, names=panel.matrix_episodes[2].display_name)
+
+
+def test_export_keeps_edited_plans_and_calibrates_only_pending_pairs(panel, season, monkeypatch, qt_app, tmp_path):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    edited = panel.jobs[0]
+    season.clear()
+    saved = []
+
+    def save(*_args):
+        saved.append(dict(panel.jobs))
+        panel._finish_operation("finished", "test")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    monkeypatch.setattr(panel, "_save_jobs", save)
+    panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert season == [(3, True), (4, True)]
+    assert saved[0][0] is edited and set(saved[0]) == {0, 2, 3}
 
 
 def test_standard_options_are_visible_and_advanced_options_are_hidden(panel, qt_app):
