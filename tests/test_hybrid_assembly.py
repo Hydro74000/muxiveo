@@ -205,13 +205,18 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     extracts = []
 
     def extract(command, **kwargs):
-        extracts.append((Path(command[command.index("-i") + 1]).name, command[command.index("-map") + 1]))
-        # L'inspecteur simulé inverse les pistes : ID 12 = forcés du donneur.
-        forced = "source1" in command[command.index("-i") + 1] and "0:12" in command
-        content = "Hello" if forced else "[Music]" + " --> " * 60
-        return SimpleNamespace(returncode=0, stdout="1\n00:00:01,000 --> 00:00:02,000\n" + content, stderr="")
+        source = Path(command[command.index("-i") + 1]).name
+        maps = [index for index, value in enumerate(command) if value == "-map"]
+        extracts.append((source, [command[index + 1] for index in maps]))
+        for index in maps:
+            # -map 0:N -c:s srt -f srt <sortie> ; l'inspecteur simulé inverse
+            # les pistes : ID 12 = forcés du donneur.
+            forced = "source1" in source and command[index + 1] == "0:12"
+            content = "Hello" if forced else "[Music]" + " --> " * 60
+            Path(command[index + 6]).write_text("1\n00:00:01,000 --> 00:00:02,000\n" + content)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("core.workflows.subtitle_heuristics.subprocess.run", extract)
+    monkeypatch.setattr("core.workflows.subtitle_text.run_probe", extract)
     profile = {"version": 1, "kind": "decision-profile", "name": "Flags détectés", "rules": [{
         "id": "subtitles", "scope": "all", "match": {"all": [
             {"field": "type", "op": "is", "value": "subtitle"},
@@ -228,7 +233,8 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     options = SimpleNamespace(**vars(CommonOptions(auto_forced_subs=True, auto_sdh=True)), profile=str(path))
     result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
     active_subs = [t for s in result.sources for t in s.tracks if t.enabled and t.is_subtitle]
-    assert len(extracts) == len(active_subs) == 3
+    assert sum(len(maps) for _source, maps in extracts) == len(active_subs) == 3
+    assert len({source for source, _maps in extracts}) == len(extracts)  # Une seule lecture par fichier.
     forced = next(t for t in active_subs if t.orig_title == "Forcés")
     assert forced.flag_forced and forced.title == "French Forced"
     assert not any(t.flag_default for t in active_subs)  # La détection ne réécrit pas le profil.
@@ -287,7 +293,8 @@ def test_metadata_template_and_advanced_options_use_final_tracks(assembly, tmp_p
     assert result.output.name == "Crystal.Lake.S01E01.MULTi.VFF.DDP.MVO.mkv"
     assert result.crossfade_ms == 137 and not result.clean_nfo
     assert calls == [{"enabled": True, "kind": "tv", "season": "1", "episode": "1", "cover": cover, "id": 213562}]
-    assert classified[0][1] == {"ffmpeg": "ffmpeg", "forced": True, "sdh": True, "threshold": 17}
+    assert {key: classified[0][1][key] for key in ("ffmpeg", "forced", "sdh", "threshold")} == {
+        "ffmpeg": "ffmpeg", "forced": True, "sdh": True, "threshold": 17}
     assert (0, "SDH") in classified[0][0] and (0, "Complets") not in classified[0][0]
     job = remux_config_to_exact_job(result)
     assert job["file_title"] == result.file_title and job["tag_overrides"]["SEASON"] == "1"

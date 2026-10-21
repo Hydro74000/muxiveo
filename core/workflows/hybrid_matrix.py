@@ -10,9 +10,11 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from core.lang_tags import Rfc5646LanguageTags
+from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration
 
@@ -715,13 +717,21 @@ def prepare_matrix_episode(
     drift_threshold_ms: int = 25,
     *,
     calibrate: bool = True,
+    cache: PreparationCache | None = None,
 ) -> tuple[RemuxConfig, SyncCalibration | None]:
-    """Construit le plan ; calibrate=False diffère la synchro automatique de la GUI."""
+    """Construit le plan ; calibrate=False diffère la synchro automatique de la GUI.
+
+    ``cache`` (session) évite de relire inspections, sous-titres et réponses
+    TMDB déjà obtenus ; la durée de chaque étape est consignée au journal.
+    """
     from cli.remux_config import build_remux_config
     from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
     from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+
+    started = time.perf_counter()
+    context = PreparationContext(cache=cache, cancel_event=getattr(options, "cancel_event", None))
 
     if not episode.master_file:
         raise ValueError(f"Épisode {episode.display_name} sans fichier master.")
@@ -772,13 +782,14 @@ def prepare_matrix_episode(
         remux_config, report = build_profile_remux_config(
             profile, cli_inputs=source_paths, cli_output=str(output_path),
             config=config, options=build_options, logger=logger, preview=True,
-            metadata_job=job_payload, select_tracks=select_tracks,
+            metadata_job=job_payload, select_tracks=select_tracks, context=context,
         )
         logger.emit("info", f"{episode.display_name} : profil {profile.get('name') or profile_name} appliqué "
                     f"sur les pistes candidates ({report.get('applied_rules', 0)} règles, "
                     f"{len(remux_config.track_order)} pistes finales).")
     else:
-        remux_config = build_remux_config(job_payload, config, build_options, logger, select_tracks=select_tracks)
+        remux_config = build_remux_config(job_payload, config, build_options, logger, select_tracks=select_tracks,
+                                          context=context)
     remux_config.keep_chapters = recipe.keep_master_chapters
     remux_config.chapter_source_index = 0
     if recipe.sync_strategy == "none":
@@ -862,33 +873,35 @@ def prepare_matrix_episode(
                 f"master #{ref_audio.mkv_tid} ({ref_audio.language}) / "
                 f"donneur #{sync_audio.mkv_tid} ({sync_audio.language})…",
             )
-            donor_calib = audio_scanner.scan(
-                AudioSyncTrack(master_source.path, ref_audio.mkv_tid),
-                AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
-                detect_cuts=detect_cuts,
-                drift_threshold_ms=drift_threshold_ms,
-                cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
-                cadence_audio_method=cadence_audio_method,
-                log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
-            )
+            with context.measure("synchro"):
+                donor_calib = audio_scanner.scan(
+                    AudioSyncTrack(master_source.path, ref_audio.mkv_tid),
+                    AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
+                    detect_cuts=detect_cuts,
+                    drift_threshold_ms=drift_threshold_ms,
+                    cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
+                    cadence_audio_method=cadence_audio_method,
+                    log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
+                )
         elif target_sub and sub_scanner is not None:
             logger.emit("info", f"[{episode.display_name}] Synchronisation sous-titre donneur #{donor_idx}…")
-            if ref_sub:
-                donor_calib = sub_scanner.scan(
-                    master_source.path, ref_sub.mkv_tid,
-                    donor_source.path, target_sub.mkv_tid,
-                    is_ref_sub=True,
-                    detect_cuts=detect_cuts,
-                    log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
-                )
-            elif ref_audio:
-                donor_calib = sub_scanner.scan(
-                    master_source.path, ref_audio.mkv_tid,
-                    donor_source.path, target_sub.mkv_tid,
-                    is_ref_sub=False,
-                    detect_cuts=False,
-                    log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
-                )
+            with context.measure("synchro"):
+                if ref_sub:
+                    donor_calib = sub_scanner.scan(
+                        master_source.path, ref_sub.mkv_tid,
+                        donor_source.path, target_sub.mkv_tid,
+                        is_ref_sub=True,
+                        detect_cuts=detect_cuts,
+                        log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
+                    )
+                elif ref_audio:
+                    donor_calib = sub_scanner.scan(
+                        master_source.path, ref_audio.mkv_tid,
+                        donor_source.path, target_sub.mkv_tid,
+                        is_ref_sub=False,
+                        detect_cuts=False,
+                        log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
+                    )
 
         if donor_calib:
             if primary_calibration is None:
@@ -951,7 +964,9 @@ def prepare_matrix_episode(
         from core.workflows.subtitle_heuristics import forced_first
         final_order = forced_first(final_order, remux_config.sources)
     remux_config.track_order = final_order
-    _finalize_matrix_metadata(episode, remux_config, outdir, config, options, logger, profile, final_order)
+    _finalize_matrix_metadata(episode, remux_config, outdir, config, options, logger, profile, final_order, context)
+    logger.emit("info", f"{episode.display_name} : plan prêt en {time.perf_counter() - started:.1f} s"
+                + (f" ({context.timings.summary()})" if context.timings.values else "") + ".")
     episode.calibration = primary_calibration
     if primary_calibration:
         episode.shift_ms = primary_calibration.segments[0].shift_ms
@@ -999,7 +1014,7 @@ def matrix_output_context(
 def _finalize_matrix_metadata(
     episode: MatrixEpisode, result: RemuxConfig, outdir: Path,
     config: Any, options: Any, logger: Any, profile: dict[str, Any] | None,
-    final_order: list[tuple[int, int, str]],
+    final_order: list[tuple[int, int, str]], preparation: PreparationContext | None = None,
 ) -> None:
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
     from cli.output_template import render_output_filename
@@ -1018,7 +1033,12 @@ def _finalize_matrix_metadata(
             tmdb["id"] = tmdb_id
         if getattr(options, "tmdb_apikey", None):
             tmdb["api_key"] = options.tmdb_apikey
-        title, tags, cover, details = resolve_tmdb_metadata({"tmdb": tmdb}, config, result.sources[0].path, logger)
+        preparation = preparation or PreparationContext()
+        with preparation.measure("TMDB"):
+            title, tags, cover, details = resolve_tmdb_metadata(
+                {"tmdb": tmdb}, config, result.sources[0].path, logger,
+                response_cache=preparation.cache.tmdb_responses if preparation.cache is not None else None,
+            )
         result.file_title = title
         result.tag_overrides = merge_tmdb_tag_overrides(tags, result.tag_overrides, tmdb_wins=True)
         result.tmdb_cover = cover

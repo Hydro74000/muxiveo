@@ -8,6 +8,7 @@ Authentification TMDB via :
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import mimetypes
@@ -20,6 +21,7 @@ import urllib.request
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from core.logging import get_logger
 from core.tls import TlsVerificationError, urlopen_tls
@@ -374,6 +376,7 @@ class TmdbFetcher:
         *,
         language: str = "en-US",
         bearer_token: str = "",
+        response_cache: dict[str, Any] | None = None,
     ) -> None:
         self._key = api_key.strip()
         self._bearer_token = bearer_token.strip()
@@ -381,6 +384,9 @@ class TmdbFetcher:
             raise TmdbError("Authentification TMDB manquante (clé API ou token Bearer).")
         self._lang = language or "en-US"
         self._image_config_cache: dict | None = None
+        # Réponses partagées entre fetchers d'une même session (saison : une
+        # recherche et une fiche de série pour tous les épisodes).
+        self._response_cache = response_cache
 
     def _debug_enabled(self) -> bool:
         raw = os.environ.get(_TMDB_DEBUG_ENV, "")
@@ -428,6 +434,9 @@ class TmdbFetcher:
         }
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
+        cache_key = f"{self._bearer_token}\n{url}"
+        if self._response_cache is not None and cache_key in self._response_cache:
+            return copy.deepcopy(self._response_cache[cache_key])
         req = urllib.request.Request(url, headers=headers)
         try:
             with self._urlopen(req, timeout=12) as resp:
@@ -435,7 +444,10 @@ class TmdbFetcher:
                 content_encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
                 if content_encoding:
                     body = self._decode_http_body(body, content_encoding)
-                return json.loads(body.decode("utf-8"))
+                data = json.loads(body.decode("utf-8"))
+                if self._response_cache is not None:
+                    self._response_cache[cache_key] = copy.deepcopy(data)
+                return data
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 if self._key and not self._bearer_token:

@@ -184,7 +184,7 @@ def test_prepare_pair_with_subtitle_only_donor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_video, ref_audio, ref_sub, tgt_sub]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_video, ref_audio, ref_sub, tgt_sub]),
     )
 
     # Mocker SubtitleSyncScanner.scan
@@ -229,7 +229,7 @@ def test_prepare_pair_with_subtitle_only_donor_physical_mode(tmp_path, monkeypat
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_sub]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_sub]),
     )
 
     mock_calib = SyncCalibration((SyncSegment(0.0, -120.0), SyncSegment(30000.0, -550.0)), 0.95)
@@ -266,7 +266,7 @@ def test_remux_with_explicit_calibration_file_container_mode(tmp_path, monkeypat
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio, tgt_sub]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio, tgt_sub]),
     )
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="container", sync_subtitles="mirror")
@@ -304,7 +304,7 @@ def test_remux_with_explicit_calibration_file_physical_mode(tmp_path, monkeypatc
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
     )
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="physical")
@@ -334,7 +334,7 @@ def test_remux_with_cuts_calibration_in_container_mode_raises(tmp_path, monkeypa
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
     )
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="container")
@@ -403,7 +403,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
 
     monkeypatch.setattr(
         "cli.profile.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([s1_0, s1_1], [MagicMock(), MagicMock()], [t1_ref_v, t1_ref_a, t1_donor_a]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([s1_0, s1_1], [MagicMock(), MagicMock()], [t1_ref_v, t1_ref_a, t1_donor_a]),
     )
 
     conf1, _ = build_profile_remux_config(
@@ -424,7 +424,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
 
     monkeypatch.setattr(
         "cli.profile.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([s2_0, s2_1], [MagicMock(), MagicMock()], [t2_ref_v, t2_ref_a, t2_donor_a]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([s2_0, s2_1], [MagicMock(), MagicMock()], [t2_ref_v, t2_ref_a, t2_donor_a]),
     )
 
     conf2, _ = build_profile_remux_config(
@@ -518,7 +518,7 @@ def test_build_remux_config_auto_sync_flag_runs_dynamic_sync(tmp_path, monkeypat
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
     )
 
     mock_calib = SyncCalibration.linear(150.0)
@@ -584,7 +584,7 @@ def test_cmd_preview_with_calibration_output_json(tmp_path, capsys, monkeypatch)
 
     monkeypatch.setattr(
         "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
     )
     orig_which = shutil.which
     monkeypatch.setattr("shutil.which", lambda cmd: orig_which(cmd) or f"/mock/bin/{cmd}")

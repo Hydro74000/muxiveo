@@ -17,6 +17,7 @@ from core.profiles.decision import (
     profile_output_template,
     validate_decision_profile,
 )
+from core.workflows.preparation_cache import PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, normalize_mux_backend
 
 from cli.batch import (
@@ -144,12 +145,15 @@ def build_profile_remux_config(
     preview: bool = False,
     metadata_job: dict[str, Any] | None = None,
     select_tracks: Callable[[list[SourceInput]], None] | None = None,
+    context: PreparationContext | None = None,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
     """Applique les heuristiques puis le profil aux candidats bornés par select_tracks."""
     if not cli_inputs:
         raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
+    context = context or PreparationContext()
     job = {"sources": [{"path": value} for value in cli_inputs]}
-    sources, _infos, tracks = inspect_sources(job, config, options, logger)
+    with context.measure("inspection"):
+        sources, _infos, tracks = inspect_sources(job, config, options, logger, cache=context.cache)
     if select_tracks is not None:
         # Le témoin borne les candidats du profil, sans perdre les pistes
         # d'origine nécessaires aux sélecteurs exact-job et à la synchro.
@@ -160,9 +164,10 @@ def build_profile_remux_config(
     from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
     # Enrichir les flags avant les règles : elles peuvent les utiliser pour
     # nommer/sélectionner les pistes, puis surcharger les décisions automatiques.
-    classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
-        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
-        all_audio_languages=True)
+    with context.measure("sous-titres"):
+        classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+            forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
+            all_audio_languages=True, cache=context.cache, cancel_event=context.cancel_event)
     if options.auto_forced_subs:
         order = forced_first([
             (source.file_index, track.mkv_tid, track.entry_id)

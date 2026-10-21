@@ -6,6 +6,9 @@ from pathlib import Path
 
 from core.workflows.sync_calibration import SyncCalibration
 
+#: Description sonore entre crochets ou parenthèses, marque des sous-titres SDH.
+SOUND_DESCRIPTION = re.compile(
+    r"[\[(](?:music|musique|rires|laughter|applause|applaudissements|cris|screams|gunshots|tirs)[^\])]*[\])]", re.I)
 _TIMING = re.compile(r"(?P<a>(?:\d+:)?\d{2}:\d{2}[,.]\d{3})\s+-->\s+(?P<b>(?:\d+:)?\d{2}:\d{2}[,.]\d{3})(?P<settings>[^\r\n]*)")
 
 
@@ -85,5 +88,5 @@ def subtitle_hints(text: str, *, count: int | None, language: str,
     forced = (count is not None and 0 < count < threshold and bool(language)
               and canonical(language) == canonical(audio_language))
     sdh = bool(re.search(r"\bSDH\b|\b(?:hearing impaired|malentendant)\b", title, re.I)
-               or re.search(r"[\[(](?:music|musique|rires|laughter|applause|applaudissements|cris|screams|gunshots|tirs)[^\])]*[\])]", text, re.I))
+               or SOUND_DESCRIPTION.search(text))
     return {"forced": forced, "hearing_impaired": sdh}

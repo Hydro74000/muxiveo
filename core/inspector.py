@@ -437,6 +437,11 @@ class FileInspector:
         self._cancel_event = cancel_event
         self._probe_timeout_s = float(probe_timeout_s)
 
+    @property
+    def tool_signature(self) -> tuple[str, str]:
+        """Outils dont dépend le résultat d'une inspection (clé de cache)."""
+        return str(self._ffprobe), str(self._mediainfo)
+
     def _probe(self, cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess:
         """Lance une sonde ; ``InspectionCancelled`` remonte telle quelle."""
         try:

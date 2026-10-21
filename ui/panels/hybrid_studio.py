@@ -58,6 +58,7 @@ from core.workflows.hybrid_matrix import (
     prepare_matrix_episode,
     witness_track_choices,
 )
+from core.workflows.preparation_cache import PreparationCache
 from ui.shutdown import Shutdown, defer_close
 from ui.operation_bar import OperationState
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
@@ -422,6 +423,12 @@ class DonorSelectCombo(QComboBox):
 # Panneau Studio Hybridation
 # =============================================================================
 
+#: Paires préparées simultanément : la préparation ne lit que les en-têtes et
+#: l'index des fichiers ; la synchro audio, qui décode les pistes, reste à deux.
+_PREPARE_WORKERS = 4
+_CALIBRATE_WORKERS = 2
+
+
 class _GuiLogger:
     def __init__(self, signal, episode: str):
         self.signal, self.episode = signal, episode
@@ -435,8 +442,9 @@ class _GuiLogger:
 
 
 class HybridStudio(QWidget):
-    prepared = Signal(object, object)
-    failed = Signal(str)
+    # Préparation d'une ligne du lot : génération, ligne, plan, calibration / message.
+    prepared = Signal(int, int, object, object)
+    failed = Signal(int, int, str)
     ready_changed = Signal(bool)
     op_state_changed = Signal(str, str)
     op_progress = Signal(str)
@@ -451,8 +459,16 @@ class HybridStudio(QWidget):
         super().__init__(parent)
         self.config = config
         self.setWindowTitle(translate_text("Studio Hybridation"))
-        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.executor = ThreadPoolExecutor(max_workers=_PREPARE_WORKERS)
         self._executor = self.executor
+        # Inspections, sous-titres et TMDB déjà lus : ni la vérification audio
+        # ni une nouvelle analyse ne relisent un fichier inchangé.
+        self._prep_cache = PreparationCache()
+        self._prepare_queue: list[int] = []
+        self._prepare_running: set[int] = set()
+        self._prepare_generation = 0
+        self._prepare_calibrate = False
+        self._prepare_settings: tuple[Any, ...] = ()
         self.jobs: dict[int, tuple[Any, Any]] = {}
         self._pending_sync_rows: set[int] = set()
         self._defer_audio_sync = False
@@ -478,7 +494,6 @@ class HybridStudio(QWidget):
         self._witness_sources: list[SourceInput] = []
         self._witness_signature = None
         self._tmdb_preview = None
-        self.index = 0
         self.stopped = False
         self.cancel_event = threading.Event()
         self.signals = None
@@ -1032,10 +1047,10 @@ class HybridStudio(QWidget):
             inspector = FileInspector(str(self.config.tool_ffprobe), str(self.config.tool_mediainfo))
             sources_tracks = []
             try:
-                master_info = inspector.inspect(master_file)
+                master_info = self._prep_cache.inspect(inspector, master_file)
                 sources_tracks.append(("Master", "master", master_info, "master"))
                 for d_src, d_path in witness_ep.donor_files:
-                    d_info = inspector.inspect(d_path)
+                    d_info = self._prep_cache.inspect(inspector, d_path)
                     sources_tracks.append((d_src.label or "Donneur", "donor", d_info, d_src.source_id))
                 return sources_tracks
             except Exception as exc:
@@ -1519,18 +1534,19 @@ class HybridStudio(QWidget):
         self._matrix_signature = self._source_signature()
         self._prepared_signature = self._settings_signature()
         self._run_after_prepare = auto_run
-        self.index, self.stopped = 0, False
+        self.stopped = False
         if not reuse_matrix:
             self.table.setRowCount(0)
+            candidates = self.matrix.get_all_donor_candidates()
             for row, ep in enumerate(self.matrix_episodes):
-                self._insert_table_row(row, ep)
+                self._insert_table_row(row, ep, candidates)
         else:
             # Plans effacés : aucun ancien statut ne doit survivre à une annulation.
             for row, ep in enumerate(self.matrix_episodes):
                 self._reset_row_status(row, ep)
 
         self.set_busy(True)
-        self.prepare_next()
+        self._start_preparation()
         return True
 
     def _capture_preparation(self) -> None:
@@ -1559,14 +1575,14 @@ class HybridStudio(QWidget):
         except Exception as exc:
             self.on_failed(str(exc))
             return True
-        self.index = 0
         self._defer_audio_sync = False
         self._prepare_failures.clear()
         self.set_busy(True)
-        self.prepare_next()
+        self._start_preparation()
         return True
 
-    def _insert_table_row(self, row: int, ep: MatrixEpisode):
+    def _insert_table_row(self, row: int, ep: MatrixEpisode,
+                          candidates: list[tuple[MatrixSource, Path]] | None = None):
         if row >= self.table.rowCount():
             self.table.insertRow(row)
 
@@ -1583,7 +1599,8 @@ class HybridStudio(QWidget):
             self.table.setCellWidget(row, 1, btn_choose)
 
         # Colonne 2 : Donneur(s) assigné(s) (Combo interactif)
-        all_candidates = self.matrix.get_all_donor_candidates()
+        # Listage des dossiers donneurs : une seule fois pour tout le tableau.
+        all_candidates = self.matrix.get_all_donor_candidates() if candidates is None else candidates
         combo = DonorSelectCombo(row, ep, all_candidates, self._on_donor_reassigned, self.matrix, self)
         self.table.setCellWidget(row, 2, combo)
 
@@ -1775,6 +1792,7 @@ class HybridStudio(QWidget):
                     _GuiLogger(self.log_message, ep.display_name),
                     detect_cuts=detect_cuts,
                     drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
+                    cache=self._prep_cache,
                 )
                 return config, calibration
             except Exception as exc:
@@ -1853,96 +1871,60 @@ class HybridStudio(QWidget):
         else:
             self.open_in_remux.emit(ep.all_paths)
 
-    def prepare_next(self):
-        if self.stopped or self.index >= len(self.matrix_episodes):
-            offer_sync = self._defer_audio_sync and bool(self._pending_sync_rows) and not self.stopped
-            self._defer_audio_sync = False
-            failed = [self.matrix_episodes[row].display_name for row in sorted(self._prepare_failures)
-                      if row < len(self.matrix_episodes)]
-            self._prepare_failures.clear()
-            names = ", ".join(failed[:5]) + (" …" if len(failed) > 5 else "")
-            self.set_busy(False)
-            if self.stopped:
-                self._export_after_prepare = None
-                self._finish_operation("cancelled", translate_text("Hybridation annulée"))
-            elif failed and (self._export_after_prepare is not None or self._run_after_prepare):
-                # Jamais de lot partiel : chaque paire complète doit avoir son plan.
-                self._export_after_prepare = None
-                self._run_after_prepare = False
-                message = translate_text("Préparation impossible pour {count} épisode(s) : {names}",
-                                         count=len(failed), names=names)
-                self.status.setText(message)
-                self._finish_operation("failed", message)
-            elif self._export_after_prepare is not None:
-                directory = self._export_after_prepare
-                self._export_after_prepare = None
-                self._save_jobs(directory)
-            elif self._run_after_prepare:
-                self._run_after_prepare = False
-                if self.jobs:
-                    self.run()
-                else:
-                    self._finish_operation("failed", translate_text("Aucun plan d’hybridation prêt."))
-            elif failed:
-                message = translate_text("Analyse terminée : {count} épisode(s) en échec ({names}).",
-                                         count=len(failed), names=names)
-                self.status.setText(message)
-                self.log_message.emit("WARN", message)
-                self._finish_operation("failed", message)
-            else:
-                self._finish_operation("finished", translate_text("Analyse terminée"))
-            # Analyse différée seulement (ni lancement ni export) : paires prêtes même si d'autres ont échoué.
-            if offer_sync:
-                answer = QMessageBox.question(
-                    self, translate_text("Vérifier la synchronisation audio"),
-                    translate_text("Analyse terminée. Voulez-vous lancer la vérification de concordance audio pour les {count} épisodes appariés ?",
-                                   count=len(self._pending_sync_rows)),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if answer == QMessageBox.StandardButton.Yes:
-                    self.verify_audio()
-            return
+    def _start_preparation(self) -> None:
+        """Met en file les paires sans plan (ou à synchro différée), puis remplit les postes."""
+        self._prepare_generation += 1
+        self._prepare_queue = []
+        self._prepare_running.clear()
+        for row, episode in enumerate(self.matrix_episodes):
+            if row in self.jobs and (self._defer_audio_sync or row not in self._pending_sync_rows):
+                continue
+            if not episode.is_complete:
+                item = self.table.item(row, 3)
+                if item is not None:
+                    item.setText(translate_text("Incomplet"))
+                    item.setForeground(QColor(_C.WARN))
+                continue
+            self._prepare_queue.append(row)
+        # Réglages figés pour tout le lot (widgets lus dans le thread GUI).
+        self._prepare_calibrate = not self._defer_audio_sync
+        self._prepare_settings = (replace(self.recipe), self.output.text().strip(),
+                                  self.detect_cuts.isChecked(), self.args)
+        self._fill_preparation()
 
-        episode = self.matrix_episodes[self.index]
-        if self.index in self.jobs and (self._defer_audio_sync or self.index not in self._pending_sync_rows):
-            self.index += 1
-            self.prepare_next()
-            return
-        if not episode.is_complete:
-            item = self.table.item(self.index, 3)
-            if item is not None:
-                item.setText(translate_text("Incomplet"))
-                item.setForeground(QColor(_C.WARN))
-            self.index += 1
-            self.prepare_next()
-            return
+    def _fill_preparation(self) -> None:
+        """Lance les paires en attente dans la limite des postes ; termine le lot quand tout est rendu."""
+        recipe = self._prepare_settings[0] if self._prepare_settings else self.recipe
+        calibrating = self._prepare_calibrate and recipe.sync_strategy == "auto"
+        limit = _CALIBRATE_WORKERS if calibrating else _PREPARE_WORKERS
+        while self._prepare_queue and not self.stopped and len(self._prepare_running) < limit:
+            self._submit_preparation(self._prepare_queue.pop(0), calibrating)
+        if not self._prepare_running:
+            self._finish_preparation()
 
-        item = self.table.item(self.index, 3)
+    def _submit_preparation(self, row: int, calibrating: bool) -> None:
+        episode = self.matrix_episodes[row]
+        recipe, output_dir, detect_cuts, args = self._prepare_settings
+        calibrate = self._prepare_calibrate
+        self._prepare_running.add(row)
+        item = self.table.item(row, 3)
         if item is not None:
-            item.setText(translate_text("Analyse en cours…") if self.recipe.sync_strategy == "auto" and not self._defer_audio_sync
-                         else translate_text("Préparation en cours…"))
+            item.setText(translate_text("Analyse en cours…") if calibrating else translate_text("Préparation en cours…"))
         self.status.setText(translate_text(
             "{step} {current}/{total} : {name}",
-            step=translate_text("Analyse synchro") if self.recipe.sync_strategy == "auto" and not self._defer_audio_sync
-            else translate_text("Préparation"),
-            current=self.index + 1,
+            step=translate_text("Analyse synchro") if calibrating else translate_text("Préparation"),
+            current=row + 1,
             total=len(self.matrix_episodes),
             name=episode.display_name,
         ))
-
         self.op_state_changed.emit("step", self.status.text())
-        recipe = replace(self.recipe)
-        output_dir = self.output.text().strip()
-        detect_cuts = self.detect_cuts.isChecked()
-        args = self.args
-        calibrate = not self._defer_audio_sync
+        generation = self._prepare_generation
 
         def task():
             try:
                 config, calibration = prepare_matrix_episode(
                     episode,
-                    recipe,
+                    replace(recipe),
                     output_dir,
                     self.config,
                     args,
@@ -1950,67 +1932,130 @@ class HybridStudio(QWidget):
                     detect_cuts=detect_cuts,
                     drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
                     calibrate=calibrate,
+                    cache=self._prep_cache,
                 )
-                self.prepared.emit(config, calibration)
+                self.prepared.emit(generation, row, config, calibration)
             except Exception as exc:
-                self.failed.emit(str(exc))
+                self.failed.emit(generation, row, str(exc))
 
         self.executor.submit(task)
 
-    def on_prepared(self, config, calibration):
+    def _finish_preparation(self) -> None:
+        """Fin du lot : lancement, export ou proposition de vérification audio."""
+        offer_sync = self._defer_audio_sync and bool(self._pending_sync_rows) and not self.stopped
+        self._defer_audio_sync = False
+        failed = [self.matrix_episodes[row].display_name for row in sorted(self._prepare_failures)
+                  if row < len(self.matrix_episodes)]
+        self._prepare_failures.clear()
+        names = ", ".join(failed[:5]) + (" …" if len(failed) > 5 else "")
+        self.set_busy(False)
         if self.stopped:
-            self._defer_audio_sync = False
+            self._export_after_prepare = None
             self._finish_operation("cancelled", translate_text("Hybridation annulée"))
-            return
-        self.jobs[self.index] = (config, calibration)
-        if self._defer_audio_sync:
-            self._pending_sync_rows.add(self.index)
+        elif failed and (self._export_after_prepare is not None or self._run_after_prepare):
+            # Jamais de lot partiel : chaque paire complète doit avoir son plan.
+            self._export_after_prepare = None
+            self._run_after_prepare = False
+            message = translate_text("Préparation impossible pour {count} épisode(s) : {names}",
+                                     count=len(failed), names=names)
+            self.status.setText(message)
+            self._finish_operation("failed", message)
+        elif self._export_after_prepare is not None:
+            directory = self._export_after_prepare
+            self._export_after_prepare = None
+            self._save_jobs(directory)
+        elif self._run_after_prepare:
+            self._run_after_prepare = False
+            if self.jobs:
+                self.run()
+            else:
+                self._finish_operation("failed", translate_text("Aucun plan d’hybridation prêt."))
+        elif failed:
+            message = translate_text("Analyse terminée : {count} épisode(s) en échec ({names}).",
+                                     count=len(failed), names=names)
+            self.status.setText(message)
+            self.log_message.emit("WARN", message)
+            self._finish_operation("failed", message)
         else:
-            self._pending_sync_rows.discard(self.index)
-        item = self.table.item(self.index, 3)
-        if item is not None:
-            item.setToolTip("")
-            if self._defer_audio_sync:
+            self._finish_operation("finished", translate_text("Analyse terminée"))
+        # Analyse différée seulement (ni lancement ni export) : paires prêtes même si d'autres ont échoué.
+        if offer_sync:
+            answer = QMessageBox.question(
+                self, translate_text("Vérifier la synchronisation audio"),
+                translate_text("Analyse terminée. Voulez-vous lancer la vérification de concordance audio pour les {count} épisodes appariés ?",
+                               count=len(self._pending_sync_rows)),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self.verify_audio()
+
+    def _row_returned(self, generation: int, row: int) -> bool:
+        """Libère le poste d'une ligne ; faux pour le résultat d'un lot précédent."""
+        if generation != self._prepare_generation or row not in self._prepare_running:
+            return False
+        self._prepare_running.discard(row)
+        if self.stopped:
+            # Annulation : la ligne retrouve l'état de son plan (seules les
+            # paires à synchro différée en ont un), sinon l'état sans plan.
+            item = self.table.item(row, 3)
+            if row in self.jobs and item is not None:
                 item.setText(translate_text("Synchro audio à vérifier"))
                 item.setForeground(QColor(_C.TEXT_SEC))
-            elif calibration and calibration.segments:
-                txt = f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
-                if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
-                    txt = f"⚠️ {txt}"
-                    item.setToolTip(translate_text(
-                        "Différence de cadence détectée : {desc} — Conversion nécessaire",
-                        desc=calibration.cadence_mismatch.description,
-                    ))
-                item.setText(txt)
-                color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
-                item.setForeground(color)
-            else:
-                item.setText(translate_text("Sans synchro") if self.recipe.sync_strategy == "none"
-                             else translate_text("Prêt (0 ms)"))
-                item.setForeground(QColor(_C.OK))
-        self._update_run_button()
-        self.index += 1
-        self.prepare_next()
+            elif row not in self.jobs:
+                self._reset_row_status(row, self.matrix_episodes[row])
+        return True
 
-    def _on_episode_failed(self, message: str):
-        """Échec d'un épisode : noté sur sa ligne, la préparation de la saison continue."""
-        if self.stopped:
-            self.on_failed(message)
+    def on_prepared(self, generation: int, row: int, config, calibration):
+        if not self._row_returned(generation, row):
             return
-        row = self.index
-        self.jobs.pop(row, None)
-        self._pending_sync_rows.discard(row)
-        self._prepare_failures[row] = message
-        item = self.table.item(row, 3)
-        if item is not None:
-            item.setText(translate_text("Échec"))
-            item.setForeground(QColor(_C.ERROR))
-            item.setToolTip(message)
-        name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
-        self.log_message.emit("ERROR", f"[{name}] {message}")
-        self._update_run_button()
-        self.index += 1
-        self.prepare_next()
+        if not self.stopped:
+            self.jobs[row] = (config, calibration)
+            if self._defer_audio_sync:
+                self._pending_sync_rows.add(row)
+            else:
+                self._pending_sync_rows.discard(row)
+            item = self.table.item(row, 3)
+            if item is not None:
+                item.setToolTip("")
+                if self._defer_audio_sync:
+                    item.setText(translate_text("Synchro audio à vérifier"))
+                    item.setForeground(QColor(_C.TEXT_SEC))
+                elif calibration and calibration.segments:
+                    txt = f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
+                    if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
+                        txt = f"⚠️ {txt}"
+                        item.setToolTip(translate_text(
+                            "Différence de cadence détectée : {desc} — Conversion nécessaire",
+                            desc=calibration.cadence_mismatch.description,
+                        ))
+                    item.setText(txt)
+                    color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
+                    item.setForeground(color)
+                else:
+                    item.setText(translate_text("Sans synchro") if self.recipe.sync_strategy == "none"
+                                 else translate_text("Prêt (0 ms)"))
+                    item.setForeground(QColor(_C.OK))
+            self._update_run_button()
+        self._fill_preparation()
+
+    def _on_episode_failed(self, generation: int, row: int, message: str):
+        """Échec d'un épisode : noté sur sa ligne, la préparation de la saison continue."""
+        if not self._row_returned(generation, row):
+            return
+        if not self.stopped:
+            self.jobs.pop(row, None)
+            self._pending_sync_rows.discard(row)
+            self._prepare_failures[row] = message
+            item = self.table.item(row, 3)
+            if item is not None:
+                item.setText(translate_text("Échec"))
+                item.setForeground(QColor(_C.ERROR))
+                item.setToolTip(message)
+            name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
+            self.log_message.emit("ERROR", f"[{name}] {message}")
+            self._update_run_button()
+        self._fill_preparation()
 
     def on_failed(self, message: str):
         self._defer_audio_sync = False
@@ -2018,11 +2063,6 @@ class HybridStudio(QWidget):
         self._run_after_prepare = False
         self._export_after_prepare = None
         self.status.setText(translate_text("Hybridation impossible : {err}", err=message))
-        if self.index < self.table.rowCount():
-            item = self.table.item(self.index, 3)
-            if item is not None:
-                item.setForeground(QColor(_C.ERROR))
-                item.setText(translate_text("Échec"))
         self.listen_button.setEnabled(True)
         self.aux_running = False
         self.log_message.emit("WARN" if self.stopped else "ERROR", message)

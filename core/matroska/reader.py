@@ -14,7 +14,7 @@ from io import BytesIO
 import mmap
 from pathlib import Path
 import struct
-from typing import BinaryIO, Iterator, overload
+from typing import BinaryIO, Iterable, Iterator, overload
 
 
 _CONTENT_ENCODINGS_ID = bytes.fromhex("6d80")
@@ -337,6 +337,12 @@ class MatroskaReader:
     SEEK_ID = bytes.fromhex("4dbb")
     SEEK_ID_FIELD_ID = bytes.fromhex("53ab")
     SEEK_POSITION_ID = bytes.fromhex("53ac")
+    CUES_ID = bytes.fromhex("1c53bb6b")
+    CUE_POINT_ID = bytes.fromhex("bb")
+    CUE_TRACK_POSITIONS_ID = bytes.fromhex("b7")
+    CUE_TRACK_ID = bytes.fromhex("f7")
+    CUE_CLUSTER_POSITION_ID = bytes.fromhex("f1")
+    CUE_RELATIVE_POSITION_ID = bytes.fromhex("f0")
     LEVEL1_IDS = frozenset({
         bytes.fromhex(value) for value in (
             "114d9b74", "1549a966", "1654ae6b", "1f43b675",
@@ -1431,6 +1437,82 @@ class MatroskaReader:
                 item for item in self.top_level() if item.element_id == self.CLUSTER_ID
             ]
         return list(self._clusters_cache)
+
+    def cue_block_positions(self, track_numbers: set[int]) -> dict[int, set[tuple[int, int]]] | None:
+        """Blocs indexés par les Cues : ``{piste: {(cluster, position relative)}}``.
+
+        ``cluster`` est relatif au payload du Segment, la position relative au
+        payload du Cluster. Seuls les Cues trouvés par l'index (SeekHead) ou
+        avant les Clusters sont lus : jamais de parcours des Clusters. ``None``
+        sans Cues, ou si une entrée de ces pistes n'a pas de
+        CueRelativePosition (bloc inadressable sans lire tout le Cluster).
+        """
+        cues = [item for item in self._metadata_elements() if item.element_id == self.CUES_ID]
+        if not cues:
+            return None
+        positions: dict[int, set[tuple[int, int]]] = {number: set() for number in track_numbers}
+        for element in cues:
+            for point_id, point in payload_children(self.payload(element)):
+                if point_id != self.CUE_POINT_ID:
+                    continue
+                for entry_id, entry in payload_children(point):
+                    if entry_id != self.CUE_TRACK_POSITIONS_ID:
+                        continue
+                    fields = dict(payload_children(entry))
+                    number = int.from_bytes(fields.get(self.CUE_TRACK_ID, b""), "big")
+                    if number not in positions:
+                        continue
+                    if self.CUE_CLUSTER_POSITION_ID not in fields or self.CUE_RELATIVE_POSITION_ID not in fields:
+                        return None
+                    positions[number].add((
+                        int.from_bytes(fields[self.CUE_CLUSTER_POSITION_ID], "big"),
+                        int.from_bytes(fields[self.CUE_RELATIVE_POSITION_ID], "big"),
+                    ))
+        return positions
+
+    def blocks_at(self, positions: Iterable[tuple[int, int]]) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
+        """Blocs désignés par des positions de Cues, dans l'ordre du fichier.
+
+        Seuls l'en-tête du Cluster et le bloc visé (SimpleBlock ou Block d'un
+        BlockGroup) sont lus. Rend ``(position, numéro de piste, frames)`` ;
+        une position qui ne désigne pas un bloc lève ``ValueError``.
+        """
+        segment = self.segment()
+        size = self.path.stat().st_size
+        segment_end = segment.end if segment.end is not None else size
+        clusters: dict[int, tuple[int, int]] = {}
+        with self.path.open("rb", buffering=self._SKIPPING_READ_BUFFER) as fh:
+            for position in sorted(set(positions)):
+                cluster_position, relative = position
+                bounds = clusters.get(cluster_position)
+                if bounds is None:
+                    fh.seek(segment.payload_offset + cluster_position)
+                    cluster = read_element(fh, limit=segment_end)
+                    if cluster is None or cluster.element_id != self.CLUSTER_ID:
+                        raise ValueError("Cue vers un élément qui n'est pas un Cluster")
+                    bounds = (cluster.payload_offset, cluster.end if cluster.end is not None else segment_end)
+                    clusters[cluster_position] = bounds
+                start, end = bounds
+                if start + relative >= end:
+                    raise ValueError("Cue hors du Cluster")
+                fh.seek(start + relative)
+                element = read_element(fh, limit=end)
+                if element is None or element.size is None:
+                    raise ValueError("Bloc indexé illisible")
+                block: EbmlElement | None = element
+                if element.element_id == self.BLOCK_GROUP_ID:
+                    block = next((child for child in iter_children(fh, element, file_size=size)
+                                  if child.element_id == self.BLOCK_ID), None)
+                elif element.element_id != self.SIMPLE_BLOCK_ID:
+                    raise ValueError("Cue vers un élément qui n'est pas un bloc")
+                if block is None or block.size is None:
+                    raise ValueError("BlockGroup indexé sans Block")
+                fh.seek(block.payload_offset)
+                data = _read_exact(fh, block.size)
+                track_number, length = _read_vint_value(data)
+                if len(data) < length + 3:
+                    raise ValueError("Block Matroska tronqué")
+                yield position, track_number, _split_laces(data[length + 3:], data[length + 2])
 
     def block_summaries(
         self,

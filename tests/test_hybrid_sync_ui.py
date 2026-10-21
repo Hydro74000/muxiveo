@@ -97,7 +97,7 @@ def test_season_analysis_prompts_only_after_all_pairs_are_prepared(panel, season
     prompts = []
 
     def question(*_args):
-        prompts.append(list(season))
+        prompts.append(sorted(season))
         assert not panel.busy
         assert panel._pending_sync_rows == {0, 2, 3}
         assert panel._sync_editor is None
@@ -108,11 +108,38 @@ def test_season_analysis_prompts_only_after_all_pairs_are_prepared(panel, season
     _wait(qt_app, lambda: not panel.busy)
     analysis = [(1, False), (3, False), (4, False)]
     assert prompts == [analysis]
-    assert season == analysis + ([(1, True), (3, True), (4, True)] if accept else [])
+    # Paires préparées en parallèle : ordre libre dans chaque phase.
+    assert sorted(season[:3]) == analysis
+    assert sorted(season[3:]) == ([(1, True), (3, True), (4, True)] if accept else [])
     assert set(panel.jobs) == {0, 2, 3}
     assert panel._pending_sync_rows == (set() if accept else {0, 2, 3})
     assert panel.verify_audio_button.isEnabled()
     assert panel.sync_episode.count() == (3 if accept else 0)
+
+
+def test_pairs_are_prepared_in_parallel_with_a_shared_cache(panel, season, monkeypatch, qt_app, tmp_path):
+    import ui.panels.hybrid_studio as studio
+    base = studio.prepare_matrix_episode
+    lock, running, peaks, caches = threading.Lock(), {}, {}, set()
+
+    def prepare(*args, calibrate=True, **kwargs):
+        caches.add(id(kwargs["cache"]))
+        with lock:
+            running[calibrate] = running.get(calibrate, 0) + 1
+            peaks[calibrate] = max(peaks.get(calibrate, 0), running[calibrate])
+        time.sleep(0.1)
+        with lock:
+            running[calibrate] -= 1
+        return base(*args, calibrate=calibrate, **kwargs)
+
+    monkeypatch.setattr(studio, "prepare_matrix_episode", prepare)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy and len(season) == 6)
+    # Trois paires complètes : préparées ensemble, puis synchro audio deux par deux.
+    assert peaks == {False: 3, True: 2}
+    assert caches == {id(panel._prep_cache)}
+    assert set(panel.jobs) == {0, 2, 3} and not panel._pending_sync_rows
 
 
 def test_audio_button_rechecks_every_pair_and_preserves_manual_pairing(panel, season, monkeypatch, qt_app, tmp_path):
@@ -129,7 +156,7 @@ def test_audio_button_rechecks_every_pair_and_preserves_manual_pairing(panel, se
         panel.verify_audio_button.click()
         assert panel.busy and not panel.verify_audio_button.isEnabled()
         _wait(qt_app, lambda: not panel.busy)
-        assert season == [(1, True), (3, True), (4, True)]
+        assert sorted(season) == [(1, True), (3, True), (4, True)]
         assert panel.matrix_episodes[2] is reassigned
         assert reassigned.donor_files[0][1].name == "manually_assigned.mkv"
         assert not panel._pending_sync_rows
@@ -157,7 +184,7 @@ def test_run_and_export_calibrate_all_pending_episodes(panel, season, monkeypatc
         panel.export_jobs()
     _wait(qt_app, lambda: not panel.busy)
     assert completed == [{0, 2, 3}]
-    assert season == [(1, True), (3, True), (4, True)]
+    assert sorted(season) == [(1, True), (3, True), (4, True)]
 
 
 def test_cancelled_season_analysis_does_not_offer_audio_verification(panel, season, monkeypatch, qt_app, tmp_path):
@@ -211,7 +238,7 @@ def test_failing_episode_does_not_stop_season_analysis(panel, season, monkeypatc
                         or QMessageBox.StandardButton.No)
     panel.scan_button.click()
     _wait(qt_app, lambda: not panel.busy)
-    assert season == [(1, False), (4, False)]
+    assert sorted(season) == [(1, False), (4, False)]
     assert set(panel.jobs) == {0, 3} and prompts == [{0, 3}]
     assert panel.table.item(2, 3).text() == translate_text("Échec")
     assert "illisible" in panel.table.item(2, 3).toolTip()
@@ -230,7 +257,7 @@ def test_failing_audio_check_still_covers_the_rest_of_the_season(panel, season, 
     monkeypatch.setattr(panel, "run_next", lambda: executions.append(True))
     (panel.verify_audio if action == "verify" else panel.run)()
     _wait(qt_app, lambda: not panel.busy)
-    assert season == [(1, True), (4, True)]
+    assert sorted(season) == [(1, True), (4, True)]
     assert set(panel.jobs) == {0, 3} and not panel._pending_sync_rows
     assert not executions and not panel._operation_active
     message = ("Analyse terminée : {count} épisode(s) en échec ({names})." if action == "verify"
@@ -256,7 +283,7 @@ def test_export_keeps_edited_plans_and_calibrates_only_pending_pairs(panel, seas
     monkeypatch.setattr(panel, "_save_jobs", save)
     panel.export_jobs()
     _wait(qt_app, lambda: not panel.busy)
-    assert season == [(3, True), (4, True)]
+    assert sorted(season) == [(3, True), (4, True)]
     assert saved[0][0] is edited and set(saved[0]) == {0, 2, 3}
 
 
@@ -361,10 +388,9 @@ def test_season_preparation_opens_the_first_ready_studio_without_a_table_selecti
     panel.table.setRowCount(3)
     panel.matrix_episodes = [MatrixEpisode(season=1, episode=i + 1) for i in range(3)]
     panel.jobs = {1: _job(tmp_path), 2: copy.deepcopy(_job(tmp_path))}
-    panel.index = 3
     panel.set_busy(True)
     assert panel.table.currentRow() == -1
-    panel.prepare_next()
+    panel._finish_preparation()
     assert panel.table.currentRow() == 1
     assert panel.sync_episode.currentData() == 1
     assert panel.sync_episode.count() == 2

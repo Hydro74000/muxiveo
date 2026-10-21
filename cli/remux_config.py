@@ -17,6 +17,7 @@ from core.media_info_fetcher import (
     extract_year_from_filename,
 )
 from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX
+from core.workflows.preparation_cache import PreparationContext
 from core.workflows.remux_models import (
     RemuxConfig, SourceInput, TrackEntry, clone_track_entry, normalize_mux_backend,
 )
@@ -266,6 +267,7 @@ def resolve_tmdb_metadata(
     logger: Logger,
     *,
     source_title: str = "",
+    response_cache: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, str] | None, tuple[str, str] | None, MediaDetails | None]:
     tmdb = normalized_tmdb_options(job, first_source, source_title=source_title)
     if not tmdb:
@@ -287,6 +289,7 @@ def resolve_tmdb_metadata(
         api_key=api_key,
         bearer_token=bearer,
         language=str(tmdb.get("language") or "fr-FR"),
+        response_cache=response_cache,
     )
     kind = str(tmdb.get("kind") or "all")
     season = str(tmdb.get("season") or "")
@@ -415,7 +418,9 @@ def build_remux_config(
     cli_inputs: list[str] | None = None,
     cli_output: str | None = None,
     select_tracks: Callable[[list[SourceInput]], None] | None = None,
+    context: PreparationContext | None = None,
 ) -> RemuxConfig:
+    context = context or PreparationContext()
     job = dict(job)
     for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
         value = getattr(options, key, None)
@@ -428,7 +433,9 @@ def build_remux_config(
     if getattr(options, "calibration", None):
         job["calibration"] = options.calibration
     validate_job_contract(job, require_version=False)
-    sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
+    with context.measure("inspection"):
+        sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs,
+                                                 cache=context.cache)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
     relaxed_selectors = bool(job.get("_relaxed_selectors"))
     apply_audio_variants(
@@ -503,8 +510,10 @@ def build_remux_config(
                 raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
 
     from core.workflows.subtitle_heuristics import classify_subtitles
-    classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
-        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
+    with context.measure("sous-titres"):
+        classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+            forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
+            cache=context.cache, cancel_event=context.cancel_event)
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
     tmdb_tags = None

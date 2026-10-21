@@ -175,7 +175,7 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
     options = CommonOptions(sync_mode="physical", calibration="ignored.json", auto_sync=True)
     seen = []
 
-    def build(job, config, build_options, logger, *, select_tracks):
+    def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
         seen.append(build_options)
         master_tracks = [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
                          TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]
@@ -228,7 +228,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
         donor_files=[(MatrixSource("donor", donor, SourceRole.DONOR), donor)],
     )
 
-    def build(job, config, options, logger, *, select_tracks):
+    def build(job, config, options, logger, *, select_tracks, **_kwargs):
         master_tracks = [
             TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
             TrackEntry(1, "audio", "EAC3", "", "en-US", "", file_id="src0"),
