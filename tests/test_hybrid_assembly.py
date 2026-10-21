@@ -364,6 +364,68 @@ def test_live_name_preview_matches_prepared_jobs_and_preserves_metadata_and_alia
         panel.close()
 
 
+def test_profile_output_template_names_the_plan_and_its_preview(assembly, tmp_path, qt_app):
+    from core.workflows.hybrid_matrix import default_matrix_output_name
+    from ui.panels.hybrid_studio import HybridStudio
+
+    episode, recipe, _ = assembly
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                   "output_template": "{season_episode}.profile-name"}))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == "S01E01.profile-name.mkv"
+    panel = HybridStudio(AppConfig())
+    try:
+        panel.reference.setText(str(episode.master_file))
+        panel.profile.setText(str(profile))
+        assert panel.controls["output-template"].placeholderText() == "{season_episode}.profile-name"
+        assert panel.output_preview.name.text() == "S01E01.profile-name.mkv"
+        panel.controls["output-template"].setText("{season_episode}.explicite")
+        assert panel.output_preview.name.text() == "S01E01.explicite.mkv"
+        panel.controls["output-template"].clear()
+        panel.profile.setText("")
+        assert panel.controls["output-template"].placeholderText() == ""
+        assert panel.output_preview.name.text() == default_matrix_output_name(episode.master_file, panel.recipe.output_tag)
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_witness_language_edit_reaches_the_profile(assembly, tmp_path, edited):
+    import io
+    from core.workflows.hybrid_matrix import HybridTrackChoice
+
+    episode, _, sources = assembly
+    # Dossier donneur de SRT seuls : piste sans langue, langue saisie sur le témoin.
+    sources[2].tracks = [TrackEntry(0, "subtitle", "SUBRIP", "", "", "", file_id="src2")]
+    recipe = HybridRecipe.from_witness_config(RemuxConfig(sources, tmp_path / "out.mkv", [], crossfade_ms=0))
+    recipe.sync_strategy = "none"
+    if edited:
+        choice = next(c for c in recipe.track_choices if c.source_id == "src_3")
+        assert isinstance(choice, HybridTrackChoice)
+        recipe.track_overrides = {choice: {"language": "fr-FR", "title": "French SDH"}}
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({
+        "version": 1, "kind": "decision-profile", "name": "FR",
+        "selection_policy": {"disable_unmatched_types": ["subtitle"]},
+        "rules": [{"id": "fr", "scope": "all", "match": {"all": [
+            {"field": "type", "op": "is", "value": "subtitle"}, {"field": "language", "op": "is", "value": "fr-FR"},
+        ]}, "actions": [{"type": "set_enabled", "value": True}]}],
+    }))
+    stream = io.StringIO()
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger(stream=stream))
+    srt = result.sources[2].tracks[0]
+    if edited:
+        assert srt.enabled and (srt.language, srt.title) == ("fr-FR", "French SDH")
+        assert "#10 subtitle" not in stream.getvalue()
+    else:
+        # Sans langue, aucune règle ne la retient : l'écart est signalé, pas silencieux.
+        assert not srt.enabled
+        assert "écartée(s) par le profil" in stream.getvalue() and "#10 subtitle und" in stream.getvalue()
+
+
 def test_witness_name_preview_follows_checkboxes_before_analysis(assembly, qt_app):
     from core.inspector import AudioTrack
     from ui.panels.hybrid_studio import HybridStudio

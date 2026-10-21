@@ -31,6 +31,19 @@ def test_inspection_is_reused_as_an_independent_copy_until_the_file_changes(tmp_
     assert cache.inspect(inspector, path).title == "lecture 2"
 
 
+def test_replaced_file_of_same_size_and_date_is_inspected_again(tmp_path):
+    path = tmp_path / "episode.mkv"
+    path.write_bytes(b"x")
+    cache, inspector = PreparationCache(), _Inspector()
+    cache.inspect(inspector, path)
+    stat = path.stat()
+    replacement = tmp_path / "nouveau.mkv"
+    replacement.write_bytes(b"y")
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    os.replace(replacement, path)
+    assert cache.inspect(inspector, path).title == "lecture 2"
+
+
 def test_inspection_depends_on_the_tools(tmp_path):
     path = tmp_path / "episode.mkv"
     path.write_bytes(b"x")

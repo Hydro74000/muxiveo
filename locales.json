@@ -9114,5 +9114,25 @@
   "Sous-titre": {
     "fra": "Sous-titre",
     "eng": "Subtitle"
+  },
+  "Afficher uniquement les sélectionnées": {
+    "fra": "Afficher uniquement les sélectionnées",
+    "eng": "Show selected only"
+  },
+  "Afficher toutes les pistes": {
+    "fra": "Afficher toutes les pistes",
+    "eng": "Show all tracks"
+  },
+  "✓ {count} donneurs : {names}": {
+    "fra": "✓ {count} donneurs : {names}",
+    "eng": "✓ {count} donors: {names}"
+  },
+  "Garder uniquement {name}": {
+    "fra": "Garder uniquement {name}",
+    "eng": "Keep only {name}"
+  },
+  "Double-clic pour modifier : appliqué à toute la saison.": {
+    "fra": "Double-clic pour modifier : appliqué à toute la saison.",
+    "eng": "Double-click to edit: applied to the whole season."
   }
 }

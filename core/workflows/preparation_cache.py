@@ -1,7 +1,8 @@
 """Cache et chronométrage de la préparation des plans (Hybrid Studio, saison).
 
-Les résultats sont liés à l'identité du fichier (chemin, taille, date de
-modification) : un fichier modifié n'est jamais servi depuis le cache. Le
+Les résultats sont liés à l'identité du fichier (chemin, inode, taille, dates
+de modification et de changement) : un fichier modifié ou remplacé n'est
+jamais servi depuis le cache. Le
 cache appartient à une session (un panneau) et peut être partagé entre les
 threads de préparation.
 """
@@ -19,14 +20,19 @@ from typing import TYPE_CHECKING, Any, Generator
 if TYPE_CHECKING:
     from core.inspector import FileInfo, FileInspector
 
-FileIdentity = tuple[str, int, int]
+FileIdentity = tuple[str, int, int, int, int, int]
 
 
 def file_identity(path: Path) -> FileIdentity | None:
-    """Chemin résolu, taille et date de modification ; None si le fichier est illisible."""
+    """Chemin résolu, inode, taille et dates ; None si le fichier est illisible.
+
+    L'inode et la date de changement (ctime) distinguent un fichier remplacé
+    ou réécrit à taille égale avec une date de modification préservée.
+    """
     try:
         stat = path.stat()
-        return str(path.resolve()), stat.st_size, stat.st_mtime_ns
+        return (str(path.resolve()), stat.st_dev, stat.st_ino, stat.st_size,
+                stat.st_mtime_ns, stat.st_ctime_ns)
     except OSError:
         return None
 

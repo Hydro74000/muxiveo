@@ -89,6 +89,7 @@ class OutputTemplatePreview(QWidget):
         self._field = field
         self._context: dict[str, Any] | None = None
         self._default_name = ""
+        self._fallback_template = ""
         self._note = ""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -109,13 +110,16 @@ class OutputTemplatePreview(QWidget):
             layout.addWidget(widget)
         field.textChanged.connect(self._refresh)
 
-    def set_context(self, context: dict[str, Any] | None, *, default_name: str = "", episode: str = "", note: str = "") -> None:
+    def set_context(self, context: dict[str, Any] | None, *, default_name: str = "", episode: str = "", note: str = "",
+                    fallback_template: str = "") -> None:
         self._context, self._default_name, self._note = context, default_name, note
+        self._fallback_template = fallback_template
         self.caption.setText(translate_text("Aperçu du nom final") + (f" · {episode}" if episode else ""))
         self._refresh()
 
     def _refresh(self, *_args) -> None:
-        template = self._field.text().strip()
+        # Champ vide : template de repli (profil), sinon nom par défaut.
+        template = self._field.text().strip() or self._fallback_template
         try:
             # Une saisie incomplète ne doit pas faire planter la page.
             rendered = render_output_filename(template, self._context or {}) if template else self._default_name

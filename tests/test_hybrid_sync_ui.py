@@ -331,6 +331,99 @@ def test_caption_option_requires_detection_and_keeps_user_choice(panel, qt_app, 
     assert not checkbox.isEnabled()
 
 
+def test_older_witness_inspection_never_replaces_a_newer_one(panel, tmp_path, monkeypatch):
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    infos = {tmp_path / name: FileInfo(tmp_path / name, "matroska", 1, 100, None,
+                                       subtitle_tracks=[SubtitleTrack(i, "subrip", "eng", "") for i in range(count)])
+             for name, count in (("a.mkv", 1), ("b.mkv", 2))}
+    pending = []
+    monkeypatch.setattr(panel, "executor", SimpleNamespace(
+        submit=lambda task: pending.append((Future(), task)) or pending[-1][0], shutdown=lambda **_: None))
+    monkeypatch.setattr(panel._prep_cache, "inspect", lambda _inspector, path: infos[path])
+    for path in infos:
+        episode = SimpleNamespace(master_file=path, donor_files=[], display_name=path.stem)
+        monkeypatch.setattr(panel, "_build_matrix",
+                            lambda episode=episode: SimpleNamespace(sources=[object()], scan=lambda: [episode]))
+        panel.inspect_witness()
+    signature = panel._source_signature()
+    panel.reference.setText(str(tmp_path / "autre"))
+    # B (dernière demande) termine avant A : A est ignorée.
+    for future, task in reversed(pending):
+        future.set_result(task())
+    assert panel._witness_sources[0].path == tmp_path / "b.mkv"
+    assert panel.witness_table.rowCount() == 2
+    # Sources modifiées pendant l'inspection : le résultat n'est pas « actuel ».
+    assert panel._witness_signature == signature != panel._source_signature()
+
+
+def test_multi_donor_row_shows_every_donor_and_its_sync(panel, tmp_path):
+    first_donor, second_donor = MatrixSource("src_1", tmp_path, label="Donneur 1"), MatrixSource("src_2", tmp_path, label="Donneur 2")
+    episode = MatrixEpisode(season=1, episode=1, master_file=tmp_path / "master.mkv",
+                            donor_files=[(first_donor, tmp_path / "donor1.mkv"), (second_donor, tmp_path / "donor2.mkv")])
+    panel.matrix_episodes = [episode]
+    panel.table.setRowCount(0)
+    panel._insert_table_row(0, episode, [])
+    config, calibration = _job(tmp_path)
+    panel._show_row_sync(0, config, calibration)
+    assert panel.table.item(0, 3).text() == "Donneur 1 : -67.0 ms · 3 seg  |  Donneur 2 : +25.0 ms · 2 seg"
+    assert "donor2.mkv" in panel.table.item(0, 3).toolTip()
+    # Mode conteneur : le décalage du second donneur est lu sur ses pistes.
+    config.sync_calibrations = {}
+    for track in config.sources[2].tracks:
+        track.time_shift_ms = 40
+    panel._show_row_sync(0, config, SyncCalibration.linear(-67))
+    assert panel.table.item(0, 3).text().endswith("Donneur 2 : +40.0 ms · 1 seg")
+    combo = panel.table.cellWidget(0, 2)
+    assert combo.currentText() == translate_text("✓ {count} donneurs : {names}", count=2, names="Donneur 1 + Donneur 2")
+    assert "donor2.mkv" in combo.toolTip()
+    # L'entrée « tous les donneurs » ne retire rien ; « Garder uniquement » réduit à un donneur.
+    combo._handle_selection(0)
+    assert len(episode.donor_files) == 2
+    combo.setCurrentIndex(2)
+    assert episode.donor_files == [(second_donor, tmp_path / "donor2.mkv")]
+
+
+def test_witness_language_and_title_edits_are_kept_by_the_recipe(panel, tmp_path):
+    from PySide6.QtCore import Qt
+    info = FileInfo(tmp_path / "subs.srt", "srt", 1, 100, None, subtitle_tracks=[SubtitleTrack(0, "subrip", "", "")])
+    panel._populate_witness_table([("Master", "master", FileInfo(tmp_path / "m.mkv", "matroska", 1, 100, None)),
+                                   ("Donneur 2", "donor", info)])
+    item = panel.witness_track_items[0]
+    item["checkbox"].setChecked(True)
+    assert not panel.witness_table.item(0, 3).flags() & Qt.ItemFlag.ItemIsEditable
+    assert item["lang_item"].flags() & Qt.ItemFlag.ItemIsEditable
+    item["lang_item"].setText("fr-FR")
+    item["title_item"].setText("French SDH")
+    panel.apply_witness_recipe()
+    assert panel.recipe.track_overrides == {item["choice"]: {"language": "fr-FR", "title": "French SDH"}}
+    assert panel.recipe.donor_sub_langs == ["fr-FR"]
+    # Une nouvelle inspection du témoin réaffiche les valeurs saisies.
+    panel._populate_witness_table([("Master", "master", FileInfo(tmp_path / "m.mkv", "matroska", 1, 100, None)),
+                                   ("Donneur 2", "donor", info)])
+    assert panel.witness_table.item(0, 4).text() == "fr-FR"
+    assert panel.witness_table.item(0, 5).text() == "French SDH"
+
+
+def test_witness_filter_shows_only_selected_tracks(panel, tmp_path):
+    info = FileInfo(tmp_path / "witness.mkv", "matroska", 1, 100, None,
+                    subtitle_tracks=[SubtitleTrack(i, "subrip", "eng", "") for i in range(3)])
+    panel._populate_witness_table([("Master", "master", info)])
+    boxes = [item["checkbox"] for item in panel.witness_track_items]
+    for box, checked in zip(boxes, (True, False, True)):
+        box.setChecked(checked)
+    panel.witness_selected_only.setChecked(True)
+    assert [panel.witness_table.isRowHidden(row) for row in range(3)] == [False, True, False]
+    boxes[0].setChecked(False)
+    assert panel.witness_table.isRowHidden(0)
+    panel._populate_witness_table([("Master", "master", info)])
+    assert panel.witness_selected_only.isChecked()
+    assert all(panel.witness_table.isRowHidden(row) != item["checkbox"].isChecked()
+               for row, item in enumerate(panel.witness_track_items))
+    panel.witness_selected_only.setChecked(False)
+    assert not any(panel.witness_table.isRowHidden(row) for row in range(3))
+
+
 def test_correspondence_and_witness_tables_fit_all_rows_and_shrink(panel, qt_app, tmp_path):
     panel.table.setRowCount(8)
     info = FileInfo(tmp_path / "witness.mkv", "matroska", 1, 100, None,
@@ -425,6 +518,9 @@ def test_episode_selector_and_correspondence_selection_open_the_same_studio(pane
     assert panel.table.currentRow() == 0
     assert panel.sync_episode.currentData() == 0
     assert panel._sync_editor.target_entry is panel.jobs[0][0].sources[1].tracks[1]
+    # La sélection d'une ligne ne déplie pas la carte Recalage et pré-écoute.
+    assert not panel._wave_section.toggle.isChecked()
+    panel._wave_section.set_expanded(True)
     panel.findChild(QScrollArea).ensureWidgetVisible(panel.sync_episode)
     qt_app.processEvents()
     QTest.mouseClick(panel.sync_episode, Qt.MouseButton.LeftButton)

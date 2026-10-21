@@ -77,6 +77,20 @@ def test_sdh_hints():
     assert not subtitle_hints("[Bonjour]", count=None, language="fra", audio_language="fra")["hearing_impaired"]
 
 
+def test_sdh_is_detected_without_selected_audio(monkeypatch, tmp_path):
+    from core.inspector import FileInfo
+    from core.workflows import subtitle_heuristics
+    from core.workflows.preparation_cache import SubtitleTextSummary
+    track = TrackEntry(0, "subtitle", "subrip", "", "fra", "VF", file_id="src0")
+    source = SourceInput(tmp_path / "x.mkv", 0, [track])
+    monkeypatch.setattr(subtitle_heuristics, "subtitle_text_summaries",
+                        lambda *_a, **_k: {0: SubtitleTextSummary(5, "[Music]")})
+    subtitle_heuristics.classify_subtitles([source], [FileInfo(source.path, "matroska", 1, 100, None)],
+                                           ffmpeg="ffmpeg", forced=True, sdh=True)
+    # Sans audio, pas de langue de référence pour les forcés ; la détection SDH reste active.
+    assert track.flag_hearing_impaired and not track.flag_forced
+
+
 def test_pairing_case_order_and_missing(tmp_path):
     ref, donor = tmp_path / "Référence", tmp_path / "Donneur"
     ref.mkdir(); donor.mkdir()

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.i18n import translate_text
+from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.remux_models import SourceInput, TrackEntry, tracks_from_file_info
 from ui.widgets.content_table import ContentTableWidget
@@ -321,6 +322,16 @@ class ProfileSelector(QWidget):
         self.browse_btn.setEnabled(enabled)
 
 
+def _donor_labels(donor_files: list[tuple[MatrixSource, Path]]) -> list[str]:
+    """Libellé de chaque donneur ; numéroté quand deux donneurs partagent le même."""
+    labels = [src.label or f"D{index}" for index, (src, _path) in enumerate(donor_files, 1)]
+    return [f"{label} #{index}" if labels.count(label) > 1 else label for index, label in enumerate(labels, 1)]
+
+
+def _has_cadence(cadence: Any) -> bool:
+    return bool(cadence) and getattr(cadence, "cadence_type", None) not in (None, "none")
+
+
 class DonorSelectCombo(QComboBox):
     """Menu déroulant interactif pour assigner ou réassigner un fichier donneur pour un élément."""
 
@@ -348,8 +359,15 @@ class DonorSelectCombo(QComboBox):
         self._populating = True
         self.clear()
 
-        # 1. Donneur(s) actuellement assigné(s)
-        if self.ep.donor_files:
+        # 1. Donneur(s) actuellement assigné(s) : plusieurs donneurs restent visibles ensemble.
+        labels = _donor_labels(self.ep.donor_files)
+        self.setToolTip("\n".join(f"{label} : {d_path.name}" for label, (_src, d_path) in zip(labels, self.ep.donor_files)))
+        if len(self.ep.donor_files) > 1:
+            self.addItem(translate_text("✓ {count} donneurs : {names}", count=len(labels), names=" + ".join(labels)), "__keep__")
+            for label, (d_src, d_path) in zip(labels, self.ep.donor_files):
+                self.addItem(translate_text("Garder uniquement {name}", name=f"{d_path.name}  [{label}]"), (d_src, d_path))
+            self.setCurrentIndex(0)
+        elif self.ep.donor_files:
             for d_src, d_path in self.ep.donor_files:
                 self.addItem(f"✓ {d_path.name}  [{d_src.label}]", (d_src, d_path))
             self.setCurrentIndex(0)
@@ -380,6 +398,8 @@ class DonorSelectCombo(QComboBox):
             return
 
         data = self.itemData(index)
+        if data == "__keep__":
+            return
         if data == "__browse__":
             path, _ = QFileDialog.getOpenFileName(
                 self,
@@ -453,7 +473,8 @@ class HybridStudio(QWidget):
     op_progress_pct = Signal(int)
     log_message = Signal(str, str)
     open_in_remux = Signal(object)
-    witness_inspected = Signal(object)
+    # Inspection témoin : génération, signature des sources, pistes ou erreur.
+    witness_inspected = Signal(int, object, object)
     single_calibration_done = Signal(int, object, object)
     single_calibration_failed = Signal(int, str)
 
@@ -495,7 +516,9 @@ class HybridStudio(QWidget):
         self.witness_track_items: list[dict] = []
         self._witness_sources: list[SourceInput] = []
         self._witness_signature = None
+        self._witness_generation = 0
         self._tmdb_preview = None
+        self._profile_naming: tuple[Any, tuple[str, dict[str, Any]]] = (None, ("", {}))
         self.stopped = False
         self.cancel_event = threading.Event()
         self.signals = None
@@ -510,6 +533,7 @@ class HybridStudio(QWidget):
         for control in (*self.controls.values(), self.profile):
             if isinstance(control, QLineEdit):
                 control.textChanged.connect(self._update_output_preview)
+        self.profile.combo.currentIndexChanged.connect(self._update_output_preview)
         self._update_run_button()
 
     def _build_ui(self) -> None:
@@ -697,6 +721,10 @@ class HybridStudio(QWidget):
         self.inspect_witness_btn = _secondary_button(translate_text("🔍 Inspecter l'épisode témoin"))
         self.inspect_witness_btn.clicked.connect(self.inspect_witness)
         wit_header.addWidget(self.inspect_witness_btn)
+        self.witness_selected_only = _secondary_button(translate_text("Afficher uniquement les sélectionnées"))
+        self.witness_selected_only.setCheckable(True)
+        self.witness_selected_only.toggled.connect(self._filter_witness_rows)
+        wit_header.addWidget(self.witness_selected_only)
 
 
         self.witness_info = QLabel(translate_text("Choisissez vos dossiers sources ci-dessus, puis inspectez l'épisode témoin pour choisir les pistes à mixer."))
@@ -713,6 +741,8 @@ class HybridStudio(QWidget):
         self.witness_table.horizontalHeader().setSectionResizeMode(len(headers) - 1, QHeaderView.ResizeMode.Stretch)
         # « disabled » (FlagEnabled absent) en couleur d'erreur, comme dans le Conteneur.
         self.witness_table.setItemDelegateForColumn(6, _TrackInfoDelegate(self.witness_table))
+        # Langue et titre modifiables : le modèle les applique à chaque épisode.
+        self.witness_table.itemChanged.connect(self._update_output_preview)
         cwit_layout.addWidget(self.witness_table)
 
         wit_actions = QHBoxLayout()
@@ -950,7 +980,7 @@ class HybridStudio(QWidget):
 
         self.prepared.connect(self.on_prepared)
         self.failed.connect(self._on_episode_failed)
-        self.witness_inspected.connect(self._populate_witness_table)
+        self.witness_inspected.connect(self._on_witness_inspected)
         self.single_calibration_done.connect(self._on_single_calibration_done)
         self.single_calibration_failed.connect(self._on_single_calibration_failed)
 
@@ -1039,6 +1069,9 @@ class HybridStudio(QWidget):
         )
 
         master_file = witness_ep.master_file
+        # Inspections parallèles : seule la dernière demandée s'applique.
+        self._witness_generation += 1
+        generation, signature = self._witness_generation, self._source_signature()
 
         def task():
             from core.inspector import FileInspector
@@ -1058,21 +1091,27 @@ class HybridStudio(QWidget):
             if future.cancelled():
                 return
             res = future.result()
-            self.witness_inspected.emit(res)
+            self.witness_inspected.emit(generation, signature, res)
 
         fut = self.executor.submit(task)
         fut.add_done_callback(on_done)
 
-    def _populate_witness_table(self, res):
+    def _on_witness_inspected(self, generation: int, signature, res) -> None:
+        if generation == self._witness_generation:
+            self._populate_witness_table(res, signature)
+
+    def _populate_witness_table(self, res, signature=None):
         self._witness_section.set_expanded(True)
         if isinstance(res, Exception):
             self.witness_info.setText(translate_text("Erreur d'inspection : {err}", err=str(res)))
             return
 
         self.witness_table.setRowCount(0)
+        previously_blocked = self.witness_table.blockSignals(True)
         self.witness_track_items = []
         self._witness_sources = []
-        self._witness_signature = self._source_signature()
+        # Signature des sources inspectées, pas celle du moment de l'affichage.
+        self._witness_signature = signature if signature is not None else self._source_signature()
         row = 0
         for source_index, source_info in enumerate(res):
             src_label, role, file_info = source_info[:3]
@@ -1119,8 +1158,13 @@ class HybridStudio(QWidget):
                                                 "subtitle": _C.TRACK_SUBTITLE}.get(st_type, _C.TEXT_SEC)))
                 self.witness_table.setItem(row, 2, item_type)
                 self.witness_table.setItem(row, 3, QTableWidgetItem(entry.codec))
-                self.witness_table.setItem(row, 4, QTableWidgetItem(entry.language or "-"))
-                self.witness_table.setItem(row, 5, QTableWidgetItem(entry.title))
+                overrides = self.recipe.track_overrides.get(choice, {})
+                item_lang = QTableWidgetItem(overrides.get("language", entry.language) or "-")
+                item_title = QTableWidgetItem(overrides.get("title", entry.title))
+                for editable in (item_lang, item_title):
+                    editable.setToolTip(translate_text("Double-clic pour modifier : appliqué à toute la saison."))
+                self.witness_table.setItem(row, 4, item_lang)
+                self.witness_table.setItem(row, 5, item_title)
 
                 # Même libellé que la colonne Info du Conteneur : définition, HDR,
                 # cadence, canaux, débit, Atmos / DTS:X, éléments et flags.
@@ -1130,6 +1174,9 @@ class HybridStudio(QWidget):
                 item_info.setData(_TRACK_INFO_DISABLED_LABEL_ROLE,
                                   "" if entry.flag_enabled else TrackEntry.DISABLED_LABEL)
                 self.witness_table.setItem(row, 6, item_info)
+                for column in (1, 2, 3, 6):
+                    cell = self.witness_table.item(row, column)
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
                 self.witness_track_items.append({
                     "checkbox": chk,
@@ -1138,14 +1185,28 @@ class HybridStudio(QWidget):
                     "lang": stream.language or "",
                     "codec": stream.codec or "",
                     "choice": choice,
+                    "lang_item": item_lang,
+                    "title_item": item_title,
                     "track": entry,
                 })
                 chk.toggled.connect(self._update_output_preview)
+                chk.toggled.connect(self._filter_witness_rows)
                 row += 1
 
+        self.witness_table.blockSignals(previously_blocked)
         self.apply_recipe_btn.setEnabled(not self.busy)
         self.witness_info.setText(translate_text("Pistes détectées sur l'épisode témoin. Cochez celles à conserver puis appliquez le modèle."))
+        self._filter_witness_rows()
         self._update_output_preview()
+
+    def _filter_witness_rows(self, *_args) -> None:
+        """Masque les pistes décochées tant que le filtre « sélectionnées » est actif."""
+        only_selected = self.witness_selected_only.isChecked()
+        self.witness_selected_only.setText(translate_text(
+            "Afficher toutes les pistes" if only_selected else "Afficher uniquement les sélectionnées"))
+        for row, item in enumerate(self.witness_track_items):
+            self.witness_table.setRowHidden(row, only_selected and not item["checkbox"].isChecked())
+        self.witness_table._schedule_height()
 
     def apply_witness_recipe(self):
         if self.busy or not self.witness_track_items:
@@ -1159,13 +1220,17 @@ class HybridStudio(QWidget):
         choices = []
         master_sub_langs = []
 
+        overrides: dict[Any, dict[str, str]] = {}
         for item in self.witness_track_items:
             if not item["checkbox"].isChecked():
                 continue
             role = item["role"]
             st_type = item["type"]
-            lang = item["lang"]
+            edits = self._witness_edits(item)
+            lang = edits.get("language", item["lang"])
             choices.append(item["choice"])
+            if edits:
+                overrides[item["choice"]] = edits
 
             if st_type == "video" and role == "master":
                 keep_video = True
@@ -1186,6 +1251,7 @@ class HybridStudio(QWidget):
         recipe.donor_audio_langs = donor_audio_langs
         recipe.donor_sub_langs = donor_sub_langs
         recipe.track_choices = tuple(choices)
+        recipe.track_overrides = overrides
         recipe.sync_mode = self.mode.currentData() or "physical"
         recipe.sync_subtitles = "mirror" if self.mirror.isChecked() else "none"
         recipe.cadence_auto_apply = self.cadence_auto_apply.isChecked()
@@ -1205,6 +1271,20 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))
         self._update_output_preview()
+
+    @staticmethod
+    def _witness_edits(item: dict) -> dict[str, str]:
+        """Langue / titre saisis dans le tableau témoin, quand ils diffèrent de la piste."""
+        track = item["track"]
+        text = item["lang_item"].text().strip()
+        language = "" if text in {"", "-"} else Rfc5646LanguageTags.normalize(text) or text
+        title = item["title_item"].text().strip()
+        edits = {}
+        if language != (track.language or ""):
+            edits["language"] = language
+        if title != (track.title or ""):
+            edits["title"] = title
+        return edits
 
     def browse(self, field: QLineEdit):
         if self.busy:
@@ -1287,14 +1367,19 @@ class HybridStudio(QWidget):
             episode is None or episode.master_file == self._witness_sources[0].path
         ):
             source = self._witness_sources[0].path
-            tracks = [replace(item["track"], enabled=item["checkbox"].isChecked()) for item in self.witness_track_items]
+            tracks = [replace(item["track"], enabled=item["checkbox"].isChecked(), **self._witness_edits(item))
+                      for item in self.witness_track_items]
             note = translate_text("Aperçu témoin : analysez pour appliquer le profil et les options aux pistes finales.")
         else:
             raw_source = self.reference.text().strip()
             source = episode.master_file if episode else Path(raw_source) if raw_source else None
             note = translate_text("Aperçu partiel : inspectez le témoin ou analysez cet élément pour connaître ses pistes.")
+        profile_template, profile_variables = self._profile_naming_for(profile)
+        template_edit = self.controls["output-template"]
+        if isinstance(template_edit, QLineEdit):
+            template_edit.setPlaceholderText(profile_template)
         if source is None:
-            self.output_preview.set_context(None, note=note)
+            self.output_preview.set_context(None, note=note, fallback_template=profile_template)
             return
         if episode is None:
             season, number = parse_episode_key(source) or (0, 0)
@@ -1311,7 +1396,8 @@ class HybridStudio(QWidget):
                 note = translate_text("Aperçu partiel : le titre TMDB de cet épisode sera chargé pendant l'analyse.")
         if tmdb_id and details is None:
             note = translate_text("Aperçu partiel : recherchez le titre TMDB ou analysez pour charger ses métadonnées.")
-        variables = snapshot.get("__profile_variables__", {}) if snapshot.get("__profile__", "") == profile else {}
+        variables = (snapshot.get("__profile_variables__", {}) if snapshot.get("__profile__", "") == profile
+                     else profile_variables)
         if job and snapshot.get("__profile__", "") != profile:
             note = translate_text("Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.")
         context = matrix_output_context(
@@ -1319,7 +1405,27 @@ class HybridStudio(QWidget):
             group=self.controls["tag"].text().strip(),
         )
         self.output_preview.set_context(context, default_name=default_matrix_output_name(source, self.recipe.output_tag),
-                                        episode=episode.display_name, note=note)
+                                        episode=episode.display_name, note=note, fallback_template=profile_template)
+
+    def _profile_naming_for(self, profile: str) -> tuple[str, dict[str, Any]]:
+        """Template et variables du profil choisi, relus seulement si le fichier change."""
+        if not profile:
+            return "", {}
+        from cli.errors import CliError
+        from cli.profile import load_decision_profile, resolve_decision_profile_path
+        from core.profiles.decision import profile_output_template
+        try:
+            path = resolve_decision_profile_path(profile, self.config)
+            key = (str(path), path.stat().st_mtime_ns)
+            if self._profile_naming[0] != key:
+                loaded = load_decision_profile(path, self.config)
+                variables = loaded.get("variables")
+                self._profile_naming = (key, (profile_output_template(loaded),
+                                              dict(variables) if isinstance(variables, dict) else {}))
+        except (CliError, OSError, ValueError):
+            # Exact job ou profil illisible : pas de nom de profil.
+            return "", {}
+        return self._profile_naming[1]
 
     def _update_caption_option(self):
         """La disponibilité suit les vidéos détectées, sans modifier le choix utilisateur."""
@@ -1455,6 +1561,7 @@ class HybridStudio(QWidget):
             tuple(self.recipe.keep_master_audio_langs), tuple(self.recipe.donor_audio_langs),
             tuple(self.recipe.donor_sub_langs), self.recipe.keep_master_video,
             self.recipe.track_choices,
+            tuple((choice, tuple(sorted(values.items()))) for choice, values in self.recipe.track_overrides.items()),
         )
 
     def _source_signature(self):
@@ -1824,23 +1931,7 @@ class HybridStudio(QWidget):
             return
         self.jobs[row] = (config, calibration)
         self._pending_sync_rows.discard(row)
-        item = self.table.item(row, 3)
-        if item is not None:
-            if calibration and calibration.segments:
-                txt = f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
-                if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
-                    txt = f"⚠️ {txt}"
-                    item.setToolTip(translate_text(
-                        "Différence de cadence détectée : {desc} — Conversion nécessaire",
-                        desc=calibration.cadence_mismatch.description,
-                    ))
-                item.setText(txt)
-                color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
-                item.setForeground(color)
-            else:
-                item.setText(translate_text("Sans synchro") if self.sync_strategy.currentData() == "none"
-                             else translate_text("Prêt (0 ms)"))
-                item.setForeground(QColor(_C.OK))
+        self._show_row_sync(row, config, calibration, no_sync=self.sync_strategy.currentData() == "none")
         self._update_run_button()
         self.status.setText(translate_text("Préparation terminée pour : {name}", name=self.matrix_episodes[row].display_name))
         self._finish_operation("finished", translate_text("Analyse terminée"))
@@ -1852,6 +1943,8 @@ class HybridStudio(QWidget):
         # Une ligne déjà sélectionnée n'émet pas itemSelectionChanged. Son
         # offset doit néanmoins suivre la nouvelle calibration, sans l'écraser.
         self.select_waveform()
+        # Recalibrage demandé pour cette ligne : son résultat est montré.
+        self._wave_section.set_expanded(True)
 
     def _on_single_calibration_failed(self, row: int, err: str):
         item = self.table.item(row, 3)
@@ -2021,28 +2114,59 @@ class HybridStudio(QWidget):
             else:
                 self._pending_sync_rows.discard(row)
             item = self.table.item(row, 3)
-            if item is not None:
+            if self._defer_audio_sync and item is not None:
                 item.setToolTip("")
-                if self._defer_audio_sync:
-                    item.setText(translate_text("Synchro audio à vérifier"))
-                    item.setForeground(QColor(_C.TEXT_SEC))
-                elif calibration and calibration.segments:
-                    txt = f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
-                    if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
-                        txt = f"⚠️ {txt}"
-                        item.setToolTip(translate_text(
-                            "Différence de cadence détectée : {desc} — Conversion nécessaire",
-                            desc=calibration.cadence_mismatch.description,
-                        ))
-                    item.setText(txt)
-                    color = QColor(_C.OK) if len(calibration.segments) == 1 else QColor(_C.WARN)
-                    item.setForeground(color)
-                else:
-                    item.setText(translate_text("Sans synchro") if self.recipe.sync_strategy == "none"
-                                 else translate_text("Prêt (0 ms)"))
-                    item.setForeground(QColor(_C.OK))
+                item.setText(translate_text("Synchro audio à vérifier"))
+                item.setForeground(QColor(_C.TEXT_SEC))
+            elif not self._defer_audio_sync:
+                self._show_row_sync(row, config, calibration, no_sync=self.recipe.sync_strategy == "none")
             self._update_run_button()
         self._fill_preparation()
+
+    def _show_row_sync(self, row: int, config, primary: SyncCalibration | None, *, no_sync: bool = False) -> None:
+        """Décalage de chaque donneur du plan ; un donneur unique garde l'affichage compact."""
+        item = self.table.item(row, 3)
+        if item is None:
+            return
+        item.setToolTip("")
+        if not (primary and primary.segments):
+            item.setText(translate_text("Sans synchro") if no_sync else translate_text("Prêt (0 ms)"))
+            item.setForeground(QColor(_C.OK))
+            return
+        donor_files = self.matrix_episodes[row].donor_files if row < len(self.matrix_episodes) else []
+        labels = (_donor_labels(donor_files) if len(donor_files) == len(config.sources) - 1
+                  else [f"D{index}" for index in range(1, len(config.sources))])
+        entries: list[tuple[str, str, SyncCalibration]] = []
+        cadences: list[Any] = [primary.cadence_mismatch] if _has_cadence(primary.cadence_mismatch) else []
+        for index, (label, source) in enumerate(zip(labels, config.sources[1:]), 1):
+            payload = config.sync_calibrations.get(str(index))
+            if payload:
+                calibration = SyncCalibration.from_dict(payload)
+            else:
+                # Mode conteneur : le décalage est porté par les pistes du donneur.
+                shifts = [t.time_shift_ms for t in source.tracks if t.enabled and (t.is_audio or t.is_subtitle)]
+                if not shifts:
+                    continue
+                calibration = SyncCalibration.linear(next((shift for shift in shifts if shift), 0))
+            if _has_cadence(calibration.cadence_mismatch) and calibration.cadence_mismatch not in cadences:
+                cadences.append(calibration.cadence_mismatch)
+            entries.append((label, source.path.name, calibration))
+        if len(entries) <= 1:
+            entries = [("", "", primary)]
+
+        def summary(calibration: SyncCalibration) -> str:
+            return f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg"
+
+        text = (summary(entries[0][2]) if len(entries) == 1
+                else "  |  ".join(f"{label} : {summary(calibration)}" for label, _name, calibration in entries))
+        tips = ([f"{label} · {name} : {summary(calibration)}" for label, name, calibration in entries]
+                if len(entries) > 1 else [])
+        tips += [translate_text("Différence de cadence détectée : {desc} — Conversion nécessaire", desc=cadence.description)
+                 for cadence in cadences]
+        item.setText(f"⚠️ {text}" if cadences else text)
+        item.setToolTip("\n".join(tips))
+        cuts = any(len(calibration.segments) > 1 for _label, _name, calibration in entries)
+        item.setForeground(QColor(_C.WARN if cuts else _C.OK))
 
     def _on_episode_failed(self, generation: int, row: int, message: str):
         """Échec d'un épisode : noté sur sa ligne, la préparation de la saison continue."""
@@ -2207,7 +2331,6 @@ class HybridStudio(QWidget):
         self._sync_editors.append(editor)
         self._sync_content.addWidget(editor)
         self.sync_hint.hide()
-        self._wave_section.set_expanded(True)
         editor.show()
         if self.sync_strategy.currentData() == "none":
             editor.spin_shift.setEnabled(False)
@@ -2236,9 +2359,7 @@ class HybridStudio(QWidget):
             episode.calibration = calibration
             episode.shift_ms = calibration.segments[0].shift_ms
             episode.segments_count = len(calibration.segments)
-        item = self.table.item(row, 3)
-        if item is not None:
-            item.setText(f"{calibration.segments[0].shift_ms:+.1f} ms · {len(calibration.segments)} seg")
+        self._show_row_sync(row, config, primary)
         self.log_message.emit("INFO", translate_text(
             "Synchronisation mise à jour : {source} ({count} segments).",
             source=config.sources[source_index].path.name, count=len(calibration.segments),
@@ -2255,6 +2376,7 @@ class HybridStudio(QWidget):
             self.status.setText(translate_text("Veuillez d'abord analyser ou calibrer cet élément (bouton ⚡)."))
             return
         if self._sync_editor is not None:
+            self._wave_section.set_expanded(True)
             self._sync_editor._toggle_listen()
         else:
             self.status.setText(translate_text("Aucune piste audio donneuse disponible pour la pré-écoute."))

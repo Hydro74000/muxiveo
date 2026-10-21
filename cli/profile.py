@@ -234,10 +234,12 @@ def build_profile_remux_config(
     crossfade_ms = options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80)
 
     sync_calibrations: dict[str, Any] = {}
-    if options.calibration:
-        from core.workflows.sync_calibration import SyncCalibration
-        calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig")))
-        if sync_mode == "physical":
+
+    def apply_calibration(calib) -> None:
+        """Comme sans profil : une conversion de cadence impose le mode physique."""
+        nonlocal sync_mode, sync_calibrations
+        if sync_mode == "physical" or _has_cadence(calib):
+            sync_mode = "physical"
             sync_calibrations = {"1": calib.to_dict()}
         elif len(calib.segments) == 1:
             if len(sources) > 1:
@@ -246,18 +248,18 @@ def build_profile_remux_config(
                         t.time_shift_ms = round(calib.segments[0].shift_ms)
         else:
             raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+
+    if options.calibration:
+        from core.workflows.sync_calibration import SyncCalibration
+        apply_calibration(SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig"))))
     elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
         from cli.hybrid import perform_dynamic_sync
         calib = perform_dynamic_sync(sources, result.tracks, config, options, logger)
         if calib is not None:
-            if sync_mode == "physical":
-                sync_calibrations = {"1": calib.to_dict()}
-            elif len(calib.segments) == 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-            else:
-                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+            apply_calibration(calib)
+    elif sync_mode == "container" and (metadata.get("sync_calibrations") or {}).get("1"):
+        from core.workflows.sync_calibration import SyncCalibration
+        apply_calibration(SyncCalibration.from_dict(metadata["sync_calibrations"]["1"]))
     else:
         sync_calibrations = dict(metadata.get("sync_calibrations", {}))
 
@@ -279,6 +281,10 @@ def build_profile_remux_config(
         sync_calibrations=sync_calibrations,
     )
     return remux_config, result.report
+
+
+def _has_cadence(calib) -> bool:
+    return bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
 
 
 def profile_validate(profile_path: str, *, json_output: bool = False, config: AppConfig | None = None) -> int:

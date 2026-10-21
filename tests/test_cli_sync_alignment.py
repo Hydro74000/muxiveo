@@ -347,6 +347,109 @@ def test_remux_with_cuts_calibration_in_container_mode_raises(tmp_path, monkeypa
 # 5. Réserve 3 : Profil avec flag auto-sync et réanalyse dynamique à chaque fois
 # =============================================================================
 
+def test_profile_calibration_with_cadence_switches_to_physical(tmp_path, monkeypatch):
+    from core.workflows.cadence import CadenceMismatch, CadenceType
+    calibration = SyncCalibration(
+        segments=(SyncSegment(0, -42.0),), confidence=0.95,
+        cadence_mismatch=CadenceMismatch(CadenceType.PAL_TO_FILM_23976, 25.0, 23.976, 24000 / 25025,
+                                         speed_ratio="24000/25025"),
+    )
+    calib_file = tmp_path / "calib.json"
+    calib_file.write_text(json.dumps(calibration.to_dict()))
+    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
+    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
+    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
+    monkeypatch.setattr(
+        "cli.profile.inspect_sources",
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
+    )
+    profile = {"version": 1, "kind": "decision-profile", "name": "Cadence", "rules": []}
+    conf, _ = build_profile_remux_config(
+        profile, cli_inputs=[str(src0.path), str(src1.path)], cli_output=str(tmp_path / "out.mkv"),
+        config=AppConfig(), options=CommonOptions(calibration=str(calib_file), sync_mode="container"),
+        logger=Logger(fmt="text"),
+    )
+    # Comme sans profil : la correction de vitesse impose le mode physique.
+    assert conf.sync_mode == "physical"
+    assert conf.sync_calibrations["1"]["cadence_mismatch"]["speed_ratio"] == "24000/25025"
+    assert tgt_audio.time_shift_ms == 0
+
+
+def test_prepare_pair_output_all_renders_every_track_value(tmp_path, monkeypatch):
+    ref_file, donor_file = tmp_path / "ref.S01E02.mkv", tmp_path / "donor.S01E02.mkv"
+    ref_file.touch()
+    donor_file.touch()
+    ref_audio = TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")
+    donor_audio = TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")
+    fake_config = RemuxConfig(
+        sources=[SourceInput(ref_file, 0, [ref_audio]), SourceInput(donor_file, 1, [donor_audio])],
+        output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
+    )
+    monkeypatch.setattr("cli.hybrid.build_remux_config", lambda job, conf, opts, log: fake_config)
+    scanner = MagicMock()
+    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    args = build_parser().parse_args([
+        "hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
+        "--output-template", "{audio-codec:best}", "--output-all",
+    ])
+    result, _ = prepare_pair(HybridPair(ref_file, donor_file, 1, 2), args, AppConfig(), Logger(fmt="text"))
+    assert result.output.name == "AAC+AC3.mkv"
+
+
+@pytest.mark.parametrize(("cli_template", "expected"), [("", "PROFILE-CUSTOM.mkv"), ("CLI-CUSTOM", "CLI-CUSTOM.mkv")])
+def test_prepare_pair_uses_profile_output_template(tmp_path, monkeypatch, cli_template, expected):
+    ref_file, donor_file = tmp_path / "Show.S01E01.master.mkv", tmp_path / "Show.S01E01.donor.mkv"
+    ref_file.touch()
+    donor_file.touch()
+    ref_audio = TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")
+    donor_audio = TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")
+    fake_config = RemuxConfig(
+        sources=[SourceInput(ref_file, 0, [ref_audio]), SourceInput(donor_file, 1, [donor_audio])],
+        output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
+    )
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                   "output_template": "PROFILE-CUSTOM"}))
+    monkeypatch.setattr("cli.profile.build_profile_remux_config", lambda *_a, **_k: (fake_config, {}))
+    scanner = MagicMock()
+    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    arguments = ["hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
+                 "--profile", str(profile)]
+    args = build_parser().parse_args(arguments + (["--output-template", cli_template] if cli_template else []))
+    result, _ = prepare_pair(HybridPair(ref_file, donor_file, 1, 1), args, AppConfig(), Logger(fmt="text"))
+    # --output-template prime sur le profil, qui prime sur le nom par défaut.
+    assert result.output.name == expected
+
+
+def test_prepare_pair_names_each_episode_without_tmdb(tmp_path, monkeypatch):
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                   "output_template": "{season_episode}.{season}x{episode}.profile-name"}))
+    scanner = MagicMock()
+    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    names = []
+    for number in (1, 2):
+        ref_file, donor_file = tmp_path / f"Show.S01E0{number}.master.mkv", tmp_path / f"Show.S01E0{number}.donor.mkv"
+        ref_file.touch()
+        donor_file.touch()
+        fake_config = RemuxConfig(
+            sources=[SourceInput(ref_file, 0, [TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")]),
+                     SourceInput(donor_file, 1, [TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")])],
+            output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
+        )
+        monkeypatch.setattr("cli.profile.build_profile_remux_config", lambda *_a, planned=fake_config, **_k: (planned, {}))
+        args = build_parser().parse_args(["hybrid", "--ref", str(ref_file), "--donor", str(donor_file),
+                                          "-o", str(tmp_path / "out"), "--profile", str(profile)])
+        result, _ = prepare_pair(HybridPair(ref_file, donor_file, 1, number), args, AppConfig(), Logger(fmt="text"))
+        names.append(result.output.name)
+    # Sans TMDB, les numéros de la paire suffisent : pas de collision dans le lot.
+    assert names == ["S01E01.01x01.profile-name.mkv", "S01E02.01x02.profile-name.mkv"]
+
+
 def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path, monkeypatch):
     """Vérifie que la synchronisation sur un profil est un flag et recalcule dynamiquement
     la calibration pour chaque paire de sources, au lieu d'utiliser une calibration figée."""

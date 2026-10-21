@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
-import re
 import subprocess
 from typing import Any
 
@@ -268,9 +267,11 @@ def prepare_pair(pair, args, config, logger):
             job["tmdb"]["id"] = args.auto_tmdb
         if args.tmdb_apikey:
             job["tmdb"]["api_key"] = args.tmdb_apikey
+    profile: dict = {}
     if args.profile:
         from cli.profile import build_profile_remux_config, load_decision_profile
-        result, _ = build_profile_remux_config(load_decision_profile(args.profile, config),
+        profile = load_decision_profile(args.profile, config)
+        result, _ = build_profile_remux_config(profile,
             cli_inputs=[str(pair.reference), str(pair.donor)], cli_output=job["output"],
             config=config, options=options, logger=logger, preview=True, metadata_job=job)
         result = replace(result, mux_backend="native", sync_mode=args.sync_mode,
@@ -392,21 +393,26 @@ def prepare_pair(pair, args, config, logger):
     if args.auto_forced_subs:
         from core.workflows.subtitle_heuristics import forced_first
         result.track_order = forced_first(result.track_order, result.sources)
-    if args.output_template:
-        from cli.output_template import build_output_context, render_output_template
+    # Template explicite, sinon celui du profil, sinon nom par défaut (comme Hybrid Studio).
+    from core.profiles.decision import profile_output_template
+    template = args.output_template or profile_output_template(profile)
+    if template:
+        from cli.output_template import render_output_filename
         from cli.remux_config import resolve_tmdb_metadata
+        from core.workflows.hybrid_matrix import MatrixEpisode, matrix_output_context
         details = resolve_tmdb_metadata(job, config, pair.reference, logger)[3] if job.get("tmdb") else None
-        ctx = build_output_context(pair.reference, details, tracks=all_tracks, track_order=list(result.track_order))
-        ref_title_m = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", pair.reference.name)
-        ref_ep_title = ref_title_m.group(1) if ref_title_m else ""
-        ref_ep_title = re.sub(r"\.(?:REPACK|PROPER)$", "", ref_ep_title, flags=re.IGNORECASE)
-        ctx.update({"release_group": args.tag, "group": args.tag,
-                    "season_num": pair.season, "episode_num": pair.episode,
-                    "ref_episode_title": ref_ep_title})
-        name = render_output_template(args.output_template, ctx)
-        if Path(name).is_absolute() or ".." in Path(name).parts:
-            raise CliError("Le template doit rester dans le dossier de sortie.", EXIT_ARGS)
-        result.output = outdir / name
+        variables = profile.get("variables")
+        # Même contexte que Hybrid Studio : {season_episode}, {season} et {episode} sans TMDB.
+        ctx = matrix_output_context(
+            MatrixEpisode(season=pair.season, episode=pair.episode, master_file=pair.reference), pair.reference,
+            details=details, tracks=all_tracks, track_order=list(result.track_order),
+            variables=dict(variables) if isinstance(variables, dict) else None, group=args.tag,
+            output_all=bool(getattr(args, "output_all", False)),
+        )
+        try:
+            result.output = outdir / render_output_filename(template, ctx)
+        except ValueError as exc:
+            raise CliError(str(exc), EXIT_ARGS) from exc
     return result, calibration
 
 

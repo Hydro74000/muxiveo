@@ -308,6 +308,8 @@ class HybridRecipe:
     exclude_languages: list[str] = field(default_factory=list)
     # None : sélection par profil/langues ; () : toutes les pistes décochées.
     track_choices: tuple[HybridTrackChoice, ...] | None = None
+    #: Langue / titre saisis sur le témoin, appliqués aux pistes retenues avant le profil.
+    track_overrides: dict[HybridTrackChoice, dict[str, str]] = field(default_factory=dict)
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     sync_strategy: str = "auto"  # "auto", "manual" ou "none"
@@ -665,6 +667,8 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
                 track.enabled = choice in remaining
                 if choice is not None and track.enabled:
                     remaining.remove(choice)
+                    for name, value in recipe.track_overrides.get(choice, {}).items():
+                        setattr(track, name, value)
         if remaining:
             descriptions = ", ".join(f"{c.source_id}/{c.track_type}/{c.language}/{c.title}" for c in sorted(remaining, key=repr))
             raise ValueError(f"Pistes du modèle témoin introuvables pour {episode.display_name} : {descriptions}")
@@ -770,8 +774,11 @@ def prepare_matrix_episode(
     )
     profile_name = getattr(options, "profile", None)
 
+    selected_ids: set[str] = set()
+
     def select_tracks(sources):
         _select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name))
+        selected_ids.update(t.entry_id for source in sources for t in source.tracks if t.enabled)
 
     profile = None
     if profile_name:
@@ -787,6 +794,14 @@ def prepare_matrix_episode(
         logger.emit("info", f"{episode.display_name} : profil {profile.get('name') or profile_name} appliqué "
                     f"sur les pistes candidates ({report.get('applied_rules', 0)} règles, "
                     f"{len(remux_config.track_order)} pistes finales).")
+        # Une piste cochée sur le témoin que le profil écarte (aucune règle ne la retient) doit se voir.
+        dropped = [(source, track) for source in remux_config.sources for track in source.tracks
+                   if recipe.track_choices is not None and track.entry_id in selected_ids and not track.enabled]
+        if dropped:
+            logger.emit("warning", f"{episode.display_name} : piste(s) cochée(s) dans le modèle mais écartée(s) "
+                        f"par le profil : " + ", ".join(
+                            f"{source.path.name} #{track.mkv_tid} {track.track_type} {track.language or 'und'}"
+                            + (f" « {track.title} »" if track.title else "") for source, track in dropped) + ".")
     else:
         remux_config = build_remux_config(job_payload, config, build_options, logger, select_tracks=select_tracks,
                                           context=context)
@@ -989,7 +1004,7 @@ def default_matrix_output_name(source: Path, output_tag: str = "Hybrid") -> str:
 def matrix_output_context(
     episode: MatrixEpisode, source: Path, *, details: MediaDetails | None = None,
     tracks: list[TrackEntry] | None = None, track_order: list[tuple[int, int, str]] | None = None,
-    variables: dict[str, Any] | None = None, group: str = "",
+    variables: dict[str, Any] | None = None, group: str = "", output_all: bool = False,
 ) -> dict[str, Any]:
     """Même contexte pour l'aperçu UI et le nom réel du fichier assemblé."""
     from cli.output_template import build_output_context
@@ -997,7 +1012,8 @@ def matrix_output_context(
     output_variables = dict(variables or {})
     if group:
         output_variables["release_group"] = group
-    context = build_output_context(source, details, tracks=tracks, track_order=track_order, variables=output_variables)
+    context = build_output_context(source, details, tracks=tracks, track_order=track_order, variables=output_variables,
+                                   output_all=output_all)
     title_match = re.search(r"S\d+E\d+\.(.*?)\.(?:1080p|720p|2160p|WEB|HDTV|AMZN)", source.name, re.I)
     reference_title = re.sub(r"\.(?:REPACK|PROPER)$", "", title_match.group(1), flags=re.I) if title_match else ""
     context.update(season_num=episode.season, episode_num=episode.episode, ref_episode_title=reference_title)
@@ -1019,6 +1035,7 @@ def _finalize_matrix_metadata(
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
     from cli.output_template import render_output_filename
     from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
+    from core.profiles.decision import profile_output_template
 
     details = None
     tmdb_id = getattr(options, "auto_tmdb", None)
@@ -1049,9 +1066,11 @@ def _finalize_matrix_metadata(
     context = matrix_output_context(
         episode, result.sources[0].path, details=details, tracks=tracks,
         track_order=final_order, variables=variables, group=group,
+        output_all=bool(getattr(options, "output_all", False)),
     )
     context.update(__tmdb_id__=str(tmdb_id or ""), __profile__=getattr(options, "profile", "") or "")
     episode.naming_context = context
-    template = getattr(options, "output_template", None)
+    # Template explicite, sinon celui du profil, sinon nom par défaut.
+    template = getattr(options, "output_template", None) or profile_output_template(profile or {})
     if template:
         result.output = outdir / render_output_filename(template, context)

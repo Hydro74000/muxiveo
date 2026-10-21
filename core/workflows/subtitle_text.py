@@ -146,13 +146,13 @@ def _indexed_texts(
             frames[number].extend(payloads)
     except (OSError, ValueError):
         return {}
-    return {
-        request.stream_index: SubtitleText(
-            "\n\n".join(_event_text(request.codec.casefold(), payload) for payload in frames[number]),
-            len(frames[number]),
-        )
-        for number, request in by_number.items()
-    }
+    texts: dict[int, SubtitleText] = {}
+    for number, request in by_number.items():
+        # Comme FFmpeg, qui n'écrit aucune entrée SRT pour un bloc sans texte.
+        events = [text for text in (_event_text(request.codec.casefold(), payload) for payload in frames[number])
+                  if text.strip()]
+        texts[request.stream_index] = SubtitleText("\n\n".join(events), len(events))
+    return texts
 
 
 def _event_text(codec: str, payload: bytes) -> str:

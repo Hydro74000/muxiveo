@@ -16,10 +16,14 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
     audios = [t for s in sources for t in s.tracks if t.enabled and t.track_type == "audio"]
     default = next((t for t in audios if t.flag_default), audios[0] if audios else None)
     if default is None:
-        return
+        # Sans audio, les forcés n'ont pas de langue de référence ; les SDH restent détectables.
+        forced = False
+        if not sdh:
+            return
+    audio_language = default.language if default is not None else ""
     # Avant un profil, la langue audio par défaut n'est pas encore décidée.
     # Détecter les forcés de chaque langue candidate ; le profil tranchera.
-    languages = list(dict.fromkeys(t.language for t in audios)) if all_audio_languages else [default.language]
+    languages = list(dict.fromkeys(t.language for t in audios)) if all_audio_languages else [audio_language]
     for source, info in zip(sources, infos):
         subtitles = {t.index: t for t in info.subtitle_tracks}
         candidates = [track for track in source.tracks if track.enabled and track.track_type == "subtitle"]
@@ -36,7 +40,7 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
                 # La première description sonore suffit à la détection SDH.
                 text, count = summary.sound_description, summary.count
             hints = subtitle_hints(text, count=count, language=track.language,
-                audio_language=default.language, threshold=threshold, title=track.title)
+                audio_language=audio_language, threshold=threshold, title=track.title)
             forced_hint = forced and (hints["forced"] or (all_audio_languages and any(
                 subtitle_hints(text, count=count, language=track.language,
                     audio_language=language, threshold=threshold)["forced"] for language in languages

@@ -11,7 +11,7 @@ from core.matroska.ids import EBML_HEADER_ID, SEGMENT_ID
 from core.matroska.reader import MatroskaReader
 from core.workflows import subtitle_text
 from core.workflows.preparation_cache import PreparationCache
-from core.workflows.subtitle_text import SubtitleTextRequest, extract_subtitle_texts, subtitle_text_summaries
+from core.workflows.subtitle_text import SubtitleText, SubtitleTextRequest, extract_subtitle_texts, subtitle_text_summaries
 
 _ID = {name: bytes.fromhex(value) for name, value in {
     "tracks": "1654ae6b", "entry": "ae", "number": "d7", "uid": "73c5", "type": "83", "codec": "86",
@@ -26,7 +26,7 @@ _CLUSTERS = (
 )
 
 
-def _mkv(tmp_path: Path, *, indexed=frozenset({2, 3}), skip=(), grouped=False, relative=True) -> Path:
+def _mkv(tmp_path: Path, *, indexed=frozenset({2, 3}), skip=(), grouped=False, relative=True, blocks=_CLUSTERS) -> Path:
     """MKV minimal : Tracks, Cues (avant les Clusters, lus sans SeekHead), Clusters."""
     tracks = element(_ID["tracks"], b"".join(element(_ID["entry"], b"".join((
         uint_element(_ID["number"], number), uint_element(_ID["uid"], number),
@@ -35,7 +35,7 @@ def _mkv(tmp_path: Path, *, indexed=frozenset({2, 3}), skip=(), grouped=False, r
     cues = clusters = b""
     for _ in range(8):  # Point fixe : la taille des Cues décale les Clusters.
         offset, clusters, points = len(tracks) + len(cues), b"", []
-        for cluster_blocks in _CLUSTERS:
+        for cluster_blocks in blocks:
             body = uint_element(_ID["timestamp"], 0)
             for number, payload in cluster_blocks:
                 block = bytes([0x80 | number]) + b"\x00\x00\x80" + payload
@@ -84,6 +84,16 @@ def test_indexed_tracks_are_read_from_cues_without_ffmpeg(tmp_path, ffmpeg_calls
     assert texts[1].count == 3 and texts[1].text == "Bonjour\n\n[Music] la la\n\nFin"
     # ASS : champs d'en-tête retirés, balises i/b/u comme dans le SRT produit par FFmpeg.
     assert texts[2].count == 1 and texts[2].text == "<i>Salut</i>\nici"
+
+
+def test_empty_blocks_are_not_counted_like_ffmpeg(tmp_path, ffmpeg_calls):
+    blocks = (
+        ((2, b"Bonjour"), (2, b""), (3, b"0,0,Default,,0,0,0,,")),
+        ((2, b" \r\n"), (3, b"0,0,Default,,0,0,0,,Salut"), (2, b"Fin")),
+    )
+    texts = extract_subtitle_texts(_mkv(tmp_path, blocks=blocks), _requests(utf8=4, ass=2), ffmpeg="ffmpeg")
+    assert not ffmpeg_calls
+    assert texts == {1: SubtitleText("Bonjour\n\nFin", 2), 2: SubtitleText("Salut", 1)}
 
 
 def test_unverifiable_or_incomplete_index_goes_to_a_single_ffmpeg_pass(tmp_path, ffmpeg_calls):
