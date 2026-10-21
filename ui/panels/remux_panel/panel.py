@@ -788,7 +788,6 @@ class RemuxPanel(QWidget):
     def _apply_rebuild_preview(self) -> None:
         if self._closing:
             return
-        output_name.refresh_profile_output(self)
         generation = self._preview_generation
         config = self._current_config()
         if config is None:
@@ -2531,6 +2530,7 @@ class RemuxPanel(QWidget):
             self._emit_video_tracks()
 
     def current_output_path(self) -> Path | None:
+        output_name.refresh_profile_output(self)
         text = self._output_edit.text().strip()
         return Path(text) if text else None
 

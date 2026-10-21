@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.workflows.remux_models import RemuxConfig, SourceInput
+from ui.panels.remux_panel.functions import output_name
 
 if TYPE_CHECKING:
     from ui.panels.remux_panel.panel import RemuxPanel
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
 def current_config(panel: "RemuxPanel", *, output_fallback: str = "") -> RemuxConfig | None:
     if not panel._has_ready_files():
         return None
+    # Nom du profil à jour des pistes cochées, sans attendre l'aperçu différé.
+    output_name.refresh_profile_output(panel)
 
     output_str = panel._output_edit.text().strip() or output_fallback
     if not output_str:

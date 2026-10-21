@@ -2440,17 +2440,33 @@ class TestRemuxPanelDecisionProfiles:
             item = panel._track_table.item(row, _TrackTable.COL_CHECK)
             assert item is not None
             item.setCheckState(state)
-            output_name.refresh_profile_output(panel)
 
         tmdb.on_tmdb_details_selected(panel, MediaDetails(title="Le Film"))
         set_english(Qt.CheckState.Unchecked)
-        assert panel._output_edit.text() == str(out_dir / "Le.Film.HEVC.mkv")
+        # Lancement immédiat : le nom suit la piste décochée sans attendre l'aperçu différé.
+        config = panel.collect_config()
+        assert config is not None and config.output == out_dir / "Le.Film.HEVC.mkv"
 
         panel._output_edit.setText(str(out_dir / "manuel.mkv"))
         output_name.refresh_profile_output(panel)
         set_english(Qt.CheckState.Checked)
-        assert panel._output_edit.text() == str(out_dir / "manuel.mkv")
+        assert panel.current_output_path() == out_dir / "manuel.mkv"
         assert panel._profile_output is None
+        panel.close()
+
+    def test_reapplied_profile_keeps_output_base_folder(self, qt_app, tmp_path):
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        profile = {"version": 1, "kind": "decision-profile", "name": "Dossier", "rules": [],
+                   "output_template": "{video-codec:best}/{source_name}"}
+
+        panel._apply_decision_profile(profile)
+        panel._apply_decision_profile(profile)
+
+        assert panel.current_output_path() == out_dir / "HEVC" / "fid.mkv"
         panel.close()
 
     def test_profile_editor_keeps_output_template_and_previews_it(self, qt_app, tmp_path):

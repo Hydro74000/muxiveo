@@ -71,7 +71,12 @@ def track_profile_output(panel: RemuxPanel, profile: Mapping[str, Any]) -> None:
         panel._profile_output = None
         return
     current = panel._output_edit.text().strip()
-    folder = Path(current).parent if current else panel._config.output_dir
+    previous = panel._profile_output
+    # Chemin encore piloté par un profil : sa base est gardée (un modèle à sous-dossiers ne s'imbrique pas).
+    if previous is not None and current == previous.path:
+        folder = previous.folder
+    else:
+        folder = Path(current).parent if current else panel._config.output_dir
     panel._profile_output = ProfileOutputName(template, profile_variables(profile), folder)
     refresh_profile_output(panel, force=True)
     if panel._profile_output is not None and panel._tmdb_details is None and uses_tmdb_fields(template):
