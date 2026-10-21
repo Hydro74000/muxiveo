@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.remux_models import SourceInput, tracks_from_file_info
+from core.workflows.remux_models import SourceInput, TrackEntry, tracks_from_file_info
 from ui.widgets.content_table import ContentTableWidget
 from ui.widgets.output_template_edit import OutputTemplateLineEdit, OutputTemplatePreview
 from ui.widgets.surface import CollapsibleCard
@@ -59,6 +59,8 @@ from core.workflows.hybrid_matrix import (
     witness_track_choices,
 )
 from core.workflows.preparation_cache import PreparationCache
+from ui.panels.remux_panel.models import _TRACK_INFO_DISABLED_LABEL_ROLE
+from ui.panels.remux_panel.widgets.track_table import _TrackInfoDelegate
 from ui.shutdown import Shutdown, defer_close
 from ui.operation_bar import OperationState
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
@@ -701,20 +703,16 @@ class HybridStudio(QWidget):
         self.witness_info.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         cwit_layout.addWidget(self.witness_info)
 
-        self.witness_table = ContentTableWidget(0, 5)
+        # Colonnes du tableau des pistes du panneau Conteneur (Codec, Langue, Titre, Info).
+        headers = ["Conserver", "Source", "Type", "Codec", "Langue", "Titre", "Info"]
+        self.witness_table = ContentTableWidget(0, len(headers))
         self.witness_table.setStyleSheet(_table_style())
-        self.witness_table.setHorizontalHeaderLabels([
-            translate_text("Conserver"),
-            translate_text("Source"),
-            translate_text("Type"),
-            translate_text("Langue"),
-            translate_text("Format / Détails"),
-        ])
-        self.witness_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.witness_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.witness_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.witness_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.witness_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.witness_table.setHorizontalHeaderLabels([translate_text(label) for label in headers])
+        for column in range(len(headers)):
+            self.witness_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.witness_table.horizontalHeader().setSectionResizeMode(len(headers) - 1, QHeaderView.ResizeMode.Stretch)
+        # « disabled » (FlagEnabled absent) en couleur d'erreur, comme dans le Conteneur.
+        self.witness_table.setItemDelegateForColumn(6, _TrackInfoDelegate(self.witness_table))
         cwit_layout.addWidget(self.witness_table)
 
         wit_actions = QHBoxLayout()
@@ -1116,15 +1114,22 @@ class HybridStudio(QWidget):
                 item_src.setForeground(QColor(_C.ACCENT if is_master else _C.OK))
                 self.witness_table.setItem(row, 1, item_src)
 
-                item_type = QTableWidgetItem(st_type.capitalize())
+                item_type = QTableWidgetItem(translate_text(entry.type_long))
+                item_type.setForeground(QColor({"video": _C.TRACK_VIDEO, "audio": _C.TRACK_AUDIO,
+                                                "subtitle": _C.TRACK_SUBTITLE}.get(st_type, _C.TEXT_SEC)))
                 self.witness_table.setItem(row, 2, item_type)
+                self.witness_table.setItem(row, 3, QTableWidgetItem(entry.codec))
+                self.witness_table.setItem(row, 4, QTableWidgetItem(entry.language or "-"))
+                self.witness_table.setItem(row, 5, QTableWidgetItem(entry.title))
 
-                item_lang = QTableWidgetItem(stream.language or "-")
-                self.witness_table.setItem(row, 3, item_lang)
-
-                details = f"{stream.codec or ''} {stream.title or ''}".strip()
-                item_details = QTableWidgetItem(details)
-                self.witness_table.setItem(row, 4, item_details)
+                # Même libellé que la colonne Info du Conteneur : définition, HDR,
+                # cadence, canaux, débit, Atmos / DTS:X, éléments et flags.
+                item_info = QTableWidgetItem(entry.full_info_label)
+                item_info.setForeground(QColor(_C.TEXT_SEC))
+                item_info.setToolTip(entry.full_info_label)
+                item_info.setData(_TRACK_INFO_DISABLED_LABEL_ROLE,
+                                  "" if entry.flag_enabled else TrackEntry.DISABLED_LABEL)
+                self.witness_table.setItem(row, 6, item_info)
 
                 self.witness_track_items.append({
                     "checkbox": chk,

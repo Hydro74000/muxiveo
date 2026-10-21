@@ -9102,5 +9102,17 @@
   "Tout cocher / tout décocher": {
     "fra": "Tout cocher / tout décocher",
     "eng": "Check all / uncheck all"
+  },
+  "Titre": {
+    "fra": "Titre",
+    "eng": "Title"
+  },
+  "Info": {
+    "fra": "Info",
+    "eng": "Info"
+  },
+  "Sous-titre": {
+    "fra": "Sous-titre",
+    "eng": "Subtitle"
   }
 }
