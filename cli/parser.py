@@ -30,6 +30,12 @@ def _add_sync_options(parser):
         help="Avec --detect-cuts : pas d'analyse continue si les mesures ponctuelles concordent "
              "(confiance ≥ 0,90). Défaut : [sync] quick_audio_check.",
     )
+    parser.add_argument(
+        "--reject-coherent-sync",
+        action="store_true",
+        help="Avec --detect-cuts : refuser une synchro cohérente en partie non vérifiée (zones sans "
+             "correspondance entourées du même décalage). Défaut : acceptée avec un avertissement.",
+    )
     parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
     parser.add_argument(
         "--cadence-auto",

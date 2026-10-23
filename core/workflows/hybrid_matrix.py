@@ -731,7 +731,7 @@ def prepare_matrix_episode(
     from cli.remux_config import build_remux_config
     from cli.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
-    from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
+    from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
 
     started = time.perf_counter()
@@ -834,6 +834,8 @@ def prepare_matrix_episode(
     cancel_event = getattr(options, "cancel_event", None)
     audio_scanner = AudioSyncScanner(
         ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event, quick_check=quick_check_enabled(options, config),
+        # Hybrid : synchro cohérente en partie non vérifiée acceptée (avertissement au journal).
+        accept_coherent=coherent_sync_accepted(options),
     ) if calibrate and recipe.sync_strategy == "auto" else None
     sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if calibrate and recipe.sync_strategy == "auto" else None
 
@@ -897,6 +899,7 @@ def prepare_matrix_episode(
                     cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
                     cadence_audio_method=cadence_audio_method,
                     log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
+                    warn=lambda msg: logger.emit("warning", f"[{episode.display_name}] {msg}"),
                 )
         elif target_sub and sub_scanner is not None:
             logger.emit("info", f"[{episode.display_name}] Synchronisation sous-titre donneur #{donor_idx}…")

@@ -9134,5 +9134,61 @@
   "Double-clic pour modifier : appliqué à toute la saison.": {
     "fra": "Double-clic pour modifier : appliqué à toute la saison.",
     "eng": "Double-click to edit: applied to the whole season."
+  },
+  "Synchro à valider": {
+    "fra": "Synchro à valider",
+    "eng": "Sync to confirm"
+  },
+  "Synchro proposée : départ {offset} ms, {cuts} coupure(s) (piste #{target}, référence #{reference}).": {
+    "fra": "Synchro proposée : départ {offset} ms, {cuts} coupure(s) (piste #{target}, référence #{reference}).",
+    "eng": "Proposed sync: start {offset} ms, {cuts} cut(s) (track #{target}, reference #{reference})."
+  },
+  "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).": {
+    "fra": "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).",
+    "eng": "Proposed sync: {offset} ms (track #{target}, reference #{reference})."
+  },
+  "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.": {
+    "fra": "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.",
+    "eng": "{count} zone(s) without an acoustic match, with the same offset on both sides: {zones}. Apply directly, or review these zones in Sync Studio before confirming."
+  },
+  "Relire dans le Synchro Studio": {
+    "fra": "Relire dans le Synchro Studio",
+    "eng": "Review in Sync Studio"
+  },
+  "Appliquer": {
+    "fra": "Appliquer",
+    "eng": "Apply"
+  },
+  "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre ({zones}).": {
+    "fra": "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre ({zones}).",
+    "eng": "Consistent sync to confirm: {count} zone(s) without an acoustic match, same offset on both sides ({zones})."
+  },
+  "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).": {
+    "fra": "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).",
+    "eng": "Sync confirmed by the user, zones not reviewed ({zones})."
+  },
+  "Synchro proposée non appliquée : piste #{idx} inchangée.": {
+    "fra": "Synchro proposée non appliquée : piste #{idx} inchangée.",
+    "eng": "Proposed sync not applied: track #{idx} unchanged."
+  },
+  "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).": {
+    "fra": "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
+    "eng": "Sync confirmed by the user after review in Sync Studio ({zones})."
+  },
+  "Zones à relire :": {
+    "fra": "Zones à relire :",
+    "eng": "Zones to review:"
+  },
+  "Afficher le début de cette zone sans correspondance acoustique": {
+    "fra": "Afficher le début de cette zone sans correspondance acoustique",
+    "eng": "Show the start of this zone without an acoustic match"
+  },
+  "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre. Relire ces zones puis « Valider la synchro des pistes ».": {
+    "fra": "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre. Relire ces zones puis « Valider la synchro des pistes ».",
+    "eng": "Proposed sync: {count} zone(s) without an acoustic match, same offset on both sides. Review these zones, then “Confirm track sync”."
+  },
+  "Valider la synchro des pistes": {
+    "fra": "Valider la synchro des pistes",
+    "eng": "Confirm track sync"
   }
 }

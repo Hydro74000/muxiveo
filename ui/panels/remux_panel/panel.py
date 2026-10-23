@@ -43,7 +43,7 @@ from core.profiles.decision import DecisionProfileManager, apply_decision_profil
 from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.audio_sync import AudioSyncTrack
+from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.sync_rewrite import (
     SYNC_REWRITE_MODE_OFFSET,
@@ -166,6 +166,7 @@ class RemuxPanel(QWidget):
     _paths_scanned = Signal(object)
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
+    _audio_sync_review = Signal(str, str, object, object)
     _subtitle_sync_done = Signal(str, str, int, float, object)
     _subtitle_sync_error = Signal(str, str)
     _preview_compiled = Signal(int, str)
@@ -258,6 +259,9 @@ class RemuxPanel(QWidget):
         self._paths_scanned.connect(self._apply_scanned_paths, Qt.ConnectionType.QueuedConnection)
         self._audio_sync_done.connect(
             self._on_audio_sync_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._audio_sync_review.connect(
+            self._on_audio_sync_review, Qt.ConnectionType.QueuedConnection
         )
         self._audio_sync_error.connect(
             self._on_audio_sync_error, Qt.ConnectionType.QueuedConnection
@@ -2050,6 +2054,10 @@ class RemuxPanel(QWidget):
                     calibration.confidence,
                     calibration,
                 )
+            except AudioSyncReviewRequired as exc:
+                self._audio_sync_review.emit(
+                    target_entry_id, reference_entry_id, exc.calibration, exc.output_ranges_ms(),
+                )
             except Exception as exc:
                 self._audio_sync_error.emit(target_entry_id, str(exc))
 
@@ -2179,6 +2187,75 @@ class RemuxPanel(QWidget):
         finally:
             self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
+
+    def _confirm_coherent_sync(self, target: TrackEntry, reference: TrackEntry,
+                               calibration: SyncCalibration, ranges_ms) -> str:
+        """Synchro cohérente proposée : « review » (Synchro Studio), « apply » ou « cancel »."""
+        from core.workflows.audio_sync import format_sync_ranges
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(translate_text("Synchro à valider"))
+        offset = f"{round(calibration.segments[0].shift_ms):+d}"
+        if calibration.cuts_count:
+            box.setText(translate_text(
+                "Synchro proposée : départ {offset} ms, {cuts} coupure(s) (piste #{target}, référence #{reference}).",
+                offset=offset, cuts=calibration.cuts_count, target=target.mkv_tid, reference=reference.mkv_tid,
+            ))
+        else:
+            box.setText(translate_text(
+                "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).",
+                offset=offset, target=target.mkv_tid, reference=reference.mkv_tid,
+            ))
+        box.setInformativeText(translate_text(
+            "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. "
+            "Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.",
+            count=len(ranges_ms), zones=format_sync_ranges(ranges_ms),
+        ))
+        review = box.addButton(translate_text("Relire dans le Synchro Studio"), QMessageBox.ButtonRole.AcceptRole)
+        apply = box.addButton(translate_text("Appliquer"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(review)
+        box.exec()
+        clicked = box.clickedButton()
+        return "review" if clicked is review else "apply" if clicked is apply else "cancel"
+
+    def _on_audio_sync_review(self, entry_id: str, reference_entry_id: str,
+                              calibration: SyncCalibration, ranges_ms) -> None:
+        """Synchro cohérente en partie non vérifiée : proposée à l'utilisateur."""
+        from core.workflows.audio_sync import format_sync_ranges
+
+        ranges_ms = tuple(ranges_ms)
+        zones = format_sync_ranges(ranges_ms)
+        tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
+        target = tracks_by_id.get(entry_id)
+        reference = tracks_by_id.get(reference_entry_id)
+        self.log_message.emit("WARN", translate_text(
+            "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, "
+            "même décalage de part et d'autre ({zones}).",
+            count=len(ranges_ms), zones=zones,
+        ))
+        if target is None or reference is None:
+            self.audio_sync_finished.emit(False, {"entry_id": entry_id})
+            return
+        choice = self._confirm_coherent_sync(target, reference, calibration, ranges_ms)
+        if choice == "apply":
+            self.log_message.emit("INFO", translate_text(
+                "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).", zones=zones,
+            ))
+            self._on_audio_sync_done(
+                entry_id, reference_entry_id, round(calibration.segments[0].shift_ms),
+                calibration.confidence, calibration,
+            )
+            return
+        # Opération terminée avant le Synchro Studio, qui exige qu'aucune ne soit en cours.
+        self.audio_sync_finished.emit(choice == "review", {"entry_id": entry_id})
+        if choice == "review":
+            self._on_sync_studio_requested(target, proposal=(calibration, ranges_ms), reference_override=reference)
+        else:
+            self.log_message.emit("INFO", translate_text(
+                "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
+            ))
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
         try:
@@ -2373,7 +2450,14 @@ class RemuxPanel(QWidget):
             return
         self.hdr_studio_requested.emit(source.path, entry.mkv_tid)
 
-    def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
+    def _on_sync_studio_requested(
+        self,
+        entry: TrackEntry,
+        *,
+        proposal: tuple[SyncCalibration, tuple[tuple[float, float], ...]] | None = None,
+        reference_override: TrackEntry | None = None,
+    ) -> None:
+        """`proposal` : synchro cohérente proposée et zones à relire (axe de sortie)."""
         if not self._can_start_auxiliary_operation():
             return
         target_source = self._find_source(entry.file_id)
@@ -2392,7 +2476,9 @@ class RemuxPanel(QWidget):
             dialog_prompt = translate_text("Choisir la source audio qui servira de référence.")
 
         last_reference = self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None
-        if last_reference is not None and any(choice is last_reference for _label, choice in choices):
+        if reference_override is not None:
+            reference_entry = reference_override
+        elif last_reference is not None and any(choice is last_reference for _label, choice in choices):
             reference_entry = last_reference
         elif len(choices) > 1:
             if entry.track_type == "subtitle":
@@ -2421,9 +2507,11 @@ class RemuxPanel(QWidget):
             reference_source = self._find_source(reference_entry.file_id)
 
         target_source_idx = self._source_index_for_file_id(entry.file_id)
-        existing_calib = entry.sync_calibration
+        existing_calib: SyncCalibration | dict | None = entry.sync_calibration
         if existing_calib is None and target_source_idx is not None:
             existing_calib = self._workflow_options.get("sync_calibrations", {}).get(str(target_source_idx))
+        if proposal is not None:
+            existing_calib = proposal[0]
 
         from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
         dialog = SyncStudioDialog(
@@ -2437,7 +2525,10 @@ class RemuxPanel(QWidget):
             ffmpeg_bin=self._config.tool_ffmpeg,
             ffprobe_bin=self._config.tool_ffprobe,
             parent=self,
-            quick_validated=self._audio_sync_results.get(entry.entry_id, ("", False))[1],
+            quick_validated=(
+                False if proposal is not None else self._audio_sync_results.get(entry.entry_id, ("", False))[1]
+            ),
+            review_ranges_ms=proposal[1] if proposal is not None else (),
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_calibration, new_offset = dialog.result_calibration()
@@ -2492,6 +2583,13 @@ class RemuxPanel(QWidget):
                     cuts=cuts_info,
                 ),
             )
+            reviewed = tuple(getattr(dialog, "review_ranges_ms", ()) or ())
+            if reviewed:
+                from core.workflows.audio_sync import format_sync_ranges
+                self.log_message.emit("INFO", translate_text(
+                    "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
+                    zones=format_sync_ranges(reviewed),
+                ))
 
 
     def update_video_track_encoding(self, plans) -> None:

@@ -9,7 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
-from core.workflows.audio_sync import AudioSyncError, AudioSyncTrack
+from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
 if TYPE_CHECKING:
@@ -60,15 +60,29 @@ def quick_check_enabled(options: Any, config: Any) -> bool:
     return bool(value)
 
 
+def coherent_sync_accepted(options: Any) -> bool:
+    """Synchro cohérente en partie non vérifiée acceptée, sauf `--reject-coherent-sync` (CLI)."""
+    return not bool(getattr(options, "reject_coherent_sync", False))
+
+
+def _unverified_total_ms(ranges) -> float:
+    return float(sum(stop - start for start, stop in ranges))
+
+
 class AudioSyncScanner:
     def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None,
-                 quick_check=False):
+                 quick_check=False, accept_coherent=False):
         """`quick_check` : décalage constant et mesures sûres → pas d'analyse continue
-        (les écarts qui se compensent entre deux mesures ne sont alors pas vus)."""
+        (les écarts qui se compensent entre deux mesures ne sont alors pas vus).
+
+        `accept_coherent` : une synchro cohérente en partie non vérifiée est
+        acceptée avec un avertissement ; sinon `AudioSyncReviewRequired`.
+        """
         self.ffmpeg, self.ffprobe = str(ffmpeg), str(ffprobe)
         self.window_s, self.max_offset_s = window_s, max_offset_s
         self.cancel_event = cancel_event
         self.quick_check = bool(quick_check)
+        self.accept_coherent = bool(accept_coherent)
 
     def _run(self, command: list[str], *, timeout: float, abort: threading.Event | None = None,
              **kwargs: Any) -> subprocess.CompletedProcess[Any]:
@@ -331,7 +345,8 @@ class AudioSyncScanner:
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
              drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="auto",
-             log=lambda message: None, _downmixes: tuple[str, str] | None = None):
+             log=lambda message: None, warn=None, _downmixes: tuple[str, str] | None = None):
+        """`warn` : avertissements (synchro cohérente acceptée) ; défaut : `log`."""
         import numpy as np
         from core.workflows.cadence import CadenceAudioMethod, build_cadence_audio_filter
         if drift_threshold_ms <= 0:
@@ -409,7 +424,7 @@ class AudioSyncScanner:
                                          drift_threshold_ms=drift_threshold_ms,
                                          cadence_mismatch=cadence_mismatch,
                                          cadence_audio_method=cadence_audio_method,
-                                         log=log, _downmixes=downmixes)
+                                         log=log, warn=warn, _downmixes=downmixes)
                 raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
             p, offset, confidence = measured
             samples.append({"start_ms": float(p * 1000), "shift_ms": offset, "confidence": confidence})
@@ -479,28 +494,57 @@ class AudioSyncScanner:
         check_cancelled = self._check_cancelled
 
         def scan(envelopes: tuple[ndarray, ndarray]):
-            return scan_envelopes(
+            review: list[tuple[float, float]] = []
+            result = scan_envelopes(
                 *envelopes,
                 max_offset_ms=max_offset_ms, tolerance_ms=drift_threshold_ms,
-                speed_factor=speed_factor, check_cancelled=check_cancelled, log=log,
+                speed_factor=speed_factor, check_cancelled=check_cancelled, log=log, review=review,
             )
+            return result, tuple(review)
         if _downmixes is not None:
-            segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str, _downmixes))
+            (segments, confidence, anchors), unverified = scan(
+                self._envelopes(reference, donor, filter_str, _downmixes))
         else:
+            # Pistes de langues différentes : les dialogues masquent la musique
+            # et les effets communs. Seconde passe sans le canal central.
             try:
-                segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str))
+                (segments, confidence, anchors), unverified = scan(self._envelopes(reference, donor, filter_str))
             except AudioSyncError as exc:
                 self._check_cancelled()
-                # Pistes de langues différentes : les dialogues masquent la musique
-                # et les effets communs. Seconde passe sans le canal central.
                 downmixes = self._dialogue_free_downmixes(reference, donor)
                 if downmixes is None:
                     raise
                 log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                segments, confidence, anchors = scan(self._envelopes(reference, donor, filter_str, downmixes))
-        return SyncCalibration(
+                (segments, confidence, anchors), unverified = scan(
+                    self._envelopes(reference, donor, filter_str, downmixes))
+            else:
+                downmixes = self._dialogue_free_downmixes(reference, donor) if unverified else None
+                if downmixes is not None:
+                    # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
+                    log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
+                    try:
+                        alternative = scan(self._envelopes(reference, donor, filter_str, downmixes))
+                    except AudioSyncError as exc:
+                        self._check_cancelled()
+                        log(f"{exc} Analyse mono conservée.")
+                    else:
+                        if _unverified_total_ms(alternative[1]) < _unverified_total_ms(unverified):
+                            (segments, confidence, anchors), unverified = alternative
+        calibration = SyncCalibration(
             segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=active_cadence_method,
             cadence_pitch_analysis=pitch_analysis,
         )
+        if unverified:
+            proposal = AudioSyncReviewRequired(
+                f"Synchro cohérente à valider : {len(unverified)} zone(s) sans correspondance, "
+                "même décalage de part et d'autre.",
+                calibration, unverified,
+            )
+            zones = format_sync_ranges(proposal.output_ranges_ms())
+            if not self.accept_coherent:
+                raise AudioSyncReviewRequired(f"{proposal} Zones à relire : {zones}.", calibration, unverified)
+            (warn or log)(f"Synchro cohérente acceptée malgré {len(unverified)} zone(s) sans correspondance "
+                          f"(même décalage de part et d'autre) : {zones}.")
+        return calibration

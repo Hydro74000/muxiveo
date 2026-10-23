@@ -9,7 +9,7 @@ from typing import Any
 
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.audio_sync import AudioSyncTrack
-from core.workflows.audio_sync_scan import AudioSyncScanner, quick_check_enabled
+from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
 from core.workflows.hybrid import HybridPair, episode_key, pair_directories
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.workflow_store import atomic_write_text, save_workflow
@@ -29,7 +29,8 @@ def _write_json(path, value):
 def scanner(args, config):
     return AudioSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe,
                             cancel_event=getattr(args, "cancel_event", None),
-                            quick_check=quick_check_enabled(args, config))
+                            quick_check=quick_check_enabled(args, config),
+                            accept_coherent=coherent_sync_accepted(args))
 
 
 def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio") -> str:
@@ -124,6 +125,7 @@ def cmd_sync_scan(args, config, logger):
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda message: logger.emit("info", message),
+            warn=lambda message: logger.emit("warning", message),
         )
 
     if args.output_json:
@@ -210,6 +212,7 @@ def perform_dynamic_sync(
             getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
             getattr(options, "ffprobe", None) or config.tool_ffprobe,
             quick_check=quick_check_enabled(options, config),
+            accept_coherent=coherent_sync_accepted(options),
         )
         return audio_scanner.scan(
             AudioSyncTrack(ref_source.path, ref_audio.mkv_tid),
@@ -219,6 +222,7 @@ def perform_dynamic_sync(
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda msg: logger.emit("info", msg),
+            warn=lambda msg: logger.emit("warning", msg),
         )
 
     # 2. Sous-titre donneur si pas d'audio
@@ -350,6 +354,7 @@ def prepare_pair(pair, args, config, logger):
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda text: logger.emit("info", text),
+            warn=lambda text: logger.emit("warning", text),
         )
     elif target_sub is not None:
         from core.workflows.subtitle_sync_scan import SubtitleSyncScanner

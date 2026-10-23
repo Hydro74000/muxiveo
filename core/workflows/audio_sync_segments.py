@@ -198,15 +198,21 @@ def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int)
 
 
 def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
-                   speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None):
-    """Sonde toute la piste, y compris le début et les plateaux intermédiaires."""
+                   speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None,
+                   review: list[tuple[float, float]] | None = None):
+    """Sonde toute la piste, y compris le début et les plateaux intermédiaires.
+
+    ``review`` : reçoit les zones cohérentes non vérifiées (début actif sans
+    correspondance, long trou au même décalage de part et d'autre) au lieu de
+    les refuser, en instants du donneur d'origine. Sans liste : refus.
+    """
     size = min(8000, min(len(reference), len(donor)) // 3)
     if size < 1000:
         raise AudioSyncError("Piste trop courte pour une calibration multi-segments.")
     step = size // 2
     stop = len(reference) - size
     positions = sorted(set([*range(0, stop + 1, step), stop]))
-    anchors = []
+    anchors: list[Anchor] = []
     for start in positions:
         check_cancelled()
         try:
@@ -228,10 +234,16 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         if _active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any():
             intro = _distinct_intro(reference, donor, first, size, tolerance_ms)
             if intro is None:
-                raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
-            log(f"Introduction propre à chaque piste (logos), séparée du film par un silence jusqu'à "
-                f"{intro[0] / 1000:.1f} s (référence) / {intro[1] / 1000:.1f} s (donneur) : "
-                f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
+                if review is None:
+                    raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
+                first_start = max(0, first.donor_ms - size // 2)
+                review.append((0.0, first_start * speed_factor))
+                log(f"Début de piste sans correspondance (0–{first_start * speed_factor / 1000:.1f} s) : "
+                    f"décalage du premier plateau proposé ({first.shift_ms:+d} ms), à relire.")
+            else:
+                log(f"Introduction propre à chaque piste (logos), séparée du film par un silence jusqu'à "
+                    f"{intro[0] / 1000:.1f} s (référence) / {intro[1] / 1000:.1f} s (donneur) : "
+                    f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
         else:
             log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
     segments = [SyncSegment(0, anchors[0].shift_ms)]
@@ -244,8 +256,13 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         stable = abs(right.shift_ms - segments[-1].shift_ms) <= tolerance_ms
         gap = right.donor_ms - left.donor_ms
         if gap > _MAX_ANCHOR_GAP_MS:
-            raise AudioSyncError(f"Intervalle audio non vérifié ({left.donor_ms / 1000:.1f}–{right.donor_ms / 1000:.1f} s) ; calibration manuelle requise.")
-        if stable and gap > size * 3:
+            if not stable or review is None:
+                raise AudioSyncError(f"Intervalle audio non vérifié ({left.donor_ms / 1000:.1f}–{right.donor_ms / 1000:.1f} s) ; calibration manuelle requise.")
+            review.append((left.donor_ms * speed_factor, right.donor_ms * speed_factor))
+            log(f"Intervalle sans correspondance ({left.donor_ms * speed_factor / 1000:.1f}–"
+                f"{right.donor_ms * speed_factor / 1000:.1f} s), même décalage de part et d'autre "
+                f"({right.shift_ms:+d} ms) : à relire.")
+        elif stable and gap > size * 3:
             # Un bref passage doublé peut ne fournir aucune correspondance ;
             # conserver le décalage observé des deux côtés, et le signaler.
             stable_gaps.append(gap)

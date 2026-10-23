@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
-from core.workflows.audio_sync import AudioSyncTrack
+from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
 from core.workflows.physical_sync import audio_filter
 from core.workflows.remux_models import TrackEntry
@@ -93,6 +93,7 @@ class SyncStudioDialog(QDialog):
     _subtitles_ready = Signal(object, object)
     _auto_sub_sync_ready = Signal(object)
     _auto_sub_sync_failed = Signal(str)
+    _auto_sync_review = Signal(object, object)
     _preview_ready = Signal(int, str)
     _preview_error = Signal(int, str)
     _duration_ready = Signal(float)
@@ -113,10 +114,17 @@ class SyncStudioDialog(QDialog):
         embedded: bool = False,
         crossfade_ms: int = 80,
         quick_validated: bool = False,
+        review_ranges_ms: tuple[tuple[float, float], ...] = (),
     ) -> None:
-        """`quick_validated` : synchro actuelle validée par la seule vérification rapide."""
+        """`quick_validated` : synchro actuelle validée par la seule vérification rapide.
+
+        `review_ranges_ms` : zones sans correspondance d'une synchro cohérente
+        proposée (axe de sortie), à relire avant « Valider la synchro des pistes ».
+        """
         super().__init__(parent)
         self.quick_validated = bool(quick_validated)
+        self.review_ranges_ms: tuple[tuple[float, float], ...] = ()
+        self._apply_btn: QPushButton | None = None
         self._embedded = embedded
         self.crossfade_ms = crossfade_ms
         if embedded:
@@ -188,6 +196,7 @@ class SyncStudioDialog(QDialog):
         self._subtitles_ready.connect(self._on_subtitles_ready)
         self._auto_sub_sync_ready.connect(self._on_auto_sub_sync_ready)
         self._auto_sub_sync_failed.connect(self._on_auto_sub_sync_failed)
+        self._auto_sync_review.connect(self._on_auto_sync_review)
         self._preview_ready.connect(self._on_preview_ready)
         self._preview_error.connect(self._on_preview_error)
         self._duration_ready.connect(self._on_duration_ready)
@@ -199,6 +208,9 @@ class SyncStudioDialog(QDialog):
             self.listen_status.setText(translate_text(
                 "Synchro actuelle validée par la vérification rapide (mesures ponctuelles)."
             ))
+        if review_ranges_ms:
+            self._set_review_ranges(review_ranges_ms)
+            QTimer.singleShot(0, lambda: self._goto_review_range(0))
 
     def _shift_label_text(self) -> str:
         if len(self.current_calibration.segments) <= 1:
@@ -425,6 +437,14 @@ class SyncStudioDialog(QDialog):
         wave_header.addWidget(self.btn_mode_switch)
 
         wc_layout.addLayout(wave_header)
+
+        # Zones d'une synchro cohérente proposée : sans correspondance, à relire.
+        self._review_row = QWidget(self)
+        self._review_layout = QHBoxLayout(self._review_row)
+        self._review_layout.setContentsMargins(0, 0, 0, 0)
+        self._review_layout.setSpacing(_scale(6))
+        self._review_row.setVisible(False)
+        wc_layout.addWidget(self._review_row)
 
         timeline_row = QHBoxLayout()
         self.timeline = QSlider(Qt.Orientation.Horizontal)
@@ -663,6 +683,7 @@ class SyncStudioDialog(QDialog):
             apply_btn = _primary_button(translate_text("Appliquer la synchronisation"))
             apply_btn.clicked.connect(self.accept)
             btn_bar.addWidget(apply_btn)
+            self._apply_btn = apply_btn
             vbox.addLayout(btn_bar)
 
     def _activate_segment(self, idx: int) -> None:
@@ -765,6 +786,46 @@ class SyncStudioDialog(QDialog):
             self.timeline_label.setText(
                 f"{SyncCalibration.format_timestamp(position_ms)} / {SyncCalibration.format_timestamp(self._duration_ms)}"
             )
+
+    def _set_review_ranges(self, ranges_ms) -> None:
+        """Affiche les zones à relire (boutons de navigation) et le libellé de validation."""
+        self.review_ranges_ms = tuple((float(start), float(stop)) for start, stop in ranges_ms)
+        while self._review_layout.count():
+            item = self._review_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        if self.review_ranges_ms:
+            label = QLabel(translate_text("Zones à relire :"))
+            label.setStyleSheet(f"color: {_C.WARN}; font-size: {_font_px(10)}px; font-weight: 600;")
+            self._review_layout.addWidget(label)
+            for index, (start, stop) in enumerate(self.review_ranges_ms):
+                button = _secondary_button(
+                    f"{SyncCalibration.format_timestamp(start)[:8]} – {SyncCalibration.format_timestamp(stop)[:8]}",
+                    padding_h=8,
+                )
+                button.setToolTip(translate_text("Afficher le début de cette zone sans correspondance acoustique"))
+                button.clicked.connect(lambda _checked=False, i=index: self._goto_review_range(i))
+                self._review_layout.addWidget(button)
+            self._review_layout.addStretch()
+            self.listen_status.setText(translate_text(
+                "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et "
+                "d'autre. Relire ces zones puis « Valider la synchro des pistes ».",
+                count=len(self.review_ranges_ms),
+            ))
+        self._review_row.setVisible(bool(self.review_ranges_ms))
+        if self._apply_btn is not None:
+            self._apply_btn.setText(
+                translate_text("Valider la synchro des pistes") if self.review_ranges_ms
+                else translate_text("Appliquer la synchronisation")
+            )
+
+    def _goto_review_range(self, index: int) -> None:
+        """20 s affichées depuis le début de la zone (zone courte : centrée)."""
+        if not 0 <= index < len(self.review_ranges_ms) or self._closing:
+            return
+        start, stop = self.review_ranges_ms[index]
+        self._seek_timeline(round(min(start + _GOTO_HALF_WINDOW_S * 1000.0, (start + stop) / 2.0)))
 
     def _seek_timeline(self, position_ms: int) -> None:
         self.goto_edit.setText(SyncCalibration.format_timestamp(position_ms))
@@ -1207,6 +1268,9 @@ class SyncStudioDialog(QDialog):
                 )
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
+            except AudioSyncReviewRequired as exc:
+                if not self._closing:
+                    self._auto_sync_review.emit(exc.calibration, exc.output_ranges_ms())
             except Exception as exc:
                 if not self._closing:
                     self._auto_sub_sync_failed.emit(str(exc))
@@ -1247,6 +1311,8 @@ class SyncStudioDialog(QDialog):
     def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
         if getattr(self, "_closing", False):
             return
+        # Nouveau résultat : les zones d'une proposition précédente ne valent plus.
+        self._set_review_ranges(())
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
 
@@ -1285,6 +1351,14 @@ class SyncStudioDialog(QDialog):
                 )
             )
         self.calibration_changed.emit(self.current_calibration)
+
+    def _on_auto_sync_review(self, cal: SyncCalibration, ranges_ms) -> None:
+        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées."""
+        if getattr(self, "_closing", False):
+            return
+        self._on_auto_sub_sync_ready(cal)
+        self._set_review_ranges(ranges_ms)
+        self._goto_review_range(0)
 
     def _on_auto_sub_sync_failed(self, err: str) -> None:
         if getattr(self, "_closing", False):
