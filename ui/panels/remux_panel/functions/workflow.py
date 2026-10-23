@@ -163,7 +163,8 @@ def _session_job(panel):
                 if int(index) in full_to_compact
             },
         )
-        job = remux_config_to_exact_job(compact)
+        # Pistes prises désignées par leur identité, modifications à part.
+        job = remux_config_to_exact_job(compact, identity_selectors=True)
         ready_sources = list(job["sources"])
         _remap_selector_sources(job, {compact: full for full, compact in full_to_compact.items()})
         job["sources"] = [
@@ -193,7 +194,7 @@ def _session_job(panel):
             for source in panel._source_files
         ]
     job["_muxiveo_session"] = {
-        "version": 1,
+        "version": 2,
         "pending_source_indices": pending_indices,
         "row_order": [
             _track_key(track, source_index[track.file_id])
@@ -280,6 +281,11 @@ def load(panel, path):
     except Exception as exc:
         load_failed(panel, str(exc))
         return
+    session = job.get("_muxiveo_session")
+    if isinstance(session, dict) and session.get("version", 1) == 1:
+        # Session v1 : sélecteurs descriptifs dont le rang suivait l'ordre
+        # d'affichage (faux après réordonnancement) → résolution tolérante.
+        job["_relaxed_selectors"] = True
     panel._workflow_loading = True
     panel.setEnabled(False)
     def task():

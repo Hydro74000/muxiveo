@@ -124,6 +124,34 @@ def test_silent_intro_on_both_sides_is_accepted():
     assert any("Début silencieux" in message for message in messages)
 
 
+def _distinct_intros(reference_film_start):
+    """Logos propres à chaque piste ; film au même instant décalé de +3212 ms (cas réel By Any Means)."""
+    ref, donor = _edited_pair([], [3212])
+    rng = np.random.default_rng(31)
+    donor[1000:11600] = np.repeat(rng.uniform(0.01, 1, 1060), 10)
+    donor[:1000] = donor[11600:18500] = 0
+    ref[1000:19700] = np.repeat(rng.uniform(0.01, 1, 1870), 10)
+    ref[:1000] = ref[19700:reference_film_start] = 0
+    # Son actif propre à la référence entre son silence et le début du film.
+    ref[reference_film_start:21712] = rng.uniform(0.01, 1, 21712 - reference_film_start)
+    return ref, donor
+
+
+def test_distinct_intros_closed_by_aligned_silences_are_accepted():
+    ref, donor = _distinct_intros(21712)
+    messages: list[str] = []
+    segments, _, _ = scan_envelopes(ref, donor, log=messages.append)
+    assert [s.shift_ms for s in segments] == [3212]
+    assert any("Introduction propre" in message for message in messages)
+
+
+def test_distinct_intro_whose_silence_misses_the_plateau_is_rejected():
+    # Silence de la référence fini 1,5 s trop tôt : son actif non apparié avant le film.
+    ref, donor = _distinct_intros(20212)
+    with pytest.raises(AudioSyncError, match="Début de piste"):
+        scan_envelopes(ref, donor)
+
+
 def test_short_small_unverified_excursion_returning_to_plateau_is_ignored():
     anchors = [Anchor(t, 1000, .8) for t in (32000, 36000)] + [Anchor(t, 1031, .75) for t in (44000, 48000, 52000)]
     anchors += [Anchor(t, 1001, .8) for t in (56000, 60000)]

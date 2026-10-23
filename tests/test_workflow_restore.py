@@ -63,6 +63,31 @@ def test_exact_job_selector_uses_original_empty_language(tmp_path):
     assert "language" not in selector
 
 
+def test_exact_job_selector_position_follows_source_order_after_reorder(tmp_path):
+    from core.profiles.selectors import resolve_track_selector
+    english = TrackEntry(2, "subtitle", "SRT", "", "eng", "English", file_id="src0")
+    french = TrackEntry(4, "subtitle", "SRT", "", "fra", "French", file_id="src0")
+    # Ordre du tableau réordonné : la piste française passe devant.
+    config = RemuxConfig([SourceInput(tmp_path / "source.mkv", 0, [french, english])],
+                         tmp_path / "out.mkv", [(0, 4, french.entry_id), (0, 2, english.entry_id)])
+    job = remux_config_to_exact_job(config)
+    inspected = [TrackEntry(2, "subtitle", "SRT", "", "eng", "English", file_id="src0"),
+                 TrackEntry(4, "subtitle", "SRT", "", "fra", "French", file_id="src0")]
+    for spec in job["tracks"]:
+        assert resolve_track_selector(spec["selector"], inspected).title == spec["title"]
+
+
+def test_session_job_uses_identity_selectors(tmp_path):
+    track = TrackEntry(3, "audio", "FLAC", "2.0", "fra", "VF", file_id="src0")
+    track.title = "Titre modifié"
+    config = RemuxConfig([SourceInput(tmp_path / "source.mkv", 0, [track])],
+                         tmp_path / "out.mkv", [(0, 3, track.entry_id)])
+    job = remux_config_to_exact_job(config, identity_selectors=True)
+    assert job["tracks"][0]["selector"] == {"source": 0, "type": "audio", "id": 3}
+    assert job["tracks"][0]["title"] == "Titre modifié"
+    assert job["track_order"][0]["selector"] == {"source": 0, "type": "audio", "id": 3}
+
+
 def test_nfo_opt_out_and_error(tmp_path):
     import subprocess
     from core.workflows.remux_attachments import write_mediainfo_nfo

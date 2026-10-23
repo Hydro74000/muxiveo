@@ -25,6 +25,11 @@ _MAX_ANCHOR_GAP_MS = 30_000
 # perception de la synchro labiale), sur 30 s au plus.
 _MAX_EXCURSION_SHIFT_MS = 45
 _MAX_EXCURSION_MS = 30_000
+# Introduction différente (logos de distributeurs) : admise si un silence d'au
+# moins 0,5 s la sépare du film dans les deux pistes, avec des fins de silence
+# concordant avec le premier plateau (blocs de 100 ms : ±250 ms).
+_INTRO_SILENCE_MS = 500
+_INTRO_SILENCE_TOLERANCE_MS = 250
 
 
 def _active_blocks(values):
@@ -33,6 +38,36 @@ def _active_blocks(values):
 
     values = np.abs(np.asarray(values, dtype=float))
     return values[:len(values) // 100 * 100].reshape(-1, 100).mean(axis=1) > _ACTIVITY_LEVEL
+
+
+def _intro_silence_end(values, window_start: int, size: int) -> int | None:
+    """Fin du dernier silence d'au moins 0,5 s commencé avant le centre de la première fenêtre vérifiée."""
+    import numpy as np
+
+    silent = ~_active_blocks(values[:max(0, window_start + size)])
+    bounds = np.flatnonzero(np.diff(np.r_[0, silent.astype(np.int8), 0]))
+    ends = [int(stop) * 100 for start, stop in zip(bounds[::2], bounds[1::2])
+            if (stop - start) * 100 >= _INTRO_SILENCE_MS and start * 100 < window_start + size // 2]
+    return ends[-1] if ends else None
+
+
+def _distinct_intro(reference, donor, first: Anchor, size: int, tolerance_ms: int) -> tuple[int, int] | None:
+    """Fins (référence, donneur) du silence qui clôt une introduction propre à chaque piste.
+
+    Le son actif non apparié doit précéder ce silence ; après lui, au plus une
+    demi-fenêtre sépare le film de la première ancre vérifiée.
+    """
+    donor_start = first.donor_ms - size // 2
+    reference_start = donor_start + first.shift_ms
+    reference_end = _intro_silence_end(reference, reference_start, size)
+    donor_end = _intro_silence_end(donor, donor_start, size)
+    if reference_end is None or donor_end is None:
+        return None
+    if abs(reference_end - donor_end - first.shift_ms) > max(tolerance_ms, _INTRO_SILENCE_TOLERANCE_MS):
+        return None
+    if reference_end < reference_start - size // 2 or donor_end < donor_start - size // 2:
+        return None
+    return reference_end, donor_end
 
 
 def match_window(reference, donor, start: int, size: int, max_offset: int) -> Anchor:
@@ -191,8 +226,14 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
     unverified = first.donor_ms + first.shift_ms - size // 2 - max(0, first.shift_ms) - size
     if unverified > 0:
         if _active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any():
-            raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
-        log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
+            intro = _distinct_intro(reference, donor, first, size, tolerance_ms)
+            if intro is None:
+                raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
+            log(f"Introduction propre à chaque piste (logos), séparée du film par un silence jusqu'à "
+                f"{intro[0] / 1000:.1f} s (référence) / {intro[1] / 1000:.1f} s (donneur) : "
+                f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
+        else:
+            log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
     segments = [SyncSegment(0, anchors[0].shift_ms)]
     confidence = anchors[0].confidence
     stable_gaps = []

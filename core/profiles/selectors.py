@@ -104,14 +104,17 @@ def _track_position(
     source_index: int | None,
     source_index_by_file_id: Mapping[str, int] | None = None,
 ) -> int:
-    position = 0
-    for candidate in tracks:
-        candidate_source = _source_index_for_track(candidate, source_index_by_file_id)
-        if candidate is track:
-            return position
-        if candidate.track_type == track.track_type and candidate_source == source_index:
-            position += 1
-    return position
+    """Rang de la piste parmi celles de même type de sa source, dans l'ordre
+    de la source (mkv_tid) : l'ordre d'affichage et les variantes n'y comptent pas."""
+    return sum(
+        1
+        for candidate in tracks
+        if candidate is not track
+        and not candidate.is_new
+        and candidate.track_type == track.track_type
+        and _source_index_for_track(candidate, source_index_by_file_id) == source_index
+        and candidate.mkv_tid < track.mkv_tid
+    )
 
 
 def _video_text(track: TrackEntry) -> str:
@@ -637,8 +640,14 @@ def remux_config_to_exact_job(
     *,
     name: str = "",
     fallback_profile: str = "",
+    identity_selectors: bool = False,
 ) -> dict[str, Any]:
-    """Serialize a remux state as an exact CLI job."""
+    """Serialize a remux state as an exact CLI job.
+
+    ``identity_selectors`` : pistes désignées par leur identité dans la source
+    (source, type, id) au lieu d'une description, pour reprendre une session
+    sur les mêmes fichiers quelles que soient les modifications.
+    """
     source_index_by_file_id: dict[str, int] = {}
     for source in config.sources:
         for track in source.tracks:
@@ -659,6 +668,8 @@ def remux_config_to_exact_job(
 
     def _track_selector(track: TrackEntry) -> dict[str, Any]:
         source_idx = source_index_by_file_id.get(track.file_id)
+        if identity_selectors:
+            return {"source": source_idx, "type": track.track_type, "id": int(track.mkv_tid)}
         source_tracks = next(
             (source.tracks for source in config.sources if source.file_index == source_idx),
             all_tracks,
