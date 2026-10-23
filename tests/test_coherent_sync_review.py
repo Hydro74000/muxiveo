@@ -98,6 +98,19 @@ def test_scanner_prefers_fully_verified_dialogue_free_pass(monkeypatch):
     assert [s.shift_ms for s in calibration.segments] == [200]
 
 
+def test_unknown_layout_keeps_mono_proposal(monkeypatch):
+    # Disposition non reconnue (6.0…) : la sonde du mixage échoue, la proposition reste.
+    scanner = _scanner(monkeypatch, accept_coherent=False)
+
+    def unknown_layout(*_a):
+        raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
+
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", unknown_layout)
+    with pytest.raises(AudioSyncReviewRequired) as exc:
+        _scan(scanner)
+    assert [s.shift_ms for s in exc.value.calibration.segments] == [200]
+
+
 def test_coherent_sync_accepted_unless_rejected():
     assert coherent_sync_accepted(SimpleNamespace())
     assert not coherent_sync_accepted(SimpleNamespace(reject_coherent_sync=True))
@@ -120,7 +133,7 @@ def _review_panel(choice):
         audio_sync_finished=SimpleNamespace(emit=lambda ok, _meta: calls["finished"].append(ok)),
         _confirm_coherent_sync=lambda *_a: choice,
         _on_audio_sync_done=lambda *args: calls["done"].append(args),
-        _on_sync_studio_requested=lambda entry, **kwargs: calls["studio"].append((entry, kwargs)),
+        _review_sync_proposal=lambda *args: calls["studio"].append(args),
     )
     calibration = SyncCalibration.linear(-5466)
     ranges = ((155998.0, 188000.0),)
@@ -139,9 +152,88 @@ def test_panel_applies_confirmed_proposal_and_logs_user_validation():
 
 def test_panel_review_opens_studio_with_proposal():
     calls, target, reference, calibration, ranges = _review_panel("review")
-    assert calls["finished"] == [True]
-    assert calls["studio"] == [(target, {"proposal": (calibration, ranges), "reference_override": reference})]
+    # L'opération de synchro reste ouverte pendant la relecture.
+    assert calls["finished"] == []
+    assert calls["studio"] == [(target, reference, calibration, ranges)]
     assert calls["done"] == []
+
+
+class _AcceptingStudio:
+    """Synchro Studio validé tel quel ; mémorise ses paramètres."""
+
+    opened: list[dict] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _AcceptingStudio.opened.append(kwargs)
+
+    def exec(self):
+        from PySide6.QtWidgets import QDialog
+        return QDialog.DialogCode.Accepted
+
+    def result_calibration(self):
+        calibration = self.kwargs["calibration"]
+        return calibration, round(calibration.segments[0].shift_ms)
+
+
+@pytest.mark.parametrize("choice", ["apply", "review"])
+def test_apply_and_review_both_reset_a_shifted_reference(qt_app, tmp_path, monkeypatch, choice):
+    """Audit : référence à +250 ms, proposition à −320 ms ; les deux parcours remettent la référence à zéro."""
+    from core.config import AppConfig
+    from tests.test_remux import _COLOR_A, _COLOR_B, _track
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    _AcceptingStudio.opened.clear()
+    monkeypatch.setattr(mod, "SyncStudioDialog", _AcceptingStudio)
+    panel = RemuxPanel(AppConfig())
+    try:
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"))
+        monkeypatch.setattr(panel, "_confirm_coherent_sync", lambda *_a: choice)
+        finished: list[bool] = []
+        panel.audio_sync_finished.connect(lambda ok, _meta: finished.append(ok))
+        panel._apply_source_sync_offset("reference", 250)
+        assert reference.time_shift_ms == 250
+
+        ranges = ((1000.0, 40000.0),)
+        panel._on_audio_sync_review(target.entry_id, reference.entry_id, SyncCalibration.linear(-320), ranges)
+
+        assert (reference.time_shift_ms, target.time_shift_ms) == (0, -320)
+        assert finished == [True]
+        assert [kwargs["review_ranges_ms"] for kwargs in _AcceptingStudio.opened] == ([ranges] if choice == "review" else [])
+    finally:
+        panel.close()
+
+
+def test_review_abandoned_in_studio_leaves_track_unchanged(qt_app, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+    from ui.panels.remux_panel import panel as panel_mod
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    class _RejectingStudio(_AcceptingStudio):
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(mod, "SyncStudioDialog", _RejectingStudio)
+    target = SimpleNamespace(entry_id="target", mkv_tid=2, file_id="f1")
+    reference = SimpleNamespace(entry_id="reference", mkv_tid=1, file_id="f0")
+    finished: list[bool] = []
+    done: list[tuple] = []
+    fake = SimpleNamespace(
+        _find_source=lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"),
+        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        log_message=SimpleNamespace(emit=lambda *_a: None),
+        audio_sync_finished=SimpleNamespace(emit=lambda ok, _meta: finished.append(ok)),
+        _on_audio_sync_done=lambda *args: done.append(args),
+    )
+    panel_mod.RemuxPanel._review_sync_proposal(
+        cast(Any, fake), cast(Any, target), cast(Any, reference), SyncCalibration.linear(-320), ((0.0, 1.0),),
+    )
+    assert finished == [False] and done == []
 
 
 def test_panel_cancelled_proposal_leaves_track_unchanged():

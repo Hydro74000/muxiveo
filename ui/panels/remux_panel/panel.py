@@ -2248,14 +2248,60 @@ class RemuxPanel(QWidget):
                 calibration.confidence, calibration,
             )
             return
-        # Opération terminée avant le Synchro Studio, qui exige qu'aucune ne soit en cours.
-        self.audio_sync_finished.emit(choice == "review", {"entry_id": entry_id})
         if choice == "review":
-            self._on_sync_studio_requested(target, proposal=(calibration, ranges_ms), reference_override=reference)
-        else:
+            self._review_sync_proposal(target, reference, calibration, ranges_ms)
+            return
+        self.log_message.emit("INFO", translate_text(
+            "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
+        ))
+        self.audio_sync_finished.emit(False, {"entry_id": entry_id})
+
+    def _review_sync_proposal(self, target: TrackEntry, reference: TrackEntry,
+                              calibration: SyncCalibration, ranges_ms: tuple[tuple[float, float], ...]) -> None:
+        """Relecture d'une synchro proposée dans le Synchro Studio, au sein de l'opération de synchro.
+
+        Validée, elle est appliquée comme « Appliquer » (`_on_audio_sync_done` : référence
+        d'une autre source remise à zéro, résultat enregistré) ; sinon la piste reste inchangée.
+        """
+        from core.workflows.audio_sync import format_sync_ranges
+        from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+
+        applied = False
+        try:
+            target_source = self._find_source(target.file_id)
+            reference_source = self._find_source(reference.file_id)
+            if target_source is None or reference_source is None:
+                return
+            dialog = SyncStudioDialog(
+                target_entry=target,
+                target_source_path=target_source.path,
+                target_stream_index=int(target.mkv_tid),
+                reference_entry=reference,
+                reference_source_path=reference_source.path,
+                reference_stream_index=int(reference.mkv_tid),
+                calibration=calibration,
+                ffmpeg_bin=self._config.tool_ffmpeg,
+                ffprobe_bin=self._config.tool_ffprobe,
+                parent=self,
+                review_ranges_ms=ranges_ms,
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            new_calibration, new_offset = dialog.result_calibration()
             self.log_message.emit("INFO", translate_text(
-                "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
+                "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
+                zones=format_sync_ranges(ranges_ms),
             ))
+            applied = True
+            self._on_audio_sync_done(
+                target.entry_id, reference.entry_id, int(new_offset), float(new_calibration.confidence), new_calibration,
+            )
+        finally:
+            if not applied:
+                self.log_message.emit("INFO", translate_text(
+                    "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
+                ))
+                self.audio_sync_finished.emit(False, {"entry_id": target.entry_id})
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
         try:
@@ -2450,14 +2496,7 @@ class RemuxPanel(QWidget):
             return
         self.hdr_studio_requested.emit(source.path, entry.mkv_tid)
 
-    def _on_sync_studio_requested(
-        self,
-        entry: TrackEntry,
-        *,
-        proposal: tuple[SyncCalibration, tuple[tuple[float, float], ...]] | None = None,
-        reference_override: TrackEntry | None = None,
-    ) -> None:
-        """`proposal` : synchro cohérente proposée et zones à relire (axe de sortie)."""
+    def _on_sync_studio_requested(self, entry: TrackEntry) -> None:
         if not self._can_start_auxiliary_operation():
             return
         target_source = self._find_source(entry.file_id)
@@ -2476,9 +2515,7 @@ class RemuxPanel(QWidget):
             dialog_prompt = translate_text("Choisir la source audio qui servira de référence.")
 
         last_reference = self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None
-        if reference_override is not None:
-            reference_entry = reference_override
-        elif last_reference is not None and any(choice is last_reference for _label, choice in choices):
+        if last_reference is not None and any(choice is last_reference for _label, choice in choices):
             reference_entry = last_reference
         elif len(choices) > 1:
             if entry.track_type == "subtitle":
@@ -2507,11 +2544,9 @@ class RemuxPanel(QWidget):
             reference_source = self._find_source(reference_entry.file_id)
 
         target_source_idx = self._source_index_for_file_id(entry.file_id)
-        existing_calib: SyncCalibration | dict | None = entry.sync_calibration
+        existing_calib = entry.sync_calibration
         if existing_calib is None and target_source_idx is not None:
             existing_calib = self._workflow_options.get("sync_calibrations", {}).get(str(target_source_idx))
-        if proposal is not None:
-            existing_calib = proposal[0]
 
         from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
         dialog = SyncStudioDialog(
@@ -2525,10 +2560,7 @@ class RemuxPanel(QWidget):
             ffmpeg_bin=self._config.tool_ffmpeg,
             ffprobe_bin=self._config.tool_ffprobe,
             parent=self,
-            quick_validated=(
-                False if proposal is not None else self._audio_sync_results.get(entry.entry_id, ("", False))[1]
-            ),
-            review_ranges_ms=proposal[1] if proposal is not None else (),
+            quick_validated=self._audio_sync_results.get(entry.entry_id, ("", False))[1],
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_calibration, new_offset = dialog.result_calibration()

@@ -518,7 +518,14 @@ class AudioSyncScanner:
                 (segments, confidence, anchors), unverified = scan(
                     self._envelopes(reference, donor, filter_str, downmixes))
             else:
-                downmixes = self._dialogue_free_downmixes(reference, donor) if unverified else None
+                downmixes = None
+                if unverified:
+                    try:
+                        downmixes = self._dialogue_free_downmixes(reference, donor)
+                    except AudioSyncError as exc:
+                        # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
+                        self._check_cancelled()
+                        log(f"{exc} Analyse mono conservée.")
                 if downmixes is not None:
                     # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
                     log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
