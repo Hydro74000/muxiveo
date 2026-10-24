@@ -424,7 +424,6 @@ def build_rife_stage(
     gpu: int = -1,
     mode: str = "normal",
     tta: int = 1,
-    feature_cache: bool = False,
     trt_plugin: str = "",
     trt_cache: str = "",
 ) -> list[str]:
@@ -461,7 +460,9 @@ def build_rife_stage(
         cmd.extend(["--gpu", str(int(gpu))])
     if int(tta) > 1 and not preset.ultra:
         cmd.extend(["--tta", str(int(tta))])
-    if feature_cache:
+    # Cache des têtes RIFE : sorties identiques, réserve VRAM vérifiée par le moteur à chaque inférence,
+    # sans effet en TensorRT ni sur v4.6 ; omis si le binaire ne le prend pas en charge.
+    if rife_supports(rife_bin, "feature-cache"):
         cmd.append("--feature-cache")
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -517,7 +518,6 @@ _RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
 
 def rife_support_errors(
     capabilities: RifeCapabilities | None, preset: InterpolationPreset, *, tta: int, rife_bin: str,
-    feature_cache: bool = False,
 ) -> list[str]:
     """Réglages d'interpolation non pris en charge par le binaire (contrat, options, modèle, sélecteur).
 
@@ -537,7 +537,6 @@ def rife_support_errors(
         ("engine", preset.engine == "hybrid", "le moteur hybride (préréglages Équilibré et Qualité)",
          ", ou choisir le préréglage Rapide"),
         ("ultra", preset.ultra, "le préréglage Ultra", ", ou choisir le préréglage Qualité"),
-        ("feature-cache", feature_cache, "le cache des caractéristiques", ", ou désactiver ce cache"),
     )
     for option, needed, feature, alternative in features:
         if needed and not capabilities.supports(option):
@@ -555,6 +554,12 @@ def rife_support_errors(
         return [f"Interpolation d'images : préréglage Ultra indisponible (poids du sélecteur : "
                 f"{capabilities.selector_status}) ; {_RIFE_UPDATE_HINT}, ou choisir le préréglage Qualité."]
     return []
+
+
+def rife_supports(rife_bin: str, option: str) -> bool:
+    """Vrai si le binaire déclare l'option (capacités illisibles : faux)."""
+    capabilities = rife_capabilities(rife_bin)
+    return capabilities is not None and capabilities.supports(option)
 
 
 def rife_capabilities(rife_bin: str) -> RifeCapabilities | None:

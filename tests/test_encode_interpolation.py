@@ -1013,13 +1013,16 @@ def test_required_dovi_level_capped_for_tv_compat():
 
 
 @pytest.mark.parametrize("quality", ["fast", "balanced", "quality", "ultra", "light"])
-def test_optional_feature_cache_is_forwarded_for_every_preset(quality):
-    cmd = build_rife_stage("r", quality=quality, source=InterpolationSource(), feature_cache=True)
-    assert "--feature-cache" in cmd
-    plain = build_rife_stage("r", quality=quality, source=InterpolationSource())
-    assert "--feature-cache" not in plain
-    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": True}))
-    assert preset.to_video_settings().interpolation.feature_cache
+def test_feature_cache_forwarded_when_binary_supports_it(quality):
+    target = "core.workflows.encode.interpolation.rife_capabilities"
+    with patch(target, return_value=_legacy_capabilities((1, 7, 1))):
+        assert "--feature-cache" in build_rife_stage("r", quality=quality, source=InterpolationSource())
+    for older in (_legacy_capabilities((1, 7, 0)), None):
+        with patch(target, return_value=older):
+            assert "--feature-cache" not in build_rife_stage("r", quality=quality, source=InterpolationSource())
+    # Ancienne option des préréglages enregistrés : ignorée au chargement.
+    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": False}))
+    assert preset.to_video_settings().interpolation.enabled
 
 
 def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
@@ -1035,12 +1038,8 @@ def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
         settings = panel._current_interpolation_settings()
         assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
         assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
-        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8, feature_cache=True))
+        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
         assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
-        assert panel._interp_cache_cb.isChecked() and panel._current_interpolation_settings().feature_cache
-        panel._set_combo_data(panel._interp_quality_combo, "light")
-        assert panel._current_interpolation_settings().feature_cache
-        panel._set_combo_data(panel._interp_quality_combo, "ultra")
         assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
     finally:
         panel.close()   # arrête les sondes du panneau (threads) avant la destruction
