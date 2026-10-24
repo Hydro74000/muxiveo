@@ -6,6 +6,7 @@ import copy
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,7 +44,7 @@ from core.profiles.decision import DecisionProfileManager, apply_decision_profil
 from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack
+from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.sync_rewrite import (
     SYNC_REWRITE_MODE_OFFSET,
@@ -60,8 +61,14 @@ from core.workflows.remux_models import (
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.remux_panel.functions import chapters as chapter_functions
 from ui.panels.remux_panel.functions import config_builder, inspection, output_name, signals, tmdb
-from ui.panels.remux_panel.models import SourceFile
-from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, effective_calibration
+from ui.panels.remux_panel.models import SourceFile, SyncLink
+from core.workflows.sync_calibration import (
+    NEGLIGIBLE_SYNC_MS,
+    SyncCalibration,
+    compose_calibrations,
+    effective_calibration,
+    invert_calibration,
+)
 from ui.panels.remux_panel.theme import (
     _C,
     _card,
@@ -82,6 +89,17 @@ from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
 # Calibration de chapitres « courante » (valeur par défaut des transitions).
 _CURRENT = object()
+
+
+def _same_applied_sync(first: SyncCalibration, second: SyncCalibration) -> bool:
+    """Même synchro une fois appliquée : décalage arrondi à la ms, ou coupures et cadence identiques."""
+    first_stored, second_stored = effective_calibration(first), effective_calibration(second)
+    if first_stored is None and second_stored is None:
+        return round(first.segments[0].shift_ms) == round(second.segments[0].shift_ms)
+    return (first_stored is not None and second_stored is not None
+            and first_stored.segments == second_stored.segments
+            and first_stored.cadence_mismatch == second_stored.cadence_mismatch
+            and first_stored.cadence_audio_method == second_stored.cadence_audio_method)
 
 
 class _AudioSyncReferenceDialog(QDialog):
@@ -212,6 +230,8 @@ class RemuxPanel(QWidget):
         self._source_names: dict[str, str] = {}
         self._source_colors: dict[str, str] = {}
         self._source_sync_offsets_ms: dict[str, int] = {}
+        # Source synchronisée face à la piste d'une autre source : elle suit sa référence.
+        self._sync_links: dict[str, SyncLink] = {}
         self._auto_sync_entry_ids: set[str] = set()
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
@@ -452,6 +472,7 @@ class RemuxPanel(QWidget):
         self._track_table.hdr_inspect_requested.connect(self._on_hdr_inspect_requested)
         self._track_table.auto_sync_cancel_requested.connect(self._on_auto_sync_cancel_requested)
         self._track_table.sync_rewrite_toggle_requested.connect(self._on_sync_rewrite_toggle_requested)
+        self._track_table.time_shift_edited.connect(self._on_track_time_shift_edited)
         content_layout.addWidget(self._track_table)
 
         content_layout.addWidget(_separator())
@@ -1044,13 +1065,13 @@ class RemuxPanel(QWidget):
         rendered_name = output_name.render_profile_output_name(self, profile, tracks)
         if not self._confirm_decision_profile_application(name, tracks, report, output_file_name=rendered_name):
             return
-        self._commit_decision_profile_result(tracks)
+        self._commit_decision_profile_result(tracks, report)
         output_name.track_profile_output(self, profile)
         self.log_message.emit("OK", translate_text("Profil appliqué : {name}", name=name))
 
     def _apply_decision_profile(self, profile: dict) -> None:
-        tracks, _report = self._build_decision_profile_result(profile)
-        self._commit_decision_profile_result(tracks)
+        tracks, report = self._build_decision_profile_result(profile)
+        self._commit_decision_profile_result(tracks, report)
         output_name.track_profile_output(self, profile)
 
     def _build_decision_profile_result(self, profile: dict) -> tuple[list[TrackEntry], dict]:
@@ -1067,7 +1088,9 @@ class RemuxPanel(QWidget):
         )
         return result.tracks, result.report
 
-    def _commit_decision_profile_result(self, tracks: list[TrackEntry]) -> None:
+    def _commit_decision_profile_result(self, tracks: list[TrackEntry], report: dict | None = None) -> None:
+        shifts_before = {track.entry_id: int(track.time_shift_ms or 0) for track in self._track_table.current_tracks()}
+        written = (report or {}).get("written_fields", {})
         by_file_id: dict[str, list[TrackEntry]] = {}
         for track in tracks:
             by_file_id.setdefault(track.file_id, []).append(track)
@@ -1075,6 +1098,12 @@ class RemuxPanel(QWidget):
             if source.id in by_file_id:
                 source.tracks = by_file_id[source.id]
         self._replace_track_table_tracks(tracks)
+        # Décalages écrits par une règle du profil, même à valeur inchangée : comme une saisie à la main.
+        self._take_entered_offsets([
+            track for track in tracks
+            if "time_shift_ms" in written.get(track.entry_id, ())
+            or (track.entry_id in shifts_before and int(track.time_shift_ms or 0) != shifts_before[track.entry_id])
+        ])
         self._refresh_audio_sync_buttons()
         self._track_table.refresh_filter()
         self._rebuild_preview()
@@ -1203,6 +1232,7 @@ class RemuxPanel(QWidget):
             if not track.is_new
         }
         self._source_sync_offsets_ms.clear()
+        self._sync_links.clear()
         self._auto_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
@@ -1749,6 +1779,177 @@ class RemuxPanel(QWidget):
             for entry in self._track_table.current_tracks()
         )
 
+    def _source_label(self, file_id: str) -> str:
+        return self._source_names.get(file_id, file_id)
+
+    def _track_calibration(self, entry: TrackEntry) -> SyncCalibration:
+        """Synchro appliquée à une piste : calibration de sa source, sinon son décalage."""
+        return effective_calibration(entry.sync_calibration) or SyncCalibration.linear(int(entry.time_shift_ms or 0))
+
+    def _source_calibration(self, file_id: str) -> SyncCalibration:
+        """Synchro appliquée à une source : calibration à coupures ou cadence, sinon son décalage."""
+        source_index = self._source_index_for_file_id(file_id)
+        stored = (
+            effective_calibration(self._workflow_options.get("sync_calibrations", {}).get(str(source_index)))
+            if source_index is not None else None
+        )
+        return stored or SyncCalibration.linear(int(self._source_sync_offsets_ms.get(file_id, 0) or 0))
+
+    def _reference_calibration(self, link: SyncLink) -> SyncCalibration:
+        """Position de la piste de référence dans la sortie (celle de sa source si elle n'est plus chargée)."""
+        entry = next(
+            (track for track in self._track_table.current_tracks() if track.entry_id == link.reference_entry_id),
+            None,
+        )
+        return self._track_calibration(entry) if entry is not None else self._source_calibration(link.reference_file_id)
+
+    def _sync_depends_on(self, file_id: str, other_file_id: str) -> bool:
+        """La synchro de `file_id` découle-t-elle, même indirectement, de celle de `other_file_id` ?"""
+        seen: set[str] = set()
+        link = self._sync_links.get(file_id)
+        while link is not None and link.reference_file_id not in seen:
+            if link.reference_file_id == other_file_id:
+                return True
+            seen.add(link.reference_file_id)
+            link = self._sync_links.get(link.reference_file_id)
+        return False
+
+    def _set_source_calibration(self, file_id: str, calibration: SyncCalibration, *,
+                                negligible: bool = False) -> bool:
+        """Synchro de toute la source : pistes audio / sous-titres et chapitres. `negligible` : non appliquée."""
+        if not file_id:
+            return False
+        source_index = self._source_index_for_file_id(file_id)
+        previous = self._chapter_sync_calibration_for_index(source_index)
+        stored = None if negligible else effective_calibration(calibration)
+        if source_index is not None:
+            if stored is not None:
+                self._workflow_options.setdefault("sync_calibrations", {})[str(source_index)] = stored.to_dict()
+            else:
+                self._workflow_options.get("sync_calibrations", {}).pop(str(source_index), None)
+        offset = 0 if negligible else round(calibration.segments[0].shift_ms)
+        updated = self._apply_source_sync_offset(file_id, offset, previous_calibration=previous)
+        self._sync_entry_calibrations()
+        return updated
+
+    def _link_measured_sync(self, target_file_id: str, reference: TrackEntry | None,
+                            measured: SyncCalibration) -> tuple[SyncCalibration, str]:
+        """Synchro de la cible sur la sortie, d'après une mesure faite face à l'audio d'origine de `reference`.
+
+        Référence synchronisée par ailleurs (autre source, décalage saisi) : la cible suit sa
+        position dans la sortie. Référence synchronisée à partir de la cible (boucle) : sa synchro
+        est retirée, la nouvelle mesure prime ; sa source est retournée pour recalculer ses
+        dépendantes. Le lien est mémorisé : la cible suivra les changements de sa référence.
+        """
+        if reference is None or not reference.file_id or reference.file_id == target_file_id:
+            self._sync_links.pop(target_file_id, None)
+            return measured, ""
+        released = ""
+        if self._sync_depends_on(reference.file_id, target_file_id):
+            released = reference.file_id
+            self._sync_links.pop(released, None)
+            self._set_source_calibration(released, SyncCalibration.linear(0))
+            self.log_message.emit("INFO", translate_text(
+                "La source de référence « {reference} » était synchronisée à partir de « {target} » : "
+                "sa synchro est retirée, la nouvelle mesure prime.",
+                reference=self._source_label(released), target=self._source_label(target_file_id),
+            ))
+        link = SyncLink(reference.file_id, reference.entry_id, measured)
+        self._sync_links[target_file_id] = link
+        position = self._reference_calibration(link)
+        if effective_calibration(position) is not None or position.segments[0].shift_ms:
+            self.log_message.emit("INFO", translate_text(
+                "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.",
+                reference=self._source_label(reference.file_id),
+            ))
+        return replace(compose_calibrations(measured, position), quick_check=measured.quick_check), released
+
+    def _propagate_sync(self, changed: set[str]) -> bool:
+        """Sources synchronisées face à une source modifiée : recalculées, elles suivent leur référence.
+
+        Retourne vrai si une synchro a changé.
+        """
+        queue = [file_id for file_id in changed if file_id]
+        done = set(queue)
+        updated = False
+        while queue:
+            reference_file_id = queue.pop(0)
+            for file_id, link in list(self._sync_links.items()):
+                if link.reference_file_id != reference_file_id or file_id in done:
+                    continue
+                done.add(file_id)
+                queue.append(file_id)
+                calibration = compose_calibrations(link.relative, self._reference_calibration(link))
+                offset = round(calibration.segments[0].shift_ms)
+                negligible = effective_calibration(calibration) is None and abs(offset) <= NEGLIGIBLE_SYNC_MS
+                if _same_applied_sync(SyncCalibration.linear(0) if negligible else calibration,
+                                      self._source_calibration(file_id)):
+                    continue
+                updated = True
+                self._set_source_calibration(file_id, calibration, negligible=negligible)
+                self.log_message.emit("INFO", translate_text(
+                    "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).",
+                    source=self._source_label(file_id),
+                    reference=self._source_label(reference_file_id),
+                    offset=f"{0 if negligible else offset:+d}",
+                ))
+        if updated:
+            self._track_table.refresh_all_entries_info()
+        return updated
+
+    def _take_entered_offsets(self, entries: list[TrackEntry]) -> bool:
+        """Décalages saisis (dialogue d'édition, profil) : ils priment sur le lien de leur source et
+        les dépendantes suivent. Retourne vrai si une autre synchro a changé.
+
+        Toutes les sources concernées sont détachées avant le recalcul : une valeur saisie n'est
+        jamais remplacée par celle déduite d'une autre saisie. La synchro d'une source ne porte que
+        sur ses pistes audio et sous-titres : la vidéo n'y touche pas.
+        """
+        changed: dict[str, TrackEntry] = {}
+        for entry in entries:
+            if entry.track_type in {"audio", "subtitle"}:
+                changed.setdefault(entry.file_id, entry)
+        for file_id, entry in changed.items():
+            if self._sync_links.pop(file_id, None) is not None:
+                self.log_message.emit("INFO", translate_text(
+                    "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.",
+                    idx=entry.mkv_tid, source=self._source_label(file_id),
+                ))
+        for file_id, entry in changed.items():
+            # Coupures ou cadence communes à la source : la saisie déplace toute sa calibration.
+            calibration = effective_calibration(entry.sync_calibration)
+            offset = int(entry.time_shift_ms or 0)
+            if calibration is not None and round(calibration.segments[0].shift_ms) != offset:
+                self._set_source_calibration(file_id, calibration.with_start_offset(offset))
+                self.log_message.emit("INFO", translate_text(
+                    "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.",
+                    source=self._source_label(file_id), offset=f"{offset:+d}",
+                ))
+        return self._propagate_sync(set(changed))
+
+    def _on_track_time_shift_edited(self, entry: TrackEntry) -> None:
+        if self._take_entered_offsets([entry]):
+            self._rebuild_preview()
+            self._emit_signals()
+
+    def _release_source_sync(self, file_id: str) -> None:
+        """Synchro de la source retirée : plus de lien, ses dépendantes suivent sa position d'origine."""
+        self._sync_links.pop(file_id, None)
+        self._propagate_sync({file_id})
+
+    def _relative_sync_calibration(self, entry: TrackEntry, reference: TrackEntry | None) -> SyncCalibration:
+        """Synchro de la piste exprimée face à l'audio d'origine de la référence (affichage du Synchro Studio)."""
+        current = self._track_calibration(entry)
+        if reference is None or reference.file_id == entry.file_id:
+            return current
+        link = self._sync_links.get(entry.file_id)
+        if link is not None and link.reference_file_id == reference.file_id:
+            return link.relative
+        position = self._track_calibration(reference)
+        if effective_calibration(position) is None and not position.segments[0].shift_ms:
+            return current
+        return compose_calibrations(current, invert_calibration(position))
+
     def _apply_source_sync_offset(
         self,
         file_id: str,
@@ -1810,6 +2011,7 @@ class RemuxPanel(QWidget):
         self._auto_sync_entry_ids.discard(entry.entry_id)
         if not self._file_has_shifted_timeline_tracks(entry.file_id):
             self._source_sync_offsets_ms.pop(entry.file_id, None)
+            self._release_source_sync(entry.file_id)
             self._chapter_sync_cancelled_source_ids.discard(entry.file_id)
             self._update_chapters_from_sources()
             new_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(source_index)
@@ -1819,6 +2021,9 @@ class RemuxPanel(QWidget):
                 old_chapter_offset_ms,
                 new_chapter_offset_ms,
             )
+        else:
+            # Les autres pistes de la source restent synchronisées ; celles qui suivent cette piste suivent.
+            self._propagate_sync({entry.file_id})
         self._sync_entry_calibrations()
         self._track_table.refresh_all_entries_info()
         self._refresh_sync_action_buttons()
@@ -1849,6 +2054,7 @@ class RemuxPanel(QWidget):
         for track in affected:
             track.sync_calibration = None
         self._apply_source_sync_offset(entry.file_id, 0, previous_calibration=previous)
+        self._release_source_sync(entry.file_id)
         self._sync_entry_calibrations()
         self._track_table.refresh_all_entries_info()
         self._refresh_sync_action_buttons()
@@ -1896,6 +2102,7 @@ class RemuxPanel(QWidget):
             if int(entry.time_shift_ms or 0) != 0:
                 self._track_table.update_time_shift(entry.entry_id, 0)
         self._source_sync_offsets_ms.clear()
+        self._sync_links.clear()
         self._auto_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
@@ -2063,6 +2270,29 @@ class RemuxPanel(QWidget):
 
         self._executor.submit(_task)
 
+    def _apply_measured_sync(self, entry_id: str, reference_entry_id: str, offset_ms: int, calibration: object):
+        """Préambule commun des synchros mesurées (audio, sous-titres).
+
+        Retourne (pistes par identifiant, piste cible, synchro de la cible sur la sortie,
+        source de référence libérée d'une boucle ou "").
+        """
+        tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
+        target_entry = tracks_by_id.get(entry_id)
+        reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+        measured: SyncCalibration | None = None
+        if isinstance(calibration, SyncCalibration):
+            measured = calibration
+        elif isinstance(calibration, dict):
+            try:
+                measured = SyncCalibration.from_dict(calibration)
+            except ValueError:
+                measured = None
+        measured = measured or SyncCalibration.linear(offset_ms)
+        if target_entry is None:
+            return tracks_by_id, None, measured, ""
+        result, released = self._link_measured_sync(target_entry.file_id, reference_entry, measured)
+        return tracks_by_id, target_entry, result, released
+
     def _on_audio_sync_done(
         self,
         entry_id: str,
@@ -2072,47 +2302,11 @@ class RemuxPanel(QWidget):
         calibration: object = None,
     ) -> None:
         try:
-            tracks_by_id = {
-                track.entry_id: track
-                for track in self._track_table.current_tracks()
-            }
-            target_entry = tracks_by_id.get(entry_id)
-            reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+            tracks_by_id, target_entry, cal_obj, released = self._apply_measured_sync(
+                entry_id, reference_entry_id, offset_ms, calibration,
+            )
             target_file_id = target_entry.file_id if target_entry is not None else ""
-            reference_file_id = reference_entry.file_id if reference_entry is not None else ""
-
-            if reference_file_id and reference_file_id != target_file_id:
-                ref_source_idx = self._source_index_for_file_id(reference_file_id)
-                previous_reference = self._chapter_sync_calibration_for_index(ref_source_idx)
-                if ref_source_idx is not None and "sync_calibrations" in self._workflow_options:
-                    self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
-                self._apply_source_sync_offset(reference_file_id, 0, previous_calibration=previous_reference)
-
-            target_source_idx = self._source_index_for_file_id(target_file_id)
-            previous_target = self._chapter_sync_calibration_for_index(target_source_idx)
-            cal_obj: SyncCalibration | None = None
-            if calibration is not None:
-                if hasattr(calibration, "segments"):
-                    cal_obj = cast(SyncCalibration, calibration)
-                elif isinstance(calibration, dict):
-                    try:
-                        cal_obj = SyncCalibration.from_dict(calibration)
-                    except Exception:
-                        cal_obj = None
-
-            # Coupures ou conversion de cadence : la calibration complète suit la source.
-            stored = effective_calibration(cal_obj)
-            if stored is not None:
-                if "sync_calibrations" not in self._workflow_options:
-                    self._workflow_options["sync_calibrations"] = {}
-                self._workflow_options["sync_calibrations"][str(target_source_idx)] = stored.to_dict()
-                if target_entry is not None:
-                    target_entry.sync_calibration = stored.to_dict()
-            else:
-                if target_source_idx is not None and "sync_calibrations" in self._workflow_options:
-                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
-                if target_entry is not None:
-                    target_entry.sync_calibration = None
+            offset_ms = round(cal_obj.segments[0].shift_ms)
 
             # Le décalage vaut pour toute la source : un nouveau résultat remplace l'état précédent.
             for other_id in [
@@ -2120,19 +2314,14 @@ class RemuxPanel(QWidget):
                 if (track := tracks_by_id.get(other_id)) is not None and track.file_id == target_file_id
             ]:
                 self._audio_sync_results.pop(other_id, None)
-            quick_check = bool(getattr(cal_obj, "quick_check", False))
+            quick_check = cal_obj.quick_check
             negligible = self._negligible_sync_offset(offset_ms, cal_obj, target_entry)
             if negligible:
                 offset_ms = 0
             else:
                 self._audio_sync_results[entry_id] = (reference_entry_id, quick_check)
 
-            if self._apply_source_sync_offset(
-                target_file_id,
-                offset_ms,
-                previous_calibration=previous_target,
-            ):
-                self._sync_entry_calibrations()
+            if self._set_source_calibration(target_file_id, cal_obj, negligible=negligible):
                 self._track_table.refresh_all_entries_info()
                 offset_label = f"{int(offset_ms):+d}"
                 confidence_label = f"{float(confidence):.2f}"
@@ -2182,20 +2371,27 @@ class RemuxPanel(QWidget):
                         description=mismatch.description,
                         method=getattr(cal_obj, "cadence_audio_method", "") or "auto",
                     ))
+                self._propagate_sync({target_file_id, released})
                 self._rebuild_preview()
                 self._emit_signals()
         finally:
             self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
 
+    def _proposed_sync(self, target: TrackEntry, reference: TrackEntry, measured: SyncCalibration) -> SyncCalibration:
+        """Synchro qui sera appliquée pour une mesure face à `reference` (sans rien modifier) :
+        position de la référence composée, sauf boucle (sa synchro sera retirée)."""
+        if reference.file_id == target.file_id or self._sync_depends_on(reference.file_id, target.file_id):
+            return measured
+        return compose_calibrations(measured, self._track_calibration(reference))
+
     def _confirm_coherent_sync(self, target: TrackEntry, reference: TrackEntry,
                                calibration: SyncCalibration, ranges_ms) -> str:
         """Synchro cohérente proposée : « review » (Synchro Studio), « apply » ou « cancel »."""
-        from core.workflows.audio_sync import format_sync_ranges
-
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(translate_text("Synchro à valider"))
+        calibration = self._proposed_sync(target, reference, calibration)
         offset = f"{round(calibration.segments[0].shift_ms):+d}"
         if calibration.cuts_count:
             box.setText(translate_text(
@@ -2223,8 +2419,6 @@ class RemuxPanel(QWidget):
     def _on_audio_sync_review(self, entry_id: str, reference_entry_id: str,
                               calibration: SyncCalibration, ranges_ms) -> None:
         """Synchro cohérente en partie non vérifiée : proposée à l'utilisateur."""
-        from core.workflows.audio_sync import format_sync_ranges
-
         ranges_ms = tuple(ranges_ms)
         zones = format_sync_ranges(ranges_ms)
         tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
@@ -2251,56 +2445,68 @@ class RemuxPanel(QWidget):
         if choice == "review":
             self._review_sync_proposal(target, reference, calibration, ranges_ms)
             return
+        self._log_sync_proposal_dropped(target)
+        self.audio_sync_finished.emit(False, {"entry_id": entry_id})
+
+    def _sync_studio_dialog(self, entry: TrackEntry, target_source, reference_entry: TrackEntry | None,
+                            reference_source, calibration, *, quick_validated: bool = False,
+                            review_ranges_ms: tuple[tuple[float, float], ...] = ()):
+        """Synchro Studio d'une piste face à sa référence (ouvert à la main ou relecture d'une proposition)."""
+        from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
+
+        return SyncStudioDialog(
+            target_entry=entry,
+            target_source_path=target_source.path,
+            target_stream_index=int(entry.mkv_tid),
+            reference_entry=reference_entry,
+            reference_source_path=reference_source.path if reference_source else None,
+            reference_stream_index=int(reference_entry.mkv_tid) if reference_entry else None,
+            calibration=calibration,
+            ffmpeg_bin=self._config.tool_ffmpeg,
+            ffprobe_bin=self._config.tool_ffprobe,
+            parent=self,
+            quick_validated=quick_validated,
+            review_ranges_ms=review_ranges_ms,
+        )
+
+    def _log_sync_reviewed(self, ranges_ms) -> None:
+        self.log_message.emit("INFO", translate_text(
+            "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
+            zones=format_sync_ranges(ranges_ms),
+        ))
+
+    def _log_sync_proposal_dropped(self, target: TrackEntry) -> None:
         self.log_message.emit("INFO", translate_text(
             "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
         ))
-        self.audio_sync_finished.emit(False, {"entry_id": entry_id})
 
     def _review_sync_proposal(self, target: TrackEntry, reference: TrackEntry,
                               calibration: SyncCalibration, ranges_ms: tuple[tuple[float, float], ...]) -> None:
         """Relecture d'une synchro proposée dans le Synchro Studio, au sein de l'opération de synchro.
 
-        Validée, elle est appliquée comme « Appliquer » (`_on_audio_sync_done` : référence
-        d'une autre source remise à zéro, résultat enregistré) ; sinon la piste reste inchangée.
+        Validée, elle est appliquée comme « Appliquer » (`_on_audio_sync_done` : même lien à la
+        référence, résultat enregistré) ; sinon la piste reste inchangée.
         """
-        from core.workflows.audio_sync import format_sync_ranges
-        from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
-
         applied = False
         try:
             target_source = self._find_source(target.file_id)
             reference_source = self._find_source(reference.file_id)
             if target_source is None or reference_source is None:
                 return
-            dialog = SyncStudioDialog(
-                target_entry=target,
-                target_source_path=target_source.path,
-                target_stream_index=int(target.mkv_tid),
-                reference_entry=reference,
-                reference_source_path=reference_source.path,
-                reference_stream_index=int(reference.mkv_tid),
-                calibration=calibration,
-                ffmpeg_bin=self._config.tool_ffmpeg,
-                ffprobe_bin=self._config.tool_ffprobe,
-                parent=self,
-                review_ranges_ms=ranges_ms,
+            dialog = self._sync_studio_dialog(
+                target, target_source, reference, reference_source, calibration, review_ranges_ms=ranges_ms,
             )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             new_calibration, new_offset = dialog.result_calibration()
-            self.log_message.emit("INFO", translate_text(
-                "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
-                zones=format_sync_ranges(ranges_ms),
-            ))
+            self._log_sync_reviewed(ranges_ms)
             applied = True
             self._on_audio_sync_done(
                 target.entry_id, reference.entry_id, int(new_offset), float(new_calibration.confidence), new_calibration,
             )
         finally:
             if not applied:
-                self.log_message.emit("INFO", translate_text(
-                    "Synchro proposée non appliquée : piste #{idx} inchangée.", idx=target.mkv_tid,
-                ))
+                self._log_sync_proposal_dropped(target)
                 self.audio_sync_finished.emit(False, {"entry_id": target.entry_id})
 
     def _on_audio_sync_error(self, _entry_id: str, detail: str) -> None:
@@ -2402,53 +2608,15 @@ class RemuxPanel(QWidget):
         calibration: object = None,
     ) -> None:
         try:
-            tracks_by_id = {
-                track.entry_id: track
-                for track in self._track_table.current_tracks()
-            }
-            target_entry = tracks_by_id.get(entry_id)
-            reference_entry = tracks_by_id.get(reference_entry_id) if reference_entry_id else None
+            _tracks_by_id, target_entry, cal_obj, released = self._apply_measured_sync(
+                entry_id, reference_entry_id, offset_ms, calibration,
+            )
             target_file_id = target_entry.file_id if target_entry is not None else ""
-            reference_file_id = reference_entry.file_id if reference_entry is not None else ""
-
-            if reference_file_id and reference_file_id != target_file_id:
-                ref_source_idx = self._source_index_for_file_id(reference_file_id)
-                previous_reference = self._chapter_sync_calibration_for_index(ref_source_idx)
-                if ref_source_idx is not None and "sync_calibrations" in self._workflow_options:
-                    self._workflow_options["sync_calibrations"].pop(str(ref_source_idx), None)
-                self._apply_source_sync_offset(reference_file_id, 0, previous_calibration=previous_reference)
-
-            target_source_idx = self._source_index_for_file_id(target_file_id)
-            previous_target = self._chapter_sync_calibration_for_index(target_source_idx)
-            cal_obj: SyncCalibration | None = None
-            if calibration is not None:
-                if hasattr(calibration, "segments"):
-                    cal_obj = cast(SyncCalibration, calibration)
-                elif isinstance(calibration, dict):
-                    try:
-                        cal_obj = SyncCalibration.from_dict(calibration)
-                    except Exception:
-                        cal_obj = None
-
-            # Même règle que l'audio : coupures ou cadence, la calibration complète suit la source.
-            stored = effective_calibration(cal_obj)
-            if stored is not None:
-                if "sync_calibrations" not in self._workflow_options:
-                    self._workflow_options["sync_calibrations"] = {}
-                self._workflow_options["sync_calibrations"][str(target_source_idx)] = stored.to_dict()
-                if target_entry is not None:
-                    target_entry.sync_calibration = stored.to_dict()
-            else:
-                if target_source_idx is not None and "sync_calibrations" in self._workflow_options:
-                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
-                if target_entry is not None:
-                    target_entry.sync_calibration = None
-
+            offset_ms = round(cal_obj.segments[0].shift_ms)
             negligible = self._negligible_sync_offset(offset_ms, cal_obj, target_entry)
             if negligible:
                 offset_ms = 0
-            if self._apply_source_sync_offset(target_file_id, offset_ms, previous_calibration=previous_target):
-                self._sync_entry_calibrations()
+            if self._set_source_calibration(target_file_id, cal_obj, negligible=negligible):
                 self._track_table.refresh_all_entries_info()
                 offset_label = f"{int(offset_ms):+d}"
                 confidence_label = f"{float(confidence):.2f}"
@@ -2476,6 +2644,7 @@ class RemuxPanel(QWidget):
                             confidence=confidence_label,
                         ),
                     )
+                self._propagate_sync({target_file_id, released})
                 self._rebuild_preview()
                 self._emit_signals()
         finally:
@@ -2514,7 +2683,11 @@ class RemuxPanel(QWidget):
             dialog_title = translate_text("Source de référence")
             dialog_prompt = translate_text("Choisir la source audio qui servira de référence.")
 
-        last_reference = self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None
+        link = self._sync_links.get(entry.file_id)
+        last_reference = next(
+            (choice for _label, choice in choices if link is not None and choice.entry_id == link.reference_entry_id),
+            None,
+        ) or (self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None)
         if last_reference is not None and any(choice is last_reference for _label, choice in choices):
             reference_entry = last_reference
         elif len(choices) > 1:
@@ -2543,68 +2716,36 @@ class RemuxPanel(QWidget):
         if reference_entry is not None:
             reference_source = self._find_source(reference_entry.file_id)
 
-        target_source_idx = self._source_index_for_file_id(entry.file_id)
-        existing_calib = entry.sync_calibration
-        if existing_calib is None and target_source_idx is not None:
-            existing_calib = self._workflow_options.get("sync_calibrations", {}).get(str(target_source_idx))
-
-        from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
-        dialog = SyncStudioDialog(
-            target_entry=entry,
-            target_source_path=target_source.path,
-            target_stream_index=int(entry.mkv_tid),
-            reference_entry=reference_entry,
-            reference_source_path=reference_source.path if reference_source else None,
-            reference_stream_index=int(reference_entry.mkv_tid) if reference_entry else None,
-            calibration=existing_calib,
-            ffmpeg_bin=self._config.tool_ffmpeg,
-            ffprobe_bin=self._config.tool_ffprobe,
-            parent=self,
+        shown = self._relative_sync_calibration(entry, reference_entry)
+        dialog = self._sync_studio_dialog(
+            entry, target_source, reference_entry, reference_source, shown,
             quick_validated=self._audio_sync_results.get(entry.entry_id, ("", False))[1],
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            new_calibration, new_offset = dialog.result_calibration()
-            # Coupures ou cadence : la calibration complète suit la source (pas seulement son départ).
-            is_multi = effective_calibration(new_calibration) is not None
-            calib_dict = new_calibration.to_dict() if is_multi else None
-            previous_calibration = self._chapter_sync_calibration_for_index(target_source_idx)
-
-            if target_source_idx is not None:
-                if "sync_calibrations" not in self._workflow_options:
-                    self._workflow_options["sync_calibrations"] = {}
-                if is_multi:
-                    self._workflow_options["sync_calibrations"][str(target_source_idx)] = calib_dict
-                else:
-                    self._workflow_options["sync_calibrations"].pop(str(target_source_idx), None)
-
-            # Reporter la synchro sur toutes les pistes audio/sous-titres de la même source
-            affected_count = 0
-            for sf in self._source_files:
-                if sf.id == entry.file_id:
-                    for t in sf.tracks:
-                        if t.track_type in {"audio", "subtitle"}:
-                            t.time_shift_ms = int(new_offset)
-                            t.sync_calibration = calib_dict
-
-            for t in self._track_table.current_tracks():
-                if t.file_id == entry.file_id and t.track_type in {"audio", "subtitle"}:
-                    t.time_shift_ms = int(new_offset)
-                    t.sync_calibration = calib_dict
-                    affected_count += 1
-
-            self._apply_source_sync_offset(entry.file_id, new_offset, previous_calibration=previous_calibration)
+            measured, _relative_offset = dialog.result_calibration()
+            # Validé sans modification : rien n'est appliqué (une référence à silences ajoutés
+            # ne se retraverse pas exactement : instants de silence sans audio d'origine).
+            if measured is shown:
+                self.log_message.emit("INFO", translate_text("Synchro Studio : aucune modification, synchro inchangée."))
+                return
+            # Synchro réglée face à l'audio d'origine de la référence : même application que les mesures.
+            new_calibration, released = self._link_measured_sync(entry.file_id, reference_entry, measured)
+            self._set_source_calibration(entry.file_id, new_calibration)
+            self._propagate_sync({entry.file_id, released})
+            new_offset = round(new_calibration.segments[0].shift_ms)
+            affected_count = sum(
+                1 for track in self._track_table.current_tracks()
+                if track.file_id == entry.file_id and track.track_type in {"audio", "subtitle"}
+            )
             if entry.track_type == "audio" and reference_entry is not None and entry.entry_id in self._auto_sync_entry_ids:
                 self._audio_sync_results[entry.entry_id] = (
                     reference_entry.entry_id, bool(getattr(dialog, "quick_validated", False)),
                 )
-            self._sync_entry_calibrations()
             self._track_table.refresh_all_entries_info()
             self._rebuild_preview()
             self._emit_signals()
 
-            cuts_info = (
-                f" ({len(new_calibration.segments) - 1} coupure(s))" if len(new_calibration.segments) > 1 else ""
-            )
+            cuts_info = f" ({new_calibration.cuts_count} coupure(s))" if new_calibration.cuts_count else ""
             self.log_message.emit(
                 "OK",
                 translate_text(
@@ -2617,11 +2758,7 @@ class RemuxPanel(QWidget):
             )
             reviewed = tuple(getattr(dialog, "review_ranges_ms", ()) or ())
             if reviewed:
-                from core.workflows.audio_sync import format_sync_ranges
-                self.log_message.emit("INFO", translate_text(
-                    "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
-                    zones=format_sync_ranges(reviewed),
-                ))
+                self._log_sync_reviewed(reviewed)
 
 
     def update_video_track_encoding(self, plans) -> None:

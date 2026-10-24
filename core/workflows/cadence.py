@@ -55,6 +55,30 @@ class CadenceMismatch:
             return 1.0
         return 1.0 / self.speed_factor
 
+    def inverse(self) -> CadenceMismatch:
+        """Conversion réciproque (25 → 23,976 devient 23,976 → 25)."""
+        reverse = {
+            CadenceType.PAL_TO_FILM_23976: CadenceType.FILM_23976_TO_PAL,
+            CadenceType.FILM_23976_TO_PAL: CadenceType.PAL_TO_FILM_23976,
+            CadenceType.PAL_TO_FILM_24: CadenceType.FILM_24_TO_PAL,
+            CadenceType.FILM_24_TO_PAL: CadenceType.PAL_TO_FILM_24,
+        }
+        ratio = ""
+        if self.speed_ratio:
+            try:
+                ratio = str(1 / Fraction(self.speed_ratio))
+            except (ValueError, ZeroDivisionError):
+                ratio = ""
+        return CadenceMismatch(
+            cadence_type=reverse.get(self.cadence_type, self.cadence_type),
+            source_fps=self.target_fps,
+            target_fps=self.source_fps,
+            speed_factor=1.0 / self.speed_factor if self.speed_factor > 0 else 1.0,
+            confidence=self.confidence,
+            detection_method=self.detection_method,
+            speed_ratio=ratio,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "cadence_type": self.cadence_type.value,

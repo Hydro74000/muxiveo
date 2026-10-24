@@ -134,6 +134,7 @@ def _review_panel(choice):
         _confirm_coherent_sync=lambda *_a: choice,
         _on_audio_sync_done=lambda *args: calls["done"].append(args),
         _review_sync_proposal=lambda *args: calls["studio"].append(args),
+        _log_sync_proposal_dropped=lambda _target: calls["log"].append(("INFO", "non appliquée")),
     )
     calibration = SyncCalibration.linear(-5466)
     ranges = ((155998.0, 188000.0),)
@@ -177,8 +178,9 @@ class _AcceptingStudio:
 
 
 @pytest.mark.parametrize("choice", ["apply", "review"])
-def test_apply_and_review_both_reset_a_shifted_reference(qt_app, tmp_path, monkeypatch, choice):
-    """Audit : référence à +250 ms, proposition à −320 ms ; les deux parcours remettent la référence à zéro."""
+def test_apply_and_review_share_the_same_application(qt_app, tmp_path, monkeypatch, choice):
+    """Audit : référence à +250 ms, proposition à −320 ms ; les deux parcours donnent le même résultat :
+    la cible suit la position de la référence dans la sortie (−320 + 250)."""
     from core.config import AppConfig
     from tests.test_remux import _COLOR_A, _COLOR_B, _track
     from ui.panels.remux_panel.panel import RemuxPanel
@@ -202,33 +204,72 @@ def test_apply_and_review_both_reset_a_shifted_reference(qt_app, tmp_path, monke
         ranges = ((1000.0, 40000.0),)
         panel._on_audio_sync_review(target.entry_id, reference.entry_id, SyncCalibration.linear(-320), ranges)
 
-        assert (reference.time_shift_ms, target.time_shift_ms) == (0, -320)
+        assert (reference.time_shift_ms, target.time_shift_ms) == (250, -70)
         assert finished == [True]
         assert [kwargs["review_ranges_ms"] for kwargs in _AcceptingStudio.opened] == ([ranges] if choice == "review" else [])
     finally:
         panel.close()
 
 
-def test_review_abandoned_in_studio_leaves_track_unchanged(qt_app, tmp_path, monkeypatch):
+def test_manual_studio_validation_follows_a_shifted_reference(qt_app, tmp_path, monkeypatch):
+    """Studio ouvert à la main : réglage face à l'audio d'origine de la référence, cible placée comme
+    pour une synchro auto (elle suit la position de la référence dans la sortie)."""
+    from core.config import AppConfig
+    from core.i18n import translate_text
+    from tests.test_remux import _COLOR_A, _COLOR_B, _track
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    class _ManualStudio(_AcceptingStudio):
+        def result_calibration(self):
+            return SyncCalibration.linear(-320), -320
+
+    monkeypatch.setattr(mod, "SyncStudioDialog", _ManualStudio)
+    panel = RemuxPanel(AppConfig())
+    try:
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"))
+        monkeypatch.setattr(panel, "_audio_sync_reference_choices", lambda _entry: [("VO", reference)])
+        panel._apply_source_sync_offset("reference", 250)
+        logs: list[tuple[str, str]] = []
+        panel.log_message.connect(lambda level, text: logs.append((level, text)))
+
+        _AcceptingStudio.opened.clear()
+        panel._on_sync_studio_requested(target)
+
+        # Affichage relatif à l'audio d'origine de la référence : cible non décalée = −250 ms.
+        assert [s.shift_ms for s in _AcceptingStudio.opened[0]["calibration"].segments] == [-250]
+        assert (reference.time_shift_ms, target.time_shift_ms) == (250, -70)
+        assert ("INFO", translate_text(
+            "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.",
+            reference="reference",
+        )) in logs
+    finally:
+        panel.close()
+
+
+def test_review_abandoned_in_studio_leaves_track_unchanged(qt_app, tmp_path):
     from PySide6.QtWidgets import QDialog
     from ui.panels.remux_panel import panel as panel_mod
-    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
 
     class _RejectingStudio(_AcceptingStudio):
         def exec(self):
             return QDialog.DialogCode.Rejected
 
-    monkeypatch.setattr(mod, "SyncStudioDialog", _RejectingStudio)
     target = SimpleNamespace(entry_id="target", mkv_tid=2, file_id="f1")
     reference = SimpleNamespace(entry_id="reference", mkv_tid=1, file_id="f0")
     finished: list[bool] = []
     done: list[tuple] = []
     fake = SimpleNamespace(
         _find_source=lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"),
-        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
         log_message=SimpleNamespace(emit=lambda *_a: None),
         audio_sync_finished=SimpleNamespace(emit=lambda ok, _meta: finished.append(ok)),
         _on_audio_sync_done=lambda *args: done.append(args),
+        _sync_studio_dialog=lambda *_a, **_k: _RejectingStudio(),
+        _log_sync_proposal_dropped=lambda _target: None,
     )
     panel_mod.RemuxPanel._review_sync_proposal(
         cast(Any, fake), cast(Any, target), cast(Any, reference), SyncCalibration.linear(-320), ((0.0, 1.0),),

@@ -32,6 +32,7 @@ def update_chapters_from_sources(panel: "RemuxPanel") -> None:
 def reset_empty_state(panel: "RemuxPanel") -> None:
     panel._color_index = 0
     panel._source_sync_offsets_ms.clear()
+    panel._sync_links.clear()
     panel._auto_sync_entry_ids.clear()
     panel._chapter_sync_cancelled_source_ids.clear()
     panel._track_table.clear_all()

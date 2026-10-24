@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor
 
 from core.inspector import FileInfo, fmt_timecode_display
 from core.media_info_fetcher import clean_text_for_search, extract_year_from_text
+from core.workflows.sync_calibration import SyncCalibration
 
 # Hauteurs fixes pour les éléments de la liste de fichiers
 _FILE_ROW_H = 52
@@ -26,6 +27,20 @@ _TRACK_INFO_OFFSET_NEG_COLOR = QColor("#d92f2f")
 _TRACK_INFO_OFFSET_POS_COLOR = QColor("#1f9d55")
 _TRACK_INFO_OFFSET_COLOR = _TRACK_INFO_OFFSET_NEG_COLOR
 _TRACK_INFO_CUTS_COLOR = QColor("#e5a50a")
+
+
+@dataclass(frozen=True)
+class SyncLink:
+    """Synchro d'une source mesurée face à la piste d'une autre source : elle suit sa référence.
+
+    ``relative`` : source → audio d'origine de la référence ; la synchro appliquée est
+    ``compose_calibrations(relative, position de la référence dans la sortie)``.
+    """
+
+    reference_file_id: str
+    reference_entry_id: str
+    relative: SyncCalibration
+
 
 _TC_RE = re.compile(r"^(\d+):(\d{2}):(\d{2})(?:[.,](\d+))?$")
 

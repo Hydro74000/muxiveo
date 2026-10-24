@@ -1410,6 +1410,11 @@ def _apply_decision_profile_rules(
         for entry_id, tags in temporary_tags_by_entry_id.items()
         if tags
     }
+    # Champs écrits par une règle, même à valeur inchangée (piste → champs).
+    written: dict[str, list[str]] = {}
+    for entry_id, field in proposed:
+        written.setdefault(entry_id, []).append(field)
+    report["written_fields"] = {entry_id: sorted(fields) for entry_id, fields in written.items()}
     report["valid"] = not report["conflicts"] and not report["ambiguous_matches"]
     return DecisionProfileResult(tracks=working, report=report, profile=dict(profile))
 

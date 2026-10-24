@@ -259,6 +259,7 @@ class _TrackTable(QTableWidget):
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
     sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
     hdr_inspect_requested = Signal(object)  # TrackEntry (vidéo)
+    time_shift_edited = Signal(object)  # TrackEntry — décalage saisi dans le dialogue d'édition
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -954,6 +955,7 @@ class _TrackTable(QTableWidget):
     def _open_edit_dialog(self, entry: TrackEntry) -> None:
         if entry.embedded_caption_parent_id:
             return
+        previous_shift = int(entry.time_shift_ms or 0)
         dlg = TrackEditDialog(entry, parent=self)
         if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
             row = self._find_row_for_entry(entry)
@@ -970,6 +972,8 @@ class _TrackTable(QTableWidget):
                 self.blockSignals(False)
                 if lang_item is not None:
                     self.itemChanged.emit(lang_item)
+            if int(entry.time_shift_ms or 0) != previous_shift:
+                self.time_shift_edited.emit(entry)
 
     def update_audio_meta(
         self,

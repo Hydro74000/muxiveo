@@ -9190,5 +9190,29 @@
   "Valider la synchro des pistes": {
     "fra": "Valider la synchro des pistes",
     "eng": "Confirm track sync"
+  },
+  "La source de référence « {reference} » était synchronisée à partir de « {target} » : sa synchro est retirée, la nouvelle mesure prime.": {
+    "fra": "La source de référence « {reference} » était synchronisée à partir de « {target} » : sa synchro est retirée, la nouvelle mesure prime.",
+    "eng": "Reference source “{reference}” was synchronized from “{target}”: its sync is removed, the new measurement prevails."
+  },
+  "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.": {
+    "fra": "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.",
+    "eng": "Reference “{reference}” is itself synchronized: the target follows its position in the output."
+  },
+  "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).": {
+    "fra": "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).",
+    "eng": "Sync of “{source}” recalculated: it follows its reference “{reference}” ({offset} ms)."
+  },
+  "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.": {
+    "fra": "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.",
+    "eng": "Offset of track #{idx} entered manually: source “{source}” no longer follows its reference."
+  },
+  "Synchro Studio : aucune modification, synchro inchangée.": {
+    "fra": "Synchro Studio : aucune modification, synchro inchangée.",
+    "eng": "Sync Studio: no change, sync unchanged."
+  },
+  "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.": {
+    "fra": "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.",
+    "eng": "Sync of “{source}” moved to {offset} ms: its cuts and cadence are kept."
   }
 }

@@ -1816,7 +1816,8 @@ class TestTrackTableUpdateAudioMeta:
         assert panel._last_audio_sync_reference(target) is None
         panel.close()
 
-    def test_audio_sync_done_clears_reference_offset(self, qt_app, tmp_path):
+    def test_audio_sync_done_follows_shifted_reference(self, qt_app, tmp_path):
+        """Référence décalée à la main : la mesure vaut face à son audio d'origine, la cible suit sa position."""
         panel = RemuxPanel(AppConfig())
         target = _track(1, "audio", file_id="target")
         reference = _track(1, "audio", file_id="reference")
@@ -1826,8 +1827,8 @@ class TestTrackTableUpdateAudioMeta:
 
         panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.876)
 
-        assert target.time_shift_ms == -320
-        assert reference.time_shift_ms == 0
+        assert target.time_shift_ms == -70
+        assert reference.time_shift_ms == 250
         panel.close()
 
     def test_audio_sync_done_applies_delta_to_source_tracks_and_chapters(self, qt_app, tmp_path):
@@ -2144,7 +2145,9 @@ class TestTrackTableUpdateAudioMeta:
         panel._track_table.append_tracks(_COLOR_B, [target_audio, target_sub])
         panel._update_chapters_from_sources()
 
-        panel._on_audio_sync_done(reference_audio.entry_id, "", 250, 0.9)
+        # Référence synchronisée sur la cible, puis la cible sur la référence : boucle,
+        # la nouvelle mesure prime et la référence revient à son audio d'origine.
+        panel._on_audio_sync_done(reference_audio.entry_id, target_audio.entry_id, 250, 0.9)
         assert reference_audio.time_shift_ms == 250
         assert reference_sub.time_shift_ms == 250
         assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.25, 10.25]

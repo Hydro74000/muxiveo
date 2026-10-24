@@ -226,6 +226,10 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     panel._source_names.pop(file_id, None)
     panel._source_colors.pop(file_id, None)
     panel._source_sync_offsets_ms.pop(file_id, None)
+    # Liens vers la source retirée : ses dépendantes gardent leur synchro telle quelle.
+    panel._sync_links.pop(file_id, None)
+    for other_id in [other for other, link in panel._sync_links.items() if link.reference_file_id == file_id]:
+        panel._sync_links.pop(other_id, None)
     panel._chapter_sync_cancelled_source_ids.discard(file_id)
     panel._auto_sync_entry_ids.difference_update(
         track.entry_id

@@ -13,7 +13,9 @@ from core.i18n import translate_text
 from core.workflows.workflow_store import load_workflow, save_workflow
 from core.workflows.remux_models import RemuxConfig
 from core.profiles.selectors import remux_config_to_exact_job
+from core.workflows.sync_calibration import SyncCalibration
 from ui.panels.remux_panel.functions import config_builder
+from ui.panels.remux_panel.models import SyncLink
 from ui.panels.remux_panel.theme import _C, _font_px, _scale, _secondary_button
 
 
@@ -118,6 +120,34 @@ def _track_key(track, source_index):
     return key
 
 
+def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
+    """Liens de synchro d'une session (absents des sessions antérieures : synchros conservées telles quelles)."""
+    if not isinstance(payload, dict):
+        return {}
+    count = len(panel._source_files)
+    tracks_by_key = {
+        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
+        for index, source in enumerate(config.sources)
+        for track in source.tracks
+    }
+    links: dict[str, SyncLink] = {}
+    for target_index, item in payload.items():
+        try:
+            target, reference = int(target_index), int(item["reference"])
+            if not (0 <= target < count and 0 <= reference < count) or target == reference:
+                continue
+            relative = SyncCalibration.from_dict(item["calibration"])
+            key = item.get("reference_track")
+            track = tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id"))) \
+                if isinstance(key, dict) else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        links[panel._source_files[target].id] = SyncLink(
+            panel._source_files[reference].id, track.entry_id if track is not None else "", relative,
+        )
+    return links
+
+
 def _remap_selector_sources(job, compact_to_full):
     for item in job.get("tracks", []):
         selector = item.get("selector")
@@ -205,6 +235,20 @@ def _session_job(panel):
             str(source_index[file_id]): offset
             for file_id, offset in panel._source_sync_offsets_ms.items()
             if file_id in source_index
+        },
+        # Synchro mesurée face à la piste d'une autre source : la source suit sa référence.
+        "sync_links": {
+            str(source_index[file_id]): {
+                "reference": source_index[link.reference_file_id],
+                "reference_track": next(
+                    (_track_key(track, source_index[track.file_id]) for track in panel._track_table.current_tracks()
+                     if track.entry_id == link.reference_entry_id and track.file_id in source_index),
+                    None,
+                ),
+                "calibration": link.relative.to_dict(),
+            }
+            for file_id, link in panel._sync_links.items()
+            if file_id in source_index and link.reference_file_id in source_index
         },
         "auto_sync_tracks": [
             _track_key(track, source_index[track.file_id])
@@ -388,6 +432,7 @@ def restore(panel, config, infos, session=None):
         for track in source.tracks
         if (index, track.mkv_tid, track.entry_id if track.is_new else None) in auto_sync_keys
     }
+    panel._sync_links = _restored_sync_links(panel, config, session.get("sync_links"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

@@ -919,3 +919,14 @@ def test_fr_ca_condition_targets_only_quebec_tracks():
     vfq = _audio(2, language="fr-CA", title="VFQ")
     apply_decision_profile(profile, [vff, vfq])
     assert (vff.title, vfq.title) == ("VFF", "Québec")
+
+
+def test_report_lists_fields_written_even_with_an_unchanged_value():
+    track = _audio(1)
+    track.time_shift_ms = 50
+    profile = {"version": 1, "kind": "decision-profile", "name": "Décalage", "rules": [{
+        "id": "r1", "match": {"all": []}, "actions": [{"type": "set_time_shift_ms", "value": 50}],
+    }]}
+    result = apply_decision_profile(profile, [track])
+    assert result.report["written_fields"] == {track.entry_id: ["time_shift_ms"]}
+    assert result.tracks[0].time_shift_ms == 50

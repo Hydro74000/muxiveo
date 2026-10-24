@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from fractions import Fraction
 import math
 from typing import Any
 
@@ -12,6 +13,8 @@ from core.workflows.cadence import CadenceMismatch, CadenceType
 NEGLIGIBLE_SYNC_MS = 5
 # Tolérance des bornes d'une section éditée (arrondis des instants saisis).
 _EDIT_TOLERANCE_MS = 1e-6
+# Composition : jonctions arrondies à la microseconde, recalculées à travers une cadence.
+_COMPOSE_TOLERANCE_MS = 0.01
 
 
 @dataclass(frozen=True)
@@ -96,6 +99,10 @@ class SyncCalibration:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Calibration invalide.") from exc
+
+    def with_start_offset(self, offset_ms: float) -> SyncCalibration:
+        """Départ fixé à `offset_ms`, toute la suite décalée d'autant (coupures et cadence conservées)."""
+        return self._shifted_from(0, float(offset_ms) - self.segments[0].shift_ms)
 
     @property
     def cuts_count(self) -> int:
@@ -313,6 +320,122 @@ def _merged(segments: list[SyncSegment]) -> tuple[SyncSegment, ...]:
             continue
         result.append(segment)
     return tuple(result)
+
+
+def _active_cadence(calibration: SyncCalibration) -> CadenceMismatch | None:
+    mismatch = calibration.cadence_mismatch
+    return mismatch if mismatch is not None and mismatch.cadence_type != CadenceType.NONE else None
+
+
+def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):
+    """(conversion, méthode audio, analyse) de `inner` puis `outer` ; conversions réciproques annulées."""
+    first, second = _active_cadence(inner), _active_cadence(outer)
+    if second is None:
+        return first, inner.cadence_audio_method, inner.cadence_pitch_analysis if first else None
+    if first is None:
+        return second, outer.cadence_audio_method, outer.cadence_pitch_analysis
+    speed = first.speed_factor * second.speed_factor
+    if abs(speed - 1.0) < 1e-9:
+        return None, inner.cadence_audio_method, None
+    ratio = ""
+    if first.speed_ratio and second.speed_ratio:
+        try:
+            ratio = str(Fraction(first.speed_ratio) * Fraction(second.speed_ratio))
+        except (ValueError, ZeroDivisionError):
+            ratio = ""
+    combined = CadenceMismatch(
+        cadence_type=CadenceType.CUSTOM,
+        source_fps=first.source_fps,
+        target_fps=second.target_fps,
+        speed_factor=speed,
+        confidence=min(first.confidence, second.confidence),
+        detection_method="composition",
+        speed_ratio=ratio,
+    )
+    return combined, inner.cadence_audio_method, None
+
+
+def _increasing(segments: list[SyncSegment]) -> tuple[SyncSegment, ...]:
+    """Débuts arrondis à la microseconde, strictement croissants ; décalages égaux fusionnés."""
+    result: list[SyncSegment] = []
+    for segment in segments:
+        start = round(segment.start_ms, 3)
+        if result and start <= result[-1].start_ms:
+            result[-1] = SyncSegment(result[-1].start_ms, segment.shift_ms)
+            continue
+        result.append(SyncSegment(start, segment.shift_ms))
+    return _merged(result)
+
+
+def compose_calibrations(inner: SyncCalibration, outer: SyncCalibration) -> SyncCalibration:
+    """Synchro de la cible sur la sortie : `inner` (cible → audio d'origine de la référence),
+    puis `outer` (référence → sortie).
+
+    Chaque jonction de la référence tombant dans un segment de la cible y crée une jonction ;
+    les conversions de cadence se multiplient (réciproques : annulées).
+
+    Après un saut négatif de la cible (contenu absent de la référence), le morceau suit le
+    segment de la référence où la lecture reprend : un silence ajouté à cet endroit de la
+    référence reçoit ce contenu au lieu de le perdre. Composer avec `invert_calibration(outer)`
+    puis `outer` redonne ainsi la synchro de départ.
+    """
+    inner_ratio, outer_ratio = inner._stretch_ratio(), outer._stretch_ratio()
+    cadence, method, analysis = _combined_cadence(inner, outer)
+    outer_starts = [segment.start_ms for segment in outer.segments]
+    played = {index for _start, _stop, index in outer.output_ranges()}
+    pieces: list[SyncSegment] = []
+    # Position la plus avancée déjà lue dans la référence (même règle que `output_ranges`).
+    reached = -math.inf
+    for index, segment in enumerate(inner.segments):
+        stop = inner.segments[index + 1].start_ms if index + 1 < len(inner.segments) else math.inf
+        reference_start = segment.start_ms * inner_ratio + segment.shift_ms
+        reference_stop = stop * inner_ratio + segment.shift_ms
+        resume = max(reference_start, reached)
+        reached = max(reached, reference_stop)
+        current = max(i for i, start in enumerate(outer_starts)
+                      if i == 0 or start <= resume + _COMPOSE_TOLERANCE_MS)
+        if resume > reference_start:
+            # Contenu en surplus repris : jamais sur un segment de la référence entièrement coupé.
+            while current not in played and current + 1 < len(outer.segments):
+                current += 1
+        pieces.append(SyncSegment(segment.start_ms,
+                                  segment.shift_ms * outer_ratio + outer.segments[current].shift_ms))
+        for following in range(current + 1, len(outer.segments)):
+            if outer_starts[following] >= reference_stop - _COMPOSE_TOLERANCE_MS:
+                break
+            pieces.append(SyncSegment((outer_starts[following] - segment.shift_ms) / inner_ratio,
+                                      segment.shift_ms * outer_ratio + outer.segments[following].shift_ms))
+    # Mesures ponctuelles relatives à la référence : valables telles quelles seulement si elle n'est pas déplacée.
+    unchanged = _active_cadence(outer) is None and outer.segments == (SyncSegment(0, 0.0),)
+    return SyncCalibration(
+        _increasing(pieces),
+        min(inner.confidence, outer.confidence),
+        inner.samples if unchanged else (),
+        cadence_mismatch=cadence,
+        cadence_audio_method=method,
+        cadence_pitch_analysis=analysis,
+    )
+
+
+def invert_calibration(calibration: SyncCalibration) -> SyncCalibration:
+    """Réciproque (sortie → piste) : chaque plage jouée revient à son segment ; une partie coupée
+    n'a pas d'antécédent et un silence ajouté revient à la plage qui le suit (saut négatif,
+    rendu à son silence par `compose_calibrations`)."""
+    ranges = calibration.output_ranges()
+    if not ranges:
+        raise ValueError("Calibration sans plage jouée.")
+    ratio = calibration._stretch_ratio()
+    pieces = [
+        SyncSegment(0.0 if position == 0 else ranges[position - 1][1], -calibration.segments[index].shift_ms / ratio)
+        for position, (_start, _stop, index) in enumerate(ranges)
+    ]
+    mismatch = _active_cadence(calibration)
+    return SyncCalibration(
+        _increasing(pieces),
+        calibration.confidence,
+        cadence_mismatch=mismatch.inverse() if mismatch is not None else None,
+        cadence_audio_method=calibration.cadence_audio_method,
+    )
 
 
 def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | None) -> list[str]:
