@@ -44,9 +44,9 @@ class _NotesBrowser(QTextBrowser):
     Couvre les ressources demandées au document (images de fond, feuilles de style) ; les images en ligne sont
     retirées avant affichage (`_strip_images`), le moteur d'images de Qt lisant leur fichier sans passer par ici."""
 
-    def loadResource(self, type: int, name: QUrl | str) -> object:  # noqa: A002 — signature Qt
+    def loadResource(self, resource_type: int, name: QUrl | str) -> object:
         # Valeur non nulle : le repli de QTextDocument (lecture directe du fichier local) n'est pas tenté.
-        if type == QTextDocument.ResourceType.ImageResource.value:
+        if resource_type == QTextDocument.ResourceType.ImageResource.value:
             image = QImage(1, 1, QImage.Format.Format_ARGB32)
             image.fill(0)
             return image

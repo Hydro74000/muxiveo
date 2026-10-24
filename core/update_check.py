@@ -43,8 +43,9 @@ DEFAULT_UPDATE_CHANNEL = UPDATE_CHANNEL_UNSTABLE if APP_IS_UNSTABLE_BUILD else U
 
 _VERSION_RE = re.compile(r"^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$")
 # Tag publié accepté (flux ou API) : chiffres, points et suffixe alphanumérique. Rien d'autre ne peut atteindre un
-# chemin d'URL (`/`, `?`, `#`, `..`) ni un libellé Qt interprété en HTML (`<`, `"`).
-_REMOTE_TAG_RE = re.compile(r"^[vV]?\d+(?:\.\d+){0,2}(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
+# chemin d'URL (`/`, `?`, `#`, `..`) ni un libellé Qt interprété en HTML (`<`, `"`). Sans quantificateur imbriqué :
+# identifiants vides du suffixe (points doublés, en tête ou en fin) refusés par `is_release_tag`.
+_REMOTE_TAG_RE = re.compile(r"^[vV]?\d+(?:\.\d+){0,2}(?:-([0-9A-Za-z.]+))?$")
 _UNSTABLE_RE = re.compile(r"^-unstable\.(\d+)\.(\d+)")
 
 
@@ -120,7 +121,11 @@ def display_version(version: str) -> str:
 
 def is_release_tag(tag: str) -> bool:
     """True si `tag` a la forme d'un tag de release publiable (voir `_REMOTE_TAG_RE`)."""
-    return bool(_REMOTE_TAG_RE.match((tag or "").strip())) and bool(version_key(tag))
+    match = _REMOTE_TAG_RE.match((tag or "").strip())
+    if match is None:
+        return False
+    suffix = match.group(1)
+    return (suffix is None or all(suffix.split("."))) and bool(version_key(tag))
 
 
 def is_repository_url(url: str, prefix: str = APP_REPOSITORY_URL) -> bool:
