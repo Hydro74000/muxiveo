@@ -65,6 +65,7 @@ from core.workflows.encode.interpolation import (
     expand_rpu_file,
     ffprobe_beside,
     interpolation_source_from_probe,
+    decode_normalization_rate,
     multiply_fps_expr,
     parse_rife_progress,
 )
@@ -139,7 +140,7 @@ class TestInterpolationSource:
             format_start_time="0.000000",
         )
         assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "", "24000/1001",
-                                           colorspace="bt2020nc")
+                                           nominal_rate="24000/1001", colorspace="bt2020nc")
         assert info.decode_rate == "24000/1001"
 
     def test_untagged_fallbacks(self):
@@ -176,6 +177,27 @@ class TestInterpolationSource:
         cfr = interpolation_source_from_probe({"r_frame_rate": "30000/1001", "avg_frame_rate": "2997/100"})
         assert vfr.is_vfr and vfr.cfr_rate == "30/1"
         assert not cfr.is_vfr and cfr.cfr_rate == ""
+        assert cfr.nominal_rate == "30000/1001"
+
+    @pytest.mark.parametrize("mode,deint,probe,expected", [
+        # sans « une image par champ » : normalisation VFR seule, inchangée
+        ("", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, ""),
+        ("", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "25/1"),
+        ("send_frame", "interlaced", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "25/1"),
+        # CFR entièrement désentrelacé : flux régulier, aucun fps=
+        ("send_field", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, ""),
+        # D19 : sortie irrégulière (interlaced) ou VFR → double de la cadence nominale
+        ("send_field", "interlaced", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, "50/1"),
+        ("send_field", "interlaced", {"r_frame_rate": "30000/1001", "avg_frame_rate": "2997/100"}, "60000/1001"),
+        ("send_field", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "50/1"),
+        ("send_field_nospatial", "all", {"r_frame_rate": "30000/1001", "avg_frame_rate": "25/1"}, "60000/1001"),
+        # r_frame_rate = cadence des champs (H.264 entrelacé) : déjà le double
+        ("send_field", "all", {"r_frame_rate": "50/1", "avg_frame_rate": "25/1"}, "50/1"),
+    ])
+    def test_decode_normalization_rate(self, mode, deint, probe, expected):
+        filters = VideoFilterSettings(yadif_enabled=bool(mode), yadif_mode=mode or "send_frame", yadif_deint=deint)
+        info = interpolation_source_from_probe(probe)
+        assert decode_normalization_rate(info, _video(filters=filters)) == expected
 
     @pytest.mark.parametrize("probe_name,nvencc_name", [
         ("smpte428", "st428"), ("smpte431", "st431-2"), ("smpte432", "st432-1"),
@@ -389,6 +411,16 @@ class TestVideoOnlyBuilder:
         [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
         decode = command_stages(cmd)[0]
         assert decode[decode.index("-vf") + 1] == "fps=30/1"
+
+    def test_vfr_field_deinterlace_normalized_once_at_double_rate(self, tmp_path):
+        # D19 : un fps= à la cadence source après YADIF « une image par champ » annulait le doublement.
+        video = _video(filters=VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field"))
+        cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video)
+        info = interpolation_source_from_probe({"r_frame_rate": "25/1", "avg_frame_rate": "49/2"})
+        [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
+        vf = (decode := command_stages(cmd)[0])[decode.index("-vf") + 1]
+        assert vf.startswith("yadif=send_field:") and vf.endswith(",fps=50/1")
+        assert vf.count("fps=") == 1
 
     def test_negative_offset_cuts_at_decode(self, tmp_path):
         video = _video()
@@ -874,6 +906,13 @@ class TestNvenccInterpolationDecode:
         with_vf = [*self._DECODE[:6], "-vf", "yadif", *self._DECODE[6:]]
         appended = _interpolation_decode_cmd(with_vf, InterpolationSource(is_vfr=True, cfr_rate="30/1"))
         assert appended[appended.index("-vf") + 1] == "yadif,fps=30/1"
+
+    def test_field_deinterlace_rate_from_video(self):
+        with_vf = [*self._DECODE[:6], "-vf", "yadif=send_field:auto:all", *self._DECODE[6:]]
+        video = _video(filters=VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field"))
+        info = InterpolationSource(is_vfr=True, cfr_rate="30000/1001", frame_rate="25/1")
+        cmd = _interpolation_decode_cmd(with_vf, info, video)
+        assert cmd[cmd.index("-vf") + 1] == "yadif=send_field:auto:all,fps=60000/1001"
 
     def test_nvencc_dynamic_hdr_accepted(self, qt_app, tmp_path):
         _ = qt_app

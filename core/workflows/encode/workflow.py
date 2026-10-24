@@ -126,6 +126,7 @@ from core.workflows.encode.interpolation import (
     rife_support_errors as _rife_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
+    decode_normalization_rate as _decode_normalization_rate,
     parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
@@ -335,26 +336,32 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
-def _interpolation_decode_cmd(decode_cmd: list[str], info: _InterpolationSource) -> list[str]:
+def _interpolation_decode_cmd(
+    decode_cmd: list[str],
+    info: _InterpolationSource,
+    video: VideoEncodeSettings | None = None,
+) -> list[str]:
     """Décodage y4m aligné trame à trame pour RIFE.
 
     ``-fps_mode passthrough`` : aucune trame dupliquée ou supprimée par ffmpeg
-    (les métadonnées dynamiques sont indexées par trame) ; source VFR
-    normalisée CFR à sa cadence nominale.
+    (les métadonnées dynamiques sont indexées par trame) ; un seul ``fps=`` :
+    source VFR normalisée CFR à sa cadence nominale, ou au double après YADIF
+    « une image par champ » (``decode_normalization_rate``).
     """
     cmd = list(decode_cmd)
+    rate = _decode_normalization_rate(info, video) if video is not None else info.cfr_rate
 
     def insert_before_output(args: list[str]) -> None:
         # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
         at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
         cmd[at:at] = args
 
-    if info.cfr_rate:
+    if rate:
         if "-vf" in cmd:
             index = cmd.index("-vf") + 1
-            cmd[index] = f"{cmd[index]},fps={info.cfr_rate}"
+            cmd[index] = f"{cmd[index]},fps={rate}"
         else:
-            insert_before_output(["-vf", f"fps={info.cfr_rate}"])
+            insert_before_output(["-vf", f"fps={rate}"])
     if "-fps_mode" not in cmd:
         insert_before_output(["-fps_mode", "passthrough"])
     return cmd
@@ -1074,7 +1081,7 @@ class EncodeWorkflow(QObject):
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
         )
-        return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info)])
+        return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 
     def _run_nvencc_direct_output(
         self,

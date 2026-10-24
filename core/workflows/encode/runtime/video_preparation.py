@@ -25,7 +25,12 @@ from core.workflows.encode.domain import (
     video_codec_args,
     video_codec_args_bitrate,
 )
-from core.workflows.encode.interpolation import InterpolationSource, build_decode_stage, build_rife_stage
+from core.workflows.encode.interpolation import (
+    InterpolationSource,
+    build_decode_stage,
+    build_rife_stage,
+    decode_normalization_rate,
+)
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
 
@@ -138,9 +143,11 @@ class VideoOnlyCommandBuilder:
         decode_pre.extend(raw_input_rate_args(video, source))
         if offset_ms < 0:
             decode_pre.extend(cb.offset_input_args(offset_ms))
-        # Source VFR : normalisation CFR à la cadence nominale (le y4m est CFR) ;
-        # les trames dupliquées deviennent des paires figées, recopiées par RIFE.
-        decode_vf = ",".join(part for part in (build_vf(video), f"fps={info.cfr_rate}" if info.cfr_rate else "") if part)
+        # Un seul fps= (le y4m est CFR) : cadence nominale d'une source VFR, ou double
+        # après YADIF « une image par champ » ; les trames dupliquées deviennent des
+        # paires figées, recopiées par RIFE.
+        rate = decode_normalization_rate(info, video)
+        decode_vf = ",".join(part for part in (build_vf(video), f"fps={rate}" if rate else "") if part)
         decode = build_decode_stage(
             cb.ffmpeg_bin,
             source,
