@@ -268,7 +268,7 @@ class FrameInterpolationSettings:
     enabled: bool = False
     factor: float = 2                 # multiplicateur de cadence (2,5 = 24 -> 60)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
+    quality: str = "quality"          # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)

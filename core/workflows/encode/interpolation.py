@@ -78,7 +78,7 @@ INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset(
 INTERPOLATION_ULTRA_QUALITIES: frozenset[str] = frozenset(
     name for name, preset in INTERPOLATION_PRESETS.items() if preset.ultra
 )
-INTERPOLATION_DEFAULT_QUALITY = "balanced"
+INTERPOLATION_DEFAULT_QUALITY = "quality"
 INTERPOLATION_FACTORS: tuple[float, ...] = (2, 2.5, 3, 4)
 # Anciennes cadences cibles, conservées pour la compatibilité des projets enregistrés.
 INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")

@@ -1913,7 +1913,7 @@ class EncodePanel(QWidget):
             if value == "light":
                 self._interp_quality_combo.insertSeparator(self._interp_quality_combo.count())
             self._interp_quality_combo.addItem(label, value)
-        self._set_combo_data(self._interp_quality_combo, "balanced")
+        self._set_combo_data(self._interp_quality_combo, INTERPOLATION_DEFAULT_QUALITY)
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_mode_combo = QComboBox()
         self._interp_mode_combo.setStyleSheet(_combo_style())
@@ -2094,7 +2094,7 @@ class EncodePanel(QWidget):
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
             factor=2 if is_target else float(choice),
             target_fps=choice if is_target else "",
-            quality=str(self._interp_quality_combo.currentData() or "balanced"),
+            quality=str(self._interp_quality_combo.currentData() or INTERPOLATION_DEFAULT_QUALITY),
             mode="fast" if self._interp_quality_combo.currentData() == "light"
             else str(self._interp_mode_combo.currentData() or "normal"),
             tta=int(self._interp_tta_combo.currentData() or 1),

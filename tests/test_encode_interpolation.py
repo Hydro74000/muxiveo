@@ -738,7 +738,7 @@ class TestWorkflowInterpolation:
         for name in ("rife-v4.6", "rife-v4.15-mvo1"):
             (tmp_path / "rife-models" / name).mkdir(parents=True)
         (tmp_path / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
-        balanced = _cfg(tmp_path, _video(interpolation=_interp()))
+        balanced = _cfg(tmp_path, _video(interpolation=_interp(quality="balanced")))
         quality = _cfg(tmp_path, _video(interpolation=_interp(quality="quality")))
         fast = _cfg(tmp_path, _video(interpolation=_interp(quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
