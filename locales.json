@@ -5219,10 +5219,6 @@
     "fra": "Mise à jour disponible",
     "eng": "Update available"
   },
-  "Muxiveo v{version} est disponible (version actuelle : {current}).": {
-    "fra": "Muxiveo v{version} est disponible (version actuelle : {current}).",
-    "eng": "Muxiveo v{version} is available (current version: {current})."
-  },
   "Installer": {
     "fra": "Installer",
     "eng": "Install"
@@ -9206,5 +9202,61 @@
   "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.": {
     "fra": "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.",
     "eng": "Sync of “{source}” moved to {offset} ms: its cuts and cadence are kept."
+  },
+  "Afficher une popup quand une mise à jour est disponible": {
+    "fra": "Afficher une popup quand une mise à jour est disponible",
+    "eng": "Show a popup when an update is available"
+  },
+  "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »).": {
+    "fra": "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »).",
+    "eng": "At startup, a window presents the new version and its release notes (collapsed) and offers to install it. Otherwise, the new version is only shown at the bottom of the sidebar. Can also be turned off from the popup (\"Don't show update popups again\")."
+  },
+  "Muxiveo v{version} est disponible": {
+    "fra": "Muxiveo v{version} est disponible",
+    "eng": "Muxiveo v{version} is available"
+  },
+  "Version actuelle : {current}.": {
+    "fra": "Version actuelle : {current}.",
+    "eng": "Current version: {current}."
+  },
+  "Notes de version": {
+    "fra": "Notes de version",
+    "eng": "Release notes"
+  },
+  "Ne plus afficher de popup de mise à jour": {
+    "fra": "Ne plus afficher de popup de mise à jour",
+    "eng": "Don't show update popups again"
+  },
+  "La nouvelle version reste signalée en bas du menu latéral. Réactivation : Paramètres → Interface.": {
+    "fra": "La nouvelle version reste signalée en bas du menu latéral. Réactivation : Paramètres → Interface.",
+    "eng": "The new version is still shown at the bottom of the sidebar. To turn popups back on: Settings → Interface."
+  },
+  "Chargement des notes de version…": {
+    "fra": "Chargement des notes de version…",
+    "eng": "Loading release notes…"
+  },
+  "Notes de version indisponibles ({reason}). Elles restent consultables sur la page de la release.": {
+    "fra": "Notes de version indisponibles ({reason}). Elles restent consultables sur la page de la release.",
+    "eng": "Release notes unavailable ({reason}). They can still be read on the release page."
+  },
+  "Aucune note de version publiée pour cette version.": {
+    "fra": "Aucune note de version publiée pour cette version.",
+    "eng": "No release notes published for this version."
+  },
+  "Préférence de mise à jour non enregistrée : {reason}": {
+    "fra": "Préférence de mise à jour non enregistrée : {reason}",
+    "eng": "Update preference not saved: {reason}"
+  },
+  "Popup de mise à jour réactivée.": {
+    "fra": "Popup de mise à jour réactivée.",
+    "eng": "Update popup turned back on."
+  },
+  "Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.": {
+    "fra": "Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.",
+    "eng": "Update popup turned off: turn it back on in Settings → Interface."
+  },
+  "Mise à jour d'extension disponible": {
+    "fra": "Mise à jour d'extension disponible",
+    "eng": "Extension update available"
   }
 }

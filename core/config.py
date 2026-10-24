@@ -1005,6 +1005,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
             {"key": "check_updates", "attr": "check_updates", "kind": "bool", "label": "Vérifier les mises à jour au démarrage", "description": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral."},
+            {"key": "update_popup", "attr": "update_popup", "kind": "bool", "label": "Afficher une popup quand une mise à jour est disponible", "description": "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »)."},
             {"key": "update_channel", "attr": "update_channel", "kind": "choice", "label": "Canal de mise à jour", "description": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.", "options": (("stable", "Stable"), ("unstable", "Unstable"))},
             {"key": "enable_file_logging", "attr": "enable_file_logging", "kind": "bool", "label": "Activer le logging fichier", "description": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
             {"key": "file_logging_level", "attr": "file_logging_level", "kind": "choice", "label": "Niveau de logging fichier", "description": "Standard écrit le flux visible dans la fenêtre. Verbose ajoute les sorties techniques détaillées des outils.", "options": (("standard", "Standard"), ("verbose", "Verbose"))},
@@ -1423,6 +1424,7 @@ class AppConfig:
             False,
         )
         self.check_updates = self._resolve_bool("ui", "check_updates", "ui/check_updates", True)
+        self.update_popup = self._resolve_bool("ui", "update_popup", "ui/update_popup", True)
         self.update_channel = normalize_update_channel(
             self._resolve_text("ui", "update_channel", "ui/update_channel", DEFAULT_UPDATE_CHANNEL)
         )
@@ -1523,6 +1525,7 @@ class AppConfig:
             "true" if self.startup_logs_expanded else "false",
         )
         s.setValue("ui/check_updates", "true" if self.check_updates else "false")
+        s.setValue("ui/update_popup", "true" if self.update_popup else "false")
         s.setValue("ui/update_channel", self.update_channel)
 
         s.setValue("metadata/tmdb_api_key", self.tmdb_api_key)
@@ -1536,6 +1539,12 @@ class AppConfig:
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
+
+    def save_update_popup(self, enabled: bool) -> None:
+        """Popup de mise à jour activée ou non depuis la popup : config.ini (prioritaire) puis QSettings."""
+        self.update_popup = bool(enabled)
+        write_ini_settings({"ui": {"update_popup": "true" if self.update_popup else "false"}})
+        self.save()
 
     def save_last_update_check(self, timestamp: float, latest_version: str = "", channel: str = "") -> None:
         """Mémorise l'horodatage, la version trouvée et le canal de la dernière vérification."""
@@ -1740,6 +1749,7 @@ class AppConfig:
                 "startup_menu_compact": self.startup_menu_compact,
                 "startup_logs_expanded": self.startup_logs_expanded,
                 "check_updates": self.check_updates,
+                "update_popup": self.update_popup,
                 "update_channel": self.update_channel,
             },
             "metadata": {

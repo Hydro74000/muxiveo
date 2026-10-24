@@ -36,6 +36,7 @@ Signal exposé :
 from __future__ import annotations
 
 import copy
+import html
 import json
 import re
 import subprocess
@@ -48,7 +49,7 @@ from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QGuiApplication,
+    QColor, QGuiApplication, QPainter, QPen,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox,
@@ -105,6 +106,7 @@ from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hdr_studio import HdrStudio
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.dialogs.update_dialog import UpdateDialog
 from ui.panels.extensions_panel import ExtensionsPanel
 from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
 from ui.operation_bar import OperationBar, OperationState
@@ -1075,6 +1077,9 @@ class _NavButton(QWidget):
         self.page_index = page_index
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self._checked  = False
+        self._ready    = False
+        self._has_update = False
+        self._label    = label
         self._is_sub   = is_sub
         self._compact  = compact
         self._icon_char = icon_char
@@ -1155,6 +1160,23 @@ class _NavButton(QWidget):
     def isCheckable(self) -> bool:
         return True
 
+    def set_ready(self, ready: bool) -> None:
+        """Point vert du mode étendu : opération prête à lancer depuis cette page."""
+        self._ready = ready
+        self._ready_dot.setVisible(ready or self._has_update)
+
+    def set_update_available(self, available: bool) -> None:
+        """Point vert de mise à jour : à droite du libellé, en pastille sur l'icône en mode compact."""
+        if available == self._has_update:
+            return
+        self._has_update = available
+        self._ready_dot.setVisible(self._ready or available)
+        tooltip = translate_text(self._label)
+        if available:
+            tooltip += " — " + translate_text("Mise à jour d'extension disponible")
+        self.setToolTip(tooltip)
+        self._update_style(self._checked)
+
     def _update_style(self, checked: bool) -> None:
         if checked:
             bg     = _Colors.BG_ACTIVE
@@ -1194,7 +1216,19 @@ class _NavButton(QWidget):
         key = {0: "home", 1: "merge_dovi", 2: "encode", 3: "media", 4: "hybrid", 5: "settings", 6: "extensions",
                7: "hdr"}[self.page_index]
         self._full_icon_lbl.setPixmap(workflow_icon(key, icon_c).pixmap(_scale(18), _scale(18)))
-        self._compact_icon_lbl.setPixmap(workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26)))
+        compact_pixmap = workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26))
+        if self._has_update:
+            # Pastille en haut à droite de l'icône, détourée de la couleur du fond.
+            size = _scale(26)
+            dot = _scale(9)
+            ring = max(1, _scale(2))
+            painter = QPainter(compact_pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(_Colors.BG_ACTIVE if checked else _Colors.BG_SIDEBAR), ring))
+            painter.setBrush(QColor(_Colors.OK))
+            painter.drawEllipse(size - dot - ring // 2, ring // 2, dot, dot)
+            painter.end()
+        self._compact_icon_lbl.setPixmap(compact_pixmap)
         font_size = f"{_font_px(11 if self._is_sub else 12)}px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
@@ -1433,7 +1467,13 @@ class _Sidebar(QWidget):
 
     def set_ready_operations(self, pages: set[int]) -> None:
         for button in self._buttons:
-            button._ready_dot.setVisible(button.page_index in pages)
+            button.set_ready(button.page_index in pages)
+
+    def set_page_update_available(self, index: int, available: bool) -> None:
+        """Point vert de mise à jour sur l'entrée de la page `index` (Extensions)."""
+        for button in self._buttons:
+            if button.page_index == index:
+                button.set_update_available(available)
 
     def set_update_available(self, info: UpdateInfo | None) -> None:
         """Affiche une nouvelle version, ou efface le badge si elle est obsolète."""
@@ -1454,7 +1494,8 @@ class _Sidebar(QWidget):
         else:
             text = f"↑ v{short}"
         self._version_lbl.setText(
-            f'<a href="{info.url}" style="color:{_Colors.ACCENT}; text-decoration:none;">{text}</a>'
+            f'<a href="{html.escape(info.url, quote=True)}" style="color:{_Colors.ACCENT}; text-decoration:none;">'
+            f"{html.escape(text)}</a>"
         )
         self._version_lbl.setToolTip(
             translate_text("Nouvelle version disponible : v{version}", version=info.version)
@@ -2111,10 +2152,14 @@ class MainWindow(QMainWindow):
         panel.remove_requested.connect(self._on_extension_remove_requested)
         panel.trt_enabled_toggled.connect(trt.set_enabled)
         panel.auto_update_toggled.connect(trt.set_auto_update)
+        for ctrl in (rife, trt, fel):
+            ctrl.state_changed.connect(self._refresh_extensions_update_dot, Qt.ConnectionType.QueuedConnection)
+        panel.auto_update_toggled.connect(self._refresh_extensions_update_dot)
         panel.set_rife_state(rife.state())
         panel.set_fel_state(fel.state())
         panel.set_trt_state(trt.state())
         self._dashboard.set_rife_state(rife.state())
+        self._refresh_extensions_update_dot()
         self._encode_panel.rife_install_requested.connect(rife.install)
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
@@ -2122,6 +2167,13 @@ class MainWindow(QMainWindow):
         for ctrl in (rife, trt, fel):
             ctrl.cleanup()
             ctrl.refresh_feed()
+
+    def _refresh_extensions_update_dot(self, *_args: object) -> None:
+        """Point vert sur « Extensions » : une mise à jour attend une action de l'utilisateur."""
+        pending = any(
+            ctrl.manual_update_pending for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)
+        )
+        self._sidebar.set_page_update_available(self._PAGE_INDEX_BY_PANEL_KEY["extensions"], pending)
 
     def _extension_controller(self, plugin_id: str) -> PluginController:
         return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
@@ -3492,6 +3544,7 @@ class MainWindow(QMainWindow):
         self._update_settings: tuple[str, bool] | None = None
         self._update_refresh_pending = False
         self._update_download_cancel: threading.Event | None = None
+        self._update_popup_version = ""     # version déjà présentée par la popup pendant cette session
         self._sidebar.update_requested.connect(self._on_update_requested)
         self._update_available.connect(self._on_update_available, Qt.ConnectionType.QueuedConnection)
         self._update_check_failed.connect(self._on_update_check_failed, Qt.ConnectionType.QueuedConnection)
@@ -3581,6 +3634,22 @@ class MainWindow(QMainWindow):
         )
         if prompt:
             self._show_update_dialog(info)
+        else:
+            self._maybe_popup_update()
+
+    def _maybe_popup_update(self) -> None:
+        """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
+        abandonnée dès le début de la fermeture."""
+        info = self._update_info
+        if (
+            hasattr(self, "_shutdown") or info is None or info.version == self._update_popup_version
+            or not getattr(self._config, "update_popup", True)
+        ):
+            return
+        if self._running or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(2000, self, self._maybe_popup_update)
+            return
+        self._show_update_dialog(info)
 
     def _on_update_requested(self) -> None:
         """Clic sur le badge de version : proposer l'installation ou ouvrir la release."""
@@ -3596,35 +3665,43 @@ class MainWindow(QMainWindow):
         self._show_update_dialog(info)
 
     def _show_update_dialog(self, info: UpdateInfo) -> None:
+        self._update_popup_version = info.version
         kind = detect_install_kind()
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle(translate_text("Mise à jour disponible"))
-        box.setText(
-            translate_text(
-                "Muxiveo v{version} est disponible (version actuelle : {current}).",
-                version=info.version,
-                current=f"v{APP_BUILD_VERSION}",
-            )
-        )
-        notes: list[str] = []
+        remarks: list[str] = []
         if info.prerelease:
-            notes.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
-        install_btn = None
-        if can_self_update(info, kind):
-            install_btn = box.addButton(translate_text("Installer"), QMessageBox.ButtonRole.AcceptRole)
-        elif hint := manual_update_hint():
-            notes.append(translate_text("Mise à jour manuelle : {command}", command=hint))
-        if notes:
-            box.setInformativeText("\n\n".join(notes))
-        release_btn = box.addButton(translate_text("Voir la release"), QMessageBox.ButtonRole.ActionRole)
-        box.addButton(translate_text("Plus tard"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is release_btn:
+            remarks.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
+        can_install = can_self_update(info, kind)
+        if not can_install and (hint := manual_update_hint()):
+            remarks.append(translate_text("Mise à jour manuelle : {command}", command=hint))
+        popup_enabled = bool(getattr(self._config, "update_popup", True))
+        dialog = UpdateDialog(
+            info, current=f"v{APP_BUILD_VERSION}", remarks=remarks, can_install=can_install,
+            popup_enabled=popup_enabled, parent=self,
+        )
+        dialog.exec()
+        choice, wanted = dialog.choice, dialog.popup_enabled
+        dialog.deleteLater()
+        if wanted != popup_enabled:
+            self._set_update_popup(wanted)
+        if choice == UpdateDialog.RELEASE:
             open_external(QUrl(info.url))
-        elif install_btn is not None and clicked is install_btn:
+        elif choice == UpdateDialog.INSTALL:
             self._start_update_install(info, kind)
+
+    def _set_update_popup(self, enabled: bool) -> None:
+        """Préférence changée depuis la popup : enregistrée et reportée dans le panneau Paramètres."""
+        try:
+            self._config.save_update_popup(enabled)
+        except OSError as exc:
+            self.log_error(translate_text("Préférence de mise à jour non enregistrée : {reason}", reason=exc))
+            return
+        settings_panel = getattr(self, "_settings_panel", None)
+        if settings_panel is not None:
+            settings_panel.refresh_field("ui", "update_popup")
+        self.log_info(
+            translate_text("Popup de mise à jour réactivée.") if enabled
+            else translate_text("Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.")
+        )
 
     def _start_update_install(self, info: UpdateInfo, kind: InstallKind) -> None:
         """Télécharge la mise à jour dans un thread, avec dialogue de progression annulable."""

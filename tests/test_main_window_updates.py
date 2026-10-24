@@ -20,8 +20,8 @@ class UpdateWindow(MainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
         self._config = SimpleNamespace(
-            update_channel="unstable", check_updates=True,
-            save_last_update_check=Mock(),
+            update_channel="unstable", check_updates=True, update_popup=False,
+            save_last_update_check=Mock(), save_update_popup=Mock(),
         )
         self._sidebar = _Sidebar(self)
         self._running = False
@@ -31,6 +31,9 @@ class UpdateWindow(MainWindow):
         self.log_warn = Mock()
         self._show_update_dialog = Mock()
         self._schedule_update_check()
+
+    def closeEvent(self, event):  # fermeture en fin de session de tests : ni panneaux ni workers à arrêter
+        QMainWindow.closeEvent(self, event)
 
 
 @pytest.fixture
@@ -252,3 +255,86 @@ def test_startup_always_checks_network_despite_recent_check(qt_app, monkeypatch,
     finally:
         widget.deleteLater()
         qt_app.processEvents()
+
+
+def test_startup_result_opens_popup_once_per_version(window):
+    window._config.update_popup = True
+    info = UpdateInfo("99.0.0", "https://example/")
+    window._show_update_dialog.side_effect = lambda shown: setattr(window, "_update_popup_version", shown.version)
+    window._on_update_available(window._update_request_id, "unstable", info, False)
+    window._on_update_available(window._update_request_id, "unstable", info, False)
+    window._show_update_dialog.assert_called_once_with(info)
+    assert window._sidebar._update_info is info
+
+
+def test_popup_disabled_keeps_sidebar_badge_only(window):
+    info = UpdateInfo("99.0.0", "https://example/")
+    window._on_update_available(window._update_request_id, "unstable", info, False)
+    window._show_update_dialog.assert_not_called()
+    assert window._sidebar._update_info is info
+
+
+def test_popup_deferred_while_operation_runs(window):
+    window._config.update_popup = True
+    window._running = True
+    with patch("ui.main_window.QTimer.singleShot") as single_shot:
+        window._on_update_available(window._update_request_id, "unstable", UpdateInfo("99.0.0", "https://example/"), False)
+    window._show_update_dialog.assert_not_called()
+    assert single_shot.call_args.args[2] == window._maybe_popup_update
+    window._running = False
+    window._maybe_popup_update()
+    window._show_update_dialog.assert_called_once()
+
+
+@pytest.mark.parametrize("choice", ["", "release", "install"])
+def test_popup_checkbox_saves_preference_and_runs_choice(window, choice):
+    del window._show_update_dialog                      # gestionnaire réel, dialogue simulé
+    window._config.update_popup = True
+    window._settings_panel = Mock()
+    dialog = Mock(choice=choice, popup_enabled=False)
+    info = UpdateInfo("99.0.0", "https://example/")
+    with patch("ui.main_window.UpdateDialog", return_value=dialog) as dialog_cls, \
+         patch("ui.main_window.detect_install_kind", return_value=InstallKind.APPIMAGE), \
+         patch("ui.main_window.can_self_update", return_value=True), \
+         patch("ui.main_window.open_external") as open_url, \
+         patch.object(window, "_start_update_install") as install:
+        dialog_cls.INSTALL, dialog_cls.RELEASE = "install", "release"
+        window._show_update_dialog(info)
+    assert dialog_cls.call_args.kwargs["popup_enabled"] is True and dialog_cls.call_args.kwargs["can_install"]
+    window._config.save_update_popup.assert_called_once_with(False)
+    window._settings_panel.refresh_field.assert_called_once_with("ui", "update_popup")
+    assert open_url.called == (choice == "release")
+    assert install.called == (choice == "install")
+    assert window._update_popup_version == "99.0.0"
+
+
+def test_sidebar_extension_update_dot(qt_app):
+    sidebar = _Sidebar(compact=True)
+    button = next(b for b in sidebar._buttons if b.page_index == 6)
+    plain = button._compact_icon_lbl.pixmap().toImage()
+    sidebar.set_page_update_available(6, True)
+    assert button._has_update and not button._ready_dot.isHidden()
+    assert button._compact_icon_lbl.pixmap().toImage() != plain     # pastille dessinée sur l'icône
+    sidebar.set_ready_operations(set())                             # le point reste : mise à jour en attente
+    assert not button._ready_dot.isHidden()
+    sidebar.set_page_update_available(6, False)
+    assert button._ready_dot.isHidden() and button._compact_icon_lbl.pixmap().toImage() == plain
+    sidebar.deleteLater()
+
+
+def test_deferred_popup_dropped_once_closing(window):
+    window._config.update_popup = True
+    window._update_info = UpdateInfo("99.0.0", "https://example/")
+    window._shutdown = Mock()                                    # closeEvent() commencé
+    with patch("ui.main_window.QTimer.singleShot") as single_shot:
+        window._maybe_popup_update()
+    single_shot.assert_not_called()
+    window._show_update_dialog.assert_not_called()
+
+
+def test_sidebar_version_link_escapes_release_url(qt_app):
+    sidebar = _Sidebar()
+    sidebar.set_update_available(UpdateInfo("99.0.0", 'https://example/"><img src="x">'))
+    text = sidebar._version_lbl.text()
+    assert "<img" not in text and "&quot;&gt;&lt;img" in text
+    sidebar.deleteLater()

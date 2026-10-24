@@ -388,39 +388,53 @@ class SettingsPanel(QWidget):
         for group in INI_FIELD_GROUPS:
             section = group["section"]
             for field in group["fields"]:
-                widget = self._field_widgets[(section, field["key"])]
-                value = getattr(self._config, field["attr"])
-
-                if isinstance(widget, QLineEdit):
-                    widget.setText(str(value))
-                elif isinstance(widget, QCheckBox):
-                    widget.setChecked(bool(value))
-                elif isinstance(widget, QSlider):
-                    steps = widget.property("steps")
-                    if steps:
-                        try:
-                            idx = steps.index(int(value))
-                        except ValueError:
-                            idx = min(range(len(steps)), key=lambda i: abs(steps[i] - int(value)))
-                        widget.setValue(idx)
-                    else:
-                        widget.setValue(int(value))
-                elif isinstance(widget, QSpinBox):
-                    widget.setValue(int(value))
-                elif isinstance(widget, QComboBox):
-                    lookup = str(value)
-                    index = widget.findData(lookup)
-                    if index < 0 and field["kind"] == "language":
-                        ietf = Rfc5646LanguageTags.from_iso639_2(lookup)
-                        canonical = Rfc5646LanguageTags.to_iso639_2(ietf) if ietf else None
-                        if canonical:
-                            index = widget.findData(canonical)
-                    if index >= 0:
-                        widget.setCurrentIndex(index)
+                self._load_field(section, field)
 
         self._sync_dependent_field_states()
         if self._status_label is not None:
             self._status_label.clear()
+
+    def _load_field(self, section: str, field: dict[str, Any]) -> None:
+        widget = self._field_widgets[(section, field["key"])]
+        value = getattr(self._config, field["attr"])
+
+        if isinstance(widget, QLineEdit):
+            widget.setText(str(value))
+        elif isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+        elif isinstance(widget, QSlider):
+            steps = widget.property("steps")
+            if steps:
+                try:
+                    idx = steps.index(int(value))
+                except ValueError:
+                    idx = min(range(len(steps)), key=lambda i: abs(steps[i] - int(value)))
+                widget.setValue(idx)
+            else:
+                widget.setValue(int(value))
+        elif isinstance(widget, QSpinBox):
+            widget.setValue(int(value))
+        elif isinstance(widget, QComboBox):
+            lookup = str(value)
+            index = widget.findData(lookup)
+            if index < 0 and field["kind"] == "language":
+                ietf = Rfc5646LanguageTags.from_iso639_2(lookup)
+                canonical = Rfc5646LanguageTags.to_iso639_2(ietf) if ietf else None
+                if canonical:
+                    index = widget.findData(canonical)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+
+    def refresh_field(self, section: str, key: str) -> None:
+        """Recharge un seul champ depuis la config (réglage modifié hors du panneau), sans toucher aux autres saisies."""
+        for group in INI_FIELD_GROUPS:
+            if group["section"] != section:
+                continue
+            for field in group["fields"]:
+                if field["key"] == key:
+                    self._load_field(section, field)
+                    self._sync_dependent_field_states()
+                    return
 
     def _collect_values(self) -> dict[str, dict[str, str]]:
         values: dict[str, dict[str, str]] = {}

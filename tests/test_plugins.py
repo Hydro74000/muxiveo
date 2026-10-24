@@ -501,3 +501,40 @@ def test_controller_auto_update_follows_feed(qt_app, tmp_path, monkeypatch):
         assert updates == [1]  # une seule mise à jour automatique par session
     finally:
         ctrl.shutdown()
+
+
+def test_controller_manual_update_pending(qt_app, tmp_path, monkeypatch):
+    """Point vert « Extensions » : seulement pour une mise à jour que l'utilisateur doit lancer."""
+    from core.config import AppConfig
+    from ui.plugin_controller import RifePluginController
+
+    installed = plugins.InstalledPlugin(plugins.RIFE.min_version, tmp_path, {})
+    monkeypatch.setattr(plugins, "installed_plugin", lambda spec, *_a, **_k: installed if spec is plugins.RIFE else None)
+    monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: PLATFORM)
+    feed = [{"version": "99.0.0", "tag": "mvo-rife-v99.0.0", "contract": 1,
+             "platforms": [{"platform": PLATFORM, "asset": "a", "size": 1}]}]
+    monkeypatch.setattr(plugins, "fetch_feed", lambda spec, **_k: feed)
+    config = AppConfig()
+    config.plugins_auto_update = False
+    ctrl = RifePluginController(config)
+    try:
+        assert not ctrl.manual_update_pending           # version installée = version proposée
+        ctrl._feed_job()
+        assert ctrl.state().update_available and ctrl.manual_update_pending
+        ctrl._set_state(busy="update")
+        assert not ctrl.manual_update_pending
+    finally:
+        ctrl.shutdown()
+
+    config.plugins_auto_update = True
+    ctrl = RifePluginController(config)
+    seen: list[bool] = []
+    monkeypatch.setattr(ctrl, "update", lambda: seen.append(ctrl.manual_update_pending))
+    try:
+        ctrl._set_state(target="99.0.0")
+        assert not ctrl.manual_update_pending           # mise à jour automatique encore à décider
+        ctrl._feed_job()
+        assert seen == [False]                          # pas de point vert au lancement automatique
+        assert ctrl.manual_update_pending               # automatique tentée sans succès : à l'utilisateur
+    finally:
+        ctrl.shutdown()
