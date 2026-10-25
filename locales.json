@@ -9259,21 +9259,9 @@
     "fra": "Mise à jour d'extension disponible",
     "eng": "Extension update available"
   },
-  "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage (Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release.": {
-    "fra": "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage (Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release.",
-    "eng": "Built-in installation is not possible from an AppImage. Update with your AppImage manager (Gear Lever, AppImageUpdate…) or download the new version from the release page."
-  },
   "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.": {
     "fra": "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.",
     "eng": "Built-in installation is not possible from a Flatpak. Update with your software center or flatpak update, or download the new version from the release page."
-  },
-  "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.": {
-    "fra": "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.",
-    "eng": "Built-in installation is not possible on macOS. Download the new disk image (DMG) from the release page."
-  },
-  "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version depuis la page de la release.": {
-    "fra": "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version depuis la page de la release.",
-    "eng": "This release does not provide a verifiable installer for this system. Download the new version from the release page."
   },
   "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.": {
     "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.",
@@ -9282,5 +9270,57 @@
   "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.": {
     "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.",
     "eng": "Built-in installation is not possible for this installation type. Update with your package manager or download the new version from the release page."
+  },
+  "Déplacez Muxiveo dans le dossier Applications puis relancez-le : ouverte depuis l'image disque ou le dossier de téléchargement, l'application ne peut pas se remplacer.": {
+    "fra": "Déplacez Muxiveo dans le dossier Applications puis relancez-le : ouverte depuis l'image disque ou le dossier de téléchargement, l'application ne peut pas se remplacer.",
+    "eng": "Move Muxiveo to the Applications folder and reopen it: opened from the disk image or the download folder, the application cannot replace itself."
+  },
+  "Emplacement d'installation non modifiable par votre compte. Mettez à jour avec votre gestionnaire ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Emplacement d'installation non modifiable par votre compte. Mettez à jour avec votre gestionnaire ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Your account cannot modify the installation location. Update with your package manager or download the new version from the release page."
+  },
+  "Python est installé dans le dossier des sources : Windows empêche alors de le remplacer. Remplacez le dossier par l'archive source de la page de la release.": {
+    "fra": "Python est installé dans le dossier des sources : Windows empêche alors de le remplacer. Remplacez le dossier par l'archive source de la page de la release.",
+    "eng": "Python is installed inside the source folder, so Windows prevents replacing it. Replace the folder with the source archive from the release page."
+  },
+  "Outils système hdiutil et ditto introuvables. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.": {
+    "fra": "Outils système hdiutil et ditto introuvables. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.",
+    "eng": "The hdiutil and ditto system tools are missing. Download the new disk image (DMG) from the release page."
+  },
+  "Sources installées avant l'installation intégrée : remplacez-les une fois par l'archive source de la page de la release, les mises à jour suivantes s'installeront d'un clic.": {
+    "fra": "Sources installées avant l'installation intégrée : remplacez-les une fois par l'archive source de la page de la release, les mises à jour suivantes s'installeront d'un clic.",
+    "eng": "Sources installed before built-in installation existed: replace them once with the source archive from the release page; later updates will install in one click."
+  },
+  "Cette release ne fournit pas de paquet vérifiable pour ce mode d'installation. Téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Cette release ne fournit pas de paquet vérifiable pour ce mode d'installation. Téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "This release does not provide a verifiable package for this installation type. Download the new version from the release page."
+  },
+  "Vérification de Muxiveo v{version}…": {
+    "fra": "Vérification de Muxiveo v{version}…",
+    "eng": "Checking Muxiveo v{version}…"
+  },
+  "Suivi des mises à jour illisible : {reason}": {
+    "fra": "Suivi des mises à jour illisible : {reason}",
+    "eng": "Update tracking unreadable: {reason}"
+  },
+  "Mise à jour vers v{version} échouée : {reason}": {
+    "fra": "Mise à jour vers v{version} échouée : {reason}",
+    "eng": "Update to v{version} failed: {reason}"
+  },
+  "Mise à jour vers v{version} installée.": {
+    "fra": "Mise à jour vers v{version} installée.",
+    "eng": "Update to v{version} installed."
+  },
+  "Version précédente conservée dans {path}": {
+    "fra": "Version précédente conservée dans {path}",
+    "eng": "Previous version kept in {path}"
+  },
+  "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}": {
+    "fra": "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}",
+    "eng": "Modified files replaced by the new version (copy in the previous version): {files}"
+  },
+  "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).": {
+    "fra": "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).",
+    "eng": "Python dependencies changed: rerun the setup (Settings → Rerun setup)."
   }
 }

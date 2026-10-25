@@ -39,6 +39,7 @@ import copy
 import html
 import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -78,9 +79,11 @@ from core.update_install import (
     UpdateInstallError,
     apply_update,
     can_self_update,
+    collect_update_results,
     detect_install_kind,
     download_update,
     manual_update_hint,
+    self_install_blocker,
 )
 from core.version import (
     APP_BUILD_VERSION, APP_DONATION_URL, APP_IS_UNSTABLE_BUILD,
@@ -3549,6 +3552,36 @@ class MainWindow(QMainWindow):
         self._update_available.connect(self._on_update_available, Qt.ConnectionType.QueuedConnection)
         self._update_check_failed.connect(self._on_update_check_failed, Qt.ConnectionType.QueuedConnection)
         self._sync_update_settings()
+        self._report_previous_updates()
+
+    def _report_previous_updates(self) -> None:
+        """Compte rendu des mises à jour par échange de dossiers (processus détaché, application fermée)."""
+        try:
+            results = collect_update_results()
+        except Exception as exc:  # noqa: BLE001 — le démarrage ne dépend jamais du ménage
+            self.log_warn(translate_text("Suivi des mises à jour illisible : {reason}", reason=exc))
+            return
+        for result in results:
+            version = str(result.get("version") or "?")
+            if not result.get("ok"):
+                message = translate_text("Mise à jour vers v{version} échouée : {reason}", version=version,
+                                         reason=str(result.get("error") or "?"))
+                self.log_error(message)
+                QTimer.singleShot(0, self, lambda text=message: QMessageBox.warning(
+                    self, translate_text("Mise à jour"), text))
+                continue
+            self.log_ok(translate_text("Mise à jour vers v{version} installée.", version=version))
+            if backup := result.get("backup"):
+                self.log_info(translate_text("Version précédente conservée dans {path}", path=backup))
+            if kept := result.get("kept"):
+                self.log_warn(translate_text(
+                    "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}",
+                    files=", ".join(str(item) for item in kept),
+                ))
+            if result.get("requirements_changed"):
+                self.log_warn(translate_text(
+                    "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup)."
+                ))
 
     def _sync_update_settings(self) -> None:
         """Invalide les réponses et le badge dès que les préférences changent."""
@@ -3677,7 +3710,7 @@ class MainWindow(QMainWindow):
         popup_enabled = bool(getattr(self._config, "update_popup", True))
         dialog = UpdateDialog(
             info, current=f"v{APP_BUILD_VERSION}", remarks=remarks, can_install=can_install,
-            install_unavailable="" if can_install else install_unavailable_reason(kind, hint),
+            install_unavailable="" if can_install else install_unavailable_reason(kind, hint, self_install_blocker(kind)),
             popup_enabled=popup_enabled, parent=self,
         )
         dialog.exec()
@@ -3737,7 +3770,11 @@ class MainWindow(QMainWindow):
         def _on_progress(received: int, total: int) -> None:
             if cancel_event.is_set():
                 return
-            if total > 0:
+            if total > 0 and received >= total and kind in (InstallKind.SOURCE_ARCHIVE, InstallKind.MACOS_APP):
+                # Extraction, contrôles et essai de la nouvelle version : durée inconnue.
+                dialog.setLabelText(translate_text("Vérification de Muxiveo v{version}…", version=info.version))
+                dialog.setRange(0, 0)
+            elif total > 0:
                 dialog.setValue(min(100, int(received * 100 / total)))
             else:
                 dialog.setRange(0, 0)
@@ -3765,7 +3802,10 @@ class MainWindow(QMainWindow):
                 bridge.finished.emit(result)
             except RuntimeError:  # fenêtre détruite entre-temps
                 if isinstance(result, Path):
-                    result.unlink(missing_ok=True)
+                    if result.is_dir():
+                        shutil.rmtree(result, ignore_errors=True)
+                    else:
+                        result.unlink(missing_ok=True)
 
         threading.Thread(target=_worker, name="muxiveo-update-download", daemon=True).start()
         dialog.show()
@@ -3774,7 +3814,10 @@ class MainWindow(QMainWindow):
         if cancelled or self._running:
             if isinstance(result, Path):
                 try:
-                    result.unlink(missing_ok=True)
+                    if result.is_dir():          # dossier de travail préparé (archive source, application macOS)
+                        shutil.rmtree(result)
+                    else:
+                        result.unlink(missing_ok=True)
                 except OSError as exc:
                     self.log_error(str(exc))
             self.log_info(translate_text("Mise à jour annulée."))

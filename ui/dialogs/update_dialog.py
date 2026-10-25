@@ -19,7 +19,14 @@ from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButt
 
 from core.i18n import translate_text
 from core.update_check import UpdateCheckError, UpdateInfo, fetch_release_notes
-from core.update_install import InstallKind
+from core.update_install import (
+    BLOCKER_NO_HDIUTIL,
+    BLOCKER_NO_MARKER,
+    BLOCKER_NOT_WRITABLE,
+    BLOCKER_PYTHON_INSIDE,
+    BLOCKER_TRANSLOCATED,
+    InstallKind,
+)
 from ui.design_system import colors as _C, font_px, scale
 from ui.desktop import open_external
 from ui.styles import _checkbox_style, _primary_button, _secondary_button
@@ -34,27 +41,43 @@ _EXPLICIT_ANCHOR_RE = re.compile(
 )
 
 
-def install_unavailable_reason(kind: InstallKind, manual_hint: str = "") -> str:
-    """Info-bulle du bouton « Installer » grisé : gestionnaire de mises à jour à utiliser, sinon page de la release."""
-    if kind is InstallKind.APPIMAGE:
+def install_unavailable_reason(kind: InstallKind, manual_hint: str = "", blocker: str = "") -> str:
+    """Info-bulle du bouton « Installer » grisé : ce qui bloque, gestionnaire à utiliser, sinon page de la release."""
+    if blocker == BLOCKER_TRANSLOCATED:
         return translate_text(
-            "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage "
-            "(Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release."
+            "Déplacez Muxiveo dans le dossier Applications puis relancez-le : ouverte depuis l'image disque ou le "
+            "dossier de téléchargement, l'application ne peut pas se remplacer."
+        )
+    if blocker == BLOCKER_NOT_WRITABLE:
+        return translate_text(
+            "Emplacement d'installation non modifiable par votre compte. Mettez à jour avec votre gestionnaire ou "
+            "téléchargez la nouvelle version depuis la page de la release."
+        )
+    if blocker == BLOCKER_PYTHON_INSIDE:
+        return translate_text(
+            "Python est installé dans le dossier des sources : Windows empêche alors de le remplacer. Remplacez le "
+            "dossier par l'archive source de la page de la release."
+        )
+    if blocker == BLOCKER_NO_HDIUTIL:
+        return translate_text(
+            "Outils système hdiutil et ditto introuvables. Téléchargez la nouvelle image disque (DMG) depuis la page "
+            "de la release."
+        )
+    if blocker == BLOCKER_NO_MARKER:
+        return translate_text(
+            "Sources installées avant l'installation intégrée : remplacez-les une fois par l'archive source de la "
+            "page de la release, les mises à jour suivantes s'installeront d'un clic."
         )
     if kind is InstallKind.FLATPAK:
         return translate_text(
             "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, "
             "ou téléchargez la nouvelle version depuis la page de la release."
         )
-    if kind is InstallKind.MACOS_APP:
+    if kind in (InstallKind.WINDOWS_INSTALLER, InstallKind.APPIMAGE, InstallKind.MACOS_APP,
+                InstallKind.SOURCE_ARCHIVE):
         return translate_text(
-            "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page "
-            "de la release."
-        )
-    if kind is InstallKind.WINDOWS_INSTALLER:
-        return translate_text(
-            "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version "
-            "depuis la page de la release."
+            "Cette release ne fournit pas de paquet vérifiable pour ce mode d'installation. Téléchargez la nouvelle "
+            "version depuis la page de la release."
         )
     if manual_hint:
         return translate_text(

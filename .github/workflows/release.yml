@@ -162,6 +162,11 @@ jobs:
     name: Media regressions (gate)
     uses: ./.github/workflows/ci-media-regressions.yml
 
+  # Mise à jour intégrée (archive source, application macOS) sur Linux, Windows et macOS.
+  update-process:
+    name: Update process (gate)
+    uses: ./.github/workflows/ci-update-process.yml
+
   build-linux:
     name: Build Linux AppImage
     runs-on: ubuntu-latest
@@ -513,12 +518,13 @@ jobs:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
     # Canal build (branche quelconque, lancement manuel) : aucun tag ni release.
-    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.media-regressions.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
+    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.media-regressions.result == 'success' && needs.update-process.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
       - release-metadata
       - plugins-state
       - unit-tests
       - media-regressions
+      - update-process
       - build-linux
       - build-windows
       - build-macos
@@ -550,8 +556,17 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="Muxiveo-${VERSION}"
-          git archive --format=tar --prefix="${PREFIX}/" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
-          git archive --format=zip --prefix="${PREFIX}/" HEAD -o "artifacts/${PREFIX}-source.zip"
+          # Version exacte (comme les paquets) et marqueur d'installation : mise à jour intégrée des sources.
+          EXTRA="$(mktemp -d)"
+          printf 'BUILD_VERSION = %s\n' "$(python3 -c 'import os; print(repr(os.environ["VERSION"]))')" > "$EXTRA/_build_version.py"
+          python3 scripts/write_source_marker.py --version "$VERSION" --extra core/_build_version.py \
+            --out "$EXTRA/.muxiveo-installation"
+          extras=(--prefix="${PREFIX}/core/" --add-file="$EXTRA/_build_version.py"
+                  --prefix="${PREFIX}/" --add-file="$EXTRA/.muxiveo-installation")
+          git archive --format=tar "${extras[@]}" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
+          git archive --format=zip "${extras[@]}" HEAD -o "artifacts/${PREFIX}-source.zip"
+          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -qx "${PREFIX}/.muxiveo-installation"
+          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -qx "${PREFIX}/core/_build_version.py"
           ls -la artifacts
 
       # Sommes SHA-256 de tous les assets : requises par la mise à jour intégrée

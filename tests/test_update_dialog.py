@@ -153,12 +153,12 @@ def test_explicit_anchor_regex_is_linear():
 
 
 def test_install_greyed_with_reason_when_not_self_installable(qt_app):
-    reason = install_unavailable_reason(InstallKind.APPIMAGE)
+    reason = install_unavailable_reason(InstallKind.MACOS_APP, blocker=update_dialog.BLOCKER_TRANSLOCATED)
     dialog = UpdateDialog(UpdateInfo("99.0.0", "https://example/"), current="v1", can_install=False,
                           install_unavailable=reason, notes_loader=lambda _v: "")
     button = dialog._install_btn
     assert not button.isEnabled() and not button.isHidden()
-    assert "AppImage" in button.toolTip() and "Gear Lever" in button.toolTip()
+    assert "Applications" in button.toolTip()
     dialog.deleteLater()
     dialog = UpdateDialog(UpdateInfo("99.0.0", "https://example/"), current="v1", can_install=True,
                           notes_loader=lambda _v: "")
@@ -168,7 +168,16 @@ def test_install_greyed_with_reason_when_not_self_installable(qt_app):
 
 def test_install_unavailable_reasons_name_the_way_to_update():
     assert "flatpak update" in install_unavailable_reason(InstallKind.FLATPAK)
-    assert "DMG" in install_unavailable_reason(InstallKind.MACOS_APP)
     assert "git pull" in install_unavailable_reason(InstallKind.UNSUPPORTED, "git pull")
     assert "brew upgrade muxiveo" in install_unavailable_reason(InstallKind.UNSUPPORTED, "brew upgrade muxiveo")
-    assert "release" in install_unavailable_reason(InstallKind.WINDOWS_INSTALLER)
+    for kind in (InstallKind.WINDOWS_INSTALLER, InstallKind.APPIMAGE, InstallKind.SOURCE_ARCHIVE):
+        assert "paquet vérifiable" in install_unavailable_reason(kind) or "verifiable" in install_unavailable_reason(kind)
+    blockers = {
+        update_dialog.BLOCKER_NOT_WRITABLE: ("modifiable", "modify"),
+        update_dialog.BLOCKER_PYTHON_INSIDE: ("Python",),
+        update_dialog.BLOCKER_NO_HDIUTIL: ("hdiutil",),
+        update_dialog.BLOCKER_NO_MARKER: ("archive source", "source archive"),
+    }
+    for blocker, words in blockers.items():
+        text = install_unavailable_reason(InstallKind.UNSUPPORTED, blocker=blocker)
+        assert any(word in text for word in words), blocker

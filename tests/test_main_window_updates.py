@@ -340,13 +340,35 @@ def test_sidebar_version_link_escapes_release_url(qt_app):
     sidebar.deleteLater()
 
 
-def test_appimage_popup_offers_greyed_install(window):
+def test_appimage_popup_install_follows_blocker(window):
     del window._show_update_dialog                      # gestionnaire réel, dialogue simulé
     info = UpdateInfo("99.0.0", "https://example/", assets=(
         ReleaseAsset("Muxiveo-x86_64-99.0.0.AppImage", "https://example/a"), ReleaseAsset("SHA256SUMS", "https://example/s"),
     ))
-    with patch("ui.main_window.UpdateDialog", return_value=Mock(choice="", popup_enabled=False)) as dialog_cls, \
-         patch("ui.main_window.detect_install_kind", return_value=InstallKind.APPIMAGE):
-        window._show_update_dialog(info)
-    kwargs = dialog_cls.call_args.kwargs
-    assert kwargs["can_install"] is False and "AppImage" in kwargs["install_unavailable"]
+    for blocker, expected in (("", True), ("not-writable", False)):
+        with patch("ui.main_window.UpdateDialog", return_value=Mock(choice="", popup_enabled=False)) as dialog_cls, \
+             patch("ui.main_window.detect_install_kind", return_value=InstallKind.APPIMAGE), \
+             patch("core.update_install.platform.machine", return_value="x86_64"), \
+             patch("core.update_install.self_install_blocker", return_value=blocker), \
+             patch("ui.main_window.self_install_blocker", return_value=blocker):
+            window._show_update_dialog(info)
+        kwargs = dialog_cls.call_args.kwargs
+        assert kwargs["can_install"] is expected
+        assert bool(kwargs["install_unavailable"]) is not expected
+
+
+def test_previous_update_results_reported_at_startup(window):
+    results = [
+        {"ok": True, "version": "2.0.0", "backup": "/apps/.muxiveo-update-x/old", "kept": ["docs/a.md"],
+         "requirements_changed": True},
+        {"ok": False, "version": "2.0.1", "error": "Dossier utilisé"},
+    ]
+    window.log_ok = Mock()
+    with patch("ui.main_window.collect_update_results", return_value=results), \
+         patch("ui.main_window.QTimer.singleShot") as single_shot:
+        window._report_previous_updates()
+    assert "2.0.0" in window.log_ok.call_args.args[0]
+    warnings = " ".join(call.args[0] for call in window.log_warn.call_args_list)
+    assert "docs/a.md" in warnings and ("setup" in warnings.lower())
+    assert "Dossier utilisé" in window.log_error.call_args.args[0]
+    single_shot.assert_called_once()                    # avertissement visible pour l'échec

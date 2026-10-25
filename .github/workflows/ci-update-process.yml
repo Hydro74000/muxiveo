@@ -1,0 +1,51 @@
+name: Update process
+
+# Mise à jour intégrée par échange de dossiers (core/update_apply.py) sur les trois systèmes :
+# archive source (extraction bornée, report des fichiers de l'utilisateur, échange, contrôle, relance,
+# retour arrière) et application macOS copiée depuis un DMG (hdiutil / ditto). Bibliothèque standard
+# seule : aucune dépendance Qt, conftest ignoré. Condition de publication (release.yml).
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - core/update_apply.py
+      - core/update_install.py
+      - tests/test_update_apply.py
+      - scripts/write_source_marker.py
+      - .github/workflows/ci-update-process.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Update process (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: Update process tests
+        run: python -m pytest -v --noconftest -p no:cacheprovider tests/test_update_apply.py
+
+      - name: Source marker (archive réelle)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/write_source_marker.py --version 0.0.0-ci --extra core/_build_version.py --out marker.json
+          python -c 'import json; d = json.load(open("marker.json")); assert "core/update_apply.py" in d["files"] and "core/_build_version.py" in d["files"]'

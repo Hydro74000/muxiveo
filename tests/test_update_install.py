@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import io
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from core import update_install
+from core import update_apply, update_install
 from core.update_check import RELEASE_DOWNLOAD_URL_PREFIX, ReleaseAsset, UpdateInfo
 from core.update_install import (
     InstallKind,
@@ -70,12 +71,32 @@ def test_detect_install_kind():
     assert detect_install_kind({}, "darwin", True) is InstallKind.MACOS_APP
     assert detect_install_kind({}, "darwin", False) is InstallKind.UNSUPPORTED        # Homebrew, sources
     assert detect_install_kind({"FLATPAK_ID": "io.x", "APPIMAGE": "/a"}, "linux", False) is InstallKind.FLATPAK
+    cellar = "/opt/homebrew/Cellar/muxiveo/5.0/Muxiveo.app/Contents/MacOS/Muxiveo"
+    assert detect_install_kind({}, "darwin", True, executable=cellar) is InstallKind.UNSUPPORTED
+
+
+def test_detect_source_archive_by_marker_never_git_checkout(tmp_path):
+    (tmp_path / update_apply.MARKER_NAME).write_text("{}")
+    for platform_name in ("linux", "win32", "darwin"):
+        assert detect_install_kind({}, platform_name, False, executable="/usr/bin/python3",
+                                   source_root=tmp_path) is InstallKind.SOURCE_ARCHIVE
+    assert detect_install_kind({}, "darwin", False, executable="/opt/homebrew/bin/python3",
+                               source_root=tmp_path) is InstallKind.UNSUPPORTED
+    (tmp_path / ".git").mkdir()
+    assert detect_install_kind({}, "linux", False, executable="/usr/bin/python3",
+                               source_root=tmp_path) is InstallKind.UNSUPPORTED
 
 
 def test_manual_update_hint():
     assert manual_update_hint("/opt/homebrew/Cellar/muxiveo/4.0.0/bin/python", True) == "brew upgrade muxiveo"
     assert manual_update_hint("/usr/bin/python3", False) == "git pull"
     assert manual_update_hint("/Applications/Muxiveo.app/Contents/MacOS/Muxiveo", True) == ""
+
+
+def test_manual_update_hint_git_only_for_checkouts(tmp_path):
+    assert manual_update_hint("/usr/bin/python3", False, source_root=tmp_path) == ""
+    (tmp_path / ".git").mkdir()
+    assert manual_update_hint("/usr/bin/python3", False, source_root=tmp_path) == "git pull"
 
 
 def test_select_asset_and_can_self_update():
@@ -86,9 +107,106 @@ def test_select_asset_and_can_self_update():
     assert select_asset(info, InstallKind.UNSUPPORTED) is None
     assert can_self_update(info, InstallKind.WINDOWS_INSTALLER)
     assert not can_self_update(_info(_SETUP), InstallKind.WINDOWS_INSTALLER)
-    # Images et application macOS : gestionnaire externe ou page de la release, même avec un paquet publié.
-    for kind in (InstallKind.APPIMAGE, InstallKind.FLATPAK, InstallKind.MACOS_APP, InstallKind.UNSUPPORTED):
+    for kind in (InstallKind.FLATPAK, InstallKind.UNSUPPORTED):           # gestionnaire externe
         assert not can_self_update(info, kind), kind
+
+
+def test_swap_assets_selected():
+    info = _info("Muxiveo-99.0.0-source.tar.gz", "Muxiveo-99.0.0-source.zip", "Muxiveo-99.0.0.dmg",
+                 "Muxiveo-99.0.0-homebrew-macos.tar.gz", "SHA256SUMS")
+    assert _selected(info, InstallKind.SOURCE_ARCHIVE).name == "Muxiveo-99.0.0-source.tar.gz"
+    assert _selected(info, InstallKind.MACOS_APP).name == "Muxiveo-99.0.0.dmg"
+
+
+def test_appimage_self_update_needs_writable_folder(tmp_path, monkeypatch):
+    appimage = tmp_path / _APPIMAGE
+    appimage.write_bytes(b"old")
+    monkeypatch.setenv("APPIMAGE", str(appimage))
+    info = _info(_APPIMAGE, "SHA256SUMS")
+    monkeypatch.setattr(update_install.platform, "machine", lambda: "x86_64")
+    assert update_install.self_install_blocker(InstallKind.APPIMAGE) == ""
+    assert can_self_update(info, InstallKind.APPIMAGE)
+    monkeypatch.setattr(update_install.os, "access", lambda path, mode: False)
+    assert update_install.self_install_blocker(InstallKind.APPIMAGE) == update_install.BLOCKER_NOT_WRITABLE
+    assert not can_self_update(info, InstallKind.APPIMAGE)
+
+
+def test_blockers_for_macos_and_unmarked_sources(tmp_path, monkeypatch):
+    translocated = Path("/private/var/folders/x/AppTranslocation/ABC/d/Muxiveo.app")
+    monkeypatch.setattr(update_install, "installation_root", lambda kind: translocated)
+    assert update_install.self_install_blocker(InstallKind.MACOS_APP) == update_install.BLOCKER_TRANSLOCATED
+    monkeypatch.setattr(update_install, "installation_root", lambda kind: tmp_path / "Muxiveo.app")
+    monkeypatch.setattr(update_install.shutil, "which", lambda name: None)
+    assert update_install.self_install_blocker(InstallKind.MACOS_APP) == update_install.BLOCKER_NO_HDIUTIL
+    monkeypatch.setattr(update_install, "_SOURCE_ROOT", tmp_path)          # sources sans .git ni marqueur
+    monkeypatch.setattr(update_install.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(update_install.sys, "executable", "/usr/bin/python3")
+    assert update_install.self_install_blocker(InstallKind.UNSUPPORTED) == update_install.BLOCKER_NO_MARKER
+    (tmp_path / ".git").mkdir()
+    assert update_install.self_install_blocker(InstallKind.UNSUPPORTED) == ""
+
+
+def test_download_update_prepares_swap_workdir_and_cleans_on_failure(tmp_path, monkeypatch):
+    install = tmp_path / "Muxiveo"
+    install.mkdir()
+    monkeypatch.setattr(update_install, "installation_root", lambda kind: install)
+    monkeypatch.setattr(update_install, "fetch_expected_sha256", lambda info, asset: "0" * 64)
+    monkeypatch.setattr(update_install, "download_asset",
+                        lambda asset, dest, expected, progress, cancelled: dest.write_bytes(b"x") or dest)
+    calls = []
+    monkeypatch.setattr(update_apply, "prepare", lambda *args: calls.append(args))
+    info = _info("Muxiveo-99.0.0-source.tar.gz", "SHA256SUMS")
+    work = download_update(info, InstallKind.SOURCE_ARCHIVE)
+    assert work.parent == tmp_path and work.name.startswith(update_apply.WORKDIR_PREFIX)
+    assert (work / update_apply.WORKDIR_TAG).is_file()
+    kind, archive, prepared_work, root, version, probe, relaunch, _bundle = calls[0]
+    assert (kind, prepared_work, root, version) == (update_apply.KIND_SOURCE, work, install, "99.0.0")
+    assert probe[-1].endswith("main.py") and update_apply.ROOT_TOKEN in probe[-1]
+
+    def refuse(*args):
+        raise update_apply.UpdateApplyError("archive inattendue")
+
+    monkeypatch.setattr(update_apply, "prepare", refuse)
+    with pytest.raises(UpdateInstallError, match="archive inattendue"):
+        download_update(info, InstallKind.SOURCE_ARCHIVE)
+    assert [p.name for p in tmp_path.iterdir() if p != work] == ["Muxiveo"]   # dossier de travail supprimé
+
+
+def test_apply_update_starts_isolated_helper_and_waits_until_ready(tmp_path, monkeypatch):
+    work = tmp_path / f"{update_apply.WORKDIR_PREFIX}x"
+    work.mkdir()
+    launched = {}
+
+    class FakeHelper:
+        def __init__(self, command, **kwargs):
+            launched.update(command=command, **kwargs)
+            (work / update_apply.READY_FILE).touch()
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(update_install.subprocess, "Popen", FakeHelper)
+    apply_update(InstallKind.SOURCE_ARCHIVE, work)
+    command = launched["command"]
+    assert command[1:3] == ["-I", str(work / "update_apply.py")] and (work / "update_apply.py").is_file()
+    assert command[3:] == ["commit", str(work), "--pid", str(os.getpid())] and launched["cwd"] == work
+
+
+def test_apply_update_reports_helper_failure(tmp_path, monkeypatch):
+    work = tmp_path / f"{update_apply.WORKDIR_PREFIX}x"
+    work.mkdir()
+
+    class DeadHelper:
+        def __init__(self, command, **kwargs):
+            (work / update_apply.RESULT_FILE).write_text(json.dumps({"ok": False, "error": "préparation absente"}))
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(update_install.subprocess, "Popen", DeadHelper)
+    with pytest.raises(UpdateInstallError, match="préparation absente"):
+        apply_update(InstallKind.SOURCE_ARCHIVE, work)
+    assert not work.exists()
 
 
 def test_select_asset_matches_unstable_names():

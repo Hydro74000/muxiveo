@@ -247,3 +247,13 @@ def test_cli_executable_routes_to_cli_without_flag(monkeypatch):
     assert launcher._is_cli_invocation()
     monkeypatch.setattr(launcher.sys, "executable", r"C:\\Program Files\\Muxiveo\\Muxiveo.exe")
     assert not launcher._is_cli_invocation()
+
+
+def test_apply_update_phase_routes_before_anything(monkeypatch):
+    """Binaire figé (macOS) : `--apply-update` exécute l'échange de dossiers, sans setup ni Qt."""
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["Muxiveo", "--apply-update", "commit", "/w", "--pid", "1"])
+    monkeypatch.setattr("core.update_apply.main", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(launcher, "_run_first_time_setup", MagicMock(side_effect=AssertionError("setup lancé")))
+    assert launcher.main() == 0
+    assert calls == [["commit", "/w", "--pid", "1"]]
