@@ -10,7 +10,8 @@ from PySide6.QtWidgets import QLabel
 
 from core.update_check import UpdateCheckError, UpdateInfo
 from ui.dialogs import update_dialog
-from ui.dialogs.update_dialog import UpdateDialog, heading_slug
+from core.update_install import InstallKind
+from ui.dialogs.update_dialog import UpdateDialog, heading_slug, install_unavailable_reason
 
 
 def _wait(qt_app, predicate, timeout: float = 3.0) -> None:
@@ -149,3 +150,25 @@ def test_explicit_anchor_regex_is_linear():
     started = time.perf_counter()
     assert update_dialog._EXPLICIT_ANCHOR_RE.findall(text) == []
     assert time.perf_counter() - started < 1.0
+
+
+def test_install_greyed_with_reason_when_not_self_installable(qt_app):
+    reason = install_unavailable_reason(InstallKind.APPIMAGE)
+    dialog = UpdateDialog(UpdateInfo("99.0.0", "https://example/"), current="v1", can_install=False,
+                          install_unavailable=reason, notes_loader=lambda _v: "")
+    button = dialog._install_btn
+    assert not button.isEnabled() and not button.isHidden()
+    assert "AppImage" in button.toolTip() and "Gear Lever" in button.toolTip()
+    dialog.deleteLater()
+    dialog = UpdateDialog(UpdateInfo("99.0.0", "https://example/"), current="v1", can_install=True,
+                          notes_loader=lambda _v: "")
+    assert dialog._install_btn.isEnabled() and not dialog._install_btn.toolTip()
+    dialog.deleteLater()
+
+
+def test_install_unavailable_reasons_name_the_way_to_update():
+    assert "flatpak update" in install_unavailable_reason(InstallKind.FLATPAK)
+    assert "DMG" in install_unavailable_reason(InstallKind.MACOS_APP)
+    assert "git pull" in install_unavailable_reason(InstallKind.UNSUPPORTED, "git pull")
+    assert "brew upgrade muxiveo" in install_unavailable_reason(InstallKind.UNSUPPORTED, "brew upgrade muxiveo")
+    assert "release" in install_unavailable_reason(InstallKind.WINDOWS_INSTALLER)

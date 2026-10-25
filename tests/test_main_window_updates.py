@@ -338,3 +338,15 @@ def test_sidebar_version_link_escapes_release_url(qt_app):
     text = sidebar._version_lbl.text()
     assert "<img" not in text and "&quot;&gt;&lt;img" in text
     sidebar.deleteLater()
+
+
+def test_appimage_popup_offers_greyed_install(window):
+    del window._show_update_dialog                      # gestionnaire réel, dialogue simulé
+    info = UpdateInfo("99.0.0", "https://example/", assets=(
+        ReleaseAsset("Muxiveo-x86_64-99.0.0.AppImage", "https://example/a"), ReleaseAsset("SHA256SUMS", "https://example/s"),
+    ))
+    with patch("ui.main_window.UpdateDialog", return_value=Mock(choice="", popup_enabled=False)) as dialog_cls, \
+         patch("ui.main_window.detect_install_kind", return_value=InstallKind.APPIMAGE):
+        window._show_update_dialog(info)
+    kwargs = dialog_cls.call_args.kwargs
+    assert kwargs["can_install"] is False and "AppImage" in kwargs["install_unavailable"]

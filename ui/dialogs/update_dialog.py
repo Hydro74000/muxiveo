@@ -8,6 +8,7 @@ mise à jour ». Le choix (installer, voir la release) et la préférence sont a
 
 from __future__ import annotations
 
+import html
 import re
 import threading
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButt
 
 from core.i18n import translate_text
 from core.update_check import UpdateCheckError, UpdateInfo, fetch_release_notes
+from core.update_install import InstallKind
 from ui.design_system import colors as _C, font_px, scale
 from ui.desktop import open_external
 from ui.styles import _checkbox_style, _primary_button, _secondary_button
@@ -30,6 +32,39 @@ _EXPLICIT_ANCHOR_RE = re.compile(
     r'<a[ \t]+(?:name|id)[ \t]*=[ \t]*"([^"\n]+)"[ \t]*>[ \t]*</a>[ \t\r]*\n(?:[ \t\r]*\n)*[ \t]*#{1,6}[ \t]+([^\n]+)',
     re.IGNORECASE,
 )
+
+
+def install_unavailable_reason(kind: InstallKind, manual_hint: str = "") -> str:
+    """Info-bulle du bouton « Installer » grisé : gestionnaire de mises à jour à utiliser, sinon page de la release."""
+    if kind is InstallKind.APPIMAGE:
+        return translate_text(
+            "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage "
+            "(Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release."
+        )
+    if kind is InstallKind.FLATPAK:
+        return translate_text(
+            "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, "
+            "ou téléchargez la nouvelle version depuis la page de la release."
+        )
+    if kind is InstallKind.MACOS_APP:
+        return translate_text(
+            "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page "
+            "de la release."
+        )
+    if kind is InstallKind.WINDOWS_INSTALLER:
+        return translate_text(
+            "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version "
+            "depuis la page de la release."
+        )
+    if manual_hint:
+        return translate_text(
+            "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou "
+            "téléchargez la nouvelle version depuis la page de la release.", command=manual_hint,
+        )
+    return translate_text(
+        "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de "
+        "paquets ou téléchargez la nouvelle version depuis la page de la release."
+    )
 
 
 def heading_slug(text: str) -> str:
@@ -88,6 +123,7 @@ class UpdateDialog(QDialog):
         current: str,
         remarks: list[str] | tuple[str, ...] = (),
         can_install: bool = False,
+        install_unavailable: str = "",
         popup_enabled: bool = True,
         notes_loader: Callable[[str], str] = fetch_release_notes,
         parent: QWidget | None = None,
@@ -161,11 +197,16 @@ class UpdateDialog(QDialog):
         buttons.addWidget(later_btn)
         # Popup non sollicitée : Entrée ne doit jamais lancer l'installation (clic explicite seulement).
         later_btn.setDefault(True)
-        if can_install:
-            install_btn = _primary_button(translate_text("Installer"))
-            install_btn.setAutoDefault(False)
-            install_btn.clicked.connect(lambda: self._finish(self.INSTALL))
-            buttons.addWidget(install_btn)
+        self._install_btn = _primary_button(translate_text("Installer"))
+        self._install_btn.setAutoDefault(False)
+        self._install_btn.clicked.connect(lambda: self._finish(self.INSTALL))
+        if not can_install:
+            # Grisé (pas masqué) : l'info-bulle, affichée aussi sur un bouton désactivé, indique la marche à suivre.
+            self._install_btn.setEnabled(False)
+            self._install_btn.setCursor(Qt.CursorShape.ArrowCursor)
+            reason = install_unavailable or install_unavailable_reason(InstallKind.UNSUPPORTED)
+            self._install_btn.setToolTip(f"<p>{html.escape(reason)}</p>")   # texte riche : retour à la ligne
+        buttons.addWidget(self._install_btn)
         layout.addLayout(buttons)
 
         self._notes_ready.connect(self._on_notes_ready, Qt.ConnectionType.QueuedConnection)

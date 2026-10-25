@@ -67,7 +67,9 @@ def test_detect_install_kind():
     assert detect_install_kind({}, "linux", True) is InstallKind.UNSUPPORTED
     assert detect_install_kind({}, "win32", True) is InstallKind.WINDOWS_INSTALLER
     assert detect_install_kind({}, "win32", False) is InstallKind.UNSUPPORTED
-    assert detect_install_kind({}, "darwin", True) is InstallKind.UNSUPPORTED
+    assert detect_install_kind({}, "darwin", True) is InstallKind.MACOS_APP
+    assert detect_install_kind({}, "darwin", False) is InstallKind.UNSUPPORTED        # Homebrew, sources
+    assert detect_install_kind({"FLATPAK_ID": "io.x", "APPIMAGE": "/a"}, "linux", False) is InstallKind.FLATPAK
 
 
 def test_manual_update_hint():
@@ -84,6 +86,9 @@ def test_select_asset_and_can_self_update():
     assert select_asset(info, InstallKind.UNSUPPORTED) is None
     assert can_self_update(info, InstallKind.WINDOWS_INSTALLER)
     assert not can_self_update(_info(_SETUP), InstallKind.WINDOWS_INSTALLER)
+    # Images et application macOS : gestionnaire externe ou page de la release, même avec un paquet publié.
+    for kind in (InstallKind.APPIMAGE, InstallKind.FLATPAK, InstallKind.MACOS_APP, InstallKind.UNSUPPORTED):
+        assert not can_self_update(info, kind), kind
 
 
 def test_select_asset_matches_unstable_names():

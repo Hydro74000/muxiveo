@@ -1,11 +1,12 @@
 """
 core/update_install.py — Téléchargement vérifié et installation d'une mise à jour.
 
-Modes supportés :
-- AppImage : remplacement atomique du fichier `$APPIMAGE` puis relance ;
+Installation intégrée proposée (`SELF_INSTALL_KINDS`) :
 - Windows : lancement de l'installeur NSIS (élévation UAC gérée par ShellExecute).
 
-Les autres modes (macOS, Homebrew, sources) renvoient vers la page de release.
+Les autres modes relèvent de leur gestionnaire de mises à jour ou de la page de release : AppImage (Gear Lever,
+AppImageUpdate… ; le remplacement atomique de `$APPIMAGE` puis relance reste implémenté mais n'est plus proposé),
+Flatpak, application macOS (DMG), Homebrew, sources.
 Intégrité : SHA-256 contrôlé contre l'asset `SHA256SUMS` publié avec la release ;
 sans lui, l'installation est refusée.
 """
@@ -43,8 +44,16 @@ class InstallKind(Enum):
     """Mode d'installation de l'application en cours."""
 
     APPIMAGE = "appimage"
+    FLATPAK = "flatpak"
+    MACOS_APP = "macos-app"
     WINDOWS_INSTALLER = "windows-installer"
     UNSUPPORTED = "unsupported"
+
+
+# Seul l'installeur Windows se remplace lui-même ; image (AppImage, Flatpak) et application macOS : gestionnaire de
+# mises à jour externe ou téléchargement depuis la page de la release.
+SELF_INSTALL_KINDS = frozenset({InstallKind.WINDOWS_INSTALLER})
+_FLATPAK_INFO = Path("/.flatpak-info")
 
 
 class UpdateInstallError(Exception):
@@ -56,14 +65,20 @@ def detect_install_kind(
     sys_platform: str | None = None,
     frozen: bool | None = None,
 ) -> InstallKind:
-    """Détermine si l'application courante peut se mettre à jour elle-même."""
+    """Mode d'installation de l'application courante (bac à sable Flatpak sondé seulement sur l'environnement réel)."""
+    real_env = env is None
     env = os.environ if env is None else env
     sys_platform = sys.platform if sys_platform is None else sys_platform
     frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if sys_platform.startswith("linux") and env.get("APPIMAGE"):
-        return InstallKind.APPIMAGE
+    if sys_platform.startswith("linux"):
+        if env.get("FLATPAK_ID") or (real_env and _FLATPAK_INFO.exists()):
+            return InstallKind.FLATPAK
+        if env.get("APPIMAGE"):
+            return InstallKind.APPIMAGE
     if sys_platform == "win32" and frozen:
         return InstallKind.WINDOWS_INSTALLER
+    if sys_platform == "darwin" and frozen:
+        return InstallKind.MACOS_APP
     return InstallKind.UNSUPPORTED
 
 
@@ -109,9 +124,13 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
 
 
 def can_self_update(info: UpdateInfo, kind: InstallKind | None = None) -> bool:
-    """True si la release fournit un asset installable et ses sommes de contrôle."""
+    """True si le mode d'installation se met à jour lui-même et que la release fournit son paquet et ses sommes."""
     kind = detect_install_kind() if kind is None else kind
-    return select_asset(info, kind) is not None and info.asset(CHECKSUMS_ASSET_NAME) is not None
+    return (
+        kind in SELF_INSTALL_KINDS
+        and select_asset(info, kind) is not None
+        and info.asset(CHECKSUMS_ASSET_NAME) is not None
+    )
 
 
 def parse_checksums(text: str) -> dict[str, str]:

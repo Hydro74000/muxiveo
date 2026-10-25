@@ -106,7 +106,7 @@ from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hdr_studio import HdrStudio
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
-from ui.dialogs.update_dialog import UpdateDialog
+from ui.dialogs.update_dialog import UpdateDialog, install_unavailable_reason
 from ui.panels.extensions_panel import ExtensionsPanel
 from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
 from ui.operation_bar import OperationBar, OperationState
@@ -3671,11 +3671,13 @@ class MainWindow(QMainWindow):
         if info.prerelease:
             remarks.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
         can_install = can_self_update(info, kind)
-        if not can_install and (hint := manual_update_hint()):
+        hint = "" if can_install else manual_update_hint()
+        if hint:
             remarks.append(translate_text("Mise à jour manuelle : {command}", command=hint))
         popup_enabled = bool(getattr(self._config, "update_popup", True))
         dialog = UpdateDialog(
             info, current=f"v{APP_BUILD_VERSION}", remarks=remarks, can_install=can_install,
+            install_unavailable="" if can_install else install_unavailable_reason(kind, hint),
             popup_enabled=popup_enabled, parent=self,
         )
         dialog.exec()

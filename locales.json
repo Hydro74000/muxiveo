@@ -9258,5 +9258,29 @@
   "Mise à jour d'extension disponible": {
     "fra": "Mise à jour d'extension disponible",
     "eng": "Extension update available"
+  },
+  "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage (Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible depuis une AppImage. Mettez à jour avec votre gestionnaire d'AppImage (Gear Lever, AppImageUpdate…) ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible from an AppImage. Update with your AppImage manager (Gear Lever, AppImageUpdate…) or download the new version from the release page."
+  },
+  "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible from a Flatpak. Update with your software center or flatpak update, or download the new version from the release page."
+  },
+  "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.": {
+    "fra": "Installation intégrée impossible sur macOS. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.",
+    "eng": "Built-in installation is not possible on macOS. Download the new disk image (DMG) from the release page."
+  },
+  "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Cette release ne fournit pas d'installeur vérifiable pour ce système. Téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "This release does not provide a verifiable installer for this system. Download the new version from the release page."
+  },
+  "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible for this installation type. Update with {command} or download the new version from the release page."
+  },
+  "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible for this installation type. Update with your package manager or download the new version from the release page."
   }
 }
