@@ -9,7 +9,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 
 [Français](README.md) | **English**
 
-[![Official Website](https://img.shields.io/badge/Website-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://www.muxiveo.fr/)
+[![Official Website](https://img.shields.io/badge/Website-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://muxiveo.fr/)
 [![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-quick-download--installation)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg?style=flat-square)](LICENSE)
@@ -18,7 +18,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 <br/>
 
 💬 **Discord Community: [https://discord.gg/YGAjNjZHQC](https://discord.gg/YGAjNjZHQC)**  
-🌐 **Official Website: [https://www.muxiveo.fr/](https://www.muxiveo.fr/)**
+🌐 **Official Website: [https://muxiveo.fr/](https://muxiveo.fr/)**
 
 <br/>
 
