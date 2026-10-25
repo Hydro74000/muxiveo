@@ -51,12 +51,17 @@ READY_FILE = "ready"
 RESULT_FILE = "result.json"
 PREPARED_FILE = "prepared.json"
 REPORTED_FILE = "reported"
+_ANNOUNCED_VERSION_RE = re.compile(r"^Muxiveo (\S+)$")
 _RESERVED_NAME_RE = re.compile(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?")
 _WINDOWS_SHARING_ERRORS = {5, 32, 33}   # accès refusé, fichier ou verrou utilisé par un autre processus
 
 
 class UpdateApplyError(Exception):
     """Mise à jour impossible ou interrompue (message destiné à l'utilisateur)."""
+
+
+class SwapStateError(UpdateApplyError):
+    """Échange de dossiers interrompu sans retour possible à l'état initial : installation à vérifier."""
 
 
 # --------------------------------------------------------------------------- extraction
@@ -214,9 +219,15 @@ def probe(template: list[str], root: Path, version: str) -> None:
                                 capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise UpdateApplyError(f"La nouvelle version ne démarre pas : {exc}") from exc
-    if result.returncode != 0 or version not in result.stdout:
+    announced = [m.group(1) for line in result.stdout.splitlines() if (m := _ANNOUNCED_VERSION_RE.match(line.strip()))]
+    if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip().splitlines()[-1:] or [f"code {result.returncode}"]
         raise UpdateApplyError(f"La nouvelle version ne démarre pas correctement : {detail[0]}")
+    if version not in announced:     # égalité exacte : 12.0.0 n'est pas 2.0.0
+        raise UpdateApplyError(
+            f"La nouvelle version ne démarre pas correctement : version annoncée {announced[0] if announced else '?'}"
+            f" au lieu de {version}."
+        )
 
 
 def _source_candidate(unpacked: Path) -> Path:
@@ -317,16 +328,35 @@ def _atomic_exchange(left: Path, right: Path) -> bool:
 
 
 def exchange(left: Path, right: Path, spare: Path) -> None:
-    """Échange le contenu de deux dossiers ; à défaut d'échange atomique, trois renommages avec retour arrière."""
+    """Échange le contenu de deux dossiers ; à défaut d'échange atomique, trois renommages.
+
+    Échec : état initial rétabli puis exception d'origine ; `SwapStateError` si ce retour échoue lui aussi.
+    """
     if _atomic_exchange(left, right):
         return
     os.rename(left, spare)
     try:
         os.rename(right, left)
-    except BaseException:
-        os.rename(spare, left)
+    except BaseException as exc:
+        _undo_exchange(exc, [(spare, left)])
         raise
-    os.rename(spare, right)
+    try:
+        os.rename(spare, right)
+    except BaseException as exc:
+        _undo_exchange(exc, [(left, right), (spare, left)])
+        raise
+
+
+def _undo_exchange(cause: BaseException, renames: list[tuple[Path, Path]]) -> None:
+    """Annule un échange inachevé ; `SwapStateError` (avec l'emplacement de chaque dossier) si c'est impossible."""
+    for source, target in renames:
+        try:
+            os.rename(source, target)
+        except OSError as exc:
+            raise SwapStateError(
+                f"Échange de dossiers interrompu ({cause}) puis retour impossible ({exc}) : {source} n'a pas pu "
+                f"reprendre la place de {target}."
+            ) from exc
 
 
 def _describe_os_error(exc: OSError, install: Path) -> str:
@@ -413,15 +443,20 @@ def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
         launch(doc["relaunch"], install)
     except BaseException as exc:  # noqa: BLE001 — tout échec ramène l'ancienne version
         error = _describe_os_error(exc, install) if isinstance(exc, OSError) else str(exc)
-        incomplete = False
-        try:
-            if swapped:
-                exchange(install, candidate, spare)
-            for rel in reversed(moved):
-                os.rename(candidate.joinpath(*safe_relative(rel).parts), install.joinpath(*safe_relative(rel).parts))
-        except OSError as rollback_error:
-            incomplete = True
-            error += f" — retour arrière incomplet ({rollback_error}) : fichiers conservés dans {work}"
+        # Échange interrompu sans retour possible : ne plus rien déplacer, tout conserver pour l'utilisateur.
+        incomplete = isinstance(exc, SwapStateError)
+        if incomplete:
+            error += f" — fichiers conservés dans {work}"
+        else:
+            try:
+                if swapped:
+                    exchange(install, candidate, spare)
+                for rel in reversed(moved):
+                    os.rename(candidate.joinpath(*safe_relative(rel).parts),
+                              install.joinpath(*safe_relative(rel).parts))
+            except (OSError, SwapStateError) as rollback_error:
+                incomplete = True
+                error += f" — retour arrière incomplet ({rollback_error}) : fichiers conservés dans {work}"
         _write_result(work, ok=False, version=doc["version"], error=error, rollback_incomplete=incomplete)
         try:
             launch(doc["relaunch"], install)

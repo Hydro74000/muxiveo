@@ -183,6 +183,47 @@ def test_failed_installed_probe_rolls_back_and_relaunches_previous(tmp_path):
     assert not result["ok"] and "défaillante" in result["error"] and not result["rollback_incomplete"]
 
 
+def _fail_renames(monkeypatch, failing: set[tuple[str, str]]) -> None:
+    """Échange sans renommage atomique ; chaque couple (source, cible) de `failing` échoue une fois."""
+    monkeypatch.setattr(update_apply, "_atomic_exchange", lambda left, right: False)
+    real_rename = os.rename
+
+    def rename(source, target):
+        key = (Path(source).name, Path(target).name)
+        if key in failing:
+            failing.discard(key)
+            raise OSError(5, "refusé", str(source))
+        real_rename(source, target)
+
+    monkeypatch.setattr(update_apply.os, "rename", rename)
+
+
+def test_third_rename_failure_restores_previous_install(tmp_path, monkeypatch):
+    install, work, archive = _source_setup(tmp_path, _release_files("2.0.0"))
+    _prepare_source(install, work, archive)
+    _fail_renames(monkeypatch, {("swap", "Muxiveo-2.0.0")})                # 3ᵉ renommage de l'échange
+
+    assert update_apply.commit(work, _exited_pid()) == 1
+    assert _wait_file(install / "launched.txt") == "1.0.0"                 # ancienne version en place, relancée
+    assert (install / "core" / "old_module.py").is_file() and (install / "config.ini").is_file()
+    assert (install / ".venv" / "bin" / "python").is_file() and not (work / "swap").exists()
+    result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
+    assert not result["ok"] and not result["rollback_incomplete"]
+
+
+def test_unrecoverable_exchange_is_flagged_and_kept(tmp_path, monkeypatch):
+    install, work, archive = _source_setup(tmp_path, _release_files("2.0.0"))
+    _prepare_source(install, work, archive)
+    _fail_renames(monkeypatch, {("swap", "Muxiveo-2.0.0"), ("Muxiveo", "Muxiveo-2.0.0")})   # échange puis retour
+
+    assert update_apply.commit(work, _exited_pid()) == 1
+    result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
+    assert result["rollback_incomplete"] and str(work) in result["error"]
+    assert (work / "swap" / "core" / "old_module.py").is_file()             # ancienne version intacte
+    update_apply.collect_results(work.parent, now=time.time() + 10 * 86400)
+    assert (work / "swap").is_dir()                                          # jamais supprimée par le ménage
+
+
 def test_application_still_running_changes_nothing(tmp_path):
     install, work, archive = _source_setup(tmp_path, _release_files("2.0.0"))
     _prepare_source(install, work, archive)
@@ -214,6 +255,12 @@ def test_prepare_refuses_wrong_version(tmp_path):
         root = update_apply.ROOT_TOKEN
         update_apply.prepare(update_apply.KIND_SOURCE, archive, work, install, "3.0.0",
                              [sys.executable, os.path.join(root, "main.py")], [])
+
+
+def test_announced_version_compared_exactly(tmp_path):
+    install, work, archive = _source_setup(tmp_path, _release_files("12.0.0"))
+    with pytest.raises(UpdateApplyError, match="12.0.0 au lieu de 2.0.0"):
+        _prepare_source(install, work, archive)
 
 
 def test_helper_script_runs_isolated_from_a_copy(tmp_path):

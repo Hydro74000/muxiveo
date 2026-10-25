@@ -565,8 +565,9 @@ jobs:
                   --prefix="${PREFIX}/" --add-file="$EXTRA/.muxiveo-installation")
           git archive --format=tar "${extras[@]}" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
           git archive --format=zip "${extras[@]}" HEAD -o "artifacts/${PREFIX}-source.zip"
-          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -qx "${PREFIX}/.muxiveo-installation"
-          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -qx "${PREFIX}/core/_build_version.py"
+          # grep sans -q : il lit toute la liste (sinon tar reçoit SIGPIPE, code 141 avec pipefail).
+          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -x "${PREFIX}/.muxiveo-installation" > /dev/null
+          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -x "${PREFIX}/core/_build_version.py" > /dev/null
           ls -la artifacts
 
       # Sommes SHA-256 de tous les assets : requises par la mise à jour intégrée
