@@ -396,6 +396,9 @@ class VideoEncodeSettings:
     # Recadrage absolu (gauche, haut, droite, bas) que le RPU réinjecté doit suivre
     # (offsets L5 par scène). Posé par le workflow (``resolve_ffmpeg_dovi_geometry``).
     dovi_rpu_crop:    tuple[int, int, int, int] | None = None
+    # Échelle (horizontale, verticale) de l'image recadrée vers la sortie, que les
+    # offsets L5 du RPU suivent après le recadrage (redimensionnement hors NVENC).
+    dovi_rpu_scale:   tuple[float, float] | None = None
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.
