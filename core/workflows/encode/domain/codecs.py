@@ -326,6 +326,19 @@ def nvenc_effective_preset(video: VideoEncodeSettings) -> str:
     return video.preset
 
 
+# libx265 (FFmpeg) reçoit ``-threads`` comme ``frame-threads``, borné à 16 par x265 :
+# au-delà, l'encodeur refuse de s'ouvrir (défaut cœurs × 0,75 > 16 dès 22 cœurs logiques).
+# Les pools de x265 occupent de toute façon tous les cœurs.
+X265_MAX_FRAME_THREADS = 16
+
+
+def encoder_thread_args(video: VideoEncodeSettings, args: list[str]) -> list[str]:
+    """``-threads N`` de l'encodeur vidéo, ramené au maximum accepté par libx265 (0 = automatique)."""
+    if video.codec != "libx265" or len(args) != 2 or args[0] != "-threads":
+        return args
+    return ["-threads", str(min(int(args[1]), X265_MAX_FRAME_THREADS))]
+
+
 def x265_params(video: VideoEncodeSettings) -> str:
     parts: list[str] = []
     if video.extra_params:

@@ -16,6 +16,7 @@ from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks,
     build_encoder_vf,
     build_vf,
+    encoder_thread_args,
     hardware_input_args,
     vulkan_filter_device_args,
     hdr_meta_args,
@@ -111,7 +112,7 @@ class VideoOnlyCommandBuilder:
         vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks(), hw_decoded=video.fel_context is None)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(cb.ffmpeg_thread_args(thread_count))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
         cmd.extend(["-map", f"0:{int(stream_index)}"])
         return cmd
 
@@ -185,7 +186,7 @@ class VideoOnlyCommandBuilder:
         ) if part)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(cb.ffmpeg_thread_args(thread_count))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
         cmd.extend(["-map", "0:0"])
         return PipelineCommand(cmd, [decode, rife])
 
