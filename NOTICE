@@ -83,5 +83,9 @@ pymediainfo
 -------------------------------------------------------------------------------
 Muxiveo itself
   Copyright : Copyright 2026 AOTR
-  License   : MIT
-  See       : LICENSE
+  License   : GNU General Public License v3 or later (GPL-3.0-or-later)
+  See       : LICENSE and LICENSES/GPL-3.0-or-later.txt
+
+  Muxiveo is free software licensed under GNU GPLv3+. The "Muxiveo" name,
+  logos and associated brand assets remain the exclusive intellectual
+  property of AOTR.

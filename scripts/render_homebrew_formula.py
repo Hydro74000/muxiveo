@@ -94,7 +94,7 @@ def render_formula(
   desc "GUI video workflow tool for remuxing, encoding, Dolby Vision and HDR10+"
   homepage "{homepage}"
   version "{version}"
-  license "MIT"
+  license "GPL-3.0-or-later"
 
   on_linux do
     url "{linux_url}"

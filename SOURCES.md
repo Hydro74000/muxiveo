@@ -1,8 +1,19 @@
 # Source Code Availability — GPL / LGPL Compliance
 
 This document fulfills the written offer requirement of the GNU General Public
-License (GPL) and GNU Lesser General Public License (LGPL) for bundled binaries
-distributed with Muxiveo.
+License (GPL) and GNU Lesser General Public License (LGPL) for Muxiveo and all
+bundled binaries distributed with it.
+
+---
+
+## Muxiveo (GNU General Public License v3 or later)
+
+Muxiveo is free and open-source software licensed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**.
+The complete source code, packaging scripts, and build instructions are publicly available at:
+
+- **Repository:** https://github.com/Hydro74000/Muxiveo
+- **License:** [LICENSE](LICENSE) (GPL-3.0-or-later)
+- **Website:** https://muxiveo.fr
 
 ---
 

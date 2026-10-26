@@ -1053,7 +1053,7 @@ def test_build_nsis_installer_names_allinc_when_marker_present_and_standard_othe
 def test_bundle_windows_licenses(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
-    (root / "LICENSE").write_text("MIT License for Muxiveo", encoding="utf-8")
+    (root / "LICENSE").write_text("GNU General Public License v3 for Muxiveo", encoding="utf-8")
     (root / "NOTICE").write_text("Notices", encoding="utf-8")
     (root / "SOURCES.md").write_text("Sources", encoding="utf-8")
     licenses_dir = root / "LICENSES"
@@ -1078,7 +1078,7 @@ def test_bundle_windows_licenses(tmp_path, monkeypatch):
 def test_package_appimage_bundle_licenses(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
-    (root / "LICENSE").write_text("MIT", encoding="utf-8")
+    (root / "LICENSE").write_text("GPL-3.0-or-later", encoding="utf-8")
     (root / "NOTICE").write_text("NOTICE", encoding="utf-8")
     (root / "SOURCES.md").write_text("SOURCES", encoding="utf-8")
     licenses_dir = root / "LICENSES"
