@@ -29,6 +29,11 @@
 * **Hybrid Studio : modèle d'assemblage détaillé.** Le tableau de l'épisode témoin reprend les colonnes du panneau Conteneur : codec, langue, titre et infos de la piste (définition, HDR / Dolby Vision, cadence, canaux, débit, Atmos / DTS:X, nombre de sous-titres, flags défaut / forcé / malentendant / malvoyant…). La langue et le titre se modifient par double-clic et s'appliquent à toute la saison, avant le profil. « Afficher uniquement les sélectionnées » filtre le tableau.
 * **Hybrid Studio : plusieurs donneurs.** Tous les donneurs d'un épisode apparaissent dans le plan, avec leur liste de pistes et leur synchro. La liste des donneurs de l'épisode les montre ensemble et permet d'en garder un seul (« Garder uniquement … »). La carte « Recalage et pré-écoute » est repliée par défaut.
 * **Interpolation : cache des caractéristiques toujours actif.** L'interpolation en Vulkan est plus rapide avec les préréglages Qualité, Ultra et Light, et les images restent identiques. La case « Cache des caractéristiques » disparaît du panneau Encodage : le cache sert dès que muxiveo-rife le prend en charge. Il se désactive quand la mémoire GPU disponible ne laisse pas assez de réserve. Il n'a pas d'effet avec TensorRT ni avec RIFE v4.6.
+* **Interpolation : préréglage Qualité par défaut.** Une nouvelle interpolation démarre sur Qualité (moteur hybride + RIFE v4.15 affiné par Muxiveo) au lieu d'Équilibré. Les réglages déjà enregistrés ne changent pas.
+* **Mises à jour : fenêtre de nouvelle version.** Au démarrage, une nouvelle version s'annonce dans une fenêtre, une fois par version et par session ; si une opération ou un dialogue est en cours, la fenêtre attend sa fin. Les notes de version se lisent dans un volet replié. La case « Ne plus afficher de popup de mise à jour » la désactive (aussi dans Paramètres → Interface) : la nouvelle version est alors seulement signalée en bas du menu latéral.
+* **Mises à jour : installation intégrée pour les archives source et l'application macOS.** En plus de l'installeur Windows et de l'AppImage, l'archive source (à partir de celles de la 5.1.0) et l'application macOS se mettent à jour depuis Muxiveo. La nouvelle version est essayée avant d'être mise en place ; `config.ini` et les fichiers ajoutés au dossier sont conservés. En cas d'échec, l'ancienne version est rétablie et relancée, et le résultat s'affiche au démarrage suivant. Sous macOS, l'application doit se trouver dans Applications ; un dépôt git n'est jamais remplacé (`git pull`). Quand l'installation intégrée n'est pas possible (Flatpak, Homebrew, dossier non modifiable…), le bouton « Installer » est grisé et son info-bulle explique comment mettre à jour.
+* **Extensions : point vert.** Un point vert sur « Extensions » dans le menu latéral (pastille sur l'icône en mode compact) signale une mise à jour d'extension à lancer.
+* **Licence : GPL-3.0.** Muxiveo passe de la licence MIT à la GNU General Public License v3.0 ou ultérieure (`GPL-3.0-or-later`). Le nom, le logo et les éléments de marque Muxiveo restent la propriété exclusive d'AOTR.
 
 ---
 
@@ -41,6 +46,9 @@
 * **Détection des sous-titres forcés / SDH** : sur un très gros fichier, l'extraction n'échoue plus au bout de 120 s ; le délai suit la taille du fichier.
 * **CLI `hybrid`** : avec `--output-template`, `{season_episode}`, `{season}` et `{episode}` sont remplis sans TMDB, comme dans Hybrid Studio, et `--output-all` est pris en compte.
 * **CLI, `--profile`** : une calibration avec conversion de cadence passe en mode physique, comme sans profil ; la correction de vitesse est conservée.
+* **Encodage x265 sur les processeurs à 22 cœurs logiques ou plus** : l'encodeur refusait de s'ouvrir (code 183) et tout encodage x265 échouait. Le nombre de threads transmis à x265 est limité à 16, son maximum.
+* **Copie Dolby Vision avec redimensionnement (x265, QSV, VAAPI, AMF)** : la zone active (L5) du RPU suit désormais les dimensions de sortie. Avant, elle restait exprimée en pixels de la source.
+* **Interpolation après désentrelacement Bob** : sur une source à cadence variable, une image sur deux était perdue. Le flux remis à RIFE est désormais régularisé une seule fois, au double de la cadence ; la durée de la sortie est juste.
 
 ---
 ---
@@ -69,6 +77,11 @@
 * **Hybrid Studio: detailed assembly template.** The reference episode table uses the Container panel columns: codec, language, title and track info (resolution, HDR / Dolby Vision, frame rate, channels, bitrate, Atmos / DTS:X, subtitle count, default / forced / hearing impaired / visual impaired flags…). Language and title are edited by double-click and apply to the whole season, before the profile. "Show selected only" filters the table.
 * **Hybrid Studio: multiple donors.** All the donors of an episode appear in the plan, with their track list and sync. The episode donor list shows them together and lets you keep only one ("Keep only …"). The "Alignment and audio preview" card is collapsed by default.
 * **Interpolation: feature cache always on.** Vulkan interpolation is faster with the Quality, Ultra and Light presets, and frames stay identical. The "Feature cache" checkbox is removed from the Encoding panel: the cache is used whenever muxiveo-rife supports it. It turns off when available GPU memory does not leave enough reserve. It has no effect with TensorRT or RIFE v4.6.
+* **Interpolation: Quality preset by default.** A new interpolation starts on Quality (hybrid engine + RIFE v4.15 fine-tuned by Muxiveo) instead of Balanced. Settings already saved do not change.
+* **Updates: new version window.** At startup, a new version is announced in a window, once per version and per session; if an operation or a dialog is in progress, the window waits until it ends. Release notes can be read in a collapsed pane. The "Don't show update popups again" checkbox turns it off (also in Settings → Interface): the new version is then only shown at the bottom of the sidebar.
+* **Updates: built-in install for source archives and the macOS app.** In addition to the Windows installer and the AppImage, the source archive (from the 5.1.0 archives onwards) and the macOS app update from within Muxiveo. The new version is tried before it is put in place; `config.ini` and files added to the folder are kept. If anything fails, the previous version is restored and restarted, and the result is shown at the next startup. On macOS, the app must be in Applications; a git repository is never replaced (`git pull`). When the built-in install is not possible (Flatpak, Homebrew, read-only folder…), the "Install" button is greyed out and its tooltip explains how to update.
+* **Extensions: green dot.** A green dot on "Extensions" in the sidebar (a badge on the icon in compact mode) signals an extension update waiting to be started.
+* **License: GPL-3.0.** Muxiveo moves from the MIT license to the GNU General Public License v3.0 or later (`GPL-3.0-or-later`). The Muxiveo name, logo and brand assets remain the exclusive property of AOTR.
 
 ---
 
@@ -81,3 +94,6 @@
 * **Forced / SDH subtitle detection**: on a very large file, extraction no longer fails after 120 s; the timeout follows the file size.
 * **CLI `hybrid`**: with `--output-template`, `{season_episode}`, `{season}` and `{episode}` are filled in without TMDB, as in Hybrid Studio, and `--output-all` is taken into account.
 * **CLI, `--profile`**: a calibration with frame rate conversion switches to physical mode, as without a profile; the speed correction is kept.
+* **x265 encoding on processors with 22 or more logical cores**: the encoder refused to open (code 183) and every x265 encode failed. The thread count passed to x265 is capped at 16, its maximum.
+* **Dolby Vision copy with resizing (x265, QSV, VAAPI, AMF)**: the RPU active area (L5) now follows the output dimensions. Before, it stayed in source pixels.
+* **Interpolation after Bob deinterlacing**: on a variable frame rate source, one frame out of two was lost. The stream handed to RIFE is now regularized only once, at twice the frame rate; the output duration is correct.
