@@ -366,11 +366,15 @@ def _start_swap_helper(kind: InstallKind, work: Path) -> None:
                     "stderr": subprocess.DEVNULL, "close_fds": True}
     if os.name == "nt":
         detached = 0x00000008 | 0x00000200          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # Argv construit ici (interpréteur ou exécutable de l'application), sans shell.
         try:   # hors de l'objet job éventuel du terminal, qui le tuerait avec l'application
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             helper = subprocess.Popen(command, creationflags=detached | 0x01000000, **kwargs)  # nosec B603
         except OSError:
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             helper = subprocess.Popen(command, creationflags=detached, **kwargs)  # nosec B603
     else:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         helper = subprocess.Popen(command, start_new_session=True, **kwargs)  # nosec B603
     deadline = time.monotonic() + _HELPER_READY_TIMEOUT_S
     while not (work / update_apply.READY_FILE).exists():

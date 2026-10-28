@@ -40,7 +40,7 @@ MACOS_APP_NAME = "Muxiveo.app"
 # Livrés comme modèles mais propres à l'utilisateur : config.ini (Windows, mode sources : configuration écrite par le
 # setup et le panneau Paramètres à la racine du projet) — toujours conservés, jamais remplacés par la nouvelle version.
 PRESERVED_FILES = frozenset({"config.ini"})
-ROOT_TOKEN = "{root}"
+ROOT_TOKEN = "{root}"  # nosec B105  # jeton de gabarit, pas un secret
 
 MAX_BYTES = 2 * 1024**3
 MAX_ENTRIES = 50_000
@@ -146,6 +146,8 @@ def extract_app_from_dmg(dmg: Path, destination: Path, app_name: str = MACOS_APP
 
 def _run(command: list[str], label: str, timeout: float = 600.0) -> None:
     try:
+        # Argv construit par ce module (outils système), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(command, check=False, capture_output=True, text=True,  # nosec B603
                                 timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -215,6 +217,8 @@ def probe(template: list[str], root: Path, version: str) -> None:
     """`--cli version` de la version à installer : elle démarre et annonce la version attendue."""
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     try:
+        # Commande enregistrée par l'application, dossier contrôlé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(expand(template, root) + ["--cli", "version"], cwd=root,  # nosec B603
                                 capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
