@@ -665,3 +665,80 @@ def test_hybrid_nfo_paths_require_an_explicit_opt_out(panel, tmp_path):
     assert panel._parse_preparation_args().clean_nfo is False
     panel.controls["no-clean-nfo"].setChecked(False)
     assert panel._parse_preparation_args().clean_nfo is True
+
+
+def test_manual_strategy_keeps_the_cadence_settings_available(panel):
+    """Le décalage manuel applique aussi la conversion de cadence : ses réglages restent accessibles."""
+    panel.sync_strategy.setCurrentIndex(panel.sync_strategy.findData("manual"))
+    assert panel.cadence_auto_apply.isEnabled() and panel.cadence_method_combo.isEnabled()
+    assert not panel.detect_cuts.isEnabled()
+    panel.sync_strategy.setCurrentIndex(panel.sync_strategy.findData("none"))
+    assert not panel.cadence_auto_apply.isEnabled() and not panel.cadence_method_combo.isEnabled()
+
+
+def test_studio_offers_the_cadence_without_changing_the_plan(panel, tmp_path):
+    """Synchro du plan sans conversion (décochée auparavant) : proposée décochée, plan inchangé à l'ouverture."""
+    config, primary = _job(tmp_path)
+    config.sources[0].tracks.insert(0, TrackEntry(0, "video", "H264", "", "", "", file_id="src0",
+                                                  frame_rate="24000/1001"))
+    config.sources[1].tracks.insert(0, TrackEntry(3, "video", "H264", "", "", "", file_id="src1",
+                                                  frame_rate="25/1"))
+    before = copy.deepcopy(config.sync_calibrations)
+    _select_job(panel, (config, primary))
+    editor = panel._sync_editor
+    assert editor._cadence_available is not None and not editor.cadence_check.isChecked()
+    assert config.sync_calibrations == before
+    editor.cadence_check.setChecked(True)
+    stored = SyncCalibration.from_dict(config.sync_calibrations["1"])
+    assert stored.cadence_mismatch is not None and config.sync_mode == "physical"
+
+
+def test_run_settles_undecided_cadence_methods_before_processing(panel, tmp_path, monkeypatch):
+    """Conversion cochée puis lancement immédiat (analyse du studio annulée) : méthode tranchée avant l'épisode."""
+    from dataclasses import replace
+    from core.workflows import hybrid_matrix
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    config, primary = _job(tmp_path)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    undecided = replace(primary, cadence_mismatch=pal, cadence_audio_method="auto")
+    config.sync_calibrations["1"] = undecided.to_dict()
+    _select_job(panel, (config, primary))
+    calls: list[str] = []
+    monkeypatch.setattr(hybrid_matrix, "resolve_plan_cadence_methods",
+                        lambda plan, *_args: calls.append("analyse") or {"1": replace(
+                            undecided, cadence_audio_method="asetrate", cadence_method_auto=True)})
+    monkeypatch.setattr(panel.executor, "submit", lambda fn, *args: fn())
+    monkeypatch.setattr(panel, "run_next", lambda: calls.append("épisode"))
+    panel.execution_rows = [0]
+    assert panel._finalize_cadence_methods([0], panel.run_next)
+    assert calls == ["analyse", "épisode"]
+    stored = SyncCalibration.from_dict(config.sync_calibrations["1"])
+    assert stored.cadence_audio_method == "asetrate" and stored.cadence_method_requested == "auto"
+    assert all(SyncCalibration.from_dict(track.sync_calibration).cadence_audio_method == "asetrate"
+               for track in config.sources[1].tracks if track.sync_calibration)
+    assert not panel._finalize_cadence_methods([0], panel.run_next)
+
+
+def test_cancelled_cadence_settlement_logs_no_failure(panel, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from core.workflows import hybrid_matrix
+    from core.workflows.audio_sync import AudioSyncError
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    config, primary = _job(tmp_path)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    config.sync_calibrations["1"] = replace(primary, cadence_mismatch=pal, cadence_audio_method="auto").to_dict()
+    _select_job(panel, (config, primary))
+
+    def cancelled(*_args):
+        panel.cancel_event.set()
+        raise AudioSyncError("Analyse annulée.")
+
+    logs: list[tuple[str, str]] = []
+    panel.log_message.connect(lambda level, text: logs.append((level, text)))
+    monkeypatch.setattr(hybrid_matrix, "resolve_plan_cadence_methods", cancelled)
+    monkeypatch.setattr(panel.executor, "submit", lambda fn, *args: fn())
+    continued: list[bool] = []
+    assert panel._finalize_cadence_methods([0], lambda: continued.append(True))
+    assert continued == [True] and not any(level == "WARN" for level, _text in logs)

@@ -35,6 +35,8 @@ def reset_empty_state(panel: "RemuxPanel") -> None:
     panel._sync_links.clear()
     panel._auto_sync_entry_ids.clear()
     panel._chapter_sync_cancelled_source_ids.clear()
+    panel._cadence_declined_source_ids.clear()
+    panel._drop_cadence_analyses()
     panel._track_table.clear_all()
     panel._attachment_panel.clear_all()
     panel._chapter_panel.clear_all()

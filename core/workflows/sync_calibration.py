@@ -33,6 +33,9 @@ class SyncCalibration:
     cadence_pitch_analysis: Any | None = None
     # Validée par les seules mesures ponctuelles (analyse continue ignorée) ; non sérialisé.
     quick_check: bool = False
+    # Méthode demandée « auto » (tranchée par l'analyse de hauteur ou non) : les analyses
+    # suivantes la redemandent, avec repli vers l'autre méthode.
+    cadence_method_auto: bool = False
 
     def __post_init__(self):
         if not self.segments or self.segments[0].start_ms != 0:
@@ -50,6 +53,12 @@ class SyncCalibration:
     def linear(cls, offset_ms: float):
         return cls((SyncSegment(0, float(offset_ms)),))
 
+    @property
+    def cadence_method_requested(self) -> str:
+        """Méthode demandée : « auto » (choisie par analyse, avec repli) ou la méthode explicite."""
+        method = self.cadence_audio_method or "auto"
+        return "auto" if self.cadence_method_auto or method == "auto" else method
+
     def to_dict(self):
         data = {
             "version": 1,
@@ -63,6 +72,9 @@ class SyncCalibration:
             data["cadence_mismatch"] = self.cadence_mismatch.to_dict()
         if self.cadence_audio_method:
             data["cadence_audio_method"] = self.cadence_audio_method
+        if self.cadence_method_auto and self.cadence_mismatch is not None:
+            # Sans conversion, le mode demandé n'a pas d'objet.
+            data["cadence_method_auto"] = True
         if self.cadence_pitch_analysis is not None:
             if hasattr(self.cadence_pitch_analysis, "to_dict"):
                 data["cadence_pitch_analysis"] = self.cadence_pitch_analysis.to_dict()
@@ -96,6 +108,7 @@ class SyncCalibration:
                 cadence_mismatch=cadence_mismatch,
                 cadence_audio_method=cadence_method,
                 cadence_pitch_analysis=pitch_analysis,
+                cadence_method_auto=payload.get("cadence_method_auto") is True,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Calibration invalide.") from exc
@@ -328,15 +341,17 @@ def _active_cadence(calibration: SyncCalibration) -> CadenceMismatch | None:
 
 
 def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):
-    """(conversion, méthode audio, analyse) de `inner` puis `outer` ; conversions réciproques annulées."""
+    """(conversion, méthode audio, analyse, mode « auto ») de `inner` puis `outer` ;
+    conversions réciproques annulées."""
     first, second = _active_cadence(inner), _active_cadence(outer)
     if second is None:
-        return first, inner.cadence_audio_method, inner.cadence_pitch_analysis if first else None
+        return (first, inner.cadence_audio_method, inner.cadence_pitch_analysis if first else None,
+                inner.cadence_method_auto)
     if first is None:
-        return second, outer.cadence_audio_method, outer.cadence_pitch_analysis
+        return second, outer.cadence_audio_method, outer.cadence_pitch_analysis, outer.cadence_method_auto
     speed = first.speed_factor * second.speed_factor
     if abs(speed - 1.0) < 1e-9:
-        return None, inner.cadence_audio_method, None
+        return None, inner.cadence_audio_method, None, inner.cadence_method_auto
     ratio = ""
     if first.speed_ratio and second.speed_ratio:
         try:
@@ -352,7 +367,7 @@ def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):
         detection_method="composition",
         speed_ratio=ratio,
     )
-    return combined, inner.cadence_audio_method, None
+    return combined, inner.cadence_audio_method, None, inner.cadence_method_auto
 
 
 def _increasing(segments: list[SyncSegment]) -> tuple[SyncSegment, ...]:
@@ -380,7 +395,7 @@ def compose_calibrations(inner: SyncCalibration, outer: SyncCalibration) -> Sync
     puis `outer` redonne ainsi la synchro de départ.
     """
     inner_ratio, outer_ratio = inner._stretch_ratio(), outer._stretch_ratio()
-    cadence, method, analysis = _combined_cadence(inner, outer)
+    cadence, method, analysis, method_auto = _combined_cadence(inner, outer)
     outer_starts = [segment.start_ms for segment in outer.segments]
     played = {index for _start, _stop, index in outer.output_ranges()}
     pieces: list[SyncSegment] = []
@@ -414,6 +429,7 @@ def compose_calibrations(inner: SyncCalibration, outer: SyncCalibration) -> Sync
         cadence_mismatch=cadence,
         cadence_audio_method=method,
         cadence_pitch_analysis=analysis,
+        cadence_method_auto=method_auto,
     )
 
 
@@ -435,6 +451,7 @@ def invert_calibration(calibration: SyncCalibration) -> SyncCalibration:
         calibration.confidence,
         cadence_mismatch=mismatch.inverse() if mismatch is not None else None,
         cadence_audio_method=calibration.cadence_audio_method,
+        cadence_method_auto=calibration.cadence_method_auto,
     )
 
 

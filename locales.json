@@ -4655,10 +4655,6 @@
     "fra": "Aperçu non disponible : {error}",
     "eng": "Preview unavailable: {error}"
   },
-  "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>": {
-    "fra": "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>",
-    "eng": "Pitch: {shift} semitone (F0: {f0_ref} Hz vs {f0_donor} Hz) • Spectral corr.: asetrate {asetrate} | atempo {atempo} • Recommended: <b>{method}</b>"
-  },
   "Différence de cadence détectée : {description} — méthode audio : {method}.": {
     "fra": "Différence de cadence détectée : {description} — méthode audio : {method}.",
     "eng": "Frame-rate mismatch detected: {description} — audio method: {method}."
@@ -9322,5 +9318,49 @@
   "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).": {
     "fra": "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).",
     "eng": "Python dependencies changed: rerun the setup (Settings → Rerun setup)."
+  },
+  "Analyse sur la piste #{measured} ({language}) de la même source, langue de la référence : la synchro vaut pour toutes les pistes de la source.": {
+    "fra": "Analyse sur la piste #{measured} ({language}) de la même source, langue de la référence : la synchro vaut pour toutes les pistes de la source.",
+    "eng": "Analysis on track #{measured} ({language}) of the same source, in the reference language: the sync applies to every track of the source."
+  },
+  "Méthode de conversion de cadence de « {source} » : {method}.": {
+    "fra": "Méthode de conversion de cadence de « {source} » : {method}.",
+    "eng": "Cadence conversion method for “{source}”: {method}."
+  },
+  "Piste #{idx} : cadence vidéo de sa source différente de la vidéo de sortie ({description}). Un décalage seul dérive au fil du film : régler la conversion de cadence dans le Synchro Studio.": {
+    "fra": "Piste #{idx} : cadence vidéo de sa source différente de la vidéo de sortie ({description}). Un décalage seul dérive au fil du film : régler la conversion de cadence dans le Synchro Studio.",
+    "eng": "Track #{idx}: its source video frame rate differs from the output video ({description}). An offset alone drifts over the film: set the cadence conversion in Sync Studio."
+  },
+  "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence.": {
+    "fra": "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence.",
+    "eng": "Different video frame rates: the track is slowed down or sped up to follow the reference video."
+  },
+  "Hauteur de la cible : {shift} demi-ton • Recommandé : <b>{method}</b>": {
+    "fra": "Hauteur de la cible : {shift} demi-ton • Recommandé : <b>{method}</b>",
+    "eng": "Target pitch: {shift} semitone • Recommended: <b>{method}</b>"
+  },
+  "Analyse de la hauteur audio en cours (conversion de cadence).": {
+    "fra": "Analyse de la hauteur audio en cours (conversion de cadence).",
+    "eng": "Audio pitch analysis in progress (cadence conversion)."
+  },
+  "Analyse de la hauteur audio (conversion de cadence)…": {
+    "fra": "Analyse de la hauteur audio (conversion de cadence)…",
+    "eng": "Analysing audio pitch (cadence conversion)…"
+  },
+  "Sauvegarde annulée": {
+    "fra": "Sauvegarde annulée",
+    "eng": "Save cancelled"
+  },
+  "Analyse de hauteur interrompue ({error}) : méthode atempo pour les plans restants.": {
+    "fra": "Analyse de hauteur interrompue ({error}) : méthode atempo pour les plans restants.",
+    "eng": "Pitch analysis interrupted ({error}): atempo method for the remaining plans."
+  },
+  "Sauvegarde des workflows": {
+    "fra": "Sauvegarde des workflows",
+    "eng": "Saving workflows"
+  },
+  "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.": {
+    "fra": "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.",
+    "eng": "Pitch analysis failed ({error}): atempo method, track pitch kept."
   }
 }

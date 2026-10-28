@@ -263,6 +263,7 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
         _scan_cancel=threading.Event(),
         _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_measure_entry=lambda target, _reference: target,
         _audio_sync_cadence=lambda *_a: None,
         _audio_sync_reference_choices=lambda _entry: [reference],
         _audio_sync_track=lambda entry: entry,
@@ -319,27 +320,53 @@ def test_positive_delay_longer_than_probe_preserves_beginning_and_tail():
     assert samples[-1]['start_ms'] > len(donor) - 8000
 
 
-def test_audio_reference_choices_list_every_compatible_track_of_other_sources():
+def _choice_track(entry_id, file_id, tid, info="5.1", language="", commentary=False):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        entry_id=entry_id, file_id=file_id, mkv_tid=tid, track_type="audio",
+        codec="ac3", display_info=info, language=language, title="", flag_commentary=commentary,
+    )
+
+
+def _choice_panel(tracks):
     from pathlib import Path
     from types import SimpleNamespace
     from ui.panels.remux_panel import panel
-
-    def track(entry_id, file_id, tid, info="5.1"):
-        return SimpleNamespace(
-            entry_id=entry_id, file_id=file_id, mkv_tid=tid, track_type="audio",
-            codec="ac3", display_info=info, language="", title="",
-        )
-
-    target = track("t", "A", 1)
-    tracks = [target, track("b2", "B", 2), track("b1", "B", 1), track("b3", "B", 3, "stereo")]
-    fake = SimpleNamespace(
+    return SimpleNamespace(
         _source_files=[SimpleNamespace(id="A", path=Path("a.mkv")), SimpleNamespace(id="B", path=Path("b.mkv"))],
         _track_table=SimpleNamespace(current_tracks=lambda: tracks),
         _audio_sync_family=panel.RemuxPanel._audio_sync_family,
     )
-    choices = panel.RemuxPanel._audio_sync_reference_choices(cast(Any, fake), cast(Any, target))
-    # Ordre du tableau conservé (pistes réordonnées), piste stéréo exclue.
-    assert [entry.entry_id for _label, entry in choices] == ["b2", "b1"]
+
+
+def test_audio_reference_choices_list_every_track_of_other_sources_same_layout_first():
+    from ui.panels.remux_panel import panel
+
+    target = _choice_track("t", "A", 1)
+    tracks = [target, _choice_track("b3", "B", 3, "stereo"), _choice_track("b2", "B", 2), _choice_track("b1", "B", 1)]
+    choices = panel.RemuxPanel._audio_sync_reference_choices(cast(Any, _choice_panel(tracks)), cast(Any, target))
+    # Ordre du tableau conservé (pistes réordonnées), même disposition d'abord.
+    assert [entry.entry_id for _label, entry in choices] == ["b2", "b1", "b3"]
+    # Cible stéréo, référence 5.1 seule (WEB 25 i/s face à un WEB-DL 23,976 i/s) : proposée.
+    stereo = _choice_track("s", "A", 2, "2.0")
+    choices = panel.RemuxPanel._audio_sync_reference_choices(
+        cast(Any, _choice_panel([stereo, _choice_track("b1", "B", 1)])), cast(Any, stereo))
+    assert [entry.entry_id for _label, entry in choices] == ["b1"]
+
+
+def test_audio_sync_analyses_the_target_source_track_in_the_reference_language():
+    from ui.panels.remux_panel import panel
+
+    target = _choice_track("fr", "A", 1, "2.0", "fre")
+    commentary = _choice_track("com", "A", 3, "2.0", "eng", commentary=True)
+    english = _choice_track("en", "A", 2, "2.0", "eng")
+    reference = _choice_track("ref", "B", 1, "5.1", "en-US")
+    fake = _choice_panel([target, commentary, english, reference])
+    measure = panel.RemuxPanel._audio_sync_measure_entry
+    assert measure(cast(Any, fake), cast(Any, target), cast(Any, reference)) is english
+    assert measure(cast(Any, fake), cast(Any, english), cast(Any, reference)) is english
+    assert measure(cast(Any, fake), cast(Any, target), cast(Any, _choice_track("x", "B", 2, "5.1", ""))) is target
+    assert measure(cast(Any, fake), cast(Any, target), None) is target
 
 
 def _scan_with_samples(monkeypatch, *, quick_check, shift=1006.0, confidence=.95):
@@ -472,6 +499,7 @@ def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
         _scan_cancel=threading.Event(),
         _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_measure_entry=lambda target, _reference: target,
         _audio_sync_cadence=lambda *_a: None,
         _audio_sync_track=lambda entry: entry,
         _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
@@ -507,6 +535,7 @@ def test_remux_panel_passes_detected_cadence_to_scan(monkeypatch):
         _scan_cancel=threading.Event(),
         _can_start_auxiliary_operation=lambda: True,
         _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_measure_entry=lambda target, _reference: target,
         _audio_sync_cadence=lambda *_a: mismatch,
         _audio_sync_track=lambda entry: entry,
         _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe", sync_cadence_audio_method="asetrate"),

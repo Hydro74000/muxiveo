@@ -259,6 +259,10 @@ def _session_job(panel):
             source_index[file_id] for file_id in panel._chapter_sync_cancelled_source_ids
             if file_id in source_index
         ],
+        "cadence_declined_source_indices": [
+            source_index[file_id] for file_id in panel._cadence_declined_source_ids
+            if file_id in source_index
+        ],
         "tag_edits": dict(panel._attachment_panel._tag_edits),
         "output_text": panel._output_edit.text(),
     }
@@ -418,6 +422,11 @@ def restore(panel, config, infos, session=None):
     panel._chapter_sync_cancelled_source_ids = {
         panel._source_files[int(index)].id
         for index in session.get("chapter_sync_cancelled_source_indices", [])
+        if str(index).isdigit() and 0 <= int(index) < len(panel._source_files)
+    }
+    panel._cadence_declined_source_ids = {
+        panel._source_files[int(index)].id
+        for index in session.get("cadence_declined_source_indices", [])
         if str(index).isdigit() and 0 <= int(index) < len(panel._source_files)
     }
     auto_sync_keys = {

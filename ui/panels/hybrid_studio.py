@@ -52,6 +52,7 @@ from core.workflows.hybrid_matrix import (
     MatrixEpisode,
     MatrixSource,
     SourceRole,
+    _extract_source_video_fps,
     _language_selected,
     default_matrix_output_name,
     matrix_output_context,
@@ -477,6 +478,8 @@ class HybridStudio(QWidget):
     witness_inspected = Signal(int, object, object)
     single_calibration_done = Signal(int, object, object)
     single_calibration_failed = Signal(int, str)
+    # Méthodes « auto » de cadence tranchées avant traitement : [(ligne, plan, {source: calibration})].
+    cadence_methods_resolved = Signal(object)
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
@@ -983,6 +986,8 @@ class HybridStudio(QWidget):
         self.witness_inspected.connect(self._on_witness_inspected)
         self.single_calibration_done.connect(self._on_single_calibration_done)
         self.single_calibration_failed.connect(self._on_single_calibration_failed)
+        self.cadence_methods_resolved.connect(self._on_cadence_methods_resolved)
+        self._cadence_continuation: Callable[[], None] | None = None
 
     def _add_extra_source_row(self, path: str = "", role: SourceRole = SourceRole.DONOR, label: str = ""):
         row_widget = QWidget()
@@ -1545,8 +1550,9 @@ class HybridStudio(QWidget):
         self.scan_button.setText(translate_text("Analyser la saison") if automatic
                                  else translate_text("Préparer la saison"))
         self.detect_cuts.setEnabled(automatic and not self.busy)
-        self.cadence_auto_apply.setEnabled(automatic and not self.busy)
-        self.cadence_method_combo.setEnabled(automatic and not self.busy)
+        # Décalage manuel : la conversion de cadence et sa méthode s'appliquent aussi.
+        self.cadence_auto_apply.setEnabled((automatic or manual) and not self.busy)
+        self.cadence_method_combo.setEnabled((automatic or manual) and not self.busy)
 
     def _settings_signature(self):
         control_values = tuple((key, control.isChecked() if isinstance(control, QCheckBox)
@@ -2315,6 +2321,13 @@ class HybridStudio(QWidget):
         calibration = config.sync_calibrations.get(str(source_index))
         if calibration is None:
             calibration = primary if source_index == 1 else SyncCalibration.linear(track.time_shift_ms)
+        # Conversion d'après les vidéos, proposée décochée : le plan (réglages, choix du studio) en décide.
+        cadence_hint = None
+        if self.sync_strategy.currentData() != "none":
+            from core.workflows.cadence import detect_cadence_from_metadata
+            cadence_hint = detect_cadence_from_metadata(
+                _extract_source_video_fps(config.sources[0]), _extract_source_video_fps(source),
+            )
         editor = SyncStudioDialog(
             target_entry=track, target_source_path=source.path, target_stream_index=track.mkv_tid,
             reference_entry=reference, reference_source_path=config.sources[0].path if reference else None,
@@ -2322,6 +2335,9 @@ class HybridStudio(QWidget):
             calibration=calibration, ffmpeg_bin=self.config.tool_ffmpeg,
             ffprobe_bin=self.config.tool_ffprobe, crossfade_ms=config.crossfade_ms,
             parent=self, embedded=True,
+            cadence_hint=cadence_hint,
+            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
+            apply_cadence_hint=False,
         )
         editor.calibration_changed.connect(lambda cal: self._apply_studio_calibration(row, source_index, config, cal))
         editor.finished.connect(lambda _result: self._sync_editor_closed(editor))
@@ -2338,7 +2354,16 @@ class HybridStudio(QWidget):
     def _apply_studio_calibration(self, row, source_index, config, calibration):
         if self.busy or row not in self.jobs or self.jobs[row][0] is not config:
             return
-        if len(calibration.segments) > 1:
+        self._store_row_calibration(row, source_index, config, calibration)
+        self.log_message.emit("INFO", translate_text(
+            "Synchronisation mise à jour : {source} ({count} segments).",
+            source=config.sources[source_index].path.name, count=len(calibration.segments),
+        ))
+
+    def _store_row_calibration(self, row, source_index, config, calibration):
+        """Synchro d'une source donneuse du plan (pistes, calibrations, ligne affichée)."""
+        # Coupures ou conversion de cadence : seule la réécriture physique les applique.
+        if len(calibration.segments) > 1 or _has_cadence(calibration.cadence_mismatch):
             config.sync_mode = "physical"
         offset = round(calibration.segments[0].shift_ms)
         payload = calibration.to_dict()
@@ -2360,10 +2385,57 @@ class HybridStudio(QWidget):
             episode.shift_ms = calibration.segments[0].shift_ms
             episode.segments_count = len(calibration.segments)
         self._show_row_sync(row, config, primary)
-        self.log_message.emit("INFO", translate_text(
-            "Synchronisation mise à jour : {source} ({count} segments).",
-            source=config.sources[source_index].path.name, count=len(calibration.segments),
-        ))
+
+    def _finalize_cadence_methods(self, rows, then: Callable[[], None]) -> bool:
+        """Méthodes « auto » de conversion de cadence restées non tranchées (studio fermé avant son
+        analyse) : tranchées en arrière-plan avant traitement ou sauvegarde, puis `then`.
+        Faux si aucun plan n'en porte."""
+        from core.workflows.hybrid_matrix import plan_needs_cadence_method, resolve_plan_cadence_methods
+
+        pending = [(row, self.jobs[row][0]) for row in rows
+                   if row in self.jobs and plan_needs_cadence_method(self.jobs[row][0])]
+        if not pending:
+            return False
+        self._cadence_continuation = then
+        self.set_busy(True)
+        label = translate_text("Analyse de la hauteur audio (conversion de cadence)…")
+        self.status.setText(label)
+        self.op_state_changed.emit("step", label)
+        ffmpeg, ffprobe, cancel_event = str(self.config.tool_ffmpeg), str(self.config.tool_ffprobe), self.cancel_event
+        # Copies lues par le worker : les plans ne sont modifiés que dans le thread GUI.
+        work = [(row, config, copy.deepcopy(config),
+                 self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else config.output.stem)
+                for row, config in pending]
+
+        def task():
+            results = []
+            try:
+                for row, config, snapshot, name in work:
+                    if cancel_event.is_set():
+                        break
+                    results.append((row, config, resolve_plan_cadence_methods(
+                        snapshot, ffmpeg, ffprobe, cancel_event, _GuiLogger(self.log_message, name), name,
+                    )))
+            except Exception as exc:
+                # Annulation : l'opération se termine en « annulée » sans message d'échec.
+                if not cancel_event.is_set():
+                    self.log_message.emit("WARN", translate_text(
+                        "Analyse de hauteur interrompue ({error}) : méthode atempo pour les plans restants.",
+                        error=str(exc),
+                    ))
+            self.cadence_methods_resolved.emit(results)
+
+        self.executor.submit(task)
+        return True
+
+    def _on_cadence_methods_resolved(self, results):
+        for row, config, resolved in results:
+            if row in self.jobs and self.jobs[row][0] is config:
+                for key, calibration in resolved.items():
+                    self._store_row_calibration(row, int(key), config, calibration)
+        then, self._cadence_continuation = self._cadence_continuation, None
+        if then is not None:
+            then()
 
     def listen(self):
         if self.busy:
@@ -2404,11 +2476,19 @@ class HybridStudio(QWidget):
             return
         self._save_jobs(Path(directory))
 
-    def _save_jobs(self, directory: Path):
+    def _save_jobs(self, directory: Path, *, finalized: bool = False):
         from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
         from core.profiles.selectors import remux_config_to_exact_job
         from core.workflows.workflow_store import save_workflow
 
+        if not finalized:
+            # Méthodes « auto » de cadence tranchées avant d'écrire les workflows.
+            from core.workflows.hybrid_matrix import plan_needs_cadence_method
+            if any(plan_needs_cadence_method(config) for config, _ in self.jobs.values()):
+                if not self._begin_operation(translate_text("Sauvegarde des workflows")):
+                    return
+                self._finalize_cadence_methods(sorted(self.jobs), lambda: self._save_jobs_after_cadence(directory))
+                return
         try:
             if not self.jobs:
                 raise ValueError(translate_text("Aucun plan d’hybridation prêt."))
@@ -2465,6 +2545,9 @@ class HybridStudio(QWidget):
         self.exec_index = 0
         self.stopped = False
         self.set_busy(True)
+        # Méthode « auto » non tranchée : traduite en atempo sans analyse, elle l'est d'abord.
+        if self._finalize_cadence_methods(self.execution_rows, self.run_next):
+            return
         self.run_next()
 
     @staticmethod
@@ -2481,6 +2564,12 @@ class HybridStudio(QWidget):
         previous = self._completed_jobs.get(row)
         return bool(previous is not None and previous[0] == self.jobs[row]
                     and previous[1] == self._output_identity(self.jobs[row][0].output))
+
+    def _save_jobs_after_cadence(self, directory: Path):
+        if self.stopped:
+            self._finish_operation("cancelled", translate_text("Sauvegarde annulée"))
+            return
+        self._save_jobs(directory, finalized=True)
 
     def run_next(self):
         from core.workflows.remux import RemuxWorkflow

@@ -308,3 +308,200 @@ def test_session_round_trips_links(chain):
     assert restored == panel._sync_links
     # Sessions antérieures : pas de lien, synchros conservées telles quelles.
     assert workflow_functions._restored_sync_links(panel, config, None) == {}
+
+
+def test_declined_cadence_is_offered_unchecked_at_reopening(chain, monkeypatch):
+    """Conversion décochée dans le studio : toujours proposée, plus recochée d'office (session comprise)."""
+    from tests.test_remux import _video
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    panel, tracks, logs = chain
+    panel._source_files[0].info.video_tracks = [_video(0, frame_rate="24000/1001")]
+    panel._source_files[2].info.video_tracks = [_video(0, frame_rate="25/1")]
+    opened: list[dict] = []
+
+    class _Declining(_Studio):
+        cadence_declined = True
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            opened.append(kwargs)
+
+    monkeypatch.setattr(mod, "SyncStudioDialog", _Declining)
+    monkeypatch.setattr(panel, "_audio_sync_reference_choices", lambda _entry: [("A", tracks["A"][0])])
+    panel._on_sync_studio_requested(tracks["C"][0])
+    assert opened[0]["cadence_hint"].speed_ratio == "24000/25025" and opened[0]["apply_cadence_hint"]
+    assert panel._cadence_declined_source_ids == {"C"} and _shifts(tracks)["C"] == [0, 0]
+    assert ("INFO", translate_text("Synchro Studio : aucune modification, synchro inchangée.")) in logs
+    panel._on_sync_studio_requested(tracks["C"][0])
+    assert opened[1]["cadence_hint"] is not None and not opened[1]["apply_cadence_hint"]
+
+    session = workflow_functions._session_job(panel)["_muxiveo_session"]
+    assert session["cadence_declined_source_indices"] == [2]
+    # Analyse automatique avec conversion : le refus antérieur ne vaut plus.
+    pal = opened[0]["cadence_hint"]
+    _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal))
+    assert panel._cadence_declined_source_ids == set()
+
+
+def _capture_cadence_analyses(panel, monkeypatch):
+    """Analyses de hauteur du panneau : tâches mémorisées (lancées par le test) ; méthode retenue
+    asetrate face à la source A, atempo face aux autres."""
+    from dataclasses import replace
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    submitted: list = []
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: submitted.append(fn))
+
+    def resolve(_self, reference, _target, calibration, log=None):
+        method = "asetrate" if reference.source_path.name == "A.mkv" else "atempo"
+        return replace(calibration, cadence_audio_method=method, cadence_method_auto=True)
+
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
+    return submitted
+
+
+def _run_analysis(task) -> None:
+    from PySide6.QtCore import QCoreApplication
+    task()
+    QCoreApplication.processEvents()
+
+
+def _auto_cadence(offset_ms: float) -> SyncCalibration:
+    from core.workflows.cadence import detect_cadence_from_metadata
+    return SyncCalibration((SyncSegment(0, offset_ms),), cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"),
+                           cadence_audio_method="auto")
+
+
+def test_stale_cadence_method_analysis_is_relaunched(chain, monkeypatch):
+    """Synchro modifiée pendant l'analyse de hauteur : résultat écarté, analyse relancée sur la synchro actuelle."""
+    from dataclasses import replace
+
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    assert len(submitted) == 1
+    link = panel._sync_links["C"]
+    panel._sync_links["C"] = replace(link, relative=link.relative.with_start_offset(450))
+    _run_analysis(submitted.pop())
+    # Analyse faite sur l'ancien décalage : rien appliqué, analyse relancée.
+    assert panel._source_calibration("C").cadence_audio_method == "auto" and len(submitted) == 1
+    _run_analysis(submitted.pop())
+    assert panel._sync_links["C"].relative.cadence_audio_method == "asetrate"
+    assert panel._source_calibration("C").cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
+
+
+def test_late_analysis_against_a_former_reference_is_rejected(chain, monkeypatch):
+    """C analysée face à A, synchros annulées, C resynchronisée face à B (même décalage, même
+    cadence) : le résultat tardif de A est écarté, celui de B s'applique."""
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    panel._on_global_sync_cancel_requested()
+    _sync(panel, tracks, "C", "B", 300, _auto_cadence(300.0))
+    against_a, against_b = submitted
+    _run_analysis(against_a)
+    assert panel._source_calibration("C").cadence_audio_method == "auto" and panel.cadence_resolution_pending()
+    _run_analysis(against_b)
+    assert panel._source_calibration("C").cadence_audio_method == "atempo"
+    assert not panel.cadence_resolution_pending()
+
+
+def test_new_analysis_of_a_source_supersedes_the_previous_one(chain, monkeypatch):
+    """Resynchronisation face à une autre référence sans annulation : l'analyse précédente est remplacée."""
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    _sync(panel, tracks, "C", "B", 300, _auto_cadence(300.0))
+    against_a, against_b = submitted
+    _run_analysis(against_b)
+    _run_analysis(against_a)
+    assert panel._source_calibration("C").cadence_audio_method == "atempo"
+    assert not panel.cadence_resolution_pending()
+
+
+def test_pending_cadence_analysis_holds_the_media_operation(chain, monkeypatch):
+    """Méthode « auto » en cours d'analyse : le traitement attend ; un échec retient atempo, signalé."""
+    from PySide6.QtCore import QCoreApplication
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, tracks, logs = chain
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    submitted: list = []
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("ffprobe absent")
+
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: submitted.append(fn))
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", fail)
+    ready: list[bool] = []
+    panel.ready_changed.connect(ready.append)
+    # Synchro appliquée avec une méthode « auto » non tranchée : analyse planifiée d'office.
+    _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
+                                                       cadence_audio_method="auto"))
+    assert panel.cadence_resolution_pending() and ready and len(submitted) == 1
+    submitted.pop()()
+    QCoreApplication.processEvents()
+    assert not panel.cadence_resolution_pending()
+    applied = panel._source_calibration("C")
+    assert applied.cadence_audio_method == "atempo" and applied.cadence_method_requested == "auto"
+    assert any(level == "WARN" and "ffprobe absent" in text for level, text in logs)
+
+
+def test_only_the_latest_analysis_of_a_source_is_awaited(chain, monkeypatch):
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    panel._schedule_cadence_method(tracks["C"][0], tracks["A"][0])
+    first, latest = submitted
+    _run_analysis(first)
+    # Remplacée : son résultat ne lève pas l'attente de la plus récente, ni ne s'applique.
+    assert panel.cadence_resolution_pending()
+    assert panel._source_calibration("C").cadence_audio_method == "auto"
+    _run_analysis(latest)
+    assert not panel.cadence_resolution_pending()
+    assert panel._source_calibration("C").cadence_audio_method == "asetrate"
+
+
+def test_applied_sync_comparison_includes_the_requested_mode():
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from ui.panels.remux_panel.panel import _same_applied_sync
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    explicit = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="asetrate")
+    auto = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="asetrate",
+                           cadence_method_auto=True)
+    assert not _same_applied_sync(explicit, auto)
+    cuts = (SyncSegment(0, 0.0), SyncSegment(1000, 500.0))
+    # Sans conversion, le mode n'a pas d'effet.
+    assert _same_applied_sync(SyncCalibration(cuts), SyncCalibration(cuts, cadence_method_auto=True))
+
+
+@pytest.mark.parametrize("removed", ["C", "A"])
+def test_removing_a_source_drops_its_cadence_analyses(chain, monkeypatch, removed):
+    """Source de la piste ou de sa référence retirée : son analyse ne bloque plus le traitement média."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, tracks, _logs = chain
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: None)
+    _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
+                                                       cadence_audio_method="auto"))
+    assert panel.cadence_resolution_pending()
+    inspection_functions.on_remove_file(panel, removed)
+    assert not panel.cadence_resolution_pending()
+
+
+def test_global_cancel_drops_cadence_analyses(chain, monkeypatch):
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, tracks, _logs = chain
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: None)
+    _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
+                                                       cadence_audio_method="auto"))
+    assert panel.cadence_resolution_pending()
+    panel._on_global_sync_cancel_requested()
+    assert not panel.cadence_resolution_pending()

@@ -73,7 +73,9 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
         labels.append(f"[{label}]")
         if stop is not None:
             previous_end = max(previous_end, stop + segment.shift_ms)
-    parts.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1,asetpts=PTS-STARTPTS[out]")
+    # Horodatage recalculé d'après le nombre d'échantillons : avec atempo, les images ne reportent
+    # pas le silence inséré par adelay (piste encodée en avance de ce silence : 5 s sur un épisode).
+    parts.append("".join(labels) + f"concat=n={len(labels)}:v=0:a=1,asetpts=N/SR/TB[out]")
     return ";".join(parts)
 
 

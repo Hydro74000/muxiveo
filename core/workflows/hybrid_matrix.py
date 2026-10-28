@@ -13,7 +13,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from core.lang_tags import Rfc5646LanguageTags
+from core.lang_tags import Rfc5646LanguageTags, language_key
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
 from core.workflows.sync_calibration import SyncCalibration
@@ -630,12 +630,78 @@ def _extract_source_video_fps(source_input: SourceInput) -> str | float | None:
     return None
 
 
+def _resolve_cadence_method(reference, donor, calibration: SyncCalibration, ffmpeg_bin, ffprobe_bin,
+                            cancel_event, logger, name: str) -> SyncCalibration:
+    """Méthode « auto » d'une conversion de cadence réglée sans mesure : tranchée par la hauteur
+    des pistes, sinon atempo."""
+    from core.workflows.audio_sync import AudioSyncError
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    try:
+        return AudioSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event).resolve_cadence_method(
+            reference, donor, calibration, log=lambda msg: logger.emit("info", f"[{name}] {msg}"),
+        )
+    except (AudioSyncError, KeyError, ValueError) as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise
+        logger.emit("warning", f"[{name}] Analyse de hauteur impossible ({exc}) : méthode 'atempo'.")
+        return replace(calibration, cadence_audio_method="atempo", cadence_method_auto=True)
+
+
+def _undecided_cadence_method(calibration: SyncCalibration) -> bool:
+    mismatch = calibration.cadence_mismatch
+    return (mismatch is not None and mismatch.cadence_type != "none"
+            and (calibration.cadence_audio_method or "auto") == "auto")
+
+
+def _plan_calibrations(config: RemuxConfig) -> dict[str, SyncCalibration]:
+    calibrations: dict[str, SyncCalibration] = {}
+    for key, payload in config.sync_calibrations.items():
+        try:
+            calibrations[key] = SyncCalibration.from_dict(payload)
+        except ValueError:
+            continue
+    return calibrations
+
+
+def plan_needs_cadence_method(config: RemuxConfig) -> bool:
+    """Le plan porte une conversion de cadence dont la méthode « auto » n'est pas tranchée."""
+    return any(_undecided_cadence_method(calibration) for calibration in _plan_calibrations(config).values())
+
+
+def resolve_plan_cadence_methods(config: RemuxConfig, ffmpeg_bin, ffprobe_bin, cancel_event, logger,
+                                 name: str) -> dict[str, SyncCalibration]:
+    """Méthodes « auto » non tranchées du plan (studio fermé avant son analyse), par source donneuse :
+    hauteur du donneur (piste de la langue du master) face à l'audio du master, sinon atempo.
+    Retourne les calibrations à remplacer."""
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    master = config.sources[0]
+    ref_audio = next((t for t in master.tracks if t.track_type == "audio" and t.enabled), None) \
+        or next((t for t in master.tracks if t.track_type == "audio"), None)
+    language = _language_key(ref_audio.language) if ref_audio else ""
+    resolved: dict[str, SyncCalibration] = {}
+    for key, calibration in _plan_calibrations(config).items():
+        if not _undecided_cadence_method(calibration) or not key.isdigit() or not 0 < int(key) < len(config.sources):
+            continue
+        donor = config.sources[int(key)]
+        donor_audio = next((
+            t for t in donor.tracks if t.track_type == "audio" and language and _language_key(t.language) == language
+        ), None) or next((t for t in donor.tracks if t.track_type == "audio" and t.enabled), None)
+        if ref_audio is None or donor_audio is None:
+            logger.emit("warning", f"[{name}] Analyse de hauteur impossible (piste audio absente) : méthode 'atempo'.")
+            resolved[key] = replace(calibration, cadence_audio_method="atempo", cadence_method_auto=True)
+            continue
+        resolved[key] = _resolve_cadence_method(
+            AudioSyncTrack(master.path, ref_audio.mkv_tid), AudioSyncTrack(donor.path, donor_audio.mkv_tid),
+            calibration, ffmpeg_bin, ffprobe_bin, cancel_event, logger, name,
+        )
+    return resolved
+
+
 def _language_key(language: str | None) -> str:
     """Ramène les codes ISO et BCP 47 à leur langue de base."""
-    value = (language or "").strip().casefold()
-    if not value or value == "und":
-        return ""
-    return Rfc5646LanguageTags.to_iso639_2(value) or value.split("-", 1)[0]
+    return language_key(language)
 
 
 def _language_selected(language: str | None, expected: list[str]) -> bool:
@@ -723,7 +789,8 @@ def prepare_matrix_episode(
     calibrate: bool = True,
     cache: PreparationCache | None = None,
 ) -> tuple[RemuxConfig, SyncCalibration | None]:
-    """Construit le plan ; calibrate=False diffère la synchro automatique de la GUI.
+    """Construit le plan ; calibrate=False diffère la synchro automatique de la GUI, et l'analyse
+    de hauteur d'un décalage manuel à cadence (tranchée avant traitement : `resolve_plan_cadence_methods`).
 
     ``cache`` (session) évite de relire inspections, sous-titres et réponses
     TMDB déjà obtenus ; la durée de chaque étape est consignée au journal.
@@ -846,8 +913,10 @@ def prepare_matrix_episode(
         cadence_auto_apply = getattr(recipe, "cadence_auto_apply", True)
         cadence_audio_method = getattr(recipe, "cadence_audio_method", "auto") or "auto"
 
-        m_fps = _extract_source_video_fps(master_source) if audio_scanner is not None else None
-        d_fps = _extract_source_video_fps(donor_source) if audio_scanner is not None else None
+        # Analyse automatique ou décalage manuel : tous deux suivent la conversion de cadence.
+        cadence_needed = audio_scanner is not None or recipe.sync_strategy == "manual"
+        m_fps = _extract_source_video_fps(master_source) if cadence_needed else None
+        d_fps = _extract_source_video_fps(donor_source) if cadence_needed else None
         if m_fps and d_fps:
             from core.workflows.cadence import detect_cadence_from_metadata
             cadence_mismatch = detect_cadence_from_metadata(m_fps, d_fps)
@@ -868,13 +937,26 @@ def prepare_matrix_episode(
 
         if recipe.sync_strategy == "manual":
             shift = int(recipe.manual_shift_ms)
+            manual_cadence = cadence_mismatch if cadence_auto_apply else None
             for track in donor_source.tracks:
                 track.time_shift_ms = 0
                 track.sync_calibration = None
-                if track.enabled and (track.track_type == "audio" or
-                                      (track.track_type == "subtitle" and recipe.sync_subtitles == "mirror")):
+                if manual_cadence is None and track.enabled and (
+                        track.track_type == "audio"
+                        or (track.track_type == "subtitle" and recipe.sync_subtitles == "mirror")):
                     track.time_shift_ms = shift
             donor_calib = SyncCalibration.linear(shift)
+            if manual_cadence is not None:
+                # Décalage sur la chronologie convertie : la cadence impose la réécriture physique.
+                donor_calib = replace(donor_calib, cadence_mismatch=manual_cadence,
+                                      cadence_audio_method=cadence_audio_method,
+                                      cadence_method_auto=cadence_audio_method == "auto")
+                if calibrate and ref_audio and sync_audio and cadence_audio_method == "auto":
+                    donor_calib = _resolve_cadence_method(
+                        AudioSyncTrack(master_source.path, ref_audio.mkv_tid),
+                        AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
+                        donor_calib, ffmpeg_bin, ffprobe_bin, cancel_event, logger, episode.display_name,
+                    )
         elif recipe.sync_strategy == "none":
             for track in donor_source.tracks:
                 track.time_shift_ms = 0
@@ -924,7 +1006,7 @@ def prepare_matrix_episode(
         if donor_calib:
             if primary_calibration is None:
                 primary_calibration = donor_calib
-            if recipe.sync_strategy == "auto":
+            if recipe.sync_strategy == "auto" or donor_calib.cadence_mismatch is not None:
                 calibrations[str(donor_idx)] = donor_calib
                 has_cadence = bool(donor_calib.cadence_mismatch and getattr(donor_calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
                 if has_cadence and cadence_auto_apply:

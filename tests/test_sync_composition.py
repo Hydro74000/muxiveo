@@ -128,3 +128,23 @@ def test_round_trip_through_any_reference_keeps_the_sync(seed):
     restored = compose_calibrations(compose_calibrations(current, invert_calibration(reference)), reference)
     assert _segments(restored) == _segments(current)
     assert restored._stretch_ratio() == pytest.approx(current._stretch_ratio())
+
+
+def test_requested_cadence_mode_is_serialised_composed_and_inverted():
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    auto = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="atempo",
+                           cadence_method_auto=True)
+    explicit = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="atempo")
+    assert SyncCalibration.from_dict(auto.to_dict()).cadence_method_requested == "auto"
+    assert SyncCalibration.from_dict(explicit.to_dict()).cadence_method_requested == "atempo"
+    assert "cadence_method_auto" not in explicit.to_dict()
+    # Sans conversion, le mode demandé n'est pas sérialisé.
+    assert "cadence_method_auto" not in SyncCalibration((SyncSegment(0, 250.0),), cadence_method_auto=True).to_dict()
+    undecided = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="auto")
+    assert undecided.cadence_method_requested == "auto"
+    position = SyncCalibration.linear(250)
+    assert compose_calibrations(auto, position).cadence_method_auto
+    assert not compose_calibrations(explicit, position).cadence_method_auto
+    assert invert_calibration(auto).cadence_method_auto

@@ -501,13 +501,16 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     assert len(calib.segments) == 2
     assert calib.segments[1].start_ms == pytest.approx(600000 * mismatch.speed_factor, abs=50)
-    # Décodages parallèles : ordre d'appel libre.
-    assert sorted(envelope_calls, key=str) == [None, "atempo=24000/25025"]
+    # Mesure exacte (asetrate) ; décodages parallèles : ordre d'appel libre.
+    exact = "aresample=48000,asetrate=46034,aresample=48000"
+    assert sorted(envelope_calls, key=str) == [None, exact]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
-    # Vérifier que speed_factor et filter ont bien été transmis à measure
-    assert all(c[1] == "atempo=24000/25025" for c in measure_calls)
+    # Mesures ponctuelles en asetrate ; sortie atempo : son écart mesuré ensuite (nul ici).
+    assert all(c[1] == exact for c in measure_calls[:6])
+    assert {c[1] for c in measure_calls[6:]} == {exact, "atempo=24000/25025"}
     assert all(math.isclose(c[2], 24000.0 / 25025.0) for c in measure_calls)
+    assert calib.cadence_audio_method == "atempo" and calib.segments[0].shift_ms == pytest.approx(100.0)
 
 
 def test_parse_framerate_fraction_canonical_and_custom():

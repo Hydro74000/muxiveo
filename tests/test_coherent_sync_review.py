@@ -11,7 +11,7 @@ import pytest
 from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted
 from core.workflows.audio_sync_segments import scan_envelopes
-from core.workflows.sync_calibration import SyncCalibration
+from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 from tests.test_audio_sync_segments import _edited_pair
 
 
@@ -194,7 +194,7 @@ def test_apply_and_review_share_the_same_application(qt_app, tmp_path, monkeypat
         reference = _track(1, "audio", file_id="reference")
         panel._track_table.append_tracks(_COLOR_A, [target])
         panel._track_table.append_tracks(_COLOR_B, [reference])
-        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"))
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv", info=None))
         monkeypatch.setattr(panel, "_confirm_coherent_sync", lambda *_a: choice)
         finished: list[bool] = []
         panel.audio_sync_finished.connect(lambda ok, _meta: finished.append(ok))
@@ -231,7 +231,7 @@ def test_manual_studio_validation_follows_a_shifted_reference(qt_app, tmp_path, 
         reference = _track(1, "audio", file_id="reference")
         panel._track_table.append_tracks(_COLOR_A, [target])
         panel._track_table.append_tracks(_COLOR_B, [reference])
-        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv"))
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv", info=None))
         monkeypatch.setattr(panel, "_audio_sync_reference_choices", lambda _entry: [("VO", reference)])
         panel._apply_source_sync_offset("reference", 250)
         logs: list[tuple[str, str]] = []
@@ -303,3 +303,70 @@ def test_studio_shows_review_zones_until_a_new_result(qt_app, tmp_path, monkeypa
     assert dialog.review_ranges_ms == () and not dialog._review_row.isVisibleTo(dialog)
     assert dialog._apply_btn.text() == translate_text("Appliquer la synchronisation")
     dialog.close()
+
+
+def test_cadence_declined_during_review_is_remembered(qt_app, tmp_path, monkeypatch):
+    """Relecture d'une proposition : conversion décochée puis validée, mémorisée comme à l'ouverture manuelle."""
+    from core.config import AppConfig
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from tests.test_remux import _COLOR_A, _COLOR_B, _track
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    class _DecliningStudio(_AcceptingStudio):
+        cadence_declined = True
+
+        def result_calibration(self):
+            return SyncCalibration.linear(-320), -320
+
+    _AcceptingStudio.opened.clear()
+    monkeypatch.setattr(mod, "SyncStudioDialog", _DecliningStudio)
+    panel = RemuxPanel(AppConfig())
+    try:
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv", info=None))
+        monkeypatch.setattr(panel, "_confirm_coherent_sync", lambda *_a: "review")
+        pal = detect_cadence_from_metadata("24000/1001", "25/1")
+        proposal = SyncCalibration((SyncSegment(0, -320.0),), cadence_mismatch=pal)
+        panel._on_audio_sync_review(target.entry_id, reference.entry_id, proposal, ((1000.0, 40000.0),))
+        assert panel._cadence_declined_source_ids == {"target"}
+        assert target.time_shift_ms == -320 and "0" not in panel._workflow_options.get("sync_calibrations", {})
+    finally:
+        panel.close()
+
+
+def test_review_validated_with_an_undecided_auto_method_is_analysed(qt_app, tmp_path, monkeypatch):
+    """Relecture validée en « Auto » avant la fin de l'analyse du studio : méthode tranchée avant traitement."""
+    from core.config import AppConfig
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from tests.test_remux import _COLOR_A, _COLOR_B, _track
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+
+    class _AutoStudio(_AcceptingStudio):
+        def result_calibration(self):
+            calibration = SyncCalibration((SyncSegment(0, -320.0),), cadence_mismatch=pal, cadence_audio_method="auto")
+            return calibration, -320
+
+    monkeypatch.setattr(mod, "SyncStudioDialog", _AutoStudio)
+    panel = RemuxPanel(AppConfig())
+    try:
+        target = _track(1, "audio", file_id="target")
+        reference = _track(1, "audio", file_id="reference")
+        panel._track_table.append_tracks(_COLOR_A, [target])
+        panel._track_table.append_tracks(_COLOR_B, [reference])
+        monkeypatch.setattr(panel, "_find_source", lambda file_id: SimpleNamespace(path=tmp_path / f"{file_id}.mkv", info=None))
+        monkeypatch.setattr(panel, "_confirm_coherent_sync", lambda *_a: "review")
+        submitted: list = []
+        monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: submitted.append(fn))
+        panel._on_audio_sync_review(target.entry_id, reference.entry_id,
+                                    SyncCalibration((SyncSegment(0, -320.0),), cadence_mismatch=pal),
+                                    ((1000.0, 40000.0),))
+        assert panel.cadence_resolution_pending() and len(submitted) == 1
+    finally:
+        panel.close()

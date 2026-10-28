@@ -700,3 +700,11 @@ class Rfc5646LanguageTags:
             prev_lang[row] = canonical
             return True
         return False
+
+
+def language_key(language: str | None) -> str:
+    """Ramène les codes ISO et BCP 47 à leur langue de base ("" si inconnue)."""
+    value = (language or "").strip().casefold()
+    if not value or value == "und":
+        return ""
+    return Rfc5646LanguageTags.to_iso639_2(value) or value.split("-", 1)[0]

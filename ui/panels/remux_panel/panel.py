@@ -39,12 +39,14 @@ from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
 from core.matroska.reader import MatroskaReader
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
+from core.lang_tags import language_key
 from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
 from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
+from core.workflows.cadence import CadenceType
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.sync_rewrite import (
     SYNC_REWRITE_MODE_OFFSET,
@@ -92,14 +94,17 @@ _CURRENT = object()
 
 
 def _same_applied_sync(first: SyncCalibration, second: SyncCalibration) -> bool:
-    """Même synchro une fois appliquée : décalage arrondi à la ms, ou coupures et cadence identiques."""
+    """Même synchro une fois appliquée : décalage arrondi à la ms, ou coupures et cadence identiques
+    (méthode et mode demandé compris : les analyses suivantes en dépendent)."""
     first_stored, second_stored = effective_calibration(first), effective_calibration(second)
     if first_stored is None and second_stored is None:
         return round(first.segments[0].shift_ms) == round(second.segments[0].shift_ms)
     return (first_stored is not None and second_stored is not None
             and first_stored.segments == second_stored.segments
             and first_stored.cadence_mismatch == second_stored.cadence_mismatch
-            and first_stored.cadence_audio_method == second_stored.cadence_audio_method)
+            and first_stored.cadence_audio_method == second_stored.cadence_audio_method
+            and (first_stored.cadence_mismatch is None
+                 or first_stored.cadence_method_requested == second_stored.cadence_method_requested))
 
 
 class _AudioSyncReferenceDialog(QDialog):
@@ -185,6 +190,7 @@ class RemuxPanel(QWidget):
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
     _audio_sync_review = Signal(str, str, object, object)
+    _cadence_method_resolved = Signal(str, str, object, object, object)
     _subtitle_sync_done = Signal(str, str, int, float, object)
     _subtitle_sync_error = Signal(str, str)
     _preview_compiled = Signal(int, str)
@@ -236,6 +242,13 @@ class RemuxPanel(QWidget):
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
+        # Sources dont la conversion de cadence proposée a été décochée dans le Synchro Studio :
+        # elle y reste proposée, sans être recochée d'office.
+        self._cadence_declined_source_ids: set[str] = set()
+        # Analyses en cours de la méthode « auto » de conversion de cadence :
+        # jeton → (piste, référence, source de la piste). Le traitement attend leur résultat
+        # (sinon atempo serait appliqué sans le dire) ; un jeton retiré invalide son résultat.
+        self._cadence_pending: dict[object, tuple[str, str, str]] = {}
         self._color_index: int = 0
         self._file_list: _FileListWidget
         self._track_table: _TrackTable
@@ -282,6 +295,9 @@ class RemuxPanel(QWidget):
         )
         self._audio_sync_review.connect(
             self._on_audio_sync_review, Qt.ConnectionType.QueuedConnection
+        )
+        self._cadence_method_resolved.connect(
+            self._on_cadence_method_resolved, Qt.ConnectionType.QueuedConnection
         )
         self._audio_sync_error.connect(
             self._on_audio_sync_error, Qt.ConnectionType.QueuedConnection
@@ -1236,6 +1252,8 @@ class RemuxPanel(QWidget):
         self._auto_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
+        self._cadence_declined_source_ids.clear()
+        self._drop_cadence_analyses()
         self._workflow_options.get("sync_calibrations", {}).clear()
         self._track_table.clear_all()
         for source in self._source_files:
@@ -1552,6 +1570,11 @@ class RemuxPanel(QWidget):
         return None
 
     def _audio_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
+        """Pistes audio des autres sources ; même disposition (stéréo / multicanal) d'abord.
+
+        Dispositions différentes admises : l'analyse compare un mixage mono, puis les canaux
+        sans dialogue (surrounds ou L−R) des deux pistes.
+        """
         choices: list[tuple[str, TrackEntry]] = []
         target_family = self._audio_sync_family(target)
         if target_family is None:
@@ -1565,7 +1588,7 @@ class RemuxPanel(QWidget):
                     ref.file_id != sf.id
                     or ref.track_type != "audio"
                     or ref.entry_id in seen_entries
-                    or self._audio_sync_family(ref) != target_family
+                    or self._audio_sync_family(ref) is None
                 ):
                     continue
                 seen_entries.add(ref.entry_id)
@@ -1575,7 +1598,21 @@ class RemuxPanel(QWidget):
                     f"{sf.path.name} | #{ref.mkv_tid} {ref.codec} {ref.display_info}{lang}{title}",
                     ref,
                 ))
+        choices.sort(key=lambda choice: self._audio_sync_family(choice[1]) != target_family)
         return choices
+
+    def _audio_sync_measure_entry(self, target: TrackEntry, reference: TrackEntry | None) -> TrackEntry:
+        """Piste analysée pour synchroniser `target` : une piste de sa source dans la langue de la
+        référence (hors commentaire), sinon `target`. Même chronologie : la synchro vaut pour la source."""
+        reference_language = language_key(reference.language) if reference is not None else ""
+        if not reference_language or language_key(target.language) == reference_language:
+            return target
+        return next((
+            track for track in self._track_table.current_tracks()
+            if track.file_id == target.file_id and track.track_type == "audio"
+            and not track.flag_commentary and self._audio_sync_family(track) is not None
+            and language_key(track.language) == reference_language
+        ), target)
 
     def _subtitle_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
         choices: list[tuple[str, TrackEntry]] = []
@@ -1925,6 +1962,8 @@ class RemuxPanel(QWidget):
                     "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.",
                     source=self._source_label(file_id), offset=f"{offset:+d}",
                 ))
+            elif offset and (calibration is None or calibration.cadence_mismatch is None):
+                self._warn_offset_without_cadence(entry)
         return self._propagate_sync(set(changed))
 
     def _on_track_time_shift_edited(self, entry: TrackEntry) -> None:
@@ -2106,6 +2145,8 @@ class RemuxPanel(QWidget):
         self._auto_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
+        self._cadence_declined_source_ids.clear()
+        self._drop_cadence_analyses()
         if "sync_calibrations" in self._workflow_options:
             self._workflow_options["sync_calibrations"].clear()
         self._sync_entry_calibrations()
@@ -2136,10 +2177,8 @@ class RemuxPanel(QWidget):
         """Analyse approfondie forcée ; reprend la référence de la synchro précédente."""
         self._on_audio_sync_requested(entry, deep=True, reference_entry=self._last_audio_sync_reference(entry))
 
-    def _audio_sync_cadence(self, reference: TrackEntry, target: TrackEntry):
-        """Écart de cadence vidéo PAL ↔ cinéma entre les deux sources (réglage « appliquer automatiquement »)."""
-        if not bool(getattr(self._config, "sync_cadence_auto_apply", True)):
-            return None
+    def _source_cadence(self, reference: TrackEntry, target: TrackEntry):
+        """Écart de cadence vidéo PAL ↔ cinéma entre les sources des deux pistes."""
         from core.workflows.cadence import detect_cadence_from_metadata
 
         def frame_rate(entry: TrackEntry):
@@ -2148,6 +2187,28 @@ class RemuxPanel(QWidget):
             return next((video.frame_rate for video in videos if video.frame_rate), None)
 
         return detect_cadence_from_metadata(frame_rate(reference), frame_rate(target))
+
+    def _audio_sync_cadence(self, reference: TrackEntry, target: TrackEntry):
+        """Écart de cadence vidéo entre les deux sources (réglage « appliquer automatiquement »)."""
+        if not bool(getattr(self._config, "sync_cadence_auto_apply", True)):
+            return None
+        return self._source_cadence(reference, target)
+
+    def _warn_offset_without_cadence(self, entry: TrackEntry) -> None:
+        """Décalage saisi sur une source dont la vidéo n'a pas la cadence de la vidéo de sortie :
+        seul, il dérive au fil du film ; la conversion se règle dans le Synchro Studio."""
+        output_video = next((track for track in self._track_table.current_tracks()
+                             if track.track_type == "video" and track.enabled), None)
+        if output_video is None or output_video.file_id == entry.file_id:
+            return
+        mismatch = self._source_cadence(output_video, entry)
+        if mismatch is None:
+            return
+        self.log_message.emit("WARN", translate_text(
+            "Piste #{idx} : cadence vidéo de sa source différente de la vidéo de sortie ({description}). "
+            "Un décalage seul dérive au fil du film : régler la conversion de cadence dans le Synchro Studio.",
+            idx=entry.mkv_tid, description=mismatch.description,
+        ))
 
     def _negligible_sync_offset(self, offset_ms: int, calibration: SyncCalibration | None,
                                 entry: TrackEntry | None) -> bool:
@@ -2210,8 +2271,9 @@ class RemuxPanel(QWidget):
                 ),
             )
 
+        measured_entry = self._audio_sync_measure_entry(entry, reference_entry)
         reference = self._audio_sync_track(reference_entry)
-        target = self._audio_sync_track(entry)
+        target = self._audio_sync_track(measured_entry)
         if reference is None or target is None:
             self.log_message.emit("ERROR", "impossible d'utiliser la synchronisation améliorée")
             return
@@ -2225,6 +2287,12 @@ class RemuxPanel(QWidget):
         )
         self.log_message.emit("INFO", start_label)
         self.audio_sync_started.emit({"label": start_label})
+        if measured_entry is not entry:
+            self.log_message.emit("INFO", translate_text(
+                "Analyse sur la piste #{measured} ({language}) de la même source, langue de la référence : "
+                "la synchro vaut pour toutes les pistes de la source.",
+                measured=measured_entry.mkv_tid, language=measured_entry.language,
+            ))
         quick_check = not deep and bool(getattr(self._config, "sync_quick_audio_check", True))
         cadence_mismatch = self._audio_sync_cadence(reference_entry, entry)
         cadence_method = str(getattr(self._config, "sync_cadence_audio_method", "auto") or "auto")
@@ -2315,6 +2383,9 @@ class RemuxPanel(QWidget):
             ]:
                 self._audio_sync_results.pop(other_id, None)
             quick_check = cal_obj.quick_check
+            if cal_obj.cadence_mismatch is not None:
+                # Nouvelle analyse avec conversion : un refus antérieur dans le studio ne vaut plus.
+                self._cadence_declined_source_ids.discard(target_file_id)
             negligible = self._negligible_sync_offset(offset_ms, cal_obj, target_entry)
             if negligible:
                 offset_ms = 0
@@ -2374,6 +2445,9 @@ class RemuxPanel(QWidget):
                 self._propagate_sync({target_file_id, released})
                 self._rebuild_preview()
                 self._emit_signals()
+            if target_entry is not None and not negligible:
+                # Relecture validée en « Auto » avant la fin de l'analyse du studio : méthode à trancher.
+                self._schedule_cadence_method(target_entry, tracks_by_id.get(reference_entry_id))
         finally:
             self.audio_sync_finished.emit(True, {"entry_id": entry_id})
 
@@ -2454,6 +2528,11 @@ class RemuxPanel(QWidget):
         """Synchro Studio d'une piste face à sa référence (ouvert à la main ou relecture d'une proposition)."""
         from ui.panels.remux_panel.widgets.sync_studio_dialog import SyncStudioDialog
 
+        analysed = (
+            self._audio_sync_measure_entry(entry, reference_entry)
+            if entry.track_type == "audio" and reference_entry is not None and reference_entry.track_type == "audio"
+            else entry
+        )
         return SyncStudioDialog(
             target_entry=entry,
             target_source_path=target_source.path,
@@ -2467,7 +2546,22 @@ class RemuxPanel(QWidget):
             parent=self,
             quick_validated=quick_validated,
             review_ranges_ms=review_ranges_ms,
+            # Sans calibration à cadence : conversion d'après les vidéos, réglable dans le studio ;
+            # cochée d'office sauf réglage désactivé ou refus antérieur pour cette source.
+            cadence_hint=self._source_cadence(reference_entry, entry) if reference_entry is not None else None,
+            cadence_audio_method=str(getattr(self._config, "sync_cadence_audio_method", "auto") or "auto"),
+            apply_cadence_hint=(bool(getattr(self._config, "sync_cadence_auto_apply", True))
+                                and entry.file_id not in self._cadence_declined_source_ids),
+            analysis_stream_index=int(analysed.mkv_tid),
         )
+
+    def _note_cadence_choice(self, file_id: str, dialog, calibration: SyncCalibration) -> None:
+        """Studio validé (ouverture manuelle ou relecture) : conversion proposée décochée mémorisée
+        pour la source, plus recochée d'office ; validée avec conversion, le refus est oublié."""
+        if getattr(dialog, "cadence_declined", False):
+            self._cadence_declined_source_ids.add(file_id)
+        elif calibration.cadence_mismatch is not None:
+            self._cadence_declined_source_ids.discard(file_id)
 
     def _log_sync_reviewed(self, ranges_ms) -> None:
         self.log_message.emit("INFO", translate_text(
@@ -2499,6 +2593,7 @@ class RemuxPanel(QWidget):
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             new_calibration, new_offset = dialog.result_calibration()
+            self._note_cadence_choice(target.file_id, dialog, new_calibration)
             self._log_sync_reviewed(ranges_ms)
             applied = True
             self._on_audio_sync_done(
@@ -2723,15 +2818,28 @@ class RemuxPanel(QWidget):
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             measured, _relative_offset = dialog.result_calibration()
+            self._note_cadence_choice(entry.file_id, dialog, measured)
             # Validé sans modification : rien n'est appliqué (une référence à silences ajoutés
             # ne se retraverse pas exactement : instants de silence sans audio d'origine).
-            if measured is shown:
+            # Conversion proposée puis décochée, décalages intacts : rien non plus.
+            unchanged_without_cadence = (
+                measured.segments == shown.segments
+                and measured.cadence_mismatch is None and shown.cadence_mismatch is None
+            )
+            if measured is shown or unchanged_without_cadence:
                 self.log_message.emit("INFO", translate_text("Synchro Studio : aucune modification, synchro inchangée."))
                 return
             # Synchro réglée face à l'audio d'origine de la référence : même application que les mesures.
             new_calibration, released = self._link_measured_sync(entry.file_id, reference_entry, measured)
             self._set_source_calibration(entry.file_id, new_calibration)
             self._propagate_sync({entry.file_id, released})
+            mismatch = measured.cadence_mismatch
+            if mismatch is not None and mismatch.cadence_type != CadenceType.NONE:
+                self.log_message.emit("INFO", translate_text(
+                    "Conversion de cadence appliquée : {description} (méthode {method}).",
+                    description=mismatch.description, method=measured.cadence_audio_method or "auto",
+                ))
+                self._schedule_cadence_method(entry, reference_entry)
             new_offset = round(new_calibration.segments[0].shift_ms)
             affected_count = sum(
                 1 for track in self._track_table.current_tracks()
@@ -2760,6 +2868,119 @@ class RemuxPanel(QWidget):
             if reviewed:
                 self._log_sync_reviewed(reviewed)
 
+
+    def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None) -> None:
+        """Méthode « auto » restée non tranchée (studio validé avant son analyse) : hauteur analysée
+        en arrière-plan sur la synchro face à la référence ; résultat périmé → analyse relancée."""
+        if reference_entry is None or reference_entry.track_type != "audio":
+            return
+        relative = self._relative_sync_calibration(entry, reference_entry)
+        mismatch = relative.cadence_mismatch
+        if mismatch is None or mismatch.cadence_type == CadenceType.NONE or (relative.cadence_audio_method or "auto") != "auto":
+            return
+        measured_entry = (self._audio_sync_measure_entry(entry, reference_entry)
+                          if entry.track_type == "audio" else None)
+        if measured_entry is None:
+            measured_entry = next((
+                track for track in self._track_table.current_tracks()
+                if track.file_id == entry.file_id and track.track_type == "audio"
+            ), None)
+        reference = self._audio_sync_track(reference_entry)
+        target = self._audio_sync_track(measured_entry) if measured_entry is not None else None
+        if reference is None or target is None:
+            return
+        entry_id, reference_entry_id = entry.entry_id, reference_entry.entry_id
+        # Analyses antérieures de la même source : remplacées par celle-ci.
+        for previous, (_entry, _reference, file_id) in list(self._cadence_pending.items()):
+            if file_id == entry.file_id:
+                del self._cadence_pending[previous]
+        token = object()
+        self._cadence_pending[token] = (entry_id, reference_entry_id, entry.file_id)
+        self.ready_changed.emit(self._has_ready_files())
+
+        def _task() -> None:
+            try:
+                from core.workflows.audio_sync_scan import AudioSyncScanner
+                scanner = AudioSyncScanner(self._config.tool_ffmpeg, self._config.tool_ffprobe,
+                                           cancel_event=self._scan_cancel)
+                resolved = scanner.resolve_cadence_method(
+                    reference, target, relative,
+                    log=lambda msg: self.log_message.emit("INFO", f"Analyse acoustique : {msg}"),
+                )
+            except Exception as exc:
+                self.log_message.emit("WARN", translate_text(
+                    "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.",
+                    error=str(exc),
+                ))
+                resolved = replace(relative, cadence_audio_method="atempo", cadence_method_auto=True)
+            self._cadence_method_resolved.emit(entry_id, reference_entry_id, relative, resolved, token)
+
+        self._executor.submit(_task)
+
+    def cadence_resolution_pending(self) -> bool:
+        """Méthode de conversion de cadence en cours d'analyse : traitement à différer."""
+        return bool(self._cadence_pending)
+
+    def _drop_cadence_analyses(self, entry_ids: set[str] | None = None) -> None:
+        """Analyses devenues inutiles (piste ou référence retirée, synchros annulées) : le traitement
+        ne les attend plus ; leur résultat, à son arrivée, ne trouve rien à appliquer.
+        Toutes si `entry_ids` est None."""
+        for token, (entry_id, reference_entry_id, _file_id) in list(self._cadence_pending.items()):
+            if entry_ids is None or entry_id in entry_ids or reference_entry_id in entry_ids:
+                del self._cadence_pending[token]
+
+    def _on_cadence_method_resolved(self, entry_id: str, reference_entry_id: str,
+                                    before: SyncCalibration, resolved: SyncCalibration,
+                                    token: object) -> None:
+        # Jeton retiré (piste ou référence retirée, synchros annulées, analyse remplacée) : périmé.
+        if self._cadence_pending.pop(token, None) is None:
+            return
+        try:
+            self._apply_resolved_cadence_method(entry_id, reference_entry_id, before, resolved)
+        finally:
+            self.ready_changed.emit(self._has_ready_files())
+
+    def _apply_resolved_cadence_method(self, entry_id: str, reference_entry_id: str,
+                                       before: SyncCalibration, resolved: SyncCalibration) -> None:
+        tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
+        entry, reference = tracks.get(entry_id), tracks.get(reference_entry_id)
+        if entry is None or reference is None:
+            return
+        link = self._sync_links.get(entry.file_id)
+        analysed_reference = (link.reference_entry_id == reference_entry_id if link is not None
+                              else reference.file_id == entry.file_id)
+        if not analysed_reference:
+            # Synchro désormais faite face à une autre référence : cette analyse ne la concerne plus.
+            return
+        current = self._relative_sync_calibration(entry, reference)
+        if current.cadence_mismatch is None or (current.cadence_audio_method or "auto") != "auto":
+            return
+        if current.to_dict() != before.to_dict():
+            # Synchro modifiée pendant l'analyse : la fenêtre analysée ne correspond plus.
+            self._schedule_cadence_method(entry, reference)
+            return
+        if resolved.cadence_audio_method == before.cadence_audio_method:
+            return
+        method, analysis = resolved.cadence_audio_method, resolved.cadence_pitch_analysis
+        link = self._sync_links.get(entry.file_id)
+        if link is not None:
+            self._sync_links[entry.file_id] = replace(link, relative=replace(
+                link.relative, cadence_audio_method=method, cadence_pitch_analysis=analysis,
+                cadence_method_auto=True,
+            ))
+        applied = self._source_calibration(entry.file_id)
+        if applied.cadence_mismatch is not None:
+            self._set_source_calibration(entry.file_id, replace(
+                applied, cadence_audio_method=method, cadence_pitch_analysis=analysis, cadence_method_auto=True,
+            ))
+        self._propagate_sync({entry.file_id})
+        self.log_message.emit("INFO", translate_text(
+            "Méthode de conversion de cadence de « {source} » : {method}.",
+            source=self._source_label(entry.file_id), method=method,
+        ))
+        self._track_table.refresh_all_entries_info()
+        self._rebuild_preview()
+        self._emit_signals()
 
     def update_video_track_encoding(self, plans) -> None:
         plan_map: dict[str, str] = {}

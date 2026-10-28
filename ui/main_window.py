@@ -2301,13 +2301,16 @@ class MainWindow(QMainWindow):
         encoding = encode is not None and not self._encode_panel.is_pure_copy(encode)
         remux = self._remux_panel.collect_config()
         config = encode if encoding else remux
-        ready = config is not None
+        # Méthode « auto » de conversion de cadence en cours d'analyse : le traitement l'attend.
+        analysing = self._remux_panel.cadence_resolution_pending()
+        ready = config is not None and not analysing
         output = config.output if config is not None else None
         media = OperationState(
             "media", 2 if encoding else 3,
             translate_text("Remux & Encode"),
             str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
-            ready, translate_text("Ajoutez une source et renseignez le fichier de sortie."),
+            ready, translate_text("Analyse de la hauteur audio en cours (conversion de cadence).") if analysing
+            else translate_text("Ajoutez une source et renseignez le fichier de sortie."),
         )
         return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
                 self._hdr_panel.operation_state()]

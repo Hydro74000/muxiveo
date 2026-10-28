@@ -120,6 +120,50 @@ def extract_f0_candidates(
     return results
 
 
+# Transposition lue sur le spectre en échelle logarithmique : fiable entre deux mixages
+# du même son (corrélation ≥ 0,95), pas entre deux doublages (dialogues différents).
+_SPECTRAL_SHIFT_MIN_SCORE = 0.95
+_SPECTRAL_SHIFT_TOLERANCE_CENTS = 25.0
+
+
+def spectral_pitch_shift_cents(
+    reference: ndarray,
+    donor: ndarray,
+    sr: int,
+    max_cents: int = 200,
+) -> tuple[float, float]:
+    """Hauteur du donneur face à la référence (cents, positif = plus aigu) et corrélation des spectres.
+
+    Spectres moyens rééchantillonnés au cent entre 150 Hz et 3,8 kHz : une transposition
+    y devient une translation, cherchée à ±`max_cents`.
+    """
+    if np is None:
+        raise ImportError("numpy est requis pour l'analyse spectrale.")
+    size = 8192
+    if min(len(reference), len(donor)) < size:
+        return 0.0, 0.0
+    window = np.hanning(size)
+    grid = 150.0 * 2 ** (np.arange(int(1200 * math.log2(3800 / 150))) / 1200)
+    freqs = np.fft.rfftfreq(size, 1 / sr)
+
+    def log_spectrum(values: ndarray) -> ndarray:
+        frames = [values[i:i + size] * window for i in range(0, len(values) - size + 1, size // 4)]
+        power = np.mean([np.abs(np.fft.rfft(frame)) ** 2 for frame in frames], axis=0)
+        spectrum = np.log(np.interp(grid, freqs, power) + 1e-12)
+        return spectrum - spectrum.mean()
+
+    ref_spec, donor_spec = log_spectrum(reference), log_spectrum(donor)
+    span = len(grid) - 2 * max_cents
+    target = donor_spec[max_cents:max_cents + span]
+    scores = []
+    for lag in range(-max_cents, max_cents + 1):
+        shifted = ref_spec[max_cents + lag:max_cents + lag + span]
+        scores.append(float(np.corrcoef(shifted, target)[0, 1]) if shifted.std() > 0 and target.std() > 0 else 0.0)
+    best = int(np.argmax(scores))
+    # Le donneur reproduit à f·2^(c/1200) ce que la référence a à f : décalage de +c cents.
+    return float(max_cents - best), float(scores[best])
+
+
 def analyze_cadence_pitch(
     ref_samples: ndarray,
     donor_ase_samples: ndarray,
@@ -181,6 +225,35 @@ def analyze_cadence_pitch(
     expected_shift = 0.707
     if mismatch and mismatch.speed_factor > 0:
         expected_shift = 12.0 * math.log2(1.0 / mismatch.speed_factor)
+
+    # Transposition mesurée sur le spectre : tranche seule quand elle est nette et proche
+    # de l'une des deux hypothèses (hauteur d'origine ou montée de la conversion).
+    shift_cents, shift_score = spectral_pitch_shift_cents(ref, ate, sr)
+    expected_cents = expected_shift * 100.0
+    spectral = (
+        shift_score >= _SPECTRAL_SHIFT_MIN_SCORE
+        and min(abs(shift_cents), abs(shift_cents - expected_cents)) <= _SPECTRAL_SHIFT_TOLERANCE_CENTS
+    )
+    if spectral:
+        selected = "asetrate" if abs(shift_cents - expected_cents) < abs(shift_cents) else "atempo"
+        state = (
+            "PAL Speedup non compensé : la méthode 'asetrate' rétablit le pitch naturel d'origine"
+            if selected == "asetrate"
+            else "hauteur déjà compensée : la méthode 'atempo' la conserve"
+        )
+        return CadencePitchAnalysis(
+            selected_method=selected,
+            pitch_shift_semitones=round(shift_cents / 100.0, 3),
+            spectral_corr_asetrate=round(max(0.0, corr_ase), 4),
+            spectral_corr_atempo=round(max(0.0, corr_ate), 4),
+            f0_ref_hz=round(f0_ref_med, 1),
+            f0_donor_hz=round(f0_ate_med if f0_ate_med > 0 else f0_ase_med, 1),
+            confidence=round(shift_score, 3),
+            details=(
+                f"Hauteur du donneur {shift_cents / 100.0:+.2f} demi-ton face à la référence "
+                f"(spectre, corrélation {shift_score:.2f}) : {state}"
+            ),
+        )
 
     # Détection de l'adéquation :
     delta_corr = corr_ase - corr_ate

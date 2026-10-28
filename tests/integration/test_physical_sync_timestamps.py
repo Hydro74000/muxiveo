@@ -297,3 +297,38 @@ def test_mixed_audio_sync_keeps_common_origin(qt_app, tmp_path, monkeypatch, bac
         ]), dtype="<f4")
         onset = np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000
         assert onset == pytest.approx((500 + offset) / 1000, abs=0.002)
+
+
+@pytest.mark.parametrize("method", ["asetrate", "atempo"])
+def test_cadence_rewrite_timestamps_count_the_inserted_silence(tmp_path, method):
+    """Conversion de cadence + silence inséré (adelay) : l'horodatage de la sortie suit ses échantillons.
+
+    Avec atempo, les images ne reportaient pas le silence : la piste encodée partait en avance de
+    sa durée (repère, saut, muxeur natif décalés ; 5 s sur un épisode réel)."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.sync_calibration import SyncSegment
+
+    source = tmp_path / "source.mkv"
+    _run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=64x64:r=25:d=6",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=5",
+        "-af", "adelay=500:all=1", "-c:v", "ffv1", "-c:a", "aac", str(source),
+    ])
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    video = TrackEntry(0, "video", "FFV1", "", "und", "")
+    audio = TrackEntry(1, "audio", "aac", "", "fra", "")
+    calibration = SyncCalibration((SyncSegment(0, 2000.0), SyncSegment(3000, 2500.0)),
+                                  cadence_mismatch=pal, cadence_audio_method=method)
+    config = RemuxConfig(
+        [SourceInput(source, 0, [video, audio])], tmp_path / "out.mkv",
+        [(0, 0, video.entry_id), (0, 1, audio.entry_id)], sync_mode="physical",
+        sync_calibrations={"0": calibration.to_dict()},
+    )
+    artifact = prepare_physical(config, tmp_path, _FFMPEG, _run, ffprobe=_FFPROBE).sources[-1].path
+    pcm = np.frombuffer(_run(["ffmpeg", "-v", "error", "-i", str(artifact), "-ac", "1", "-f", "f32le", "-"]), "<f4")
+    duration = float(_run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                           str(artifact)]))
+    assert duration == pytest.approx(len(pcm) / 48000, abs=0.05)
+    onset = int(np.argmax(np.abs(pcm) > 0.05)) / 48000
+    # Son à 0,5 s de la source, ralenti (25 → 23,976) puis décalé de 2 s ; atempo : gigue WSOLA.
+    assert onset == pytest.approx(0.5 * 25025 / 24000 + 2.0, abs=0.04)
