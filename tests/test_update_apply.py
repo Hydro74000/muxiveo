@@ -1,7 +1,7 @@
 """Mise à jour par échange de dossiers (core/update_apply.py) : archive source, application macOS.
 
 Bibliothèque standard seule (fausse application, aucun Qt) : aussi exécuté sur Linux, Windows et macOS par
-`.github/workflows/update-tests.yml` (`pytest --noconftest`).
+`.github/workflows/ci-update-process.yml` (`pytest --noconftest`).
 """
 
 from __future__ import annotations
@@ -484,7 +484,7 @@ def test_cancel_during_candidate_probe_kills_and_reaps_process(tmp_path, monkeyp
 def test_macos_app_update_from_dmg(tmp_path):
     def bundle(root: Path, version: str) -> Path:
         app = root / update_apply.MACOS_APP_NAME
-        executable = app / "Contents" / "MacOS" / "Muxiveo"
+        executable = app / "Contents" / "MacOS" / "muxiveo"
         executable.parent.mkdir(parents=True)
         executable.write_text(
             "#!/bin/sh\n"
@@ -494,7 +494,7 @@ def test_macos_app_update_from_dmg(tmp_path):
         )
         executable.chmod(0o755)
         with (app / "Contents" / "Info.plist").open("wb") as out:
-            plistlib.dump({"CFBundleIdentifier": "com.example.muxiveo", "CFBundleExecutable": "Muxiveo"}, out)
+            plistlib.dump({"CFBundleIdentifier": "com.example.muxiveo", "CFBundleExecutable": "muxiveo"}, out)
         return app
 
     parent = tmp_path / "Applications"
@@ -509,12 +509,35 @@ def test_macos_app_update_from_dmg(tmp_path):
     work.mkdir()
     (work / update_apply.WORKDIR_TAG).touch()
     shutil.copyfile(dmg, work / dmg.name)
-    executable = os.path.join(update_apply.ROOT_TOKEN, "Contents", "MacOS", "Muxiveo")
+    executable = os.path.join(update_apply.ROOT_TOKEN, "Contents", "MacOS", "muxiveo")
     update_apply.prepare(update_apply.KIND_MACOS, work / dmg.name, work, install, "2.0.0",
                          [executable], [executable], bundle_id="com.example.muxiveo")
     assert update_apply.commit(work, _exited_pid()) == 0
     assert _wait_file(parent / "launched.txt").strip() == "2.0.0"
-    assert "2.0.0" in (install / "Contents" / "MacOS" / "Muxiveo").read_text(encoding="utf-8")
+    assert "2.0.0" in (install / "Contents" / "MacOS" / "muxiveo").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("declared, present, accepted", [
+    ("muxiveo", "muxiveo", True),
+    ("muxiveo", "Muxiveo", False),      # casse différente : introuvable sur un volume sensible à la casse
+    ("muxiveo", None, False),
+    (None, "muxiveo", False),
+])
+def test_app_bundle_executable_is_the_declared_one_with_exact_case(tmp_path, declared, present, accepted):
+    app = tmp_path / update_apply.MACOS_APP_NAME
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    if present:
+        (app / "Contents" / "MacOS" / present).write_text("#!/bin/sh\n", encoding="utf-8")
+    info = {"CFBundleIdentifier": "com.example.muxiveo"}
+    if declared:
+        info["CFBundleExecutable"] = declared
+    with (app / "Contents" / "Info.plist").open("wb") as out:
+        plistlib.dump(info, out)
+    if accepted:
+        update_apply._check_app_bundle(app, "com.example.muxiveo")
+    else:
+        with pytest.raises(UpdateApplyError, match="exécutable absent"):
+            update_apply._check_app_bundle(app, "com.example.muxiveo")
 
 
 @pytest.mark.parametrize("last_error, closed", [(87, True), (5, False)])

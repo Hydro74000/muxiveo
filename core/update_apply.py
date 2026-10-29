@@ -303,16 +303,24 @@ def _source_candidate(unpacked: Path) -> Path:
 
 
 def _check_app_bundle(bundle: Path, bundle_id: str) -> None:
-    executable = bundle / "Contents" / "MacOS" / "Muxiveo"
-    if executable.is_symlink() or not executable.is_file():
-        raise UpdateApplyError("Application inattendue : exécutable absent.")
+    """Identifiant attendu et exécutable déclaré (`CFBundleExecutable`, casse exacte : volumes sensibles à la casse)."""
     try:
         with (bundle / "Contents" / "Info.plist").open("rb") as source:
-            identifier = plistlib.load(source).get("CFBundleIdentifier")
+            info = plistlib.load(source)
     except (OSError, plistlib.InvalidFileException, ValueError) as exc:
         raise UpdateApplyError(f"Application inattendue : Info.plist illisible ({exc}).") from exc
+    identifier = info.get("CFBundleIdentifier")
     if identifier != bundle_id:
         raise UpdateApplyError(f"Application inattendue : identifiant {identifier!r}.")
+    name = info.get("CFBundleExecutable")
+    macos = bundle / "Contents" / "MacOS"
+    try:
+        listed = isinstance(name, str) and name in os.listdir(macos)
+    except OSError:
+        listed = False
+    executable = macos / name if listed else None
+    if executable is None or executable.is_symlink() or not executable.is_file():
+        raise UpdateApplyError("Application inattendue : exécutable absent.")
 
 
 # --------------------------------------------------------------------------- préparation

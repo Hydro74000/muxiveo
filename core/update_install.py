@@ -33,7 +33,7 @@ from pathlib import Path
 from core import update_apply
 from core.subprocess_utils import host_environment
 from core.update_check import RELEASE_DOWNLOAD_URL_PREFIX, ReleaseAsset, UpdateInfo, is_repository_url
-from core.version import APP_MACOS_BUNDLE_ID, APP_USER_AGENT
+from core.version import APP_EXECUTABLE_NAME, APP_MACOS_BUNDLE_ID, APP_USER_AGENT
 
 CHECKSUMS_ASSET_NAME = "SHA256SUMS"
 _MAX_ASSET_BYTES = 2 * 1024**3
@@ -135,7 +135,7 @@ def installation_root(kind: InstallKind) -> Path:
     if kind is InstallKind.SOURCE_ARCHIVE:
         return _SOURCE_ROOT
     if kind is InstallKind.MACOS_APP:
-        return Path(sys.executable).resolve().parents[2]       # Muxiveo.app/Contents/MacOS/Muxiveo
+        return Path(sys.executable).resolve().parents[2]       # Muxiveo.app/Contents/MacOS/muxiveo
     raise UpdateInstallError("Mode d'installation sans emplacement remplaçable.")
 
 
@@ -350,7 +350,8 @@ def _swap_commands(kind: InstallKind) -> tuple[list[str], list[str]]:
     """Commandes de contrôle (`--cli version` ajouté) et de relance ; `{root}` = dossier contrôlé ou installé."""
     root = update_apply.ROOT_TOKEN
     if kind is InstallKind.MACOS_APP:
-        return [os.path.join(root, "Contents", "MacOS", "Muxiveo")], ["/usr/bin/open", "-n", root]
+        # Nom exact du bundle (`CFBundleExecutable`, package.py) : un volume APFS peut être sensible à la casse.
+        return [os.path.join(root, "Contents", "MacOS", APP_EXECUTABLE_NAME)], ["/usr/bin/open", "-n", root]
     entry = Path(sys.argv[0]).name if sys.argv and Path(sys.argv[0]).name in ("launcher.py", "main.py") else "main.py"
     return [sys.executable, os.path.join(root, "main.py")], [sys.executable, os.path.join(root, entry)]
 

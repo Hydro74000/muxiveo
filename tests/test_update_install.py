@@ -134,6 +134,17 @@ def test_appimage_self_update_needs_writable_folder(tmp_path, monkeypatch):
     assert not can_self_update(info, InstallKind.APPIMAGE)
 
 
+def test_macos_swap_commands_use_the_bundle_executable_name():
+    """Même nom que `CFBundleExecutable` écrit par package.py : un volume APFS peut être sensible à la casse."""
+    from core.version import APP_EXECUTABLE_NAME
+
+    probe, relaunch = update_install._swap_commands(InstallKind.MACOS_APP)
+    assert probe == [os.path.join(update_apply.ROOT_TOKEN, "Contents", "MacOS", APP_EXECUTABLE_NAME)]
+    assert relaunch == ["/usr/bin/open", "-n", update_apply.ROOT_TOKEN]
+    package = (Path(__file__).resolve().parent.parent / "package.py").read_text(encoding="utf-8")
+    assert 'plist["CFBundleExecutable"] = APP_EXECUTABLE_NAME' in package
+
+
 def test_blockers_for_macos_and_unmarked_sources(tmp_path, monkeypatch):
     translocated = Path("/private/var/folders/x/AppTranslocation/ABC/d/Muxiveo.app")
     monkeypatch.setattr(update_install, "installation_root", lambda kind: translocated)
