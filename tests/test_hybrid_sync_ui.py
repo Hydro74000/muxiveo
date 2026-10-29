@@ -132,6 +132,10 @@ def test_profile_rewrite_during_parallel_preparation_rejects_entire_batch(panel,
     assert all(doc["output_template"] == "avant.mkv" for doc in documents)
     assert panel.jobs == {} and not panel._run_after_prepare
     assert panel.status.text() == translate_text("Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.")
+    # Plans effacés : aucune ligne ne reste « en cours » ni n'affiche un plan rejeté.
+    expected = {translate_text("Prêt pour analyse"), translate_text("Incomplet")}
+    statuses = [panel.table.item(row, 3).text() for row in range(panel.table.rowCount())]
+    assert statuses and set(statuses) <= expected
 
 
 def test_profile_restored_after_rejected_result_cannot_export_partial_batch(panel, tmp_path, monkeypatch):
@@ -614,13 +618,9 @@ def test_episode_selector_and_correspondence_selection_open_the_same_studio(pane
     panel._wave_section.set_expanded(True)
     panel.findChild(QScrollArea).ensureWidgetVisible(panel.sync_episode)
     qt_app.processEvents()
-    QTest.mouseClick(panel.sync_episode, Qt.MouseButton.LeftButton)
-    qt_app.processEvents()
-    view = panel.sync_episode.view()
-    QTest.mouseMove(view.viewport(), view.visualRect(view.model().index(1, 0)).center())
-    QTest.qWait(250)
-    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton,
-                     pos=view.visualRect(view.model().index(1, 0)).center())
+    # Choix au clavier : la liste déroulante (popup à capture de souris) échoue
+    # sous Wayland / X11 réels quand la fenêtre de test n'a pas reçu d'entrée.
+    QTest.keyClick(panel.sync_episode, Qt.Key.Key_Down)
     qt_app.processEvents()
     assert panel.table.currentRow() == 1
     assert panel.sync_episode.currentData() == 1

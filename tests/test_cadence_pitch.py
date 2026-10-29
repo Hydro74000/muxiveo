@@ -1,17 +1,15 @@
 """Tests pour l'analyse acoustique de hauteur tonale (Pitch / Hz) et sélection automatique de la cadence."""
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
-from core.workflows.cadence import CadenceAudioMethod, CadenceMismatch, CadenceType, build_cadence_audio_filter
+from core.workflows.cadence import CadenceMismatch, CadenceType
 from core.workflows.cadence_pitch import (
     CadencePitchAnalysis,
     analyze_cadence_pitch,

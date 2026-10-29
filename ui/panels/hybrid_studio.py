@@ -2155,6 +2155,9 @@ class HybridStudio(QWidget):
         if self._prepared_signature is not None and self._prepared_signature != self._settings_signature():
             self.jobs.clear()
             self._pending_sync_rows.clear()
+            # Plans effacés : aucune ligne ne garde un décalage ou « Analyse en cours… ».
+            for row, ep in enumerate(self.matrix_episodes):
+                self._reset_row_status(row, ep)
             self._run_after_prepare = False
             self._export_after_prepare = None
             self._defer_audio_sync = False
