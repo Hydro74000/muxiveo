@@ -85,7 +85,7 @@ from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 from ui.panels.remux_panel.widgets.file_list import _FileListWidget
-from ui.panels.remux_panel.widgets.track_table import _TrackTable
+from ui.panels.remux_panel.widgets.track_table import _TrackTable, track_sync_active
 from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
 
@@ -240,6 +240,8 @@ class RemuxPanel(QWidget):
         # Source synchronisée face à la piste d'une autre source : elle suit sa référence.
         self._sync_links: dict[str, SyncLink] = {}
         self._auto_sync_entry_ids: set[str] = set()
+        # Pistes à synchro propre importée (audio, sous-titre en miroir) : elles ne suivent plus leur source.
+        self._own_sync_entry_ids: set[str] = set()
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
@@ -1214,8 +1216,27 @@ class RemuxPanel(QWidget):
         return reply == QMessageBox.StandardButton.Yes
 
     def _track_inherits_source_sync(self, entry: TrackEntry) -> bool:
-        """L'audio suit la source ; les sous-titres la suivent seulement en miroir."""
+        """L'audio suit la source ; les sous-titres la suivent seulement en miroir.
+
+        Une synchro propre importée (`tracks[].sync_calibration`) détache la piste de sa source.
+        """
+        if entry.entry_id in self._own_sync_entry_ids:
+            return False
+        return self._track_type_inherits_source_sync(entry)
+
+    def _track_type_inherits_source_sync(self, entry: TrackEntry) -> bool:
         return entry.is_audio or (entry.is_subtitle and self._workflow_options.get("sync_subtitles", "mirror") == "mirror")
+
+    def _adopt_own_sync_calibrations(self, tracks: list[TrackEntry]) -> None:
+        """Import : une calibration de piste différente de celle de sa source est une synchro propre,
+        prioritaire à l'exécution ; elle est conservée au lieu d'être remplacée par celle de la source."""
+        calibrations = self._workflow_options.get("sync_calibrations", {})
+        for entry in tracks:
+            if entry.sync_calibration is None or not self._track_type_inherits_source_sync(entry):
+                continue
+            source_idx = self._source_index_for_file_id(entry.file_id)
+            if entry.sync_calibration != calibrations.get(str(source_idx)):
+                self._own_sync_entry_ids.add(entry.entry_id)
 
     def _sync_entry_calibrations(self, tracks: list[TrackEntry] | None = None) -> None:
         if tracks is None:
@@ -1259,6 +1280,7 @@ class RemuxPanel(QWidget):
         self._source_sync_offsets_ms.clear()
         self._sync_links.clear()
         self._auto_sync_entry_ids.clear()
+        self._own_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
         self._cadence_declined_source_ids.clear()
@@ -1283,6 +1305,7 @@ class RemuxPanel(QWidget):
         self.log_message.emit("INFO", translate_text("Pistes, synchronisation et chapitres réinitialisés sur les sources."))
 
     def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
+        self._own_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._sync_entry_calibrations(tracks)
         self._auto_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
@@ -1480,9 +1503,7 @@ class RemuxPanel(QWidget):
     def _track_sync_counts(self) -> dict[str, int]:
         counts = {"video": 0, "audio": 0, "subtitle": 0}
         for entry in self._track_table.current_tracks():
-            if entry.track_type in counts and (
-                    int(entry.time_shift_ms or 0) != 0
-                    or effective_calibration(entry.sync_calibration, entry.track_type) is not None):
+            if entry.track_type in counts and track_sync_active(entry):
                 counts[entry.track_type] += 1
         return counts
 
@@ -1557,7 +1578,7 @@ class RemuxPanel(QWidget):
         active = {
             entry.entry_id
             for entry in self._track_table.current_tracks()
-            if entry.track_type in {"audio", "subtitle"} and int(entry.time_shift_ms or 0) != 0
+            if entry.track_type in {"audio", "subtitle"} and track_sync_active(entry)
         }
         if self._auto_sync_entry_ids.issubset(active):
             return
@@ -2027,10 +2048,15 @@ class RemuxPanel(QWidget):
             if entry.track_type not in {"audio", "subtitle"}:
                 continue
             if not self._track_inherits_source_sync(entry):
-                # Sous-titre hors miroir : ni lien ni synchro de source ; ses coupures suivent la saisie.
-                own = effective_calibration(entry.sync_calibration, entry.track_type)
+                # Synchro propre : ni lien ni synchro de source ; ses coupures suivent la saisie.
+                own = projected_calibration(entry.sync_calibration, entry.track_type)
                 if own is not None:
-                    entry.sync_calibration = own.with_start_offset(int(entry.time_shift_ms or 0)).to_dict()
+                    shifted = own.with_start_offset(int(entry.time_shift_ms or 0))
+                    # Décalage constant importé : il primerait sur le champ saisi. Le champ suffit,
+                    # sauf synchro propre d'une piste qui suivrait sinon sa source.
+                    keep = (effective_calibration(shifted, entry.track_type) is not None
+                            or entry.entry_id in self._own_sync_entry_ids)
+                    entry.sync_calibration = shifted.to_dict() if keep else None
                     moved = True
                 if int(entry.time_shift_ms or 0) and (own is None or own.cadence_mismatch is None):
                     self._warn_offset_without_cadence(entry)
@@ -2141,9 +2167,15 @@ class RemuxPanel(QWidget):
         if entry.track_type not in {"audio", "subtitle"}:
             return
         if not self._track_inherits_source_sync(entry):
-            # Sous-titre hors miroir : sa synchro lui est propre, la source n'est pas touchée.
+            # Synchro propre à la piste : la source n'est pas touchée.
             entry.sync_calibration = None
-            self._track_table.update_time_shift(entry.entry_id, 0)
+            offset = 0
+            if entry.entry_id in self._own_sync_entry_ids:
+                # Synchro propre importée : la piste suit de nouveau sa source.
+                self._own_sync_entry_ids.discard(entry.entry_id)
+                self._sync_entry_calibrations([entry])
+                offset = round(self._source_calibration(entry.file_id).segments[0].shift_ms)
+            self._track_table.update_time_shift(entry.entry_id, offset)
             self._auto_sync_entry_ids.discard(entry.entry_id)
             self._track_table.refresh_all_entries_info()
             self._refresh_sync_action_buttons()
@@ -2276,6 +2308,7 @@ class RemuxPanel(QWidget):
         self._source_sync_offsets_ms.clear()
         self._sync_links.clear()
         self._auto_sync_entry_ids.clear()
+        self._own_sync_entry_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
         self._cadence_declined_source_ids.clear()

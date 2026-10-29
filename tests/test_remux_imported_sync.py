@@ -156,3 +156,86 @@ def test_cancelling_imported_linear_audio_offset_preserves_other_tracks(chain, t
     panel._on_auto_sync_cancel_requested(audio)
     assert panel._track_calibration(audio) == SyncCalibration.linear(0)
     assert panel._track_calibration(subtitle) == SyncCalibration.linear(2000)
+
+
+_OWN_CUTS = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(60_000, -1000.0)))
+
+
+def _restore_own(chain, tmp_path, track_type, own, *, mirror="mirror", source_calibration=None, mode="physical"):
+    """Restaure un exact-job dont une piste de B porte une calibration propre."""
+    panel, _tracks, _logs = chain
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    config = panel.collect_config()
+    config.sync_mode = mode
+    config.sync_subtitles = mirror
+    config.sync_calibrations = {"1": source_calibration.to_dict()} if source_calibration else {}
+    next(track for track in config.sources[1].tracks if track.track_type == track_type).sync_calibration = own.to_dict()
+    workflow.restore(panel, config, [source.info for source in panel._source_files])
+    tracks = panel.collect_config().sources[1].tracks
+    edited = next(track for track in tracks if track.track_type == track_type)
+    return panel, edited, next(track for track in tracks if track is not edited)
+
+
+@pytest.mark.parametrize("source_calibration", [
+    None, SyncCalibration.linear(2000), SyncCalibration((SyncSegment(0, 2000), SyncSegment(10000, 2400))),
+])
+@pytest.mark.parametrize("track_type", ["audio", "subtitle"])
+def test_imported_own_track_calibration_survives_restore(chain, tmp_path, track_type, source_calibration):
+    """Calibration propre d'une piste qui suit normalement sa source : conservée, exportée, appliquée."""
+    panel, edited, other = _restore_own(chain, tmp_path, track_type, _OWN_CUTS, source_calibration=source_calibration)
+    assert panel._track_calibration(edited) == _OWN_CUTS
+    assert panel._track_calibration(other) == (source_calibration or SyncCalibration.linear(0))
+    panel._on_table_changed()
+    panel._sync_entry_calibrations()
+    assert panel._track_calibration(edited) == _OWN_CUTS
+    payloads = {item["selector"]["id"]: item for item in workflow._session_job(panel)["tracks"]
+                if item["selector"]["source"] == 1}
+    assert payloads[edited.mkv_tid]["sync_calibration"] == _OWN_CUTS.to_dict()
+    # La synchro de la source change : ses autres pistes suivent, la synchro propre reste.
+    panel._set_source_calibration(edited.file_id, SyncCalibration.linear(500))
+    assert panel._track_calibration(edited) == _OWN_CUTS
+    assert panel._track_calibration(other) == SyncCalibration.linear(500)
+    prepared = {item.track.entry_id: applied
+                for item, _path, _command, applied in preparation_commands(panel.collect_config(), tmp_path, "ffmpeg")}
+    assert prepared[edited.entry_id].segments == _OWN_CUTS.segments
+    # Annulation de la piste : elle suit de nouveau sa source.
+    panel._on_auto_sync_cancel_requested(edited)
+    assert panel._track_calibration(edited) == SyncCalibration.linear(500)
+    panel._set_source_calibration(edited.file_id, SyncCalibration.linear(700))
+    assert panel._track_calibration(edited) == SyncCalibration.linear(700)
+
+
+@pytest.mark.parametrize("track_type,mirror", [("subtitle", "none"), ("audio", "mirror")])
+def test_entered_offset_replaces_imported_linear_own_calibration(chain, tmp_path, track_type, mirror):
+    """Calibration propre linéaire importée : la valeur saisie est celle appliquée (Remux et Encode)."""
+    panel, edited, _other = _restore_own(chain, tmp_path, track_type, SyncCalibration.linear(1200),
+                                         mirror=mirror, mode="container")
+    assert edited.time_shift_ms == 1200
+    for offset in (600, 0):
+        edited.time_shift_ms = offset
+        panel._track_table.time_shift_edited.emit(edited)
+        config = panel.collect_config()
+        mapped = {item.track.entry_id: item.track.time_shift_ms for item in resolve_mapped_tracks(config)}
+        assert mapped[edited.entry_id] == offset
+        if track_type != "subtitle":
+            continue
+        # Pont Encode (sous-titres copiés ; l'audio n'y passe qu'avec ses réglages d'encodage).
+        encode = merge_remux_into_encode_config(
+            EncodeConfig(config.sources[0].path, config.output, video=VideoEncodeSettings()), config)
+        offsets = [item.offset_ms for item in encode.track_time_offsets
+                   if item.track_type == "subtitle" and item.source_path == config.sources[1].path]
+        assert offsets == ([offset] if offset else [])
+
+
+def test_zero_start_own_calibration_stays_cancelable_after_table_edit(chain):
+    """Coupures sans décalage de départ : l'annulation individuelle survit aux éditions et au réordonnancement."""
+    panel, tracks, _logs = chain
+    panel._workflow_options["sync_subtitles"] = "none"
+    subtitle = tracks["B"][1]
+    panel._on_subtitle_sync_done(subtitle.entry_id, tracks["A"][1].entry_id, 0, .95, _OWN_CUTS)
+    assert subtitle.time_shift_ms == 0 and subtitle.sync_calibration is not None
+    assert panel._track_table._has_cancelable_auto_sync(subtitle)
+    panel._on_table_changed()
+    assert panel._track_table._has_cancelable_auto_sync(subtitle)
+    panel._on_track_order_changed()
+    assert panel._track_table._has_cancelable_auto_sync(subtitle)

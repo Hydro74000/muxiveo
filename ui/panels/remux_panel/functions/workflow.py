@@ -448,6 +448,8 @@ def restore(panel, config, infos, session=None):
         if (index, track.mkv_tid, track.entry_id if track.is_new else None) in auto_sync_keys
     }
     panel._sync_links = _restored_sync_links(panel, config, session.get("sync_links"))
+    panel._own_sync_entry_ids = set()
+    panel._adopt_own_sync_calibrations(ordered)
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

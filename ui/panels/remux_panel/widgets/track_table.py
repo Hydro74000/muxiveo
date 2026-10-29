@@ -51,6 +51,13 @@ from ui.panels.remux_panel.theme import (
 )
 from ui.panels.track_edit_dialog import TrackEditDialog
 
+
+def track_sync_active(entry: TrackEntry) -> bool:
+    """Synchro appliquée à une piste : décalage de départ, ou coupures / cadence même sans décalage."""
+    return int(entry.time_shift_ms or 0) != 0 or effective_calibration(
+        entry.sync_calibration, entry.track_type) is not None
+
+
 class _TrackInfoDelegate(QStyledItemDelegate):
     _SYNC_LABEL_COLOR = QColor(_C.ACCENT)
     _DISABLED_LABEL_COLOR = QColor(_C.ERROR)
@@ -810,8 +817,7 @@ class _TrackTable(QTableWidget):
         if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
             return False
         # Coupures sans décalage de départ : la synchro reste annulable.
-        return int(entry.time_shift_ms or 0) != 0 or effective_calibration(
-            entry.sync_calibration, entry.track_type) is not None
+        return track_sync_active(entry)
 
     def _sync_rewrite_preview(self, entry: TrackEntry):
         return ui_sync_rewrite_preview_for_track(

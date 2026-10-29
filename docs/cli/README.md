@@ -322,6 +322,9 @@ propre à la piste, prioritaire sur celle de sa source. Le panneau Conteneur
 l'écrit pour un sous-titre synchronisé seul avec `sync_subtitles: "none"`
 (coupures ou cadence) : le sous-titre est réécrit, l'audio de sa source n'est
 pas touché.
+À l'import, une calibration de piste différente de celle de sa source (audio,
+sous-titre en miroir) est conservée : la piste ne suit plus sa source jusqu'à
+l'annulation de sa synchro.
 
 ### `track_order`
 
