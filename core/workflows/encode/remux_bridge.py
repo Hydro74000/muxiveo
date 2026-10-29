@@ -105,7 +105,7 @@ def merge_remux_into_encode_config(
             return
         offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
         calibration = getattr(track, "sync_calibration", None) if track_type != TrackType.VIDEO.value else None
-        if effective_calibration(calibration) is None:
+        if effective_calibration(calibration, track_type) is None:
             calibration = None
         if offset_ms == 0 and calibration is None:
             return

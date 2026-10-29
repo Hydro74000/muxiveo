@@ -485,7 +485,7 @@ class SyncRewriteService:
     ) -> SyncRewritePreparedInput | None:
         from core.workflows.sync_calibration import effective_calibration
         # Calibration multi-segments/cadence : seule une réécriture physique la respecte.
-        calib = effective_calibration(calibration)
+        calib = effective_calibration(calibration, str(track_type or "").strip().lower())
         if int(offset_ms or 0) == 0 and calib is None:
             return None
         if cancel_cb is not None and cancel_cb():

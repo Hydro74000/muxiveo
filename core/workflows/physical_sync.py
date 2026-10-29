@@ -93,7 +93,13 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
 
 def track_calibration(config, mapped):
     payload = mapped.track.sync_calibration or config.sync_calibrations.get(str(mapped.source_file_index))
-    return SyncCalibration.from_dict(payload) if payload else SyncCalibration.linear(mapped.track.time_shift_ms)
+    if not payload:
+        return SyncCalibration.linear(mapped.track.time_shift_ms)
+    calibration = SyncCalibration.from_dict(payload)
+    if mapped.track.track_type != "audio" and not calibration.changes_timeline:
+        # Hauteur seule : sans objet hors audio, la chronologie se réduit au décalage.
+        return SyncCalibration.linear(calibration.segments[0].shift_ms)
+    return calibration
 
 
 def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None,
@@ -111,7 +117,11 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         track = mapped.track
         if sync_rewrite_forced_offset(track):
             continue
-        calibrated = bool(track.sync_calibration) or str(mapped.source_file_index) in config.sync_calibrations
+        payload = track.sync_calibration or config.sync_calibrations.get(str(mapped.source_file_index))
+        # Hors audio, une hauteur seule se réduit au décalage : sans décalage, instants intacts.
+        calibrated = bool(payload) and (
+            track.track_type == "audio" or track_calibration(config, mapped) != SyncCalibration.linear(0)
+        )
         mirror_offset = 0
         if track.track_type == "subtitle" and not track.time_shift_ms and not calibrated and config.sync_subtitles == "mirror":
             offsets = {m.track.time_shift_ms for m in mapped_tracks if m.source_file_index == mapped.source_file_index and m.track.track_type == "audio"}

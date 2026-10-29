@@ -74,6 +74,12 @@ class SyncCalibration:
         """Conversion de cadence ou de hauteur : la piste audio doit être réécrite."""
         return _active_cadence(self) is not None or self.cadence_pitch_factor != 1.0
 
+    @property
+    def changes_timeline(self) -> bool:
+        """Coupures ou conversion de cadence : la chronologie change (sous-titres compris) ;
+        une hauteur seule ne concerne que l'audio."""
+        return len(self.segments) > 1 or _active_cadence(self) is not None
+
     def to_dict(self):
         data = {
             "version": 1,
@@ -510,8 +516,12 @@ def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | Non
 
 
 
-def effective_calibration(calibration_or_dict: SyncCalibration | dict | None) -> SyncCalibration | None:
-    """Retourne la calibration si elle n'est pas réductible à un décalage constant (coupures, cadence ou hauteur)."""
+def effective_calibration(calibration_or_dict: SyncCalibration | dict | None,
+                          track_type: str = "audio") -> SyncCalibration | None:
+    """Retourne la calibration si elle n'est pas réductible à un décalage constant (coupures, cadence ou hauteur).
+
+    Hors audio (`track_type`), une hauteur seule ne compte pas : la chronologie reste un décalage.
+    """
     calibration = calibration_or_dict
     if isinstance(calibration, dict):
         try:
@@ -520,4 +530,6 @@ def effective_calibration(calibration_or_dict: SyncCalibration | dict | None) ->
             return None
     if not isinstance(calibration, SyncCalibration):
         return None
-    return calibration if len(calibration.segments) > 1 or calibration.converts_audio else None
+    if track_type != "audio":
+        return calibration if calibration.changes_timeline else None
+    return calibration if calibration.changes_timeline or calibration.converts_audio else None

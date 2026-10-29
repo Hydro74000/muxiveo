@@ -171,7 +171,8 @@ def validate_remux_config(
                 f"file_index={file_index}, stream={mkv_tid}, offset={selected_track.time_shift_ms} ms"
             )
         calibration = effective_calibration(
-            selected_track.sync_calibration or config.sync_calibrations.get(str(file_index))
+            selected_track.sync_calibration or config.sync_calibrations.get(str(file_index)),
+            selected_track.track_type,
         )
         if calibration is not None and selected_track.track_type in {"audio", "subtitle"}:
             codec = normalized_rewrite_codec(selected_track.orig_codec or selected_track.codec)

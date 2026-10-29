@@ -194,7 +194,8 @@ class RemuxRuntimeRunner:
                     mapped.track.track_type in {"audio", "subtitle"}
                     and effective_calibration(
                         mapped.track.sync_calibration
-                        or run_config.sync_calibrations.get(str(mapped.source_file_index))
+                        or run_config.sync_calibrations.get(str(mapped.source_file_index)),
+                        mapped.track.track_type,
                     ) is not None
                     for mapped in mapped_tracks
                 ):
@@ -262,7 +263,8 @@ class RemuxRuntimeRunner:
                         offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
                         calibration = effective_calibration(
                             getattr(mapped_track.track, "sync_calibration", None)
-                            or run_config.sync_calibrations.get(str(mapped_track.source_file_index))
+                            or run_config.sync_calibrations.get(str(mapped_track.source_file_index)),
+                            mapped_track.track.track_type,
                         ) if mapped_track.track.track_type in {"audio", "subtitle"} else None
                         if (offset_ms == 0 and calibration is None) or (
                             calibration is None and sync_rewrite_forced_offset(mapped_track.track)

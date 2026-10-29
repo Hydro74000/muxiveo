@@ -258,7 +258,8 @@ def native_capability_reasons(
                 config.sync_mode != "physical"
                 and track.track_type in {"audio", "subtitle"}
                 and effective_calibration(
-                    track.sync_calibration or config.sync_calibrations.get(str(source.file_index))
+                    track.sync_calibration or config.sync_calibrations.get(str(source.file_index)),
+                    track.track_type,
                 ) is not None
             ):
                 reasons.append(

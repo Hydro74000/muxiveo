@@ -464,3 +464,35 @@ def test_plan_cadence_methods_are_settled_from_the_master_language(tmp_path, mon
     assert set(resolved) == {"1"} and resolved["1"].cadence_audio_method == "asetrate"
     config.sync_calibrations["1"] = resolved["1"].to_dict()
     assert not plan_needs_cadence_method(config)
+
+
+def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, monkeypatch):
+    """Calibration importée à hauteur seule (vitesse inchangée) : le mode conteneur la perdrait."""
+    import json
+
+    master, donor = tmp_path / "master.mkv", tmp_path / "donor.mkv"
+    source = MatrixSource("donor", donor, SourceRole.DONOR)
+    episode = MatrixEpisode(master_file=master, donor_files=[(source, donor)])
+    pitch = SyncCalibration((SyncSegment(0, 120.0),), cadence_pitch_factor=24000 / 25025)
+    supplied = tmp_path / "calibration.json"
+    supplied.write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
+
+    def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
+        result = RemuxConfig(
+            sources=[SourceInput(master, 0, [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+                                             TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]),
+                     SourceInput(donor, 1, [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1")])],
+            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
+            sync_subtitles=job["sync_subtitles"],
+        )
+        select_tracks(result.sources)
+        return result
+
+    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    result, _calibration = prepare_matrix_episode(
+        episode, HybridRecipe(sync_strategy="auto", sync_mode="container"), tmp_path / "out",
+        SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        CommonOptions(sync_mode="container", calibration=str(supplied)), Logger(),
+    )
+    assert result.sync_mode == "physical"
+    assert SyncCalibration.from_dict(result.sync_calibrations["1"]).audio_pitch_factor == pytest.approx(24000 / 25025)

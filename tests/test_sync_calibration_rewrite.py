@@ -189,3 +189,22 @@ def test_physical_applies_track_calibration_once(tmp_path, monkeypatch):
     assert track.sync_calibration == calibration.to_dict()
     prepared.sync_mode = "physical"
     assert preparation_commands(prepared, tmp_path, "ffmpeg") == []
+
+
+def test_pitch_only_calibration_leaves_bitmap_subtitles_untouched(tmp_path):
+    """Hauteur seule (synchro chaînée) : audio réécrit, PGS en miroir intact (instants inchangés)."""
+    from core.workflows.physical_sync import preparation_commands
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+
+    pitch = SyncCalibration((SyncSegment(0, 0.0),), cadence_pitch_factor=24000 / 25025)
+    audio = TrackEntry(0, "audio", "EAC3", "", "fra", "")
+    pgs = TrackEntry(1, "subtitle", "hdmv_pgs_subtitle", "", "fra", "")
+    config = RemuxConfig(
+        [SourceInput(tmp_path / "in.mkv", 0, [audio, pgs])], tmp_path / "out.mkv",
+        [(0, 0, audio.entry_id), (0, 1, pgs.entry_id)], sync_mode="physical", sync_subtitles="mirror",
+        sync_calibrations={"0": pitch.to_dict()},
+    )
+    commands = preparation_commands(config, tmp_path, "ffmpeg", sample_rates={(tmp_path / "in.mkv", 0): 48000})
+    assert [mapped.track.track_type for mapped, *_rest in commands] == ["audio"]
+    assert effective_calibration(pitch.to_dict(), "subtitle") is None
+    assert effective_calibration(pitch.to_dict()) == pitch
