@@ -1006,7 +1006,8 @@ def prepare_matrix_episode(
             if recipe.sync_strategy == "auto" or donor_calib.cadence_mismatch is not None or donor_calib.converts_audio:
                 calibrations[str(donor_idx)] = donor_calib
                 # Cadence ou hauteur (synchro chaînée importée) : seule la réécriture les conserve.
-                if donor_calib.converts_audio and cadence_auto_apply:
+                # « Conversion automatique » ne porte que sur la cadence détectée, jamais sur une calibration fournie.
+                if donor_calib.converts_audio:
                     remux_config.sync_mode = "physical"
 
     # Décider après tous les donneurs : une conversion de cadence peut imposer

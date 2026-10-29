@@ -466,7 +466,8 @@ def test_plan_cadence_methods_are_settled_from_the_master_language(tmp_path, mon
     assert not plan_needs_cadence_method(config)
 
 
-def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, monkeypatch):
+@pytest.mark.parametrize("auto_apply", [True, False])
+def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, monkeypatch, auto_apply):
     """Calibration importée à hauteur seule (vitesse inchangée) : le mode conteneur la perdrait."""
     import json
 
@@ -490,7 +491,8 @@ def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, m
 
     monkeypatch.setattr("cli.remux_config.build_remux_config", build)
     result, _calibration = prepare_matrix_episode(
-        episode, HybridRecipe(sync_strategy="auto", sync_mode="container"), tmp_path / "out",
+        episode, HybridRecipe(sync_strategy="auto", sync_mode="container", cadence_auto_apply=auto_apply),
+        tmp_path / "out",
         SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
         CommonOptions(sync_mode="container", calibration=str(supplied)), Logger(),
     )

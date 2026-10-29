@@ -317,6 +317,12 @@ Les edits explicites modifient une piste ciblée par index ou par sélecteur :
 }
 ```
 
+`sync_calibration` (objet au format de `sync_calibrations`, facultatif) : synchro
+propre à la piste, prioritaire sur celle de sa source. Le panneau Conteneur
+l'écrit pour un sous-titre synchronisé seul avec `sync_subtitles: "none"`
+(coupures ou cadence) : le sous-titre est réécrit, l'audio de sa source n'est
+pas touché.
+
 ### `track_order`
 
 `track_order` permet de fixer l'ordre de sortie après filtrage. Chaque entrée

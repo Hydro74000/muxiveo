@@ -1223,7 +1223,7 @@ class RemuxPanel(QWidget):
         calibrations = self._workflow_options.get("sync_calibrations", {})
         for entry in tracks:
             if not self._track_inherits_source_sync(entry):
-                entry.sync_calibration = None
+                # Sous-titre hors miroir : sa synchro propre (coupures, cadence) reste la sienne.
                 continue
             source_idx = self._source_index_for_file_id(entry.file_id)
             if source_idx is not None and str(source_idx) in calibrations:
@@ -1480,7 +1480,9 @@ class RemuxPanel(QWidget):
     def _track_sync_counts(self) -> dict[str, int]:
         counts = {"video": 0, "audio": 0, "subtitle": 0}
         for entry in self._track_table.current_tracks():
-            if entry.track_type in counts and int(entry.time_shift_ms or 0) != 0:
+            if entry.track_type in counts and (
+                    int(entry.time_shift_ms or 0) != 0
+                    or effective_calibration(entry.sync_calibration, entry.track_type) is not None):
                 counts[entry.track_type] += 1
         return counts
 
@@ -1882,6 +1884,45 @@ class RemuxPanel(QWidget):
         self._sync_entry_calibrations()
         return updated
 
+    def _apply_track_only_sync(self, entry: TrackEntry, reference: TrackEntry | None,
+                               measured: SyncCalibration, origin: str) -> bool:
+        """Sous-titre hors miroir : la synchro ne porte que sur la piste, jamais sur l'audio de sa source.
+
+        Décalage constant : champ de la piste. Coupures ou cadence : calibration propre à la piste
+        (`track_sync_payload`), sous-titre réécrit. Pas de lien : la piste ne suit pas sa référence.
+        Retourne vrai si une synchro a été appliquée.
+        """
+        position = self._track_calibration(reference) if reference is not None else SyncCalibration.linear(0)
+        calibration = compose_calibrations(measured, position).for_track(entry.track_type)
+        stored = effective_calibration(calibration, entry.track_type)
+        offset = round(calibration.segments[0].shift_ms)
+        if self._negligible_sync_offset(offset, calibration, entry):
+            offset = 0
+        entry.sync_calibration = stored.to_dict() if stored is not None else None
+        if stored is not None:
+            self.log_message.emit("WARN", translate_text(
+                "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : "
+                "sous-titre réécrit, l'audio de sa source n'est pas concerné.",
+                origin=origin, idx=entry.mkv_tid,
+            ))
+            for line in stored.summary_lines():
+                self.log_message.emit("INFO", f"  • {line}")
+        self._track_table.update_time_shift(entry.entry_id, offset)
+        if offset or stored is not None:
+            self._auto_sync_entry_ids.add(entry.entry_id)
+        else:
+            self._auto_sync_entry_ids.discard(entry.entry_id)
+        self._track_table.refresh_all_entries_info()
+        self._refresh_sync_action_buttons()
+        self._rebuild_preview()
+        self._emit_signals()
+        if offset or stored is not None:
+            self.log_message.emit("OK", translate_text(
+                "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (sous-titres sans recalage miroir).",
+                origin=origin, offset=f"{offset:+d}", idx=entry.mkv_tid,
+            ))
+        return bool(offset) or stored is not None
+
     def _link_measured_sync(self, target_file_id: str, reference: TrackEntry | None,
                             measured: SyncCalibration) -> tuple[SyncCalibration, str]:
         """Synchro de la cible sur la sortie, d'après une mesure faite face à l'audio d'origine de `reference`.
@@ -1975,14 +2016,26 @@ class RemuxPanel(QWidget):
         """Décalages saisis (dialogue d'édition, profil) : ils priment sur le lien de leur source et
         les dépendantes suivent. Retourne vrai si une autre synchro a changé.
 
+        Sous-titre hors miroir : traité seul, ses coupures propres suivent la valeur saisie.
         Toutes les sources concernées sont détachées avant le recalcul : une valeur saisie n'est
         jamais remplacée par celle déduite d'une autre saisie. La synchro d'une source ne porte que
         sur ses pistes audio et sous-titres : la vidéo n'y touche pas.
         """
         grouped: dict[str, list[TrackEntry]] = {}
+        moved = False
         for entry in entries:
-            if entry.track_type in {"audio", "subtitle"}:
-                grouped.setdefault(entry.file_id, []).append(entry)
+            if entry.track_type not in {"audio", "subtitle"}:
+                continue
+            if not self._track_inherits_source_sync(entry):
+                # Sous-titre hors miroir : ni lien ni synchro de source ; ses coupures suivent la saisie.
+                own = effective_calibration(entry.sync_calibration, entry.track_type)
+                if own is not None:
+                    entry.sync_calibration = own.with_start_offset(int(entry.time_shift_ms or 0)).to_dict()
+                    moved = True
+                if int(entry.time_shift_ms or 0) and (own is None or own.cadence_mismatch is None):
+                    self._warn_offset_without_cadence(entry)
+                continue
+            grouped.setdefault(entry.file_id, []).append(entry)
         # Piste retenue par source : la première piste audio (celle que mesure la synchro), sinon la première.
         changed = {
             file_id: next((entry for entry in group if entry.track_type == "audio"), group[0])
@@ -2019,7 +2072,7 @@ class RemuxPanel(QWidget):
                 ))
             elif offset and (calibration is None or calibration.cadence_mismatch is None):
                 self._warn_offset_without_cadence(entry)
-        return self._propagate_sync(set(changed)) or detached
+        return self._propagate_sync(set(changed)) or detached or moved
 
     def _on_track_time_shift_edited(self, entry: TrackEntry) -> None:
         if self._take_entered_offsets([entry]):
@@ -2034,9 +2087,11 @@ class RemuxPanel(QWidget):
     def _relative_sync_calibration(self, entry: TrackEntry, reference: TrackEntry | None) -> SyncCalibration:
         """Synchro de la piste exprimée face à l'audio d'origine de la référence (affichage du Synchro Studio)."""
         current = self._track_calibration(entry)
-        if reference is None or reference.file_id == entry.file_id:
+        inherits = self._track_inherits_source_sync(entry)
+        # Sous-titre hors miroir : sa source ne le déplace pas, même référence dans sa propre source.
+        if reference is None or (reference.file_id == entry.file_id and inherits):
             return current
-        link = self._sync_links.get(entry.file_id)
+        link = self._sync_links.get(entry.file_id) if inherits else None
         if link is not None and link.reference_file_id == reference.file_id:
             return link.relative
         position = self._track_calibration(reference)
@@ -2084,6 +2139,19 @@ class RemuxPanel(QWidget):
 
     def _on_auto_sync_cancel_requested(self, entry: TrackEntry) -> None:
         if entry.track_type not in {"audio", "subtitle"}:
+            return
+        if not self._track_inherits_source_sync(entry):
+            # Sous-titre hors miroir : sa synchro lui est propre, la source n'est pas touchée.
+            entry.sync_calibration = None
+            self._track_table.update_time_shift(entry.entry_id, 0)
+            self._auto_sync_entry_ids.discard(entry.entry_id)
+            self._track_table.refresh_all_entries_info()
+            self._refresh_sync_action_buttons()
+            self.log_message.emit("INFO", translate_text(
+                "Synchronisation annulée pour la piste #{idx}.", idx=entry.mkv_tid,
+            ))
+            self._rebuild_preview()
+            self._emit_signals()
             return
         source_index = self._source_index_for_file_id(entry.file_id)
         source_calibration = (
@@ -2201,6 +2269,8 @@ class RemuxPanel(QWidget):
         old_chapter_offset_ms = self._chapter_sync_offset_ms_for_index(selected_source_index)
         old_calibration = self._chapter_sync_calibration_for_index(selected_source_index)
         for entry in self._track_table.current_tracks():
+            # Synchros propres aux pistes (sous-titres hors miroir) comprises.
+            entry.sync_calibration = None
             if int(entry.time_shift_ms or 0) != 0:
                 self._track_table.update_time_shift(entry.entry_id, 0)
         self._source_sync_offsets_ms.clear()
@@ -2769,6 +2839,14 @@ class RemuxPanel(QWidget):
         calibration: object = None,
     ) -> None:
         try:
+            tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
+            target = tracks_by_id.get(entry_id)
+            if target is not None and not self._track_inherits_source_sync(target):
+                received = calibration if isinstance(calibration, (SyncCalibration, dict)) else None
+                measured = projected_calibration(received, "subtitle") or SyncCalibration.linear(offset_ms)
+                self._apply_track_only_sync(target, tracks_by_id.get(reference_entry_id), measured,
+                                            translate_text("Synchronisation des sous-titres"))
+                return
             _tracks_by_id, target_entry, cal_obj, released = self._apply_measured_sync(
                 entry_id, reference_entry_id, offset_ms, calibration,
             )
@@ -2894,6 +2972,9 @@ class RemuxPanel(QWidget):
             )
             if measured is shown or unchanged_without_cadence:
                 self.log_message.emit("INFO", translate_text("Synchro Studio : aucune modification, synchro inchangée."))
+                return
+            if not self._track_inherits_source_sync(entry):
+                self._apply_track_only_sync(entry, reference_entry, measured, "Synchro Studio")
                 return
             # Synchro réglée face à l'audio d'origine de la référence : même application que les mesures.
             new_calibration, released = self._link_measured_sync(entry.file_id, reference_entry, measured)

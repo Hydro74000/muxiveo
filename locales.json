@@ -9402,5 +9402,17 @@
   "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).": {
     "fra": "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).",
     "eng": "Sync of “{source}” is shared by all its tracks (cuts or cadence): offset {offset} ms of track #{idx} kept, {ignored} ms ignored."
+  },
+  "Synchronisation des sous-titres": {
+    "fra": "Synchronisation des sous-titres",
+    "eng": "Subtitle synchronization"
+  },
+  "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (sous-titres sans recalage miroir).": {
+    "fra": "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (sous-titres sans recalage miroir).",
+    "eng": "{origin}: {offset} ms offset applied to track #{idx} only (subtitles without mirroring)."
+  },
+  "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.": {
+    "fra": "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.",
+    "eng": "{origin}: cuts or cadence specific to track #{idx} (subtitles without mirroring): subtitle rewritten, its source audio is not affected."
   }
 }

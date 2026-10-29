@@ -29,7 +29,7 @@ from core.workflows.common.sync_rewrite import (
     ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.remux_models import TrackEntry
-from core.workflows.sync_calibration import SyncCalibration, format_calibration_summary
+from core.workflows.sync_calibration import SyncCalibration, effective_calibration, format_calibration_summary
 from ui.panels.remux_panel.models import (
     _TRACK_INFO_CUTS_COLOR,
     _TRACK_INFO_CUTS_LABEL_ROLE,
@@ -809,7 +809,9 @@ class _TrackTable(QTableWidget):
             return False
         if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
             return False
-        return int(entry.time_shift_ms or 0) != 0
+        # Coupures sans décalage de départ : la synchro reste annulable.
+        return int(entry.time_shift_ms or 0) != 0 or effective_calibration(
+            entry.sync_calibration, entry.track_type) is not None
 
     def _sync_rewrite_preview(self, entry: TrackEntry):
         return ui_sync_rewrite_preview_for_track(

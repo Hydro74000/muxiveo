@@ -124,7 +124,7 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
             mirror_offset = next(iter(offsets), 0)
         if track.track_type not in {"audio", "subtitle"} or not (track.time_shift_ms or calibrated or mirror_offset):
             continue
-        if track.track_type == "subtitle" and config.sync_subtitles == "none" and not track.time_shift_ms:
+        if track.track_type == "subtitle" and config.sync_subtitles == "none" and not (track.time_shift_ms or calibrated):
             continue
         calibration = SyncCalibration.linear(mirror_offset) if mirror_offset else track_calibration(config, mapped)
         timestamp_args = (["-copyts", *input_timestamp_offset_args(

@@ -115,6 +115,12 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
     for key in ("language", "title"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
+    if value.get("sync_calibration") is not None:
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            SyncCalibration.from_dict(value["sync_calibration"])
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{path}.sync_calibration: {exc}")
     if "sync_rewrite_mode" in value and value["sync_rewrite_mode"] not in SYNC_REWRITE_MODES:
         errors.append(f"{path}.sync_rewrite_mode: attendu {SYNC_REWRITE_MODES}")
     if "flags" in value:

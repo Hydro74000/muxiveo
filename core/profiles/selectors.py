@@ -644,6 +644,8 @@ def apply_track_spec(track: TrackEntry, spec: Mapping[str, Any]) -> None:
                 setattr(track, f"flag_{name}", bool(value))
     if "time_shift_ms" in spec:
         track.time_shift_ms = int(spec["time_shift_ms"] or 0)
+    if "sync_calibration" in spec:
+        track.sync_calibration = dict(spec["sync_calibration"]) if spec["sync_calibration"] else None
     if "sync_rewrite_mode" in spec:
         track.sync_rewrite_mode = normalized_sync_rewrite_mode(str(spec["sync_rewrite_mode"] or ""))
 
@@ -702,6 +704,11 @@ def remux_config_to_exact_job(
             source_index_by_file_id=source_index_by_file_id,
         )
 
+    def _inherited_sync(track: TrackEntry) -> dict | None:
+        if not (track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror")):
+            return None
+        return config.sync_calibrations.get(str(source_index_by_file_id.get(track.file_id)))
+
     tracks_payload: list[dict[str, Any]] = []
     audio_variants: list[dict[str, Any]] = []
     for track in all_tracks:
@@ -715,6 +722,9 @@ def remux_config_to_exact_job(
         }
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
+        if track.sync_calibration and track.sync_calibration != _inherited_sync(track):
+            # Synchro propre à la piste (sous-titre hors miroir) : la source n'en porte pas trace.
+            payload["sync_calibration"] = track.sync_calibration
         if track.is_video and track.remove_closed_captions is not None:
             payload["remove_closed_captions"] = track.remove_closed_captions
         if track.is_new:
