@@ -465,7 +465,7 @@ def build_remux_config(
         from core.workflows.sync_calibration import SyncCalibration
         calib_data = json.loads(Path(calib_file).read_text(encoding="utf-8-sig"))
         calib = SyncCalibration.from_dict(calib_data)
-        has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+        has_cadence = calib.converts_audio
         sync_mode = job.get("sync_mode", "container")
         if sync_mode == "physical" or has_cadence:
             job["sync_mode"] = "physical"
@@ -481,7 +481,7 @@ def build_remux_config(
         from cli.hybrid import perform_dynamic_sync
         calib = perform_dynamic_sync(sources, tracks, config, options, logger)
         if calib is not None:
-            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+            has_cadence = calib.converts_audio
             sync_mode = job.get("sync_mode", "container")
             if sync_mode == "physical" or has_cadence:
                 job["sync_mode"] = "physical"
@@ -497,7 +497,7 @@ def build_remux_config(
         calib_payload = job["sync_calibrations"].get("1")
         if calib_payload:
             calib = SyncCalibration.from_dict(calib_payload)
-            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+            has_cadence = calib.converts_audio
             if has_cadence:
                 job["sync_mode"] = "physical"
             elif len(calib.segments) == 1:

@@ -505,3 +505,48 @@ def test_global_cancel_drops_cadence_analyses(chain, monkeypatch):
     assert panel.cadence_resolution_pending()
     panel._on_global_sync_cancel_requested()
     assert not panel.cadence_resolution_pending()
+
+
+def test_restored_session_resumes_an_unfinished_cadence_analysis(chain, monkeypatch, tmp_path):
+    """Sauvegarde pendant l'analyse d'une méthode « auto » : la restauration la relance et le
+    traitement l'attend (sinon atempo implicite, hauteur fausse conservée)."""
+    from ui.panels.remux_panel.functions import config_builder
+
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    assert panel.cadence_resolution_pending()
+    config = config_builder.current_config(panel, output_fallback=str(tmp_path / "out.mkv"))
+    session = workflow_functions._session_job(panel)["_muxiveo_session"]
+    infos = [source.info for source in panel._source_files]
+
+    resumed = RemuxPanel(AppConfig())
+    try:
+        resumed_submitted = _capture_cadence_analyses(resumed, monkeypatch)
+        workflow_functions.restore(resumed, config, infos, session)
+        target = resumed._source_files[2].id
+        assert resumed._sync_links[target].relative.cadence_audio_method == "auto"
+        assert resumed.cadence_resolution_pending() and len(resumed_submitted) == 1
+        _run_analysis(resumed_submitted.pop())
+        assert resumed._source_calibration(target).cadence_audio_method == "asetrate"
+        assert not resumed.cadence_resolution_pending()
+    finally:
+        resumed.close()
+    assert len(submitted) == 1
+
+
+def test_resolved_method_recomposes_the_pitch_of_a_chained_reference(chain, monkeypatch):
+    """A suit B en asetrate (23,976 → 25), C mesurée face à A en « auto » : avant l'analyse, la
+    hauteur de A reste appliquée à C ; tranchée en asetrate, les deux hauteurs s'annulent."""
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    pal = _auto_cadence(0.0).cadence_mismatch
+    _sync(panel, tracks, "A", "B", 0, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal.inverse(),
+                                                      cadence_audio_method="asetrate"))
+    _sync(panel, tracks, "C", "A", 0, _auto_cadence(0.0))
+    pending = panel._source_calibration("C")
+    assert pending.cadence_mismatch is None
+    assert pending.audio_pitch_factor == pytest.approx(pal.inverse().speed_factor)
+    _run_analysis(submitted.pop())
+    assert panel._sync_links["C"].relative.cadence_audio_method == "asetrate"
+    assert not panel._source_calibration("C").converts_audio

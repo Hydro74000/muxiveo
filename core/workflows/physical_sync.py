@@ -27,18 +27,30 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
 
     ``sample_rate`` : débit réel de la piste, requis par la conversion de cadence ``asetrate``.
     """
-    from core.workflows.cadence import CadenceType, build_cadence_audio_filter
+    from fractions import Fraction
+
+    from core.workflows.cadence import CadenceType, build_cadence_audio_filter, build_speed_pitch_audio_filter
 
     segments = calibration.segments
     parts, labels, previous_end = [], [], 0.0
     in_labels = ["[0:a:0]"] * len(segments)
 
-    if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none", CadenceType.NONE):
-        cadence_str = build_cadence_audio_filter(
-            calibration.cadence_mismatch,
-            getattr(calibration, "cadence_audio_method", "atempo"),
-            sample_rate=sample_rate,
-        )
+    mismatch = calibration.cadence_mismatch
+    if mismatch is not None and getattr(mismatch, "cadence_type", None) in (None, "none", CadenceType.NONE):
+        mismatch = None
+    if mismatch is not None or calibration.cadence_pitch_factor != 1.0:
+        if calibration.cadence_pitch_factor == 1.0 and mismatch is not None:
+            cadence_str = build_cadence_audio_filter(
+                mismatch,
+                getattr(calibration, "cadence_audio_method", "atempo"),
+                sample_rate=sample_rate,
+            )
+        else:
+            # Méthodes différentes composées : la hauteur ne suit plus la vitesse.
+            speed: Fraction | float = 1.0
+            if mismatch is not None:
+                speed = Fraction(mismatch.speed_ratio) if mismatch.speed_ratio else mismatch.speed_factor
+            cadence_str = build_speed_pitch_audio_filter(speed, calibration.audio_pitch_factor, sample_rate)
         if len(segments) > 1:
             split_labels = "".join(f"[cin{i}]" for i in range(len(segments)))
             parts.append(f"[0:a:0]{cadence_str},asplit={len(segments)}{split_labels}")
@@ -120,11 +132,7 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         output = root / f"sync_{index}.mka"
         if track.track_type == "audio":
             codec = normalized_rewrite_codec(track.codec)
-            has_cadence = bool(
-                calibration.cadence_mismatch
-                and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none")
-            )
-            copy = (not has_cadence) and len(calibration.segments) == 1 and calibration.segments[0].shift_ms == 0
+            copy = (not calibration.converts_audio) and len(calibration.segments) == 1 and calibration.segments[0].shift_ms == 0
             if copy:
                 # Les codecs à pré-roll doivent conserver leur CodecDelay.
                 if codec in {"aac", "opus", "mp3"}:
@@ -194,6 +202,8 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             cadence_info = ""
             if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
                 cadence_info = f" — cadence {calibration.cadence_mismatch.description} ({calibration.cadence_audio_method})"
+            if calibration.cadence_pitch_factor != 1.0:
+                cadence_info += f" — hauteur ×{calibration.audio_pitch_factor:.5f}"
             if len(segments) > 1:
                 log(
                     "INFO",

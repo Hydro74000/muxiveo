@@ -148,3 +148,36 @@ def test_requested_cadence_mode_is_serialised_composed_and_inverted():
     assert compose_calibrations(auto, position).cadence_method_auto
     assert not compose_calibrations(explicit, position).cadence_method_auto
     assert invert_calibration(auto).cadence_method_auto
+
+
+@pytest.mark.parametrize("inner_method, outer_method", [("atempo", "asetrate"), ("asetrate", "atempo")])
+def test_reciprocal_cadences_of_different_methods_keep_the_pitch(inner_method, outer_method):
+    """Vitesse rendue, hauteur d'asetrate conservée : 1 000 Hz → 959 Hz (réécriture et sérialisation)."""
+    from core.workflows.physical_sync import audio_filter
+    from core.workflows.sync_calibration import effective_calibration
+
+    inner = SyncCalibration((SyncSegment(0, 40.0),), cadence_mismatch=_PAL if inner_method == "asetrate" else _PAL.inverse(),
+                            cadence_audio_method=inner_method)
+    outer = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=_PAL.inverse() if inner_method == "asetrate" else _PAL,
+                            cadence_audio_method=outer_method)
+    composed = SyncCalibration.from_dict(compose_calibrations(inner, outer).to_dict())
+    assert composed.cadence_mismatch is None and composed.converts_audio
+    assert composed.audio_pitch_factor == pytest.approx(24000 / 25025)
+    assert effective_calibration(composed) is not None
+    rewrite = audio_filter(composed, sample_rate=48000)
+    assert "asetrate=46034,aresample=48000,atempo=24000/23017" in rewrite
+    back = compose_calibrations(composed, invert_calibration(composed))
+    assert not back.converts_audio and back.audio_pitch_factor == pytest.approx(1.0)
+
+
+def test_mixed_methods_compose_speed_and_pitch_separately():
+    film = CadenceMismatch(CadenceType.CUSTOM, 24.0, 23.976, 1000.0 / 1001.0, speed_ratio="1000/1001")
+    inner = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=_PAL, cadence_audio_method="atempo")
+    outer = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=film, cadence_audio_method="asetrate")
+    composed = compose_calibrations(inner, outer)
+    assert composed.cadence_mismatch is not None
+    assert composed.cadence_mismatch.speed_factor == pytest.approx(_PAL.speed_factor * film.speed_factor)
+    assert composed.audio_pitch_factor == pytest.approx(film.speed_factor)
+    # Mêmes méthodes : rien de plus que la conversion, filtre inchangé.
+    same = compose_calibrations(inner, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=film))
+    assert same.cadence_pitch_factor == 1.0 and "cadence_pitch_factor" not in same.to_dict()

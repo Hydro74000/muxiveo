@@ -471,6 +471,8 @@ def restore(panel, config, infos, session=None):
     panel.setEnabled(True)
     panel._refresh_sync_action_buttons()
     panel._refresh_audio_sync_buttons()
+    # Sauvegarde faite pendant l'analyse d'une méthode « auto » : analyse reprise, traitement différé.
+    panel._resume_cadence_analyses()
     panel.ready_changed.emit(True)
     panel._emit_signals()
     panel._rebuild_preview()

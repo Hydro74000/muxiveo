@@ -284,7 +284,7 @@ def build_profile_remux_config(
 
 
 def _has_cadence(calib) -> bool:
-    return bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
+    return calib.converts_audio
 
 
 def profile_validate(profile_path: str, *, json_output: bool = False, config: AppConfig | None = None) -> int:

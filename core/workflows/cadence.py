@@ -365,3 +365,25 @@ def build_cadence_audio_filter(
         return "atempo=25/24"
 
     return f"atempo={speed:.6f}"
+
+
+def build_speed_pitch_audio_filter(
+    speed: Fraction | float,
+    pitch: float,
+    sample_rate: int | None = None,
+) -> str:
+    """Vitesse et hauteur indépendantes (conversions de méthodes différentes composées).
+
+    ``asetrate`` donne la hauteur (et autant de vitesse), ``atempo`` le reste de la vitesse,
+    calculé d'après le débit arrondi : la durée reste exacte. Débit inconnu : piste ramenée à 48 kHz.
+    """
+    rate = sample_rate if sample_rate is not None and sample_rate > 0 else 48000
+    chain = [] if rate == sample_rate else ["aresample=48000"]
+    shifted = round(rate * pitch)
+    if shifted != rate:
+        chain += [f"asetrate={shifted}", f"aresample={rate}"]
+    exact = speed if isinstance(speed, Fraction) else Fraction(speed).limit_denominator(10_000_000)
+    tempo = exact * Fraction(rate, shifted)
+    if tempo != 1:
+        chain.append(f"atempo={tempo.numerator}/{tempo.denominator}")
+    return ",".join(chain) or "anull"

@@ -103,6 +103,7 @@ def _same_applied_sync(first: SyncCalibration, second: SyncCalibration) -> bool:
             and first_stored.segments == second_stored.segments
             and first_stored.cadence_mismatch == second_stored.cadence_mismatch
             and first_stored.cadence_audio_method == second_stored.cadence_audio_method
+            and first_stored.cadence_pitch_factor == second_stored.cadence_pitch_factor
             and (first_stored.cadence_mismatch is None
                  or first_stored.cadence_method_requested == second_stored.cadence_method_requested))
 
@@ -2869,15 +2870,18 @@ class RemuxPanel(QWidget):
                 self._log_sync_reviewed(reviewed)
 
 
-    def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None) -> None:
+    def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None) -> bool:
         """Méthode « auto » restée non tranchée (studio validé avant son analyse) : hauteur analysée
-        en arrière-plan sur la synchro face à la référence ; résultat périmé → analyse relancée."""
+        en arrière-plan sur la synchro face à la référence ; résultat périmé → analyse relancée.
+
+        Retourne vrai si une analyse est lancée.
+        """
         if reference_entry is None or reference_entry.track_type != "audio":
-            return
+            return False
         relative = self._relative_sync_calibration(entry, reference_entry)
         mismatch = relative.cadence_mismatch
         if mismatch is None or mismatch.cadence_type == CadenceType.NONE or (relative.cadence_audio_method or "auto") != "auto":
-            return
+            return False
         measured_entry = (self._audio_sync_measure_entry(entry, reference_entry)
                           if entry.track_type == "audio" else None)
         if measured_entry is None:
@@ -2888,7 +2892,7 @@ class RemuxPanel(QWidget):
         reference = self._audio_sync_track(reference_entry)
         target = self._audio_sync_track(measured_entry) if measured_entry is not None else None
         if reference is None or target is None:
-            return
+            return False
         entry_id, reference_entry_id = entry.entry_id, reference_entry.entry_id
         # Analyses antérieures de la même source : remplacées par celle-ci.
         for previous, (_entry, _reference, file_id) in list(self._cadence_pending.items()):
@@ -2916,6 +2920,31 @@ class RemuxPanel(QWidget):
             self._cadence_method_resolved.emit(entry_id, reference_entry_id, relative, resolved, token)
 
         self._executor.submit(_task)
+        return True
+
+    def _resume_cadence_analyses(self) -> None:
+        """Session restaurée : méthodes « auto » sauvegardées avant la fin de leur analyse, analysées
+        à nouveau (appliquées telles quelles en atempo, elles garderaient une hauteur fausse)."""
+        tracks = self._track_table.current_tracks()
+        by_id = {track.entry_id: track for track in tracks}
+        for source in self._source_files:
+            link = self._sync_links.get(source.id)
+            calibration = link.relative if link is not None else self._source_calibration(source.id)
+            mismatch = calibration.cadence_mismatch
+            if (mismatch is None or mismatch.cadence_type == CadenceType.NONE
+                    or (calibration.cadence_audio_method or "auto") != "auto"):
+                continue
+            entry = next((t for t in tracks if t.file_id == source.id and t.track_type == "audio"), None)
+            if entry is None:
+                # Sans piste audio, la hauteur n'a pas d'objet.
+                continue
+            reference = by_id.get(link.reference_entry_id) if link is not None else None
+            if not self._schedule_cadence_method(entry, reference):
+                self.log_message.emit("WARN", translate_text(
+                    "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence "
+                    "introuvable) : atempo, hauteur de la piste conservée.",
+                    source=self._source_label(source.id),
+                ))
 
     def cadence_resolution_pending(self) -> bool:
         """Méthode de conversion de cadence en cours d'analyse : traitement à différer."""
@@ -2963,13 +2992,19 @@ class RemuxPanel(QWidget):
             return
         method, analysis = resolved.cadence_audio_method, resolved.cadence_pitch_analysis
         link = self._sync_links.get(entry.file_id)
+        applied = self._source_calibration(entry.file_id)
         if link is not None:
-            self._sync_links[entry.file_id] = replace(link, relative=replace(
+            link = replace(link, relative=replace(
                 link.relative, cadence_audio_method=method, cadence_pitch_analysis=analysis,
                 cadence_method_auto=True,
             ))
-        applied = self._source_calibration(entry.file_id)
-        if applied.cadence_mismatch is not None:
+            self._sync_links[entry.file_id] = link
+            # Hauteur de la référence composée à part : la synchro appliquée est recalculée.
+            calibration = compose_calibrations(link.relative, self._reference_calibration(link))
+            negligible = (effective_calibration(calibration) is None
+                          and abs(round(calibration.segments[0].shift_ms)) <= NEGLIGIBLE_SYNC_MS)
+            self._set_source_calibration(entry.file_id, calibration, negligible=negligible)
+        elif applied.cadence_mismatch is not None:
             self._set_source_calibration(entry.file_id, replace(
                 applied, cadence_audio_method=method, cadence_pitch_analysis=analysis, cadence_method_auto=True,
             ))

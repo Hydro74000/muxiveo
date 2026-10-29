@@ -9362,5 +9362,9 @@
   "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.": {
     "fra": "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.",
     "eng": "Pitch analysis failed ({error}): atempo method, track pitch kept."
+  },
+  "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.": {
+    "fra": "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.",
+    "eng": "Cadence conversion method for “{source}” not resolved (reference track not found): atempo, track pitch kept."
   }
 }
