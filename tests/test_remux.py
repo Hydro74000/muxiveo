@@ -2457,6 +2457,25 @@ class TestRemuxPanelDecisionProfiles:
         assert panel._profile_output is None
         panel.close()
 
+    def test_reading_the_config_never_renders_the_output_name(self, qt_app, tmp_path, monkeypatch):
+        """Nom du profil recalculé aux changements seulement : lire la configuration (barre
+        d'exécution, sauvegarde, aperçu) ne réécrit jamais le champ de sortie."""
+        from ui.panels.remux_panel.functions import output_name
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        panel._apply_decision_profile({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                       "output_template": "{video-codec:best}/{source_name}"})
+        calls: list[object] = []
+        monkeypatch.setattr(output_name, "refresh_profile_output", lambda *a, **k: calls.append(a) or False)
+        assert panel.collect_config() is not None and panel.current_output_path() == out_dir / "HEVC" / "fid.mkv"
+        assert calls == []
+        panel._rebuild_preview()
+        assert len(calls) == 1
+        panel.close()
+
     def test_reapplied_profile_keeps_output_base_folder(self, qt_app, tmp_path):
         panel = self._panel_with_tracks(qt_app, tmp_path, [
             _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),

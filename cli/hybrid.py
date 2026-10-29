@@ -380,38 +380,28 @@ def prepare_pair(pair, args, config, logger):
     else:
         raise CliError("Une piste donneuse audio ou sous-titre est requise.", EXIT_ARGS)
 
-    has_cadence = bool(
-        calibration.cadence_mismatch
-        and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none")
+    # Cadence ou hauteur (calibration chaînée importée) : seule la réécriture physique les conserve.
+    from cli.remux_config import apply_donor_calibration
+    result.sync_mode, result.sync_calibrations = apply_donor_calibration(
+        calibration, sync_mode=result.sync_mode, sources=result.sources, sync_subtitles=args.sync_subtitles,
+        sync_calibrations=result.sync_calibrations,
     )
-    if has_cadence:
-        result.sync_mode = "physical"
-
-    if result.sync_mode == "physical":
-        result.sync_calibrations = {"1": calibration.to_dict()}
-    elif len(calibration.segments) != 1:
-        raise CliError("Le mode container ne prend pas en charge les coupures.", EXIT_ARGS)
-    else:
-        for track in donor_tracks:
-            if track.track_type == "audio" or (track.track_type == "subtitle" and args.sync_subtitles == "mirror"):
-                track.time_shift_ms = round(calibration.segments[0].shift_ms)
     if args.auto_forced_subs:
         from core.workflows.subtitle_heuristics import forced_first
         result.track_order = forced_first(result.track_order, result.sources)
     # Template explicite, sinon celui du profil, sinon nom par défaut (comme Hybrid Studio).
-    from core.profiles.decision import profile_output_template
+    from core.profiles.decision import profile_output_template, profile_variables
     template = args.output_template or profile_output_template(profile)
     if template:
         from cli.output_template import render_output_filename
         from cli.remux_config import resolve_tmdb_metadata
         from core.workflows.hybrid_matrix import MatrixEpisode, matrix_output_context
         details = resolve_tmdb_metadata(job, config, pair.reference, logger)[3] if job.get("tmdb") else None
-        variables = profile.get("variables")
         # Même contexte que Hybrid Studio : {season_episode}, {season} et {episode} sans TMDB.
         ctx = matrix_output_context(
             MatrixEpisode(season=pair.season, episode=pair.episode, master_file=pair.reference), pair.reference,
             details=details, tracks=all_tracks, track_order=list(result.track_order),
-            variables=dict(variables) if isinstance(variables, dict) else None, group=args.tag,
+            variables=profile_variables(profile), group=args.tag,
             output_all=bool(getattr(args, "output_all", False)),
         )
         try:

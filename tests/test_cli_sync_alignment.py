@@ -906,3 +906,64 @@ def test_cmd_sync_scan_audio_with_cadence_detection(tmp_path, monkeypatch, capsy
 
 
 
+
+
+def _pitch_only_calibration(tmp_path):
+    pitch = SyncCalibration((SyncSegment(0, 80.0),), cadence_pitch_factor=24000 / 25025)
+    path = tmp_path / "pitch.json"
+    path.write_text(json.dumps(pitch.to_dict()))
+    return path
+
+
+def test_prepare_pair_pitch_only_calibration_forces_physical(tmp_path, monkeypatch):
+    """`hybrid --calibration` d'une synchro chaînée (hauteur seule) : jamais réduite à un décalage."""
+    ref_file, donor_file = tmp_path / "S01E01.mkv", tmp_path / "S01E01.fre.mkv"
+    ref_file.touch()
+    donor_file.touch()
+    ref_audio = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="src0")
+    tgt_audio = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    src0 = SourceInput(path=ref_file, file_index=0, tracks=[TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"), ref_audio])
+    src1 = SourceInput(path=donor_file, file_index=1, tracks=[tgt_audio])
+    monkeypatch.setattr(
+        "cli.remux_config.inspect_sources",
+        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [*src0.tracks, tgt_audio]),
+    )
+    args = build_parser().parse_args([
+        "hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
+        "--sync-mode", "container", "--calibration", str(_pitch_only_calibration(tmp_path)),
+    ])
+    result, _calibration = prepare_pair(HybridPair(ref_file, donor_file, 1, 1), args, AppConfig(), Logger(fmt="text"))
+    assert result.sync_mode == "physical"
+    assert SyncCalibration.from_dict(result.sync_calibrations["1"]).audio_pitch_factor == pytest.approx(24000 / 25025)
+    assert tgt_audio.time_shift_ms == 0
+
+
+@pytest.mark.parametrize("payload, physical", [
+    (SyncCalibration.linear(-120).to_dict(), False),
+    (SyncCalibration((SyncSegment(0, 80.0),), cadence_pitch_factor=24000 / 25025).to_dict(), True),
+])
+def test_container_document_calibration_keeps_the_other_sources(tmp_path, monkeypatch, payload, physical):
+    """Calibration du document (mode conteneur) pour la source 1 : celle de la source 2 conservée,
+    avec ou sans profil."""
+    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
+    first = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    second = TrackEntry(0, "audio", "E-AC-3", "5.1", "ita", "VI", file_id="src2")
+    sources = [SourceInput(path=tmp_path / f"{name}.mkv", file_index=index, tracks=[track])
+               for index, (name, track) in enumerate((("ref", ref_audio), ("first", first), ("second", second)))]
+    inspected = lambda job, conf, opts, log, cli_inputs=None, **_kwargs: (sources, [MagicMock()] * 3, [ref_audio, first, second])  # noqa: E731
+    monkeypatch.setattr("cli.remux_config.inspect_sources", inspected)
+    monkeypatch.setattr("cli.profile.inspect_sources", inspected)
+    cuts = {"segments": [{"start_ms": 0.0, "shift_ms": 0.0}, {"start_ms": 5000.0, "shift_ms": 100.0}]}
+    document = {"sync_mode": "container", "sync_calibrations": {"1": payload, "2": cuts}}
+    job = {"sources": [{"path": str(source.path)} for source in sources], "output": str(tmp_path / "out.mkv"), **document}
+    plain = build_remux_config(job, AppConfig(), CommonOptions(), Logger(fmt="text"))
+    profile = {"version": 1, "kind": "decision-profile", "name": "Doc", "rules": []}
+    profiled, _ = build_profile_remux_config(
+        profile, cli_inputs=[str(source.path) for source in sources], cli_output=str(tmp_path / "out.mkv"),
+        config=AppConfig(), options=CommonOptions(), logger=Logger(fmt="text"), metadata_job=document,
+    )
+    for result in (plain, profiled):
+        assert result.sync_calibrations["2"] == cuts
+        assert result.sync_mode == ("physical" if physical else "container")
+        assert ("1" in result.sync_calibrations) is physical
+    assert first.time_shift_ms == (0 if physical else -120)

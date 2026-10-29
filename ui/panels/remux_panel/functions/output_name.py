@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from cli.output_template import build_output_context, render_output_filename
 from core.i18n import translate_text
-from core.profiles.decision import profile_output_template
+from core.profiles.decision import profile_output_template, profile_variables
 from core.workflows.remux_models import TrackEntry
 
 if TYPE_CHECKING:
@@ -26,11 +26,6 @@ class ProfileOutputName:
     variables: dict[str, Any] = field(default_factory=dict)
     folder: Path = Path()
     path: str = ""
-
-
-def profile_variables(profile: Mapping[str, Any]) -> dict[str, Any]:
-    variables = profile.get("variables")
-    return dict(variables) if isinstance(variables, dict) else {}
 
 
 def uses_tmdb_fields(template: str) -> bool:
@@ -84,28 +79,34 @@ def track_profile_output(panel: RemuxPanel, profile: Mapping[str, Any]) -> None:
             "Nom de sortie du profil : sélectionnez la fiche TMDB pour renseigner titre, année et épisode."))
 
 
-def refresh_profile_output(panel: RemuxPanel, *, force: bool = False) -> None:
-    """Le nom suit pistes et fiche TMDB ; un chemin modifié à la main n'est plus remplacé."""
+def refresh_profile_output(panel: RemuxPanel, *, force: bool = False) -> bool:
+    """Le nom suit pistes et fiche TMDB ; un chemin modifié à la main n'est plus remplacé.
+
+    Appelé à chaque changement du panneau (`RemuxPanel._rebuild_preview`), jamais à la lecture
+    de la configuration. Retourne vrai si le champ de sortie a été réécrit.
+    """
     state = panel._profile_output
     if state is None or not panel._source_files:
-        return
+        return False
     current = panel._output_edit.text().strip()
     if not force and current != state.path:
         panel._profile_output = None
-        return
+        return False
     context = output_context(panel, panel._track_table.current_tracks(), state.variables)
     if context is None:
-        return
+        return False
     try:
         name = render_output_filename(state.template, context)
     except ValueError as exc:
         panel._profile_output = None
         panel.log_message.emit("WARN", translate_text(
             "Nom de sortie du profil ignoré : {err}", err=translate_text(str(exc))))
-        return
+        return False
     state.path = str(state.folder / name)
-    if state.path != current:
-        panel._output_edit.setText(state.path)
+    if state.path == current:
+        return False
+    panel._output_edit.setText(state.path)
+    return True
 
 
 def stop_profile_output(panel: RemuxPanel) -> None:

@@ -11,7 +11,7 @@ from core.workflows.common.audio_timestamps import (
 )
 
 from core.workflows.remux_models import RemuxError, SourceInput
-from core.workflows.remux_mapping import resolve_mapped_tracks
+from core.workflows.remux_mapping import resolve_mapped_tracks, track_sync_payload
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.common.sync_rewrite import (
     SYNC_AUDIO_ORIGIN_FILTER,
@@ -29,15 +29,13 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
     """
     from fractions import Fraction
 
-    from core.workflows.cadence import CadenceType, build_cadence_audio_filter, build_speed_pitch_audio_filter
+    from core.workflows.cadence import build_cadence_audio_filter, build_speed_pitch_audio_filter
 
     segments = calibration.segments
     parts, labels, previous_end = [], [], 0.0
     in_labels = ["[0:a:0]"] * len(segments)
 
-    mismatch = calibration.cadence_mismatch
-    if mismatch is not None and getattr(mismatch, "cadence_type", None) in (None, "none", CadenceType.NONE):
-        mismatch = None
+    mismatch = calibration.active_cadence
     if mismatch is not None or calibration.cadence_pitch_factor != 1.0:
         if calibration.cadence_pitch_factor == 1.0 and mismatch is not None:
             cadence_str = build_cadence_audio_filter(
@@ -92,14 +90,10 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
 
 
 def track_calibration(config, mapped):
-    payload = mapped.track.sync_calibration or config.sync_calibrations.get(str(mapped.source_file_index))
+    payload = track_sync_payload(config, mapped.track, mapped.source_file_index)
     if not payload:
         return SyncCalibration.linear(mapped.track.time_shift_ms)
-    calibration = SyncCalibration.from_dict(payload)
-    if mapped.track.track_type != "audio" and not calibration.changes_timeline:
-        # Hauteur seule : sans objet hors audio, la chronologie se réduit au décalage.
-        return SyncCalibration.linear(calibration.segments[0].shift_ms)
-    return calibration
+    return SyncCalibration.from_dict(payload).for_track(mapped.track.track_type)
 
 
 def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None,
@@ -117,7 +111,7 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         track = mapped.track
         if sync_rewrite_forced_offset(track):
             continue
-        payload = track.sync_calibration or config.sync_calibrations.get(str(mapped.source_file_index))
+        payload = track_sync_payload(config, track, mapped.source_file_index)
         # Hors audio, une hauteur seule se réduit au décalage : sans décalage, instants intacts.
         calibrated = bool(payload) and (
             track.track_type == "audio" or track_calibration(config, mapped) != SyncCalibration.linear(0)
@@ -210,7 +204,7 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             track = mapped.track
             segments = calibration.segments
             cadence_info = ""
-            if calibration.cadence_mismatch and getattr(calibration.cadence_mismatch, "cadence_type", None) not in (None, "none"):
+            if calibration.active_cadence is not None:
                 cadence_info = f" — cadence {calibration.cadence_mismatch.description} ({calibration.cadence_audio_method})"
             if calibration.cadence_pitch_factor != 1.0:
                 cadence_info += f" — hauteur ×{calibration.audio_pitch_factor:.5f}"

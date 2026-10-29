@@ -1163,7 +1163,8 @@ class TestExecutionPreviewAndValidate:
         assert report["post_patches"] == []
         assert any("video_0.mkv" in artifact for artifact in cast(list, report["temporary_artifacts"]))
         command_preview = wf.preview_command(config)
-        assert "# Muxage final Matroska : native (demandé : auto)" in command_preview
+        comment = "REM" if os.name == "nt" else "#"
+        assert f"{comment} Muxage final Matroska : native (demandé : auto)" in command_preview
         assert "Assemblage final interne" in command_preview
 
     def test_ffmpeg_attachment_contract_uses_command_mime(self, tmp_path: Path) -> None:
@@ -1496,7 +1497,9 @@ class TestNativeSyncRewrite:
         source, artifact = self._sources(tmp_path)
         config = _encode_config(
             tmp_path, source=source, subtitle_tracks=[(source, 1)],
-            track_time_offsets=[TrackOffset("subtitle", source, 1, offset_ms=500, calibration={"segments": []})],
+            track_time_offsets=[TrackOffset("subtitle", source, 1, offset_ms=500, calibration={"segments": [
+                {"start_ms": 0, "shift_ms": 500}, {"start_ms": 1000, "shift_ms": 1000},
+            ]})],
         )
         with pytest.raises(EncodeError, match="réécriture sync réelle est requise"):
             self._assemble(config, artifact, tmp_path, None)

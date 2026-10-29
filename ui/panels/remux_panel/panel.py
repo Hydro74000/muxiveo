@@ -46,7 +46,6 @@ from core.profiles.selectors import remux_config_to_exact_job
 from core.runner import TaskSignals, ToolRunner
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
-from core.workflows.cadence import CadenceType
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
 from core.workflows.common.sync_rewrite import (
     SYNC_REWRITE_MODE_OFFSET,
@@ -69,6 +68,7 @@ from core.workflows.sync_calibration import (
     SyncCalibration,
     compose_calibrations,
     effective_calibration,
+    projected_calibration,
     invert_calibration,
 )
 from ui.panels.remux_panel.theme import (
@@ -814,6 +814,10 @@ class RemuxPanel(QWidget):
     def _rebuild_preview(self) -> None:
         if self._closing:
             return
+        # Nom du profil recalculé à chaque changement (pistes, fiche TMDB), avant toute lecture
+        # de la configuration (barre d'exécution, lancement immédiat) ; jamais pendant une lecture.
+        if output_name.refresh_profile_output(self):
+            return      # champ de sortie réécrit : son textChanged a déjà relancé cette méthode
         self.operation_changed.emit()
         if hasattr(self, "_autosave_timer"):
             from ui.panels.remux_panel.functions.workflow import mark_dirty
@@ -1209,12 +1213,16 @@ class RemuxPanel(QWidget):
         )
         return reply == QMessageBox.StandardButton.Yes
 
+    def _track_inherits_source_sync(self, entry: TrackEntry) -> bool:
+        """L'audio suit la source ; les sous-titres la suivent seulement en miroir."""
+        return entry.is_audio or (entry.is_subtitle and self._workflow_options.get("sync_subtitles", "mirror") == "mirror")
+
     def _sync_entry_calibrations(self, tracks: list[TrackEntry] | None = None) -> None:
         if tracks is None:
             tracks = self._track_table.current_tracks()
         calibrations = self._workflow_options.get("sync_calibrations", {})
         for entry in tracks:
-            if entry.track_type not in {"audio", "subtitle"}:
+            if not self._track_inherits_source_sync(entry):
                 entry.sync_calibration = None
                 continue
             source_idx = self._source_index_for_file_id(entry.file_id)
@@ -1686,12 +1694,16 @@ class RemuxPanel(QWidget):
         return self._source_sync_offset_ms_for_index(source_index)
 
     def _chapter_sync_calibration_for_index(self, source_index: int | None) -> SyncCalibration | None:
-        """Calibration à coupures ou cadence que les chapitres de la source doivent suivre."""
+        """Chronologie des chapitres, y compris le décalage porté par un plan physique importé."""
         if source_index is None or source_index < 0 or source_index >= len(self._source_files):
             return None
         if self._source_files[source_index].id in self._chapter_sync_cancelled_source_ids:
             return None
-        return effective_calibration(self._workflow_options.get("sync_calibrations", {}).get(str(source_index)))
+        calibration = projected_calibration(self._workflow_options.get("sync_calibrations", {}).get(str(source_index)),
+                                            "chapter")
+        if calibration is not None and (calibration.changes_timeline or calibration.segments[0].shift_ms):
+            return calibration
+        return None
 
     def _shift_chapter_entries(
         self,
@@ -1792,7 +1804,7 @@ class RemuxPanel(QWidget):
             return False
         updated = False
         for entry in self._track_table.current_tracks():
-            if entry.file_id != file_id or entry.track_type not in {"audio", "subtitle"}:
+            if entry.file_id != file_id or not self._track_inherits_source_sync(entry):
                 continue
             if self._track_table.update_time_shift(entry.entry_id, int(offset_ms)):
                 updated = True
@@ -1804,7 +1816,7 @@ class RemuxPanel(QWidget):
         return {
             entry.entry_id
             for entry in self._track_table.current_tracks()
-            if entry.file_id == file_id and entry.track_type in {"audio", "subtitle"}
+            if entry.file_id == file_id and self._track_inherits_source_sync(entry)
         }
 
     def _file_has_shifted_timeline_tracks(self, file_id: str) -> bool:
@@ -1822,13 +1834,13 @@ class RemuxPanel(QWidget):
 
     def _track_calibration(self, entry: TrackEntry) -> SyncCalibration:
         """Synchro appliquée à une piste : calibration de sa source, sinon son décalage."""
-        return effective_calibration(entry.sync_calibration) or SyncCalibration.linear(int(entry.time_shift_ms or 0))
+        return projected_calibration(entry.sync_calibration, entry.track_type) or SyncCalibration.linear(int(entry.time_shift_ms or 0))
 
     def _source_calibration(self, file_id: str) -> SyncCalibration:
         """Synchro appliquée à une source : calibration à coupures ou cadence, sinon son décalage."""
         source_index = self._source_index_for_file_id(file_id)
         stored = (
-            effective_calibration(self._workflow_options.get("sync_calibrations", {}).get(str(source_index)))
+            projected_calibration(self._workflow_options.get("sync_calibrations", {}).get(str(source_index)))
             if source_index is not None else None
         )
         return stored or SyncCalibration.linear(int(self._source_sync_offsets_ms.get(file_id, 0) or 0))
@@ -1935,6 +1947,30 @@ class RemuxPanel(QWidget):
             self._track_table.refresh_all_entries_info()
         return updated
 
+    def _detach_linear_source_calibration(self, file_id: str, edited_ids: set[str]) -> bool:
+        """Convertit le décalage importé en valeurs par piste avant une saisie individuelle."""
+        source_index = self._source_index_for_file_id(file_id)
+        calibrations = self._workflow_options.get("sync_calibrations", {})
+        key = str(source_index)
+        calibration = projected_calibration(calibrations.get(key))
+        if calibration is None or effective_calibration(calibration) is not None:
+            return False
+        for track in self._track_table.current_tracks():
+            if track.file_id != file_id or not self._track_inherits_source_sync(track):
+                continue
+            applied = projected_calibration(track.sync_calibration) or calibration
+            if effective_calibration(applied) is not None:
+                continue
+            if track.entry_id not in edited_ids:
+                track.time_shift_ms = round(applied.segments[0].shift_ms)
+            track.sync_calibration = None
+        # Les chapitres gardent leur position ; les pistes non éditées gardent leur décalage réel.
+        self._source_sync_offsets_ms[file_id] = round(calibration.segments[0].shift_ms)
+        calibrations.pop(key, None)
+        self._track_table.refresh_all_entries_info()
+        self._refresh_sync_action_buttons()
+        return True
+
     def _take_entered_offsets(self, entries: list[TrackEntry]) -> bool:
         """Décalages saisis (dialogue d'édition, profil) : ils priment sur le lien de leur source et
         les dépendantes suivent. Retourne vrai si une autre synchro a changé.
@@ -1943,20 +1979,38 @@ class RemuxPanel(QWidget):
         jamais remplacée par celle déduite d'une autre saisie. La synchro d'une source ne porte que
         sur ses pistes audio et sous-titres : la vidéo n'y touche pas.
         """
-        changed: dict[str, TrackEntry] = {}
+        grouped: dict[str, list[TrackEntry]] = {}
         for entry in entries:
             if entry.track_type in {"audio", "subtitle"}:
-                changed.setdefault(entry.file_id, entry)
+                grouped.setdefault(entry.file_id, []).append(entry)
+        # Piste retenue par source : la première piste audio (celle que mesure la synchro), sinon la première.
+        changed = {
+            file_id: next((entry for entry in group if entry.track_type == "audio"), group[0])
+            for file_id, group in grouped.items()
+        }
         for file_id, entry in changed.items():
             if self._sync_links.pop(file_id, None) is not None:
                 self.log_message.emit("INFO", translate_text(
                     "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.",
                     idx=entry.mkv_tid, source=self._source_label(file_id),
                 ))
+        detached = False
         for file_id, entry in changed.items():
+            detached = self._detach_linear_source_calibration(
+                file_id, {track.entry_id for track in grouped[file_id]},
+            ) or detached
             # Coupures ou cadence communes à la source : la saisie déplace toute sa calibration.
             calibration = effective_calibration(entry.sync_calibration)
             offset = int(entry.time_shift_ms or 0)
+            ignored = sorted({int(other.time_shift_ms or 0) for other in grouped[file_id]} - {offset})
+            if calibration is not None and ignored:
+                # Calibration commune à la source : une seule valeur peut s'appliquer à ses pistes.
+                self.log_message.emit("WARN", translate_text(
+                    "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage "
+                    "{offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).",
+                    source=self._source_label(file_id), offset=f"{offset:+d}", idx=entry.mkv_tid,
+                    ignored=", ".join(f"{value:+d}" for value in ignored),
+                ))
             if calibration is not None and round(calibration.segments[0].shift_ms) != offset:
                 self._set_source_calibration(file_id, calibration.with_start_offset(offset))
                 self.log_message.emit("INFO", translate_text(
@@ -1965,7 +2019,7 @@ class RemuxPanel(QWidget):
                 ))
             elif offset and (calibration is None or calibration.cadence_mismatch is None):
                 self._warn_offset_without_cadence(entry)
-        return self._propagate_sync(set(changed))
+        return self._propagate_sync(set(changed)) or detached
 
     def _on_track_time_shift_edited(self, entry: TrackEntry) -> None:
         if self._take_entered_offsets([entry]):
@@ -2036,7 +2090,9 @@ class RemuxPanel(QWidget):
             self._workflow_options.get("sync_calibrations", {}).get(str(source_index))
             if source_index is not None else None
         )
-        if effective_calibration(source_calibration or entry.sync_calibration) is not None:
+        calibration = (source_calibration or entry.sync_calibration
+                       if self._track_inherits_source_sync(entry) else entry.sync_calibration)
+        if effective_calibration(calibration) is not None:
             self._cancel_source_calibration(entry, source_index)
             return
         selected_source_index = self._chapter_panel.selected_source_index()
@@ -2044,12 +2100,14 @@ class RemuxPanel(QWidget):
         if not self._track_table.update_time_shift(entry.entry_id, 0):
             return
 
-        if source_index is not None and "sync_calibrations" in self._workflow_options:
-            self._workflow_options["sync_calibrations"].pop(str(source_index), None)
+        if self._track_inherits_source_sync(entry) and source_index is not None:
+            self._detach_linear_source_calibration(entry.file_id, {entry.entry_id})
+            self._workflow_options.get("sync_calibrations", {}).pop(str(source_index), None)
         entry.sync_calibration = None
 
         self._auto_sync_entry_ids.discard(entry.entry_id)
-        if not self._file_has_shifted_timeline_tracks(entry.file_id):
+        remaining = self._workflow_options.get("sync_calibrations", {}).get(str(source_index))
+        if not self._file_has_shifted_timeline_tracks(entry.file_id) and projected_calibration(remaining) is None:
             self._source_sync_offsets_ms.pop(entry.file_id, None)
             self._release_source_sync(entry.file_id)
             self._chapter_sync_cancelled_source_ids.discard(entry.file_id)
@@ -2089,6 +2147,7 @@ class RemuxPanel(QWidget):
         affected = [
             track for track in self._track_table.current_tracks()
             if track.file_id == entry.file_id and track.track_type in {"audio", "subtitle"}
+            and self._track_inherits_source_sync(track)
             and (int(track.time_shift_ms or 0) != 0 or track.sync_calibration)
         ]
         for track in affected:
@@ -2840,8 +2899,8 @@ class RemuxPanel(QWidget):
             new_calibration, released = self._link_measured_sync(entry.file_id, reference_entry, measured)
             self._set_source_calibration(entry.file_id, new_calibration)
             self._propagate_sync({entry.file_id, released})
-            mismatch = measured.cadence_mismatch
-            if mismatch is not None and mismatch.cadence_type != CadenceType.NONE:
+            mismatch = measured.active_cadence
+            if mismatch is not None:
                 self.log_message.emit("INFO", translate_text(
                     "Conversion de cadence appliquée : {description} (méthode {method}).",
                     description=mismatch.description, method=measured.cadence_audio_method or "auto",
@@ -2885,8 +2944,7 @@ class RemuxPanel(QWidget):
         if reference_entry is None or reference_entry.track_type != "audio":
             return False
         relative = self._relative_sync_calibration(entry, reference_entry)
-        mismatch = relative.cadence_mismatch
-        if mismatch is None or mismatch.cadence_type == CadenceType.NONE or (relative.cadence_audio_method or "auto") != "auto":
+        if not relative.cadence_method_undecided:
             return False
         measured_entry = (self._audio_sync_measure_entry(entry, reference_entry)
                           if entry.track_type == "audio" else None)
@@ -2939,9 +2997,7 @@ class RemuxPanel(QWidget):
         for source in self._source_files:
             link = self._sync_links.get(source.id)
             calibration = link.relative if link is not None else self._source_calibration(source.id)
-            mismatch = calibration.cadence_mismatch
-            if (mismatch is None or mismatch.cadence_type == CadenceType.NONE
-                    or (calibration.cadence_audio_method or "auto") != "auto"):
+            if not calibration.cadence_method_undecided:
                 continue
             entry = next((t for t in tracks if t.file_id == source.id and t.track_type == "audio"), None)
             if entry is None:
@@ -2994,7 +3050,7 @@ class RemuxPanel(QWidget):
             # Synchro désormais faite face à une autre référence : cette analyse ne la concerne plus.
             return
         current = self._relative_sync_calibration(entry, reference)
-        if current.cadence_mismatch is None or (current.cadence_audio_method or "auto") != "auto":
+        if not current.cadence_method_undecided:
             return
         if current.to_dict() != before.to_dict():
             # Synchro modifiée pendant l'analyse : la fenêtre analysée ne correspond plus.
@@ -3065,7 +3121,6 @@ class RemuxPanel(QWidget):
             self._emit_video_tracks()
 
     def current_output_path(self) -> Path | None:
-        output_name.refresh_profile_output(self)
         text = self._output_edit.text().strip()
         return Path(text) if text else None
 

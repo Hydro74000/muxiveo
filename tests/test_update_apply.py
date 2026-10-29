@@ -295,7 +295,7 @@ def test_collect_results_reports_once_and_cleans_up(tmp_path):
         return path
 
     old_ok = workdir("a", 300, result_json={"ok": True, "version": "1.5.0"})
-    failed = workdir("b", 200, result_json={"ok": False, "version": "1.9.0", "error": "x"})
+    failed = workdir("b", 200, result_json={"ok": False, "version": "1.9.0", "error": "x", "cleanup_safe": True})
     broken = workdir("c", 150, result_json={"ok": False, "version": "1.9.1", "rollback_incomplete": True})
     new_ok = workdir("d", 100, result_json={"ok": True, "version": "2.0.0"})
     abandoned = workdir("e", 7200)                                           # téléchargement abandonné
@@ -313,6 +313,168 @@ def test_collect_results_reports_once_and_cleans_up(tmp_path):
     assert new_ok.exists() and broken.exists() and running.exists()
     assert not old_ok.exists() and not failed.exists() and not abandoned.exists()
     assert (parent / f"{update_apply.WORKDIR_PREFIX}foreign").exists()
+
+
+def test_detached_cleanup_rechecks_backups_and_active_workdirs(tmp_path):
+    """Vrai auxiliaire isolé : aucun import applicatif et aucun résultat marqué comme déjà signalé."""
+    def workdir(name, age, result=None, ready=False, marked=True):
+        work = tmp_path / f"{update_apply.WORKDIR_PREFIX}{name}"
+        work.mkdir()
+        if marked:
+            (work / update_apply.WORKDIR_TAG).touch()
+        if result is not None:
+            (work / update_apply.RESULT_FILE).write_text(json.dumps(result), encoding="utf-8")
+        if ready:
+            (work / update_apply.READY_FILE).touch()
+        os.utime(work, (time.time() - age, time.time() - age))
+        return work
+
+    old = workdir("old", 300, {"ok": True})
+    latest = workdir("latest", 100, {"ok": True})
+    active = workdir("active", 10, ready=True)
+    broken = workdir("broken", 50, {"ok": False, "rollback_incomplete": True})
+    ambiguous = workdir("ambiguous", 40, {"ok": False})
+    corrupted = workdir("corrupted", 30, {"ok": False})
+    (corrupted / update_apply.RESULT_FILE).write_text('{"ok": tr')
+    personal = workdir("personal", 200, {"ok": True, "kept": ["notes.txt"]})
+    for directory in (ambiguous, corrupted, personal):
+        (directory / "previous").mkdir()
+        (directory / "previous/notes.txt").write_text("personnel")
+        os.utime(directory, (time.time() - 200, time.time() - 200))
+    foreign = workdir("foreign", 1000, marked=False)
+    helper = tmp_path / f"{update_apply.CLEANUP_PREFIX}test"
+    helper.mkdir()
+    paths = (old, latest, active, broken, ambiguous, corrupted, personal, foreign)
+    (helper / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path) for path in paths]))
+    script = helper / "update_apply.py"
+    shutil.copyfile(update_apply.__file__, script)
+    result = subprocess.run([sys.executable, "-I", str(script), "cleanup", str(helper)], capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr.decode()
+    assert not old.exists() and not helper.exists()
+    assert all(path.is_dir() for path in (latest, active, broken, foreign))
+    assert all((path / "previous/notes.txt").read_text() == "personnel" for path in (ambiguous, corrupted, personal))
+    assert not (latest / update_apply.REPORTED_FILE).exists()
+
+
+def test_cleanup_interruption_keeps_workdir_marker(tmp_path, monkeypatch):
+    work = tmp_path / f"{update_apply.WORKDIR_PREFIX}old"
+    work.mkdir()
+    (work / update_apply.WORKDIR_TAG).touch()
+    (work / "previous").mkdir()
+    monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("Dossier utilisé")))
+    update_apply._remove_workdir(work)
+    assert (work / update_apply.WORKDIR_TAG).is_file()
+
+
+@pytest.mark.parametrize("failure", ["once", "always", "relaunch", "none"])
+def test_post_swap_failures_preserve_personal_collisions(tmp_path, monkeypatch, failure):
+    install, work, archive = _source_setup(tmp_path, _release_files("2.0.0", extra={"notes.txt": "livré"}))
+    (install / "notes.txt").write_text("personnel", encoding="utf-8")
+    _prepare_source(install, work, archive)
+    real_write = update_apply._write_result
+    attempts = []
+    launches = []
+
+    def write(path, **fields):
+        attempts.append(fields)
+        if failure == "always" or (failure == "once" and len(attempts) == 1):
+            raise OSError("disque indisponible")
+        real_write(path, **fields)
+
+    def launch(*_args):
+        launches.append(True)
+        if failure == "relaunch":
+            raise OSError("relance impossible")
+
+    monkeypatch.setattr(update_apply, "_write_result", write)
+    monkeypatch.setattr(update_apply, "launch", launch)
+    assert update_apply.commit(work, _exited_pid()) == (1 if failure in ("once", "always") else 0)
+    assert launches == [True]
+    assert "2.0.0" in (install / "core/version.py").read_text()
+    assert (install / "notes.txt").read_text(encoding="utf-8") == "livré"
+    assert json.loads((work / update_apply.TRANSACTION_FILE).read_text())["phase"] == "swapped"
+    newer = tmp_path / "apps" / (update_apply.WORKDIR_PREFIX + "newer")
+    newer.mkdir()
+    (newer / update_apply.WORKDIR_TAG).touch()
+    real_write(newer, ok=True)
+    discard = []
+    update_apply.collect_results(work.parent, now=time.time() + 10 * 86400, discard=discard)
+    assert work not in discard
+    update_apply.cleanup_stale([work])
+    assert (work / "previous/notes.txt").read_text(encoding="utf-8") == "personnel"
+
+
+@pytest.mark.parametrize("content", ['{"ok": tr', '[]', 'null', '{"ok": "true"}', '{"ok": false}'])
+def test_ambiguous_result_never_discards_backup(tmp_path, content):
+    work = tmp_path / (update_apply.WORKDIR_PREFIX + "broken")
+    backup = work / "previous/notes.txt"
+    backup.parent.mkdir(parents=True)
+    backup.write_text("personnel")
+    (work / update_apply.WORKDIR_TAG).touch()
+    (work / update_apply.READY_FILE).touch()
+    (work / update_apply.RESULT_FILE).write_text(content)
+    assert update_apply.collect_results(tmp_path)[0]["ok"] is False
+    update_apply.cleanup_stale([work])
+    assert backup.read_text() == "personnel"
+
+
+def test_result_publication_failure_leaves_previous_json_intact(tmp_path, monkeypatch):
+    update_apply._write_result(tmp_path, ok=True, backup="previous")
+    original = (tmp_path / update_apply.RESULT_FILE).read_bytes()
+
+    def refuse(*_args):
+        raise OSError("remplacement refusé")
+
+    monkeypatch.setattr(update_apply.os, "replace", refuse)
+    with pytest.raises(OSError):
+        update_apply._write_result(tmp_path, ok=True, relaunch_error="échec")
+    assert (tmp_path / update_apply.RESULT_FILE).read_bytes() == original
+    assert list(tmp_path.iterdir()) == [tmp_path / update_apply.RESULT_FILE]
+
+
+def test_cancel_during_tar_extraction_prevents_probe(tmp_path, monkeypatch):
+    install, work, archive = _source_setup(tmp_path, _release_files("2.0.0"))
+    calls = []
+
+    def cancelled():
+        calls.append(True)
+        return len(calls) >= 4
+
+    monkeypatch.setattr(update_apply, "probe", lambda *_a, **_kw: pytest.fail("Contrôle après annulation"))
+    with pytest.raises(UpdateApplyError, match="annulée"):
+        update_apply.prepare(update_apply.KIND_SOURCE, archive, work, install, "2.0.0", [], [], cancelled=cancelled)
+    assert not (work / update_apply.PREPARED_FILE).exists()
+    assert (install / "core/old_module.py").exists()
+
+
+def test_cancel_during_candidate_probe_kills_and_reaps_process(tmp_path, monkeypatch):
+    import threading
+
+    install, work, archive = _source_setup(tmp_path, _release_files("2.0.0"))
+    event = threading.Event()
+    started = tmp_path / "probe-started"
+    processes = []
+    real_popen = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    command = [sys.executable, "-c", "import pathlib,time; pathlib.Path(" + repr(str(started)) +
+               ").touch(); time.sleep(30)"]
+
+    def cancelled():
+        if started.exists():
+            event.set()
+        return event.is_set()
+
+    with pytest.raises(UpdateApplyError, match="annulée"):
+        update_apply.prepare(update_apply.KIND_SOURCE, archive, work, install, "2.0.0", command, [], cancelled=cancelled)
+    assert event.is_set() and len(processes) == 1 and processes[0].poll() is not None
+    assert not (work / update_apply.PREPARED_FILE).exists()
+    assert (install / "core/old_module.py").exists()
 
 
 # --------------------------------------------------------------------------- macOS
@@ -353,3 +515,18 @@ def test_macos_app_update_from_dmg(tmp_path):
     assert update_apply.commit(work, _exited_pid()) == 0
     assert _wait_file(parent / "launched.txt").strip() == "2.0.0"
     assert "2.0.0" in (install / "Contents" / "MacOS" / "Muxiveo").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("last_error, closed", [(87, True), (5, False)])
+def test_windows_wait_needs_proof_that_the_application_exited(tmp_path, monkeypatch, last_error, closed):
+    """OpenProcess refusé : seul ERROR_INVALID_PARAMETER (PID disparu) prouve la fermeture ;
+    un accès refusé abandonne la mise à jour au lieu d'échanger sous l'application ouverte."""
+    from types import SimpleNamespace
+
+    kernel = SimpleNamespace(OpenProcess=lambda *_args: None)       # handle refusé
+    fake_ctypes = SimpleNamespace(WinDLL=lambda *_a, **_k: kernel, get_last_error=lambda: last_error,
+                                  c_void_p=object)
+    monkeypatch.setattr(update_apply, "ctypes", fake_ctypes)
+    monkeypatch.setattr(update_apply.os, "name", "nt")
+    assert update_apply._wait_for_exit(1234, tmp_path, timeout=0.1) is closed
+    assert (tmp_path / update_apply.READY_FILE).exists()

@@ -6,6 +6,8 @@ changent d'un épisode à l'autre (relais DVD/HDTV, épisodes manquants toléré
 """
 from __future__ import annotations
 
+import copy
+
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -648,12 +650,6 @@ def _resolve_cadence_method(reference, donor, calibration: SyncCalibration, ffmp
         return replace(calibration, cadence_audio_method="atempo", cadence_method_auto=True)
 
 
-def _undecided_cadence_method(calibration: SyncCalibration) -> bool:
-    mismatch = calibration.cadence_mismatch
-    return (mismatch is not None and mismatch.cadence_type != "none"
-            and (calibration.cadence_audio_method or "auto") == "auto")
-
-
 def _plan_calibrations(config: RemuxConfig) -> dict[str, SyncCalibration]:
     calibrations: dict[str, SyncCalibration] = {}
     for key, payload in config.sync_calibrations.items():
@@ -666,7 +662,7 @@ def _plan_calibrations(config: RemuxConfig) -> dict[str, SyncCalibration]:
 
 def plan_needs_cadence_method(config: RemuxConfig) -> bool:
     """Le plan porte une conversion de cadence dont la méthode « auto » n'est pas tranchée."""
-    return any(_undecided_cadence_method(calibration) for calibration in _plan_calibrations(config).values())
+    return any(calibration.cadence_method_undecided for calibration in _plan_calibrations(config).values())
 
 
 def resolve_plan_cadence_methods(config: RemuxConfig, ffmpeg_bin, ffprobe_bin, cancel_event, logger,
@@ -682,7 +678,7 @@ def resolve_plan_cadence_methods(config: RemuxConfig, ffmpeg_bin, ffprobe_bin, c
     language = _language_key(ref_audio.language) if ref_audio else ""
     resolved: dict[str, SyncCalibration] = {}
     for key, calibration in _plan_calibrations(config).items():
-        if not _undecided_cadence_method(calibration) or not key.isdigit() or not 0 < int(key) < len(config.sources):
+        if not calibration.cadence_method_undecided or not key.isdigit() or not 0 < int(key) < len(config.sources):
             continue
         donor = config.sources[int(key)]
         donor_audio = next((
@@ -850,7 +846,8 @@ def prepare_matrix_episode(
     profile = None
     if profile_name:
         from cli.profile import build_profile_remux_config, load_decision_profile
-        profile = dict(load_decision_profile(profile_name, config))
+        snapshot = getattr(options, "profile_snapshot", None)
+        profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(profile_name, config))
         profile.pop("auto_sync", None)
         profile.pop("sync", None)
         remux_config, report = build_profile_remux_config(
@@ -1120,7 +1117,7 @@ def _finalize_matrix_metadata(
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
     from cli.output_template import render_output_filename
     from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
-    from core.profiles.decision import profile_output_template
+    from core.profiles.decision import profile_output_template, profile_variables
 
     details = None
     tmdb_id = getattr(options, "auto_tmdb", None)
@@ -1146,7 +1143,7 @@ def _finalize_matrix_metadata(
         result.tmdb_cover = cover
 
     tracks = [track for source in result.sources for track in source.tracks]
-    variables = dict((profile or {}).get("variables") or {})
+    variables = profile_variables(profile or {})
     group = getattr(options, "tag", "") or ""
     context = matrix_output_context(
         episode, result.sources[0].path, details=details, tracks=tracks,
@@ -1154,6 +1151,8 @@ def _finalize_matrix_metadata(
         output_all=bool(getattr(options, "output_all", False)),
     )
     context.update(__tmdb_id__=str(tmdb_id or ""), __profile__=getattr(options, "profile", "") or "")
+    context.update(__profile_version__=getattr(options, "profile_version", None),
+                   __profile_template__=profile_output_template(profile or {}))
     episode.naming_context = context
     # Template explicite, sinon celui du profil, sinon nom par défaut.
     template = getattr(options, "output_template", None) or profile_output_template(profile or {})

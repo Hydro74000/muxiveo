@@ -153,7 +153,7 @@ def self_install_blocker(kind: InstallKind) -> str:
     except UpdateInstallError:
         return BLOCKER_NOT_WRITABLE
     if kind is InstallKind.MACOS_APP:
-        if "/AppTranslocation/" in str(root):
+        if "/AppTranslocation/" in root.as_posix():
             return BLOCKER_TRANSLOCATED
         if shutil.which("hdiutil") is None or shutil.which("ditto") is None:
             return BLOCKER_NO_HDIUTIL
@@ -333,7 +333,10 @@ def download_update(
         probe, relaunch = _swap_commands(kind)
         update_apply.prepare(
             _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch, APP_MACOS_BUNDLE_ID,
+            cancelled=cancelled,
         )
+        if cancelled is not None and cancelled():
+            raise UpdateInstallError("Mise à jour annulée.")
     except update_apply.UpdateApplyError as exc:
         shutil.rmtree(work, ignore_errors=True)
         raise UpdateInstallError(str(exc)) from exc
@@ -377,31 +380,34 @@ def _start_swap_helper(kind: InstallKind, work: Path) -> None:
         time.sleep(0.05)
 
 
+def _helper_command(kind: InstallKind, work: Path) -> list[str]:
+    """Commande isolée de l'auxiliaire, indépendant des dossiers à échanger ou supprimer."""
+    if kind is InstallKind.MACOS_APP:
+        return [sys.executable, "--apply-update"]
+    script = work / "update_apply.py"
+    shutil.copyfile(Path(update_apply.__file__), script)
+    return [sys.executable, "-I", str(script)]
+
+
 def _launch_swap_helper(kind: InstallKind, work: Path) -> subprocess.Popen:
     """Copie de l'assistant (archive source) et lancement détaché."""
-    if kind is InstallKind.MACOS_APP:
-        command = [sys.executable, "--apply-update"]
-    else:
-        # Copie hors du dossier remplacé, interpréteur isolé (ni dossier courant ni PYTHONPATH).
-        script = work / "update_apply.py"
-        shutil.copyfile(Path(update_apply.__file__), script)
-        command = [sys.executable, "-I", str(script)]
-    command += ["commit", str(work), "--pid", str(os.getpid())]
-    kwargs: dict = {"cwd": work, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
-                    "stderr": subprocess.DEVNULL, "close_fds": True}
-    if os.name == "nt":
-        detached = 0x00000008 | 0x00000200          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        # Argv construit ici (interpréteur ou exécutable de l'application), sans shell.
-        try:   # hors de l'objet job éventuel du terminal, qui le tuerait avec l'application
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            helper = subprocess.Popen(command, creationflags=detached | 0x01000000, **kwargs)  # nosec B603
-        except OSError:
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            helper = subprocess.Popen(command, creationflags=detached, **kwargs)  # nosec B603
-    else:
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        helper = subprocess.Popen(command, start_new_session=True, **kwargs)  # nosec B603
-    return helper
+    command = _helper_command(kind, work) + ["commit", str(work), "--pid", str(os.getpid())]
+    return update_apply.spawn_detached(command, work)
+
+
+def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> None:
+    """Confie le ménage à un processus détaché, sans retenir la fermeture de l'application."""
+    if not paths:
+        return
+    kind = detect_install_kind() if kind is None else kind
+    work = Path(tempfile.mkdtemp(prefix=update_apply.CLEANUP_PREFIX))
+    try:
+        (work / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path.absolute()) for path in paths]), encoding="utf-8")
+        command = _helper_command(kind, work) + ["cleanup", str(work)]
+        update_apply.spawn_detached(command, work.parent)
+    except OSError:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
 
 
 def collect_update_results(kind: InstallKind | None = None, *, discard: list[Path] | None = None) -> list[dict]:
@@ -416,7 +422,7 @@ def collect_update_results(kind: InstallKind | None = None, *, discard: list[Pat
         return []
 
 
-def apply_update(kind: InstallKind, downloaded: Path) -> None:
+def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None) -> None:
     """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application."""
     if kind in _SWAP_KINDS:
         _start_swap_helper(kind, downloaded)
@@ -439,12 +445,9 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
             raise UpdateInstallError(f"Remplacement de l'AppImage impossible : {exc}") from exc
         return
     if kind is InstallKind.WINDOWS_INSTALLER:
-        startfile = getattr(os, "startfile", None)
-        if not callable(startfile):
-            raise UpdateInstallError("os.startfile indisponible : installeur Windows non lançable.")
+        from core.windows_shell import launch_installer
         try:
-            # ShellExecute : déclenche l'invite UAC requise par l'installeur (admin).
-            startfile(str(downloaded))  # pylint: disable=not-callable
+            launch_installer(downloaded, owner_hwnd)
         except OSError as exc:
             raise UpdateInstallError(f"Lancement de l'installeur impossible : {exc}") from exc
         return

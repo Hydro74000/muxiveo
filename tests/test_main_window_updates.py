@@ -61,8 +61,10 @@ def _finish_download(window, qt_app, result):
          patch("ui.main_window.QApplication.quit") as quit_app:
         window._start_update_install(UpdateInfo("99.0.0", "https://example/"), InstallKind.APPIMAGE)
         qt_app.processEvents()
-        jobs[0]()
-        qt_app.processEvents()
+        # Téléchargement, puis installation (thread distinct, hors du thread UI).
+        while jobs:
+            jobs.pop(0)()
+            qt_app.processEvents()
     return warning, apply, quit_app
 
 
@@ -94,6 +96,9 @@ def test_cancel_or_new_operation_prevents_install(window, tmp_path, cancelled, r
         window._on_update_downloaded(downloaded, InstallKind.APPIMAGE, cancelled)
     apply.assert_not_called()
     quit_app.assert_not_called()
+    deadline = time.monotonic() + 5
+    while downloaded.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert not downloaded.exists()
 
 
@@ -101,15 +106,52 @@ def test_late_user_cancel_after_worker_result_prevents_install(window, qt_app, t
     downloaded = tmp_path / "verified.AppImage"
     downloaded.write_bytes(b"verified")
     jobs = []
-    with patch("ui.main_window.threading.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: jobs.append(kw["target"]))), \
+    with patch("ui.main_window.threading.Thread", side_effect=lambda **kw: SimpleNamespace(
+            start=lambda: jobs.append(lambda: kw["target"](*kw.get("args", ()))))), \
          patch("ui.main_window.download_update", return_value=downloaded), \
          patch("ui.main_window.apply_update") as apply:
         window._start_update_install(UpdateInfo("99.0.0", "https://example/"), InstallKind.APPIMAGE)
         jobs[0]()  # Queue the success signal before the user cancels.
         window.findChild(QProgressDialog).close()
         qt_app.processEvents()
+        assert len(jobs) == 2
+        jobs[1]()  # Le ménage tardif est lui aussi délégué.
     apply.assert_not_called()
     assert not downloaded.exists()
+
+
+def test_cancelled_directory_cleanup_keeps_gui_responsive_and_allows_close(window, qt_app, tmp_path, monkeypatch):
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    cleanup_threads = []
+    ticks = []
+    timer = QTimer(window)
+    timer.setInterval(0)
+    timer.timeout.connect(lambda: ticks.append(True))
+
+    def slow_remove(path):
+        assert path == prepared
+        cleanup_threads.append(threading.current_thread())
+        entered.set()
+        release.wait(5)
+        finished.set()
+
+    monkeypatch.setattr("ui.main_window.shutil.rmtree", slow_remove)
+    monkeypatch.setattr(window, "_launch_update", Mock())
+    timer.start()
+    try:
+        window._on_update_downloaded(prepared, InstallKind.SOURCE_ARCHIVE, True)
+        assert entered.wait(2)
+        qt_app.processEvents()
+        assert ticks and not finished.is_set()
+        assert cleanup_threads[0] is not threading.current_thread() and cleanup_threads[0].daemon
+        assert window.close()
+        window._launch_update.assert_not_called()
+    finally:
+        timer.stop()
+        release.set()
+        assert finished.wait(2)
 
 
 def test_response_from_previous_channel_is_discarded(window, qt_app):
@@ -372,3 +414,56 @@ def test_previous_update_results_reported_at_startup(window):
     assert "docs/a.md" in warnings and ("setup" in warnings.lower())
     assert "Dossier utilisé" in window.log_error.call_args.args[0]
     single_shot.assert_called_once()                    # avertissement visible pour l'échec
+
+
+def test_install_failure_is_reported_without_quitting(window, qt_app, tmp_path):
+    downloaded = tmp_path / "verified.AppImage"
+    downloaded.write_bytes(b"verified")
+    jobs = []
+    with patch("ui.main_window.threading.Thread", side_effect=lambda **kw: SimpleNamespace(start=lambda: jobs.append(kw["target"]))), \
+         patch("ui.main_window.apply_update", side_effect=UpdateInstallError("Lancement impossible")), \
+         patch("ui.main_window.QMessageBox.warning") as warning, \
+         patch("ui.main_window.QApplication.quit") as quit_app:
+        window._on_update_downloaded(downloaded, InstallKind.APPIMAGE, False)
+        assert len(jobs) == 1                       # installation confiée à un thread
+        jobs.pop()()
+        qt_app.processEvents()
+    warning.assert_called_once()
+    window.log_error.assert_called_once_with("Lancement impossible")
+    quit_app.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [None, UpdateInstallError("Élévation refusée")])
+def test_windows_installer_is_launched_on_gui_thread_with_its_owner(window, tmp_path, error):
+    setup = tmp_path / "setup.exe"
+    thread_ids = []
+
+    def apply(*_args, **_kwargs):
+        thread_ids.append(threading.get_ident())
+        if error is not None:
+            raise error
+
+    with patch("ui.main_window.apply_update", side_effect=apply) as install, \
+         patch("ui.main_window.threading.Thread") as worker, \
+         patch("ui.main_window.QApplication.quit") as quit_app, \
+         patch("ui.main_window.QMessageBox.warning") as warning:
+        window._on_update_downloaded(setup, InstallKind.WINDOWS_INSTALLER, False)
+    assert thread_ids == [threading.get_ident()]
+    install.assert_called_once_with(InstallKind.WINDOWS_INSTALLER, setup, owner_hwnd=int(window.winId()))
+    worker.assert_not_called()
+    assert quit_app.called is (error is None) and warning.called is (error is not None)
+
+
+def test_startup_cleanup_is_detached_from_gui_process(window, tmp_path):
+    old = tmp_path / "old"
+
+    def collect(*, discard):
+        discard.append(old)
+        return []
+
+    with patch("ui.main_window.collect_update_results", collect), \
+         patch("ui.main_window.start_update_cleanup") as cleanup, \
+         patch("ui.main_window.threading.Thread") as thread:
+        window._report_previous_updates()
+    cleanup.assert_called_once_with([old])
+    thread.assert_not_called()

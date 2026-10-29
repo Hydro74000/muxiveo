@@ -663,7 +663,7 @@ def remux_config_to_exact_job(
     fallback_profile: str = "",
     identity_selectors: bool = False,
 ) -> dict[str, Any]:
-    """Serialize a remux state as an exact CLI job.
+    """Sérialise l'état d'un remux en job CLI exact.
 
     ``identity_selectors`` : pistes désignées par leur identité dans la source
     (source, type, id) au lieu d'une description, pour reprendre une session

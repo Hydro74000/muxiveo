@@ -1575,8 +1575,8 @@ class DecisionProfileEditorDialog(QDialog):
         self._preview.setPlainText("\n".join(lines).strip())
 
     def _refresh_output_preview(self, profile: dict[str, Any], tracks: list[TrackEntry]) -> None:
-        variables = profile.get("variables")
-        context = self._output_context(tracks, dict(variables) if isinstance(variables, dict) else {}) if self._output_context else None
+        from core.profiles.decision import profile_variables
+        context = self._output_context(tracks, profile_variables(profile)) if self._output_context else None
         note = ""
         if context is None:
             note = translate_text("Chargez une source pour voir le nom rendu.")

@@ -53,6 +53,28 @@ def test_target_follows_a_synced_reference(chain):
     assert panel._sync_links["C"].reference_file_id == "B"
 
 
+@pytest.mark.parametrize("pitch", [1.0, 0.96])
+def test_imported_physical_offset_is_preserved_for_studio_and_chapters(chain, pitch):
+    panel, tracks, _logs = chain
+    calibration = SyncCalibration((SyncSegment(0, 2000),), cadence_pitch_factor=pitch)
+    panel._workflow_options["sync_calibrations"] = {"1": calibration.to_dict()}
+    panel._sync_entry_calibrations()
+    audio, subtitle = tracks["B"]
+    assert audio.time_shift_ms == subtitle.time_shift_ms == 0
+    assert panel._track_calibration(audio) == calibration
+    assert panel._track_calibration(subtitle) == SyncCalibration.linear(2000)
+    assert panel._source_calibration("B") == calibration
+    assert panel._chapter_sync_calibration_for_index(1) == SyncCalibration.linear(2000)
+
+
+def test_pitch_only_does_not_create_a_chapter_transformation(chain):
+    panel, _tracks, _logs = chain
+    panel._workflow_options["sync_calibrations"] = {
+        "1": SyncCalibration((SyncSegment(0, 0),), cadence_pitch_factor=0.96).to_dict(),
+    }
+    assert panel._chapter_sync_calibration_for_index(1) is None
+
+
 def test_reference_change_moves_its_dependents(chain):
     panel, tracks, logs = chain
     _sync(panel, tracks, "B", "A", -5466)
@@ -578,3 +600,21 @@ def test_reference_cadence_does_not_clear_a_declined_conversion(chain):
     _sync(panel, tracks, "C", "A", 0, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
                                                       cadence_audio_method="atempo"))
     assert "C" not in panel._cadence_declined_source_ids
+
+
+def test_conflicting_profile_offsets_on_a_calibrated_source_keep_the_audio_one(chain):
+    """Source C calibrée (cadence) ; le profil fixe le sous-titre à +500 puis l'audio à +200 :
+    la calibration commune suit l'audio, la valeur ignorée est signalée."""
+    import copy
+
+    panel, tracks, logs = chain
+    _sync(panel, tracks, "C", "A", 0, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=_auto_cadence(0.0)
+                                                      .cadence_mismatch, cadence_audio_method="atempo"))
+    edited = copy.deepcopy(panel._track_table.current_tracks())
+    by_id = {track.entry_id: track for track in edited}
+    by_id[tracks["C"][1].entry_id].time_shift_ms = 500
+    by_id[tracks["C"][0].entry_id].time_shift_ms = 200
+    panel._commit_decision_profile_result([by_id[tracks["C"][1].entry_id], *[t for t in edited
+                                           if t.entry_id != tracks["C"][1].entry_id]])
+    assert round(panel._source_calibration("C").segments[0].shift_ms) == 200
+    assert any(level == "WARN" and "+500" in text for level, text in logs)

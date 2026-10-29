@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 import time
 
 import pytest
-from PySide6.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QTableWidgetItem
+from PySide6.QtWidgets import QDialog, QGroupBox, QMessageBox, QPushButton, QScrollArea, QTableWidgetItem
 
 from core.config import AppConfig
 from core.i18n import translate_text
@@ -63,6 +64,94 @@ def _select_job(panel, job):
     panel.table.setRowCount(1)
     panel.table.setItem(0, 3, QTableWidgetItem("Prêt"))
     panel.table.selectRow(0)
+
+
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("change", ["rewrite", "unreadable", "deleted"])
+@pytest.mark.parametrize("action", ["transfer", "export", "run"])
+def test_profile_content_change_invalidates_all_final_actions(panel, tmp_path, monkeypatch, named, change, action):
+    from core.profiles.decision import DecisionProfileManager
+
+    panel.config.profiles_dir = tmp_path / "profiles"
+    manager = DecisionProfileManager(panel.config.profiles_dir / "decision")
+    path = manager.save({"kind": "decision-profile", "version": 1, "name": "Audit", "rules": [],
+                         "output_template": "avant.mkv"})
+    panel.profile.setText("Audit" if named else str(path))
+    config, calibration = _job(tmp_path)
+    config.output = tmp_path / "avant.mkv"
+    _select_job(panel, (config, calibration))
+    panel.matrix_episodes[0].naming_context = {
+        "__profile__": panel.profile.text(), "__profile_version__": panel._profile_version(),
+        "__profile_template__": "avant.mkv", "__profile_variables__": {},
+    }
+    panel._matrix_signature = panel._source_signature()
+    panel._prepared_signature = panel._settings_signature()
+    stat = path.stat()
+    if change == "deleted":
+        path.unlink()
+    else:
+        path.write_text(path.read_text().replace("avant.mkv", "apres.mkv") if change == "rewrite" else "{")
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert panel._prepared_signature != panel._settings_signature()
+    panel._update_output_preview()
+    assert panel.output_preview.name.text() == "avant.mkv"
+    opened, scans = [], []
+    panel.open_in_remux.connect(opened.append)
+    monkeypatch.setattr(panel, "scan", lambda **kwargs: scans.append(kwargs) or False)
+    monkeypatch.setattr(panel, "_save_jobs", lambda *_a: pytest.fail("Export du plan périmé"))
+    monkeypatch.setattr(panel, "run_next", lambda: pytest.fail("Exécution du plan périmé"))
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    {"transfer": lambda: panel.open_remux_row(0), "export": panel.export_jobs, "run": panel.run}[action]()
+    assert opened == []
+    assert len(scans) == (0 if action == "transfer" else 1)
+
+
+def test_profile_rewrite_during_parallel_preparation_rejects_entire_batch(panel, season, tmp_path, monkeypatch, qt_app):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps({"kind": "decision-profile", "version": 1, "name": "Audit", "rules": [],
+                                "output_template": "avant.mkv"}))
+    panel.profile.setText(str(path))
+    panel.sync_strategy.setCurrentIndex(panel.sync_strategy.findData("none"))
+    release = threading.Event()
+    documents = []
+
+    def prepare(episode, recipe, output, config, args, *_a, **_kw):
+        assert release.wait(5)
+        documents.append(copy.deepcopy(args.profile_snapshot))
+        return _job(tmp_path)
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
+    try:
+        assert panel.scan(auto_run=True)
+        assert len(panel._prepare_running) > 1
+        path.write_text(path.read_text().replace("avant.mkv", "apres.mkv"))
+    finally:
+        release.set()
+    _wait(qt_app, lambda: not panel.busy)
+    assert len(documents) == 3
+    assert all(doc["output_template"] == "avant.mkv" for doc in documents)
+    assert panel.jobs == {} and not panel._run_after_prepare
+    assert panel.status.text() == translate_text("Profil modifié : réanalysez pour actualiser les pistes et les alias de nommage.")
+
+
+def test_profile_restored_after_rejected_result_cannot_export_partial_batch(panel, tmp_path, monkeypatch):
+    from ui.panels.hybrid_studio import _PreparedEpisode
+
+    path = tmp_path / "profile.json"
+    original = json.dumps({"kind": "decision-profile", "version": 1, "name": "Audit", "rules": []})
+    path.write_text(original)
+    panel.profile.setText(str(path))
+    job = _job(tmp_path)
+    _select_job(panel, job)
+    panel._prepared_signature = panel._settings_signature()
+    panel._export_after_prepare = tmp_path
+    episode = panel.matrix_episodes[0]
+    path.write_text(original.replace("Audit", "Modifié"))
+    assert not panel._publish_episode(0, _PreparedEpisode(job[0], episode, copy.deepcopy(episode), panel._prepare_generation))
+    path.write_text(original)
+    monkeypatch.setattr(panel, "_save_jobs", lambda *_a: pytest.fail("Lot partiel exporté"))
+    panel._finish_preparation()
+    assert panel.jobs == {} and panel._export_after_prepare is None
 
 
 @pytest.fixture
@@ -153,6 +242,7 @@ def test_audio_button_rechecks_every_pair_and_preserves_manual_pairing(panel, se
     monkeypatch.setattr(panel.matrix, "scan", lambda: pytest.fail("Le plan ne doit pas être rescanné"))
     for _ in range(2):
         season.clear()
+        monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
         panel.verify_audio_button.click()
         assert panel.busy and not panel.verify_audio_button.isEnabled()
         _wait(qt_app, lambda: not panel.busy)
@@ -258,7 +348,7 @@ def test_failing_audio_check_still_covers_the_rest_of_the_season(panel, season, 
     (panel.verify_audio if action == "verify" else panel.run)()
     _wait(qt_app, lambda: not panel.busy)
     assert sorted(season) == [(1, True), (4, True)]
-    assert set(panel.jobs) == {0, 3} and not panel._pending_sync_rows
+    assert set(panel.jobs) == {0, 2, 3} and panel._pending_sync_rows == {2}
     assert not executions and not panel._operation_active
     message = ("Analyse terminée : {count} épisode(s) en échec ({names})." if action == "verify"
                else "Préparation impossible pour {count} épisode(s) : {names}")
@@ -331,7 +421,7 @@ def test_caption_option_requires_detection_and_keeps_user_choice(panel, qt_app, 
     assert not checkbox.isEnabled()
 
 
-def test_older_witness_inspection_never_replaces_a_newer_one(panel, tmp_path, monkeypatch):
+def test_older_witness_inspection_never_replaces_a_newer_one(panel, tmp_path, monkeypatch, qt_app):
     from concurrent.futures import Future
     from types import SimpleNamespace
     infos = {tmp_path / name: FileInfo(tmp_path / name, "matroska", 1, 100, None,
@@ -351,6 +441,7 @@ def test_older_witness_inspection_never_replaces_a_newer_one(panel, tmp_path, mo
     # B (dernière demande) termine avant A : A est ignorée.
     for future, task in reversed(pending):
         future.set_result(task())
+    _wait(qt_app, lambda: bool(panel._witness_sources))
     assert panel._witness_sources[0].path == tmp_path / "b.mkv"
     assert panel.witness_table.rowCount() == 2
     # Sources modifiées pendant l'inspection : le résultat n'est pas « actuel ».
@@ -693,7 +784,7 @@ def test_studio_offers_the_cadence_without_changing_the_plan(panel, tmp_path):
     assert stored.cadence_mismatch is not None and config.sync_mode == "physical"
 
 
-def test_run_settles_undecided_cadence_methods_before_processing(panel, tmp_path, monkeypatch):
+def test_run_settles_undecided_cadence_methods_before_processing(panel, tmp_path, monkeypatch, qt_app):
     """Conversion cochée puis lancement immédiat (analyse du studio annulée) : méthode tranchée avant l'épisode."""
     from dataclasses import replace
     from core.workflows import hybrid_matrix
@@ -712,6 +803,7 @@ def test_run_settles_undecided_cadence_methods_before_processing(panel, tmp_path
     monkeypatch.setattr(panel, "run_next", lambda: calls.append("épisode"))
     panel.execution_rows = [0]
     assert panel._finalize_cadence_methods([0], panel.run_next)
+    _wait(qt_app, lambda: "épisode" in calls)
     assert calls == ["analyse", "épisode"]
     stored = SyncCalibration.from_dict(config.sync_calibrations["1"])
     assert stored.cadence_audio_method == "asetrate" and stored.cadence_method_requested == "auto"
@@ -720,7 +812,7 @@ def test_run_settles_undecided_cadence_methods_before_processing(panel, tmp_path
     assert not panel._finalize_cadence_methods([0], panel.run_next)
 
 
-def test_cancelled_cadence_settlement_logs_no_failure(panel, tmp_path, monkeypatch):
+def test_cancelled_cadence_settlement_logs_no_failure(panel, tmp_path, monkeypatch, qt_app):
     from dataclasses import replace
     from core.workflows import hybrid_matrix
     from core.workflows.audio_sync import AudioSyncError
@@ -741,4 +833,170 @@ def test_cancelled_cadence_settlement_logs_no_failure(panel, tmp_path, monkeypat
     monkeypatch.setattr(panel.executor, "submit", lambda fn, *args: fn())
     continued: list[bool] = []
     assert panel._finalize_cadence_methods([0], lambda: continued.append(True))
-    assert continued == [True] and not any(level == "WARN" for level, _text in logs)
+    _wait(qt_app, lambda: not panel.busy)
+    assert not continued and not any(level == "WARN" for level, _text in logs)
+
+
+def test_pending_sync_cannot_be_opened_in_container(panel, season, monkeypatch, qt_app):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan()
+    _wait(qt_app, lambda: not panel.busy)
+    opened = []
+    panel.open_in_remux.connect(opened.append)
+    panel.open_remux_row(0)
+    assert not opened
+    assert not panel.table.cellWidget(0, 4).findChild(QPushButton, "open_remux").isEnabled()
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    panel.open_remux_row(0)
+    assert opened == [panel.jobs[0][0]]
+
+
+def test_declining_auto_reverification_preserves_edited_plans(panel, season, monkeypatch, qt_app):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    edited = SyncCalibration((SyncSegment(0, 2000), SyncSegment(10000, 2800)))
+    config = panel.jobs[0][0]
+    panel._store_row_calibration(0, 1, config, edited)
+    before, signature = dict(panel.jobs), panel._prepared_signature
+    pending = set(panel._pending_sync_rows)
+    season.clear()
+    panel.verify_audio()
+    assert not panel.busy and not season
+    assert panel.jobs == before and panel.jobs[0][1] == edited
+    assert panel._prepared_signature == signature and panel._pending_sync_rows == pending
+
+
+def test_failed_reverification_keeps_edits_for_retry(panel, season, monkeypatch, qt_app):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    old_plan = panel.jobs[0]
+    _fail_episode(monkeypatch, 1, calibrated_only=True)
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes)
+    panel.verify_audio()
+    _wait(qt_app, lambda: not panel.busy)
+    assert panel.jobs[0] is old_plan and 0 in panel._pending_sync_rows
+    assert panel.table.item(0, 3).text() == translate_text("Échec")
+    opened = []
+    panel.open_in_remux.connect(opened.append)
+    panel.open_remux_row(0)
+    assert not opened
+
+
+@pytest.mark.parametrize("original,text,expected", [
+    ("fr-ca", "fr-ca", {}), ("fr-CA", "FR-ca", {}),
+    ("fr-CA", "fr-FR", {"language": "fr-FR"}), ("fr-CA", "-", {"language": ""}),
+])
+def test_witness_language_only_records_a_real_change(original, text, expected):
+    track = TrackEntry(0, "audio", "aac", "", original, "")
+    assert HybridStudio._witness_edits({"track": track, "lang_item": QTableWidgetItem(text),
+                                       "title_item": QTableWidgetItem("")}) == expected
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_witness_fill_error_restores_previous_signal_state(panel, tmp_path, monkeypatch, blocked):
+    monkeypatch.setattr("ui.panels.hybrid_studio.tracks_from_file_info",
+                        lambda *_a: (_ for _ in ()).throw(ValueError("Métadonnées invalides")))
+    panel.witness_table.blockSignals(blocked)
+    panel._populate_witness_table([("Master", "master", FileInfo(tmp_path / "in.mkv", "mkv", 0, 0, None))])
+    assert panel.witness_table.signalsBlocked() is blocked
+    assert not panel.apply_recipe_btn.isEnabled() and not panel.witness_track_items
+    assert "Métadonnées invalides" in panel.witness_info.text()
+    panel.witness_table.blockSignals(False)
+
+
+@pytest.mark.parametrize("single", [False, True])
+def test_workers_publish_episode_changes_only_after_gui_delivery(panel, season, tmp_path, monkeypatch, qt_app, single):
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan()
+    _wait(qt_app, lambda: not panel.busy)
+    original = panel.matrix_episodes[0]
+    original.naming_context = {"previous": True}
+    entered, release = threading.Event(), threading.Event()
+
+    def prepare(episode, *_args, **_kwargs):
+        assert episode is not original
+        episode.naming_context = {"computed": True}
+        episode.shift_ms = 1234
+        episode.donor_files.append((episode.donor_files[0][0], tmp_path / "private.mkv"))
+        entered.set()
+        assert release.wait(5)
+        return _job(tmp_path)
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", prepare)
+    try:
+        if single:
+            panel.calibrate_single_row(0)
+        else:
+            panel.verify_audio()
+        assert entered.wait(5)
+        assert original.naming_context == {"previous": True} and original.shift_ms == 0
+        assert len(original.donor_files) == 1
+    finally:
+        release.set()
+    _wait(qt_app, lambda: not panel.busy)
+    assert original.naming_context == {"computed": True} and original.shift_ms == 1234
+    assert panel.matrix_episodes[0] is original and len(original.donor_files) == 1
+
+
+def test_cadence_resolution_runs_two_plans_at_a_time(panel, tmp_path, monkeypatch, qt_app):
+    from dataclasses import replace
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.hybrid_matrix import plan_needs_cadence_method
+
+    calibration = SyncCalibration((SyncSegment(0, 2000),), cadence_audio_method="auto",
+                                  cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"))
+    panel.matrix_episodes = [MatrixEpisode(episode=i + 1) for i in range(5)]
+    for row in range(5):
+        config, _primary = _job(tmp_path)
+        config.sync_calibrations = {"1": calibration.to_dict()}
+        panel.jobs[row] = config, calibration
+    release, both_entered = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    active, peak = 0, 0
+
+    def resolve(*_args):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                both_entered.set()
+        assert release.wait(5)
+        with lock:
+            active -= 1
+        return {"1": replace(calibration, cadence_audio_method="atempo", cadence_method_auto=True)}
+
+    monkeypatch.setattr("core.workflows.hybrid_matrix.resolve_plan_cadence_methods", resolve)
+    continued = []
+    try:
+        assert panel._finalize_cadence_methods(range(5), lambda: continued.append(True))
+        assert both_entered.wait(5)
+        assert all(plan_needs_cadence_method(config) for config, _calibration in panel.jobs.values())
+    finally:
+        release.set()
+    _wait(qt_app, lambda: bool(continued))
+    assert peak == 2
+    assert not any(plan_needs_cadence_method(config) for config, _calibration in panel.jobs.values())
+
+
+def test_cadence_resolution_failure_prevents_processing(panel, tmp_path, monkeypatch, qt_app):
+    from dataclasses import replace
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    config, calibration = _job(tmp_path)
+    config.sync_calibrations["1"] = replace(calibration, cadence_audio_method="auto",
+                                           cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1")).to_dict()
+    _select_job(panel, (config, calibration))
+    monkeypatch.setattr("core.workflows.hybrid_matrix.resolve_plan_cadence_methods",
+                        lambda *_a: (_ for _ in ()).throw(ValueError("Lecture impossible")))
+    continued = []
+    assert panel._finalize_cadence_methods([0], lambda: continued.append(True))
+    _wait(qt_app, lambda: not panel.busy)
+    assert not continued and "Lecture impossible" in panel.status.text()

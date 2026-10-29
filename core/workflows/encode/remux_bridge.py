@@ -8,7 +8,8 @@ from pathlib import Path
 from core.workflows.common.track_types import TrackMetaPatch, TrackOffset, TrackType
 from core.workflows.encode.models import EncodeConfig
 from core.workflows.remux_models import RemuxConfig, TrackEntry
-from core.workflows.sync_calibration import effective_calibration
+from core.workflows.remux_mapping import track_sync_payload
+from core.workflows.sync_calibration import resolve_track_sync
 
 
 def merge_remux_into_encode_config(
@@ -23,11 +24,13 @@ def merge_remux_into_encode_config(
     source_by_index = {src.file_index: src for src in remux_cfg.sources}
     remux_track_map: dict[tuple[Path, int], TrackEntry] = {}
     remux_track_map_by_id: dict[str, TrackEntry] = {}
+    source_index_by_entry: dict[str, int] = {}
 
     for src in remux_cfg.sources:
         for track in src.tracks:
             remux_track_map[(src.path, track.mkv_tid)] = track
             remux_track_map_by_id[track.entry_id] = track
+            source_index_by_entry[track.entry_id] = src.file_index
         for att in src.selected_attachments:
             attachment_streams.append((src.path, att.index))
         if src.copy_tags:
@@ -104,9 +107,9 @@ def merge_remux_into_encode_config(
         if track is None:
             return
         offset_ms = int(getattr(track, "time_shift_ms", 0) or 0)
-        calibration = getattr(track, "sync_calibration", None) if track_type != TrackType.VIDEO.value else None
-        if effective_calibration(calibration, track_type) is None:
-            calibration = None
+        calibration = track_sync_payload(remux_cfg, track, source_index_by_entry[track.entry_id])
+        offset_ms, projected = resolve_track_sync(calibration, offset_ms, track_type)
+        calibration = projected.to_dict() if projected is not None else None
         if offset_ms == 0 and calibration is None:
             return
         track_time_offsets.append(TrackOffset(

@@ -8,16 +8,15 @@ threads de préparation.
 """
 from __future__ import annotations
 
-import copy
 import threading
 import time
-from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generator
+from typing import TYPE_CHECKING, Any, Generator, Iterable
 
 from core.media_info_fetcher import TmdbResponseCache
+from core.session_cache import SessionCache
 
 if TYPE_CHECKING:
     from core.inspector import FileInfo, FileInspector
@@ -52,38 +51,35 @@ class PreparationCache:
     """Inspections, résumés de sous-titres et réponses TMDB d'une session."""
 
     def __init__(self, *, max_entries: int = 1024) -> None:
-        self._lock = threading.Lock()
-        self._entries: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
-        self._max_entries = max_entries
+        self._results: SessionCache[tuple[Any, ...], Any] = SessionCache(max_entries)
         #: Réponses JSON TMDB par URL, partagées par les préparations parallèles.
         self.tmdb_responses = TmdbResponseCache()
 
     def _get(self, key: tuple[Any, ...]) -> Any | None:
-        with self._lock:
-            value = self._entries.get(key)
-            if value is not None:
-                self._entries.move_to_end(key)
-            return value
+        return self._results.get(key)
 
     def _put(self, key: tuple[Any, ...], value: Any) -> None:
-        with self._lock:
-            self._entries[key] = value
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._max_entries:
-                self._entries.popitem(last=False)
+        self._results.put(key, value)
+
+    def retain(self, paths: Iterable[Path]) -> None:
+        """Garde seulement les entrées des fichiers `paths` (nouvelle matrice : celles des autres
+        saisons ne servent plus, la mémoire des inspections est rendue)."""
+        kept: set[str] = set()
+        for path in paths:
+            try:
+                kept.add(str(Path(path).resolve()))
+            except (OSError, TypeError, ValueError):
+                continue
+        self._results.retain(lambda key: bool(key[1] and key[1][0] in kept))
 
     def inspect(self, inspector: FileInspector, path: Path) -> FileInfo:
         """``inspector.inspect(path)`` mémorisé ; chaque appel reçoit sa propre copie."""
         identity = file_identity(path)
         key = ("inspection", identity, inspector.tool_signature)
-        cached = self._get(key) if identity is not None else None
-        if cached is not None:
-            return copy.deepcopy(cached)
-        info = inspector.inspect(path)
-        # Fichier modifié pendant l'inspection : résultat rendu, jamais mémorisé.
-        if identity is not None and file_identity(path) == identity:
-            self._put(key, copy.deepcopy(info))
-        return info
+        if identity is None:
+            return inspector.inspect(path)
+        return self._results.get_or_load(key, lambda: inspector.inspect(path),
+                                         cache_if=lambda _info: file_identity(path) == identity)
 
     def subtitle_summary(self, identity: FileIdentity, stream_index: int) -> SubtitleTextSummary | None:
         return self._get(("subtitle", identity, stream_index))

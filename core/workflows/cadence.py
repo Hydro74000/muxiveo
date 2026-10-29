@@ -105,6 +105,11 @@ class CadenceMismatch:
         )
 
 
+def active_cadence(mismatch: CadenceMismatch | None) -> CadenceMismatch | None:
+    """La conversion si elle change la cadence, sinon None (absente ou de type « none »)."""
+    return mismatch if mismatch is not None and getattr(mismatch, "cadence_type", None) not in (None, CadenceType.NONE) else None
+
+
 def parse_framerate(value: str | float | int | None) -> float | None:
     """Convertit une chaîne ou fraction de framerate (ex: '24000/1001', '23.976025', '25/1') en float."""
     if value is None:

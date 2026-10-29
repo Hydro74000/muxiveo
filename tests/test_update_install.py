@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import io
 from pathlib import Path
 from unittest.mock import patch
@@ -87,10 +88,12 @@ def test_detect_source_archive_by_marker_never_git_checkout(tmp_path):
                                source_root=tmp_path) is InstallKind.UNSUPPORTED
 
 
-def test_manual_update_hint():
-    assert manual_update_hint("/opt/homebrew/Cellar/muxiveo/4.0.0/bin/python", True) == "brew upgrade muxiveo"
-    assert manual_update_hint("/usr/bin/python3", False) == "git pull"
-    assert manual_update_hint("/Applications/Muxiveo.app/Contents/MacOS/Muxiveo", True) == ""
+def test_manual_update_hint(tmp_path):
+    # L'instantané exécuté sur une machine de test peut ne pas contenir les métadonnées Git.
+    (tmp_path / ".git").mkdir()
+    assert manual_update_hint("/opt/homebrew/Cellar/muxiveo/4.0.0/bin/python", True, source_root=tmp_path) == "brew upgrade muxiveo"
+    assert manual_update_hint("/usr/bin/python3", False, source_root=tmp_path) == "git pull"
+    assert manual_update_hint("/Applications/Muxiveo.app/Contents/MacOS/Muxiveo", True, source_root=tmp_path) == ""
 
 
 def test_manual_update_hint_git_only_for_checkouts(tmp_path):
@@ -154,7 +157,7 @@ def test_download_update_prepares_swap_workdir_and_cleans_on_failure(tmp_path, m
     monkeypatch.setattr(update_install, "download_asset",
                         lambda asset, dest, expected, progress, cancelled: dest.write_bytes(b"x") or dest)
     calls = []
-    monkeypatch.setattr(update_apply, "prepare", lambda *args: calls.append(args))
+    monkeypatch.setattr(update_apply, "prepare", lambda *args, **kwargs: calls.append(args))
     info = _info("Muxiveo-99.0.0-source.tar.gz", "SHA256SUMS")
     work = download_update(info, InstallKind.SOURCE_ARCHIVE)
     assert work.parent == tmp_path and work.name.startswith(update_apply.WORKDIR_PREFIX)
@@ -163,7 +166,7 @@ def test_download_update_prepares_swap_workdir_and_cleans_on_failure(tmp_path, m
     assert (kind, prepared_work, root, version) == (update_apply.KIND_SOURCE, work, install, "99.0.0")
     assert probe[-1].endswith("main.py") and update_apply.ROOT_TOKEN in probe[-1]
 
-    def refuse(*args):
+    def refuse(*args, **kwargs):
         raise update_apply.UpdateApplyError("archive inattendue")
 
     monkeypatch.setattr(update_apply, "prepare", refuse)
@@ -323,10 +326,25 @@ def test_appimage_update_end_to_end(tmp_path: Path, monkeypatch):
 def test_windows_update_launches_installer(tmp_path: Path, monkeypatch):
     setup = tmp_path / _SETUP
     setup.write_bytes(b"setup")
-    calls: list[str] = []
-    monkeypatch.setattr(update_install.os, "startfile", calls.append, raising=False)
-    apply_update(InstallKind.WINDOWS_INSTALLER, setup)
-    assert calls == [str(setup)]
+    calls = []
+    monkeypatch.setattr("core.windows_shell.launch_installer", lambda path, hwnd: calls.append((path, hwnd)))
+    apply_update(InstallKind.WINDOWS_INSTALLER, setup, owner_hwnd=1234)
+    assert calls == [(setup, 1234)]
+
+
+def test_cleanup_helper_is_isolated_and_detached(tmp_path, monkeypatch):
+    launched = []
+    old = tmp_path / "old"
+    monkeypatch.setattr(update_apply, "spawn_detached", lambda command, cwd: launched.append((command, cwd)))
+    update_install.start_update_cleanup([old], InstallKind.SOURCE_ARCHIVE)
+    command, cwd = launched[0]
+    work = Path(command[-1])
+    try:
+        assert command[1:3] == ["-I", str(work / "update_apply.py")]
+        assert command[-2] == "cleanup" and cwd == work.parent
+        assert json.loads((work / update_apply.CLEANUP_FILE).read_text()) == [str(old)]
+    finally:
+        shutil.rmtree(work)
 
 
 def test_apply_update_unsupported_raises(tmp_path: Path):

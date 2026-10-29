@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
+from core.workflows.cadence import active_cadence
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
 if TYPE_CHECKING:
@@ -306,12 +307,12 @@ class AudioSyncScanner:
         `samples_filter` : filtre des mesures ponctuelles ; égal au filtre exact, elles sont reprises
         telles quelles (même position, fenêtre et options) au lieu d'être refaites."""
         import numpy as np
-        from core.workflows.cadence import CadenceType, build_cadence_audio_filter
+        from core.workflows.cadence import build_cadence_audio_filter
 
-        mismatch = calibration.cadence_mismatch
+        mismatch = calibration.active_cadence
         # Méthode « auto » non tranchée : filtre atempo à l'application.
         output_method = calibration.cadence_audio_method if calibration.cadence_audio_method != "auto" else "atempo"
-        if mismatch is None or mismatch.cadence_type == CadenceType.NONE or output_method == measure_method:
+        if mismatch is None or output_method == measure_method:
             return calibration
         exact_filter = build_cadence_audio_filter(mismatch, measure_method)
         output_filter = build_cadence_audio_filter(mismatch, output_method)
@@ -359,11 +360,10 @@ class AudioSyncScanner:
         corrélation, celui de la calibration. Sans conclusion, « atempo » (hauteur de la cible
         conservée), comme le filtre d'une méthode « auto ».
         """
-        from core.workflows.cadence import CadenceType, build_cadence_audio_filter
+        from core.workflows.cadence import build_cadence_audio_filter
 
-        mismatch = calibration.cadence_mismatch
-        if (mismatch is None or mismatch.cadence_type == CadenceType.NONE
-                or (calibration.cadence_audio_method or "auto") != "auto"):
+        mismatch = calibration.active_cadence
+        if mismatch is None or not calibration.cadence_method_undecided:
             return calibration
         duration_s = self.duration(reference)
         end_ms = duration_s * 1000.0
@@ -480,7 +480,7 @@ class AudioSyncScanner:
         measure_method = "asetrate"
         filter_str = None
         speed_factor = 1.0
-        if cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
+        if active_cadence(cadence_mismatch) is not None:
             filter_str = build_cadence_audio_filter(cadence_mismatch, measure_method)
             speed_factor = getattr(cadence_mismatch, "speed_factor", 1.0)
 
@@ -518,7 +518,9 @@ class AudioSyncScanner:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise AudioSyncError("Analyse annulée.")
             measured = _measure_around(position, filter_str)
-            if measured is None and not samples and filter_str is not None and cadence_mismatch is not None:
+            if (measured is None and (is_auto_method or active_cadence_method == "atempo")
+                    and measure_method == "asetrate" and not samples
+                    and filter_str is not None and cadence_mismatch is not None):
                 # Aucune corrélation en asetrate : retenter avec atempo avant d'abandonner. En mode
                 # auto, seule cette méthode corrèle : elle devient celle de sortie.
                 alternative = "atempo" if measure_method == "asetrate" else "asetrate"
@@ -547,7 +549,7 @@ class AudioSyncScanner:
             log(f"{p:.1f} s : {offset:+.1f} ms ({confidence:.2f})")
 
             # Analyse acoustique de hauteur tonale (sélection auto asetrate vs atempo) au 1er point mesuré
-            if is_auto_method and pitch_analysis is None and cadence_mismatch and getattr(cadence_mismatch, "cadence_type", None) not in (None, "none"):
+            if is_auto_method and pitch_analysis is None and active_cadence(cadence_mismatch) is not None:
                 # Milieu de la fenêtre mesurée : le décalage y vaut, la cible n'y est pas bornée à 0.
                 pitch_analysis = self._analyze_cadence_pitch(
                     reference, donor, p + window / 2 - 2.0, offset, cadence_mismatch)

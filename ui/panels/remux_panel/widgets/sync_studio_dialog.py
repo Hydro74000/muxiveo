@@ -35,7 +35,7 @@ from core.i18n import translate_text
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
-from core.workflows.cadence import CadenceMismatch, CadenceType
+from core.workflows.cadence import CadenceMismatch, active_cadence
 from core.workflows.physical_sync import audio_filter
 from core.workflows.remux_models import TrackEntry
 from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, SyncSegment, effective_calibration
@@ -85,11 +85,6 @@ def _parse_timestamp_ms(text: str) -> float | None:
     for value in values:
         seconds = seconds * 60 + value
     return seconds * 1000.0
-
-
-def _has_cadence(calibration: SyncCalibration) -> bool:
-    mismatch = calibration.cadence_mismatch
-    return mismatch is not None and mismatch.cadence_type != CadenceType.NONE
 
 
 def _pitch_method(calibration: SyncCalibration) -> str | None:
@@ -175,8 +170,8 @@ class SyncStudioDialog(QDialog):
         else:
             self._initial_calibration = SyncCalibration.linear(target_entry.time_shift_ms or 0)
 
-        hint = cadence_hint if cadence_hint is not None and cadence_hint.cadence_type != CadenceType.NONE else None
-        if hint is not None and apply_cadence_hint and not _has_cadence(self._initial_calibration):
+        hint = active_cadence(cadence_hint)
+        if hint is not None and apply_cadence_hint and self._initial_calibration.active_cadence is None:
             self._initial_calibration = replace(
                 self._initial_calibration, cadence_mismatch=hint,
                 cadence_audio_method=cadence_audio_method or "auto", quick_check=False,
@@ -184,11 +179,11 @@ class SyncStudioDialog(QDialog):
             )
         # Conversion proposée par la case de la carte Cadence (retirée, elle peut être rétablie).
         self._cadence_available = (
-            self._initial_calibration.cadence_mismatch if _has_cadence(self._initial_calibration) else hint
+            self._initial_calibration.active_cadence or hint
         )
         self._cadence_method_default = cadence_audio_method or "auto"
         # Méthode portée par une conversion (sinon celle par défaut d'une calibration sans cadence).
-        self._cadence_method_set = _has_cadence(self._initial_calibration)
+        self._cadence_method_set = self._initial_calibration.active_cadence is not None
         # Une analyse de hauteur à la fois ; un résultat périmé (synchro modifiée) la relance.
         self._cadence_resolving = False
         # Case décochée par l'utilisateur (pas un résultat d'analyse sans conversion).
@@ -276,7 +271,7 @@ class SyncStudioDialog(QDialog):
         top_row = QHBoxLayout()
         self.cadence_check = QCheckBox(translate_text("Conversion Cadence :"))
         self.cadence_check.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px; font-weight: 700;")
-        self.cadence_check.setChecked(_has_cadence(self.current_calibration))
+        self.cadence_check.setChecked(self.current_calibration.active_cadence is not None)
         self.cadence_check.setToolTip(translate_text(
             "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence."
         ))
@@ -329,18 +324,18 @@ class SyncStudioDialog(QDialog):
     @property
     def cadence_declined(self) -> bool:
         """Conversion de cadence proposée, décochée par l'utilisateur."""
-        return self._cadence_unchecked and not _has_cadence(self.current_calibration)
+        return self._cadence_unchecked and self.current_calibration.active_cadence is None
 
     def _sync_cadence_controls(self) -> None:
         """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation)."""
         if not hasattr(self, "cadence_check"):
             return
         calibration = self.current_calibration
-        if _has_cadence(calibration):
+        if calibration.active_cadence is not None:
             self._cadence_available = calibration.cadence_mismatch
             self._cadence_method_set = True
         self.cadence_check.blockSignals(True)
-        self.cadence_check.setChecked(_has_cadence(calibration))
+        self.cadence_check.setChecked(calibration.active_cadence is not None)
         self.cadence_check.blockSignals(False)
         self._method_radio().setChecked(True)
         self._refresh_cadence_info()
@@ -365,7 +360,7 @@ class SyncStudioDialog(QDialog):
             self.rb_auto.setText(translate_text("Auto (détection pitch)"))
             self._cadence_metric_lbl.setText("")
             self._cadence_metric_lbl.setToolTip("")
-        enabled = _has_cadence(self.current_calibration)
+        enabled = self.current_calibration.active_cadence is not None
         for rb in (self.rb_auto, self.rb_asetrate, self.rb_atempo):
             rb.setEnabled(enabled)
 
@@ -398,7 +393,7 @@ class SyncStudioDialog(QDialog):
     def _resolve_cadence_method(self) -> None:
         """Méthode « auto » sans analyse : tranchée en arrière-plan par la hauteur des deux pistes."""
         calibration = self.current_calibration
-        if (self._closing or not _has_cadence(calibration) or (calibration.cadence_audio_method or "auto") != "auto"
+        if (self._closing or not calibration.cadence_method_undecided
                 or self.target_entry.is_subtitle or self.reference_source_path is None
                 or self.reference_stream_index is None
                 or (self.reference_entry is not None and self.reference_entry.is_subtitle)):
@@ -423,7 +418,7 @@ class SyncStudioDialog(QDialog):
     def _on_cadence_resolved(self, before: SyncCalibration, resolved: SyncCalibration | None) -> None:
         self._cadence_resolving = False
         current = self.current_calibration
-        if self._closing or not _has_cadence(current) or (current.cadence_audio_method or "auto") != "auto":
+        if self._closing or not current.cadence_method_undecided:
             return
         if current.segments != before.segments or current.cadence_mismatch != before.cadence_mismatch:
             # Analysée sur d'anciens décalages ou coupures : la fenêtre ne correspond plus.
@@ -1082,7 +1077,7 @@ class SyncStudioDialog(QDialog):
     def _reset_shifts(self) -> None:
         self._stop_playback()
         self.current_calibration = self._initial_calibration
-        self._cadence_method_set = _has_cadence(self._initial_calibration)
+        self._cadence_method_set = self._initial_calibration.active_cadence is not None
         self._cadence_unchecked = False
         self._sync_cadence_controls()
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms

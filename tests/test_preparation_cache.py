@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from core.inspector import FileInfo, FileInspector
 from core.media_info_fetcher import MediaSearchResult, TmdbFetcher
@@ -96,3 +98,89 @@ def test_step_timings_accumulate_per_step():
         pass
     assert list(timings.values) == ["inspection", "TMDB"]
     assert timings.summary().startswith("inspection 0.0 s · TMDB")
+
+
+def test_retain_keeps_only_the_files_of_the_new_matrix(tmp_path):
+    from core.workflows.preparation_cache import SubtitleTextSummary, file_identity
+
+    kept, dropped = tmp_path / "kept.mkv", tmp_path / "dropped.mkv"
+    kept.write_bytes(b"k")
+    dropped.write_bytes(b"d")
+    cache = PreparationCache()
+    for path in (kept, dropped):
+        cache.store_subtitle_summary(file_identity(path), 2, SubtitleTextSummary(3, ""))
+    cache.retain([kept])
+    assert cache.subtitle_summary(file_identity(kept), 2) is not None
+    assert cache.subtitle_summary(file_identity(dropped), 2) is None
+
+
+def test_tmdb_responses_keep_the_most_recent():
+    from core.media_info_fetcher import TmdbResponseCache
+
+    responses = TmdbResponseCache(max_entries=2)
+    responses.put("a", {"id": 1})
+    responses.put("b", {"id": 2})
+    assert responses.get("a") == {"id": 1}          # « a » redevient la plus récente
+    responses.put("c", {"id": 3})
+    assert responses.get("b") is None and responses.get("a") and responses.get("c")
+
+
+def test_simultaneous_inspections_are_shared_and_nested_json_is_isolated(tmp_path):
+    path = tmp_path / "in.mkv"
+    path.touch()
+    entered, release = threading.Event(), threading.Event()
+    cache = PreparationCache()
+
+    class Inspector(_Inspector):
+        def inspect(self, path):
+            self.calls += 1
+            entered.set()
+            assert release.wait(5)
+            return FileInfo(path, "mkv", 1, 0, None, ffprobe_json={"streams": [{"tags": {"language": "fra"}}]})
+
+    inspector = Inspector()
+    with ThreadPoolExecutor(2) as executor:
+        first = executor.submit(cache.inspect, inspector, path)
+        try:
+            assert entered.wait(5)
+            second = executor.submit(cache.inspect, inspector, path)
+        finally:
+            release.set()
+        left, right = first.result(timeout=5), second.result(timeout=5)
+    left.ffprobe_json["streams"][0]["tags"]["language"] = "eng"
+    assert right.ffprobe_json["streams"][0]["tags"]["language"] == "fra"
+    assert inspector.calls == 1
+
+
+def test_simultaneous_tmdb_requests_are_shared(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    class Response:
+        headers = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return b'{"results": [{"id": 7, "name": "Serie", "media_type": "tv"}]}'
+
+    def urlopen(*_args, **_kwargs):
+        calls.append(True)
+        entered.set()
+        assert release.wait(5)
+        return Response()
+
+    monkeypatch.setattr(TmdbFetcher, "_urlopen", urlopen)
+    cache = PreparationCache()
+    with ThreadPoolExecutor(2) as executor:
+        fetchers = [TmdbFetcher(api_key="k", response_cache=cache.tmdb_responses) for _ in range(2)]
+        first = executor.submit(fetchers[0].search, "Serie", kind="tv")
+        try:
+            assert entered.wait(5)
+            second = executor.submit(fetchers[1].search, "Serie", kind="tv")
+        finally:
+            release.set()
+        left, right = first.result(timeout=5), second.result(timeout=5)
+    left[0].title = "Modifié"
+    assert right[0].title == "Serie" and len(calls) == 1

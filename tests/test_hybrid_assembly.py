@@ -74,6 +74,26 @@ def assembly(tmp_path, monkeypatch):
     return episode, recipe, sources
 
 
+def test_preparation_uses_isolated_profile_snapshot_after_file_rewrite(assembly, tmp_path):
+    from cli.profile import snapshot_decision_profile
+
+    episode, recipe, _ = assembly
+    path = tmp_path / "profile.json"
+    profile = {"kind": "decision-profile", "version": 1, "name": "Audit", "output_template": "avant.mkv",
+               "rules": [{"id": "rename", "scope": "all", "match": {"all": []},
+                          "actions": [{"type": "set_title", "value": "Figé"}]}]}
+    path.write_text(json.dumps(profile))
+    version, snapshot = snapshot_decision_profile(path)
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path), profile_snapshot=snapshot, profile_version=version)
+    path.write_text("{")
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == "avant.mkv"
+    assert all(track.title == "Figé" for source in result.sources for track in source.tracks if track.enabled)
+    assert episode.naming_context["__profile_version__"] == version
+    assert episode.naming_context["__profile_template__"] == "avant.mkv"
+    assert snapshot == profile
+
+
 def test_season_analysis_prepares_tracks_and_metadata_without_sync(assembly, tmp_path, monkeypatch):
     episode, recipe, _ = assembly
     recipe.sync_strategy = "auto"

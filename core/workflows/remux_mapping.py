@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +16,7 @@ from core.workflows.common.metadata import (
 )
 from core.workflows.common.timeline_sync import needs_strict_interleave as common_needs_strict_interleave
 from core.workflows.remux_models import RemuxConfig, RemuxError, TrackEntry
+from core.workflows.sync_calibration import resolve_track_sync
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,17 @@ def track_order_parts(
     return int(item[0]), int(item[1]), None
 
 
+def track_sync_payload(config: RemuxConfig, track: TrackEntry, source_index: int) -> dict | None:
+    """La calibration propre à la piste prime ; les sous-titres n'héritent de la source qu'en miroir."""
+    if track.track_type not in {"audio", "subtitle"}:
+        return None
+    if track.sync_calibration is not None:
+        return track.sync_calibration
+    if track.is_audio or config.sync_subtitles == "mirror":
+        return config.sync_calibrations.get(str(source_index))
+    return None
+
+
 def resolve_mapped_tracks(config: RemuxConfig) -> list[MappedTrack]:
     file_index_to_input_idx = {
         src.file_index: i
@@ -114,6 +126,11 @@ def resolve_mapped_tracks(config: RemuxConfig) -> list[MappedTrack]:
 
         out_type_index = type_counters[track.track_type]
         type_counters[track.track_type] += 1
+        if config.sync_mode != "physical" and track.track_type in {"audio", "subtitle"}:
+            payload = track_sync_payload(config, track, file_index)
+            offset, _calibration = resolve_track_sync(payload, track.time_shift_ms, track.track_type)
+            if offset != track.time_shift_ms:
+                track = replace(track, time_shift_ms=offset)
         mapped.append(MappedTrack(
             source_input_idx=input_idx,
             source_file_index=file_index,

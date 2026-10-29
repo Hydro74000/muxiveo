@@ -6,7 +6,7 @@ from fractions import Fraction
 import math
 from typing import Any
 
-from core.workflows.cadence import CadenceMismatch, CadenceType
+from core.workflows.cadence import CadenceMismatch, CadenceType, active_cadence
 
 # Décalage constant mesuré jusqu'auquel (inclus) l'interface n'applique pas la synchro :
 # un réencodage audio pour quelques millisecondes n'apporte rien.
@@ -65,20 +65,39 @@ class SyncCalibration:
         return "auto" if self.cadence_method_auto or method == "auto" else method
 
     @property
+    def active_cadence(self) -> CadenceMismatch | None:
+        """Conversion de cadence effective (None si absente ou de type « none »)."""
+        return active_cadence(self.cadence_mismatch)
+
+    @property
+    def cadence_method_undecided(self) -> bool:
+        """Conversion de cadence dont la méthode « auto » n'est pas encore tranchée par l'analyse de hauteur."""
+        return self.active_cadence is not None and (self.cadence_audio_method or "auto") == "auto"
+
+    @property
     def audio_pitch_factor(self) -> float:
         """Hauteur de la piste réécrite face à l'originale (asetrate : celle de la vitesse, atempo : inchangée)."""
-        return _method_pitch(_active_cadence(self), self.cadence_audio_method) * self.cadence_pitch_factor
+        return _method_pitch(self.active_cadence, self.cadence_audio_method) * self.cadence_pitch_factor
 
     @property
     def converts_audio(self) -> bool:
         """Conversion de cadence ou de hauteur : la piste audio doit être réécrite."""
-        return _active_cadence(self) is not None or self.cadence_pitch_factor != 1.0
+        return self.active_cadence is not None or self.cadence_pitch_factor != 1.0
 
     @property
     def changes_timeline(self) -> bool:
         """Coupures ou conversion de cadence : la chronologie change (sous-titres compris) ;
         une hauteur seule ne concerne que l'audio."""
-        return len(self.segments) > 1 or _active_cadence(self) is not None
+        return len(self.segments) > 1 or self.active_cadence is not None
+
+    def for_track(self, track_type: str) -> SyncCalibration:
+        """Projette la synchro sur une piste ; hors audio, conserve les instants sans changer la hauteur."""
+        if track_type.strip().lower() == "audio":
+            return self
+        if not self.changes_timeline:
+            return SyncCalibration.linear(self.segments[0].shift_ms)
+        return replace(self, cadence_audio_method="atempo", cadence_pitch_factor=1.0,
+                       cadence_pitch_analysis=None, cadence_method_auto=False)
 
     def to_dict(self):
         data = {
@@ -309,7 +328,7 @@ class SyncCalibration:
 
     def summary_lines(self) -> list[str]:
         lines: list[str] = []
-        if self.cadence_mismatch is not None and self.cadence_mismatch.cadence_type != CadenceType.NONE:
+        if (cadence := self.active_cadence) is not None:
             pitch_desc = ""
             if self.cadence_pitch_analysis is not None:
                 details = getattr(self.cadence_pitch_analysis, "details", None)
@@ -317,7 +336,7 @@ class SyncCalibration:
                     details = self.cadence_pitch_analysis.get("details")
                 if details:
                     pitch_desc = f" — {details}"
-            lines.append(f"Cadence : {self.cadence_mismatch.description} ({self.cadence_audio_method}){pitch_desc}")
+            lines.append(f"Cadence : {cadence.description} ({self.cadence_audio_method}){pitch_desc}")
         if self.cadence_pitch_factor != 1.0:
             cents = 1200 * math.log2(self.audio_pitch_factor)
             lines.append(f"Hauteur : {cents:+.0f} cents (conversions de cadence composées)")
@@ -362,11 +381,6 @@ def _merged(segments: list[SyncSegment]) -> tuple[SyncSegment, ...]:
     return tuple(result)
 
 
-def _active_cadence(calibration: SyncCalibration) -> CadenceMismatch | None:
-    mismatch = calibration.cadence_mismatch
-    return mismatch if mismatch is not None and mismatch.cadence_type != CadenceType.NONE else None
-
-
 def _method_pitch(cadence: CadenceMismatch | None, method: str) -> float:
     """Hauteur produite par la conversion seule : asetrate la change avec la vitesse, atempo
     (et « auto » non tranchée, appliquée en atempo) la conserve."""
@@ -379,7 +393,7 @@ def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):
     Vitesse et hauteur composées séparément : des conversions réciproques s'annulent, mais la
     hauteur modifiée par une seule d'entre elles (atempo puis asetrate) est conservée.
     """
-    first, second = _active_cadence(inner), _active_cadence(outer)
+    first, second = inner.active_cadence, outer.active_cadence
     pitch = inner.audio_pitch_factor * outer.audio_pitch_factor
     cadence: CadenceMismatch | None
     if second is None:
@@ -466,7 +480,7 @@ def compose_calibrations(inner: SyncCalibration, outer: SyncCalibration) -> Sync
             pieces.append(SyncSegment((outer_starts[following] - segment.shift_ms) / inner_ratio,
                                       segment.shift_ms * outer_ratio + outer.segments[following].shift_ms))
     # Mesures ponctuelles relatives à la référence : valables telles quelles seulement si elle n'est pas déplacée.
-    unchanged = _active_cadence(outer) is None and outer.segments == (SyncSegment(0, 0.0),)
+    unchanged = outer.active_cadence is None and outer.segments == (SyncSegment(0, 0.0),)
     return SyncCalibration(
         _increasing(pieces),
         min(inner.confidence, outer.confidence),
@@ -491,7 +505,7 @@ def invert_calibration(calibration: SyncCalibration) -> SyncCalibration:
         SyncSegment(0.0 if position == 0 else ranges[position - 1][1], -calibration.segments[index].shift_ms / ratio)
         for position, (_start, _stop, index) in enumerate(ranges)
     ]
-    mismatch = _active_cadence(calibration)
+    mismatch = calibration.active_cadence
     return SyncCalibration(
         _increasing(pieces),
         calibration.confidence,
@@ -516,12 +530,9 @@ def format_calibration_summary(calibration_or_dict: SyncCalibration | dict | Non
 
 
 
-def effective_calibration(calibration_or_dict: SyncCalibration | dict | None,
+def projected_calibration(calibration_or_dict: SyncCalibration | dict | None,
                           track_type: str = "audio") -> SyncCalibration | None:
-    """Retourne la calibration si elle n'est pas réductible à un décalage constant (coupures, cadence ou hauteur).
-
-    Hors audio (`track_type`), une hauteur seule ne compte pas : la chronologie reste un décalage.
-    """
+    """Lit puis projette une calibration, y compris lorsqu'elle se réduit à un décalage."""
     calibration = calibration_or_dict
     if isinstance(calibration, dict):
         try:
@@ -530,6 +541,28 @@ def effective_calibration(calibration_or_dict: SyncCalibration | dict | None,
             return None
     if not isinstance(calibration, SyncCalibration):
         return None
-    if track_type != "audio":
-        return calibration if calibration.changes_timeline else None
+    return calibration.for_track(track_type)
+
+
+def effective_calibration(calibration_or_dict: SyncCalibration | dict | None,
+                          track_type: str = "audio") -> SyncCalibration | None:
+    """Calibration projetée nécessitant des coupures ou une conversion de vitesse/hauteur."""
+    calibration = projected_calibration(calibration_or_dict, track_type)
+    if calibration is None:
+        return None
     return calibration if calibration.changes_timeline or calibration.converts_audio else None
+
+
+def resolve_track_sync(calibration_or_dict: SyncCalibration | dict | None, offset_ms: int,
+                       track_type: str) -> tuple[int, SyncCalibration | None]:
+    """Sépare le décalage constant de la transformation complexe, sans perdre la translation du payload.
+
+    Une calibration propre à la piste (sinon celle de sa source) décrit déjà sa position complète :
+    son décalage remplace le champ historique, sans lui être ajouté.
+    """
+    calibration = projected_calibration(calibration_or_dict, track_type)
+    if calibration is None:
+        return offset_ms, None
+    if calibration.changes_timeline or calibration.converts_audio:
+        return offset_ms, calibration
+    return round(calibration.segments[0].shift_ms), None

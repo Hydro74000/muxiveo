@@ -39,11 +39,12 @@ from core.workflows.common.attachments import canonical_attachment_output_name
 from core.workflows.remux_attachments import extract_attached_pics as _extract_attached_pics_helper
 from core.workflows.remux_mapping import (
     MappedTrack,
+    track_sync_payload,
     requires_file_sync_fallback_for_offsets as _requires_file_sync_fallback_for_offsets_helper,
 )
 from core.workflows.remux_models import RemuxConfig, RemuxError
 from core.workflows.remux_plan import MuxExecutionPlan
-from core.workflows.sync_calibration import effective_calibration
+from core.workflows.sync_calibration import effective_calibration, resolve_track_sync
 from core.workflows.remux_sync import (
     decide_strict_interleave_with_prescan as _decide_strict_interleave_with_prescan_helper,
     prepare_timeline_sync_inputs as _prepare_timeline_sync_inputs_helper,
@@ -193,8 +194,7 @@ class RemuxRuntimeRunner:
                 if not rewrite_enabled and any(
                     mapped.track.track_type in {"audio", "subtitle"}
                     and effective_calibration(
-                        mapped.track.sync_calibration
-                        or run_config.sync_calibrations.get(str(mapped.source_file_index)),
+                        track_sync_payload(run_config, mapped.track, mapped.source_file_index),
                         mapped.track.track_type,
                     ) is not None
                     for mapped in mapped_tracks
@@ -261,11 +261,13 @@ class RemuxRuntimeRunner:
                     rewritten_inputs: list[SyncPreparedInput] = []
                     for mapped_track in mapped_tracks:
                         offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
-                        calibration = effective_calibration(
-                            getattr(mapped_track.track, "sync_calibration", None)
-                            or run_config.sync_calibrations.get(str(mapped_track.source_file_index)),
+                        offset_ms, calibration = resolve_track_sync(
+                            track_sync_payload(run_config, mapped_track.track, mapped_track.source_file_index),
+                            offset_ms,
                             mapped_track.track.track_type,
-                        ) if mapped_track.track.track_type in {"audio", "subtitle"} else None
+                        ) if mapped_track.track.track_type in {"audio", "subtitle"} else (offset_ms, None)
+                        if offset_ms != mapped_track.track.time_shift_ms:
+                            mapped_track = replace(mapped_track, track=replace(mapped_track.track, time_shift_ms=offset_ms))
                         if (offset_ms == 0 and calibration is None) or (
                             calibration is None and sync_rewrite_forced_offset(mapped_track.track)
                         ):
@@ -333,8 +335,8 @@ class RemuxRuntimeRunner:
                         if mapped_track.track.track_type == "audio":
                             timestamp_offsets.setdefault(Path(mapped_track.source_path), prepared.source_timestamp_offset_s)
                         run_config = replace(run_config, input_timestamp_offsets=timestamp_offsets)
+                    mapped_tracks = rewritten_tracks
                     if rewritten_inputs:
-                        mapped_tracks = rewritten_tracks
                         sync_prepared.extend(rewritten_inputs)
                     if any(item.key[2] == "audio" for item in rewritten_inputs):
                         # La source vidéo peut avoir son propre CodecDelay

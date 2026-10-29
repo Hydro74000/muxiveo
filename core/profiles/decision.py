@@ -219,6 +219,12 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def profile_variables(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Variables de nommage d'un profil, isolées au premier niveau pour l'appelant."""
+    variables = profile.get("variables")
+    return dict(variables) if isinstance(variables, dict) else {}
+
+
 def profile_output_template(profile: Mapping[str, Any]) -> str:
     """Template du nom de sortie porté par le profil (vide si absent)."""
     value = profile.get("output_template")

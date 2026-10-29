@@ -343,6 +343,16 @@ def align_dovi_rpu_geometry(
     presets = active_area.get("presets") if isinstance(active_area, dict) else None
     edits = active_area.get("edits") if isinstance(active_area, dict) else None
 
+    if crop_offsets == (0, 0, 0, 0) and not any(
+        int(preset.get(edge, 0)) for preset in presets or () if isinstance(preset, dict)
+        for edge in ("left", "top", "right", "bottom")
+    ):
+        # Redimensionnement seul, L5 absent ou nul : 0 × échelle = 0, rien à réaligner.
+        json_path.unlink(missing_ok=True)
+        if rpu_input != output_rpu:
+            shutil.copyfile(rpu_input, output_rpu)
+        return output_rpu
+
     if not presets or not edits:
         frame_count = _probe_rpu_frame_count(dovi_tool_bin, rpu_input, run_cmd=run)
         if frame_count and frame_count > 0:

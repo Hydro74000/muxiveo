@@ -117,3 +117,76 @@ def test_disabled_rewrite_rejected_before_preparation(source, tmp_path, monkeypa
         workflow._run_with_preparation(cfg, validate=validate)
     workflow.set_sync_rewrite_enabled(True)
     assert not any("sync.rewrite_enabled" in message for message in workflow.validate(cfg))
+
+
+@pytest.mark.parametrize("route", ["hybrid_to_native", "ffmpeg_rewrite"])
+def test_pitch_only_subtitle_calibration_preserves_two_second_offset(source, tmp_path, route):
+    from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+
+    calibration = SyncCalibration((SyncSegment(0, 2000),), cadence_pitch_factor=0.96)
+    if route == "hybrid_to_native":
+        video = TrackEntry(0, "video", "ffv1", "", "und", "")
+        subtitle = TrackEntry(2, "subtitle", "subrip", "", "fra", "")
+        remux = RemuxConfig([SourceInput(source, 0, [video]), SourceInput(source, 1, [subtitle])],
+                            tmp_path / "out.mkv", [(0, 0, video.entry_id), (1, 2, subtitle.entry_id)],
+                            sync_mode="physical", sync_subtitles="mirror", sync_calibrations={"1": calibration.to_dict()})
+        cfg = merge_remux_into_encode_config(config(source, tmp_path, []), remux)
+        output = assemble(cfg, tmp_path)
+        output_index = 2
+    else:
+        prepared = SyncRewriteService(ffmpeg_bin="ffmpeg").maybe_materialize(
+            source_path=source, stream_index=2, track_type="subtitle", codec="subrip", offset_ms=0,
+            tmp_dir=tmp_path, input_idx=0, calibration=calibration,
+        )
+        assert prepared is not None
+        output, output_index = prepared.path, 0
+    original, rewritten = MatroskaReader(source), MatroskaReader(output)
+    original_times = [block.timestamp_ms for block in original.blocks(track_numbers={original.tracks()[2].number})]
+    shifted_times = [block.timestamp_ms for block in rewritten.blocks(track_numbers={rewritten.tracks()[output_index].number})]
+    assert len(shifted_times) == len(original_times) == 2
+    assert [new - old for new, old in zip(shifted_times, original_times)] == pytest.approx([2000, 2000], abs=10)
+
+
+@pytest.mark.parametrize("edit_audio", [False, True])
+def test_gui_import_keeps_subtitle_times_and_uses_edited_audio_offset(source, tmp_path, qt_app, edit_audio):
+    import numpy as np
+    from core.config import AppConfig
+    from core.inspector import FileInspector
+    from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+    from ui.panels.remux_panel import RemuxPanel
+    from ui.panels.remux_panel.functions.workflow import restore
+
+    video = TrackEntry(0, "video", "ffv1", "", "und", "")
+    audio = TrackEntry(1, "audio", "ac3", "192 kbps", "fra", "")
+    subtitle = TrackEntry(2, "subtitle", "subrip", "", "fra", "")
+    imported = RemuxConfig(
+        [SourceInput(source, 0, [video]), SourceInput(source, 1, [audio, subtitle])],
+        tmp_path / "out.mkv", [(0, 0, video.entry_id), (1, 1, audio.entry_id), (1, 2, subtitle.entry_id)],
+        sync_mode="physical", sync_subtitles="none", sync_calibrations={"1": SyncCalibration.linear(2000).to_dict()},
+        keep_chapters=False,
+    )
+    info = FileInspector().inspect(source)
+    panel = RemuxPanel(AppConfig())
+    try:
+        restore(panel, imported, [info, info])
+        if edit_audio:
+            audio.time_shift_ms = 3000
+            panel._track_table.time_shift_edited.emit(audio)
+        cfg = merge_remux_into_encode_config(config(source, tmp_path, []), panel.collect_config())
+        output = assemble(cfg, tmp_path)
+    finally:
+        panel.close()
+    original, result = MatroskaReader(source), MatroskaReader(output)
+    original_times = [block.timestamp_ms for block in original.blocks(track_numbers={original.tracks()[2].number})]
+    output_times = [block.timestamp_ms for block in result.blocks(track_numbers={result.tracks()[2].number})]
+    assert output_times == original_times
+    pcm = subprocess.run([
+        "ffmpeg", "-v", "error", "-i", str(output), "-map", "0:a:0", "-ac", "1", "-ar", "48000",
+        "-f", "f32le", "pipe:1",
+    ], capture_output=True, check=True, timeout=30).stdout
+    samples = np.frombuffer(pcm, dtype="<f4")
+    active = np.flatnonzero(np.abs(samples) > 0.02)
+    assert active.size
+    assert active[0] / 48 == pytest.approx(3000 if edit_audio else 2000, abs=20)

@@ -76,10 +76,10 @@ from core.update_check import (
 )
 from core.update_install import (
     InstallKind,
-    UpdateInstallError,
     apply_update,
     can_self_update,
     collect_update_results,
+    start_update_cleanup,
     detect_install_kind,
     download_update,
     manual_update_hint,
@@ -3566,12 +3566,10 @@ class MainWindow(QMainWindow):
             self.log_warn(translate_text("Suivi des mises à jour illisible : {reason}", reason=exc))
             return
         if stale:
-            def _remove_stale() -> None:
-                for path in stale:
-                    shutil.rmtree(path, ignore_errors=True)
-
-            # Anciennes versions (arbre source, bundle .app) : suppression hors du thread UI.
-            threading.Thread(target=_remove_stale, name="muxiveo-update-cleanup").start()
+            try:
+                start_update_cleanup(stale)
+            except OSError as exc:
+                self.log_warn(translate_text("Nettoyage des anciennes mises à jour différé : {reason}", reason=exc))
         for result in results:
             version = str(result.get("version") or "?")
             if not result.get("ok"):
@@ -3824,28 +3822,74 @@ class MainWindow(QMainWindow):
     def _on_update_downloaded(self, result: object, kind: InstallKind, cancelled: bool) -> None:
         if cancelled or self._running:
             if isinstance(result, Path):
-                try:
-                    if result.is_dir():          # dossier de travail préparé (archive source, application macOS)
-                        shutil.rmtree(result)
-                    else:
-                        result.unlink(missing_ok=True)
-                except OSError as exc:
-                    self.log_error(str(exc))
+                def cleanup(path: Path) -> None:
+                    # Aucun accès Qt ; un ménage lent ne retient ni la GUI ni sa fermeture.
+                    try:
+                        if path.is_dir():
+                            shutil.rmtree(path)
+                        else:
+                            path.unlink(missing_ok=True)
+                    except OSError:
+                        pass  # dossier marqué repris par le ménage au prochain démarrage
+
+                threading.Thread(target=cleanup, args=(result,), name="muxiveo-update-cancel", daemon=True).start()
             self.log_info(translate_text("Mise à jour annulée."))
             return
         if isinstance(result, BaseException):
             self.log_error(str(result))
             QMessageBox.warning(self, translate_text("Mise à jour"), str(result))
             return
-        try:
-            apply_update(kind, cast(Path, result))
-        except UpdateInstallError as exc:
-            self.log_error(str(exc))
-            QMessageBox.warning(self, translate_text("Mise à jour"), str(exc))
+        self._launch_update(kind, cast(Path, result))
+
+    def _launch_update(self, kind: InstallKind, downloaded: Path) -> None:
+        """Installation hors du thread UI : l'assistant d'échange met jusqu'à 15 s à être prêt."""
+        if kind is InstallKind.WINDOWS_INSTALLER:
+            # Le Shell et l'UAC utilisent le fil de la fenêtre propriétaire. L'échec ou le refus
+            # d'élévation laisse cette fenêtre ouverte ; seul un lancement accepté ferme l'app.
+            try:
+                apply_update(kind, downloaded, owner_hwnd=int(self.winId()))
+            except Exception as exc:
+                self.log_error(str(exc))
+                QMessageBox.warning(self, translate_text("Mise à jour"), str(exc))
+                return
+            app = cast(QApplication | None, QApplication.instance())
+            if app is not None:
+                app.quit()
             return
-        app = cast(QApplication | None, QApplication.instance())
-        if app is not None:
-            app.quit()
+        dialog = QProgressDialog(translate_text("Lancement de la mise à jour…"), "", 0, 0, self)
+        dialog.setWindowTitle(translate_text("Mise à jour"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setCancelButton(None)        # échange engagé : rien à annuler côté application
+        dialog.setMinimumDuration(0)
+        bridge = _UpdateDownloadBridge(self)
+
+        def _on_finished(error: object) -> None:
+            dialog.close()
+            dialog.deleteLater()
+            bridge.deleteLater()
+            if isinstance(error, BaseException):
+                self.log_error(str(error))
+                QMessageBox.warning(self, translate_text("Mise à jour"), str(error))
+                return
+            app = cast(QApplication | None, QApplication.instance())
+            if app is not None:
+                app.quit()
+
+        bridge.finished.connect(_on_finished, Qt.ConnectionType.QueuedConnection)
+
+        def _worker() -> None:
+            error: object = None
+            try:
+                apply_update(kind, downloaded)
+            except Exception as exc:  # noqa: BLE001 — remonté au thread UI
+                error = exc
+            try:
+                bridge.finished.emit(error)
+            except RuntimeError:  # fenêtre détruite entre-temps
+                pass
+
+        threading.Thread(target=_worker, name="muxiveo-update-apply", daemon=True).start()
+        dialog.show()
 
     def _post_init_log(self) -> None:
         self.log_info("Muxiveo démarré.")

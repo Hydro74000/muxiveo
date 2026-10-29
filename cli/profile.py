@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from core.profiles.decision import (
     DecisionProfileManager,
     apply_decision_profile,
     profile_output_template,
+    profile_variables,
     validate_decision_profile,
 )
 from core.workflows.preparation_cache import PreparationContext
@@ -36,6 +38,7 @@ from cli.json_io import deep_merge, json_default, load_json
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.remux_config import (
+    apply_donor_calibration,
     merge_tmdb_tag_overrides,
     resolve_final_output,
     resolve_metadata_file_title,
@@ -94,6 +97,14 @@ def load_decision_profile(path: str | Path, config: AppConfig | None = None) -> 
     return profile
 
 
+def snapshot_decision_profile(path: str | Path, config: AppConfig | None = None) -> tuple[tuple[str, str], dict[str, Any]]:
+    """Fige le document validé et son identité, même après réécriture sans changement de date."""
+    resolved = resolve_decision_profile_path(path, config).resolve()
+    profile = load_decision_profile(resolved, config)
+    digest = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return (str(resolved), digest), profile
+
+
 def _refresh_sources_tracks(sources: list[SourceInput], tracks: list[TrackEntry]) -> None:
     by_file_id: dict[str, list[TrackEntry]] = {}
     for track in tracks:
@@ -124,11 +135,11 @@ def _track_order(tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
 
 def _output_variables(profile: dict[str, Any], metadata_job: dict[str, Any] | None) -> dict[str, Any]:
     metadata_variables = (metadata_job or {}).get("variables")
-    profile_variables = profile.get("variables")
-    if isinstance(metadata_variables, dict) and isinstance(profile_variables, dict):
-        return deep_merge(metadata_variables, profile_variables)
-    if isinstance(profile_variables, dict):
-        return dict(profile_variables)
+    variables = profile_variables(profile)
+    if isinstance(metadata_variables, dict) and variables:
+        return deep_merge(metadata_variables, variables)
+    if variables:
+        return variables
     if isinstance(metadata_variables, dict):
         return dict(metadata_variables)
     return {}
@@ -233,35 +244,25 @@ def build_profile_remux_config(
     clean_nfo = options.clean_nfo if options.clean_nfo is not None else metadata.get("clean_nfo", True)
     crossfade_ms = options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80)
 
-    sync_calibrations: dict[str, Any] = {}
-
-    def apply_calibration(calib) -> None:
-        """Comme sans profil : une conversion de cadence impose le mode physique."""
-        nonlocal sync_mode, sync_calibrations
-        if sync_mode == "physical" or calib.converts_audio:
-            sync_mode = "physical"
-            sync_calibrations = {"1": calib.to_dict()}
-        elif len(calib.segments) == 1:
-            if len(sources) > 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-        else:
-            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
-
+    # Comme sans profil (`apply_donor_calibration`) : une calibration de la ligne de commande ou
+    # mesurée remplace celles du document ; celle du document en mode conteneur garde les autres sources.
+    from core.workflows.sync_calibration import SyncCalibration
+    sync_calibrations: dict[str, Any] = dict(metadata.get("sync_calibrations") or {})
+    calib = None
     if options.calibration:
-        from core.workflows.sync_calibration import SyncCalibration
-        apply_calibration(SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig"))))
+        sync_calibrations = {}
+        calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig")))
     elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
         from cli.hybrid import perform_dynamic_sync
+        sync_calibrations = {}
         calib = perform_dynamic_sync(sources, result.tracks, config, options, logger)
-        if calib is not None:
-            apply_calibration(calib)
-    elif sync_mode == "container" and (metadata.get("sync_calibrations") or {}).get("1"):
-        from core.workflows.sync_calibration import SyncCalibration
-        apply_calibration(SyncCalibration.from_dict(metadata["sync_calibrations"]["1"]))
-    else:
-        sync_calibrations = dict(metadata.get("sync_calibrations", {}))
+    elif sync_mode == "container" and sync_calibrations.get("1"):
+        calib = SyncCalibration.from_dict(sync_calibrations["1"])
+    if calib is not None:
+        sync_mode, sync_calibrations = apply_donor_calibration(
+            calib, sync_mode=sync_mode, sources=sources, sync_subtitles=sync_subtitles,
+            sync_calibrations=sync_calibrations,
+        )
 
     remux_config = RemuxConfig(
         sources=sources,

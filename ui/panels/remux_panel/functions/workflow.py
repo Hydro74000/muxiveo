@@ -366,10 +366,16 @@ def load(panel, path):
 def restore(panel, config, infos, session=None):
     from ui.panels.remux_panel.models import SourceFile, _pick_file_color
     from core.workflows.remux_mapping import resolve_mapped_tracks
+    from core.workflows.sync_calibration import resolve_track_sync
     if len(config.sources) != len(infos):
         raise ValueError("Nombre d'inspections différent du nombre de sources.")
     session = session if isinstance(session, dict) else {}
-    ordered = [m.track for m in resolve_mapped_tracks(config)]
+    # Le mapping peut projeter les offsets sur des copies ; la table doit garder les pistes
+    # d'origine, dont les identités de source sont réaffectées ci-dessous.
+    original_tracks = {(source.file_index, track.entry_id): track
+                       for source in config.sources for track in source.tracks}
+    ordered = [original_tracks[(mapped.source_file_index, mapped.track.entry_id)]
+               for mapped in resolve_mapped_tracks(config)]
     ordered += [t for s in config.sources for t in s.tracks if t not in ordered]
     if isinstance(session.get("row_order"), list):
         by_key = {
@@ -466,6 +472,12 @@ def restore(panel, config, infos, session=None):
         panel._chapter_panel.reset_chapters(config.chapter_overrides)
         panel._chapter_panel._modified = True
     panel._sync_entry_calibrations()
+    for track in panel._track_table.current_tracks():
+        # Le dialogue d'édition doit partir du décalage réellement appliqué, y compris pour
+        # détecter une remise à zéro d'une calibration linéaire importée avec un champ à zéro.
+        track.time_shift_ms, _calibration = resolve_track_sync(
+            track.sync_calibration, int(track.time_shift_ms or 0), track.track_type,
+        )
     panel._track_table.refresh_all_entries_info()
     panel._workflow_loading = False
     panel.setEnabled(True)

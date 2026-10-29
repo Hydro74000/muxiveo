@@ -714,3 +714,26 @@ def test_convert_p7_rpu_to_p81_uses_editor_mode_2(tmp_path: Path, summary: str, 
         assert not out.with_suffix(".mode2.json").exists()
     else:
         assert calls == []
+
+
+@pytest.mark.parametrize("presets", [[], [{"id": 0, "left": 0, "top": 0, "right": 0, "bottom": 0}]])
+def test_resize_without_l5_offsets_copies_the_rpu(tmp_path: Path, presets):
+    """Redimensionnement seul, L5 absent ou nul : RPU copié tel quel, ni comptage ni éditeur
+    (un comptage illisible n'arrête plus l'encodage)."""
+    import json
+    rpu = tmp_path / "rpu.bin"
+    rpu.write_bytes(b"rpu")
+    out = tmp_path / "out.bin"
+    calls: list[str] = []
+
+    def run(cmd):
+        calls.append(cmd[1])
+        if "export" in cmd:
+            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({"crop": True, "presets": presets, "edits": {}}))
+        return ""
+
+    res = align_dovi_rpu_geometry(dovi_tool_bin="dovi_tool", rpu_input=rpu, output_rpu=out,
+                                  scale=(0.5, 0.5), run_cmd=run)
+    assert res == out and out.read_bytes() == b"rpu"
+    assert calls == ["export"]
+    assert not (tmp_path / "out.l5.json").exists()

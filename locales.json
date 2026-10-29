@@ -1,4 +1,28 @@
 {
+  "La vérification recalcule la synchronisation de chaque paire. Les décalages et coupures déjà réglés seront remplacés par l'analyse automatique. Continuer ?": {
+    "fra": "La vérification recalcule la synchronisation de chaque paire. Les décalages et coupures déjà réglés seront remplacés par l'analyse automatique. Continuer ?",
+    "eng": "Verification recalculates synchronization for every pair. Existing offsets and cuts will be replaced by automatic analysis. Continue?"
+  },
+  "Vérifiez la synchronisation audio avant d'ouvrir cet élément dans le Conteneur.": {
+    "fra": "Vérifiez la synchronisation audio avant d'ouvrir cet élément dans le Conteneur.",
+    "eng": "Check audio synchronization before opening this item in Container."
+  },
+  "Les réglages ont changé. Analysez à nouveau cet élément.": {
+    "fra": "Les réglages ont changé. Analysez à nouveau cet élément.",
+    "eng": "Settings have changed. Analyze this item again."
+  },
+  "Le plan a changé pendant l'analyse de hauteur.": {
+    "fra": "Le plan a changé pendant l'analyse de hauteur.",
+    "eng": "The plan changed during pitch analysis."
+  },
+  "La méthode de conversion de cadence n'a pas pu être déterminée.": {
+    "fra": "La méthode de conversion de cadence n'a pas pu être déterminée.",
+    "eng": "The frame rate conversion method could not be determined."
+  },
+  "Nettoyage des anciennes mises à jour différé : {reason}": {
+    "fra": "Nettoyage des anciennes mises à jour différé : {reason}",
+    "eng": "Cleanup of previous updates deferred: {reason}"
+  },
   "Nom de sortie": {
     "fra": "Nom de sortie",
     "eng": "Output name"
@@ -9370,5 +9394,13 @@
   "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?": {
     "fra": "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?",
     "eng": "Verification measures the sync of every pair: the “{strategy}” strategy will be replaced by automatic analysis. Continue?"
+  },
+  "Lancement de la mise à jour…": {
+    "fra": "Lancement de la mise à jour…",
+    "eng": "Starting the update…"
+  },
+  "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).": {
+    "fra": "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).",
+    "eng": "Sync of “{source}” is shared by all its tracks (cuts or cadence): offset {offset} ms of track #{idx} kept, {ignored} ms ignored."
   }
 }

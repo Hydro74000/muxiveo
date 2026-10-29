@@ -8,14 +8,12 @@ Authentification TMDB via :
 """
 from __future__ import annotations
 
-import copy
 import datetime
 import json
 import mimetypes
 import os
 import re
 import sys
-import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from core.logging import get_logger
+from core.session_cache import SessionCache
 from core.tls import TlsVerificationError, urlopen_tls
 from core.version import APP_ENV_PREFIX, APP_LOGGER_ROOT, APP_USER_AGENT
 
@@ -360,20 +359,12 @@ def default_tmdb_bearer_token() -> str:
     return os.environ.get(_TMDB_BEARER_TOKEN_ENV, "").strip() or _TMDB_DEFAULT_BEARER_TOKEN
 
 
-class TmdbResponseCache:
-    """Réponses JSON TMDB par URL, partagées entre fetchers de threads différents (accès sous verrou)."""
+class TmdbResponseCache(SessionCache[str, Any]):
+    """Réponses JSON TMDB par URL, partagées entre fetchers de threads différents (accès sous verrou),
+    les `max_entries` plus récemment utilisées."""
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._responses: dict[str, Any] = {}
-
-    def get(self, key: str) -> Any | None:
-        with self._lock:
-            return self._responses.get(key)
-
-    def put(self, key: str, value: Any) -> None:
-        with self._lock:
-            self._responses[key] = value
+    def __init__(self, *, max_entries: int = 256) -> None:
+        super().__init__(max_entries)
 
 
 class TmdbFetcher:
@@ -452,10 +443,13 @@ class TmdbFetcher:
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
         cache_key = f"{self._bearer_token}\n{url}"
-        cached = self._response_cache.get(cache_key) if self._response_cache is not None else None
-        if cached is not None:
-            return copy.deepcopy(cached)
         req = urllib.request.Request(url, headers=headers)
+        if self._response_cache is not None:
+            return self._response_cache.get_or_load(cache_key, lambda: self._request_json(req, endpoint))
+        return self._request_json(req, endpoint)
+
+    def _request_json(self, req: urllib.request.Request, endpoint: str) -> dict:
+        """Charge une réponse ; le cache éventuel regroupe les requêtes identiques autour de cet appel."""
         try:
             with self._urlopen(req, timeout=12) as resp:
                 body = resp.read()
@@ -463,8 +457,6 @@ class TmdbFetcher:
                 if content_encoding:
                     body = self._decode_http_body(body, content_encoding)
                 data = json.loads(body.decode("utf-8"))
-                if self._response_cache is not None:
-                    self._response_cache.put(cache_key, copy.deepcopy(data))
                 return data
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
