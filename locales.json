@@ -9414,5 +9414,17 @@
   "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.": {
     "fra": "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.",
     "eng": "{origin}: cuts or cadence specific to track #{idx} (subtitles without mirroring): subtitle rewritten, its source audio is not affected."
+  },
+  "{origin} : coupures ou cadence propres à la piste #{idx} (synchro propre) : piste réécrite, les autres pistes de sa source ne sont pas concernées.": {
+    "fra": "{origin} : coupures ou cadence propres à la piste #{idx} (synchro propre) : piste réécrite, les autres pistes de sa source ne sont pas concernées.",
+    "eng": "{origin}: cuts or cadence specific to track #{idx} (own sync): track rewritten, the other tracks of its source are not affected."
+  },
+  "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (synchro propre).": {
+    "fra": "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (synchro propre).",
+    "eng": "{origin}: {offset} ms offset applied to track #{idx} only (own sync)."
+  },
+  "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.": {
+    "fra": "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.",
+    "eng": "New audio sync for track #{idx}: its imported own sync is replaced, it follows its source again."
   }
 }

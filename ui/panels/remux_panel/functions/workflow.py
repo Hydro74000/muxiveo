@@ -172,7 +172,12 @@ def _remap_selector_sources(job, compact_to_full):
         }
 
 
-def _session_job(panel):
+def _session_job(panel, *, identity_selectors=True):
+    """Job exact de l'état du panneau + bloc `_muxiveo_session` (autosauvegarde, workflow sauvegardé).
+
+    `identity_selectors` : pistes désignées par (source, type, id) pour la reprise de session ;
+    faux pour la sauvegarde manuelle, dont les sélecteurs descriptifs restent réutilisables en template.
+    """
     source_index = {source.id: index for index, source in enumerate(panel._source_files)}
     ready_indices = [index for index, source in enumerate(panel._source_files) if source.info is not None]
     pending_indices = [index for index, source in enumerate(panel._source_files) if source.info is None]
@@ -194,7 +199,7 @@ def _session_job(panel):
             },
         )
         # Pistes prises désignées par leur identité, modifications à part.
-        job = remux_config_to_exact_job(compact, identity_selectors=True)
+        job = remux_config_to_exact_job(compact, identity_selectors=identity_selectors)
         ready_sources = list(job["sources"])
         _remap_selector_sources(job, {compact: full for full, compact in full_to_compact.items()})
         job["sources"] = [

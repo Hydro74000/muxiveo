@@ -5,6 +5,7 @@ import copy
 
 import pytest
 
+from core.i18n import translate_text
 from core.workflows.cadence import detect_cadence_from_metadata
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
 from core.workflows.encode.remux_bridge import merge_remux_into_encode_config
@@ -239,3 +240,95 @@ def test_zero_start_own_calibration_stays_cancelable_after_table_edit(chain):
     assert panel._track_table._has_cancelable_auto_sync(subtitle)
     panel._on_track_order_changed()
     assert panel._track_table._has_cancelable_auto_sync(subtitle)
+
+
+def test_save_workflow_preserves_sync_links(chain, tmp_path, monkeypatch):
+    """« Sauvegarder le workflow… » : les références en chaîne survivent au rechargement."""
+    from pathlib import Path
+
+    from cli.inspection import FileInspector
+    from cli.logging import Logger
+    from cli.options import CommonOptions
+    from cli.remux_config import build_remux_config
+    from core.workflows.workflow_store import load_workflow, save_workflow
+
+    panel, tracks, _logs = chain
+    for _audio_track, subtitle in tracks.values():
+        subtitle.codec = subtitle.orig_codec = "SUBRIP"  # Codec de l'inspection simulée : sélecteurs résolus.
+    _sync(panel, tracks, "B", "A", 1000)
+    _sync(panel, tracks, "C", "B", 100)
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    path = tmp_path / "saved.exact-job.json"
+    save_workflow(path, panel._current_exact_job())
+    job = load_workflow(path)
+    # Sélecteurs descriptifs : le document reste réutilisable comme template CLI.
+    assert all(set(item["selector"]) != {"source", "type", "id"} for item in job["tracks"])
+    infos = {source.path.resolve(): source.info for source in panel._source_files}
+    monkeypatch.setattr(FileInspector, "inspect", lambda _self, source, *_args, **_kwargs: infos[Path(source).resolve()])
+    config = build_remux_config(job, panel._config, CommonOptions(), Logger())
+    workflow.restore(panel, config, [infos[source.path.resolve()] for source in config.sources],
+                     job["_muxiveo_session"])
+    b_id, c_id = (source.id for source in panel._source_files[1:])
+    restored = panel._track_table.current_tracks()
+    b_audio = next(track for track in restored if track.file_id == b_id and track.is_audio)
+    c_audio = next(track for track in restored if track.file_id == c_id and track.is_audio)
+    assert c_audio.time_shift_ms == 1100
+    b_audio.time_shift_ms = 2000
+    panel._track_table.time_shift_edited.emit(b_audio)
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(2100)
+
+
+def _own_reference(chain, tmp_path):
+    """Audio de B à synchro propre importée (+1 200 ms) ; C synchronisée face à elle à +100 ms."""
+    panel, own, _other = _restore_own(chain, tmp_path, "audio", SyncCalibration.linear(1200), mode="container")
+    tracks = panel._track_table.current_tracks()
+    a_audio, c_audio = (next(track for track in tracks if track.file_id == source.id and track.is_audio)
+                        for source in (panel._source_files[0], panel._source_files[2]))
+    panel._on_audio_sync_done(c_audio.entry_id, own.entry_id, 100, .95, None)
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(1300)
+    return panel, own, a_audio, c_audio
+
+
+def test_own_reference_offset_edit_updates_dependent(chain, tmp_path):
+    panel, own, _a_audio, c_audio = _own_reference(chain, tmp_path)
+    own.time_shift_ms = 2000
+    panel._track_table.time_shift_edited.emit(own)
+    assert panel._track_calibration(own) == SyncCalibration.linear(2000)
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(2100)
+
+
+def test_own_reference_cancel_updates_dependent(chain, tmp_path):
+    panel, own, _a_audio, c_audio = _own_reference(chain, tmp_path)
+    panel._on_auto_sync_cancel_requested(own)
+    assert panel._track_calibration(own) == SyncCalibration.linear(0)
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(100)
+
+
+def test_own_reference_studio_updates_dependent_and_breaks_loops(chain, tmp_path):
+    """Synchro Studio sur une piste à synchro propre : dépendantes recalculées ; référence qui en
+    découle (boucle) détachée, la nouvelle mesure prime."""
+    panel, own, a_audio, c_audio = _own_reference(chain, tmp_path)
+    panel._apply_track_only_sync(own, a_audio, SyncCalibration.linear(800), "Synchro Studio")
+    assert panel._track_calibration(own) == SyncCalibration.linear(800)
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(900)
+    panel._apply_track_only_sync(own, c_audio, SyncCalibration.linear(50), "Synchro Studio")
+    assert c_audio.file_id not in panel._sync_links
+    assert panel._track_calibration(c_audio) == SyncCalibration.linear(0)
+    assert panel._track_calibration(own) == SyncCalibration.linear(50)
+
+
+def test_audio_resync_replaces_target_own_calibration(chain, tmp_path):
+    """Nouvelle synchro audio d'une piste à synchro propre importée : elle rejoint sa source, mesure appliquée."""
+    panel, own, other = _restore_own(chain, tmp_path, "audio", SyncCalibration.linear(1200), mode="container")
+    _panel, _tracks, logs = chain
+    a_audio = next(track for track in panel._track_table.current_tracks()
+                   if track.file_id == panel._source_files[0].id and track.is_audio)
+    panel._on_audio_sync_done(own.entry_id, a_audio.entry_id, 2500, .95, None)
+    assert own.entry_id not in panel._own_sync_entry_ids
+    assert panel._track_calibration(own) == SyncCalibration.linear(2500)
+    assert panel._track_calibration(other) == SyncCalibration.linear(2500)
+    mapped = {item.track.entry_id: item.track.time_shift_ms for item in resolve_mapped_tracks(panel.collect_config())}
+    assert mapped[own.entry_id] == 2500
+    assert ("INFO", translate_text(
+        "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, "
+        "elle suit de nouveau sa source.", idx=own.mkv_tid)) in logs
