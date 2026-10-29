@@ -354,6 +354,31 @@ def _swap_commands(kind: InstallKind) -> tuple[list[str], list[str]]:
 
 def _start_swap_helper(kind: InstallKind, work: Path) -> None:
     """Lance l'échange détaché, qui attend la sortie de l'application ; rend la main une fois prêt."""
+    try:
+        helper = _launch_swap_helper(kind, work)
+    except OSError as exc:
+        # Copie ou lancement impossible (disque plein, interpréteur absent) : rien n'est engagé.
+        shutil.rmtree(work, ignore_errors=True)
+        raise UpdateInstallError(f"Lancement de la mise à jour impossible : {exc}") from exc
+    deadline = time.monotonic() + _HELPER_READY_TIMEOUT_S
+    while not (work / update_apply.READY_FILE).exists():
+        if helper.poll() is not None or time.monotonic() > deadline:
+            if helper.poll() is None:
+                helper.kill()
+            reason = ""
+            result = work / update_apply.RESULT_FILE
+            if result.is_file():
+                try:
+                    reason = str(json.loads(result.read_text(encoding="utf-8")).get("error") or "")
+                except (OSError, ValueError):
+                    reason = ""
+            shutil.rmtree(work, ignore_errors=True)
+            raise UpdateInstallError(f"Lancement de la mise à jour impossible{' : ' + reason if reason else '.'}")
+        time.sleep(0.05)
+
+
+def _launch_swap_helper(kind: InstallKind, work: Path) -> subprocess.Popen:
+    """Copie de l'assistant (archive source) et lancement détaché."""
     if kind is InstallKind.MACOS_APP:
         command = [sys.executable, "--apply-update"]
     else:
@@ -376,30 +401,17 @@ def _start_swap_helper(kind: InstallKind, work: Path) -> None:
     else:
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         helper = subprocess.Popen(command, start_new_session=True, **kwargs)  # nosec B603
-    deadline = time.monotonic() + _HELPER_READY_TIMEOUT_S
-    while not (work / update_apply.READY_FILE).exists():
-        if helper.poll() is not None or time.monotonic() > deadline:
-            if helper.poll() is None:
-                helper.kill()
-            reason = ""
-            result = work / update_apply.RESULT_FILE
-            if result.is_file():
-                try:
-                    reason = str(json.loads(result.read_text(encoding="utf-8")).get("error") or "")
-                except (OSError, ValueError):
-                    reason = ""
-            shutil.rmtree(work, ignore_errors=True)
-            raise UpdateInstallError(f"Lancement de la mise à jour impossible{' : ' + reason if reason else '.'}")
-        time.sleep(0.05)
+    return helper
 
 
-def collect_update_results(kind: InstallKind | None = None) -> list[dict]:
-    """Résultats des mises à jour par échange de dossiers (signalés une fois), ménage des dossiers de travail."""
+def collect_update_results(kind: InstallKind | None = None, *, discard: list[Path] | None = None) -> list[dict]:
+    """Résultats des mises à jour par échange de dossiers (signalés une fois), ménage des dossiers de travail
+    (`discard` : dossiers à supprimer confiés à l'appelant, voir `update_apply.collect_results`)."""
     kind = detect_install_kind() if kind is None else kind
     if kind not in _SWAP_KINDS:
         return []
     try:
-        return update_apply.collect_results(installation_root(kind).parent)
+        return update_apply.collect_results(installation_root(kind).parent, discard=discard)
     except OSError:
         return []
 

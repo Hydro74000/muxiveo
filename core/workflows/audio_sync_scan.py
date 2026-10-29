@@ -290,15 +290,21 @@ class AudioSyncScanner:
                 mismatch=cadence_mismatch,
             )
         except Exception:
+            # Annulation : jamais confondue avec une analyse sans conclusion (atempo décidé à tort).
+            self._check_cancelled()
             return None
 
     def _with_output_method_bias(self, calibration: SyncCalibration, reference: AudioSyncTrack,
                                  donor: AudioSyncTrack, samples, window: float, measure_method: str,
-                                 measure_kwargs: dict[str, Any], log) -> SyncCalibration:
+                                 measure_kwargs: dict[str, Any], log,
+                                 samples_filter: str | None = None) -> SyncCalibration:
         """Synchro mesurée en `measure_method`, sortie dans une autre méthode : l'écart propre à
         celle-ci (atempo : avance de 6 à 22 ms selon cadence et débit, fenêtres WSOLA), mesuré aux
         positions les plus sûres, est ajouté à toute la synchro. Moins de 3 mesures
-        concordantes : synchro de la mesure conservée (écart inférieur au seuil de perception)."""
+        concordantes : synchro de la mesure conservée (écart inférieur au seuil de perception).
+
+        `samples_filter` : filtre des mesures ponctuelles ; égal au filtre exact, elles sont reprises
+        telles quelles (même position, fenêtre et options) au lieu d'être refaites."""
         import numpy as np
         from core.workflows.cadence import CadenceType, build_cadence_audio_filter
 
@@ -311,12 +317,16 @@ class AudioSyncScanner:
         output_filter = build_cadence_audio_filter(mismatch, output_method)
         differences: list[float] = []
         exact_measured = 0
+        reuse = samples_filter == exact_filter
         for sample in sorted(samples, key=lambda item: -item["confidence"])[:_OUTPUT_BIAS_POSITIONS]:
             self._check_cancelled()
             position = sample["start_ms"] / 1000.0
             try:
-                exact, _ = self.measure(reference, donor, position, window, cadence_filter=exact_filter,
-                                        speed_factor=mismatch.speed_factor, **measure_kwargs)
+                if reuse:
+                    exact = sample["shift_ms"]
+                else:
+                    exact, _ = self.measure(reference, donor, position, window, cadence_filter=exact_filter,
+                                            speed_factor=mismatch.speed_factor, **measure_kwargs)
                 exact_measured += 1
                 applied, _ = self.measure(reference, donor, position, window, cadence_filter=output_filter,
                                           speed_factor=mismatch.speed_factor, **measure_kwargs)
@@ -372,6 +382,7 @@ class AudioSyncScanner:
                     speed_factor=mismatch.speed_factor,
                 )
             except AudioSyncError:
+                self._check_cancelled()
                 offset_ms = calibration.segments[index].shift_ms
             analysis = self._analyze_cadence_pitch(
                 reference, donor, window_start + window / 2 - 2.0, offset_ms, mismatch,
@@ -548,6 +559,8 @@ class AudioSyncScanner:
                     active_cadence_method = pitch_analysis.selected_method
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
 
+        # Filtre des mesures ponctuelles (celui de l'analyse continue peut changer ensuite).
+        samples_filter = filter_str
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
         weakest = min(s["confidence"] for s in samples)
         quick = detect_cuts and self.quick_check and spread <= drift_threshold_ms
@@ -567,7 +580,7 @@ class AudioSyncScanner:
                 cadence_pitch_analysis=pitch_analysis,
                 quick_check=quick,
                 cadence_method_auto=is_auto_method,
-            ), reference, donor, samples, window, measure_method, measure_kwargs, log)
+            ), reference, donor, samples, window, measure_method, measure_kwargs, log, samples_filter)
 
         from core.workflows.cadence import detect_cadence_from_acoustic_samples
         acoustic_mismatch = detect_cadence_from_acoustic_samples(samples) if spread > drift_threshold_ms else None
@@ -592,7 +605,7 @@ class AudioSyncScanner:
                     cadence_audio_method=active_cadence_method,
                     cadence_pitch_analysis=pitch_analysis,
                     cadence_method_auto=is_auto_method,
-                ), reference, donor, samples, window, measure_method, measure_kwargs, log)
+                ), reference, donor, samples, window, measure_method, measure_kwargs, log, samples_filter)
             cadence_mismatch = acoustic_mismatch
             speed_factor = acoustic_mismatch.speed_factor
             filter_str = build_cadence_audio_filter(cadence_mismatch, measure_method)
@@ -654,7 +667,7 @@ class AudioSyncScanner:
             cadence_audio_method=active_cadence_method,
             cadence_pitch_analysis=pitch_analysis,
             cadence_method_auto=is_auto_method,
-        ), reference, donor, samples, window, measure_method, measure_kwargs, log)
+        ), reference, donor, samples, window, measure_method, measure_kwargs, log, samples_filter)
         if unverified:
             proposal = AudioSyncReviewRequired(
                 f"Synchro cohérente à valider : {len(unverified)} zone(s) sans correspondance, "

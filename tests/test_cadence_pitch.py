@@ -379,3 +379,24 @@ def test_atempo_output_is_measured_exactly_then_compensated(monkeypatch, atempo_
     assert all("asetrate" in item for item in filters[:6])
     assert calibration.segments[0].shift_ms == pytest.approx(311.0 if atempo_measurable else 300.0)
     assert any("atempo" in line and ("compensé" if atempo_measurable else "non mesurable") in line for line in logs)
+
+
+def test_cancelled_cadence_method_resolution_is_never_decided_as_atempo(monkeypatch):
+    """Annulation pendant l'analyse de hauteur : erreur remontée, jamais une méthode atempo décidée."""
+    import threading
+    from core.workflows.audio_sync import AudioSyncError
+
+    cancel = threading.Event()
+    scanner = AudioSyncScanner("ffmpeg", "ffprobe", cancel_event=cancel)
+    monkeypatch.setattr(scanner, "duration", lambda _track: 1000.0)
+
+    def cancelled(*_args, **_kwargs):
+        cancel.set()
+        raise AudioSyncError("Analyse annulée.")
+
+    monkeypatch.setattr(scanner, "measure", cancelled)
+    monkeypatch.setattr(scanner, "pitch_samples", cancelled)
+    tracks = (AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("donor.mkv"), 2))
+    auto = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=_PAL, cadence_audio_method="auto")
+    with pytest.raises(AudioSyncError, match="annulée"):
+        scanner.resolve_cadence_method(*tracks, auto)

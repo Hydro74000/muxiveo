@@ -305,12 +305,12 @@ def align_dovi_rpu_geometry(
     scale: tuple[float, float] | None = None,
     run_cmd: Callable[[list[str]], object] | None = None,
 ) -> Path:
-    """Translate each existing L5 preset, retaining its exact frame ranges.
+    """Décale chaque préréglage L5 existant en conservant ses plages d'images exactes.
 
-    Cropping removes borders (saturating at the picture edge), then ``scale``
-    (horizontal, vertical) maps the remaining offsets onto the resized output.
-    Never use active_area.crop/all to flatten scene-dependent offsets. Mode 0
-    preserves mapping, trims and the original RPU profile.
+    Le recadrage retire les bordures (borné au bord de l'image), puis ``scale``
+    (horizontal, vertical) ramène les décalages restants sur la sortie redimensionnée.
+    Jamais active_area.crop/all, qui aplatirait des décalages propres à chaque scène.
+    Le mode 0 conserve mapping, trims et profil d'origine du RPU.
     """
     def run(cmd: list[str]) -> object:
         if run_cmd is not None:

@@ -9366,5 +9366,9 @@
   "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.": {
     "fra": "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.",
     "eng": "Cadence conversion method for “{source}” not resolved (reference track not found): atempo, track pitch kept."
+  },
+  "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?": {
+    "fra": "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?",
+    "eng": "Verification measures the sync of every pair: the “{strategy}” strategy will be replaced by automatic analysis. Continue?"
   }
 }

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generator
 
+from core.media_info_fetcher import TmdbResponseCache
+
 if TYPE_CHECKING:
     from core.inspector import FileInfo, FileInspector
 
@@ -53,8 +55,8 @@ class PreparationCache:
         self._lock = threading.Lock()
         self._entries: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
         self._max_entries = max_entries
-        #: Réponses JSON TMDB par URL (lecture seule pour le fetcher).
-        self.tmdb_responses: dict[str, Any] = {}
+        #: Réponses JSON TMDB par URL, partagées par les préparations parallèles.
+        self.tmdb_responses = TmdbResponseCache()
 
     def _get(self, key: tuple[Any, ...]) -> Any | None:
         with self._lock:

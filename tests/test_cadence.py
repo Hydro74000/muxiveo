@@ -506,9 +506,11 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
     assert sorted(envelope_calls, key=str) == [None, exact]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
-    # Mesures ponctuelles en asetrate ; sortie atempo : son écart mesuré ensuite (nul ici).
+    # Mesures ponctuelles en asetrate ; sortie atempo : son écart mesuré ensuite (nul ici), face
+    # aux mesures ponctuelles reprises telles quelles (aucune mesure exacte refaite).
     assert all(c[1] == exact for c in measure_calls[:6])
-    assert {c[1] for c in measure_calls[6:]} == {exact, "atempo=24000/25025"}
+    assert {c[1] for c in measure_calls[6:]} == {"atempo=24000/25025"}
+    assert len(measure_calls) == 6 + 4
     assert all(math.isclose(c[2], 24000.0 / 25025.0) for c in measure_calls)
     assert calib.cadence_audio_method == "atempo" and calib.segments[0].shift_ms == pytest.approx(100.0)
 

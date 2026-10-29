@@ -238,7 +238,7 @@ def build_profile_remux_config(
     def apply_calibration(calib) -> None:
         """Comme sans profil : une conversion de cadence impose le mode physique."""
         nonlocal sync_mode, sync_calibrations
-        if sync_mode == "physical" or _has_cadence(calib):
+        if sync_mode == "physical" or calib.converts_audio:
             sync_mode = "physical"
             sync_calibrations = {"1": calib.to_dict()}
         elif len(calib.segments) == 1:
@@ -281,10 +281,6 @@ def build_profile_remux_config(
         sync_calibrations=sync_calibrations,
     )
     return remux_config, result.report
-
-
-def _has_cadence(calib) -> bool:
-    return calib.converts_audio
 
 
 def profile_validate(profile_path: str, *, json_output: bool = False, config: AppConfig | None = None) -> int:

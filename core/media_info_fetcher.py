@@ -15,6 +15,7 @@ import mimetypes
 import os
 import re
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -359,6 +360,22 @@ def default_tmdb_bearer_token() -> str:
     return os.environ.get(_TMDB_BEARER_TOKEN_ENV, "").strip() or _TMDB_DEFAULT_BEARER_TOKEN
 
 
+class TmdbResponseCache:
+    """Réponses JSON TMDB par URL, partagées entre fetchers de threads différents (accès sous verrou)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._responses: dict[str, Any] = {}
+
+    def get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._responses.get(key)
+
+    def put(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._responses[key] = value
+
+
 class TmdbFetcher:
     """
     Client léger pour l'API TMDB v3 (urllib stdlib, aucune dépendance externe).
@@ -376,7 +393,7 @@ class TmdbFetcher:
         *,
         language: str = "en-US",
         bearer_token: str = "",
-        response_cache: dict[str, Any] | None = None,
+        response_cache: TmdbResponseCache | None = None,
     ) -> None:
         self._key = api_key.strip()
         self._bearer_token = bearer_token.strip()
@@ -435,8 +452,9 @@ class TmdbFetcher:
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
         cache_key = f"{self._bearer_token}\n{url}"
-        if self._response_cache is not None and cache_key in self._response_cache:
-            return copy.deepcopy(self._response_cache[cache_key])
+        cached = self._response_cache.get(cache_key) if self._response_cache is not None else None
+        if cached is not None:
+            return copy.deepcopy(cached)
         req = urllib.request.Request(url, headers=headers)
         try:
             with self._urlopen(req, timeout=12) as resp:
@@ -446,7 +464,7 @@ class TmdbFetcher:
                     body = self._decode_http_body(body, content_encoding)
                 data = json.loads(body.decode("utf-8"))
                 if self._response_cache is not None:
-                    self._response_cache[cache_key] = copy.deepcopy(data)
+                    self._response_cache.put(cache_key, copy.deepcopy(data))
                 return data
         except urllib.error.HTTPError as exc:
             if exc.code == 401:

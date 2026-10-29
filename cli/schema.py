@@ -31,6 +31,7 @@ def _selector_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "track_type": {"enum": sorted(TRACK_TYPES)},
             "position": {"type": "integer"},
             "type_index": {"type": "integer"},
+            "position_order": {"enum": ["source"]},
             "id": {"type": "integer"},
             "mkv_tid": {"type": "integer"},
             "stream": {"type": "integer"},

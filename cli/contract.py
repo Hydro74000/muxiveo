@@ -128,7 +128,7 @@ def _validate_selector(errors: list[str], path: str, value: Any) -> None:
     for key in ("source", "source_index", "position", "type_index", "id", "mkv_tid", "stream"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
-    for key in ("type", "track_type", "codec", "language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "entry_id"):
+    for key in ("type", "track_type", "codec", "language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "entry_id", "position_order"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
     if "codecs" in value:

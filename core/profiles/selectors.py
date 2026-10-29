@@ -97,15 +97,33 @@ def _flag_value(track: TrackEntry, name: str, *, original: bool = True) -> bool:
     return bool(getattr(track, attr, False))
 
 
+# Rang des sélecteurs écrits depuis 5.1 : ordre de la source (mkv_tid), variantes exclues.
+SOURCE_POSITION_ORDER = "source"
+
+
 def _track_position(
     track: TrackEntry,
     tracks: list[TrackEntry],
     *,
     source_index: int | None,
     source_index_by_file_id: Mapping[str, int] | None = None,
+    legacy: bool = False,
 ) -> int:
     """Rang de la piste parmi celles de même type de sa source, dans l'ordre
-    de la source (mkv_tid) : l'ordre d'affichage et les variantes n'y comptent pas."""
+    de la source (mkv_tid) : l'ordre d'affichage et les variantes n'y comptent pas.
+
+    ``legacy`` : règle des sélecteurs sans ``position_order`` (versions antérieures), rang dans
+    l'ordre de la liste, variantes comprises.
+    """
+    if legacy:
+        position = 0
+        for candidate in tracks:
+            if candidate is track:
+                return position
+            if (candidate.track_type == track.track_type
+                    and _source_index_for_track(candidate, source_index_by_file_id) == source_index):
+                position += 1
+        return position
     return sum(
         1
         for candidate in tracks
@@ -303,6 +321,8 @@ def track_selector_for_entry(
             source_index=resolved_source,
             source_index_by_file_id=source_index_by_file_id,
         ),
+        # Règle du rang : sans ce repère, celle des exact-jobs antérieurs (ordre de la liste).
+        "position_order": SOURCE_POSITION_ORDER,
         "codec": track.orig_codec or track.codec,
         # Le sélecteur doit décrire la piste d'entrée. Si sa langue d'origine
         # est vide, une langue saisie dans l'UI ne doit pas empêcher la reprise.
@@ -387,6 +407,7 @@ def _matches_selector(
             tracks,
             source_index=track_source,
             source_index_by_file_id=source_index_by_file_id,
+            legacy=selector.get("position_order") != SOURCE_POSITION_ORDER,
         )
         if position != expected_position:
             return False
@@ -510,7 +531,7 @@ def _relaxed_selector_variants(selector: Mapping[str, Any]) -> list[dict[str, An
         seen.add(key)
         variants.append(variant)
 
-    positional = {"position", "type_index", "id", "mkv_tid", "stream", "entry_id"}
+    positional = {"position", "position_order", "type_index", "id", "mkv_tid", "stream", "entry_id"}
     noisy = {"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"}
     if track_type == "video":
         add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains"})

@@ -144,12 +144,18 @@ def extract_app_from_dmg(dmg: Path, destination: Path, app_name: str = MACOS_APP
     return destination / app_name
 
 
+def _no_window_kwargs() -> dict:
+    """Windows : aucune console ouverte par les contrôles (l'assistant détaché n'en a pas).
+    Équivalent de `core/subprocess_utils.py`, que ce module autonome ne peut pas importer."""
+    return {"creationflags": 0x08000000} if os.name == "nt" else {}      # CREATE_NO_WINDOW
+
+
 def _run(command: list[str], label: str, timeout: float = 600.0) -> None:
     try:
         # Argv construit par ce module (outils système), sans shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(command, check=False, capture_output=True, text=True,  # nosec B603
-                                timeout=timeout)
+                                timeout=timeout, **_no_window_kwargs())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise UpdateApplyError(f"Échec de {label} : {exc}") from exc
     if result.returncode != 0:
@@ -220,7 +226,8 @@ def probe(template: list[str], root: Path, version: str) -> None:
         # Commande enregistrée par l'application, dossier contrôlé, sans shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(expand(template, root) + ["--cli", "version"], cwd=root,  # nosec B603
-                                capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env, check=False)
+                                capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env, check=False,
+                                **_no_window_kwargs())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise UpdateApplyError(f"La nouvelle version ne démarre pas : {exc}") from exc
     announced = [m.group(1) for line in result.stdout.splitlines() if (m := _ANNOUNCED_VERSION_RE.match(line.strip()))]
@@ -413,7 +420,8 @@ def _write_result(work: Path, **fields: object) -> None:
 
 
 def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
-    """Après la sortie de l'application : report, échange, contrôle, relance ; retour arrière à la moindre erreur."""
+    """Après la sortie de l'application : report, échange, contrôle, puis compte rendu et relance ;
+    retour arrière à la moindre erreur avant le compte rendu."""
     work = work.resolve()
     doc = json.loads((work / PREPARED_FILE).read_text(encoding="utf-8"))
     install, candidate = Path(doc["install"]), Path(doc["candidate"])
@@ -444,7 +452,6 @@ def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
         exchange(install, candidate, spare)
         swapped = True
         probe(doc["probe"], install, doc["version"])
-        launch(doc["relaunch"], install)
     except BaseException as exc:  # noqa: BLE001 — tout échec ramène l'ancienne version
         error = _describe_os_error(exc, install) if isinstance(exc, OSError) else str(exc)
         # Échange interrompu sans retour possible : ne plus rien déplacer, tout conserver pour l'utilisateur.
@@ -472,8 +479,14 @@ def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
         os.rename(candidate, backup)
     except OSError:
         backup = candidate
-    _write_result(work, ok=True, version=doc["version"], backup=str(backup), kept=kept,
-                  requirements_changed=bool(doc.get("requirements_changed")))
+    result = {"ok": True, "version": doc["version"], "backup": str(backup), "kept": kept,
+              "requirements_changed": bool(doc.get("requirements_changed"))}
+    # Compte rendu écrit avant la relance : la nouvelle version le lit dès son démarrage.
+    _write_result(work, **result)
+    try:
+        launch(doc["relaunch"], install)
+    except OSError as exc:
+        _write_result(work, **result, relaunch_error=str(exc))
     return 0
 
 
@@ -492,13 +505,21 @@ def _workdirs(parent: Path) -> list[Path]:
     )
 
 
-def collect_results(parent: Path, now: float | None = None) -> list[dict]:
+def collect_results(parent: Path, now: float | None = None, *, discard: list[Path] | None = None) -> list[dict]:
     """Résultats non encore signalés des mises à jour passées ; ménage des dossiers de travail.
 
     Conservés : la dernière sauvegarde réussie, une mise à jour en cours (moins d'un jour) ; supprimés : dossiers
-    signalés plus anciens, téléchargements abandonnés depuis plus d'une heure.
+    signalés plus anciens, téléchargements abandonnés depuis plus d'une heure. `discard` : dossiers à supprimer
+    ajoutés à cette liste au lieu d'être supprimés (sauvegardes volumineuses : suppression laissée à l'appelant).
     """
     now = time.time() if now is None else now
+
+    def remove(work: Path) -> None:
+        if discard is not None:
+            discard.append(work)
+        else:
+            shutil.rmtree(work, ignore_errors=True)
+
     results: list[dict] = []
     finished: list[tuple[Path, dict]] = []
     for work in _workdirs(parent):
@@ -519,12 +540,12 @@ def collect_results(parent: Path, now: float | None = None) -> list[dict]:
                                 "error": f"Mise à jour interrompue ; fichiers conservés dans {work}."})
                 (work / REPORTED_FILE).touch()
         elif age > 3600:
-            shutil.rmtree(work, ignore_errors=True)
+            remove(work)
     latest_ok = next((work for work, doc in reversed(finished) if doc.get("ok")), None)
     for work, doc in finished:
         # Retour arrière incomplet : seule copie possible d'une partie de l'installation, jamais supprimée.
         if work != latest_ok and not doc.get("rollback_incomplete"):
-            shutil.rmtree(work, ignore_errors=True)
+            remove(work)
     return results
 
 

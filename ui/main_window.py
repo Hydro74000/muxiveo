@@ -3559,11 +3559,19 @@ class MainWindow(QMainWindow):
 
     def _report_previous_updates(self) -> None:
         """Compte rendu des mises à jour par échange de dossiers (processus détaché, application fermée)."""
+        stale: list[Path] = []
         try:
-            results = collect_update_results()
+            results = collect_update_results(discard=stale)
         except Exception as exc:  # noqa: BLE001 — le démarrage ne dépend jamais du ménage
             self.log_warn(translate_text("Suivi des mises à jour illisible : {reason}", reason=exc))
             return
+        if stale:
+            def _remove_stale() -> None:
+                for path in stale:
+                    shutil.rmtree(path, ignore_errors=True)
+
+            # Anciennes versions (arbre source, bundle .app) : suppression hors du thread UI.
+            threading.Thread(target=_remove_stale, name="muxiveo-update-cleanup").start()
         for result in results:
             version = str(result.get("version") or "?")
             if not result.get("ok"):

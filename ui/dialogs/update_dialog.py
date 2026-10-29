@@ -9,11 +9,12 @@ mise à jour ». Le choix (installer, voir la release) et la préférence sont a
 from __future__ import annotations
 
 import html
+import queue
 import re
 import threading
 from collections.abc import Callable
 
-from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QImage, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
 from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget
 
@@ -131,13 +132,22 @@ def _strip_images(document: QTextDocument) -> None:
         cursor.removeSelectedText()
 
 
+def _fetch_notes(loader: Callable[[str], str], version: str, results: queue.SimpleQueue) -> None:
+    """Thread worker : lit les notes sur GitHub et dépose le résultat (jamais d'accès à la popup)."""
+    try:
+        ok, text = True, loader(version)
+    except UpdateCheckError as exc:
+        ok, text = False, str(exc)
+    except Exception as exc:  # noqa: BLE001 — le volet ne doit jamais rester sur « Chargement… »
+        ok, text = False, f"{type(exc).__name__}: {exc}"
+    results.put((ok, text))
+
+
 class UpdateDialog(QDialog):
     """Popup d'une nouvelle version : notes de version repliées, installation ou page de la release."""
 
     INSTALL = "install"
     RELEASE = "release"
-
-    _notes_ready = Signal(bool, str)   # succès, notes Markdown ou raison de l'échec
 
     def __init__(
         self,
@@ -232,7 +242,12 @@ class UpdateDialog(QDialog):
         buttons.addWidget(self._install_btn)
         layout.addLayout(buttons)
 
-        self._notes_ready.connect(self._on_notes_ready, Qt.ConnectionType.QueuedConnection)
+        # Notes lues par un thread qui ne touche jamais la popup (détruite dès sa fermeture) :
+        # résultat déposé dans une file, relevé dans le thread UI par un minuteur enfant.
+        self._notes_results: queue.SimpleQueue[tuple[bool, str]] = queue.SimpleQueue()
+        self._notes_poll = QTimer(self)
+        self._notes_poll.setInterval(50)
+        self._notes_poll.timeout.connect(self._poll_notes)
 
     # ------------------------------------------------------------------
 
@@ -267,20 +282,17 @@ class UpdateDialog(QDialog):
             self._show_notes(self._info.notes)
             return
         self._notes_view.setPlainText(translate_text("Chargement des notes de version…"))
-        threading.Thread(target=self._fetch_notes, name="muxiveo-release-notes", daemon=True).start()
+        threading.Thread(target=_fetch_notes, args=(self._notes_loader, self._info.version, self._notes_results),
+                         name="muxiveo-release-notes", daemon=True).start()
+        self._notes_poll.start()
 
-    def _fetch_notes(self) -> None:
-        """Thread worker : lit les notes sur GitHub puis les relaie au thread UI."""
+    def _poll_notes(self) -> None:
         try:
-            ok, text = True, self._notes_loader(self._info.version)
-        except UpdateCheckError as exc:
-            ok, text = False, str(exc)
-        except Exception as exc:  # noqa: BLE001 — le volet ne doit jamais rester sur « Chargement… »
-            ok, text = False, f"{type(exc).__name__}: {exc}"
-        try:
-            self._notes_ready.emit(ok, text)
-        except RuntimeError:  # popup déjà fermée
-            pass
+            ok, text = self._notes_results.get_nowait()
+        except queue.Empty:
+            return
+        self._notes_poll.stop()
+        self._on_notes_ready(ok, text)
 
     def _on_notes_ready(self, ok: bool, text: str) -> None:
         if ok:

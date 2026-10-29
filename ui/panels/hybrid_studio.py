@@ -1623,6 +1623,18 @@ class HybridStudio(QWidget):
         if self._matrix_signature is not None and self._matrix_signature != self._source_signature():
             self.status.setText(translate_text("Les sources ont changé. Analysez à nouveau la saison."))
             return
+        if self.sync_strategy.currentData() != "auto":
+            # La vérification mesure chaque paire : le décalage manuel (ou l'absence de synchro) serait remplacé.
+            answer = QMessageBox.question(
+                self, translate_text("Vérifier la synchronisation audio"),
+                translate_text("La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » "
+                               "sera remplacée par l'analyse automatique. Continuer ?",
+                               strategy=self.sync_strategy.currentText()),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.sync_strategy.setCurrentIndex(self.sync_strategy.findData("auto"))
         self.scan(reuse_matrix=True, verify_audio=True)
 
@@ -2362,8 +2374,8 @@ class HybridStudio(QWidget):
 
     def _store_row_calibration(self, row, source_index, config, calibration):
         """Synchro d'une source donneuse du plan (pistes, calibrations, ligne affichée)."""
-        # Coupures ou conversion de cadence : seule la réécriture physique les applique.
-        if len(calibration.segments) > 1 or _has_cadence(calibration.cadence_mismatch):
+        # Coupures, conversion de cadence ou de hauteur : seule la réécriture physique les applique.
+        if calibration.changes_timeline or calibration.converts_audio:
             config.sync_mode = "physical"
         offset = round(calibration.segments[0].shift_ms)
         payload = calibration.to_dict()

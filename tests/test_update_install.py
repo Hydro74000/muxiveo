@@ -332,3 +332,17 @@ def test_windows_update_launches_installer(tmp_path: Path, monkeypatch):
 def test_apply_update_unsupported_raises(tmp_path: Path):
     with pytest.raises(UpdateInstallError):
         apply_update(InstallKind.UNSUPPORTED, tmp_path / "x")
+
+
+def test_apply_update_wraps_helper_launch_errors(tmp_path, monkeypatch):
+    """Interpréteur absent (ou copie impossible) : erreur signalée, dossier de travail retiré."""
+    work = tmp_path / f"{update_apply.WORKDIR_PREFIX}x"
+    work.mkdir()
+
+    def missing(*_args, **_kwargs):
+        raise FileNotFoundError("python introuvable")
+
+    monkeypatch.setattr(update_install.subprocess, "Popen", missing)
+    with pytest.raises(UpdateInstallError, match="python introuvable"):
+        apply_update(InstallKind.SOURCE_ARCHIVE, work)
+    assert not work.exists()

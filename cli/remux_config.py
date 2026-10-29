@@ -12,6 +12,7 @@ from core.media_info_fetcher import (
     MediaDetails,
     TmdbError,
     TmdbFetcher,
+    TmdbResponseCache,
     clean_filename_for_search,
     default_tmdb_bearer_token,
     extract_year_from_filename,
@@ -267,7 +268,7 @@ def resolve_tmdb_metadata(
     logger: Logger,
     *,
     source_title: str = "",
-    response_cache: dict[str, Any] | None = None,
+    response_cache: TmdbResponseCache | None = None,
 ) -> tuple[str, dict[str, str] | None, tuple[str, str] | None, MediaDetails | None]:
     tmdb = normalized_tmdb_options(job, first_source, source_title=source_title)
     if not tmdb:

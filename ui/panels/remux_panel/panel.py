@@ -2093,6 +2093,9 @@ class RemuxPanel(QWidget):
         ]
         for track in affected:
             track.sync_calibration = None
+        # Conversion annulée : l'analyse de sa méthode « auto » n'est plus attendue.
+        self._drop_cadence_analyses(file_id=entry.file_id)
+        self.ready_changed.emit(self._has_ready_files())
         self._apply_source_sync_offset(entry.file_id, 0, previous_calibration=previous)
         self._release_source_sync(entry.file_id)
         self._sync_entry_calibrations()
@@ -2384,7 +2387,10 @@ class RemuxPanel(QWidget):
             ]:
                 self._audio_sync_results.pop(other_id, None)
             quick_check = cal_obj.quick_check
-            if cal_obj.cadence_mismatch is not None:
+            link = self._sync_links.get(target_file_id)
+            # Conversion de la cible elle-même : celle de sa référence, composée, n'y compte pas.
+            measured = link.relative if link is not None else cal_obj
+            if measured.cadence_mismatch is not None:
                 # Nouvelle analyse avec conversion : un refus antérieur dans le studio ne vaut plus.
                 self._cadence_declined_source_ids.discard(target_file_id)
             negligible = self._negligible_sync_offset(offset_ms, cal_obj, target_entry)
@@ -2912,6 +2918,9 @@ class RemuxPanel(QWidget):
                     log=lambda msg: self.log_message.emit("INFO", f"Analyse acoustique : {msg}"),
                 )
             except Exception as exc:
+                if self._scan_cancel.is_set():
+                    # Panneau fermé : méthode laissée « auto », reprise à la restauration de la session.
+                    return
                 self.log_message.emit("WARN", translate_text(
                     "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.",
                     error=str(exc),
@@ -2950,12 +2959,15 @@ class RemuxPanel(QWidget):
         """Méthode de conversion de cadence en cours d'analyse : traitement à différer."""
         return bool(self._cadence_pending)
 
-    def _drop_cadence_analyses(self, entry_ids: set[str] | None = None) -> None:
+    def _drop_cadence_analyses(self, entry_ids: set[str] | None = None, *, file_id: str = "") -> None:
         """Analyses devenues inutiles (piste ou référence retirée, synchros annulées) : le traitement
         ne les attend plus ; leur résultat, à son arrivée, ne trouve rien à appliquer.
-        Toutes si `entry_ids` est None."""
-        for token, (entry_id, reference_entry_id, _file_id) in list(self._cadence_pending.items()):
-            if entry_ids is None or entry_id in entry_ids or reference_entry_id in entry_ids:
+        Toutes si `entry_ids` est None et `file_id` vide ; `file_id` : celles de la synchro de cette source."""
+        for token, (entry_id, reference_entry_id, analysed_file_id) in list(self._cadence_pending.items()):
+            if file_id:
+                if analysed_file_id == file_id:
+                    del self._cadence_pending[token]
+            elif entry_ids is None or entry_id in entry_ids or reference_entry_id in entry_ids:
                 del self._cadence_pending[token]
 
     def _on_cadence_method_resolved(self, entry_id: str, reference_entry_id: str,

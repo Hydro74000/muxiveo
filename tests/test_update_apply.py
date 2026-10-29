@@ -302,7 +302,12 @@ def test_collect_results_reports_once_and_cleans_up(tmp_path):
     running = workdir("f", 60, ready=None)                                   # échange en cours
     (parent / f"{update_apply.WORKDIR_PREFIX}foreign").mkdir()              # sans témoin : jamais touché
 
-    results = update_apply.collect_results(parent, now=now)
+    # Suppression confiée à l'appelant : rien n'est retiré pendant la lecture.
+    discard: list[Path] = []
+    results = update_apply.collect_results(parent, now=now, discard=discard)
+    assert sorted(discard) == sorted([old_ok, failed, abandoned]) and old_ok.exists()
+    for path in discard:
+        shutil.rmtree(path)
     assert [r["version"] for r in results] == ["1.5.0", "1.9.0", "1.9.1", "2.0.0"]
     assert update_apply.collect_results(parent, now=now) == []               # signalés une seule fois
     assert new_ok.exists() and broken.exists() and running.exists()

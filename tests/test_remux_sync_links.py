@@ -550,3 +550,31 @@ def test_resolved_method_recomposes_the_pitch_of_a_chained_reference(chain, monk
     _run_analysis(submitted.pop())
     assert panel._sync_links["C"].relative.cadence_audio_method == "asetrate"
     assert not panel._source_calibration("C").converts_audio
+
+
+def test_cancelled_source_sync_no_longer_awaits_its_cadence_analysis(chain, monkeypatch):
+    """Synchro à conversion « auto » annulée : le traitement n'attend plus l'analyse de sa hauteur."""
+    panel, tracks, _logs = chain
+    submitted = _capture_cadence_analyses(panel, monkeypatch)
+    _sync(panel, tracks, "C", "A", 300, _auto_cadence(300.0))
+    assert panel.cadence_resolution_pending() and len(submitted) == 1
+    panel._cancel_source_calibration(tracks["C"][0], panel._source_index_for_file_id("C"))
+    assert not panel.cadence_resolution_pending()
+    _run_analysis(submitted.pop())
+    assert panel._source_calibration("C").cadence_mismatch is None
+
+
+def test_reference_cadence_does_not_clear_a_declined_conversion(chain):
+    """Conversion refusée pour C, C remesurée sans conversion face à B (elle-même convertie) :
+    la conversion composée de B ne lève pas le refus de C."""
+    panel, tracks, _logs = chain
+    pal = _auto_cadence(0.0).cadence_mismatch
+    _sync(panel, tracks, "B", "A", 0, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
+                                                      cadence_audio_method="atempo"))
+    panel._cadence_declined_source_ids.add("C")
+    _sync(panel, tracks, "C", "B", -120)
+    assert panel._source_calibration("C").cadence_mismatch is not None
+    assert "C" in panel._cadence_declined_source_ids
+    _sync(panel, tracks, "C", "A", 0, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
+                                                      cadence_audio_method="atempo"))
+    assert "C" not in panel._cadence_declined_source_ids
