@@ -90,6 +90,9 @@ class AudioSyncScanner:
         self.cancel_event = cancel_event
         self.quick_check = bool(quick_check)
         self.accept_coherent = bool(accept_coherent)
+        # Sondes FFprobe mémorisées par fichier ou piste (les deux pistes sont décodées en parallèle).
+        self._probes: dict[tuple[str, ...], Any] = {}
+        self._probes_lock = threading.Lock()
 
     def _run(self, command: list[str], *, timeout: float, abort: threading.Event | None = None,
              **kwargs: Any) -> subprocess.CompletedProcess[Any]:
@@ -117,7 +120,20 @@ class AudioSyncScanner:
                 process.kill()
             process.communicate()
 
+    def _probed(self, key: tuple[str, ...], probe):
+        """Résultat de `probe()` mémorisé sous `key` ; un échec n'est pas mémorisé."""
+        with self._probes_lock:
+            if key in self._probes:
+                return self._probes[key]
+        value = probe()
+        with self._probes_lock:
+            self._probes[key] = value
+        return value
+
     def duration(self, track):
+        return self._probed(("duration", str(track.source_path)), lambda: self._probe_duration(track))
+
+    def _probe_duration(self, track) -> float:
         result = self._run([self.ffprobe, "-v", "error", "-show_entries",
                                  "format=duration", "-of", "json", str(track.source_path)],
                                 capture_output=True, timeout=30, **subprocess_text_kwargs())
@@ -128,6 +144,42 @@ class AudioSyncScanner:
             raise AudioSyncError("Durée audio invalide.")
         return duration
 
+    def _stream(self, track) -> dict[str, Any]:
+        """Codec, canaux, disposition et fréquence de la piste analysée."""
+        return self._probed(("stream", str(track.source_path), str(track.stream_index)),
+                            lambda: self._probe_stream(track))
+
+    def _probe_stream(self, track) -> dict[str, Any]:
+        result = self._run([self.ffprobe, "-v", "error", "-select_streams", str(track.stream_index).removeprefix("0:"),
+                            "-show_entries", "stream=codec_name,channels,channel_layout,sample_rate",
+                            "-of", "json", str(track.source_path)],
+                           timeout=30, **subprocess_text_kwargs())
+        if result.returncode:
+            raise AudioSyncError("Impossible de lire la disposition audio ; revue manuelle de la synchro nécessaire.")
+        try:
+            stream = (json.loads(result.stdout or "{}").get("streams") or [])[0]
+        except (IndexError, TypeError, ValueError, AttributeError) as exc:
+            raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.") from exc
+        if not isinstance(stream, dict):
+            raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.")
+        return stream
+
+    def _decoder_args(self, track) -> list[str]:
+        """DTS 5.1 au plus à 48 kHz au plus : cœur seul (`-core_only`). L'extension sans perte
+        (DTS-HD MA) ne change pas l'enveloppe analysée et triple le temps de décodage. Au-delà
+        (7.1, 6.1 ES, 96 kHz), le cœur n'a ni les mêmes canaux ni la même fréquence que la
+        disposition sondée : décodage complet."""
+        try:
+            stream = self._stream(track)
+            core_only = (stream.get("codec_name") == "dts" and 0 < int(stream.get("channels") or 0) <= 6
+                         and 0 < int(stream.get("sample_rate") or 0) <= 48000)
+        except AudioSyncError:
+            self._check_cancelled()
+            return []
+        except (TypeError, ValueError):
+            return []
+        return ["-core_only", "1"] if core_only else []
+
     def samples(self, track, start, duration, cadence_filter: str | None = None,
                 downmix: str | None = None) -> ndarray:
         import numpy as np
@@ -136,7 +188,7 @@ class AudioSyncScanner:
         seek_in, trim_filters = _seek_args(start)
         af = ",".join([*trim_filters, af])
         result = self._run([
-            self.ffmpeg, "-v", "error", *seek_in, "-i", str(track.source_path),
+            self.ffmpeg, "-v", "error", *seek_in, *self._decoder_args(track), "-i", str(track.source_path),
             "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
@@ -151,16 +203,10 @@ class AudioSyncScanner:
 
     def channel_layout(self, track) -> tuple[int, str]:
         """Nombre de canaux et disposition de la piste analysée."""
-        spec = str(track.stream_index).removeprefix("0:")
-        result = self._run([self.ffprobe, "-v", "error", "-select_streams", spec,
-                            "-show_entries", "stream=channels,channel_layout", "-of", "json", str(track.source_path)],
-                           timeout=30, **subprocess_text_kwargs())
-        if result.returncode:
-            raise AudioSyncError("Impossible de lire la disposition audio ; revue manuelle de la synchro nécessaire.")
+        stream = self._stream(track)
         try:
-            stream = (json.loads(result.stdout or "{}").get("streams") or [])[0]
             return int(stream.get("channels") or 0), str(stream.get("channel_layout") or "")
-        except (IndexError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.") from exc
 
     @staticmethod
@@ -184,6 +230,13 @@ class AudioSyncScanner:
     def _dialogue_free_downmixes(self, reference, donor) -> tuple[str, str] | None:
         return self.dialogue_free_downmixes(self.channel_layout(reference), self.channel_layout(donor))
 
+    @staticmethod
+    def _envelope_chain(cadence_filter, downmix: str | None) -> list[str]:
+        filters = [downmix or "aformat=channel_layouts=mono"]
+        if cadence_filter:
+            filters.append(cadence_filter)
+        return [*filters, "highpass=f=300", "lowpass=f=3000", "aeval=abs(val(0))", "aresample=1000"]
+
     def envelope(self, track, cadence_filter=None, downmix: str | None = None, *,
                  abort: threading.Event | None = None) -> ndarray:
         """Décode une fois la piste en enveloppe 1 kHz (4 Mo par 1000 s).
@@ -193,44 +246,71 @@ class AudioSyncScanner:
         Aucun seek : toutes les positions restent dans la chronologie source.
         """
         import numpy as np
-        filters = [downmix or "aformat=channel_layouts=mono"]
-        if cadence_filter:
-            filters.append(cadence_filter)
-        filters += ["highpass=f=300", "lowpass=f=3000", "aeval=abs(val(0))", "aresample=1000"]
         result = self._run([
-            self.ffmpeg, "-nostdin", "-v", "error", "-i", str(track.source_path),
-            "-map", f"0:{track.stream_index}", "-af", ",".join(filters),
+            self.ffmpeg, "-nostdin", "-v", "error", *self._decoder_args(track), "-i", str(track.source_path),
+            "-map", f"0:{track.stream_index}", "-af", ",".join(self._envelope_chain(cadence_filter, downmix)),
             "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
         ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
         if result.returncode:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         return np.frombuffer(result.stdout, dtype="<f4")
 
+    def envelope_mixes(self, track, cadence_filter, downmixes: tuple[str | None, ...], *,
+                       abort: threading.Event | None = None) -> list[ndarray]:
+        """Enveloppes de plusieurs mixages (`envelope`) en une seule lecture du fichier.
+
+        La lecture du conteneur entier (vidéo comprise) domine le temps d'analyse :
+        une passe par mixage le relirait. Valeurs identiques à `envelope`, voie par voie.
+        """
+        import numpy as np
+        count = len(downmixes)
+        graph = [f"[0:{track.stream_index}]asplit={count}" + "".join(f"[s{i}]" for i in range(count))]
+        graph += [f"[s{i}]" + ",".join([*self._envelope_chain(cadence_filter, downmix),
+                                        "aformat=sample_fmts=flt:channel_layouts=mono"]) + f"[e{i}]"
+                  for i, downmix in enumerate(downmixes)]
+        graph.append("".join(f"[e{i}]" for i in range(count)) + f"amerge=inputs={count}[out]")
+        result = self._run([
+            self.ffmpeg, "-nostdin", "-v", "error", *self._decoder_args(track), "-i", str(track.source_path),
+            "-filter_complex", ";".join(graph), "-map", "[out]", "-f", "f32le", "pipe:1",
+        ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
+        if result.returncode:
+            raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
+        values = np.frombuffer(result.stdout, dtype="<f4")
+        values = values[:len(values) // count * count].reshape(-1, count)
+        return [np.ascontiguousarray(values[:, i]) for i in range(count)]
+
     def _envelopes(self, reference, donor, cadence_filter=None,
                    downmixes: tuple[str, str] | None = None) -> tuple[ndarray, ndarray]:
-        """Décode les deux enveloppes en parallèle (deux FFmpeg simultanés).
+        return self._envelope_pairs(reference, donor, cadence_filter, (downmixes,))[0]
+
+    def _envelope_pairs(self, reference, donor, cadence_filter,
+                        mixes: tuple[tuple[str, str] | None, ...]) -> list[tuple[ndarray, ndarray]]:
+        """Décode les deux pistes en parallèle (deux FFmpeg simultanés), chacune une seule fois
+        pour tous les `mixes` (paires référence/donneur, None = mixage mono complet).
 
         Le premier échec interrompt l'autre décodage ; c'est lui qui est remonté.
         """
         from concurrent.futures import ThreadPoolExecutor
         abort = threading.Event()
         failures: list[BaseException] = []
-        reference_mix, donor_mix = downmixes or (None, None)
 
-        def decode(track, cadence, downmix):
+        def decode(track, cadence, downmixes: tuple[str | None, ...]):
             try:
-                return self.envelope(track, cadence, downmix=downmix, abort=abort)
+                if len(downmixes) == 1:
+                    return [self.envelope(track, cadence, downmix=downmixes[0], abort=abort)]
+                return self.envelope_mixes(track, cadence, downmixes, abort=abort)
             except BaseException as exc:
                 failures.append(exc)
                 abort.set()
                 raise
 
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio-envelope") as pool:
-            reference_future = pool.submit(decode, reference, None, reference_mix)
-            donor_future = pool.submit(decode, donor, cadence_filter, donor_mix)
+            reference_future = pool.submit(decode, reference, None, tuple(None if mix is None else mix[0] for mix in mixes))
+            donor_future = pool.submit(decode, donor, cadence_filter,
+                                       tuple(None if mix is None else mix[1] for mix in mixes))
         if failures:
             raise failures[0]
-        return reference_future.result(), donor_future.result()
+        return list(zip(reference_future.result(), donor_future.result()))
 
     def pitch_samples(self, track, start, duration, cadence_filter: str | None = None) -> ndarray:
         """Extrait les échantillons audio sans filtre passe-bande agressif pour l'analyse F0 et spectrale."""
@@ -241,7 +321,7 @@ class AudioSyncScanner:
         seek_in, trim_filters = _seek_args(start)
         af = ",".join([*trim_filters, af])
         result = self._run([
-            self.ffmpeg, "-v", "error", *seek_in, "-i", str(track.source_path),
+            self.ffmpeg, "-v", "error", *seek_in, *self._decoder_args(track), "-i", str(track.source_path),
             "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
@@ -632,31 +712,37 @@ class AudioSyncScanner:
                 self._envelopes(reference, donor, filter_str, _downmixes))
         else:
             # Pistes de langues différentes : les dialogues masquent la musique
-            # et les effets communs. Seconde passe sans le canal central.
+            # et les effets communs. Seconde passe sans le canal central, décodée
+            # avec la première : une seule lecture de chaque fichier.
+            layout_error: Exception | None = None
             try:
-                (segments, confidence, anchors), unverified = scan(self._envelopes(reference, donor, filter_str))
+                downmixes = self._dialogue_free_downmixes(reference, donor)
+            except (AudioSyncError, OSError) as exc:
+                self._check_cancelled()
+                downmixes, layout_error = None, exc
+            if downmixes is None:
+                mono, dialogue_free = self._envelopes(reference, donor, filter_str), None
+            else:
+                mono, dialogue_free = self._envelope_pairs(reference, donor, filter_str, (None, downmixes))
+            try:
+                (segments, confidence, anchors), unverified = scan(mono)
             except AudioSyncError as exc:
                 self._check_cancelled()
-                downmixes = self._dialogue_free_downmixes(reference, donor)
-                if downmixes is None:
+                if layout_error is not None:
+                    raise layout_error from exc
+                if dialogue_free is None:
                     raise
                 log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                (segments, confidence, anchors), unverified = scan(
-                    self._envelopes(reference, donor, filter_str, downmixes))
+                (segments, confidence, anchors), unverified = scan(dialogue_free)
             else:
-                downmixes = None
-                if unverified:
-                    try:
-                        downmixes = self._dialogue_free_downmixes(reference, donor)
-                    except AudioSyncError as exc:
-                        # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
-                        self._check_cancelled()
-                        log(f"{exc} Analyse mono conservée.")
-                if downmixes is not None:
+                if unverified and layout_error is not None:
+                    # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
+                    log(f"{layout_error} Analyse mono conservée.")
+                if unverified and dialogue_free is not None:
                     # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
                     log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
                     try:
-                        alternative = scan(self._envelopes(reference, donor, filter_str, downmixes))
+                        alternative = scan(dialogue_free)
                     except AudioSyncError as exc:
                         self._check_cancelled()
                         log(f"{exc} Analyse mono conservée.")

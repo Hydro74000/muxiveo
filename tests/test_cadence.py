@@ -352,6 +352,8 @@ def test_audio_sync_scanner_detects_acoustic_cadence(monkeypatch):
     scanner = AudioSyncScanner("ffmpeg", "ffprobe")
     # Simuler duration = 1800s (30 min)
     monkeypatch.setattr(scanner, "duration", lambda track: 1800.0)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "_decoder_args", lambda _track: [])
 
     # Simuler measure retournant une dérive PAL (+0.04167 ms/ms = ~41.67 ms/s)
     # y = 200.0 + 0.04167 * (p * 1000)
@@ -459,6 +461,8 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     scanner = AudioSyncScanner("ffmpeg", "ffprobe")
     monkeypatch.setattr(scanner, "duration", lambda track: 1200.0)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "_decoder_args", lambda _track: [])
 
     # Simuler 2 segments avec un cut à 600s
     # Segment 1 (< 600s) : shift = 100ms

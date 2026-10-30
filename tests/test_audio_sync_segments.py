@@ -178,18 +178,18 @@ def test_scanner_retries_without_center_channel(monkeypatch):
     ref, donor = _edited_pair([], [1006])
     calls = []
 
-    def envelope(track, cadence_filter=None, downmix=None, abort=None):
-        calls.append(downmix)
-        if downmix is None:
-            return np.zeros(len(ref)) if track.stream_index == 1 else donor
-        return ref if track.stream_index == 1 else donor
+    def envelope_mixes(track, cadence_filter, downmixes, abort=None):
+        calls.append(downmixes)
+        mono = np.zeros(len(ref)) if track.stream_index == 1 else donor
+        return [mono if downmix is None else ref if track.stream_index == 1 else donor for downmix in downmixes]
 
-    monkeypatch.setattr(scanner, "envelope", envelope)
+    monkeypatch.setattr(scanner, "envelope_mixes", envelope_mixes)
     messages = []
     calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
                                detect_cuts=True, log=messages.append)
     assert [s.shift_ms for s in calibration.segments] == [1006]
-    assert calls == [None, None, "pan=mono|c0=SL+SR", "pan=mono|c0=SL+SR"]
+    # Une seule lecture de chaque fichier pour les deux mixages.
+    assert calls == [(None, "pan=mono|c0=SL+SR")] * 2
     assert any("hors dialogues" in message for message in messages)
 
 
@@ -378,6 +378,7 @@ def _scan_with_samples(monkeypatch, *, quick_check, shift=1006.0, confidence=.95
     scanner = AudioSyncScanner(quick_check=quick_check)
     monkeypatch.setattr(scanner, "measure", lambda *args, **kwargs: (shift, confidence))
     monkeypatch.setattr(scanner, "duration", lambda track: 180.0)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
     ref, donor = _edited_pair([], [1006])
     calls = []
 
@@ -546,3 +547,67 @@ def test_remux_panel_passes_detected_cadence_to_scan(monkeypatch):
     )
     panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target), reference_entry=cast(Any, reference))
     assert seen == [(mismatch, "asetrate")]
+
+
+def test_imperceptible_constant_respects_lead_and_lag_thresholds():
+    from core.workflows.audio_sync_segments import imperceptible_constant
+
+    def anchors(shifts):
+        return [Anchor(index * 4000, shift, .9) for index, shift in enumerate(shifts)]
+
+    assert imperceptible_constant(anchors([200] * 10)) == 200
+    # Son en avance de 45 ms au plus (C ≥ max − 45), en retard de 125 ms au plus (C ≤ min + 125).
+    assert imperceptible_constant(anchors([0] * 99 + [-150])) == -25
+    assert imperceptible_constant(anchors([0] * 99 + [171])) is None
+
+
+def test_verified_small_junctions_follow_drift_threshold():
+    # Jonctions vérifiées : le seuil de coupure (--drift-threshold-ms) reste seul juge.
+    ref, donor = _edited_pair([60000, 120000], [200, 240, 200])
+    segments, _, _ = scan_envelopes(ref, donor)
+    assert [s.shift_ms for s in segments] == [200, 240, 200]
+
+
+def test_unverifiable_junction_falls_back_to_imperceptible_constant(monkeypatch):
+    from core.workflows import audio_sync_segments
+
+    def unverified(*_args):
+        raise AudioSyncError("Jonction vers 60.000 s non vérifiée des deux côtés (0.50, 0.40) ; calibration manuelle requise.")
+
+    monkeypatch.setattr(audio_sync_segments, "locate_transition", unverified)
+    ref, donor = _edited_pair([90000], [200, 300])
+    messages: list[str] = []
+    segments, _, _ = scan_envelopes(ref, donor, log=messages.append)
+    assert len(segments) == 1 and 255 <= segments[0].shift_ms <= 325
+    assert any("décalage constant" in message for message in messages)
+    # Écart au-delà des seuils : refus inchangé.
+    ref, donor = _edited_pair([90000], [200, 900])
+    with pytest.raises(AudioSyncError, match="non vérifiée"):
+        scan_envelopes(ref, donor)
+
+
+def test_dts_is_decoded_core_only(monkeypatch):
+    import json
+    import subprocess
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    streams = {1: ("dts", 6, 48000), 2: ("truehd", 8, 48000), 3: ("dts", 8, 48000), 4: ("dts", 6, 96000)}
+    probes = []
+
+    def run(command, **_kwargs):
+        probes.append(command)
+        codec, channels, rate = streams[int(command[command.index("-select_streams") + 1])]
+        stream = {"codec_name": codec, "channels": channels, "sample_rate": str(rate)}
+        return subprocess.CompletedProcess(command, 0, json.dumps({"streams": [stream]}), "")
+
+    monkeypatch.setattr(scanner, "_run", run)
+    dts = AudioSyncTrack(Path("a.mkv"), 1)
+    assert scanner._decoder_args(dts) == ["-core_only", "1"]
+    assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 2)) == []
+    # Cœur 5.1 à 48 kHz d'un DTS-HD MA 7.1 ou 96 kHz : disposition ou fréquence différente.
+    assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 3)) == []
+    assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 4)) == []
+    assert scanner._decoder_args(dts) == ["-core_only", "1"] and len(probes) == 4

@@ -62,6 +62,8 @@ def _scanner(monkeypatch, *, accept_coherent, downmix_pair=None):
         return pair[0] if track.stream_index == 1 else pair[1]
 
     monkeypatch.setattr(scanner, "envelope", envelope)
+    monkeypatch.setattr(scanner, "envelope_mixes", lambda track, cadence_filter, downmixes, abort=None: [
+        envelope(track, cadence_filter, downmix) for downmix in downmixes])
     return scanner
 
 
