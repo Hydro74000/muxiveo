@@ -166,7 +166,7 @@ def test_source_update_swaps_carries_user_files_and_relaunches(tmp_path, monkeyp
     assert (install / "docs" / "notes.md").read_text(encoding="utf-8") == "notes"
     result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
     backup = Path(result["backup"])
-    assert result["ok"] and result["requirements_changed"] and result["kept"] == [] and backup == work / "previous"
+    assert result["ok"] and result["requirements_changed"] and result["kept"] == [] and backup == work / "previous" / install.name
     assert (backup / "core" / "old_module.py").is_file()                    # ancienne version conservée
     assert (backup / "docs" / "notes.md").read_text(encoding="utf-8") == "notes modifiées"
 
@@ -405,7 +405,7 @@ def test_post_swap_failures_preserve_personal_collisions(tmp_path, monkeypatch, 
     update_apply.collect_results(work.parent, now=time.time() + 10 * 86400, discard=discard)
     assert work not in discard
     update_apply.cleanup_stale([work])
-    assert (work / "previous/notes.txt").read_text(encoding="utf-8") == "personnel"
+    assert (work / "previous" / install.name / "notes.txt").read_text(encoding="utf-8") == "personnel"
 
 
 @pytest.mark.parametrize("content", ['{"ok": tr', '[]', 'null', '{"ok": "true"}', '{"ok": false}'])
@@ -519,6 +519,10 @@ def test_macos_app_update_from_dmg(tmp_path):
     assert update_apply.commit(work, _exited_pid()) == 0
     assert _wait_file(parent / "launched.txt").strip() == "2.0.0"
     assert "2.0.0" in (install / "Contents" / "MacOS" / "muxiveo").read_text(encoding="utf-8")
+    # Sauvegarde relançable : un bundle n'est reconnu qu'avec son suffixe `.app`.
+    backup = Path(json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))["backup"])
+    assert backup == work.resolve() / "previous" / update_apply.MACOS_APP_NAME
+    assert "1.0.0" in (backup / "Contents" / "MacOS" / "muxiveo").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("declared, present, accepted", [

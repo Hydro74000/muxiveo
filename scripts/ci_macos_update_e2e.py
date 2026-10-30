@@ -124,7 +124,8 @@ def scenario_success(args: argparse.Namespace, workspace: Path) -> None:
     check(code == 0 and result.get("ok") is True, f"mise à jour refusée : {result}")
     check(announced(install) == f"Muxiveo {args.new_version}", "nouvelle version non installée")
     backup = Path(str(result.get("backup")))
-    check(backup.resolve() == (work / "previous").resolve(), f"sauvegarde inattendue : {backup}")
+    check(backup.resolve() == (work / "previous" / update_apply.MACOS_APP_NAME).resolve(),
+          f"sauvegarde inattendue : {backup}")
     check(announced(backup) == f"Muxiveo {args.old_version}", "ancienne version non conservée")
     wait_for(relaunched)
     reports = update_apply.collect_results(parent)

@@ -569,8 +569,11 @@ def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
         except OSError:
             pass
         return 1
-    backup = work / "previous"            # ancienne version (le candidat porte encore le nom de la nouvelle)
+    # Ancienne version sous le nom de l'installation (le candidat porte encore celui de la nouvelle) :
+    # un bundle macOS n'est reconnu, donc relançable, que par son suffixe `.app`.
+    backup = work / "previous" / install.name
     try:
+        backup.parent.mkdir()
         os.rename(candidate, backup)
     except OSError:
         backup = candidate
