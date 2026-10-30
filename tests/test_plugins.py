@@ -479,18 +479,23 @@ def test_rife_controller_install_refreshes_engine(qt_app, tmp_path, monkeypatch)
         ctrl.shutdown()
 
 
-def test_controller_auto_update_follows_feed(qt_app, tmp_path, monkeypatch):
-    from core.config import AppConfig
-    from ui.plugin_controller import RifePluginController
-
-    config = AppConfig()
-    config.plugins_auto_update = True
+def _rife_update_published(monkeypatch, tmp_path) -> None:
+    """MVO-RIFE installé à sa version plancher ; le flux annonce la 99.0.0."""
     installed = plugins.InstalledPlugin(plugins.RIFE.min_version, tmp_path, {})
     monkeypatch.setattr(plugins, "installed_plugin", lambda spec, *_a, **_k: installed if spec is plugins.RIFE else None)
     monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: PLATFORM)
     feed = [{"version": "99.0.0", "tag": "mvo-rife-v99.0.0", "contract": 1,
              "platforms": [{"platform": PLATFORM, "asset": "a", "size": 1}]}]
     monkeypatch.setattr(plugins, "fetch_feed", lambda spec, **_k: feed)
+
+
+def test_controller_auto_update_follows_feed(qt_app, tmp_path, monkeypatch):
+    from core.config import AppConfig
+    from ui.plugin_controller import RifePluginController
+
+    config = AppConfig()
+    config.plugins_auto_update = True
+    _rife_update_published(monkeypatch, tmp_path)
     ctrl = RifePluginController(config)
     updates: list[int] = []
     monkeypatch.setattr(ctrl, "update", lambda: updates.append(1))
@@ -508,12 +513,7 @@ def test_controller_manual_update_pending(qt_app, tmp_path, monkeypatch):
     from core.config import AppConfig
     from ui.plugin_controller import RifePluginController
 
-    installed = plugins.InstalledPlugin(plugins.RIFE.min_version, tmp_path, {})
-    monkeypatch.setattr(plugins, "installed_plugin", lambda spec, *_a, **_k: installed if spec is plugins.RIFE else None)
-    monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: PLATFORM)
-    feed = [{"version": "99.0.0", "tag": "mvo-rife-v99.0.0", "contract": 1,
-             "platforms": [{"platform": PLATFORM, "asset": "a", "size": 1}]}]
-    monkeypatch.setattr(plugins, "fetch_feed", lambda spec, **_k: feed)
+    _rife_update_published(monkeypatch, tmp_path)
     config = AppConfig()
     config.plugins_auto_update = False
     ctrl = RifePluginController(config)

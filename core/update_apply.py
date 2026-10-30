@@ -183,10 +183,13 @@ def _run_process(command: list[str], *, cancelled: Callable[[], bool] | None = N
                 _check_cancelled(cancelled)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    # Exception construite, aucune exécution.
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                     raise subprocess.TimeoutExpired(command, timeout)
                 try:
                     stdout, stderr = process.communicate(timeout=min(0.1, remaining))
                     _check_cancelled(cancelled)
+                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
                 except subprocess.TimeoutExpired:
                     continue

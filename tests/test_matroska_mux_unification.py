@@ -121,7 +121,7 @@ def _entry_bytes(number: int, track_type: int, codec_id: str) -> bytes:
     )))
 
 
-def _simple_cluster(track_number: int, payload: bytes = b"\x00" * 16) -> bytes:
+def _simple_cluster(track_number: int = 1, payload: bytes = b"\x00" * 16) -> bytes:
     block = bytes([0x80 | track_number]) + b"\x00\x00\x80" + payload
     return element(CLUSTER_ID, uint_element(TIMESTAMP_ID, 0) + element(SIMPLE_BLOCK_ID, block))
 

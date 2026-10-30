@@ -27,9 +27,8 @@ from PySide6.QtCore import QCoreApplication, Qt
 
 from core.matroska.ebml import ascii_element, element, string_element, uint_element
 from core.matroska.ids import (
-    CLUSTER_ID, CODEC_ID_ID, EBML_HEADER_ID, INFO_ID, SEGMENT_ID, SIMPLE_BLOCK_ID,
-    TIMESTAMP_ID, TRACKS_ID, TRACK_ENTRY_ID, TRACK_NUMBER_ID, TRACK_TYPE_ID,
-    TRACK_UID_ID, TITLE_ID,
+    CODEC_ID_ID, EBML_HEADER_ID, INFO_ID, SEGMENT_ID, TRACKS_ID, TRACK_ENTRY_ID,
+    TRACK_NUMBER_ID, TRACK_TYPE_ID, TRACK_UID_ID, TITLE_ID,
 )
 from core.matroska.mux_plan import MatroskaMuxPacket, MatroskaMuxPlan, MatroskaMuxTrack
 from core.matroska.contract import ExpectedMatroskaTrack, MatroskaOutputContract
@@ -51,6 +50,7 @@ from core.workflows.remux_plan import (
     select_mux_backend,
 )
 from core.workflows.remux_runtime import RemuxRuntimeRunner, RemuxRuntimeRunnerCallbacks
+from tests.test_matroska_mux_unification import _simple_cluster
 
 
 # =============================================================================
@@ -91,11 +91,6 @@ def _encrypted_extra() -> bytes:
     return element(bytes.fromhex("6d80"), element(
         bytes.fromhex("6240"), element(bytes.fromhex("5035"), b"\x01"),
     ))
-
-
-def _simple_cluster(track_number: int = 1, payload: bytes = b"\x00" * 16) -> bytes:
-    block = bytes([0x80 | track_number]) + b"\x00\x00\x80" + payload
-    return element(CLUSTER_ID, uint_element(TIMESTAMP_ID, 0) + element(SIMPLE_BLOCK_ID, block))
 
 
 def _write_mkv(path: Path, entries: list[bytes], *, clusters: bytes = b"") -> Path:

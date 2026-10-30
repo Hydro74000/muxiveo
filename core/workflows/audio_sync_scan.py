@@ -6,10 +6,9 @@ import json
 import subprocess
 import re
 import threading
-import time
 from typing import TYPE_CHECKING, Any
 
-from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import run_interruptible, subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.cadence import active_cadence
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
@@ -75,6 +74,11 @@ def coherent_sync_accepted(options: Any) -> bool:
 def _unverified_total_ms(ranges) -> float:
     return float(sum(stop - start for start, stop in ranges))
 
+def _stream_spec(track) -> str:
+    """Flux FFmpeg de la piste : index absolu (entier) ou spécificateur tel que `0:a:1`."""
+    index = track.stream_index
+    return f"0:{index}" if isinstance(index, int) else str(index)
+
 
 class AudioSyncScanner:
     def __init__(self, ffmpeg="ffmpeg", ffprobe="ffprobe", *, window_s=60, max_offset_s=30, cancel_event=None,
@@ -97,28 +101,10 @@ class AudioSyncScanner:
     def _run(self, command: list[str], *, timeout: float, abort: threading.Event | None = None,
              **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         """Interrompt aussi les extractions FFmpeg lorsque l'utilisateur annule ou que `abort` est levé."""
-        kwargs.pop("capture_output", None)
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
-        deadline = time.monotonic() + timeout
-        try:
-            while True:
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise AudioSyncError("Analyse annulée.")
-                if abort is not None and abort.is_set():
-                    raise AudioSyncError("Analyse interrompue.")
-                if time.monotonic() >= deadline:
-                    raise AudioSyncError("Délai d'analyse dépassé.")
-                try:
-                    stdout, stderr = process.communicate(timeout=0.2)
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-                except subprocess.TimeoutExpired:
-                    continue
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
+        return run_interruptible(command, timeout=timeout, error=AudioSyncError,
+                                 stops=[(self.cancel_event, "Analyse annulée."), (abort, "Analyse interrompue.")],
+                                 timeout_message="Délai d'analyse dépassé.",
+                                 **kwargs)
 
     def _probed(self, key: tuple[str, ...], probe):
         """Résultat de `probe()` mémorisé sous `key` ; un échec n'est pas mémorisé."""
@@ -151,7 +137,7 @@ class AudioSyncScanner:
 
     def _probe_stream(self, track) -> dict[str, Any]:
         result = self._run([self.ffprobe, "-v", "error", "-select_streams", str(track.stream_index).removeprefix("0:"),
-                            "-show_entries", "stream=codec_name,channels,channel_layout,sample_rate",
+                            "-show_entries", "stream=codec_name,profile,channels,channel_layout,sample_rate",
                             "-of", "json", str(track.source_path)],
                            timeout=30, **subprocess_text_kwargs())
         if result.returncode:
@@ -168,10 +154,11 @@ class AudioSyncScanner:
         """DTS 5.1 au plus à 48 kHz au plus : cœur seul (`-core_only`). L'extension sans perte
         (DTS-HD MA) ne change pas l'enveloppe analysée et triple le temps de décodage. Au-delà
         (7.1, 6.1 ES, 96 kHz), le cœur n'a ni les mêmes canaux ni la même fréquence que la
-        disposition sondée : décodage complet."""
+        disposition sondée : décodage complet. DTS Express (LBR seul) n'a pas de cœur."""
         try:
             stream = self._stream(track)
-            core_only = (stream.get("codec_name") == "dts" and 0 < int(stream.get("channels") or 0) <= 6
+            core_only = (stream.get("codec_name") == "dts" and stream.get("profile") != "DTS Express"
+                         and 0 < int(stream.get("channels") or 0) <= 6
                          and 0 < int(stream.get("sample_rate") or 0) <= 48000)
         except AudioSyncError:
             self._check_cancelled()
@@ -189,7 +176,7 @@ class AudioSyncScanner:
         af = ",".join([*trim_filters, af])
         result = self._run([
             self.ffmpeg, "-v", "error", *seek_in, *self._decoder_args(track), "-i", str(track.source_path),
-            "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
+            "-map", _stream_spec(track),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
             capture_output=True, timeout=max(120, duration * 4), **subprocess_windows_no_window_kwargs())
@@ -248,7 +235,7 @@ class AudioSyncScanner:
         import numpy as np
         result = self._run([
             self.ffmpeg, "-nostdin", "-v", "error", *self._decoder_args(track), "-i", str(track.source_path),
-            "-map", f"0:{track.stream_index}", "-af", ",".join(self._envelope_chain(cadence_filter, downmix)),
+            "-map", _stream_spec(track), "-af", ",".join(self._envelope_chain(cadence_filter, downmix)),
             "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
         ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
         if result.returncode:
@@ -264,7 +251,7 @@ class AudioSyncScanner:
         """
         import numpy as np
         count = len(downmixes)
-        graph = [f"[0:{track.stream_index}]asplit={count}" + "".join(f"[s{i}]" for i in range(count))]
+        graph = [f"[{_stream_spec(track)}]asplit={count}" + "".join(f"[s{i}]" for i in range(count))]
         graph += [f"[s{i}]" + ",".join([*self._envelope_chain(cadence_filter, downmix),
                                         "aformat=sample_fmts=flt:channel_layouts=mono"]) + f"[e{i}]"
                   for i, downmix in enumerate(downmixes)]
@@ -322,7 +309,7 @@ class AudioSyncScanner:
         af = ",".join([*trim_filters, af])
         result = self._run([
             self.ffmpeg, "-v", "error", *seek_in, *self._decoder_args(track), "-i", str(track.source_path),
-            "-map", f"0:{track.stream_index}" if isinstance(track.stream_index, int) else str(track.stream_index),
+            "-map", _stream_spec(track),
             "-t", str(duration), "-af", af,
             "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"],
             capture_output=True, timeout=max(120, duration * 4), **subprocess_windows_no_window_kwargs())

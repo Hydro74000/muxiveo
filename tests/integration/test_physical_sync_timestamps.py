@@ -36,6 +36,14 @@ def _run(command, _label=""):
     return subprocess.run(command, capture_output=True, check=True, timeout=30).stdout
 
 
+def _decoded_audio(path, stream: str = "0:a"):
+    """Échantillons PCM 48 kHz de `stream`, horodatages conservés depuis l'origine du fichier."""
+    return np.frombuffer(_run([
+        "ffmpeg", "-v", "error", "-copyts", "-i", str(path), "-map", stream,
+        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
+    ]), dtype="<f4")
+
+
 def _streams(path):
     return json.loads(_run([
         "ffprobe", "-v", "error", "-show_entries", "stream=start_time,initial_padding,sample_rate",
@@ -133,10 +141,7 @@ def test_rewritten_audio_keeps_video_origin(tmp_path, codec, mode, backend, offs
 
     # Vérifier aussi le son décodé : supprimer CodecDelay pour masquer le
     # retard déplacerait le repère de 256 échantillons (AC-3/E-AC-3).
-    decoded = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(output), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    decoded = _decoded_audio(output)
     expected_start = (500 + offset) * 48
     assert np.max(np.abs(decoded[:expected_start - 96])) < 0.01
     assert np.max(np.abs(decoded[expected_start:expected_start + 96])) > 0.05
@@ -167,10 +172,7 @@ def test_physical_runtime_normalizes_transport_origin(qt_app, tmp_path, suffix, 
     workflow = RemuxWorkflow(ffmpeg_bin=_FFMPEG, ffprobe_bin=_FFPROBE, generate_nfo=False)
     state = wait_task(workflow.run(config), timeout=60)
     assert state["finished"] is not None and state["failed"] is None, state
-    decoded = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(config.output), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    decoded = _decoded_audio(config.output)
     peaks = np.flatnonzero(np.abs(decoded) > 0.04)
     assert peaks.size
     assert peaks[0] / 48000 == pytest.approx((500 + offset) / 1000, abs=0.012)
@@ -194,10 +196,7 @@ def test_rewrite_preserves_intrinsic_track_delay(qt_app, tmp_path, offset, advan
         offset_ms=offset, tmp_dir=tmp_path, input_idx=1,
     )
     assert prepared is not None
-    samples = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(prepared.path), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    samples = _decoded_audio(prepared.path)
     onset = np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000
     assert onset == pytest.approx((500 + offset) / 1000, abs=0.002)
 
@@ -225,10 +224,7 @@ def test_piecewise_rewrite_uses_relative_time_on_delayed_source(tmp_path, mode):
         )
         assert prepared is not None
         artifact = prepared.path
-    samples = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(artifact), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    samples = _decoded_audio(artifact)
     assert np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000 == pytest.approx(0.625, abs=0.002)
     assert len(samples) / 48000 == pytest.approx(1.375, abs=0.035)
 
@@ -291,10 +287,7 @@ def test_mixed_audio_sync_keeps_common_origin(qt_app, tmp_path, monkeypatch, bac
     streams = _streams(config.output)
     assert float(streams[0]["start_time"]) == 0, "\n".join(" ".join(cmd) for cmd in commands)
     for index, offset in enumerate((125, second_offset)):
-        samples = np.frombuffer(_run([
-            "ffmpeg", "-v", "error", "-copyts", "-i", str(config.output), "-map", f"0:a:{index}",
-            "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-        ]), dtype="<f4")
+        samples = _decoded_audio(config.output, f"0:a:{index}")
         onset = np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000
         assert onset == pytest.approx((500 + offset) / 1000, abs=0.002)
 

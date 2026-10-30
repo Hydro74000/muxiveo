@@ -4,14 +4,13 @@ from __future__ import annotations
 import math
 import re
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from core.subprocess_utils import subprocess_windows_no_window_kwargs
+from core.subprocess_utils import run_interruptible, subprocess_windows_no_window_kwargs
 from core.workflows.subtitle_sync import parse_time, _TIMING
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
@@ -47,26 +46,9 @@ class SubtitleSyncScanner:
         self.cancel_event = cancel_event
 
     def _run(self, command: list[str], *, timeout: float = 60.0, **kwargs) -> subprocess.CompletedProcess:
-        kwargs.pop("capture_output", None)
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)  # nosec B603
-        deadline = time.monotonic() + timeout
-        try:
-            while True:
-                if self.cancel_event is not None and self.cancel_event.is_set():
-                    raise SubtitleSyncError("Analyse annulée par l'utilisateur.")
-                if time.monotonic() >= deadline:
-                    raise SubtitleSyncError("Délai d'analyse dépassé.")
-                try:
-                    stdout, stderr = process.communicate(timeout=0.2)
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-                except subprocess.TimeoutExpired:
-                    continue
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate()
+        return run_interruptible(command, timeout=timeout, error=SubtitleSyncError,
+                                 stops=[(self.cancel_event, "Analyse annulée par l'utilisateur.")],
+                                 timeout_message="Délai d'analyse dépassé.", **kwargs)
 
     @staticmethod
     def extract_cues_from_text(text: str, suffix: str = ".srt") -> list[SubtitleCue]:

@@ -313,6 +313,15 @@ def test_season_with_no_complete_pair_does_not_offer_audio_verification(panel, s
     assert not panel.verify_audio_button.isEnabled()
 
 
+def _scan_then_calibrate_first_row(panel, monkeypatch, qt_app):
+    """Analyse sans revérification automatique, puis synchro de la première paire."""
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+
+
 def _fail_episode(monkeypatch, number, *, calibrated_only=False):
     import ui.panels.hybrid_studio as studio
     base = studio.prepare_matrix_episode
@@ -853,11 +862,7 @@ def test_pending_sync_cannot_be_opened_in_container(panel, season, monkeypatch, 
 
 
 def test_declining_auto_reverification_preserves_edited_plans(panel, season, monkeypatch, qt_app):
-    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
-    panel.scan()
-    _wait(qt_app, lambda: not panel.busy)
-    panel.calibrate_single_row(0)
-    _wait(qt_app, lambda: not panel.busy)
+    _scan_then_calibrate_first_row(panel, monkeypatch, qt_app)
     edited = SyncCalibration((SyncSegment(0, 2000), SyncSegment(10000, 2800)))
     config = panel.jobs[0][0]
     panel._store_row_calibration(0, 1, config, edited)
@@ -871,11 +876,7 @@ def test_declining_auto_reverification_preserves_edited_plans(panel, season, mon
 
 
 def test_failed_reverification_keeps_edits_for_retry(panel, season, monkeypatch, qt_app):
-    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
-    panel.scan()
-    _wait(qt_app, lambda: not panel.busy)
-    panel.calibrate_single_row(0)
-    _wait(qt_app, lambda: not panel.busy)
+    _scan_then_calibrate_first_row(panel, monkeypatch, qt_app)
     old_plan = panel.jobs[0]
     _fail_episode(monkeypatch, 1, calibrated_only=True)
     monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.Yes)

@@ -51,6 +51,7 @@ from ui.panels.remux_panel.theme import (
     _table_style,
 )
 from ui.styles import _bolt_icon, _slider_style
+from ui.media_player import create_media_player
 from ui.shutdown import Shutdown, defer_close
 from ui.widgets.waveform_view import WaveformView
 from ui.widgets.content_table import ContentTableWidget
@@ -1644,14 +1645,12 @@ class SyncStudioDialog(QDialog):
             return
         self.listen_btn.setEnabled(True)
         try:
-            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
             player = self._player
             if player is None:
-                player = QMediaPlayer(self)
-                audio_output = QAudioOutput(self)
-                player.setAudioOutput(audio_output)
+                player, audio_output = create_media_player(self)
                 player.mediaStatusChanged.connect(self._on_media_status_changed)
                 player.positionChanged.connect(self._on_player_position_changed)
+                player.errorOccurred.connect(self._on_player_error)
                 self._player, self._audio_output = player, audio_output
 
             player.setSource(QUrl.fromLocalFile(path))
@@ -1694,6 +1693,12 @@ class SyncStudioDialog(QDialog):
             ]
             if active and active[0]:
                 self.listen_status.setText(f"💬 {active[0]}")
+
+    def _on_player_error(self, _error: object, message: str) -> None:
+        if getattr(self, "_closing", False) or not message:
+            return
+        self._stop_playback()
+        self.listen_status.setText(translate_text("Erreur lors de la pré-écoute : {err}", err=message))
 
     def _on_preview_error(self, token: int, message: str) -> None:
         if getattr(self, "_closing", False) or token != self._preview_token:

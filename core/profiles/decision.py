@@ -383,19 +383,7 @@ def _codec_name(codec: str, variables: Mapping[str, Any] | None = None) -> str:
     return keyword_registry.codec_name(codec, variables)
 
 
-def _track_field_values(
-    track: TrackEntry,
-    *,
-    temporary_tags: set[str] | None = None,
-    source_index_by_file_id: Mapping[str, int] | None = None,
-    variables: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    return keyword_registry.track_field_values(
-        track,
-        temporary_tags=temporary_tags,
-        source_index_by_file_id=source_index_by_file_id,
-        variables=variables,
-    )
+_track_field_values = keyword_registry.track_field_values
 
 
 def _flags_label(track: TrackEntry) -> str:

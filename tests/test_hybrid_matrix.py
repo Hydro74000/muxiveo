@@ -25,6 +25,17 @@ def _name(path: Path | None) -> str:
     return path.name
 
 
+def _selected_plan(job, select_tracks, *sources) -> RemuxConfig:
+    """Plan construit comme `build_remux_config` : sources (chemin, pistes) puis sélection."""
+    result = RemuxConfig(
+        sources=[SourceInput(path, index, tracks) for index, (path, tracks) in enumerate(sources)],
+        output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
+        sync_subtitles=job["sync_subtitles"],
+    )
+    select_tracks(result.sources)
+    return result
+
+
 def test_parse_episode_key_formats():
     assert parse_episode_key("Breaking.Bad.S01E05.2160p.mkv") == (1, 5)
     assert parse_episode_key("series.s2e12.hdtv.mp4") == (2, 12)
@@ -181,13 +192,7 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
                          TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]
         donor_tracks = [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1", time_shift_ms=99),
                         TrackEntry(1, "subtitle", "SUBRIP", "", "fra", "", file_id="src1", time_shift_ms=99)]
-        result = RemuxConfig(
-            sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
-            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
-            sync_subtitles=job["sync_subtitles"],
-        )
-        select_tracks(result.sources)
-        return result
+        return _selected_plan(job, select_tracks, (master, master_tracks), (donor, donor_tracks))
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Scanner appelé en mode sans analyse")
@@ -236,13 +241,7 @@ def test_manual_shift_follows_the_video_cadence(tmp_path, monkeypatch, auto_appl
         donor_tracks = [TrackEntry(0, "video", "H264", "", "", "", file_id="src1", frame_rate="25/1"),
                         TrackEntry(1, "audio", "AAC", "", "fre", "", file_id="src1"),
                         TrackEntry(2, "audio", "AAC", "", "eng", "", file_id="src1")]
-        result = RemuxConfig(
-            sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
-            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
-            sync_subtitles=job["sync_subtitles"],
-        )
-        select_tracks(result.sources)
-        return result
+        return _selected_plan(job, select_tracks, (master, master_tracks), (donor, donor_tracks))
 
     resolved = []
 
@@ -479,15 +478,10 @@ def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, m
     supplied.write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
 
     def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
-        result = RemuxConfig(
-            sources=[SourceInput(master, 0, [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
-                                             TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]),
-                     SourceInput(donor, 1, [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1")])],
-            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
-            sync_subtitles=job["sync_subtitles"],
-        )
-        select_tracks(result.sources)
-        return result
+        return _selected_plan(job, select_tracks,
+                              (master, [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+                                        TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]),
+                              (donor, [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1")]))
 
     monkeypatch.setattr("cli.remux_config.build_remux_config", build)
     result, _calibration = prepare_matrix_episode(

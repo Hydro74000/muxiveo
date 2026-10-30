@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 from core.bluray import ffprobe_input_args
+from core.inspector import frame_dynamic_hdr_flags
 from core.subprocess_utils import subprocess_text_kwargs
 
 
@@ -344,35 +345,7 @@ class HdrMetadataProbeService:
                 except json.JSONDecodeError:
                     flags = None
                 else:
-                    frames_obj = payload.get("frames")
-                    has_dv = False
-                    has_hdr10plus = False
-                    if isinstance(frames_obj, list):
-                        for frame in frames_obj:
-                            if not isinstance(frame, dict):
-                                continue
-                            side_data_obj = frame.get("side_data_list")
-                            if not isinstance(side_data_obj, list):
-                                continue
-                            for side_data in side_data_obj:
-                                if not isinstance(side_data, dict):
-                                    continue
-                                side_type = str(side_data.get("side_data_type", "") or "")
-                                side_type_lower = side_type.lower()
-                                if ("dolby vision" in side_type_lower) or (side_type == "DOVI configuration record"):
-                                    has_dv = True
-                                if (
-                                    "hdr dynamic metadata smpte2094-40" in side_type_lower
-                                    or "hdr10+" in side_type_lower
-                                    or "smpte st 2094" in side_type_lower
-                                    or "smpte2094" in side_type_lower
-                                ):
-                                    has_hdr10plus = True
-                                if has_dv and has_hdr10plus:
-                                    break
-                            if has_dv and has_hdr10plus:
-                                break
-                    flags = (has_dv, has_hdr10plus)
+                    flags = frame_dynamic_hdr_flags(payload.get("frames"))
 
         if cache_key is not None:
             self._ffprobe_frame_hdr_cache[cache_key] = flags

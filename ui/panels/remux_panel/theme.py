@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton
 
 from ui.design_system import (
     CHECK_ICON_PATH,
@@ -13,100 +13,18 @@ from ui.design_system import (
     font_px as _font_px,
     scale as _scale,
 )
+from ui.styles import (
+    _card, _primary_button as _shared_primary_button, _secondary_button,
+    _section_label as _shared_section_label,
+)
 
 
 def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(f"""
-        color: {_C.TEXT_DIM};
-        font-size: {_font_px(9)}px;
-        font-weight: 700;
-        letter-spacing: {_scale(2)}px;
-        background: transparent;
-    """)
-    return lbl
-
-
-def _card(parent: QWidget | None = None) -> QWidget:
-    from ui.styles import _card as surface_card
-    return surface_card(parent)
+    return _shared_section_label(text, _C.TEXT_DIM)
 
 
 def _primary_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(36))
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.ACCENT};
-            color: {_C.ON_ACCENT};
-            border: none;
-            border-radius: 6px;
-            font-size: {_font_px(12)}px;
-            font-weight: 700;
-            padding: 0 {_scale(16)}px;
-            text-align: center;
-        }}
-        QPushButton:hover  {{ background: {_C.ACCENT_HOVER}; }}
-        QPushButton:pressed {{ background: {_C.ACCENT_PRESSED}; }}
-        QPushButton:disabled {{
-            background: {_C.BG_ACTIVE};
-            color: {_C.TEXT_DIM};
-        }}
-    """)
-    return btn
-
-
-def _secondary_button(
-    text: str,
-    fixed_width: int | None = None,
-    *,
-    min_width: int | None = None,
-    padding_h: int | None = None,
-) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(28))
-
-    is_symbol = len(text.strip()) <= 2
-    if padding_h is not None:
-        pad_px = _scale(padding_h)
-    elif is_symbol:
-        pad_px = _scale(2)
-    elif fixed_width is not None and fixed_width <= 50:
-        pad_px = _scale(4)
-    else:
-        pad_px = _scale(8)
-
-    if fixed_width is not None:
-        btn.setFixedWidth(_scale(fixed_width))
-    if min_width is not None:
-        btn.setMinimumWidth(_scale(min_width))
-
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.BG_CARD};
-            color: {_C.TEXT_SEC};
-            border: 1px solid {_C.BORDER};
-            border-radius: 5px;
-            font-size: {_font_px(11)}px;
-            font-weight: 500;
-            padding: 0 {pad_px}px;
-            text-align: center;
-        }}
-        QPushButton:hover {{
-            background: {_C.BG_HOVER};
-            color: {_C.TEXT_PRI};
-            border-color: {_C.BORDER_LT};
-        }}
-        QPushButton:pressed {{ background: {_C.BG_ACTIVE}; }}
-        QPushButton:disabled {{
-            background: {_C.BG_DEEP};
-            color: {_C.TEXT_DIM};
-            border-color: {_C.BORDER};
-        }}
-    """)
-    return btn
+    return _shared_primary_button(text, padding_h=16)
 
 
 def _separator() -> QFrame:

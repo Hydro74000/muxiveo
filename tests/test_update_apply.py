@@ -171,16 +171,23 @@ def test_source_update_swaps_carries_user_files_and_relaunches(tmp_path, monkeyp
     assert (backup / "docs" / "notes.md").read_text(encoding="utf-8") == "notes modifiées"
 
 
+def _assert_previous_relaunched(install: Path, work: Path) -> dict:
+    """Ancienne version en place (venv, config) et relancée ; échec consigné, retour arrière complet."""
+    assert _wait_file(install / "launched.txt") == "1.0.0"
+    assert (install / "core" / "old_module.py").is_file() and (install / "config.ini").is_file()
+    assert (install / ".venv" / "bin" / "python").is_file()
+    result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
+    assert not result["ok"] and not result["rollback_incomplete"]
+    return result
+
+
 def test_failed_installed_probe_rolls_back_and_relaunches_previous(tmp_path):
     install, work, archive = _source_setup(tmp_path, _release_files("2.0.0", fail_installed=True))
     _prepare_source(install, work, archive)                                 # le candidat, lui, démarre
 
     assert update_apply.commit(work, _exited_pid()) == 1
-    assert _wait_file(install / "launched.txt") == "1.0.0"                 # ancienne version relancée
-    assert (install / "core" / "old_module.py").is_file() and (install / "config.ini").is_file()
-    assert (install / ".venv" / "bin" / "python").is_file()
-    result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
-    assert not result["ok"] and "défaillante" in result["error"] and not result["rollback_incomplete"]
+    result = _assert_previous_relaunched(install, work)
+    assert "défaillante" in result["error"]
 
 
 def _fail_renames(monkeypatch, failing: set[tuple[str, str]]) -> None:
@@ -204,11 +211,8 @@ def test_third_rename_failure_restores_previous_install(tmp_path, monkeypatch):
     _fail_renames(monkeypatch, {("swap", "Muxiveo-2.0.0")})                # 3ᵉ renommage de l'échange
 
     assert update_apply.commit(work, _exited_pid()) == 1
-    assert _wait_file(install / "launched.txt") == "1.0.0"                 # ancienne version en place, relancée
-    assert (install / "core" / "old_module.py").is_file() and (install / "config.ini").is_file()
-    assert (install / ".venv" / "bin" / "python").is_file() and not (work / "swap").exists()
-    result = json.loads((work / update_apply.RESULT_FILE).read_text(encoding="utf-8"))
-    assert not result["ok"] and not result["rollback_incomplete"]
+    _assert_previous_relaunched(install, work)
+    assert not (work / "swap").exists()
 
 
 def test_unrecoverable_exchange_is_flagged_and_kept(tmp_path, monkeypatch):

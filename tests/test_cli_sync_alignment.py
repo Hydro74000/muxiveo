@@ -21,6 +21,38 @@ from cli.profile import build_profile_remux_config
 from cli.remux_config import build_remux_config
 
 
+def _mock_inspected(monkeypatch, *sources: SourceInput, target: str = "cli.remux_config.inspect_sources") -> None:
+    """`inspect_sources` simulé : sources données, toutes leurs pistes dans l'ordre."""
+    tracks = [track for source in sources for track in source.tracks]
+    monkeypatch.setattr(target, lambda job, conf, opts, log, cli_inputs=None, **_kwargs: (
+        list(sources), [MagicMock() for _ in sources], tracks))
+
+
+def _audio_sources(tmp_path) -> tuple[TrackEntry, TrackEntry, SourceInput, SourceInput]:
+    """Référence FLAC `ref.mkv` et donneur E-AC-3 `donor.mkv`."""
+    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
+    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    return (ref_audio, tgt_audio, SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio]),
+            SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio]))
+
+
+def _aac_ac3_plan(tmp_path, ref_file, donor_file) -> RemuxConfig:
+    """Fichiers créés ; plan conteneur AAC (référence) + AC3 (donneur)."""
+    ref_file.touch()
+    donor_file.touch()
+    return RemuxConfig(
+        sources=[SourceInput(ref_file, 0, [TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")]),
+                 SourceInput(donor_file, 1, [TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")])],
+        output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
+    )
+
+
+def _mock_null_scanner(monkeypatch) -> None:
+    scanner = MagicMock()
+    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
+    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+
+
 # =============================================================================
 # 1. Tests Parser & Options
 # =============================================================================
@@ -182,10 +214,7 @@ def test_prepare_pair_with_subtitle_only_donor(tmp_path, monkeypatch):
     src0 = SourceInput(path=ref_file, file_index=0, tracks=[ref_video, ref_audio, ref_sub])
     src1 = SourceInput(path=donor_srt, file_index=1, tracks=[tgt_sub])
 
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_video, ref_audio, ref_sub, tgt_sub]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     # Mocker SubtitleSyncScanner.scan
     mock_calib = SyncCalibration.linear(-450)
@@ -227,10 +256,7 @@ def test_prepare_pair_with_subtitle_only_donor_physical_mode(tmp_path, monkeypat
     src0 = SourceInput(path=ref_file, file_index=0, tracks=[ref_audio])
     src1 = SourceInput(path=donor_srt, file_index=1, tracks=[tgt_sub])
 
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_sub]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     mock_calib = SyncCalibration((SyncSegment(0.0, -120.0), SyncSegment(30000.0, -550.0)), 0.95)
     monkeypatch.setattr(
@@ -264,10 +290,7 @@ def test_remux_with_explicit_calibration_file_container_mode(tmp_path, monkeypat
     src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
     src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio, tgt_sub])
 
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio, tgt_sub]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="container", sync_subtitles="mirror")
     job = {
@@ -296,16 +319,9 @@ def test_remux_with_explicit_calibration_file_physical_mode(tmp_path, monkeypatc
     }
     calib_file.write_text(json.dumps(calib_dict))
 
-    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
-    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
 
-    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
-    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
-
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="physical")
     job = {
@@ -326,16 +342,9 @@ def test_remux_with_cuts_calibration_in_container_mode_raises(tmp_path, monkeypa
         "segments": [{"start_ms": 0.0, "shift_ms": 0.0}, {"start_ms": 5000.0, "shift_ms": 100.0}],
     }))
 
-    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
-    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
 
-    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
-    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
-
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     options = CommonOptions(calibration=str(calib_file), sync_mode="container")
     job = {"sources": [{"path": str(src0.path)}, {"path": str(src1.path)}], "output": str(tmp_path / "out.mkv"), "sync_mode": "container"}
@@ -356,14 +365,8 @@ def test_profile_calibration_with_cadence_switches_to_physical(tmp_path, monkeyp
     )
     calib_file = tmp_path / "calib.json"
     calib_file.write_text(json.dumps(calibration.to_dict()))
-    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
-    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
-    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
-    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
-    monkeypatch.setattr(
-        "cli.profile.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
-    )
+    ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
+    _mock_inspected(monkeypatch, src0, src1, target="cli.profile.inspect_sources")
     profile = {"version": 1, "kind": "decision-profile", "name": "Cadence", "rules": []}
     conf, _ = build_profile_remux_config(
         profile, cli_inputs=[str(src0.path), str(src1.path)], cli_output=str(tmp_path / "out.mkv"),
@@ -378,18 +381,9 @@ def test_profile_calibration_with_cadence_switches_to_physical(tmp_path, monkeyp
 
 def test_prepare_pair_output_all_renders_every_track_value(tmp_path, monkeypatch):
     ref_file, donor_file = tmp_path / "ref.S01E02.mkv", tmp_path / "donor.S01E02.mkv"
-    ref_file.touch()
-    donor_file.touch()
-    ref_audio = TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")
-    donor_audio = TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")
-    fake_config = RemuxConfig(
-        sources=[SourceInput(ref_file, 0, [ref_audio]), SourceInput(donor_file, 1, [donor_audio])],
-        output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
-    )
+    fake_config = _aac_ac3_plan(tmp_path, ref_file, donor_file)
     monkeypatch.setattr("cli.hybrid.build_remux_config", lambda job, conf, opts, log: fake_config)
-    scanner = MagicMock()
-    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
-    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    _mock_null_scanner(monkeypatch)
     args = build_parser().parse_args([
         "hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
         "--output-template", "{audio-codec:best}", "--output-all",
@@ -401,21 +395,12 @@ def test_prepare_pair_output_all_renders_every_track_value(tmp_path, monkeypatch
 @pytest.mark.parametrize(("cli_template", "expected"), [("", "PROFILE-CUSTOM.mkv"), ("CLI-CUSTOM", "CLI-CUSTOM.mkv")])
 def test_prepare_pair_uses_profile_output_template(tmp_path, monkeypatch, cli_template, expected):
     ref_file, donor_file = tmp_path / "Show.S01E01.master.mkv", tmp_path / "Show.S01E01.donor.mkv"
-    ref_file.touch()
-    donor_file.touch()
-    ref_audio = TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")
-    donor_audio = TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")
-    fake_config = RemuxConfig(
-        sources=[SourceInput(ref_file, 0, [ref_audio]), SourceInput(donor_file, 1, [donor_audio])],
-        output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
-    )
+    fake_config = _aac_ac3_plan(tmp_path, ref_file, donor_file)
     profile = tmp_path / "profile.json"
     profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
                                    "output_template": "PROFILE-CUSTOM"}))
     monkeypatch.setattr("cli.profile.build_profile_remux_config", lambda *_a, **_k: (fake_config, {}))
-    scanner = MagicMock()
-    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
-    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    _mock_null_scanner(monkeypatch)
     arguments = ["hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
                  "--profile", str(profile)]
     args = build_parser().parse_args(arguments + (["--output-template", cli_template] if cli_template else []))
@@ -428,19 +413,11 @@ def test_prepare_pair_names_each_episode_without_tmdb(tmp_path, monkeypatch):
     profile = tmp_path / "profile.json"
     profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
                                    "output_template": "{season_episode}.{season}x{episode}.profile-name"}))
-    scanner = MagicMock()
-    scanner.scan = lambda *_a, **_k: SyncCalibration.linear(0.0)
-    monkeypatch.setattr("cli.hybrid.scanner", lambda args, conf: scanner)
+    _mock_null_scanner(monkeypatch)
     names = []
     for number in (1, 2):
         ref_file, donor_file = tmp_path / f"Show.S01E0{number}.master.mkv", tmp_path / f"Show.S01E0{number}.donor.mkv"
-        ref_file.touch()
-        donor_file.touch()
-        fake_config = RemuxConfig(
-            sources=[SourceInput(ref_file, 0, [TrackEntry(0, "audio", "AAC", "2.0", "eng", "", file_id="src0")]),
-                     SourceInput(donor_file, 1, [TrackEntry(0, "audio", "AC3", "5.1", "fre", "", file_id="src1")])],
-            output=tmp_path / "out.mkv", track_order=[(0, 0, "src0"), (1, 0, "src1")], sync_mode="container",
-        )
+        fake_config = _aac_ac3_plan(tmp_path, ref_file, donor_file)
         monkeypatch.setattr("cli.profile.build_profile_remux_config", lambda *_a, planned=fake_config, **_k: (planned, {}))
         args = build_parser().parse_args(["hybrid", "--ref", str(ref_file), "--donor", str(donor_file),
                                           "-o", str(tmp_path / "out"), "--profile", str(profile)])
@@ -504,10 +481,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
     s1_0 = SourceInput(path=src1_ref, file_index=0, tracks=[t1_ref_v, t1_ref_a])
     s1_1 = SourceInput(path=src1_donor, file_index=1, tracks=[t1_donor_a])
 
-    monkeypatch.setattr(
-        "cli.profile.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([s1_0, s1_1], [MagicMock(), MagicMock()], [t1_ref_v, t1_ref_a, t1_donor_a]),
-    )
+    _mock_inspected(monkeypatch, s1_0, s1_1, target="cli.profile.inspect_sources")
 
     conf1, _ = build_profile_remux_config(
         profile,
@@ -525,10 +499,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
     s2_0 = SourceInput(path=src2_ref, file_index=0, tracks=[t2_ref_v, t2_ref_a])
     s2_1 = SourceInput(path=src2_donor, file_index=1, tracks=[t2_donor_a])
 
-    monkeypatch.setattr(
-        "cli.profile.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([s2_0, s2_1], [MagicMock(), MagicMock()], [t2_ref_v, t2_ref_a, t2_donor_a]),
-    )
+    _mock_inspected(monkeypatch, s2_0, s2_1, target="cli.profile.inspect_sources")
 
     conf2, _ = build_profile_remux_config(
         profile,
@@ -613,16 +584,9 @@ def test_perform_dynamic_sync_audio_vs_subtitles(tmp_path, monkeypatch):
 
 
 def test_build_remux_config_auto_sync_flag_runs_dynamic_sync(tmp_path, monkeypatch):
-    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
-    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
 
-    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
-    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
-
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
 
     mock_calib = SyncCalibration.linear(150.0)
     monkeypatch.setattr(
@@ -677,18 +641,11 @@ def test_cmd_preview_with_calibration_output_json(tmp_path, capsys, monkeypatch)
         "confidence": 1.0,
     }))
 
-    ref_audio = TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")
-    tgt_audio = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
-
-    src0 = SourceInput(path=tmp_path / "ref.mkv", file_index=0, tracks=[ref_audio])
-    src1 = SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[tgt_audio])
+    ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
     src0.path.touch()
     src1.path.touch()
 
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [ref_audio, tgt_audio]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
     orig_which = shutil.which
     monkeypatch.setattr("shutil.which", lambda cmd: orig_which(cmd) or f"/mock/bin/{cmd}")
 
@@ -924,10 +881,7 @@ def test_prepare_pair_pitch_only_calibration_forces_physical(tmp_path, monkeypat
     tgt_audio = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
     src0 = SourceInput(path=ref_file, file_index=0, tracks=[TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"), ref_audio])
     src1 = SourceInput(path=donor_file, file_index=1, tracks=[tgt_audio])
-    monkeypatch.setattr(
-        "cli.remux_config.inspect_sources",
-        lambda job, conf, opts, log, cli_inputs=None, **_kwargs: ([src0, src1], [MagicMock(), MagicMock()], [*src0.tracks, tgt_audio]),
-    )
+    _mock_inspected(monkeypatch, src0, src1)
     args = build_parser().parse_args([
         "hybrid", "--ref", str(ref_file), "--donor", str(donor_file), "-o", str(tmp_path / "out"),
         "--sync-mode", "container", "--calibration", str(_pitch_only_calibration(tmp_path)),

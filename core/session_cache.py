@@ -5,7 +5,8 @@ import copy
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
-from concurrent.futures import CancelledError, Future, TimeoutError
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Generic, TypeVar
 
 K = TypeVar("K")
@@ -70,14 +71,15 @@ class SessionCache(Generic[K, V]):
             generation = self._generation
         if cached is not None:
             return copy.deepcopy(cached)
-        assert pending is not None
+        if pending is None:  # impossible : sans entrée, un chargement existe ou vient d'être créé
+            raise RuntimeError("Chargement en cours introuvable.")
         if not leader:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise CancelledError("Préparation annulée.")
                 try:
                     return copy.deepcopy(pending.result(timeout=0.05))
-                except TimeoutError:
+                except FutureTimeoutError:
                     if pending.done():
                         return copy.deepcopy(pending.result())
         try:

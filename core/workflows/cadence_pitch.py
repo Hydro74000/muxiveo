@@ -226,6 +226,18 @@ def analyze_cadence_pitch(
     if mismatch and mismatch.speed_factor > 0:
         expected_shift = 12.0 * math.log2(1.0 / mismatch.speed_factor)
 
+    def result(selected: str, shift_semitones: float, confidence: float, details: str) -> CadencePitchAnalysis:
+        return CadencePitchAnalysis(
+            selected_method=selected,
+            pitch_shift_semitones=round(shift_semitones, 3),
+            spectral_corr_asetrate=round(max(0.0, corr_ase), 4),
+            spectral_corr_atempo=round(max(0.0, corr_ate), 4),
+            f0_ref_hz=round(f0_ref_med, 1),
+            f0_donor_hz=round(f0_ate_med if f0_ate_med > 0 else f0_ase_med, 1),
+            confidence=round(confidence, 3),
+            details=details,
+        )
+
     # Transposition mesurée sur le spectre : tranche seule quand elle est nette et proche
     # de l'une des deux hypothèses (hauteur d'origine ou montée de la conversion).
     shift_cents, shift_score = spectral_pitch_shift_cents(ref, ate, sr)
@@ -241,19 +253,10 @@ def analyze_cadence_pitch(
             if selected == "asetrate"
             else "hauteur déjà compensée : la méthode 'atempo' la conserve"
         )
-        return CadencePitchAnalysis(
-            selected_method=selected,
-            pitch_shift_semitones=round(shift_cents / 100.0, 3),
-            spectral_corr_asetrate=round(max(0.0, corr_ase), 4),
-            spectral_corr_atempo=round(max(0.0, corr_ate), 4),
-            f0_ref_hz=round(f0_ref_med, 1),
-            f0_donor_hz=round(f0_ate_med if f0_ate_med > 0 else f0_ase_med, 1),
-            confidence=round(shift_score, 3),
-            details=(
-                f"Hauteur du donneur {shift_cents / 100.0:+.2f} demi-ton face à la référence "
-                f"(spectre, corrélation {shift_score:.2f}) : {state}"
-            ),
-        )
+        return result(selected, shift_cents / 100.0, shift_score, (
+            f"Hauteur du donneur {shift_cents / 100.0:+.2f} demi-ton face à la référence "
+            f"(spectre, corrélation {shift_score:.2f}) : {state}"
+        ))
 
     # Détection de l'adéquation :
     delta_corr = corr_ase - corr_ate
@@ -287,13 +290,4 @@ def analyze_cadence_pitch(
             f"(corrélation spectrale : {corr_ate:.3f} vs {corr_ase:.3f})"
         )
 
-    return CadencePitchAnalysis(
-        selected_method=selected,
-        pitch_shift_semitones=round(pitch_shift, 3),
-        spectral_corr_asetrate=round(max(0.0, corr_ase), 4),
-        spectral_corr_atempo=round(max(0.0, corr_ate), 4),
-        f0_ref_hz=round(f0_ref_med, 1),
-        f0_donor_hz=round(f0_ate_med if f0_ate_med > 0 else f0_ase_med, 1),
-        confidence=round(conf, 3),
-        details=details,
-    )
+    return result(selected, pitch_shift, conf, details)

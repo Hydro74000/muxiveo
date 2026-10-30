@@ -16,6 +16,23 @@ from core.workflows.encode.runtime.nvencc_execution import build_nvencc_pipeline
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouter, NvenccRoutingCallbacks
 
 
+def _fake_l5_dovi_tool(*, left: int = 0, calls: list[list[str]] | None = None):
+    """dovi_tool simulé : `export` écrit un L5 à bandes de 280 lignes, `editor` un RPU modifié."""
+    import json
+
+    def run(cmd):
+        if calls is not None:
+            calls.append(cmd)
+        if "export" in cmd:
+            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
+                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": left, "right": 0}], "edits": {"0-9": 0},
+            }))
+        elif "editor" in cmd:
+            Path(cmd[-1]).write_bytes(b"edited")
+        return ""
+    return run
+
+
 def test_align_nvenc_dovi_geometry_hobbit_letterbox():
     """Vérifie que les bandes noires 275px sont ajustées à 280px pour un cadre 1600p (multiple de 32)."""
     video = VideoEncodeSettings(codec="nvencc_hevc", copy_dv=True)
@@ -580,15 +597,7 @@ def test_crop_dovi_rpu_realigns_l5_only_when_cropped(tmp_path: Path):
     rpu.write_bytes(b"rpu")
     calls: list[list[str]] = []
 
-    def run(cmd):
-        calls.append(cmd)
-        if "export" in cmd:
-            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
-                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": 0, "right": 0}], "edits": {"0-9": 0},
-            }))
-        elif "editor" in cmd:
-            Path(cmd[-1]).write_bytes(b"edited")
-        return ""
+    run = _fake_l5_dovi_tool(calls=calls)
 
     video = VideoEncodeSettings(codec="libx265", copy_dv=True)
     assert crop_dovi_rpu(video=video, rpu_bin=rpu, dovi_tool_bin="dovi_tool", run_cmd=run) == rpu
@@ -614,14 +623,7 @@ def test_align_dovi_rpu_geometry_scales_l5_after_crop(tmp_path: Path, crop_offse
     rpu.write_bytes(b"rpu")
     out = tmp_path / "out.bin"
 
-    def run(cmd):
-        if "export" in cmd:
-            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
-                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": 21, "right": 0}], "edits": {"0-9": 0},
-            }))
-        elif "editor" in cmd:
-            Path(cmd[-1]).write_bytes(b"edited")
-        return ""
+    run = _fake_l5_dovi_tool(left=21)
 
     res = align_dovi_rpu_geometry(dovi_tool_bin="dovi_tool", rpu_input=rpu, output_rpu=out,
                                   crop_offsets=crop_offsets, scale=scale, run_cmd=run)
@@ -667,14 +669,7 @@ def test_crop_dovi_rpu_realigns_l5_on_resize_only(tmp_path: Path):
     rpu = tmp_path / "rpu.bin"
     rpu.write_bytes(b"rpu")
 
-    def run(cmd):
-        if "export" in cmd:
-            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
-                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": 0, "right": 0}], "edits": {"0-9": 0},
-            }))
-        elif "editor" in cmd:
-            Path(cmd[-1]).write_bytes(b"edited")
-        return ""
+    run = _fake_l5_dovi_tool()
 
     logs: list[str] = []
     video = replace(VideoEncodeSettings(codec="libx265", copy_dv=True), dovi_rpu_scale=(0.5, 0.5))

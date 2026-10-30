@@ -67,105 +67,18 @@ from ui.panels.remux_panel.widgets.track_table import _TrackInfoDelegate
 from ui.shutdown import Shutdown, defer_close
 from ui.operation_bar import OperationState
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
-from ui.styles import _bolt_icon, _checkbox_style, _groupbox_checkable_style
+from ui.styles import (
+    _bolt_icon, _card, _checkbox_style, _groupbox_checkable_style,
+    _primary_button as _shared_primary_button, _raised_button as _secondary_button, _section_label,
+)
 
 
 # =============================================================================
 # Helpers de style Design System
 # =============================================================================
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(f"""
-        color: {_C.TEXT_SEC};
-        font-size: {_font_px(9)}px;
-        font-weight: 700;
-        letter-spacing: {_scale(2)}px;
-        background: transparent;
-    """)
-    return lbl
-
-
-def _card(parent: QWidget | None = None) -> QWidget:
-    from ui.styles import _card as surface_card
-    return surface_card(parent)
-
-
 def _primary_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(32))
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.ACCENT};
-            color: {_C.ON_ACCENT};
-            border: none;
-            border-radius: {_scale(5)}px;
-            font-size: {_font_px(11)}px;
-            font-weight: 700;
-            padding: 0 {_scale(16)}px;
-        }}
-        QPushButton:hover {{
-            background: {_C.ACCENT_HOVER};
-        }}
-        QPushButton:pressed {{
-            background: {_C.ACCENT_DIM};
-        }}
-        QPushButton:disabled {{
-            background: {_C.BG_ACTIVE};
-            color: {_C.TEXT_DIM};
-        }}
-    """)
-    return btn
-
-
-def _secondary_button(
-    text: str,
-    fixed_width: int | None = None,
-    *,
-    min_width: int | None = None,
-    padding_h: int | None = None,
-) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(30))
-
-    is_symbol = len(text.strip()) <= 2
-    if padding_h is not None:
-        pad_px = _scale(padding_h)
-    elif is_symbol:
-        pad_px = _scale(2)
-    elif fixed_width is not None and fixed_width <= 50:
-        pad_px = _scale(4)
-    else:
-        pad_px = _scale(8)
-
-    if fixed_width:
-        btn.setFixedWidth(_scale(fixed_width))
-    if min_width:
-        btn.setMinimumWidth(_scale(min_width))
-
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.BG_ACTIVE};
-            color: {_C.TEXT_SEC};
-            border: 1px solid {_C.BORDER_LT};
-            border-radius: {_scale(5)}px;
-            font-size: {_font_px(11)}px;
-            padding: 0 {pad_px}px;
-            text-align: center;
-        }}
-        QPushButton:hover {{
-            background: {_C.BG_HOVER};
-            color: {_C.TEXT_PRI};
-            border-color: {_C.ACCENT};
-        }}
-        QPushButton:disabled {{
-            color: {_C.TEXT_DIM};
-            border-color: {_C.BORDER};
-        }}
-    """)
-    return btn
+    return _shared_primary_button(text, height=32, font_size=11, padding_h=16, radius=5)
 
 
 def _input_style() -> str:
@@ -1979,22 +1892,10 @@ class HybridStudio(QWidget):
 
         snapshot = copy.deepcopy(ep)
         recipe = copy.deepcopy(recipe)
-        name = snapshot.display_name
 
         def task():
             try:
-                config, calibration = prepare_matrix_episode(
-                    snapshot,
-                    recipe,
-                    output_dir,
-                    self.config,
-                    args,
-                    _GuiLogger(self.log_message, name),
-                    detect_cuts=detect_cuts,
-                    drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
-                    cache=self._prep_cache,
-                )
-                return _PreparedEpisode(config, ep, snapshot, generation), calibration
+                return self._prepare_episode(ep, snapshot, recipe, output_dir, args, detect_cuts, generation)
             except Exception as exc:
                 return exc
 
@@ -2113,7 +2014,6 @@ class HybridStudio(QWidget):
         episode = self.matrix_episodes[row]
         recipe, output_dir, detect_cuts, args = self._prepare_settings
         snapshot = copy.deepcopy(episode)
-        name = snapshot.display_name
         recipe, args = copy.deepcopy(recipe), copy.copy(args)
         calibrate = self._prepare_calibrate
         self._prepare_running.add(row)
@@ -2132,23 +2032,31 @@ class HybridStudio(QWidget):
 
         def task():
             try:
-                config, calibration = prepare_matrix_episode(
-                    snapshot,
-                    recipe,
-                    output_dir,
-                    self.config,
-                    args,
-                    _GuiLogger(self.log_message, name),
-                    detect_cuts=detect_cuts,
-                    drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
-                    calibrate=calibrate,
-                    cache=self._prep_cache,
+                prepared, calibration = self._prepare_episode(
+                    episode, snapshot, recipe, output_dir, args, detect_cuts, generation, calibrate=calibrate,
                 )
-                self.prepared.emit(generation, row, _PreparedEpisode(config, episode, snapshot, generation), calibration)
+                self.prepared.emit(generation, row, prepared, calibration)
             except Exception as exc:
                 self.failed.emit(generation, row, str(exc))
 
         self.executor.submit(task)
+
+    def _prepare_episode(self, episode, snapshot, recipe, output_dir: str, args, detect_cuts: bool,
+                         generation: int, **options: Any) -> tuple[_PreparedEpisode, Any]:
+        """Prépare `snapshot` dans un worker ; résultat rattaché à l'épisode d'origine et à sa génération."""
+        config, calibration = prepare_matrix_episode(
+            snapshot,
+            recipe,
+            output_dir,
+            self.config,
+            args,
+            _GuiLogger(self.log_message, snapshot.display_name),
+            detect_cuts=detect_cuts,
+            drift_threshold_ms=getattr(args, "drift_threshold_ms", 25) or 25,
+            cache=self._prep_cache,
+            **options,
+        )
+        return _PreparedEpisode(config, episode, snapshot, generation), calibration
 
     def _finish_preparation(self) -> None:
         """Fin du lot : lancement, export ou proposition de vérification audio."""

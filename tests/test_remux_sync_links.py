@@ -501,9 +501,10 @@ def test_applied_sync_comparison_includes_the_requested_mode():
     assert _same_applied_sync(SyncCalibration(cuts), SyncCalibration(cuts, cadence_method_auto=True))
 
 
-@pytest.mark.parametrize("removed", ["C", "A"])
-def test_removing_a_source_drops_its_cadence_analyses(chain, monkeypatch, removed):
-    """Source de la piste ou de sa référence retirée : son analyse ne bloque plus le traitement média."""
+@pytest.mark.parametrize("dropped", ["C", "A", None])
+def test_removed_source_or_global_cancel_drops_cadence_analyses(chain, monkeypatch, dropped):
+    """Source de la piste ou de sa référence retirée, ou annulation globale : l'analyse ne bloque plus
+    le traitement média."""
     from core.workflows.cadence import detect_cadence_from_metadata
 
     panel, tracks, _logs = chain
@@ -512,20 +513,10 @@ def test_removing_a_source_drops_its_cadence_analyses(chain, monkeypatch, remove
     _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
                                                        cadence_audio_method="auto"))
     assert panel.cadence_resolution_pending()
-    inspection_functions.on_remove_file(panel, removed)
-    assert not panel.cadence_resolution_pending()
-
-
-def test_global_cancel_drops_cadence_analyses(chain, monkeypatch):
-    from core.workflows.cadence import detect_cadence_from_metadata
-
-    panel, tracks, _logs = chain
-    pal = detect_cadence_from_metadata("24000/1001", "25/1")
-    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: None)
-    _sync(panel, tracks, "C", "A", 300, SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
-                                                       cadence_audio_method="auto"))
-    assert panel.cadence_resolution_pending()
-    panel._on_global_sync_cancel_requested()
+    if dropped is None:
+        panel._on_global_sync_cancel_requested()
+    else:
+        inspection_functions.on_remove_file(panel, dropped)
     assert not panel.cadence_resolution_pending()
 
 

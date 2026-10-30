@@ -1,6 +1,7 @@
 """Contrats hybrides, chronologie et intégration sur des médias synthétiques."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -1035,7 +1036,7 @@ def test_sync_studio_dialog_button_scaling_and_padding(qt_app, tmp_path):
             # Button must be scaled properly (at 125%, 30px scaled is 38px)
             assert btn.width() >= 35
             # Padding must be compact (pad_px <= 4) so content area is wide enough
-            assert "padding: 0 3px" in btn.styleSheet() or "padding: 0 2px" in btn.styleSheet()
+            assert re.search(r"padding:\s*0 [23]px", btn.styleSheet())
 
         # Step buttons: -10 ms, -1 ms, +1 ms, +10 ms
         step_buttons = [

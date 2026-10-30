@@ -26,6 +26,27 @@ def _edited_pair(cuts, shifts, duration=180_000):
     return reference, donor
 
 
+def _fake_sync_panel(**overrides):
+    """État minimal lu par `RemuxPanel._on_audio_sync_requested` ; analyse exécutée sur place."""
+    from types import SimpleNamespace
+
+    state = dict(
+        _scan_cancel=threading.Event(),
+        _can_start_auxiliary_operation=lambda: True,
+        _audio_sync_family=lambda _entry: "surround",
+        _audio_sync_measure_entry=lambda target, _reference: target,
+        _audio_sync_cadence=lambda *_a: None,
+        _audio_sync_track=lambda entry: entry,
+        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        log_message=SimpleNamespace(emit=lambda *_a: None),
+        audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
+        _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
+        _executor=SimpleNamespace(submit=lambda callback: callback()),
+    )
+    state.update(overrides)
+    return SimpleNamespace(**state)
+
+
 def test_short_window_can_find_offset_larger_than_window():
     ref, donor = _edited_pair([], [-18000])
     anchor = match_window(ref, donor, 10000, 6000, 30000)
@@ -259,20 +280,10 @@ def test_ui_reports_failed_analysis_without_constant_offset_fallback(monkeypatch
     monkeypatch.setattr(AudioSyncScanner, "scan", fail)
     monkeypatch.setattr(AudioSyncWorkflow, "detect_offset", forbidden)
     errors = []
-    fake = SimpleNamespace(
-        _scan_cancel=threading.Event(),
-        _can_start_auxiliary_operation=lambda: True,
-        _audio_sync_family=lambda _entry: "surround",
-        _audio_sync_measure_entry=lambda target, _reference: target,
-        _audio_sync_cadence=lambda *_a: None,
+    fake = _fake_sync_panel(
         _audio_sync_reference_choices=lambda _entry: [reference],
-        _audio_sync_track=lambda entry: entry,
-        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
-        log_message=SimpleNamespace(emit=lambda *_a: None),
-        audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
         _audio_sync_error=SimpleNamespace(emit=lambda *args: errors.append(args)),
         _audio_sync_done=SimpleNamespace(emit=forbidden),
-        _executor=SimpleNamespace(submit=lambda callback: callback()),
     )
     panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target))
     assert errors == [("target", "Jonction non vérifiée")]
@@ -449,38 +460,33 @@ def test_envelope_failure_interrupts_other_decode(monkeypatch):
     assert donor_aborted == [True]
 
 
-def test_run_stops_process_when_aborted(monkeypatch):
-    import subprocess
-    from core.workflows import audio_sync_scan
+def test_run_stops_process_when_aborted():
+    import sys
+    import time
     from core.workflows.audio_sync_scan import AudioSyncScanner
 
-    class _Process:
-        returncode = None
-        killed = False
-
-        def communicate(self, timeout=None):
-            if timeout is not None:
-                raise subprocess.TimeoutExpired("ffmpeg", timeout)
-            return b"", b""
-
-        def poll(self):
-            return None if not self.killed else -9
-
-        def kill(self):
-            self.killed = True
-
-    process = _Process()
-    monkeypatch.setattr(audio_sync_scan.subprocess, "Popen", lambda *args, **kwargs: process)
     abort = threading.Event()
-    abort.set()
-    with pytest.raises(AudioSyncError, match="interrompue"):
-        AudioSyncScanner()._run(["ffmpeg"], timeout=30, abort=abort)
-    assert process.killed
+    timer = threading.Timer(0.2, abort.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(AudioSyncError, match="interrompue"):
+            AudioSyncScanner()._run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=30, abort=abort)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 10
+
+
+def test_run_timeout_raises_sync_error():
+    import sys
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    with pytest.raises(AudioSyncError, match="Délai"):
+        AudioSyncScanner()._run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.3)
 
 
 @pytest.mark.parametrize("deep, expected", [(False, True), (True, False)])
 def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
-    import threading
     from types import SimpleNamespace
     from ui.panels.remux_panel import panel
     from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -496,19 +502,7 @@ def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
         raise AudioSyncError("arrêt")
 
     monkeypatch.setattr(AudioSyncScanner, "scan", scan)
-    fake = SimpleNamespace(
-        _scan_cancel=threading.Event(),
-        _can_start_auxiliary_operation=lambda: True,
-        _audio_sync_family=lambda _entry: "surround",
-        _audio_sync_measure_entry=lambda target, _reference: target,
-        _audio_sync_cadence=lambda *_a: None,
-        _audio_sync_track=lambda entry: entry,
-        _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
-        log_message=SimpleNamespace(emit=lambda *_a: None),
-        audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
-        _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
-        _executor=SimpleNamespace(submit=lambda callback: callback()),
-    )
+    fake = _fake_sync_panel()
     panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target), deep=deep,
                                               reference_entry=cast(Any, reference))
     assert seen == [expected]
@@ -516,7 +510,6 @@ def test_remux_panel_quick_check_unless_deep(monkeypatch, deep, expected):
 
 
 def test_remux_panel_passes_detected_cadence_to_scan(monkeypatch):
-    import threading
     from types import SimpleNamespace
     from ui.panels.remux_panel import panel
     from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -532,18 +525,9 @@ def test_remux_panel_passes_detected_cadence_to_scan(monkeypatch):
         raise AudioSyncError("arrêt")
 
     monkeypatch.setattr(AudioSyncScanner, "scan", scan)
-    fake = SimpleNamespace(
-        _scan_cancel=threading.Event(),
-        _can_start_auxiliary_operation=lambda: True,
-        _audio_sync_family=lambda _entry: "surround",
-        _audio_sync_measure_entry=lambda target, _reference: target,
+    fake = _fake_sync_panel(
         _audio_sync_cadence=lambda *_a: mismatch,
-        _audio_sync_track=lambda entry: entry,
         _config=SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe", sync_cadence_audio_method="asetrate"),
-        log_message=SimpleNamespace(emit=lambda *_a: None),
-        audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
-        _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
-        _executor=SimpleNamespace(submit=lambda callback: callback()),
     )
     panel.RemuxPanel._on_audio_sync_requested(cast(Any, fake), cast(Any, target), reference_entry=cast(Any, reference))
     assert seen == [(mismatch, "asetrate")]
@@ -594,13 +578,16 @@ def test_dts_is_decoded_core_only(monkeypatch):
     from core.workflows.audio_sync_scan import AudioSyncScanner
 
     scanner = AudioSyncScanner()
-    streams = {1: ("dts", 6, 48000), 2: ("truehd", 8, 48000), 3: ("dts", 8, 48000), 4: ("dts", 6, 96000)}
+    streams = {1: ("dts", 6, 48000), 2: ("truehd", 8, 48000), 3: ("dts", 8, 48000), 4: ("dts", 6, 96000),
+               5: ("dts", 6, 48000)}
     probes = []
 
     def run(command, **_kwargs):
         probes.append(command)
-        codec, channels, rate = streams[int(command[command.index("-select_streams") + 1])]
-        stream = {"codec_name": codec, "channels": channels, "sample_rate": str(rate)}
+        index = int(command[command.index("-select_streams") + 1])
+        codec, channels, rate = streams[index]
+        stream = {"codec_name": codec, "channels": channels, "sample_rate": str(rate),
+                  "profile": "DTS Express" if index == 5 else "DTS-HD MA"}
         return subprocess.CompletedProcess(command, 0, json.dumps({"streams": [stream]}), "")
 
     monkeypatch.setattr(scanner, "_run", run)
@@ -611,3 +598,30 @@ def test_dts_is_decoded_core_only(monkeypatch):
     assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 3)) == []
     assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 4)) == []
     assert scanner._decoder_args(dts) == ["-core_only", "1"] and len(probes) == 4
+    # DTS Express (LBR seul) : aucun cœur à décoder.
+    assert scanner._decoder_args(AudioSyncTrack(Path("a.mkv"), 5)) == []
+
+
+@pytest.mark.parametrize("stream_index, spec", [(2, "0:2"), ("0:a:1", "0:a:1")])
+def test_envelopes_select_the_requested_stream(monkeypatch, stream_index, spec):
+    """Index absolu (GUI) ou spécificateur (`sync-scan --stream-ref 0:a:1`) : même flux partout."""
+    import subprocess
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, b"\x00" * 16, b"")
+
+    monkeypatch.setattr(scanner, "_run", run)
+    monkeypatch.setattr(scanner, "_decoder_args", lambda _track: [])
+    monkeypatch.setattr(scanner, "duration", lambda _track: 10.0)
+    track = AudioSyncTrack(Path("a.mkv"), stream_index)
+    scanner.envelope(track)
+    scanner.envelope_mixes(track, None, (None, "pan=mono|c0=c0"))
+    assert commands[0][commands[0].index("-map") + 1] == spec
+    assert commands[1][commands[1].index("-filter_complex") + 1].startswith(f"[{spec}]asplit=2")

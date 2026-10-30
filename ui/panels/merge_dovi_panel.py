@@ -43,7 +43,10 @@ from ui.desktop import open_external
 from ui.operation_bar import OperationState
 from ui.widgets.surface import CollapsibleCard
 from ui.design_system import colors as _C, font_px as _font_px, scale as _scale
-from ui.styles import _checkbox_style
+from ui.styles import (
+    _card, _checkbox_style, _primary_button as _shared_primary_button,
+    _raised_button as _secondary_button, _section_label,
+)
 
 
 class _StringSignal(Protocol):
@@ -54,98 +57,8 @@ class _StringSignal(Protocol):
 # Helpers de style
 # =============================================================================
 
-def _section_label(text: str) -> QLabel:
-    lbl = QLabel(text)
-    lbl.setStyleSheet(f"""
-        color: {_C.TEXT_SEC};
-        font-size: {_font_px(9)}px;
-        font-weight: 700;
-        letter-spacing: {_scale(2)}px;
-        background: transparent;
-    """)
-    return lbl
-
-
-def _card(parent: QWidget | None = None) -> QWidget:
-    from ui.styles import _card as surface_card
-    return surface_card(parent)
-
-
 def _primary_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(36))
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.ACCENT};
-            color: {_C.ON_ACCENT};
-            border: none;
-            border-radius: {_scale(6)}px;
-            font-size: {_font_px(13)}px;
-            font-weight: 700;
-            padding: 0 {_scale(24)}px;
-        }}
-        QPushButton:hover {{
-            background: {_C.ACCENT_HOVER};
-        }}
-        QPushButton:pressed {{
-            background: {_C.ACCENT_DIM};
-        }}
-        QPushButton:disabled {{
-            background: {_C.BG_ACTIVE};
-            color: {_C.TEXT_DIM};
-        }}
-    """)
-    return btn
-
-
-def _secondary_button(
-    text: str,
-    fixed_width: int | None = None,
-    *,
-    min_width: int | None = None,
-    padding_h: int | None = None,
-) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.setFixedHeight(_scale(30))
-
-    is_symbol = len(text.strip()) <= 2
-    if padding_h is not None:
-        pad_px = _scale(padding_h)
-    elif is_symbol:
-        pad_px = _scale(2)
-    elif fixed_width is not None and fixed_width <= 50:
-        pad_px = _scale(4)
-    else:
-        pad_px = _scale(8)
-
-    if fixed_width:
-        btn.setFixedWidth(_scale(fixed_width))
-    if min_width:
-        btn.setMinimumWidth(_scale(min_width))
-
-    btn.setStyleSheet(f"""
-        QPushButton {{
-            background: {_C.BG_ACTIVE};
-            color: {_C.TEXT_SEC};
-            border: 1px solid {_C.BORDER_LT};
-            border-radius: {_scale(5)}px;
-            font-size: {_font_px(11)}px;
-            padding: 0 {pad_px}px;
-            text-align: center;
-        }}
-        QPushButton:hover {{
-            background: {_C.BG_HOVER};
-            color: {_C.TEXT_PRI};
-            border-color: {_C.ACCENT};
-        }}
-        QPushButton:disabled {{
-            color: {_C.TEXT_DIM};
-            border-color: {_C.BORDER};
-        }}
-    """)
-    return btn
+    return _shared_primary_button(text, font_size=13, padding_h=24)
 
 
 def _path_input() -> QLineEdit:
