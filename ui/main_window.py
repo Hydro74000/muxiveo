@@ -91,7 +91,8 @@ from core.version import (
 )
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
-from core.workflows.encode import EncodeError
+from core.workflows.encode import EncodeError, HardwareEncoderDetector
+from core.workflows.encode.vulkan import detect_vulkan
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
 from ui.confirm import confirm_close_while_running, confirm_overwrite
@@ -890,7 +891,6 @@ class DashboardPage(QWidget):
 
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
-        from core.workflows.encode import HardwareEncoderDetector
         detector = HardwareEncoderDetector()
         ffmpeg = self._config.tool_ffmpeg
         nvencc = getattr(self._config, "tool_nvencc", None) or None
@@ -904,8 +904,6 @@ class DashboardPage(QWidget):
 
     def _run_vulkan_detection(self) -> None:
         """Thread worker : Vulkan utilisable par FFmpeg (périphérique + nlmeans_vulkan sur une image)."""
-        from core.workflows.encode.vulkan import detect_vulkan
-
         ffmpeg = self._config.tool_ffmpeg
         self._vulkan_detected.emit(ffmpeg, detect_vulkan(ffmpeg))
 

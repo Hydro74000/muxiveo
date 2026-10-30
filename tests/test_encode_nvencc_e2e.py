@@ -327,6 +327,7 @@ class TestRealHardwareDetection:
         assert "nvencc_h264" in available
 
 
+@pytest.mark.real_dashboard_probes
 class TestDashboardNvenccBadges:
     """Vérifie que la DashboardPage expose et active les 3 badges NVEncC."""
 

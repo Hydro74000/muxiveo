@@ -263,8 +263,8 @@ class AudioSyncScanner:
         if result.returncode:
             raise AudioSyncError(result.stderr.decode("utf-8", errors="replace"))
         values = np.frombuffer(result.stdout, dtype="<f4")
-        values = values[:len(values) // count * count].reshape(-1, count)
-        return [np.ascontiguousarray(values[:, i]) for i in range(count)]
+        frames = values[:len(values) // count * count].reshape(-1, count)
+        return [np.ascontiguousarray(frames[:, i]) for i in range(count)]
 
     def _envelopes(self, reference, donor, cadence_filter=None,
                    downmixes: tuple[str, str] | None = None) -> tuple[ndarray, ndarray]:
