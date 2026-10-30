@@ -1,0 +1,102 @@
+name: Update process
+
+# Mise à jour intégrée par échange de dossiers (core/update_apply.py) sur les trois systèmes :
+# archive source (extraction bornée, report des fichiers de l'utilisateur, échange, contrôle, relance,
+# retour arrière) et application macOS copiée depuis un DMG (hdiutil / ditto). Bibliothèque standard
+# seule : aucune dépendance Qt, conftest ignoré. Condition de publication (release.yml).
+# Job macos-frozen : même échange par l'auxiliaire figé de l'application PyInstaller (`--apply-update`),
+# lancé depuis le bundle qu'il remplace (réussite, retour arrière, ménage).
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - core/update_apply.py
+      - core/update_install.py
+      - tests/test_update_apply.py
+      - scripts/write_source_marker.py
+      - scripts/ci_macos_update_e2e.py
+      - launcher.py
+      - package.py
+      - .github/workflows/ci-update-process.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Update process (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: Update process tests
+        run: python -m pytest -v --noconftest -p no:cacheprovider tests/test_update_apply.py
+
+      - name: Source marker (archive réelle)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/write_source_marker.py --version 0.0.0-ci --extra core/_build_version.py --out marker.json
+          python -c 'import json; d = json.load(open("marker.json")); assert "core/update_apply.py" in d["files"] and "core/_build_version.py" in d["files"]'
+
+  macos-frozen:
+    name: Update process (application macOS figée)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # Longueurs différentes : contenus et positions dans l'archive Python distincts.
+      OLD_VERSION: "0.0.1-ci-ancienne"
+      NEW_VERSION: "0.0.2-ci"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"      # comme les paquets de release.yml
+          cache: "pip"
+
+      - name: Install packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pillow
+
+      - name: Build old app
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'import os, pathlib; pathlib.Path("core/_build_version.py").write_text("BUILD_VERSION = " + repr(os.environ["OLD_VERSION"]) + "\n", encoding="utf-8")'
+          python package.py --version "$OLD_VERSION"
+          mkdir -p "$RUNNER_TEMP/old"
+          ditto dist/Muxiveo.app "$RUNNER_TEMP/old/Muxiveo.app"
+
+      - name: Build new app and DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 64 Kio aléatoires en plus : une lecture tardive de l'archive Python de l'auxiliaire après
+          # l'échange (dans le nouveau bundle, au même chemin) échouerait au lieu de passer inaperçue.
+          python -c 'import os, pathlib, secrets; pathlib.Path("core/_build_version.py").write_text("BUILD_VERSION = " + repr(os.environ["NEW_VERSION"]) + "\n_CI_PADDING = " + repr(secrets.token_hex(32768)) + "\n", encoding="utf-8")'
+          python package.py --dmg --version "$NEW_VERSION"
+
+      - name: Update through the frozen helper
+        run: >-
+          python scripts/ci_macos_update_e2e.py --old-app "$RUNNER_TEMP/old/Muxiveo.app"
+          --dmg "dist/releases/Muxiveo-$NEW_VERSION.dmg" --old-version "$OLD_VERSION" --new-version "$NEW_VERSION"

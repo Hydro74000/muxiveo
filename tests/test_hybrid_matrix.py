@@ -15,7 +15,7 @@ from core.workflows.hybrid_matrix import (
     prepare_matrix_episode,
 )
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
-from core.workflows.sync_calibration import SyncCalibration
+from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 from cli.logging import Logger
 from cli.options import CommonOptions
 
@@ -23,6 +23,17 @@ from cli.options import CommonOptions
 def _name(path: Path | None) -> str:
     assert path is not None
     return path.name
+
+
+def _selected_plan(job, select_tracks, *sources) -> RemuxConfig:
+    """Plan construit comme `build_remux_config` : sources (chemin, pistes) puis sélection."""
+    result = RemuxConfig(
+        sources=[SourceInput(path, index, tracks) for index, (path, tracks) in enumerate(sources)],
+        output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
+        sync_subtitles=job["sync_subtitles"],
+    )
+    select_tracks(result.sources)
+    return result
 
 
 def test_parse_episode_key_formats():
@@ -175,19 +186,13 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
     options = CommonOptions(sync_mode="physical", calibration="ignored.json", auto_sync=True)
     seen = []
 
-    def build(job, config, build_options, logger, *, select_tracks):
+    def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
         seen.append(build_options)
         master_tracks = [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
                          TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]
         donor_tracks = [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1", time_shift_ms=99),
                         TrackEntry(1, "subtitle", "SUBRIP", "", "fra", "", file_id="src1", time_shift_ms=99)]
-        result = RemuxConfig(
-            sources=[SourceInput(master, 0, master_tracks), SourceInput(donor, 1, donor_tracks)],
-            output=Path(job["output"]), track_order=[], sync_mode=job["sync_mode"],
-            sync_subtitles=job["sync_subtitles"],
-        )
-        select_tracks(result.sources)
-        return result
+        return _selected_plan(job, select_tracks, (master, master_tracks), (donor, donor_tracks))
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Scanner appelé en mode sans analyse")
@@ -217,6 +222,66 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
         assert len(preparation_commands(result, tmp_path, "ffmpeg")) == expected
 
 
+@pytest.mark.parametrize("auto_apply,calibrate", [(True, True), (False, True), (True, False)])
+def test_manual_shift_follows_the_video_cadence(tmp_path, monkeypatch, auto_apply, calibrate):
+    """Décalage manuel d'un donneur 25 i/s face à un master 23,976 i/s : conversion de cadence
+    (réécriture physique), méthode « auto » tranchée par la hauteur des pistes de même langue."""
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.hybrid_matrix import plan_needs_cadence_method
+    from core.workflows.physical_sync import preparation_commands
+
+    master = tmp_path / "master.mkv"
+    donor = tmp_path / "donor.mkv"
+    episode = MatrixEpisode(master_file=master,
+                            donor_files=[(MatrixSource("donor", donor, SourceRole.DONOR), donor)])
+
+    def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
+        master_tracks = [TrackEntry(0, "video", "H264", "", "", "", file_id="src0", frame_rate="24000/1001"),
+                         TrackEntry(1, "audio", "EAC3", "", "eng", "", file_id="src0")]
+        donor_tracks = [TrackEntry(0, "video", "H264", "", "", "", file_id="src1", frame_rate="25/1"),
+                        TrackEntry(1, "audio", "AAC", "", "fre", "", file_id="src1"),
+                        TrackEntry(2, "audio", "AAC", "", "eng", "", file_id="src1")]
+        return _selected_plan(job, select_tracks, (master, master_tracks), (donor, donor_tracks))
+
+    resolved = []
+
+    def resolve(self, reference, donor_track, calibration, log=lambda _m: None):
+        resolved.append((reference.stream_index, donor_track.stream_index))
+        from dataclasses import replace
+        return replace(calibration, cadence_audio_method="asetrate")
+
+    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr(AudioSyncScanner, "scan", lambda *_a, **_k: pytest.fail("analyse en mode manuel"))
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
+    recipe = HybridRecipe(sync_strategy="manual", manual_shift_ms=300, sync_mode="container",
+                          donor_audio_langs=["fre"], cadence_auto_apply=auto_apply)
+    result, calibration = prepare_matrix_episode(
+        episode, recipe, tmp_path / "out", SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        CommonOptions(), Logger(), calibrate=calibrate,
+    )
+
+    assert calibration is not None and calibration.segments[0].shift_ms == 300
+    if not calibrate:
+        # Préparation GUI sans analyse : méthode tranchée avant traitement, pas ici.
+        assert resolved == [] and calibration.cadence_audio_method == "auto"
+        assert result.sync_mode == "physical" and plan_needs_cadence_method(result)
+        return
+    if not auto_apply:
+        assert calibration.cadence_mismatch is None and result.sync_calibrations == {}
+        assert resolved == []
+        return
+    assert resolved == [(1, 2)]
+    assert result.sync_mode == "physical"
+    stored = SyncCalibration.from_dict(result.sync_calibrations["1"])
+    assert stored.cadence_mismatch is not None and stored.cadence_mismatch.speed_ratio == "24000/25025"
+    assert stored.cadence_audio_method == "asetrate"
+    assert all(track.time_shift_ms == 0 for track in result.sources[1].tracks)
+    commands = preparation_commands(result, tmp_path, "ffmpeg", sample_rates={(donor, 1): 48000})
+    graph = next(command[command.index("-filter_complex") + 1] for _mapped, _out, command, _cal in commands
+                 if "-filter_complex" in command)
+    assert "asetrate=46034" in graph
+
+
 def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, monkeypatch):
     """La VO donneuse sert de témoin acoustique, seule la VF est conservée."""
     from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -228,7 +293,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
         donor_files=[(MatrixSource("donor", donor, SourceRole.DONOR), donor)],
     )
 
-    def build(job, config, options, logger, *, select_tracks):
+    def build(job, config, options, logger, *, select_tracks, **_kwargs):
         master_tracks = [
             TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
             TrackEntry(1, "audio", "EAC3", "", "en-US", "", file_id="src0"),
@@ -364,3 +429,66 @@ def test_matrix_candidate_helpers(tmp_path):
     donor_paths = [p.name for _, p in donors]
     assert "Audio1.ac3" in donor_paths
     assert "Sub2.srt" in donor_paths
+
+
+def test_plan_cadence_methods_are_settled_from_the_master_language(tmp_path, monkeypatch):
+    """Méthode « auto » restée non tranchée dans un plan : analysée sur la piste du donneur dans la langue du master."""
+    from dataclasses import replace
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.hybrid_matrix import plan_needs_cadence_method, resolve_plan_cadence_methods
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    undecided = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="auto")
+    decided = replace(undecided, cadence_audio_method="atempo", cadence_method_auto=True)
+    master, donor = tmp_path / "master.mkv", tmp_path / "donor.mkv"
+    config = RemuxConfig(
+        sources=[SourceInput(master, 0, [TrackEntry(1, "audio", "EAC3", "", "en-US", "", file_id="src0")]),
+                 SourceInput(donor, 1, [TrackEntry(1, "audio", "AAC", "", "fre", "", file_id="src1"),
+                                        TrackEntry(2, "audio", "AAC", "", "eng", "", file_id="src1", enabled=False)]),
+                 SourceInput(tmp_path / "other.mkv", 2, [TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src2")])],
+        output=tmp_path / "out.mkv", track_order=[], sync_mode="physical",
+        sync_calibrations={"1": undecided.to_dict(), "2": decided.to_dict()},
+    )
+    analysed = []
+
+    def resolve(self, reference, donor_track, calibration, log=lambda _m: None):
+        analysed.append((reference.stream_index, donor_track.source_path.name, donor_track.stream_index))
+        return replace(calibration, cadence_audio_method="asetrate", cadence_method_auto=True)
+
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
+    assert plan_needs_cadence_method(config)
+    resolved = resolve_plan_cadence_methods(config, "ffmpeg", "ffprobe", None, Logger(), "S01E01")
+    assert analysed == [(1, "donor.mkv", 2)]
+    assert set(resolved) == {"1"} and resolved["1"].cadence_audio_method == "asetrate"
+    config.sync_calibrations["1"] = resolved["1"].to_dict()
+    assert not plan_needs_cadence_method(config)
+
+
+@pytest.mark.parametrize("auto_apply", [True, False])
+def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, monkeypatch, auto_apply):
+    """Calibration importée à hauteur seule (vitesse inchangée) : le mode conteneur la perdrait."""
+    import json
+
+    master, donor = tmp_path / "master.mkv", tmp_path / "donor.mkv"
+    source = MatrixSource("donor", donor, SourceRole.DONOR)
+    episode = MatrixEpisode(master_file=master, donor_files=[(source, donor)])
+    pitch = SyncCalibration((SyncSegment(0, 120.0),), cadence_pitch_factor=24000 / 25025)
+    supplied = tmp_path / "calibration.json"
+    supplied.write_text(json.dumps(pitch.to_dict()), encoding="utf-8")
+
+    def build(job, config, build_options, logger, *, select_tracks, **_kwargs):
+        return _selected_plan(job, select_tracks,
+                              (master, [TrackEntry(0, "video", "HEVC", "", "", "", file_id="src0"),
+                                        TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]),
+                              (donor, [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1")]))
+
+    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    result, _calibration = prepare_matrix_episode(
+        episode, HybridRecipe(sync_strategy="auto", sync_mode="container", cadence_auto_apply=auto_apply),
+        tmp_path / "out",
+        SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe"),
+        CommonOptions(sync_mode="container", calibration=str(supplied)), Logger(),
+    )
+    assert result.sync_mode == "physical"
+    assert SyncCalibration.from_dict(result.sync_calibrations["1"]).audio_pitch_factor == pytest.approx(24000 / 25025)

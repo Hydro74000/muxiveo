@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
 
 def current_config(panel: "RemuxPanel", *, output_fallback: str = "") -> RemuxConfig | None:
+    """Configuration lue dans l'état du panneau, sans le modifier (nom du profil déjà à jour :
+    recalculé à chaque changement par `RemuxPanel._rebuild_preview`)."""
     if not panel._has_ready_files():
         return None
 

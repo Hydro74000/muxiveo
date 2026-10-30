@@ -25,6 +25,16 @@ _MAX_ANCHOR_GAP_MS = 30_000
 # perception de la synchro labiale), sur 30 s au plus.
 _MAX_EXCURSION_SHIFT_MS = 45
 _MAX_EXCURSION_MS = 30_000
+# Seuils de détection d'un décalage son/image (ITU-R BT.1359) : son en avance de
+# 45 ms, en retard de 125 ms. Des paliers qui tiennent tous dans ces bornes autour
+# d'un même décalage (bobines conformées séparément) ne justifient aucune coupe.
+_IMPERCEPTIBLE_LEAD_MS = 45
+_IMPERCEPTIBLE_LAG_MS = 125
+# Introduction différente (logos de distributeurs) : admise si un silence d'au
+# moins 0,5 s la sépare du film dans les deux pistes, avec des fins de silence
+# concordant avec le premier plateau (blocs de 100 ms : ±250 ms).
+_INTRO_SILENCE_MS = 500
+_INTRO_SILENCE_TOLERANCE_MS = 250
 
 
 def _active_blocks(values):
@@ -33,6 +43,36 @@ def _active_blocks(values):
 
     values = np.abs(np.asarray(values, dtype=float))
     return values[:len(values) // 100 * 100].reshape(-1, 100).mean(axis=1) > _ACTIVITY_LEVEL
+
+
+def _intro_silence_end(values, window_start: int, size: int) -> int | None:
+    """Fin du dernier silence d'au moins 0,5 s commencé avant le centre de la première fenêtre vérifiée."""
+    import numpy as np
+
+    silent = ~_active_blocks(values[:max(0, window_start + size)])
+    bounds = np.flatnonzero(np.diff(np.r_[0, silent.astype(np.int8), 0]))
+    ends = [int(stop) * 100 for start, stop in zip(bounds[::2], bounds[1::2])
+            if (stop - start) * 100 >= _INTRO_SILENCE_MS and start * 100 < window_start + size // 2]
+    return ends[-1] if ends else None
+
+
+def _distinct_intro(reference, donor, first: Anchor, size: int, tolerance_ms: int) -> tuple[int, int] | None:
+    """Fins (référence, donneur) du silence qui clôt une introduction propre à chaque piste.
+
+    Le son actif non apparié doit précéder ce silence ; après lui, au plus une
+    demi-fenêtre sépare le film de la première ancre vérifiée.
+    """
+    donor_start = first.donor_ms - size // 2
+    reference_start = donor_start + first.shift_ms
+    reference_end = _intro_silence_end(reference, reference_start, size)
+    donor_end = _intro_silence_end(donor, donor_start, size)
+    if reference_end is None or donor_end is None:
+        return None
+    if abs(reference_end - donor_end - first.shift_ms) > max(tolerance_ms, _INTRO_SILENCE_TOLERANCE_MS):
+        return None
+    if reference_end < reference_start - size // 2 or donor_end < donor_start - size // 2:
+        return None
+    return reference_end, donor_end
 
 
 def match_window(reference, donor, start: int, size: int, max_offset: int) -> Anchor:
@@ -163,15 +203,21 @@ def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int)
 
 
 def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
-                   speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None):
-    """Sonde toute la piste, y compris le début et les plateaux intermédiaires."""
+                   speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None,
+                   review: list[tuple[float, float]] | None = None):
+    """Sonde toute la piste, y compris le début et les plateaux intermédiaires.
+
+    ``review`` : reçoit les zones cohérentes non vérifiées (début actif sans
+    correspondance, long trou au même décalage de part et d'autre) au lieu de
+    les refuser, en instants du donneur d'origine. Sans liste : refus.
+    """
     size = min(8000, min(len(reference), len(donor)) // 3)
     if size < 1000:
         raise AudioSyncError("Piste trop courte pour une calibration multi-segments.")
     step = size // 2
     stop = len(reference) - size
     positions = sorted(set([*range(0, stop + 1, step), stop]))
-    anchors = []
+    anchors: list[Anchor] = []
     for start in positions:
         check_cancelled()
         try:
@@ -191,8 +237,95 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
     unverified = first.donor_ms + first.shift_ms - size // 2 - max(0, first.shift_ms) - size
     if unverified > 0:
         if _active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any():
-            raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
-        log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
+            intro = _distinct_intro(reference, donor, first, size, tolerance_ms)
+            if intro is None:
+                if review is None:
+                    raise AudioSyncError("Début de piste non vérifié ; calibration manuelle requise.")
+                first_start = max(0, first.donor_ms - size // 2)
+                review.append((0.0, first_start * speed_factor))
+                log(f"Début de piste sans correspondance (0–{first_start * speed_factor / 1000:.1f} s) : "
+                    f"décalage du premier plateau proposé ({first.shift_ms:+d} ms), à relire.")
+            else:
+                log(f"Introduction propre à chaque piste (logos), séparée du film par un silence jusqu'à "
+                    f"{intro[0] / 1000:.1f} s (référence) / {intro[1] / 1000:.1f} s (donneur) : "
+                    f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
+        else:
+            log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
+    # Une jonction non vérifiable refuse la calibration, sauf si un décalage unique, sans
+    # coupe, garde toutes les ancres sous les seuils de perception (paliers de bobines).
+    constant = imperceptible_constant(anchors)
+    junction_log: list[str] = []
+    junction_review: list[tuple[float, float]] = []
+    try:
+        segments, confidence, kept, stable_gaps = _junction_segments(
+            reference, donor, list(anchors), size=size, tolerance_ms=tolerance_ms, speed_factor=speed_factor,
+            check_cancelled=check_cancelled, log=junction_log.append,
+            review=None if review is None else junction_review)
+    except AudioSyncError as exc:
+        check_cancelled()
+        if constant is None:
+            for message in junction_log:
+                log(message)
+            raise
+        reason = str(exc).removesuffix(" ; calibration manuelle requise.").removesuffix(".")
+    else:
+        for message in junction_log:
+            log(message)
+        if review is not None:
+            review.extend(junction_review)
+        return _finish(donor, segments, confidence, kept, stable_gaps, size=size,
+                       max_offset_ms=max_offset_ms, speed_factor=speed_factor, log=log)
+    shifts = [anchor.shift_ms for anchor in anchors]
+    log(f"{reason}. Paliers de {min(shifts):+d} à {max(shifts):+d} ms, sous les seuils de perception "
+        f"(son en avance ≤ {_IMPERCEPTIBLE_LEAD_MS} ms, en retard ≤ {_IMPERCEPTIBLE_LAG_MS} ms) : "
+        f"décalage constant {constant:+d} ms retenu.")
+    stable_gaps = []
+    for left, right in zip(anchors, anchors[1:]):
+        check_cancelled()
+        gap = right.donor_ms - left.donor_ms
+        if gap > _MAX_ANCHOR_GAP_MS:
+            _review_gap(left, right, constant, speed_factor=speed_factor, log=log, review=review)
+        elif gap > size * 3:
+            stable_gaps.append(gap)
+    return _finish(donor, [SyncSegment(0, constant)], min(anchor.confidence for anchor in anchors), anchors,
+                   stable_gaps, size=size, max_offset_ms=max_offset_ms, speed_factor=speed_factor, log=log)
+
+
+def imperceptible_constant(anchors) -> int | None:
+    """Décalage unique dont l'écart à chaque ancre reste indétectable, sinon None.
+
+    Appliquer C au lieu du décalage s d'une ancre retarde le son de C − s. C minimise
+    l'écart moyen rapporté au seuil de son sens (quantile retard / (avance + retard)
+    des ancres, régulièrement espacées), borné pour qu'aucune ancre ne dépasse un seuil.
+    """
+    import numpy as np
+
+    shifts = np.array([anchor.shift_ms for anchor in anchors])
+    low, high = int(shifts.min()), int(shifts.max())
+    if high - low > _IMPERCEPTIBLE_LEAD_MS + _IMPERCEPTIBLE_LAG_MS:
+        return None
+    best = round(float(np.quantile(shifts, _IMPERCEPTIBLE_LAG_MS / (_IMPERCEPTIBLE_LEAD_MS + _IMPERCEPTIBLE_LAG_MS))))
+    return max(high - _IMPERCEPTIBLE_LEAD_MS, min(low + _IMPERCEPTIBLE_LAG_MS, best))
+
+
+def _review_gap(left: Anchor, right: Anchor, shift: int, *, speed_factor, log, review) -> None:
+    """Long trou au même décalage de part et d'autre : à relire, refusé sans liste."""
+    if review is None:
+        raise AudioSyncError(_gap_message(left, right))
+    review.append((left.donor_ms * speed_factor, right.donor_ms * speed_factor))
+    log(f"Intervalle sans correspondance ({left.donor_ms * speed_factor / 1000:.1f}–"
+        f"{right.donor_ms * speed_factor / 1000:.1f} s), même décalage de part et d'autre "
+        f"({shift:+d} ms) : à relire.")
+
+
+def _gap_message(left: Anchor, right: Anchor) -> str:
+    return (f"Intervalle audio non vérifié ({left.donor_ms / 1000:.1f}–{right.donor_ms / 1000:.1f} s) ; "
+            "calibration manuelle requise.")
+
+
+def _junction_segments(reference, donor, anchors: list[Anchor], *, size, tolerance_ms, speed_factor,
+                       check_cancelled, log, review):
+    """Plateaux et jonctions vérifiées ; `anchors` perd les écarts brefs ignorés."""
     segments = [SyncSegment(0, anchors[0].shift_ms)]
     confidence = anchors[0].confidence
     stable_gaps = []
@@ -203,8 +336,9 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         stable = abs(right.shift_ms - segments[-1].shift_ms) <= tolerance_ms
         gap = right.donor_ms - left.donor_ms
         if gap > _MAX_ANCHOR_GAP_MS:
-            raise AudioSyncError(f"Intervalle audio non vérifié ({left.donor_ms / 1000:.1f}–{right.donor_ms / 1000:.1f} s) ; calibration manuelle requise.")
-        if stable and gap > size * 3:
+            _review_gap(left, right, right.shift_ms, speed_factor=speed_factor, log=log,
+                        review=review if stable else None)
+        elif stable and gap > size * 3:
             # Un bref passage doublé peut ne fournir aucune correspondance ;
             # conserver le décalage observé des deux côtés, et le signaler.
             stable_gaps.append(gap)
@@ -228,6 +362,10 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         confidence = min(confidence, cut_confidence)
         log(f"Jonction vérifiée à {cut * speed_factor / 1000:.3f} s : {right.shift_ms:+.0f} ms ({cut_confidence:.2f})")
         index += 1
+    return segments, confidence, anchors, stable_gaps
+
+
+def _finish(donor, segments, confidence, anchors, stable_gaps, *, size, max_offset_ms, speed_factor, log):
     if stable_gaps:
         log(f"{len(stable_gaps)} intervalle(s) sans correspondance (max {max(stable_gaps) / 1000:.0f} s) : "
             "décalage identique de part et d'autre.")

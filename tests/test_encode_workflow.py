@@ -579,6 +579,31 @@ class TestFfmpegThreads:
         assert cmds[0][cmds[0].index("-threads") + 1] == "14"
         assert cmds[1][cmds[1].index("-threads") + 1] == "14"
 
+    @pytest.mark.parametrize(("codec", "threads", "expected"), [
+        ("libx265", 24, "16"),  # frame-threads de x265 borné à 16 : au-delà, refus d'ouverture
+        ("libx265", 16, "16"),
+        ("libx265", 0, "0"),
+        ("libx264", 24, "24"),
+        ("libsvtav1", 48, "48"),
+    ])
+    def test_single_pass_threads_within_encoder_limit(self, tmp_path, codec, threads, expected):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        wf = _make_workflow(ffmpeg_threads=threads)
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv", video=_make_video_settings(codec=codec)))
+
+        assert cmd[cmd.index("-threads") + 1] == expected
+
+    def test_two_pass_x265_threads_capped_on_both_passes(self, tmp_path):
+        src = tmp_path / "source.mkv"
+        src.touch()
+        video = _make_video_settings(quality_mode=QualityMode.SIZE)
+        wf = _make_workflow(ffmpeg_threads=48)
+        cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video))
+
+        assert cmds[0][cmds[0].index("-threads") + 1] == "16"
+        assert cmds[1][cmds[1].index("-threads") + 1] == "16"
+
 
 class TestMaxParallelVideoEncodes:
 
@@ -5522,6 +5547,42 @@ class TestEncodeRuntimeMultiSourceSync:
 
         assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "12"
         assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "12"
+
+    def test_run_multi_video_pipeline_caps_x265_threads_only(self, tmp_path):
+        src = tmp_path / "src.mkv"
+        out = tmp_path / "out.mkv"
+        src.touch()
+
+        video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
+        video_b = _make_video_settings(codec="libx265", source_path=src, stream_index=1)
+        cfg = _make_config(
+            src,
+            out,
+            video=video_a,
+            video_tracks=[video_a, video_b],
+            audio_tracks=[],
+            subtitle_tracks=[],
+            copy_subtitles=False,
+        )
+
+        wf = _make_workflow(ffmpeg_threads=24, max_parallel_video_encodes=2)
+        commands_by_label: dict[str, list[str]] = {}
+
+        def _fake_run_cmd(cmd, **kwargs):
+            commands_by_label[str(kwargs.get("label", ""))] = list(cmd)
+            return "ok"
+
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd), patch.object(
+            wf,
+            "_prepare_multisource_sync",
+            return_value=({}, [], None, False),
+        ):
+            wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
+
+        # libx265 : frame-threads borné à 16 (refus d'ouverture au-delà) ; libx264 et le muxage inchangés
+        assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "24"
+        assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "16"
+        assert commands_by_label["ffmpeg-multi-video"][commands_by_label["ffmpeg-multi-video"].index("-threads") + 1] == "24"
 
     def test_prepare_multisource_sync_disables_live_when_foreign_offset(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"

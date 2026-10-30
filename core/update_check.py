@@ -42,6 +42,10 @@ UPDATE_CHANNELS = (UPDATE_CHANNEL_STABLE, UPDATE_CHANNEL_UNSTABLE)
 DEFAULT_UPDATE_CHANNEL = UPDATE_CHANNEL_UNSTABLE if APP_IS_UNSTABLE_BUILD else UPDATE_CHANNEL_STABLE
 
 _VERSION_RE = re.compile(r"^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(.*)$")
+# Tag publié accepté (flux ou API) : chiffres, points et suffixe alphanumérique. Rien d'autre ne peut atteindre un
+# chemin d'URL (`/`, `?`, `#`, `..`) ni un libellé Qt interprété en HTML (`<`, `"`). Sans quantificateur imbriqué :
+# identifiants vides du suffixe (points doublés, en tête ou en fin) refusés par `is_release_tag`.
+_REMOTE_TAG_RE = re.compile(r"^[vV]?\d+(?:\.\d+){0,2}(?:-([0-9A-Za-z.]+))?$")
 _UNSTABLE_RE = re.compile(r"^-unstable\.(\d+)\.(\d+)")
 
 
@@ -62,6 +66,7 @@ class UpdateInfo:
     url: str
     assets: tuple[ReleaseAsset, ...] = ()
     prerelease: bool = False
+    notes: str = ""           # notes de version GitHub (Markdown) ; vides si lues depuis le flux
 
     @property
     def is_newer(self) -> bool:
@@ -114,6 +119,15 @@ def display_version(version: str) -> str:
     return f"{match.group(1)}-unstable.{match.group(2)}" if match else clean
 
 
+def is_release_tag(tag: str) -> bool:
+    """True si `tag` a la forme d'un tag de release publiable (voir `_REMOTE_TAG_RE`)."""
+    match = _REMOTE_TAG_RE.match((tag or "").strip())
+    if match is None:
+        return False
+    suffix = match.group(1)
+    return (suffix is None or all(suffix.split("."))) and bool(version_key(tag))
+
+
 def is_repository_url(url: str, prefix: str = APP_REPOSITORY_URL) -> bool:
     """True si `url` pointe dans le dépôt Muxiveo (owner/repo insensibles à la casse sur GitHub)."""
     return (url or "").lower().startswith(prefix.lower())
@@ -148,7 +162,7 @@ def _parse_release(payload: object) -> UpdateInfo | None:
     if not isinstance(payload, dict) or payload.get("draft"):
         return None
     tag = str(payload.get("tag_name") or "").strip()
-    if not version_key(tag):
+    if not is_release_tag(tag):
         return None
     url = str(payload.get("html_url") or "")
     if not is_repository_url(url):
@@ -158,6 +172,7 @@ def _parse_release(payload: object) -> UpdateInfo | None:
         url=url,
         assets=_parse_assets(payload.get("assets")),
         prerelease=bool(payload.get("prerelease")),
+        notes=str(payload.get("body") or ""),
     )
 
 
@@ -171,7 +186,7 @@ def _parse_feed(payload: object, channel: str) -> UpdateInfo | None:
     if not isinstance(payload, dict) or payload.get("schema") != UPDATE_FEED_SCHEMA or payload.get("channel") != channel:
         return None
     tag = str(payload.get("tag") or "").strip()
-    if not version_key(tag):
+    if not is_release_tag(tag):
         return None
     url = str(payload.get("url") or "")
     if not is_repository_url(url):
@@ -290,6 +305,24 @@ def fetch_latest_release(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float =
         return query_latest_release(channel, timeout)
     except UpdateCheckError:
         return None
+
+
+def fetch_release_notes(version: str, timeout: float = UPDATE_CHECK_TIMEOUT_S) -> str:
+    """Notes de version GitHub (Markdown) de la release `version`.
+
+    Lève UpdateCheckError si GitHub est injoignable ou la release introuvable.
+    """
+    tag = f"v{(version or '').strip().lstrip('vV')}"
+    if not is_release_tag(tag):
+        raise UpdateCheckError(f"Version invalide : {version!r}")
+    try:
+        payload = _get_json(f"{RELEASES_API_URL}/tags/{tag}", timeout)
+    except Exception as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise UpdateCheckError(f"{type(exc).__name__}: {reason}") from exc
+    if not isinstance(payload, dict):
+        raise UpdateCheckError("Réponse GitHub inattendue.")
+    return str(payload.get("body") or "")
 
 
 def check_for_update(channel: str = DEFAULT_UPDATE_CHANNEL, timeout: float = UPDATE_CHECK_TIMEOUT_S) -> UpdateInfo | None:

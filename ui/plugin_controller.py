@@ -99,6 +99,7 @@ class PluginController(QObject):
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=self.spec.id)
         self._cancel = threading.Event()
         self._auto_update_done = False
+        self._auto_update_settled = False     # mise à jour automatique de ce lancement décidée (faite ou non)
         self._feed_known = False
 
     # ------------------------------------------------------------------ état
@@ -126,9 +127,20 @@ class PluginController(QObject):
     def _auto_update_allowed(self) -> bool:
         return self._feed_known
 
+    @property
+    def manual_update_pending(self) -> bool:
+        """Mise à jour proposée qu'il revient à l'utilisateur de lancer : ni en cours, ni laissée à la mise à
+        jour automatique de ce lancement (encore à décider), ou celle-ci a échoué."""
+        state = self._state
+        if not state.update_available or state.busy:
+            return False
+        return self._auto_update_settled or not self._config.plugins_auto_update
+
     def _maybe_auto_update(self) -> None:
+        if not self._auto_update_allowed():
+            return
         if (
-            not self._auto_update_done and self._auto_update_allowed() and self._state.update_available
+            not self._auto_update_done and self._state.update_available
             and self._config.plugins_auto_update and not self._state.busy
         ):
             self._auto_update_done = True
@@ -137,6 +149,8 @@ class PluginController(QObject):
                 label=translate_text(self.label), version=self._state.target,
             ))
             self.update()
+        # Après le lancement éventuel (état « occupé » déjà posé) : pas de point vert fugitif.
+        self._auto_update_settled = True
 
     def set_auto_update(self, enabled: bool) -> None:
         self._config.plugins_auto_update = bool(enabled)

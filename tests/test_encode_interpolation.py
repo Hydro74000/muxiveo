@@ -65,6 +65,7 @@ from core.workflows.encode.interpolation import (
     expand_rpu_file,
     ffprobe_beside,
     interpolation_source_from_probe,
+    decode_normalization_rate,
     multiply_fps_expr,
     parse_rife_progress,
 )
@@ -139,7 +140,7 @@ class TestInterpolationSource:
             format_start_time="0.000000",
         )
         assert info == InterpolationSource("bt2020nc", "limited", "topleft", 0.042, False, "", "24000/1001",
-                                           colorspace="bt2020nc")
+                                           nominal_rate="24000/1001", colorspace="bt2020nc")
         assert info.decode_rate == "24000/1001"
 
     def test_untagged_fallbacks(self):
@@ -176,6 +177,27 @@ class TestInterpolationSource:
         cfr = interpolation_source_from_probe({"r_frame_rate": "30000/1001", "avg_frame_rate": "2997/100"})
         assert vfr.is_vfr and vfr.cfr_rate == "30/1"
         assert not cfr.is_vfr and cfr.cfr_rate == ""
+        assert cfr.nominal_rate == "30000/1001"
+
+    @pytest.mark.parametrize("mode,deint,probe,expected", [
+        # sans « une image par champ » : normalisation VFR seule, inchangée
+        ("", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, ""),
+        ("", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "25/1"),
+        ("send_frame", "interlaced", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "25/1"),
+        # CFR entièrement désentrelacé : flux régulier, aucun fps=
+        ("send_field", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, ""),
+        # D19 : sortie irrégulière (interlaced) ou VFR → double de la cadence nominale
+        ("send_field", "interlaced", {"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, "50/1"),
+        ("send_field", "interlaced", {"r_frame_rate": "30000/1001", "avg_frame_rate": "2997/100"}, "60000/1001"),
+        ("send_field", "all", {"r_frame_rate": "25/1", "avg_frame_rate": "49/2"}, "50/1"),
+        ("send_field_nospatial", "all", {"r_frame_rate": "30000/1001", "avg_frame_rate": "25/1"}, "60000/1001"),
+        # r_frame_rate = cadence des champs (H.264 entrelacé) : déjà le double
+        ("send_field", "all", {"r_frame_rate": "50/1", "avg_frame_rate": "25/1"}, "50/1"),
+    ])
+    def test_decode_normalization_rate(self, mode, deint, probe, expected):
+        filters = VideoFilterSettings(yadif_enabled=bool(mode), yadif_mode=mode or "send_frame", yadif_deint=deint)
+        info = interpolation_source_from_probe(probe)
+        assert decode_normalization_rate(info, _video(filters=filters)) == expected
 
     @pytest.mark.parametrize("probe_name,nvencc_name", [
         ("smpte428", "st428"), ("smpte431", "st431-2"), ("smpte432", "st432-1"),
@@ -389,6 +411,16 @@ class TestVideoOnlyBuilder:
         [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
         decode = command_stages(cmd)[0]
         assert decode[decode.index("-vf") + 1] == "fps=30/1"
+
+    def test_vfr_field_deinterlace_normalized_once_at_double_rate(self, tmp_path):
+        # D19 : un fps= à la cadence source après YADIF « une image par champ » annulait le doublement.
+        video = _video(filters=VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field"))
+        cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video)
+        info = interpolation_source_from_probe({"r_frame_rate": "25/1", "avg_frame_rate": "49/2"})
+        [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
+        vf = (decode := command_stages(cmd)[0])[decode.index("-vf") + 1]
+        assert vf.startswith("yadif=send_field:") and vf.endswith(",fps=50/1")
+        assert vf.count("fps=") == 1
 
     def test_negative_offset_cuts_at_decode(self, tmp_path):
         video = _video()
@@ -738,7 +770,7 @@ class TestWorkflowInterpolation:
         for name in ("rife-v4.6", "rife-v4.15-mvo1"):
             (tmp_path / "rife-models" / name).mkdir(parents=True)
         (tmp_path / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
-        balanced = _cfg(tmp_path, _video(interpolation=_interp()))
+        balanced = _cfg(tmp_path, _video(interpolation=_interp(quality="balanced")))
         quality = _cfg(tmp_path, _video(interpolation=_interp(quality="quality")))
         fast = _cfg(tmp_path, _video(interpolation=_interp(quality="fast")))
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_probe_payload()):
@@ -874,6 +906,13 @@ class TestNvenccInterpolationDecode:
         with_vf = [*self._DECODE[:6], "-vf", "yadif", *self._DECODE[6:]]
         appended = _interpolation_decode_cmd(with_vf, InterpolationSource(is_vfr=True, cfr_rate="30/1"))
         assert appended[appended.index("-vf") + 1] == "yadif,fps=30/1"
+
+    def test_field_deinterlace_rate_from_video(self):
+        with_vf = [*self._DECODE[:6], "-vf", "yadif=send_field:auto:all", *self._DECODE[6:]]
+        video = _video(filters=VideoFilterSettings(yadif_enabled=True, yadif_mode="send_field"))
+        info = InterpolationSource(is_vfr=True, cfr_rate="30000/1001", frame_rate="25/1")
+        cmd = _interpolation_decode_cmd(with_vf, info, video)
+        assert cmd[cmd.index("-vf") + 1] == "yadif=send_field:auto:all,fps=60000/1001"
 
     def test_nvencc_dynamic_hdr_accepted(self, qt_app, tmp_path):
         _ = qt_app
@@ -1013,13 +1052,16 @@ def test_required_dovi_level_capped_for_tv_compat():
 
 
 @pytest.mark.parametrize("quality", ["fast", "balanced", "quality", "ultra", "light"])
-def test_optional_feature_cache_is_forwarded_for_every_preset(quality):
-    cmd = build_rife_stage("r", quality=quality, source=InterpolationSource(), feature_cache=True)
-    assert "--feature-cache" in cmd
-    plain = build_rife_stage("r", quality=quality, source=InterpolationSource())
-    assert "--feature-cache" not in plain
-    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": True}))
-    assert preset.to_video_settings().interpolation.feature_cache
+def test_feature_cache_forwarded_when_binary_supports_it(quality):
+    target = "core.workflows.encode.interpolation.rife_capabilities"
+    with patch(target, return_value=_legacy_capabilities((1, 7, 1))):
+        assert "--feature-cache" in build_rife_stage("r", quality=quality, source=InterpolationSource())
+    for older in (_legacy_capabilities((1, 7, 0)), None):
+        with patch(target, return_value=older):
+            assert "--feature-cache" not in build_rife_stage("r", quality=quality, source=InterpolationSource())
+    # Ancienne option des préréglages enregistrés : ignorée au chargement.
+    preset = EncodePreset(name="p", interpolation=cast(FrameInterpolationSettings, {"enabled": True, "feature_cache": False}))
+    assert preset.to_video_settings().interpolation.enabled
 
 
 def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
@@ -1035,12 +1077,8 @@ def test_panel_ultra_locks_normal_mode_and_tta(qt_app):
         settings = panel._current_interpolation_settings()
         assert settings.quality == "ultra" and settings.mode == "normal" and settings.tta == 1
         assert not panel._interp_mode_combo.isEnabled() and not panel._interp_tta_combo.isEnabled()
-        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8, feature_cache=True))
+        panel._apply_interpolation_settings(_interp(quality="ultra", mode="fast", tta=8))
         assert panel._interp_mode_combo.currentData() == "normal" and panel._interp_tta_combo.currentData() == 1
-        assert panel._interp_cache_cb.isChecked() and panel._current_interpolation_settings().feature_cache
-        panel._set_combo_data(panel._interp_quality_combo, "light")
-        assert panel._current_interpolation_settings().feature_cache
-        panel._set_combo_data(panel._interp_quality_combo, "ultra")
         assert "Ultra" in panel._interp_mode_combo.toolTip() and "Ultra" in panel._interp_tta_combo.toolTip()
     finally:
         panel.close()   # arrête les sondes du panneau (threads) avant la destruction

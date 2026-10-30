@@ -613,6 +613,10 @@ def _run_cli_entrypoint() -> int:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--apply-update"]:
+        # Mise à jour par échange de dossiers (application macOS), lancée par l'application avant de quitter.
+        from core.update_apply import main as _apply_update  # noqa: PLC0415
+        return _apply_update(sys.argv[2:])
     if _is_allinc() and sys.platform == "win32":
         tools_dir = Path(sys.executable).parent / "tools"
         if tools_dir.is_dir():

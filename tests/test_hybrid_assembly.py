@@ -74,6 +74,26 @@ def assembly(tmp_path, monkeypatch):
     return episode, recipe, sources
 
 
+def test_preparation_uses_isolated_profile_snapshot_after_file_rewrite(assembly, tmp_path):
+    from cli.profile import snapshot_decision_profile
+
+    episode, recipe, _ = assembly
+    path = tmp_path / "profile.json"
+    profile = {"kind": "decision-profile", "version": 1, "name": "Audit", "output_template": "avant.mkv",
+               "rules": [{"id": "rename", "scope": "all", "match": {"all": []},
+                          "actions": [{"type": "set_title", "value": "Figé"}]}]}
+    path.write_text(json.dumps(profile))
+    version, snapshot = snapshot_decision_profile(path)
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path), profile_snapshot=snapshot, profile_version=version)
+    path.write_text("{")
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == "avant.mkv"
+    assert all(track.title == "Figé" for source in result.sources for track in source.tracks if track.enabled)
+    assert episode.naming_context["__profile_version__"] == version
+    assert episode.naming_context["__profile_template__"] == "avant.mkv"
+    assert snapshot == profile
+
+
 def test_season_analysis_prepares_tracks_and_metadata_without_sync(assembly, tmp_path, monkeypatch):
     episode, recipe, _ = assembly
     recipe.sync_strategy = "auto"
@@ -205,13 +225,18 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     extracts = []
 
     def extract(command, **kwargs):
-        extracts.append((Path(command[command.index("-i") + 1]).name, command[command.index("-map") + 1]))
-        # L'inspecteur simulé inverse les pistes : ID 12 = forcés du donneur.
-        forced = "source1" in command[command.index("-i") + 1] and "0:12" in command
-        content = "Hello" if forced else "[Music]" + " --> " * 60
-        return SimpleNamespace(returncode=0, stdout="1\n00:00:01,000 --> 00:00:02,000\n" + content, stderr="")
+        source = Path(command[command.index("-i") + 1]).name
+        maps = [index for index, value in enumerate(command) if value == "-map"]
+        extracts.append((source, [command[index + 1] for index in maps]))
+        for index in maps:
+            # -map 0:N -c:s srt -f srt <sortie> ; l'inspecteur simulé inverse
+            # les pistes : ID 12 = forcés du donneur.
+            forced = "source1" in source and command[index + 1] == "0:12"
+            content = "Hello" if forced else "[Music]" + " --> " * 60
+            Path(command[index + 6]).write_text("1\n00:00:01,000 --> 00:00:02,000\n" + content)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("core.workflows.subtitle_heuristics.subprocess.run", extract)
+    monkeypatch.setattr("core.workflows.subtitle_text.run_probe", extract)
     profile = {"version": 1, "kind": "decision-profile", "name": "Flags détectés", "rules": [{
         "id": "subtitles", "scope": "all", "match": {"all": [
             {"field": "type", "op": "is", "value": "subtitle"},
@@ -228,7 +253,8 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     options = SimpleNamespace(**vars(CommonOptions(auto_forced_subs=True, auto_sdh=True)), profile=str(path))
     result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
     active_subs = [t for s in result.sources for t in s.tracks if t.enabled and t.is_subtitle]
-    assert len(extracts) == len(active_subs) == 3
+    assert sum(len(maps) for _source, maps in extracts) == len(active_subs) == 3
+    assert len({source for source, _maps in extracts}) == len(extracts)  # Une seule lecture par fichier.
     forced = next(t for t in active_subs if t.orig_title == "Forcés")
     assert forced.flag_forced and forced.title == "French Forced"
     assert not any(t.flag_default for t in active_subs)  # La détection ne réécrit pas le profil.
@@ -287,7 +313,8 @@ def test_metadata_template_and_advanced_options_use_final_tracks(assembly, tmp_p
     assert result.output.name == "Crystal.Lake.S01E01.MULTi.VFF.DDP.MVO.mkv"
     assert result.crossfade_ms == 137 and not result.clean_nfo
     assert calls == [{"enabled": True, "kind": "tv", "season": "1", "episode": "1", "cover": cover, "id": 213562}]
-    assert classified[0][1] == {"ffmpeg": "ffmpeg", "forced": True, "sdh": True, "threshold": 17}
+    assert {key: classified[0][1][key] for key in ("ffmpeg", "forced", "sdh", "threshold")} == {
+        "ffmpeg": "ffmpeg", "forced": True, "sdh": True, "threshold": 17}
     assert (0, "SDH") in classified[0][0] and (0, "Complets") not in classified[0][0]
     job = remux_config_to_exact_job(result)
     assert job["file_title"] == result.file_title and job["tag_overrides"]["SEASON"] == "1"
@@ -355,6 +382,68 @@ def test_live_name_preview_matches_prepared_jobs_and_preserves_metadata_and_alia
         assert remux_config_to_exact_job(jobs[0][0]) == original
     finally:
         panel.close()
+
+
+def test_profile_output_template_names_the_plan_and_its_preview(assembly, tmp_path, qt_app):
+    from core.workflows.hybrid_matrix import default_matrix_output_name
+    from ui.panels.hybrid_studio import HybridStudio
+
+    episode, recipe, _ = assembly
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                   "output_template": "{season_episode}.profile-name"}))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert result.output.name == "S01E01.profile-name.mkv"
+    panel = HybridStudio(AppConfig())
+    try:
+        panel.reference.setText(str(episode.master_file))
+        panel.profile.setText(str(profile))
+        assert panel.controls["output-template"].placeholderText() == "{season_episode}.profile-name"
+        assert panel.output_preview.name.text() == "S01E01.profile-name.mkv"
+        panel.controls["output-template"].setText("{season_episode}.explicite")
+        assert panel.output_preview.name.text() == "S01E01.explicite.mkv"
+        panel.controls["output-template"].clear()
+        panel.profile.setText("")
+        assert panel.controls["output-template"].placeholderText() == ""
+        assert panel.output_preview.name.text() == default_matrix_output_name(episode.master_file, panel.recipe.output_tag)
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_witness_language_edit_reaches_the_profile(assembly, tmp_path, edited):
+    import io
+    from core.workflows.hybrid_matrix import HybridTrackChoice
+
+    episode, _, sources = assembly
+    # Dossier donneur de SRT seuls : piste sans langue, langue saisie sur le témoin.
+    sources[2].tracks = [TrackEntry(0, "subtitle", "SUBRIP", "", "", "", file_id="src2")]
+    recipe = HybridRecipe.from_witness_config(RemuxConfig(sources, tmp_path / "out.mkv", [], crossfade_ms=0))
+    recipe.sync_strategy = "none"
+    if edited:
+        choice = next(c for c in recipe.track_choices if c.source_id == "src_3")
+        assert isinstance(choice, HybridTrackChoice)
+        recipe.track_overrides = {choice: {"language": "fr-FR", "title": "French SDH"}}
+    profile = tmp_path / "profile.json"
+    profile.write_text(json.dumps({
+        "version": 1, "kind": "decision-profile", "name": "FR",
+        "selection_policy": {"disable_unmatched_types": ["subtitle"]},
+        "rules": [{"id": "fr", "scope": "all", "match": {"all": [
+            {"field": "type", "op": "is", "value": "subtitle"}, {"field": "language", "op": "is", "value": "fr-FR"},
+        ]}, "actions": [{"type": "set_enabled", "value": True}]}],
+    }))
+    stream = io.StringIO()
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger(stream=stream))
+    srt = result.sources[2].tracks[0]
+    if edited:
+        assert srt.enabled and (srt.language, srt.title) == ("fr-FR", "French SDH")
+        assert "#10 subtitle" not in stream.getvalue()
+    else:
+        # Sans langue, aucune règle ne la retient : l'écart est signalé, pas silencieux.
+        assert not srt.enabled
+        assert "écartée(s) par le profil" in stream.getvalue() and "#10 subtitle und" in stream.getvalue()
 
 
 def test_witness_name_preview_follows_checkboxes_before_analysis(assembly, qt_app):

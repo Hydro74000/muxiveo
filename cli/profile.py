@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -14,8 +15,11 @@ from core.profiles.decision import (
     DecisionProfileError,
     DecisionProfileManager,
     apply_decision_profile,
+    profile_output_template,
+    profile_variables,
     validate_decision_profile,
 )
+from core.workflows.preparation_cache import PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, normalize_mux_backend
 
 from cli.batch import (
@@ -34,6 +38,7 @@ from cli.json_io import deep_merge, json_default, load_json
 from cli.logging import Logger
 from cli.options import CommonOptions
 from cli.remux_config import (
+    apply_donor_calibration,
     merge_tmdb_tag_overrides,
     resolve_final_output,
     resolve_metadata_file_title,
@@ -92,6 +97,14 @@ def load_decision_profile(path: str | Path, config: AppConfig | None = None) -> 
     return profile
 
 
+def snapshot_decision_profile(path: str | Path, config: AppConfig | None = None) -> tuple[tuple[str, str], dict[str, Any]]:
+    """Fige le document validé et son identité, même après réécriture sans changement de date."""
+    resolved = resolve_decision_profile_path(path, config).resolve()
+    profile = load_decision_profile(resolved, config)
+    digest = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return (str(resolved), digest), profile
+
+
 def _refresh_sources_tracks(sources: list[SourceInput], tracks: list[TrackEntry]) -> None:
     by_file_id: dict[str, list[TrackEntry]] = {}
     for track in tracks:
@@ -122,11 +135,11 @@ def _track_order(tracks: list[TrackEntry]) -> list[tuple[int, int, str]]:
 
 def _output_variables(profile: dict[str, Any], metadata_job: dict[str, Any] | None) -> dict[str, Any]:
     metadata_variables = (metadata_job or {}).get("variables")
-    profile_variables = profile.get("variables")
-    if isinstance(metadata_variables, dict) and isinstance(profile_variables, dict):
-        return deep_merge(metadata_variables, profile_variables)
-    if isinstance(profile_variables, dict):
-        return dict(profile_variables)
+    variables = profile_variables(profile)
+    if isinstance(metadata_variables, dict) and variables:
+        return deep_merge(metadata_variables, variables)
+    if variables:
+        return variables
     if isinstance(metadata_variables, dict):
         return dict(metadata_variables)
     return {}
@@ -143,12 +156,15 @@ def build_profile_remux_config(
     preview: bool = False,
     metadata_job: dict[str, Any] | None = None,
     select_tracks: Callable[[list[SourceInput]], None] | None = None,
+    context: PreparationContext | None = None,
 ) -> tuple[RemuxConfig, dict[str, Any]]:
     """Applique les heuristiques puis le profil aux candidats bornés par select_tracks."""
     if not cli_inputs:
         raise CliError("Au moins une entrée est requise avec `--profile` (`-i/--input`).", EXIT_ARGS)
+    context = context or PreparationContext()
     job = {"sources": [{"path": value} for value in cli_inputs]}
-    sources, _infos, tracks = inspect_sources(job, config, options, logger)
+    with context.measure("inspection"):
+        sources, _infos, tracks = inspect_sources(job, config, options, logger, cache=context.cache)
     if select_tracks is not None:
         # Le témoin borne les candidats du profil, sans perdre les pistes
         # d'origine nécessaires aux sélecteurs exact-job et à la synchro.
@@ -159,9 +175,10 @@ def build_profile_remux_config(
     from core.workflows.subtitle_heuristics import classify_subtitles, forced_first
     # Enrichir les flags avant les règles : elles peuvent les utiliser pour
     # nommer/sélectionner les pistes, puis surcharger les décisions automatiques.
-    classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
-        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
-        all_audio_languages=True)
+    with context.measure("sous-titres"):
+        classify_subtitles(sources, _infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+            forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
+            all_audio_languages=True, cache=context.cache, cancel_event=context.cancel_event)
     if options.auto_forced_subs:
         order = forced_first([
             (source.file_index, track.mkv_tid, track.entry_id)
@@ -182,7 +199,14 @@ def build_profile_remux_config(
         for track in result.tracks:
             if track.is_video and track.has_closed_captions:
                 track.remove_closed_captions = options.remove_closed_captions
-    metadata = metadata_job or {}
+    metadata = dict(metadata_job or {})
+    # Template du profil seulement sans --output-template ; -o fichier reste prioritaire,
+    # -o dossier sert de base au nom rendu.
+    template = str(metadata.get("output_template") or "").strip() or profile_output_template(profile)
+    if template:
+        metadata["output_template"] = template
+        if cli_output and (str(cli_output).endswith(("/", "\\")) or Path(cli_output).expanduser().is_dir()):
+            metadata["output"], cli_output = cli_output, None
     tmdb_title = ""
     tmdb_tags = None
     tmdb_cover = None
@@ -220,33 +244,25 @@ def build_profile_remux_config(
     clean_nfo = options.clean_nfo if options.clean_nfo is not None else metadata.get("clean_nfo", True)
     crossfade_ms = options.crossfade_ms if options.crossfade_ms is not None else metadata.get("crossfade_ms", 80)
 
-    sync_calibrations: dict[str, Any] = {}
+    # Comme sans profil (`apply_donor_calibration`) : une calibration de la ligne de commande ou
+    # mesurée remplace celles du document ; celle du document en mode conteneur garde les autres sources.
+    from core.workflows.sync_calibration import SyncCalibration
+    sync_calibrations: dict[str, Any] = dict(metadata.get("sync_calibrations") or {})
+    calib = None
     if options.calibration:
-        from core.workflows.sync_calibration import SyncCalibration
+        sync_calibrations = {}
         calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig")))
-        if sync_mode == "physical":
-            sync_calibrations = {"1": calib.to_dict()}
-        elif len(calib.segments) == 1:
-            if len(sources) > 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-        else:
-            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
     elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
         from cli.hybrid import perform_dynamic_sync
+        sync_calibrations = {}
         calib = perform_dynamic_sync(sources, result.tracks, config, options, logger)
-        if calib is not None:
-            if sync_mode == "physical":
-                sync_calibrations = {"1": calib.to_dict()}
-            elif len(calib.segments) == 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and sync_subtitles == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-            else:
-                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
-    else:
-        sync_calibrations = dict(metadata.get("sync_calibrations", {}))
+    elif sync_mode == "container" and sync_calibrations.get("1"):
+        calib = SyncCalibration.from_dict(sync_calibrations["1"])
+    if calib is not None:
+        sync_mode, sync_calibrations = apply_donor_calibration(
+            calib, sync_mode=sync_mode, sources=sources, sync_subtitles=sync_subtitles,
+            sync_calibrations=sync_calibrations,
+        )
 
     remux_config = RemuxConfig(
         sources=sources,
@@ -405,6 +421,7 @@ def profile_batch(
     if not output_dir:
         raise CliError("`profile batch` requiert `--output-dir`.", EXIT_ARGS)
     profile = load_decision_profile(profile_path, config)
+    output_template = output_template or profile_output_template(profile)
     metadata_template: dict[str, Any] = {}
     apply_metadata_overrides(
         metadata_template,

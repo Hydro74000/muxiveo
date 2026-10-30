@@ -36,8 +36,10 @@ Signal exposé :
 from __future__ import annotations
 
 import copy
+import html
 import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -48,7 +50,7 @@ from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import (
-    QGuiApplication,
+    QColor, QGuiApplication, QPainter, QPen,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox,
@@ -74,12 +76,14 @@ from core.update_check import (
 )
 from core.update_install import (
     InstallKind,
-    UpdateInstallError,
     apply_update,
     can_self_update,
+    collect_update_results,
+    start_update_cleanup,
     detect_install_kind,
     download_update,
     manual_update_hint,
+    self_install_blocker,
 )
 from core.version import (
     APP_BUILD_VERSION, APP_DONATION_URL, APP_IS_UNSTABLE_BUILD,
@@ -87,7 +91,8 @@ from core.version import (
 )
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
-from core.workflows.encode import EncodeError
+from core.workflows.encode import EncodeError, HardwareEncoderDetector
+from core.workflows.encode.vulkan import detect_vulkan
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
 from ui.confirm import confirm_close_while_running, confirm_overwrite
@@ -105,6 +110,7 @@ from ui.panels.remux_panel import RemuxPanel
 from ui.panels.hdr_studio import HdrStudio
 from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
+from ui.dialogs.update_dialog import UpdateDialog, install_unavailable_reason
 from ui.panels.extensions_panel import ExtensionsPanel
 from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
 from ui.operation_bar import OperationBar, OperationState
@@ -885,7 +891,6 @@ class DashboardPage(QWidget):
 
     def _run_hw_detection(self) -> None:
         """Thread worker : probe runtime de chaque encodeur HW."""
-        from core.workflows.encode import HardwareEncoderDetector
         detector = HardwareEncoderDetector()
         ffmpeg = self._config.tool_ffmpeg
         nvencc = getattr(self._config, "tool_nvencc", None) or None
@@ -899,8 +904,6 @@ class DashboardPage(QWidget):
 
     def _run_vulkan_detection(self) -> None:
         """Thread worker : Vulkan utilisable par FFmpeg (périphérique + nlmeans_vulkan sur une image)."""
-        from core.workflows.encode.vulkan import detect_vulkan
-
         ffmpeg = self._config.tool_ffmpeg
         self._vulkan_detected.emit(ffmpeg, detect_vulkan(ffmpeg))
 
@@ -1075,6 +1078,9 @@ class _NavButton(QWidget):
         self.page_index = page_index
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self._checked  = False
+        self._ready    = False
+        self._has_update = False
+        self._label    = label
         self._is_sub   = is_sub
         self._compact  = compact
         self._icon_char = icon_char
@@ -1155,6 +1161,23 @@ class _NavButton(QWidget):
     def isCheckable(self) -> bool:
         return True
 
+    def set_ready(self, ready: bool) -> None:
+        """Point vert du mode étendu : opération prête à lancer depuis cette page."""
+        self._ready = ready
+        self._ready_dot.setVisible(ready or self._has_update)
+
+    def set_update_available(self, available: bool) -> None:
+        """Point vert de mise à jour : à droite du libellé, en pastille sur l'icône en mode compact."""
+        if available == self._has_update:
+            return
+        self._has_update = available
+        self._ready_dot.setVisible(self._ready or available)
+        tooltip = translate_text(self._label)
+        if available:
+            tooltip += " — " + translate_text("Mise à jour d'extension disponible")
+        self.setToolTip(tooltip)
+        self._update_style(self._checked)
+
     def _update_style(self, checked: bool) -> None:
         if checked:
             bg     = _Colors.BG_ACTIVE
@@ -1194,7 +1217,19 @@ class _NavButton(QWidget):
         key = {0: "home", 1: "merge_dovi", 2: "encode", 3: "media", 4: "hybrid", 5: "settings", 6: "extensions",
                7: "hdr"}[self.page_index]
         self._full_icon_lbl.setPixmap(workflow_icon(key, icon_c).pixmap(_scale(18), _scale(18)))
-        self._compact_icon_lbl.setPixmap(workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26)))
+        compact_pixmap = workflow_icon(key, icon_c, 26).pixmap(_scale(26), _scale(26))
+        if self._has_update:
+            # Pastille en haut à droite de l'icône, détourée de la couleur du fond.
+            size = _scale(26)
+            dot = _scale(9)
+            ring = max(1, _scale(2))
+            painter = QPainter(compact_pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(_Colors.BG_ACTIVE if checked else _Colors.BG_SIDEBAR), ring))
+            painter.setBrush(QColor(_Colors.OK))
+            painter.drawEllipse(size - dot - ring // 2, ring // 2, dot, dot)
+            painter.end()
+        self._compact_icon_lbl.setPixmap(compact_pixmap)
         font_size = f"{_font_px(11 if self._is_sub else 12)}px"
         self._text_lbl.setStyleSheet(
             f"color: {color}; font-size: {font_size}; font-weight: {weight};"
@@ -1433,7 +1468,13 @@ class _Sidebar(QWidget):
 
     def set_ready_operations(self, pages: set[int]) -> None:
         for button in self._buttons:
-            button._ready_dot.setVisible(button.page_index in pages)
+            button.set_ready(button.page_index in pages)
+
+    def set_page_update_available(self, index: int, available: bool) -> None:
+        """Point vert de mise à jour sur l'entrée de la page `index` (Extensions)."""
+        for button in self._buttons:
+            if button.page_index == index:
+                button.set_update_available(available)
 
     def set_update_available(self, info: UpdateInfo | None) -> None:
         """Affiche une nouvelle version, ou efface le badge si elle est obsolète."""
@@ -1454,7 +1495,8 @@ class _Sidebar(QWidget):
         else:
             text = f"↑ v{short}"
         self._version_lbl.setText(
-            f'<a href="{info.url}" style="color:{_Colors.ACCENT}; text-decoration:none;">{text}</a>'
+            f'<a href="{html.escape(info.url, quote=True)}" style="color:{_Colors.ACCENT}; text-decoration:none;">'
+            f"{html.escape(text)}</a>"
         )
         self._version_lbl.setToolTip(
             translate_text("Nouvelle version disponible : v{version}", version=info.version)
@@ -2111,10 +2153,14 @@ class MainWindow(QMainWindow):
         panel.remove_requested.connect(self._on_extension_remove_requested)
         panel.trt_enabled_toggled.connect(trt.set_enabled)
         panel.auto_update_toggled.connect(trt.set_auto_update)
+        for ctrl in (rife, trt, fel):
+            ctrl.state_changed.connect(self._refresh_extensions_update_dot, Qt.ConnectionType.QueuedConnection)
+        panel.auto_update_toggled.connect(self._refresh_extensions_update_dot)
         panel.set_rife_state(rife.state())
         panel.set_fel_state(fel.state())
         panel.set_trt_state(trt.state())
         self._dashboard.set_rife_state(rife.state())
+        self._refresh_extensions_update_dot()
         self._encode_panel.rife_install_requested.connect(rife.install)
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
@@ -2122,6 +2168,13 @@ class MainWindow(QMainWindow):
         for ctrl in (rife, trt, fel):
             ctrl.cleanup()
             ctrl.refresh_feed()
+
+    def _refresh_extensions_update_dot(self, *_args: object) -> None:
+        """Point vert sur « Extensions » : une mise à jour attend une action de l'utilisateur."""
+        pending = any(
+            ctrl.manual_update_pending for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)
+        )
+        self._sidebar.set_page_update_available(self._PAGE_INDEX_BY_PANEL_KEY["extensions"], pending)
 
     def _extension_controller(self, plugin_id: str) -> PluginController:
         return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
@@ -2246,13 +2299,16 @@ class MainWindow(QMainWindow):
         encoding = encode is not None and not self._encode_panel.is_pure_copy(encode)
         remux = self._remux_panel.collect_config()
         config = encode if encoding else remux
-        ready = config is not None
+        # Méthode « auto » de conversion de cadence en cours d'analyse : le traitement l'attend.
+        analysing = self._remux_panel.cadence_resolution_pending()
+        ready = config is not None and not analysing
         output = config.output if config is not None else None
         media = OperationState(
             "media", 2 if encoding else 3,
             translate_text("Remux & Encode"),
             str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
-            ready, translate_text("Ajoutez une source et renseignez le fichier de sortie."),
+            ready, translate_text("Analyse de la hauteur audio en cours (conversion de cadence).") if analysing
+            else translate_text("Ajoutez une source et renseignez le fichier de sortie."),
         )
         return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
                 self._hdr_panel.operation_state()]
@@ -3492,10 +3548,47 @@ class MainWindow(QMainWindow):
         self._update_settings: tuple[str, bool] | None = None
         self._update_refresh_pending = False
         self._update_download_cancel: threading.Event | None = None
+        self._update_popup_version = ""     # version déjà présentée par la popup pendant cette session
         self._sidebar.update_requested.connect(self._on_update_requested)
         self._update_available.connect(self._on_update_available, Qt.ConnectionType.QueuedConnection)
         self._update_check_failed.connect(self._on_update_check_failed, Qt.ConnectionType.QueuedConnection)
         self._sync_update_settings()
+        self._report_previous_updates()
+
+    def _report_previous_updates(self) -> None:
+        """Compte rendu des mises à jour par échange de dossiers (processus détaché, application fermée)."""
+        stale: list[Path] = []
+        try:
+            results = collect_update_results(discard=stale)
+        except Exception as exc:  # noqa: BLE001 — le démarrage ne dépend jamais du ménage
+            self.log_warn(translate_text("Suivi des mises à jour illisible : {reason}", reason=exc))
+            return
+        if stale:
+            try:
+                start_update_cleanup(stale)
+            except OSError as exc:
+                self.log_warn(translate_text("Nettoyage des anciennes mises à jour différé : {reason}", reason=exc))
+        for result in results:
+            version = str(result.get("version") or "?")
+            if not result.get("ok"):
+                message = translate_text("Mise à jour vers v{version} échouée : {reason}", version=version,
+                                         reason=str(result.get("error") or "?"))
+                self.log_error(message)
+                QTimer.singleShot(0, self, lambda text=message: QMessageBox.warning(
+                    self, translate_text("Mise à jour"), text))
+                continue
+            self.log_ok(translate_text("Mise à jour vers v{version} installée.", version=version))
+            if backup := result.get("backup"):
+                self.log_info(translate_text("Version précédente conservée dans {path}", path=backup))
+            if kept := result.get("kept"):
+                self.log_warn(translate_text(
+                    "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}",
+                    files=", ".join(str(item) for item in kept),
+                ))
+            if result.get("requirements_changed"):
+                self.log_warn(translate_text(
+                    "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup)."
+                ))
 
     def _sync_update_settings(self) -> None:
         """Invalide les réponses et le badge dès que les préférences changent."""
@@ -3581,6 +3674,22 @@ class MainWindow(QMainWindow):
         )
         if prompt:
             self._show_update_dialog(info)
+        else:
+            self._maybe_popup_update()
+
+    def _maybe_popup_update(self) -> None:
+        """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
+        abandonnée dès le début de la fermeture."""
+        info = self._update_info
+        if (
+            hasattr(self, "_shutdown") or info is None or info.version == self._update_popup_version
+            or not getattr(self._config, "update_popup", True)
+        ):
+            return
+        if self._running or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(2000, self, self._maybe_popup_update)
+            return
+        self._show_update_dialog(info)
 
     def _on_update_requested(self) -> None:
         """Clic sur le badge de version : proposer l'installation ou ouvrir la release."""
@@ -3596,35 +3705,45 @@ class MainWindow(QMainWindow):
         self._show_update_dialog(info)
 
     def _show_update_dialog(self, info: UpdateInfo) -> None:
+        self._update_popup_version = info.version
         kind = detect_install_kind()
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle(translate_text("Mise à jour disponible"))
-        box.setText(
-            translate_text(
-                "Muxiveo v{version} est disponible (version actuelle : {current}).",
-                version=info.version,
-                current=f"v{APP_BUILD_VERSION}",
-            )
-        )
-        notes: list[str] = []
+        remarks: list[str] = []
         if info.prerelease:
-            notes.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
-        install_btn = None
-        if can_self_update(info, kind):
-            install_btn = box.addButton(translate_text("Installer"), QMessageBox.ButtonRole.AcceptRole)
-        elif hint := manual_update_hint():
-            notes.append(translate_text("Mise à jour manuelle : {command}", command=hint))
-        if notes:
-            box.setInformativeText("\n\n".join(notes))
-        release_btn = box.addButton(translate_text("Voir la release"), QMessageBox.ButtonRole.ActionRole)
-        box.addButton(translate_text("Plus tard"), QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is release_btn:
+            remarks.append(translate_text("Pré-version de développement (canal unstable) : moins testée qu'une release stable."))
+        can_install = can_self_update(info, kind)
+        hint = "" if can_install else manual_update_hint()
+        if hint:
+            remarks.append(translate_text("Mise à jour manuelle : {command}", command=hint))
+        popup_enabled = bool(getattr(self._config, "update_popup", True))
+        dialog = UpdateDialog(
+            info, current=f"v{APP_BUILD_VERSION}", remarks=remarks, can_install=can_install,
+            install_unavailable="" if can_install else install_unavailable_reason(kind, hint, self_install_blocker(kind)),
+            popup_enabled=popup_enabled, parent=self,
+        )
+        dialog.exec()
+        choice, wanted = dialog.choice, dialog.popup_enabled
+        dialog.deleteLater()
+        if wanted != popup_enabled:
+            self._set_update_popup(wanted)
+        if choice == UpdateDialog.RELEASE:
             open_external(QUrl(info.url))
-        elif install_btn is not None and clicked is install_btn:
+        elif choice == UpdateDialog.INSTALL:
             self._start_update_install(info, kind)
+
+    def _set_update_popup(self, enabled: bool) -> None:
+        """Préférence changée depuis la popup : enregistrée et reportée dans le panneau Paramètres."""
+        try:
+            self._config.save_update_popup(enabled)
+        except OSError as exc:
+            self.log_error(translate_text("Préférence de mise à jour non enregistrée : {reason}", reason=exc))
+            return
+        settings_panel = getattr(self, "_settings_panel", None)
+        if settings_panel is not None:
+            settings_panel.refresh_field("ui", "update_popup")
+        self.log_info(
+            translate_text("Popup de mise à jour réactivée.") if enabled
+            else translate_text("Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.")
+        )
 
     def _start_update_install(self, info: UpdateInfo, kind: InstallKind) -> None:
         """Télécharge la mise à jour dans un thread, avec dialogue de progression annulable."""
@@ -3658,7 +3777,11 @@ class MainWindow(QMainWindow):
         def _on_progress(received: int, total: int) -> None:
             if cancel_event.is_set():
                 return
-            if total > 0:
+            if total > 0 and received >= total and kind in (InstallKind.SOURCE_ARCHIVE, InstallKind.MACOS_APP):
+                # Extraction, contrôles et essai de la nouvelle version : durée inconnue.
+                dialog.setLabelText(translate_text("Vérification de Muxiveo v{version}…", version=info.version))
+                dialog.setRange(0, 0)
+            elif total > 0:
                 dialog.setValue(min(100, int(received * 100 / total)))
             else:
                 dialog.setRange(0, 0)
@@ -3686,7 +3809,10 @@ class MainWindow(QMainWindow):
                 bridge.finished.emit(result)
             except RuntimeError:  # fenêtre détruite entre-temps
                 if isinstance(result, Path):
-                    result.unlink(missing_ok=True)
+                    if result.is_dir():
+                        shutil.rmtree(result, ignore_errors=True)
+                    else:
+                        result.unlink(missing_ok=True)
 
         threading.Thread(target=_worker, name="muxiveo-update-download", daemon=True).start()
         dialog.show()
@@ -3694,25 +3820,74 @@ class MainWindow(QMainWindow):
     def _on_update_downloaded(self, result: object, kind: InstallKind, cancelled: bool) -> None:
         if cancelled or self._running:
             if isinstance(result, Path):
-                try:
-                    result.unlink(missing_ok=True)
-                except OSError as exc:
-                    self.log_error(str(exc))
+                def cleanup(path: Path) -> None:
+                    # Aucun accès Qt ; un ménage lent ne retient ni la GUI ni sa fermeture.
+                    try:
+                        if path.is_dir():
+                            shutil.rmtree(path)
+                        else:
+                            path.unlink(missing_ok=True)
+                    except OSError:
+                        pass  # dossier marqué repris par le ménage au prochain démarrage
+
+                threading.Thread(target=cleanup, args=(result,), name="muxiveo-update-cancel", daemon=True).start()
             self.log_info(translate_text("Mise à jour annulée."))
             return
         if isinstance(result, BaseException):
             self.log_error(str(result))
             QMessageBox.warning(self, translate_text("Mise à jour"), str(result))
             return
-        try:
-            apply_update(kind, cast(Path, result))
-        except UpdateInstallError as exc:
-            self.log_error(str(exc))
-            QMessageBox.warning(self, translate_text("Mise à jour"), str(exc))
+        self._launch_update(kind, cast(Path, result))
+
+    def _launch_update(self, kind: InstallKind, downloaded: Path) -> None:
+        """Installation hors du thread UI : l'assistant d'échange met jusqu'à 15 s à être prêt."""
+        if kind is InstallKind.WINDOWS_INSTALLER:
+            # Le Shell et l'UAC utilisent le fil de la fenêtre propriétaire. L'échec ou le refus
+            # d'élévation laisse cette fenêtre ouverte ; seul un lancement accepté ferme l'app.
+            try:
+                apply_update(kind, downloaded, owner_hwnd=int(self.winId()))
+            except Exception as exc:
+                self.log_error(str(exc))
+                QMessageBox.warning(self, translate_text("Mise à jour"), str(exc))
+                return
+            app = cast(QApplication | None, QApplication.instance())
+            if app is not None:
+                app.quit()
             return
-        app = cast(QApplication | None, QApplication.instance())
-        if app is not None:
-            app.quit()
+        dialog = QProgressDialog(translate_text("Lancement de la mise à jour…"), "", 0, 0, self)
+        dialog.setWindowTitle(translate_text("Mise à jour"))
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setCancelButton(None)        # échange engagé : rien à annuler côté application
+        dialog.setMinimumDuration(0)
+        bridge = _UpdateDownloadBridge(self)
+
+        def _on_finished(error: object) -> None:
+            dialog.close()
+            dialog.deleteLater()
+            bridge.deleteLater()
+            if isinstance(error, BaseException):
+                self.log_error(str(error))
+                QMessageBox.warning(self, translate_text("Mise à jour"), str(error))
+                return
+            app = cast(QApplication | None, QApplication.instance())
+            if app is not None:
+                app.quit()
+
+        bridge.finished.connect(_on_finished, Qt.ConnectionType.QueuedConnection)
+
+        def _worker() -> None:
+            error: object = None
+            try:
+                apply_update(kind, downloaded)
+            except Exception as exc:  # noqa: BLE001 — remonté au thread UI
+                error = exc
+            try:
+                bridge.finished.emit(error)
+            except RuntimeError:  # fenêtre détruite entre-temps
+                pass
+
+        threading.Thread(target=_worker, name="muxiveo-update-apply", daemon=True).start()
+        dialog.show()
 
     def _post_init_log(self) -> None:
         self.log_info("Muxiveo démarré.")

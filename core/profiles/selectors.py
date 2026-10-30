@@ -97,21 +97,42 @@ def _flag_value(track: TrackEntry, name: str, *, original: bool = True) -> bool:
     return bool(getattr(track, attr, False))
 
 
+# Rang des sélecteurs écrits depuis 5.1 : ordre de la source (mkv_tid), variantes exclues.
+SOURCE_POSITION_ORDER = "source"
+
+
 def _track_position(
     track: TrackEntry,
     tracks: list[TrackEntry],
     *,
     source_index: int | None,
     source_index_by_file_id: Mapping[str, int] | None = None,
+    legacy: bool = False,
 ) -> int:
-    position = 0
-    for candidate in tracks:
-        candidate_source = _source_index_for_track(candidate, source_index_by_file_id)
-        if candidate is track:
-            return position
-        if candidate.track_type == track.track_type and candidate_source == source_index:
-            position += 1
-    return position
+    """Rang de la piste parmi celles de même type de sa source, dans l'ordre
+    de la source (mkv_tid) : l'ordre d'affichage et les variantes n'y comptent pas.
+
+    ``legacy`` : règle des sélecteurs sans ``position_order`` (versions antérieures), rang dans
+    l'ordre de la liste, variantes comprises.
+    """
+    if legacy:
+        position = 0
+        for candidate in tracks:
+            if candidate is track:
+                return position
+            if (candidate.track_type == track.track_type
+                    and _source_index_for_track(candidate, source_index_by_file_id) == source_index):
+                position += 1
+        return position
+    return sum(
+        1
+        for candidate in tracks
+        if candidate is not track
+        and not candidate.is_new
+        and candidate.track_type == track.track_type
+        and _source_index_for_track(candidate, source_index_by_file_id) == source_index
+        and candidate.mkv_tid < track.mkv_tid
+    )
 
 
 def _video_text(track: TrackEntry) -> str:
@@ -300,6 +321,8 @@ def track_selector_for_entry(
             source_index=resolved_source,
             source_index_by_file_id=source_index_by_file_id,
         ),
+        # Règle du rang : sans ce repère, celle des exact-jobs antérieurs (ordre de la liste).
+        "position_order": SOURCE_POSITION_ORDER,
         "codec": track.orig_codec or track.codec,
         # Le sélecteur doit décrire la piste d'entrée. Si sa langue d'origine
         # est vide, une langue saisie dans l'UI ne doit pas empêcher la reprise.
@@ -384,6 +407,7 @@ def _matches_selector(
             tracks,
             source_index=track_source,
             source_index_by_file_id=source_index_by_file_id,
+            legacy=selector.get("position_order") != SOURCE_POSITION_ORDER,
         )
         if position != expected_position:
             return False
@@ -507,7 +531,7 @@ def _relaxed_selector_variants(selector: Mapping[str, Any]) -> list[dict[str, An
         seen.add(key)
         variants.append(variant)
 
-    positional = {"position", "type_index", "id", "mkv_tid", "stream", "entry_id"}
+    positional = {"position", "position_order", "type_index", "id", "mkv_tid", "stream", "entry_id"}
     noisy = {"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains", "flags"}
     if track_type == "video":
         add({"language", "lang", "channels", "audio_object", "title", "title_contains", "display_contains"})
@@ -620,6 +644,8 @@ def apply_track_spec(track: TrackEntry, spec: Mapping[str, Any]) -> None:
                 setattr(track, f"flag_{name}", bool(value))
     if "time_shift_ms" in spec:
         track.time_shift_ms = int(spec["time_shift_ms"] or 0)
+    if "sync_calibration" in spec:
+        track.sync_calibration = dict(spec["sync_calibration"]) if spec["sync_calibration"] else None
     if "sync_rewrite_mode" in spec:
         track.sync_rewrite_mode = normalized_sync_rewrite_mode(str(spec["sync_rewrite_mode"] or ""))
 
@@ -637,8 +663,14 @@ def remux_config_to_exact_job(
     *,
     name: str = "",
     fallback_profile: str = "",
+    identity_selectors: bool = False,
 ) -> dict[str, Any]:
-    """Serialize a remux state as an exact CLI job."""
+    """Sérialise l'état d'un remux en job CLI exact.
+
+    ``identity_selectors`` : pistes désignées par leur identité dans la source
+    (source, type, id) au lieu d'une description, pour reprendre une session
+    sur les mêmes fichiers quelles que soient les modifications.
+    """
     source_index_by_file_id: dict[str, int] = {}
     for source in config.sources:
         for track in source.tracks:
@@ -659,6 +691,8 @@ def remux_config_to_exact_job(
 
     def _track_selector(track: TrackEntry) -> dict[str, Any]:
         source_idx = source_index_by_file_id.get(track.file_id)
+        if identity_selectors:
+            return {"source": source_idx, "type": track.track_type, "id": int(track.mkv_tid)}
         source_tracks = next(
             (source.tracks for source in config.sources if source.file_index == source_idx),
             all_tracks,
@@ -669,6 +703,11 @@ def remux_config_to_exact_job(
             tracks=list(source_tracks),
             source_index_by_file_id=source_index_by_file_id,
         )
+
+    def _inherited_sync(track: TrackEntry) -> dict | None:
+        if not (track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror")):
+            return None
+        return config.sync_calibrations.get(str(source_index_by_file_id.get(track.file_id)))
 
     tracks_payload: list[dict[str, Any]] = []
     audio_variants: list[dict[str, Any]] = []
@@ -683,6 +722,9 @@ def remux_config_to_exact_job(
         }
         if track.sync_rewrite_mode:
             payload["sync_rewrite_mode"] = track.sync_rewrite_mode
+        if track.sync_calibration and track.sync_calibration != _inherited_sync(track):
+            # Synchro propre à la piste (sous-titre hors miroir) : la source n'en porte pas trace.
+            payload["sync_calibration"] = track.sync_calibration
         if track.is_video and track.remove_closed_captions is not None:
             payload["remove_closed_captions"] = track.remove_closed_captions
         if track.is_new:

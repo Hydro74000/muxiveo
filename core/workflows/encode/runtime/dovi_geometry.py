@@ -1,7 +1,9 @@
-"""Géométrie Dolby Vision d'un réencodage, sans rééchantillonner l'image de base.
+"""Géométrie Dolby Vision d'un réencodage (recadrage, redimensionnement hors NVENC).
 
 Les offsets de recadrage sont exprimés en pixels source. Le RPU est réaligné
-par scène (L5) ; les autres métadonnées et l'ordre des images sont conservés.
+par scène (L5 : recadré, puis mis à l'échelle de la sortie si l'image est
+redimensionnée) ; les autres métadonnées (L1, L2, L6, L8 : luminance, sans
+dépendance aux dimensions) et l'ordre des images sont conservés.
 
 NVENC (FFmpeg ``hevc_nvenc`` et NVEncC) code l'image par blocs de 32 lignes :
 une source 3840 × 2160 devient 3840 × 2176 dans le flux HEVC, quelles que
@@ -300,13 +302,15 @@ def convert_p7_rpu_to_p81(
 def align_dovi_rpu_geometry(
     *, dovi_tool_bin: str, rpu_input: Path, output_rpu: Path,
     crop_offsets: tuple[int, int, int, int] = (0, 0, 0, 0),
+    scale: tuple[float, float] | None = None,
     run_cmd: Callable[[list[str]], object] | None = None,
 ) -> Path:
-    """Translate each existing L5 preset, retaining its exact frame ranges.
+    """Décale chaque préréglage L5 existant en conservant ses plages d'images exactes.
 
-    Cropping removes borders (saturating at the picture edge). Never use
-    active_area.crop/all to flatten scene-dependent offsets. Mode 0 preserves
-    mapping, trims and the original RPU profile.
+    Le recadrage retire les bordures (borné au bord de l'image), puis ``scale``
+    (horizontal, vertical) ramène les décalages restants sur la sortie redimensionnée.
+    Jamais active_area.crop/all, qui aplatirait des décalages propres à chaque scène.
+    Le mode 0 conserve mapping, trims et profil d'origine du RPU.
     """
     def run(cmd: list[str]) -> object:
         if run_cmd is not None:
@@ -318,7 +322,9 @@ def align_dovi_rpu_geometry(
     if rpu_input.is_file() and rpu_input.stat().st_size == 0:
         raise EncodeError(f"Dolby Vision : fichier RPU vide ({rpu_input.name}).")
 
-    if crop_offsets == (0, 0, 0, 0):
+    if scale is not None and all(abs(v - 1.0) < 1e-9 for v in scale):
+        scale = None
+    if crop_offsets == (0, 0, 0, 0) and scale is None:
         if rpu_input != output_rpu and rpu_input.is_file():
             shutil.copyfile(rpu_input, output_rpu)
         return output_rpu
@@ -337,6 +343,16 @@ def align_dovi_rpu_geometry(
     presets = active_area.get("presets") if isinstance(active_area, dict) else None
     edits = active_area.get("edits") if isinstance(active_area, dict) else None
 
+    if crop_offsets == (0, 0, 0, 0) and not any(
+        int(preset.get(edge, 0)) for preset in presets or () if isinstance(preset, dict)
+        for edge in ("left", "top", "right", "bottom")
+    ):
+        # Redimensionnement seul, L5 absent ou nul : 0 × échelle = 0, rien à réaligner.
+        json_path.unlink(missing_ok=True)
+        if rpu_input != output_rpu:
+            shutil.copyfile(rpu_input, output_rpu)
+        return output_rpu
+
     if not presets or not edits:
         frame_count = _probe_rpu_frame_count(dovi_tool_bin, rpu_input, run_cmd=run)
         if frame_count and frame_count > 0:
@@ -354,7 +370,10 @@ def align_dovi_rpu_geometry(
 
     for preset in presets:
         for index, edge in enumerate(("left", "top", "right", "bottom")):
-            preset[edge] = max(0, int(preset.get(edge, 0)) - crop_offsets[index])
+            value = max(0, int(preset.get(edge, 0)) - crop_offsets[index])
+            if scale is not None:  # gauche / droite : échelle horizontale ; haut / bas : verticale
+                value = int(round(value * scale[0 if edge in ("left", "right") else 1]))
+            preset[edge] = value
     # The export also contains crop=true. Remove it so missing ranges/levels
     # are not implicitly rewritten to zero by the editor.
     edit_cfg = {"mode": 0, "active_area": {"presets": presets, "edits": edits}}
@@ -379,7 +398,9 @@ def resolve_ffmpeg_dovi_geometry(
 
     ``hevc_nvenc`` suit la règle NVENC (bandes alignées sur 32, plein cadre
     ramené dans le canevas UHD) ; les autres encodeurs gardent le recadrage
-    utilisateur. ``dovi_rpu_crop`` porte le recadrage absolu que le RPU doit suivre.
+    utilisateur. ``dovi_rpu_crop`` porte le recadrage absolu que le RPU doit suivre,
+    ``dovi_rpu_scale`` l'échelle d'un redimensionnement hors NVENC (offsets L5
+    recadrés puis mis à l'échelle de la sortie ; NVENC garde sa règle 1:1).
     """
     if not video.copy_dv or video.codec == "copy" or min(dimensions) <= 0:
         return video
@@ -389,24 +410,35 @@ def resolve_ffmpeg_dovi_geometry(
         return replace(geometry.video, dovi_rpu_crop=offsets)
     crop = absolute_dovi_crop(video, dimensions)
     offsets = (crop.left, crop.top, crop.right, crop.bottom) if crop.is_active() else None
-    return replace(video, dovi_rpu_crop=offsets)
+    cropped = (dimensions[0] - crop.left - crop.right, dimensions[1] - crop.top - crop.bottom)
+    scale = None
+    if video.resize.is_active() and min(cropped) > 0:
+        # Mêmes dimensions de sortie que le filtre ``scale`` (``resolve_resize_dimensions``).
+        out = resolve_resize_dimensions(cropped[0], cropped[1], video.resize)
+        if min(out) > 0 and out != cropped:
+            scale = (out[0] / cropped[0], out[1] / cropped[1])
+    return replace(video, dovi_rpu_crop=offsets, dovi_rpu_scale=scale)
 
 
 def crop_dovi_rpu(
     *, video: VideoEncodeSettings, rpu_bin: Path, dovi_tool_bin: str,
     run_cmd: Callable[[list[str]], object], log: Callable[[str], None] | None = None,
 ) -> Path:
-    """RPU réaligné sur ``video.dovi_rpu_crop`` (L5 par scène) ; inchangé sans recadrage."""
-    offsets = video.dovi_rpu_crop
-    if not offsets or not any(offsets) or not rpu_bin.is_file():
+    """RPU réaligné sur ``video.dovi_rpu_crop`` et ``video.dovi_rpu_scale`` (L5 par scène) ;
+    inchangé sans recadrage ni redimensionnement."""
+    offsets = video.dovi_rpu_crop if video.dovi_rpu_crop and any(video.dovi_rpu_crop) else None
+    scale = video.dovi_rpu_scale
+    if (offsets is None and scale is None) or not rpu_bin.is_file():
         return rpu_bin
     if log is not None:
-        log(
-            f"Dolby Vision : recadrage {offsets} (gauche, haut, droite, bas). "
-            "Réalignement des offsets L5 par scène."
-        )
+        parts = []
+        if offsets is not None:
+            parts.append(f"recadrage {offsets} (gauche, haut, droite, bas)")
+        if scale is not None:
+            parts.append(f"échelle {scale[0]:.4f} × {scale[1]:.4f}")
+        log(f"Dolby Vision : {', '.join(parts)}. Réalignement des offsets L5 par scène.")
     return align_dovi_rpu_geometry(
         dovi_tool_bin=dovi_tool_bin, rpu_input=rpu_bin,
         output_rpu=rpu_bin.with_name(f"{rpu_bin.stem}.crop.bin"),
-        crop_offsets=offsets, run_cmd=run_cmd,
+        crop_offsets=offsets or (0, 0, 0, 0), scale=scale, run_cmd=run_cmd,
     )

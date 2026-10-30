@@ -317,6 +317,15 @@ Les edits explicites modifient une piste ciblée par index ou par sélecteur :
 }
 ```
 
+`sync_calibration` (objet au format de `sync_calibrations`, facultatif) : synchro
+propre à la piste, prioritaire sur celle de sa source. Le panneau Conteneur
+l'écrit pour un sous-titre synchronisé seul avec `sync_subtitles: "none"`
+(coupures ou cadence) : le sous-titre est réécrit, l'audio de sa source n'est
+pas touché.
+À l'import, une calibration de piste différente de celle de sa source (audio,
+sous-titre en miroir) est conservée : la piste ne suit plus sa source jusqu'à
+l'annulation de sa synchro.
+
 ### `track_order`
 
 `track_order` permet de fixer l'ordre de sortie après filtrage. Chaque entrée
@@ -559,7 +568,8 @@ Tokens disponibles :
 
 Règles :
 
-- **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output` direct (job/JSON).
+- **Priorité** : `--output / -o` explicite > `--output-template` (rendu) > `output_template` du profil
+  (`--profile`) > `output` direct (job/JSON). Avec un template, `-o dossier/` sert de dossier au nom rendu.
 - **Texte libre** mélangeable avec les tokens : `"{title}.{year}.texte libre.{group}"`.
 - **Keywords pistes** : les préfixes canoniques sont `video-*`, `audio-*`,
   `sub-*`; `subtitle-*` et les variantes `_` sont acceptés en alias.
@@ -752,6 +762,7 @@ Muxiveo-cli remux \
 * `--auto-sync` : Compare automatiquement les pistes audio pour identifier le décalage temporel initial.
 * `--detect-cuts` : Détecte les ruptures temporelles (coupures ou insertions) et scinde le calage en plusieurs segments.
 * `--quick-sync-check` / `--no-quick-sync-check` : Avec `--detect-cuts`, saute l'analyse continue des pistes quand les six mesures ponctuelles donnent le même décalage (confiance ≥ 0,90) ; un décalage variable ou une confiance plus faible la déclenchent automatiquement. Un écart qui se compense entre deux mesures (scène déplacée, ajout puis retrait de même durée) n'est vu qu'avec `--no-quick-sync-check`. Défaut : `[sync] quick_audio_check` (activé).
+* `--reject-coherent-sync` : Avec `--detect-cuts`, refuse une synchro cohérente mais en partie non vérifiée (zones sans correspondance acoustique, par exemple un passage doublé de plus de 30 s ou un début actif sans correspondance, entourées du même décalage). Par défaut elle est acceptée et ces zones sont signalées par un avertissement. Le décalage de part et d'autre d'une zone doit être identique : un changement de décalage non vérifiable reste toujours refusé.
 * `--drift-threshold-ms 25` : Seuil de décalage (en ms) à partir duquel une discontinuité temporelle est considérée comme une coupure.
 * `--cadence-auto` : Détecte un éventuel écart de cadence (ex: source TV à 25 FPS PAL vs source vidéo à 23.976 FPS Cinéma).
 * `--cadence-method auto` : Analyse acoustique de la hauteur tonale (F0) pour appliquer `atempo` (préservation du timbre) ou `asetrate` (hauteur naturelle).

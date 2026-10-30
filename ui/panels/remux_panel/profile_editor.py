@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -53,7 +54,11 @@ from core.profiles.keywords import KEYWORD_CATEGORIES, is_none_keyword, keyword_
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import _C
+from ui.widgets.output_template_edit import OutputTemplateLineEdit, OutputTemplatePreview
 from ui.widgets.token_line_edit import TokenChoice, TokenLineEdit, add_token_submenu, populate_token_menu
+
+# Jetons de nommage, identiques dans toutes les langues.
+_OUTPUT_TEMPLATE_EXAMPLE = "{title:release}.{year}.{video-resolution:best}-{group}"
 
 KEYWORD_CATEGORIES_FLAT = {
     keyword
@@ -237,10 +242,12 @@ class DecisionProfileEditorDialog(QDialog):
         current_tracks: list[TrackEntry] | None = None,
         source_index_by_file_id: dict[str, int] | None = None,
         profile: dict[str, Any] | None = None,
+        output_context: Callable[[list[TrackEntry], dict[str, Any]], dict[str, Any] | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._manager = manager
+        self._output_context = output_context
         self._current_config = current_config
         self._current_tracks = current_tracks or []
         self._source_index_by_file_id = source_index_by_file_id or {}
@@ -298,6 +305,11 @@ class DecisionProfileEditorDialog(QDialog):
         self._profile["name"] = self._name_edit.text().strip() or "Nouveau profil"
         self._profile["description"] = self._description_edit.text().strip()
         self._profile["tags"] = [item.strip() for item in self._tags_edit.text().split(",") if item.strip()]
+        output_template = self._output_template_edit.text().strip()
+        if output_template:
+            self._profile["output_template"] = output_template
+        else:
+            self._profile.pop("output_template", None)
         variables = copy.deepcopy(self._profile.get("variables", {}))
         if not isinstance(variables, dict):
             variables = {}
@@ -329,6 +341,12 @@ class DecisionProfileEditorDialog(QDialog):
         header.addWidget(QLabel(translate_text("Description")), 1, 0)
         self._description_edit = QLineEdit()
         header.addWidget(self._description_edit, 1, 1, 1, 3)
+        header.addWidget(QLabel(translate_text("Nom de sortie")), 2, 0)
+        self._output_template_edit = OutputTemplateLineEdit()
+        self._output_template_edit.setPlaceholderText(_OUTPUT_TEMPLATE_EXAMPLE)
+        header.addWidget(self._output_template_edit, 2, 1, 1, 3)
+        self._output_preview = OutputTemplatePreview(self._output_template_edit)
+        header.addWidget(self._output_preview, 3, 1, 1, 3)
         root.addLayout(header)
 
         mode_row = QHBoxLayout()
@@ -588,6 +606,8 @@ class DecisionProfileEditorDialog(QDialog):
         self._name_edit.setText(str(self._profile.get("name") or ""))
         self._description_edit.setText(str(self._profile.get("description") or ""))
         self._tags_edit.setText(", ".join(str(tag) for tag in self._profile.get("tags", []) if str(tag).strip()))
+        output_template = self._profile.get("output_template")
+        self._output_template_edit.setText(output_template if isinstance(output_template, str) else "")
         variables = self._profile.get("variables", {})
         aliases = variables.get("aliases", {}) if isinstance(variables, dict) else {}
         self._aliases = self._parse_aliases(self._format_aliases(aliases))
@@ -1493,7 +1513,11 @@ class DecisionProfileEditorDialog(QDialog):
             QMessageBox.information(self, translate_text("Profil"), translate_text("Aucune configuration à capturer."))
             return
         name = self._name_edit.text().strip() or "Profil capturé"
+        output_template = self._output_template_edit.text().strip()
         self._profile = remux_config_to_decision_profile(self._current_config, name=name)
+        # La capture porte sur les pistes : le nom de sortie saisi est conservé.
+        if output_template:
+            self._profile["output_template"] = output_template
         self._selected_rule_index = -1
         self._load_profile_to_ui()
         self._refresh_rule_list()
@@ -1505,15 +1529,18 @@ class DecisionProfileEditorDialog(QDialog):
             validate_decision_profile(profile)
         except Exception as exc:
             self._preview.setPlainText(translate_text("Profil invalide : {err}", err=str(exc)))
+            self._output_preview.set_context(None)
             return
         if not self._current_tracks:
             self._preview.setPlainText(translate_text("Aucune source chargée pour la preview."))
+            self._output_preview.set_context(None, note=translate_text("Chargez une source pour voir le nom rendu."))
             return
         before = {track.entry_id: copy.deepcopy(track) for track in self._current_tracks}
         tracks = copy.deepcopy(self._current_tracks)
         result = apply_decision_profile(
             profile, tracks, source_index_by_file_id=self._source_index_by_file_id, from_current_state=True,
         )
+        self._refresh_output_preview(profile, result.tracks)
         lines = [
             translate_text("Règles appliquées : {count}", count=int(result.report.get("applied_rules", 0) or 0)),
             translate_text("Conflits : {count}", count=len(result.report.get("conflicts", []))),
@@ -1546,6 +1573,16 @@ class DecisionProfileEditorDialog(QDialog):
             for entry_id, values in tags.items():
                 lines.append(f"- {entry_id[:8]}: {', '.join(values)}")
         self._preview.setPlainText("\n".join(lines).strip())
+
+    def _refresh_output_preview(self, profile: dict[str, Any], tracks: list[TrackEntry]) -> None:
+        from core.profiles.decision import profile_variables
+        context = self._output_context(tracks, profile_variables(profile)) if self._output_context else None
+        note = ""
+        if context is None:
+            note = translate_text("Chargez une source pour voir le nom rendu.")
+        elif not context.get("title"):
+            note = translate_text("Sans fiche TMDB, titre, année et épisode restent vides.")
+        self._output_preview.set_context(context, note=note)
 
     @staticmethod
     def _flag_change_labels(old: TrackEntry, new: TrackEntry) -> list[str]:

@@ -125,6 +125,9 @@ jobs:
           tests/test_encode_native_audio_origin.py
           tests/test_audio_timestamps.py
           tests/test_windows_pytest_bootstrap.py
+          tests/test_windows_shell.py
+          tests/test_update_install.py
+          tests/test_main_window_updates.py
           tests/test_python_requirements.py
           tests/test_qt_binding_sanity.py
           tests/test_shutdown_cleanup.py::test_sync_studio_cancels_audio_and_keeps_resources_until_worker_finishes

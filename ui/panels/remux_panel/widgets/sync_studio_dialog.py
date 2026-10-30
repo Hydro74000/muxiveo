@@ -13,6 +13,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -32,8 +33,9 @@ from PySide6.QtWidgets import (
 
 from core.i18n import translate_text
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
-from core.workflows.audio_sync import AudioSyncTrack
+from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner
+from core.workflows.cadence import CadenceMismatch, active_cadence
 from core.workflows.physical_sync import audio_filter
 from core.workflows.remux_models import TrackEntry
 from core.workflows.sync_calibration import NEGLIGIBLE_SYNC_MS, SyncCalibration, SyncSegment, effective_calibration
@@ -49,6 +51,7 @@ from ui.panels.remux_panel.theme import (
     _table_style,
 )
 from ui.styles import _bolt_icon, _slider_style
+from ui.media_player import create_media_player
 from ui.shutdown import Shutdown, defer_close
 from ui.widgets.waveform_view import WaveformView
 from ui.widgets.content_table import ContentTableWidget
@@ -85,6 +88,13 @@ def _parse_timestamp_ms(text: str) -> float | None:
     return seconds * 1000.0
 
 
+def _pitch_method(calibration: SyncCalibration) -> str | None:
+    """Méthode retenue par l'analyse de hauteur de la calibration, s'il y en a une."""
+    pitch = calibration.cadence_pitch_analysis
+    selected = pitch.get("selected_method") if isinstance(pitch, dict) else getattr(pitch, "selected_method", "")
+    return selected if selected in ("asetrate", "atempo") else None
+
+
 class SyncStudioDialog(QDialog):
     """Éditeur d'inspection et d'ajustement acoustique partagé par Remux et Hybrid."""
 
@@ -93,9 +103,11 @@ class SyncStudioDialog(QDialog):
     _subtitles_ready = Signal(object, object)
     _auto_sub_sync_ready = Signal(object)
     _auto_sub_sync_failed = Signal(str)
+    _auto_sync_review = Signal(object, object)
     _preview_ready = Signal(int, str)
     _preview_error = Signal(int, str)
     _duration_ready = Signal(float)
+    _cadence_resolved = Signal(object, object)
     calibration_changed = Signal(object)
 
     def __init__(
@@ -113,10 +125,28 @@ class SyncStudioDialog(QDialog):
         embedded: bool = False,
         crossfade_ms: int = 80,
         quick_validated: bool = False,
+        review_ranges_ms: tuple[tuple[float, float], ...] = (),
+        cadence_hint: CadenceMismatch | None = None,
+        cadence_audio_method: str = "auto",
+        apply_cadence_hint: bool = True,
+        analysis_stream_index: int | None = None,
     ) -> None:
-        """`quick_validated` : synchro actuelle validée par la seule vérification rapide."""
+        """`quick_validated` : synchro actuelle validée par la seule vérification rapide.
+
+        `review_ranges_ms` : zones sans correspondance d'une synchro cohérente
+        proposée (axe de sortie), à relire avant « Valider la synchro des pistes ».
+
+        `cadence_hint` : conversion de cadence d'après les vidéos des deux sources, proposée par
+        la carte Cadence à une calibration qui n'en porte pas ; cochée d'office si
+        `apply_cadence_hint` (méthode `cadence_audio_method`), sinon laissée décochée
+        (conversion refusée auparavant, ou plan qui en décide).
+        `analysis_stream_index` : piste de la source cible comparée à la référence par les
+        analyses (synchro automatique, hauteur) ; défaut : la cible.
+        """
         super().__init__(parent)
         self.quick_validated = bool(quick_validated)
+        self.review_ranges_ms: tuple[tuple[float, float], ...] = ()
+        self._apply_btn: QPushButton | None = None
         self._embedded = embedded
         self.crossfade_ms = crossfade_ms
         if embedded:
@@ -141,6 +171,25 @@ class SyncStudioDialog(QDialog):
         else:
             self._initial_calibration = SyncCalibration.linear(target_entry.time_shift_ms or 0)
 
+        hint = active_cadence(cadence_hint)
+        if hint is not None and apply_cadence_hint and self._initial_calibration.active_cadence is None:
+            self._initial_calibration = replace(
+                self._initial_calibration, cadence_mismatch=hint,
+                cadence_audio_method=cadence_audio_method or "auto", quick_check=False,
+                cadence_method_auto=(cadence_audio_method or "auto") == "auto",
+            )
+        # Conversion proposée par la case de la carte Cadence (retirée, elle peut être rétablie).
+        self._cadence_available = (
+            self._initial_calibration.active_cadence or hint
+        )
+        self._cadence_method_default = cadence_audio_method or "auto"
+        # Méthode portée par une conversion (sinon celle par défaut d'une calibration sans cadence).
+        self._cadence_method_set = self._initial_calibration.active_cadence is not None
+        # Une analyse de hauteur à la fois ; un résultat périmé (synchro modifiée) la relance.
+        self._cadence_resolving = False
+        # Case décochée par l'utilisateur (pas un résultat d'analyse sans conversion).
+        self._cadence_unchecked = False
+        self.analysis_stream_index = target_stream_index if analysis_stream_index is None else analysis_stream_index
         self.current_calibration = self._initial_calibration
         # Section éditée à la main (axe de la forme d'onde, ms).
         self._section: tuple[float, float] | None = None
@@ -188,17 +237,202 @@ class SyncStudioDialog(QDialog):
         self._subtitles_ready.connect(self._on_subtitles_ready)
         self._auto_sub_sync_ready.connect(self._on_auto_sub_sync_ready)
         self._auto_sub_sync_failed.connect(self._on_auto_sub_sync_failed)
+        self._auto_sync_review.connect(self._on_auto_sync_review)
         self._preview_ready.connect(self._on_preview_ready)
         self._preview_error.connect(self._on_preview_error)
         self._duration_ready.connect(self._on_duration_ready)
+        self._cadence_resolved.connect(self._on_cadence_resolved)
 
         self._init_ui()
         self._push_waveform_calibration()
         self._select_segment(0)
+        self._resolve_cadence_method()
         if self.quick_validated:
             self.listen_status.setText(translate_text(
                 "Synchro actuelle validée par la vérification rapide (mesures ponctuelles)."
             ))
+        if review_ranges_ms:
+            self._set_review_ranges(review_ranges_ms)
+            QTimer.singleShot(0, lambda: self._goto_review_range(0))
+
+    def _build_cadence_frame(self, mismatch) -> QFrame:
+        """Conversion de cadence : case d'application, hauteur analysée et méthode audio."""
+        cadence_frame = QFrame()
+        cadence_frame.setStyleSheet(f"""
+            QFrame {{
+                background: {_C.BG_DEEP};
+                border: 1px solid {_C.BORDER};
+                border-radius: {_scale(6)}px;
+            }}
+        """)
+        cad_layout = QVBoxLayout(cadence_frame)
+        cad_layout.setContentsMargins(_scale(8), _scale(6), _scale(8), _scale(6))
+        cad_layout.setSpacing(_scale(4))
+
+        top_row = QHBoxLayout()
+        self.cadence_check = QCheckBox(translate_text("Conversion Cadence :"))
+        self.cadence_check.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px; font-weight: 700;")
+        self.cadence_check.setChecked(self.current_calibration.active_cadence is not None)
+        self.cadence_check.setToolTip(translate_text(
+            "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence."
+        ))
+        self.cadence_check.toggled.connect(self._on_cadence_toggled)
+        top_row.addWidget(self.cadence_check)
+        lbl_cad_title = QLabel(mismatch.description)
+        lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+        top_row.addWidget(lbl_cad_title)
+        top_row.addStretch()
+        self._cadence_metric_lbl = QLabel()
+        self._cadence_metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
+        top_row.addWidget(self._cadence_metric_lbl)
+        cad_layout.addLayout(top_row)
+
+        # Sélecteur de méthode (Radio buttons)
+        radio_row = QHBoxLayout()
+        radio_row.setSpacing(_scale(12))
+        lbl_choose = QLabel(translate_text("Méthode audio :"))
+        lbl_choose.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
+        radio_row.addWidget(lbl_choose)
+
+        self.bg_cadence = QButtonGroup(self)
+        self.rb_auto = QRadioButton()
+        self.rb_asetrate = QRadioButton(translate_text("asetrate (puriste PAL / pitch naturel)"))
+        self.rb_atempo = QRadioButton(translate_text("atempo (tonalité préservée)"))
+        for rb in (self.rb_auto, self.rb_asetrate, self.rb_atempo):
+            rb.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            self.bg_cadence.addButton(rb)
+            radio_row.addWidget(rb)
+
+        self._method_radio().setChecked(True)
+
+        self.bg_cadence.buttonClicked.connect(self._on_cadence_method_changed)
+        radio_row.addStretch()
+        cad_layout.addLayout(radio_row)
+        self._refresh_cadence_info()
+        return cadence_frame
+
+    def _method_radio(self) -> QRadioButton:
+        """Choix affiché : le mode demandé par la calibration (« Auto » même une fois la méthode
+        tranchée) ; conversion jamais activée : la méthode des réglages."""
+        requested = (self.current_calibration.cadence_method_requested if self._cadence_method_set
+                     else self._cadence_method_default)
+        return {"asetrate": self.rb_asetrate, "atempo": self.rb_atempo}.get(requested, self.rb_auto)
+
+    def _requested_cadence_method(self) -> str:
+        """Méthode demandée aux analyses : « auto » (avec repli) si ce mode est choisi."""
+        return self.current_calibration.cadence_method_requested
+
+    @property
+    def cadence_declined(self) -> bool:
+        """Conversion de cadence proposée, décochée par l'utilisateur."""
+        return self._cadence_unchecked and self.current_calibration.active_cadence is None
+
+    def _sync_cadence_controls(self) -> None:
+        """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation)."""
+        if not hasattr(self, "cadence_check"):
+            return
+        calibration = self.current_calibration
+        if calibration.active_cadence is not None:
+            self._cadence_available = calibration.cadence_mismatch
+            self._cadence_method_set = True
+        self.cadence_check.blockSignals(True)
+        self.cadence_check.setChecked(calibration.active_cadence is not None)
+        self.cadence_check.blockSignals(False)
+        self._method_radio().setChecked(True)
+        self._refresh_cadence_info()
+        self._resolve_cadence_method()
+
+    def _refresh_cadence_info(self) -> None:
+        """Hauteur analysée, méthode recommandée et état des choix de méthode."""
+        if not hasattr(self, "rb_auto"):
+            return
+        pitch = self.current_calibration.cadence_pitch_analysis
+        if isinstance(pitch, dict):
+            from core.workflows.cadence_pitch import CadencePitchAnalysis
+            pitch = CadencePitchAnalysis.from_dict(pitch)
+        if pitch is not None:
+            self.rb_auto.setText(translate_text("Auto (détecté : {m})", m=pitch.selected_method))
+            self._cadence_metric_lbl.setText(translate_text(
+                "Hauteur de la cible : {shift} demi-ton • Recommandé : <b>{method}</b>",
+                shift=f"{pitch.pitch_shift_semitones:+.2f}", method=pitch.selected_method,
+            ))
+            self._cadence_metric_lbl.setToolTip(pitch.details)
+        else:
+            self.rb_auto.setText(translate_text("Auto (détection pitch)"))
+            self._cadence_metric_lbl.setText("")
+            self._cadence_metric_lbl.setToolTip("")
+        enabled = self.current_calibration.active_cadence is not None
+        for rb in (self.rb_auto, self.rb_asetrate, self.rb_atempo):
+            rb.setEnabled(enabled)
+
+    def _on_cadence_toggled(self, checked: bool) -> None:
+        """Conversion de cadence appliquée ou retirée ; jonctions et décalages conservés."""
+        self._stop_playback()
+        method = self.current_calibration.cadence_audio_method
+        was_set = self._cadence_method_set
+        if checked and not self._cadence_method_set:
+            # Première activation d'une conversion proposée décochée : méthode des réglages.
+            method = self._cadence_method_default
+        self._cadence_method_set = self._cadence_method_set or checked
+        self._cadence_unchecked = not checked
+        method_auto = (method or "auto") == "auto" if checked and not was_set else self.current_calibration.cadence_method_auto
+        self.current_calibration = replace(
+            self.current_calibration,
+            cadence_mismatch=self._cadence_available if checked else None,
+            cadence_audio_method=method,
+            cadence_method_auto=method_auto,
+            quick_check=False,
+        )
+        self.quick_validated = False
+        self._update_cuts_table()
+        self._push_waveform_calibration()
+        if not self._target_ranges_loaded(self._current_start_s):
+            self._reload_timer.start()
+        self.calibration_changed.emit(self.current_calibration)
+        self._sync_cadence_controls()
+
+    def _resolve_cadence_method(self) -> None:
+        """Méthode « auto » sans analyse : tranchée en arrière-plan par la hauteur des deux pistes."""
+        calibration = self.current_calibration
+        if (self._closing or not calibration.cadence_method_undecided
+                or self.target_entry.is_subtitle or self.reference_source_path is None
+                or self.reference_stream_index is None
+                or (self.reference_entry is not None and self.reference_entry.is_subtitle)):
+            return
+        if self._cadence_resolving:
+            return
+        self._cadence_resolving = True
+        reference = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
+        target = AudioSyncTrack(self.target_source_path, self.analysis_stream_index)
+
+        def _worker() -> None:
+            try:
+                scanner = AudioSyncScanner(self.ffmpeg_bin, self.ffprobe_bin, cancel_event=self._cancel_event)
+                resolved = scanner.resolve_cadence_method(reference, target, calibration)
+            except Exception:
+                resolved = None
+            if not self._closing:
+                self._cadence_resolved.emit(calibration, resolved)
+
+        self._executor.submit(_worker)
+
+    def _on_cadence_resolved(self, before: SyncCalibration, resolved: SyncCalibration | None) -> None:
+        self._cadence_resolving = False
+        current = self.current_calibration
+        if self._closing or not current.cadence_method_undecided:
+            return
+        if current.segments != before.segments or current.cadence_mismatch != before.cadence_mismatch:
+            # Analysée sur d'anciens décalages ou coupures : la fenêtre ne correspond plus.
+            self._resolve_cadence_method()
+            return
+        if resolved is None:
+            return
+        self.current_calibration = replace(
+            current, cadence_audio_method=resolved.cadence_audio_method,
+            cadence_pitch_analysis=resolved.cadence_pitch_analysis, cadence_method_auto=True,
+        )
+        self._refresh_cadence_info()
+        self.calibration_changed.emit(self.current_calibration)
 
     def _shift_label_text(self) -> str:
         if len(self.current_calibration.segments) <= 1:
@@ -264,80 +498,8 @@ class SyncStudioDialog(QDialog):
         hc_layout.addWidget(info_lbl)
 
         # Section Cadence & Hauteur tonale (Pitch)
-        if self.current_calibration.cadence_mismatch and getattr(self.current_calibration.cadence_mismatch, "cadence_type", None) not in (None, "none", "NONE"):
-            mismatch = self.current_calibration.cadence_mismatch
-            pitch = getattr(self.current_calibration, "cadence_pitch_analysis", None)
-
-            cadence_frame = QFrame()
-            cadence_frame.setStyleSheet(f"""
-                QFrame {{
-                    background: {_C.BG_DEEP};
-                    border: 1px solid {_C.BORDER};
-                    border-radius: {_scale(6)}px;
-                }}
-            """)
-            cad_layout = QVBoxLayout(cadence_frame)
-            cad_layout.setContentsMargins(_scale(8), _scale(6), _scale(8), _scale(6))
-            cad_layout.setSpacing(_scale(4))
-
-            top_row = QHBoxLayout()
-            lbl_cad_title = QLabel(f"<b>{translate_text('Conversion Cadence :')}</b> {mismatch.description}")
-            lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
-            top_row.addWidget(lbl_cad_title)
-            top_row.addStretch()
-
-            best_method = "atempo"
-            if pitch:
-                f0_ref = getattr(pitch, "f0_ref_hz", 0.0) or (pitch.get("f0_ref_hz", 0.0) if isinstance(pitch, dict) else 0.0)
-                f0_don = getattr(pitch, "f0_donor_hz", 0.0) or (pitch.get("f0_donor_hz", 0.0) if isinstance(pitch, dict) else 0.0)
-                shift_semi = getattr(pitch, "pitch_shift_semitones", 0.0) or (pitch.get("pitch_shift_semitones", 0.0) if isinstance(pitch, dict) else 0.0)
-                c_ase = getattr(pitch, "spectral_corr_asetrate", 0.0) or (pitch.get("spectral_corr_asetrate", 0.0) if isinstance(pitch, dict) else 0.0)
-                c_ate = getattr(pitch, "spectral_corr_atempo", 0.0) or (pitch.get("spectral_corr_atempo", 0.0) if isinstance(pitch, dict) else 0.0)
-                best_method = getattr(pitch, "selected_method", "atempo") or (pitch.get("selected_method", "atempo") if isinstance(pitch, dict) else "atempo")
-
-                metric_lbl = QLabel(translate_text(
-                    "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) "
-                    "• Corr. spectrale : asetrate {asetrate} | atempo {atempo} "
-                    "• Recommandé : <b>{method}</b>",
-                    shift=f"{shift_semi:+.2f}", f0_ref=f"{f0_ref:.0f}", f0_donor=f"{f0_don:.0f}",
-                    asetrate=f"{c_ase:.2f}", atempo=f"{c_ate:.2f}", method=best_method,
-                ))
-                metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
-                top_row.addWidget(metric_lbl)
-
-            cad_layout.addLayout(top_row)
-
-            # Sélecteur de méthode (Radio buttons)
-            radio_row = QHBoxLayout()
-            radio_row.setSpacing(_scale(12))
-            lbl_choose = QLabel(translate_text("Méthode audio :"))
-            lbl_choose.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
-            radio_row.addWidget(lbl_choose)
-
-            self.bg_cadence = QButtonGroup(self)
-            current_method = getattr(self.current_calibration, "cadence_audio_method", "auto") or "auto"
-
-            auto_label = translate_text("Auto (détecté : {m})", m=best_method) if pitch else translate_text("Auto (détection pitch)")
-            self.rb_auto = QRadioButton(auto_label)
-            self.rb_asetrate = QRadioButton(translate_text("asetrate (puriste PAL / pitch naturel)"))
-            self.rb_atempo = QRadioButton(translate_text("atempo (tonalité préservée)"))
-
-            for rb in (self.rb_auto, self.rb_asetrate, self.rb_atempo):
-                rb.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
-                self.bg_cadence.addButton(rb)
-                radio_row.addWidget(rb)
-
-            if current_method == "asetrate":
-                self.rb_asetrate.setChecked(True)
-            elif current_method == "atempo":
-                self.rb_atempo.setChecked(True)
-            else:
-                self.rb_auto.setChecked(True)
-
-            self.bg_cadence.buttonClicked.connect(self._on_cadence_method_changed)
-            radio_row.addStretch()
-            cad_layout.addLayout(radio_row)
-            hc_layout.addWidget(cadence_frame)
+        if self._cadence_available is not None:
+            hc_layout.addWidget(self._build_cadence_frame(self._cadence_available))
 
         vbox.addWidget(header_card)
 
@@ -425,6 +587,14 @@ class SyncStudioDialog(QDialog):
         wave_header.addWidget(self.btn_mode_switch)
 
         wc_layout.addLayout(wave_header)
+
+        # Zones d'une synchro cohérente proposée : sans correspondance, à relire.
+        self._review_row = QWidget(self)
+        self._review_layout = QHBoxLayout(self._review_row)
+        self._review_layout.setContentsMargins(0, 0, 0, 0)
+        self._review_layout.setSpacing(_scale(6))
+        self._review_row.setVisible(False)
+        wc_layout.addWidget(self._review_row)
 
         timeline_row = QHBoxLayout()
         self.timeline = QSlider(Qt.Orientation.Horizontal)
@@ -663,6 +833,7 @@ class SyncStudioDialog(QDialog):
             apply_btn = _primary_button(translate_text("Appliquer la synchronisation"))
             apply_btn.clicked.connect(self.accept)
             btn_bar.addWidget(apply_btn)
+            self._apply_btn = apply_btn
             vbox.addLayout(btn_bar)
 
     def _activate_segment(self, idx: int) -> None:
@@ -766,6 +937,46 @@ class SyncStudioDialog(QDialog):
                 f"{SyncCalibration.format_timestamp(position_ms)} / {SyncCalibration.format_timestamp(self._duration_ms)}"
             )
 
+    def _set_review_ranges(self, ranges_ms) -> None:
+        """Affiche les zones à relire (boutons de navigation) et le libellé de validation."""
+        self.review_ranges_ms = tuple((float(start), float(stop)) for start, stop in ranges_ms)
+        while self._review_layout.count():
+            item = self._review_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        if self.review_ranges_ms:
+            label = QLabel(translate_text("Zones à relire :"))
+            label.setStyleSheet(f"color: {_C.WARN}; font-size: {_font_px(10)}px; font-weight: 600;")
+            self._review_layout.addWidget(label)
+            for index, (start, stop) in enumerate(self.review_ranges_ms):
+                button = _secondary_button(
+                    f"{SyncCalibration.format_timestamp(start)[:8]} – {SyncCalibration.format_timestamp(stop)[:8]}",
+                    padding_h=8,
+                )
+                button.setToolTip(translate_text("Afficher le début de cette zone sans correspondance acoustique"))
+                button.clicked.connect(lambda _checked=False, i=index: self._goto_review_range(i))
+                self._review_layout.addWidget(button)
+            self._review_layout.addStretch()
+            self.listen_status.setText(translate_text(
+                "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et "
+                "d'autre. Relire ces zones puis « Valider la synchro des pistes ».",
+                count=len(self.review_ranges_ms),
+            ))
+        self._review_row.setVisible(bool(self.review_ranges_ms))
+        if self._apply_btn is not None:
+            self._apply_btn.setText(
+                translate_text("Valider la synchro des pistes") if self.review_ranges_ms
+                else translate_text("Appliquer la synchronisation")
+            )
+
+    def _goto_review_range(self, index: int) -> None:
+        """20 s affichées depuis le début de la zone (zone courte : centrée)."""
+        if not 0 <= index < len(self.review_ranges_ms) or self._closing:
+            return
+        start, stop = self.review_ranges_ms[index]
+        self._seek_timeline(round(min(start + _GOTO_HALF_WINDOW_S * 1000.0, (start + stop) / 2.0)))
+
     def _seek_timeline(self, position_ms: int) -> None:
         self.goto_edit.setText(SyncCalibration.format_timestamp(position_ms))
         self._goto_timestamp()
@@ -867,6 +1078,9 @@ class SyncStudioDialog(QDialog):
     def _reset_shifts(self) -> None:
         self._stop_playback()
         self.current_calibration = self._initial_calibration
+        self._cadence_method_set = self._initial_calibration.active_cadence is not None
+        self._cadence_unchecked = False
+        self._sync_cadence_controls()
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._current_segment_index = min(self._current_segment_index, len(self.current_calibration.segments) - 1)
         seg = self.current_calibration.segments[self._current_segment_index]
@@ -1191,10 +1405,10 @@ class SyncStudioDialog(QDialog):
         self.waveform.set_loading(text)
         self.listen_status.setText(text)
         reference = AudioSyncTrack(self.reference_source_path, self.reference_stream_index)
-        target = AudioSyncTrack(self.target_source_path, self.target_stream_index)
+        target = AudioSyncTrack(self.target_source_path, self.analysis_stream_index)
         # Correction de cadence existante et méthode audio choisie dans le studio.
         cadence_mismatch = self.current_calibration.cadence_mismatch
-        cadence_method = self.current_calibration.cadence_audio_method or "auto"
+        cadence_method = self._requested_cadence_method()
 
         def _worker() -> None:
             try:
@@ -1207,6 +1421,9 @@ class SyncStudioDialog(QDialog):
                 )
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
+            except AudioSyncReviewRequired as exc:
+                if not self._closing:
+                    self._auto_sync_review.emit(exc.calibration, exc.output_ranges_ms())
             except Exception as exc:
                 if not self._closing:
                     self._auto_sub_sync_failed.emit(str(exc))
@@ -1247,6 +1464,8 @@ class SyncStudioDialog(QDialog):
     def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
         if getattr(self, "_closing", False):
             return
+        # Nouveau résultat : les zones d'une proposition précédente ne valent plus.
+        self._set_review_ranges(())
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
 
@@ -1257,6 +1476,7 @@ class SyncStudioDialog(QDialog):
             cal = replace(cal, segments=(SyncSegment(0, 0.0),), quick_check=False)
         self.quick_validated = bool(getattr(cal, "quick_check", False))
         self.current_calibration = cal
+        self._sync_cadence_controls()
         first_shift = cal.segments[0].shift_ms
         self._current_shift_ms = first_shift
         self.spin_shift.blockSignals(True)
@@ -1285,6 +1505,14 @@ class SyncStudioDialog(QDialog):
                 )
             )
         self.calibration_changed.emit(self.current_calibration)
+
+    def _on_auto_sync_review(self, cal: SyncCalibration, ranges_ms) -> None:
+        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées."""
+        if getattr(self, "_closing", False):
+            return
+        self._on_auto_sub_sync_ready(cal)
+        self._set_review_ranges(ranges_ms)
+        self._goto_review_range(0)
 
     def _on_auto_sub_sync_failed(self, err: str) -> None:
         if getattr(self, "_closing", False):
@@ -1417,14 +1645,12 @@ class SyncStudioDialog(QDialog):
             return
         self.listen_btn.setEnabled(True)
         try:
-            from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
             player = self._player
             if player is None:
-                player = QMediaPlayer(self)
-                audio_output = QAudioOutput(self)
-                player.setAudioOutput(audio_output)
+                player, audio_output = create_media_player(self)
                 player.mediaStatusChanged.connect(self._on_media_status_changed)
                 player.positionChanged.connect(self._on_player_position_changed)
+                player.errorOccurred.connect(self._on_player_error)
                 self._player, self._audio_output = player, audio_output
 
             player.setSource(QUrl.fromLocalFile(path))
@@ -1468,6 +1694,12 @@ class SyncStudioDialog(QDialog):
             if active and active[0]:
                 self.listen_status.setText(f"💬 {active[0]}")
 
+    def _on_player_error(self, _error: object, message: str) -> None:
+        if getattr(self, "_closing", False) or not message:
+            return
+        self._stop_playback()
+        self.listen_status.setText(translate_text("Erreur lors de la pré-écoute : {err}", err=message))
+
     def _on_preview_error(self, token: int, message: str) -> None:
         if getattr(self, "_closing", False) or token != self._preview_token:
             return
@@ -1497,19 +1729,23 @@ class SyncStudioDialog(QDialog):
         self.listen_status.setText("")
 
     def _on_cadence_method_changed(self) -> None:
-        if hasattr(self, "rb_asetrate") and self.rb_asetrate.isChecked():
+        if self.rb_asetrate.isChecked():
             new_method = "asetrate"
-        elif hasattr(self, "rb_atempo") and self.rb_atempo.isChecked():
+        elif self.rb_atempo.isChecked():
             new_method = "atempo"
         else:
-            new_method = "auto"
+            # « Auto » : méthode retenue par l'analyse de hauteur (le filtre d'une méthode
+            # « auto » non tranchée serait atempo) ; sans analyse, elle est lancée.
+            new_method = _pitch_method(self.current_calibration) or "auto"
 
         self._stop_playback()
         self.current_calibration = replace(
             self.current_calibration,
             cadence_audio_method=new_method,
+            cadence_method_auto=self.rb_auto.isChecked(),
         )
         self.calibration_changed.emit(self.current_calibration)
+        self._resolve_cadence_method()
 
     def result_calibration(self) -> tuple[SyncCalibration, int]:
         return self.current_calibration, round(self.current_calibration.segments[0].shift_ms)

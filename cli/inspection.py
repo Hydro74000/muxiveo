@@ -8,6 +8,7 @@ from typing import Any
 from core.bluray import discover_titles, playlist_path_for
 from core.config import AppConfig
 from core.inspector import AttachmentInfo, FileInfo, FileInspector
+from core.workflows.preparation_cache import PreparationCache
 from core.workflows.remux_models import SourceInput, TrackEntry, tracks_from_file_info
 
 from cli.constants import EXIT_ARGS, EXIT_VALIDATION
@@ -44,6 +45,7 @@ def inspect_sources(
     logger: Logger,
     *,
     cli_inputs: list[str] | None = None,
+    cache: PreparationCache | None = None,
 ) -> tuple[list[SourceInput], list[FileInfo], list[TrackEntry]]:
     ffprobe = options.ffprobe or job.get("ffprobe") or config.tool_ffprobe
     mediainfo = options.mediainfo or job.get("mediainfo") or config.tool_mediainfo
@@ -78,7 +80,7 @@ def inspect_sources(
                 path = titles[0].playlist_path
         if not path.exists():
             raise CliError(f"Source introuvable : {path}", EXIT_VALIDATION)
-        info = inspector.inspect(path)
+        info = cache.inspect(inspector, path) if cache is not None else inspector.inspect(path)
         file_id = f"src{source_index}"
         tracks = tracks_from_file_info(info, file_id=file_id)
         infos.append(info)

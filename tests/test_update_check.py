@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.error
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from core.update_check import (
     check_for_update,
     display_version,
     fetch_latest_release,
+    fetch_release_notes,
     is_newer,
     normalize_update_channel,
     release_page_url,
@@ -260,3 +262,49 @@ def test_feed_keeps_only_repository_assets():
     with patch.object(update_check.urllib.request, "urlopen", _routes({update_check.update_feed_url("stable"): feed})):
         info = fetch_latest_release("stable")
     assert info is not None and [a.name for a in info.assets] == ["Muxiveo.AppImage", "SHA256SUMS"]
+
+
+def test_release_notes_from_api_release_and_tag_endpoint():
+    payload = {**_release("v99.0.0"), "body": "## Nouveautés\n* x"}
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen(payload)):
+        assert fetch_latest_release("stable").notes == "## Nouveautés\n* x"
+    seen: list[str] = []
+    with patch.object(update_check.urllib.request, "urlopen", _urlopen(payload, seen)):
+        assert fetch_release_notes("99.0.0") == "## Nouveautés\n* x"
+    assert seen == [f"{update_check.RELEASES_API_URL}/tags/v99.0.0"]
+
+
+def test_release_notes_failure_raises_update_check_error():
+    def _fail(req, timeout=None):
+        raise urllib.error.URLError("offline")
+
+    with patch.object(update_check.urllib.request, "urlopen", _fail):
+        try:
+            fetch_release_notes("99.0.0")
+        except UpdateCheckError as exc:
+            assert "offline" in str(exc)
+        else:
+            raise AssertionError("UpdateCheckError attendue")
+
+
+def test_remote_tags_restricted_to_release_syntax():
+    """Tag distant : jamais de caractères de chemin d'URL ni de HTML (titre de la popup, requête des notes)."""
+    for bad in ("v99.0.0/../../users/x", "v99.0.0?a=1", "v99.0.0#x", "v99.0.0-<b>x</b>", 'v99.0.0-"x', "v99.0.0-a..b",
+                "v99.0.0-.a", "v99.0.0-a.", "v99.0.0-"):
+        assert update_check._parse_release(_release(bad)) is None, bad
+        assert update_check._parse_feed(_feed("stable", bad), "stable") is None, bad
+    assert update_check._parse_release(_release(f"v{_U2}")).version == _U2
+    assert update_check._parse_release(_release("v4.1.0-rc1")).version == "4.1.0-rc1"
+    started = time.perf_counter()                                  # rejet linéaire d'un suffixe piégé
+    assert not update_check.is_release_tag("v1.0.0-" + "a." * 100_000 + "!")
+    assert time.perf_counter() - started < 1.0
+
+
+def test_release_notes_refuse_invalid_version_without_network():
+    with patch.object(update_check.urllib.request, "urlopen", side_effect=AssertionError("réseau interrogé")):
+        try:
+            fetch_release_notes("99.0.0/../../users/x")
+        except UpdateCheckError as exc:
+            assert "invalide" in str(exc)
+        else:
+            raise AssertionError("UpdateCheckError attendue")

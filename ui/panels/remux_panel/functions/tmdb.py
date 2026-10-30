@@ -61,9 +61,12 @@ def sync_tmdb_suggested_title(panel: "RemuxPanel", _text: str = "") -> None:
 def on_tmdb_details_selected(panel: "RemuxPanel", details: object) -> None:
     if not isinstance(details, MediaDetails):
         return
+    # Fiche retenue pour le nom de sortie d'un profil (titre, année, épisode).
+    panel._tmdb_details = details
     title = details.formatted_container_title().strip()
     if title:
         panel._file_title_edit.setText(title)
+    panel._rebuild_preview()
 
 
 __all__ = [

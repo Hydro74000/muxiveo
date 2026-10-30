@@ -31,6 +31,7 @@ def _selector_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "track_type": {"enum": sorted(TRACK_TYPES)},
             "position": {"type": "integer"},
             "type_index": {"type": "integer"},
+            "position_order": {"enum": ["source"]},
             "id": {"type": "integer"},
             "mkv_tid": {"type": "integer"},
             "stream": {"type": "integer"},
@@ -83,6 +84,7 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "title": {"type": "string"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
             "time_shift_ms": {"type": "integer"},
+            "sync_calibration": {"type": ["object", "null"]},
             "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
         },
     }
@@ -378,6 +380,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "sync": {"type": "boolean"},
             "detect_cuts": {"type": "boolean"},
             "drift_threshold_ms": {"type": "integer", "minimum": 1},
+            "output_template": {"type": "string"},
             "variables": {
                 **_variables_schema(),
             },

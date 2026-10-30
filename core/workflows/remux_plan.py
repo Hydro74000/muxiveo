@@ -43,6 +43,7 @@ from core.workflows.remux_mapping import (
     normalized_language_value,
     resolve_mapped_tracks,
     track_order_parts,
+    track_sync_payload,
 )
 from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import (
@@ -258,7 +259,8 @@ def native_capability_reasons(
                 config.sync_mode != "physical"
                 and track.track_type in {"audio", "subtitle"}
                 and effective_calibration(
-                    track.sync_calibration or config.sync_calibrations.get(str(source.file_index))
+                    track_sync_payload(config, track, source.file_index),
+                    track.track_type,
                 ) is not None
             ):
                 reasons.append(

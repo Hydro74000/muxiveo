@@ -367,22 +367,48 @@ def _write_windows_console_entrypoint(gui_exe: Path, cli_exe: Path) -> Path:
 
 
 def _ensure_unix_bundle_entrypoints(bundle_dir: Path) -> Path:
-    """Normalise les entrées exécutables dans un bundle Linux/macOS."""
+    """Normalise les entrées exécutables dans un bundle Linux/macOS.
+
+    Noms comparés à la liste exacte du dossier : sur un volume insensible à la casse (macOS),
+    ``Muxiveo`` désigne le fichier ``muxiveo`` lui-même, jamais un ancien nom à supprimer.
+    """
     exe_path = bundle_dir / APP_EXECUTABLE_NAME
-    legacy_exe = bundle_dir / APP_NAME
+    names = set(os.listdir(bundle_dir))
 
-    if not exe_path.exists() and legacy_exe.exists():
-        legacy_exe.rename(exe_path)
-    elif legacy_exe.is_symlink() or legacy_exe.is_file():
-        legacy_exe.unlink()
+    if APP_EXECUTABLE_NAME not in names and APP_NAME in names:
+        exe_path = _rename_unix_executable(bundle_dir / APP_NAME)
+    elif APP_NAME in names:
+        # Entrée distincte (volume sensible à la casse) : ancien exécutable.
+        legacy_exe = bundle_dir / APP_NAME
+        if legacy_exe.is_symlink() or legacy_exe.is_file():
+            legacy_exe.unlink()
 
-    legacy_cli = bundle_dir / f"{APP_NAME}-cli"
-    if legacy_cli.is_symlink() or legacy_cli.is_file():
-        legacy_cli.unlink()
-    legacy_cli_lower = bundle_dir / f"{APP_EXECUTABLE_NAME}-cli"
-    if legacy_cli_lower.is_symlink() or legacy_cli_lower.is_file():
-        legacy_cli_lower.unlink()
+    for name in (f"{APP_NAME}-cli", f"{APP_EXECUTABLE_NAME}-cli"):
+        legacy_cli = bundle_dir / name
+        if name in names and (legacy_cli.is_symlink() or legacy_cli.is_file()):
+            legacy_cli.unlink()
     return exe_path
+
+
+def _verify_macos_bundle(app_path: Path) -> None:
+    """Bundle utilisable : exécutable de ``CFBundleExecutable`` présent (casse exacte) et ``--cli version`` réussi."""
+    import plistlib
+
+    with (app_path / "Contents" / "Info.plist").open("rb") as f:
+        name = plistlib.load(f).get("CFBundleExecutable")
+    macos_dir = app_path / "Contents" / "MacOS"
+    listed = sorted(os.listdir(macos_dir)) if macos_dir.is_dir() else []
+    if not isinstance(name, str) or name not in listed:
+        raise FileNotFoundError(f"Exécutable {name!r} absent de {macos_dir} (contenu : {listed})")
+    result = subprocess.run(
+        [str(macos_dir / name), "--cli", "version"], capture_output=True, text=True, timeout=300, check=False,
+        env=dict(os.environ, QT_QPA_PLATFORM="offscreen"),
+    )
+    if result.returncode != 0 or not result.stdout.strip().startswith(f"{APP_NAME} "):
+        raise RuntimeError(
+            f"Le bundle ne démarre pas (code {result.returncode}) : {(result.stdout + result.stderr).strip()[-2000:]}"
+        )
+    _ok(f"Bundle vérifié : {result.stdout.strip().splitlines()[-1]}")
 
 # ── Modules Python exclus du bundle ──────────────────────────────────────────
 
@@ -3406,6 +3432,7 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
         shutil.copy2(icns_path, resources / "icon.icns")
 
     _patch_macos_info_plist(app_final, version_tag=version_tag)
+    _verify_macos_bundle(app_final)
 
     if dmg:
         dmg_path = _build_macos_dmg(app_final, version_tag=version_tag)

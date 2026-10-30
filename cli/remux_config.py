@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +12,14 @@ from core.media_info_fetcher import (
     MediaDetails,
     TmdbError,
     TmdbFetcher,
+    TmdbResponseCache,
     clean_filename_for_search,
     default_tmdb_bearer_token,
     extract_year_from_filename,
 )
 from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX
+from core.workflows.preparation_cache import PreparationContext
+from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.remux_models import (
     RemuxConfig, SourceInput, TrackEntry, clone_track_entry, normalize_mux_backend,
 )
@@ -266,6 +269,7 @@ def resolve_tmdb_metadata(
     logger: Logger,
     *,
     source_title: str = "",
+    response_cache: TmdbResponseCache | None = None,
 ) -> tuple[str, dict[str, str] | None, tuple[str, str] | None, MediaDetails | None]:
     tmdb = normalized_tmdb_options(job, first_source, source_title=source_title)
     if not tmdb:
@@ -287,6 +291,7 @@ def resolve_tmdb_metadata(
         api_key=api_key,
         bearer_token=bearer,
         language=str(tmdb.get("language") or "fr-FR"),
+        response_cache=response_cache,
     )
     kind = str(tmdb.get("kind") or "all")
     season = str(tmdb.get("season") or "")
@@ -406,6 +411,36 @@ def merge_tmdb_tag_overrides(
     return deep_merge(tmdb_tags, explicit)
 
 
+def apply_donor_calibration(
+    calibration: SyncCalibration,
+    *,
+    sync_mode: str,
+    sources: list[SourceInput],
+    sync_subtitles: str,
+    sync_calibrations: Mapping[str, Any] | None = None,
+    source_index: int = 1,
+) -> tuple[str, dict[str, Any]]:
+    """Synchro d'une source donneuse : réécriture physique (mode physique, coupures refusées sinon,
+    cadence ou hauteur imposant ce mode) ou décalage conteneur de ses pistes audio (et sous-titres
+    en miroir). Les calibrations des autres sources sont conservées.
+
+    Retourne (mode de synchro, calibrations par source).
+    """
+    calibrations = dict(sync_calibrations or {})
+    key = str(source_index)
+    if sync_mode == "physical" or calibration.converts_audio:
+        calibrations[key] = calibration.to_dict()
+        return "physical", calibrations
+    if len(calibration.segments) != 1:
+        raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+    calibrations.pop(key, None)
+    if len(sources) > source_index:
+        for track in sources[source_index].tracks:
+            if track.track_type == "audio" or (track.track_type == "subtitle" and sync_subtitles == "mirror"):
+                track.time_shift_ms = round(calibration.segments[0].shift_ms)
+    return sync_mode, calibrations
+
+
 def build_remux_config(
     job: dict[str, Any],
     config: AppConfig,
@@ -415,7 +450,9 @@ def build_remux_config(
     cli_inputs: list[str] | None = None,
     cli_output: str | None = None,
     select_tracks: Callable[[list[SourceInput]], None] | None = None,
+    context: PreparationContext | None = None,
 ) -> RemuxConfig:
+    context = context or PreparationContext()
     job = dict(job)
     for key in ("sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms"):
         value = getattr(options, key, None)
@@ -428,7 +465,9 @@ def build_remux_config(
     if getattr(options, "calibration", None):
         job["calibration"] = options.calibration
     validate_job_contract(job, require_version=False)
-    sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs)
+    with context.measure("inspection"):
+        sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs,
+                                                 cache=context.cache)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
     relaxed_selectors = bool(job.get("_relaxed_selectors"))
     apply_audio_variants(
@@ -453,58 +492,27 @@ def build_remux_config(
 
     # Synchronisation explicite via calibration ou dynamique via auto_sync
     calib_file = job.get("calibration") or getattr(options, "calibration", None)
+    calib = None
     if calib_file and not job.get("sync_calibrations"):
         import json
-        from core.workflows.sync_calibration import SyncCalibration
-        calib_data = json.loads(Path(calib_file).read_text(encoding="utf-8-sig"))
-        calib = SyncCalibration.from_dict(calib_data)
-        has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
-        sync_mode = job.get("sync_mode", "container")
-        if sync_mode == "physical" or has_cadence:
-            job["sync_mode"] = "physical"
-            job["sync_calibrations"] = {"1": calib.to_dict()}
-        elif len(calib.segments) == 1:
-            if len(sources) > 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-        else:
-            raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+        calib = SyncCalibration.from_dict(json.loads(Path(calib_file).read_text(encoding="utf-8-sig")))
     elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
         from cli.hybrid import perform_dynamic_sync
         calib = perform_dynamic_sync(sources, tracks, config, options, logger)
-        if calib is not None:
-            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
-            sync_mode = job.get("sync_mode", "container")
-            if sync_mode == "physical" or has_cadence:
-                job["sync_mode"] = "physical"
-                job["sync_calibrations"] = {"1": calib.to_dict()}
-            elif len(calib.segments) == 1:
-                for t in sources[1].tracks:
-                    if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
-                        t.time_shift_ms = round(calib.segments[0].shift_ms)
-            else:
-                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
     elif job.get("sync_calibrations") and job.get("sync_mode", "container") == "container":
-        from core.workflows.sync_calibration import SyncCalibration
         calib_payload = job["sync_calibrations"].get("1")
-        if calib_payload:
-            calib = SyncCalibration.from_dict(calib_payload)
-            has_cadence = bool(calib.cadence_mismatch and getattr(calib.cadence_mismatch, "cadence_type", None) not in (None, "none"))
-            if has_cadence:
-                job["sync_mode"] = "physical"
-            elif len(calib.segments) == 1:
-                if len(sources) > 1:
-                    for t in sources[1].tracks:
-                        if t.track_type == "audio" or (t.track_type == "subtitle" and job.get("sync_subtitles", "mirror") == "mirror"):
-                            t.time_shift_ms = round(calib.segments[0].shift_ms)
-                job["sync_calibrations"] = {}
-            else:
-                raise CliError("Le mode container ne prend pas en charge les coupures multi-segments (utilisez --sync-mode physical).", EXIT_ARGS)
+        calib = SyncCalibration.from_dict(calib_payload) if calib_payload else None
+    if calib is not None:
+        job["sync_mode"], job["sync_calibrations"] = apply_donor_calibration(
+            calib, sync_mode=job.get("sync_mode", "container"), sources=sources,
+            sync_subtitles=job.get("sync_subtitles", "mirror"), sync_calibrations=job.get("sync_calibrations"),
+        )
 
     from core.workflows.subtitle_heuristics import classify_subtitles
-    classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
-        forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold)
+    with context.measure("sous-titres"):
+        classify_subtitles(sources, infos, ffmpeg=options.ffmpeg or config.tool_ffmpeg,
+            forced=options.auto_forced_subs, sdh=options.auto_sdh, threshold=options.forced_threshold,
+            cache=context.cache, cancel_event=context.cancel_event)
     keep_chapters, chapter_overrides, chapter_source_index = chapter_entries(job, infos)
     tmdb_title = ""
     tmdb_tags = None

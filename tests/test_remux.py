@@ -1816,7 +1816,8 @@ class TestTrackTableUpdateAudioMeta:
         assert panel._last_audio_sync_reference(target) is None
         panel.close()
 
-    def test_audio_sync_done_clears_reference_offset(self, qt_app, tmp_path):
+    def test_audio_sync_done_follows_shifted_reference(self, qt_app, tmp_path):
+        """Référence décalée à la main : la mesure vaut face à son audio d'origine, la cible suit sa position."""
         panel = RemuxPanel(AppConfig())
         target = _track(1, "audio", file_id="target")
         reference = _track(1, "audio", file_id="reference")
@@ -1826,8 +1827,8 @@ class TestTrackTableUpdateAudioMeta:
 
         panel._on_audio_sync_done(target.entry_id, reference.entry_id, -320, 0.876)
 
-        assert target.time_shift_ms == -320
-        assert reference.time_shift_ms == 0
+        assert target.time_shift_ms == -70
+        assert reference.time_shift_ms == 250
         panel.close()
 
     def test_audio_sync_done_applies_delta_to_source_tracks_and_chapters(self, qt_app, tmp_path):
@@ -2144,7 +2145,9 @@ class TestTrackTableUpdateAudioMeta:
         panel._track_table.append_tracks(_COLOR_B, [target_audio, target_sub])
         panel._update_chapters_from_sources()
 
-        panel._on_audio_sync_done(reference_audio.entry_id, "", 250, 0.9)
+        # Référence synchronisée sur la cible, puis la cible sur la référence : boucle,
+        # la nouvelle mesure prime et la référence revient à son audio d'origine.
+        panel._on_audio_sync_done(reference_audio.entry_id, target_audio.entry_id, 250, 0.9)
         assert reference_audio.time_shift_ms == 250
         assert reference_sub.time_shift_ms == 250
         assert [round(entry.timecode_s, 2) for entry in panel._chapter_panel.get_chapters()] == [0.25, 10.25]
@@ -2327,7 +2330,7 @@ class TestRemuxPanelDecisionProfiles:
         panel = self._panel_with_tracks(qt_app, tmp_path, [video, audio])
 
         class FakeDialog:
-            def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None):
+            def __init__(self, *, manager=None, current_config=None, current_tracks=None, source_index_by_file_id=None, parent=None, profile=None, output_context=None):
                 assert current_config is not None
                 self._manager = manager
                 self._profile = remux_config_to_decision_profile(current_config, name="Auto VF")
@@ -2414,6 +2417,103 @@ class TestRemuxPanelDecisionProfiles:
         applied = next(track for track in track_table.current_tracks() if track.mkv_tid == 1)
         assert (applied.language, applied.title) == ("fr-FR", "French")
         assert (applied.orig_language, applied.orig_title) == ("fr-CA", "VFQ")
+        panel.close()
+
+    def test_profile_output_template_names_output_until_edited_by_hand(self, qt_app, tmp_path):
+        """Le nom du profil suit pistes et fiche TMDB, puis s'efface devant une saisie manuelle."""
+        from ui.panels.remux_panel.functions import output_name, tmdb
+
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+            _track(1, "audio", file_id="fid", language="fra"),
+            _track(2, "audio", file_id="fid", language="eng", orig_language="eng"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        profile = {"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                   "output_template": "{title:release}.{audio-multi}.{video-codec:best}"}
+
+        panel._apply_decision_profile(profile)
+        assert panel._output_edit.text() == str(out_dir / "MULTi.HEVC.mkv")
+
+        def set_english(state: Qt.CheckState) -> None:
+            english = next(track for track in panel._track_table.current_tracks() if track.mkv_tid == 2)
+            row = panel._track_table._find_row_for_entry(english)
+            assert row is not None
+            item = panel._track_table.item(row, _TrackTable.COL_CHECK)
+            assert item is not None
+            item.setCheckState(state)
+
+        tmdb.on_tmdb_details_selected(panel, MediaDetails(title="Le Film"))
+        set_english(Qt.CheckState.Unchecked)
+        # Lancement immédiat : le nom suit la piste décochée sans attendre l'aperçu différé.
+        config = panel.collect_config()
+        assert config is not None and config.output == out_dir / "Le.Film.HEVC.mkv"
+
+        panel._output_edit.setText(str(out_dir / "manuel.mkv"))
+        output_name.refresh_profile_output(panel)
+        set_english(Qt.CheckState.Checked)
+        assert panel.current_output_path() == out_dir / "manuel.mkv"
+        assert panel._profile_output is None
+        panel.close()
+
+    def test_reading_the_config_never_renders_the_output_name(self, qt_app, tmp_path, monkeypatch):
+        """Nom du profil recalculé aux changements seulement : lire la configuration (barre
+        d'exécution, sauvegarde, aperçu) ne réécrit jamais le champ de sortie."""
+        from ui.panels.remux_panel.functions import output_name
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        panel._apply_decision_profile({"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                                       "output_template": "{video-codec:best}/{source_name}"})
+        calls: list[object] = []
+        monkeypatch.setattr(output_name, "refresh_profile_output", lambda *a, **k: calls.append(a) or False)
+        assert panel.collect_config() is not None and panel.current_output_path() == out_dir / "HEVC" / "fid.mkv"
+        assert calls == []
+        panel._rebuild_preview()
+        assert len(calls) == 1
+        panel.close()
+
+    def test_reapplied_profile_keeps_output_base_folder(self, qt_app, tmp_path):
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        out_dir = tmp_path / "out"
+        panel._output_edit.setText(str(out_dir / "fid.mkv"))
+        profile = {"version": 1, "kind": "decision-profile", "name": "Dossier", "rules": [],
+                   "output_template": "{video-codec:best}/{source_name}"}
+
+        panel._apply_decision_profile(profile)
+        panel._apply_decision_profile(profile)
+
+        assert panel.current_output_path() == out_dir / "HEVC" / "fid.mkv"
+        panel.close()
+
+    def test_profile_editor_keeps_output_template_and_previews_it(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.functions import output_name
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        panel = self._panel_with_tracks(qt_app, tmp_path, [
+            _track(0, "video", file_id="fid", codec="HEVC", language="und", orig_language="und"),
+        ])
+        dialog = DecisionProfileEditorDialog(
+            manager=DecisionProfileManager(tmp_path / "profiles"),
+            current_tracks=panel._track_table.current_tracks(),
+            source_index_by_file_id={"fid": 0},
+            profile={"version": 1, "kind": "decision-profile", "name": "Nom", "rules": [],
+                     "output_template": "{source_name}.{video-codec:best}"},
+            output_context=lambda tracks, variables: output_name.output_context(panel, tracks, variables),
+        )
+        assert dialog._output_template_edit.text() == "{source_name}.{video-codec:best}"
+        assert dialog._output_preview.name.text() == "fid.HEVC.mkv"
+        assert dialog.profile()["output_template"] == "{source_name}.{video-codec:best}"
+
+        dialog._output_template_edit.setText("  ")
+        assert "output_template" not in dialog.profile()
+        dialog.close()
         panel.close()
 
     def test_reset_to_sources_restores_inspected_tracks_and_keeps_entry_ids(

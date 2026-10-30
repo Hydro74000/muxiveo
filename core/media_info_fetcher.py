@@ -20,8 +20,10 @@ import urllib.request
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from core.logging import get_logger
+from core.session_cache import SessionCache
 from core.tls import TlsVerificationError, urlopen_tls
 from core.version import APP_ENV_PREFIX, APP_LOGGER_ROOT, APP_USER_AGENT
 
@@ -357,6 +359,14 @@ def default_tmdb_bearer_token() -> str:
     return os.environ.get(_TMDB_BEARER_TOKEN_ENV, "").strip() or _TMDB_DEFAULT_BEARER_TOKEN
 
 
+class TmdbResponseCache(SessionCache[str, Any]):
+    """Réponses JSON TMDB par URL, partagées entre fetchers de threads différents (accès sous verrou),
+    les `max_entries` plus récemment utilisées."""
+
+    def __init__(self, *, max_entries: int = 256) -> None:
+        super().__init__(max_entries)
+
+
 class TmdbFetcher:
     """
     Client léger pour l'API TMDB v3 (urllib stdlib, aucune dépendance externe).
@@ -374,6 +384,7 @@ class TmdbFetcher:
         *,
         language: str = "en-US",
         bearer_token: str = "",
+        response_cache: TmdbResponseCache | None = None,
     ) -> None:
         self._key = api_key.strip()
         self._bearer_token = bearer_token.strip()
@@ -381,6 +392,9 @@ class TmdbFetcher:
             raise TmdbError("Authentification TMDB manquante (clé API ou token Bearer).")
         self._lang = language or "en-US"
         self._image_config_cache: dict | None = None
+        # Réponses partagées entre fetchers d'une même session (saison : une
+        # recherche et une fiche de série pour tous les épisodes).
+        self._response_cache = response_cache
 
     def _debug_enabled(self) -> bool:
         raw = os.environ.get(_TMDB_DEBUG_ENV, "")
@@ -428,14 +442,22 @@ class TmdbFetcher:
         }
         if self._bearer_token:
             headers["Authorization"] = f"Bearer {self._bearer_token}"
+        cache_key = f"{self._bearer_token}\n{url}"
         req = urllib.request.Request(url, headers=headers)
+        if self._response_cache is not None:
+            return self._response_cache.get_or_load(cache_key, lambda: self._request_json(req, endpoint))
+        return self._request_json(req, endpoint)
+
+    def _request_json(self, req: urllib.request.Request, endpoint: str) -> dict:
+        """Charge une réponse ; le cache éventuel regroupe les requêtes identiques autour de cet appel."""
         try:
             with self._urlopen(req, timeout=12) as resp:
                 body = resp.read()
                 content_encoding = str(resp.headers.get("Content-Encoding", "")).strip().lower()
                 if content_encoding:
                     body = self._decode_http_body(body, content_encoding)
-                return json.loads(body.decode("utf-8"))
+                data = json.loads(body.decode("utf-8"))
+                return data
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 if self._key and not self._bearer_token:

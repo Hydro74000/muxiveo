@@ -556,3 +556,18 @@ def test_vfq_track_matches_saved_and_regional_selectors(language):
     assert resolve_track_selector({"type": "audio", "language": "fr-FR", "title": "VFQ"}, [vff, vfq]) is vfq
     # Nouveau sélecteur régional : la seule piste québécoise.
     assert resolve_track_selector({"type": "audio", "language": "fr-CA"}, [vff, vfq]) is vfq
+
+
+def test_legacy_selector_position_counts_variants_in_list_order():
+    """Exact-job antérieur (sans `position_order`) : rang dans l'ordre de la liste, variantes
+    comprises ; sélecteur actuel : rang dans la source, variantes exclues."""
+    from dataclasses import replace
+
+    first = _audio(1)
+    variant = replace(_audio(1, codec="AAC"), is_new=True)
+    second = _audio(2, codec="EAC3", language="en", title="EN")
+    tracks = [first, variant, second]
+    assert match_track_selector({"type": "audio", "source": 0, "position": 2}, tracks) == [second]
+    selector = track_selector_for_entry(second, source_index=0, tracks=tracks)
+    assert selector["position"] == 1 and selector["position_order"] == "source"
+    assert match_track_selector(selector, tracks) == [second]

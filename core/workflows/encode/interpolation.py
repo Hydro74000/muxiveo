@@ -78,7 +78,7 @@ INTERPOLATION_FAST_QUALITIES: frozenset[str] = frozenset(
 INTERPOLATION_ULTRA_QUALITIES: frozenset[str] = frozenset(
     name for name, preset in INTERPOLATION_PRESETS.items() if preset.ultra
 )
-INTERPOLATION_DEFAULT_QUALITY = "balanced"
+INTERPOLATION_DEFAULT_QUALITY = "quality"
 INTERPOLATION_FACTORS: tuple[float, ...] = (2, 2.5, 3, 4)
 # Anciennes cadences cibles, conservées pour la compatibilité des projets enregistrés.
 INTERPOLATION_TARGET_FPS: tuple[str, ...] = ("60000/1001", "60/1")
@@ -208,6 +208,8 @@ class InterpolationSource:
     cfr_rate: str = ""
     # Cadence du flux (avg_frame_rate, sinon r_frame_rate).
     frame_rate: str = ""
+    # r_frame_rate du flux (rationnel exact d'une source CFR).
+    nominal_rate: str = ""
     # Marquage couleur déclaré par la source ("" si absent) : le y4m ne le
     # transporte pas, l'encodeur doit le recevoir explicitement.
     primaries: str = ""
@@ -315,6 +317,7 @@ def interpolation_source_from_probe(
         is_vfr=is_vfr,
         cfr_rate=nominal_cfr_rate(r_rate, avg_rate) if is_vfr else "",
         frame_rate=avg_rate if _rate_value(avg_rate) else r_rate,
+        nominal_rate=r_rate if _rate_value(r_rate) else "",
         primaries=primaries,
         transfer=transfer,
         colorspace=colorspace,
@@ -367,6 +370,28 @@ def nominal_cfr_rate(r_rate: str, avg_rate: str) -> str:
     if r and (not avg or r <= 2 * avg):
         return r_rate
     return avg_rate if avg else ""
+
+
+def decode_normalization_rate(info: InterpolationSource, video: VideoEncodeSettings) -> str:
+    """Cadence du filtre ``fps=`` unique du décodage y4m remis à RIFE ("" : aucun).
+
+    Le y4m ne porte pas d'horodatage : le flux doit être régulier. Source VFR :
+    cadence nominale. YADIF « une image par champ » double la cadence, mais en
+    mode ``interlaced`` n'émet qu'une image par image progressive : sortie
+    irrégulière, même sur source CFR. Avec ce désentrelacement, la normalisation
+    se fait une seule fois, au double de la cadence nominale (la cadence source
+    annulerait le doublement).
+    """
+    filters = video.filters
+    if filters.field_rate_multiplier() < 2:
+        return info.cfr_rate
+    if not info.cfr_rate and str(filters.yadif_deint or "all").strip() != "interlaced":
+        return ""  # CFR entièrement désentrelacé : deux images par image, flux régulier
+    doubled_frame_rate = multiply_fps_expr(info.frame_rate, 2)
+    if info.cfr_rate and doubled_frame_rate and not _rates_differ(info.cfr_rate, doubled_frame_rate, tolerance=0.01):
+        # r_frame_rate = cadence des champs (H.264 entrelacé : 50/1 pour 25 images/s) : déjà le double.
+        return info.cfr_rate
+    return multiply_fps_expr(info.cfr_rate or info.nominal_rate or info.frame_rate, 2) or ""
 
 
 def _rate_value(rate: str) -> float | None:
@@ -424,7 +449,6 @@ def build_rife_stage(
     gpu: int = -1,
     mode: str = "normal",
     tta: int = 1,
-    feature_cache: bool = False,
     trt_plugin: str = "",
     trt_cache: str = "",
 ) -> list[str]:
@@ -461,7 +485,9 @@ def build_rife_stage(
         cmd.extend(["--gpu", str(int(gpu))])
     if int(tta) > 1 and not preset.ultra:
         cmd.extend(["--tta", str(int(tta))])
-    if feature_cache:
+    # Cache des têtes RIFE : sorties identiques, réserve VRAM vérifiée par le moteur à chaque inférence,
+    # sans effet en TensorRT ni sur v4.6 ; omis si le binaire ne le prend pas en charge.
+    if rife_supports(rife_bin, "feature-cache"):
         cmd.append("--feature-cache")
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -517,7 +543,6 @@ _RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
 
 def rife_support_errors(
     capabilities: RifeCapabilities | None, preset: InterpolationPreset, *, tta: int, rife_bin: str,
-    feature_cache: bool = False,
 ) -> list[str]:
     """Réglages d'interpolation non pris en charge par le binaire (contrat, options, modèle, sélecteur).
 
@@ -537,7 +562,6 @@ def rife_support_errors(
         ("engine", preset.engine == "hybrid", "le moteur hybride (préréglages Équilibré et Qualité)",
          ", ou choisir le préréglage Rapide"),
         ("ultra", preset.ultra, "le préréglage Ultra", ", ou choisir le préréglage Qualité"),
-        ("feature-cache", feature_cache, "le cache des caractéristiques", ", ou désactiver ce cache"),
     )
     for option, needed, feature, alternative in features:
         if needed and not capabilities.supports(option):
@@ -555,6 +579,12 @@ def rife_support_errors(
         return [f"Interpolation d'images : préréglage Ultra indisponible (poids du sélecteur : "
                 f"{capabilities.selector_status}) ; {_RIFE_UPDATE_HINT}, ou choisir le préréglage Qualité."]
     return []
+
+
+def rife_supports(rife_bin: str, option: str) -> bool:
+    """Vrai si le binaire déclare l'option (capacités illisibles : faux)."""
+    capabilities = rife_capabilities(rife_bin)
+    return capabilities is not None and capabilities.supports(option)
 
 
 def rife_capabilities(rife_bin: str) -> RifeCapabilities | None:
@@ -1093,6 +1123,7 @@ __all__ = [
     "ratio_label",
     "ffprobe_beside",
     "interpolation_source_from_probe",
+    "decode_normalization_rate",
     "multiply_fps_expr",
     "parse_rife_progress",
     "required_dovi_level",

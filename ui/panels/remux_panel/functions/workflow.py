@@ -13,7 +13,9 @@ from core.i18n import translate_text
 from core.workflows.workflow_store import load_workflow, save_workflow
 from core.workflows.remux_models import RemuxConfig
 from core.profiles.selectors import remux_config_to_exact_job
+from core.workflows.sync_calibration import SyncCalibration
 from ui.panels.remux_panel.functions import config_builder
+from ui.panels.remux_panel.models import SyncLink
 from ui.panels.remux_panel.theme import _C, _font_px, _scale, _secondary_button
 
 
@@ -118,6 +120,34 @@ def _track_key(track, source_index):
     return key
 
 
+def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
+    """Liens de synchro d'une session (absents des sessions antérieures : synchros conservées telles quelles)."""
+    if not isinstance(payload, dict):
+        return {}
+    count = len(panel._source_files)
+    tracks_by_key = {
+        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
+        for index, source in enumerate(config.sources)
+        for track in source.tracks
+    }
+    links: dict[str, SyncLink] = {}
+    for target_index, item in payload.items():
+        try:
+            target, reference = int(target_index), int(item["reference"])
+            if not (0 <= target < count and 0 <= reference < count) or target == reference:
+                continue
+            relative = SyncCalibration.from_dict(item["calibration"])
+            key = item.get("reference_track")
+            track = tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id"))) \
+                if isinstance(key, dict) else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        links[panel._source_files[target].id] = SyncLink(
+            panel._source_files[reference].id, track.entry_id if track is not None else "", relative,
+        )
+    return links
+
+
 def _remap_selector_sources(job, compact_to_full):
     for item in job.get("tracks", []):
         selector = item.get("selector")
@@ -142,7 +172,12 @@ def _remap_selector_sources(job, compact_to_full):
         }
 
 
-def _session_job(panel):
+def _session_job(panel, *, identity_selectors=True):
+    """Job exact de l'état du panneau + bloc `_muxiveo_session` (autosauvegarde, workflow sauvegardé).
+
+    `identity_selectors` : pistes désignées par (source, type, id) pour la reprise de session ;
+    faux pour la sauvegarde manuelle, dont les sélecteurs descriptifs restent réutilisables en template.
+    """
     source_index = {source.id: index for index, source in enumerate(panel._source_files)}
     ready_indices = [index for index, source in enumerate(panel._source_files) if source.info is not None]
     pending_indices = [index for index, source in enumerate(panel._source_files) if source.info is None]
@@ -163,7 +198,8 @@ def _session_job(panel):
                 if int(index) in full_to_compact
             },
         )
-        job = remux_config_to_exact_job(compact)
+        # Pistes prises désignées par leur identité, modifications à part.
+        job = remux_config_to_exact_job(compact, identity_selectors=identity_selectors)
         ready_sources = list(job["sources"])
         _remap_selector_sources(job, {compact: full for full, compact in full_to_compact.items()})
         job["sources"] = [
@@ -193,7 +229,7 @@ def _session_job(panel):
             for source in panel._source_files
         ]
     job["_muxiveo_session"] = {
-        "version": 1,
+        "version": 2,
         "pending_source_indices": pending_indices,
         "row_order": [
             _track_key(track, source_index[track.file_id])
@@ -205,6 +241,20 @@ def _session_job(panel):
             for file_id, offset in panel._source_sync_offsets_ms.items()
             if file_id in source_index
         },
+        # Synchro mesurée face à la piste d'une autre source : la source suit sa référence.
+        "sync_links": {
+            str(source_index[file_id]): {
+                "reference": source_index[link.reference_file_id],
+                "reference_track": next(
+                    (_track_key(track, source_index[track.file_id]) for track in panel._track_table.current_tracks()
+                     if track.entry_id == link.reference_entry_id and track.file_id in source_index),
+                    None,
+                ),
+                "calibration": link.relative.to_dict(),
+            }
+            for file_id, link in panel._sync_links.items()
+            if file_id in source_index and link.reference_file_id in source_index
+        },
         "auto_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -212,6 +262,10 @@ def _session_job(panel):
         ],
         "chapter_sync_cancelled_source_indices": [
             source_index[file_id] for file_id in panel._chapter_sync_cancelled_source_ids
+            if file_id in source_index
+        ],
+        "cadence_declined_source_indices": [
+            source_index[file_id] for file_id in panel._cadence_declined_source_ids
             if file_id in source_index
         ],
         "tag_edits": dict(panel._attachment_panel._tag_edits),
@@ -280,6 +334,11 @@ def load(panel, path):
     except Exception as exc:
         load_failed(panel, str(exc))
         return
+    session = job.get("_muxiveo_session")
+    if isinstance(session, dict) and session.get("version", 1) == 1:
+        # Session v1 : sélecteurs descriptifs dont le rang suivait l'ordre
+        # d'affichage (faux après réordonnancement) → résolution tolérante.
+        job["_relaxed_selectors"] = True
     panel._workflow_loading = True
     panel.setEnabled(False)
     def task():
@@ -312,10 +371,16 @@ def load(panel, path):
 def restore(panel, config, infos, session=None):
     from ui.panels.remux_panel.models import SourceFile, _pick_file_color
     from core.workflows.remux_mapping import resolve_mapped_tracks
+    from core.workflows.sync_calibration import resolve_track_sync
     if len(config.sources) != len(infos):
         raise ValueError("Nombre d'inspections différent du nombre de sources.")
     session = session if isinstance(session, dict) else {}
-    ordered = [m.track for m in resolve_mapped_tracks(config)]
+    # Le mapping peut projeter les offsets sur des copies ; la table doit garder les pistes
+    # d'origine, dont les identités de source sont réaffectées ci-dessous.
+    original_tracks = {(source.file_index, track.entry_id): track
+                       for source in config.sources for track in source.tracks}
+    ordered = [original_tracks[(mapped.source_file_index, mapped.track.entry_id)]
+               for mapped in resolve_mapped_tracks(config)]
     ordered += [t for s in config.sources for t in s.tracks if t not in ordered]
     if isinstance(session.get("row_order"), list):
         by_key = {
@@ -370,6 +435,11 @@ def restore(panel, config, infos, session=None):
         for index in session.get("chapter_sync_cancelled_source_indices", [])
         if str(index).isdigit() and 0 <= int(index) < len(panel._source_files)
     }
+    panel._cadence_declined_source_ids = {
+        panel._source_files[int(index)].id
+        for index in session.get("cadence_declined_source_indices", [])
+        if str(index).isdigit() and 0 <= int(index) < len(panel._source_files)
+    }
     auto_sync_keys = {
         (int(key["source"]), int(key["id"]), key.get("entry_id"))
         for key in session.get("auto_sync_tracks", [])
@@ -382,6 +452,9 @@ def restore(panel, config, infos, session=None):
         for track in source.tracks
         if (index, track.mkv_tid, track.entry_id if track.is_new else None) in auto_sync_keys
     }
+    panel._sync_links = _restored_sync_links(panel, config, session.get("sync_links"))
+    panel._own_sync_entry_ids = set()
+    panel._adopt_own_sync_calibrations(ordered)
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):
@@ -406,11 +479,19 @@ def restore(panel, config, infos, session=None):
         panel._chapter_panel.reset_chapters(config.chapter_overrides)
         panel._chapter_panel._modified = True
     panel._sync_entry_calibrations()
+    for track in panel._track_table.current_tracks():
+        # Le dialogue d'édition doit partir du décalage réellement appliqué, y compris pour
+        # détecter une remise à zéro d'une calibration linéaire importée avec un champ à zéro.
+        track.time_shift_ms, _calibration = resolve_track_sync(
+            track.sync_calibration, int(track.time_shift_ms or 0), track.track_type,
+        )
     panel._track_table.refresh_all_entries_info()
     panel._workflow_loading = False
     panel.setEnabled(True)
     panel._refresh_sync_action_buttons()
     panel._refresh_audio_sync_buttons()
+    # Sauvegarde faite pendant l'analyse d'une méthode « auto » : analyse reprise, traitement différé.
+    panel._resume_cadence_analyses()
     panel.ready_changed.emit(True)
     panel._emit_signals()
     panel._rebuild_preview()

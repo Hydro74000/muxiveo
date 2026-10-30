@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from core.workflows.encode.models import EncodeConfig, VideoCropSettings, VideoEncodeSettings
+from core.workflows.encode.models import EncodeConfig, VideoCropSettings, VideoEncodeSettings, VideoResizeSettings
 from core.workflows.encode.runtime.dovi_geometry import (
     align_dovi_rpu_geometry,
     align_nvenc_dovi_geometry,
@@ -14,6 +14,23 @@ from core.workflows.encode.runtime.dovi_geometry import (
 from core.workflows.encode.runtime.nvencc import build_nvencc_command
 from core.workflows.encode.runtime.nvencc_execution import build_nvencc_pipeline_commands
 from core.workflows.encode.runtime.nvencc_routing import NvenccInputRouter, NvenccRoutingCallbacks
+
+
+def _fake_l5_dovi_tool(*, left: int = 0, calls: list[list[str]] | None = None):
+    """dovi_tool simulé : `export` écrit un L5 à bandes de 280 lignes, `editor` un RPU modifié."""
+    import json
+
+    def run(cmd):
+        if calls is not None:
+            calls.append(cmd)
+        if "export" in cmd:
+            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
+                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": left, "right": 0}], "edits": {"0-9": 0},
+            }))
+        elif "editor" in cmd:
+            Path(cmd[-1]).write_bytes(b"edited")
+        return ""
+    return run
 
 
 def test_align_nvenc_dovi_geometry_hobbit_letterbox():
@@ -580,15 +597,7 @@ def test_crop_dovi_rpu_realigns_l5_only_when_cropped(tmp_path: Path):
     rpu.write_bytes(b"rpu")
     calls: list[list[str]] = []
 
-    def run(cmd):
-        calls.append(cmd)
-        if "export" in cmd:
-            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({
-                "presets": [{"id": 0, "top": 280, "bottom": 280, "left": 0, "right": 0}], "edits": {"0-9": 0},
-            }))
-        elif "editor" in cmd:
-            Path(cmd[-1]).write_bytes(b"edited")
-        return ""
+    run = _fake_l5_dovi_tool(calls=calls)
 
     video = VideoEncodeSettings(codec="libx265", copy_dv=True)
     assert crop_dovi_rpu(video=video, rpu_bin=rpu, dovi_tool_bin="dovi_tool", run_cmd=run) == rpu
@@ -600,6 +609,74 @@ def test_crop_dovi_rpu_realigns_l5_only_when_cropped(tmp_path: Path):
     assert out.read_bytes() == b"edited"
     assert json.loads((tmp_path / "rpu.crop.l5.json").read_text())["active_area"]["presets"][0]["top"] == 0
     assert logs and "(0, 280, 0, 280)" in logs[0]
+
+
+@pytest.mark.parametrize(("crop_offsets", "scale", "expected_top"), [
+    ((0, 0, 0, 0), (0.5, 0.5), 140),     # 2160 → 1080 : bandes 280 → 140
+    ((0, 8, 0, 8), (0.5, 0.5), 136),     # recadrage puis échelle : (280 − 8) × 0,5
+    ((0, 0, 0, 0), (1.0, 1.0), 280),     # échelle 1 : aucun réalignement (copie)
+])
+def test_align_dovi_rpu_geometry_scales_l5_after_crop(tmp_path: Path, crop_offsets, scale, expected_top):
+    """Redimensionnement hors NVENC : offsets L5 recadrés puis mis à l'échelle de la sortie (D14)."""
+    import json
+    rpu = tmp_path / "rpu.bin"
+    rpu.write_bytes(b"rpu")
+    out = tmp_path / "out.bin"
+
+    run = _fake_l5_dovi_tool(left=21)
+
+    res = align_dovi_rpu_geometry(dovi_tool_bin="dovi_tool", rpu_input=rpu, output_rpu=out,
+                                  crop_offsets=crop_offsets, scale=scale, run_cmd=run)
+    assert res == out
+    if scale == (1.0, 1.0):
+        assert out.read_bytes() == b"rpu"
+        return
+    preset = json.loads((tmp_path / "out.l5.json").read_text())["active_area"]["presets"][0]
+    assert (preset["top"], preset["bottom"]) == (expected_top, expected_top)
+    assert preset["left"] == 10  # round(21 × 0,5) : échelle horizontale
+
+
+@pytest.mark.parametrize(("crop", "resize", "expected_scale"), [
+    (VideoCropSettings(), VideoResizeSettings(enabled=True, preset="1080p"), (0.5, 0.5)),
+    (VideoCropSettings(enabled=True, top=280, bottom=280), VideoResizeSettings(enabled=True, preset="1080p"), (0.5, 0.5)),
+    (VideoCropSettings(), VideoResizeSettings(enabled=True, preset="2160p"), None),   # même taille : pas d'échelle
+    (VideoCropSettings(), VideoResizeSettings(), None),                               # pas de redimensionnement
+])
+def test_resolve_ffmpeg_dovi_geometry_rpu_follows_resize(crop, resize, expected_scale):
+    """libx265 + copie DV + redimensionnement : le RPU suit l'échelle du filtre ``scale`` (D14)."""
+    from core.workflows.encode.runtime.dovi_geometry import resolve_ffmpeg_dovi_geometry
+    video = VideoEncodeSettings(codec="libx265", copy_dv=True, crop=crop, resize=resize)
+    res = resolve_ffmpeg_dovi_geometry(video, (3840, 2160))
+    assert res.copy_dv is True
+    assert res.dovi_rpu_scale == expected_scale
+    again = resolve_ffmpeg_dovi_geometry(res, (3840, 2160))
+    assert (again.dovi_rpu_crop, again.dovi_rpu_scale) == (res.dovi_rpu_crop, res.dovi_rpu_scale)
+
+
+def test_resolve_ffmpeg_dovi_geometry_nvenc_resize_keeps_one_to_one_rule():
+    """NVENC : règle 1:1 inchangée (copie DV coupée sur redimensionnement), aucune échelle posée."""
+    from core.workflows.encode.runtime.dovi_geometry import resolve_ffmpeg_dovi_geometry
+    video = VideoEncodeSettings(codec="hevc_nvenc", copy_dv=True, resize=VideoResizeSettings(enabled=True, preset="1080p"))
+    res = resolve_ffmpeg_dovi_geometry(video, (3840, 2160), l5_offsets=(0, 0, 0, 0))
+    assert res.copy_dv is False
+    assert res.dovi_rpu_scale is None
+
+
+def test_crop_dovi_rpu_realigns_l5_on_resize_only(tmp_path: Path):
+    import json
+    from dataclasses import replace
+    from core.workflows.encode.runtime.dovi_geometry import crop_dovi_rpu
+    rpu = tmp_path / "rpu.bin"
+    rpu.write_bytes(b"rpu")
+
+    run = _fake_l5_dovi_tool()
+
+    logs: list[str] = []
+    video = replace(VideoEncodeSettings(codec="libx265", copy_dv=True), dovi_rpu_scale=(0.5, 0.5))
+    out = crop_dovi_rpu(video=video, rpu_bin=rpu, dovi_tool_bin="dovi_tool", run_cmd=run, log=logs.append)
+    assert out == tmp_path / "rpu.crop.bin"
+    assert json.loads((tmp_path / "rpu.crop.l5.json").read_text())["active_area"]["presets"][0]["top"] == 140
+    assert logs and "échelle" in logs[0]
 
 
 _SUMMARY_P7 = "Parsing RPU file...\n\nSummary:\n  Frames: 60\n  Profile: 7 (FEL)\n  DM version: 1 (CM v2.9)\n"
@@ -632,3 +709,26 @@ def test_convert_p7_rpu_to_p81_uses_editor_mode_2(tmp_path: Path, summary: str, 
         assert not out.with_suffix(".mode2.json").exists()
     else:
         assert calls == []
+
+
+@pytest.mark.parametrize("presets", [[], [{"id": 0, "left": 0, "top": 0, "right": 0, "bottom": 0}]])
+def test_resize_without_l5_offsets_copies_the_rpu(tmp_path: Path, presets):
+    """Redimensionnement seul, L5 absent ou nul : RPU copié tel quel, ni comptage ni éditeur
+    (un comptage illisible n'arrête plus l'encodage)."""
+    import json
+    rpu = tmp_path / "rpu.bin"
+    rpu.write_bytes(b"rpu")
+    out = tmp_path / "out.bin"
+    calls: list[str] = []
+
+    def run(cmd):
+        calls.append(cmd[1])
+        if "export" in cmd:
+            Path(cmd[-1].split("=", 1)[1]).write_text(json.dumps({"crop": True, "presets": presets, "edits": {}}))
+        return ""
+
+    res = align_dovi_rpu_geometry(dovi_tool_bin="dovi_tool", rpu_input=rpu, output_rpu=out,
+                                  scale=(0.5, 0.5), run_cmd=run)
+    assert res == out and out.read_bytes() == b"rpu"
+    assert calls == ["export"]
+    assert not (tmp_path / "out.l5.json").exists()

@@ -13,7 +13,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -178,6 +178,39 @@ def run_cancellable_capture(
         finally:
             if on_end is not None:
                 on_end(proc)
+
+
+def run_interruptible(
+    command: list[str],
+    *,
+    timeout: float,
+    stops: Iterable[tuple[threading.Event | None, str]],
+    error: Callable[[str], Exception],
+    timeout_message: str,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess:
+    """Capture bornée : premier événement de `stops` levé ou délai dépassé → `error(message)`.
+
+    Le processus (et ses descendants) est tué dès l'arrêt, même pendant une lecture silencieuse.
+    """
+    events = [(event, message) for event, message in stops if event is not None]
+
+    def check_cancelled() -> None:
+        for event, message in events:
+            if event.is_set():
+                raise error(message)
+
+    kwargs.pop("capture_output", None)
+    try:
+        return run_cancellable_capture(
+            command,
+            cancel_cb=(lambda: any(event.is_set() for event, _ in events)) if events else None,
+            check_cancelled=check_cancelled,
+            timeout=timeout,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise error(timeout_message) from exc
 
 
 # Variables pouvant pointer dans le bundle figé (AppImage/PyInstaller) et casser

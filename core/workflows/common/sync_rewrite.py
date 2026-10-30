@@ -483,9 +483,9 @@ class SyncRewriteService:
         calibration: SyncCalibration | dict | None = None,
         crossfade_ms: int = 80,
     ) -> SyncRewritePreparedInput | None:
-        from core.workflows.sync_calibration import effective_calibration
+        from core.workflows.sync_calibration import resolve_track_sync
         # Calibration multi-segments/cadence : seule une réécriture physique la respecte.
-        calib = effective_calibration(calibration)
+        offset_ms, calib = resolve_track_sync(calibration, int(offset_ms or 0), str(track_type or ""))
         if int(offset_ms or 0) == 0 and calib is None:
             return None
         if cancel_cb is not None and cancel_cb():

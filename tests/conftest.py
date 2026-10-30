@@ -32,6 +32,9 @@ def pytest_configure(config):
         _SETTINGS_ENV[name] = os.environ.get(name)
         os.environ[name] = _SETTINGS_DIR
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, _SETTINGS_DIR)
+    config.addinivalue_line(
+        "markers", "real_dashboard_probes: sondes réelles du tableau de bord (encodeurs, Vulkan)"
+    )
 
 
 def pytest_unconfigure(config):
@@ -135,6 +138,45 @@ def _no_nvof_probe_by_default(monkeypatch):
             interpolation.NvofCapability(reason="tests"), interpolation.TrtCapability(reason="tests"),
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_probes_simulated(request, monkeypatch):
+    """Tableau de bord : détection exécutée (executor, signaux, slots) sur des sondes simulées.
+
+    Résultat par défaut : aucun encodeur ni Vulkan (``real_dashboard_probes`` : sondes réelles).
+    Chaque page est conservée puis attendue en fin de test : détruite pendant ses sondes,
+    elle recevait leurs signaux une fois libérée (segfault dans ``processEvents``).
+    """
+    from types import SimpleNamespace
+
+    from core.workflows.encode.vulkan import VulkanCapability
+    from ui import main_window
+    from ui.main_window import DashboardPage
+
+    if request.node.get_closest_marker("real_dashboard_probes") is None:
+        monkeypatch.setattr(
+            DashboardPage, "_scan_encoder_availability",
+            staticmethod(lambda _ffmpeg, codec_ids: dict.fromkeys(codec_ids, False)),
+        )
+        monkeypatch.setattr(
+            main_window, "HardwareEncoderDetector",
+            lambda: SimpleNamespace(detect=lambda ffmpeg, **_kw: (set(), ffmpeg)),
+        )
+        monkeypatch.setattr(main_window, "detect_vulkan", lambda _ffmpeg: VulkanCapability(reason="tests"))
+    pages: list[DashboardPage] = []
+    start = DashboardPage._start_hw_detection
+
+    def tracked_start(page: DashboardPage) -> None:
+        pages.append(page)
+        start(page)
+
+    monkeypatch.setattr(DashboardPage, "_start_hw_detection", tracked_start)
+    yield
+    for page in pages:
+        page._executor.shutdown(wait=True)
+    if pages:
+        QCoreApplication.processEvents()
 
 
 @pytest.fixture(autouse=True)

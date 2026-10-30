@@ -8,6 +8,10 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+from PySide6.QtCore import QCoreApplication
+
+from core.config import AppConfig
 from ui.main_window import DashboardPage
 
 
@@ -19,6 +23,7 @@ def _completed(*, stdout: str = "", stderr: str = "", returncode: int = 0) -> Ma
     return proc
 
 
+@pytest.mark.real_dashboard_probes
 def test_dashboard_scans_software_encoders_with_configured_ffmpeg_path():
     custom_ffmpeg = r"C:\Tools\ffmpeg\bin\ffmpeg.exe"
 
@@ -32,6 +37,7 @@ def test_dashboard_scans_software_encoders_with_configured_ffmpeg_path():
     assert detected == {"libx265": True, "libx264": False}
 
 
+@pytest.mark.real_dashboard_probes
 def test_dashboard_hw_detection_uses_configured_ffmpeg_path():
     custom_ffmpeg = r"C:\Tools\ffmpeg\bin\ffmpeg.exe"
     emitted: list[set[str]] = []
@@ -61,3 +67,35 @@ def test_dashboard_sw_detection_runs_off_ui_thread_and_emits_states():
     DashboardPage._run_sw_detection(cast(Any, fake_page))
 
     assert emitted == [{"libx265": False, "aac": True}]
+
+
+def test_dashboard_detection_updates_badges_from_probe_results(qt_app, monkeypatch):
+    """Détection complète (executor → signaux → slots) : chaque badge suit le résultat de sa sonde."""
+    from core.workflows.encode.vulkan import VulkanCapability
+    from ui import main_window
+
+    monkeypatch.setattr(
+        DashboardPage, "_scan_encoder_availability",
+        staticmethod(lambda _ffmpeg, codec_ids: {codec: codec in {"libx265", "aac"} for codec in codec_ids}),
+    )
+    monkeypatch.setattr(
+        main_window, "HardwareEncoderDetector",
+        lambda: SimpleNamespace(detect=lambda ffmpeg, **_kw: ({"hevc_nvenc"}, ffmpeg)),
+    )
+    monkeypatch.setattr(
+        main_window, "detect_vulkan", lambda _ffmpeg: VulkanCapability(available=True, device="GPU test", nlmeans=True)
+    )
+    page = DashboardPage(AppConfig(), lambda *_a, **_kw: None)
+    page._executor.shutdown(wait=True)
+    QCoreApplication.processEvents()
+
+    def state(badge) -> str:
+        return badge.text().split()[0]
+
+    assert {codec: state(badge) for codec, (badge, _label) in page._sw_badges.items()} == {
+        "libx265": "●", "libx264": "○", "libsvtav1": "○",
+        "aac": "●", "eac3": "○", "flac": "○", "ac3": "○", "libopus": "○",
+    }
+    assert state(page._hw_badges["hevc_nvenc"][0]) == "●"
+    assert {state(badge) for codec, (badge, _label) in page._hw_badges.items() if codec != "hevc_nvenc"} == {"○"}
+    assert page._vulkan_badge is not None and state(page._vulkan_badge) == "●"

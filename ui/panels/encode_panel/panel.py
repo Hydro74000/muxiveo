@@ -1913,7 +1913,7 @@ class EncodePanel(QWidget):
             if value == "light":
                 self._interp_quality_combo.insertSeparator(self._interp_quality_combo.count())
             self._interp_quality_combo.addItem(label, value)
-        self._set_combo_data(self._interp_quality_combo, "balanced")
+        self._set_combo_data(self._interp_quality_combo, INTERPOLATION_DEFAULT_QUALITY)
         self._interp_quality_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
         self._interp_mode_combo = QComboBox()
         self._interp_mode_combo.setStyleSheet(_combo_style())
@@ -1935,14 +1935,6 @@ class EncodePanel(QWidget):
         for level in INTERPOLATION_TTA_LEVELS:
             self._interp_tta_combo.addItem("TTA : Désactivé" if level == 1 else f"TTA : ×{level}", level)
         self._interp_tta_combo.currentIndexChanged.connect(lambda _: self._on_interpolation_changed())
-        self._interp_cache_cb = QCheckBox("Cache des caractéristiques")
-        self._interp_cache_cb.setStyleSheet(_checkbox_style())
-        self._interp_cache_cb.setToolTip(
-            "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. "
-            "Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas "
-            "de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6."
-        )
-        self._interp_cache_cb.toggled.connect(lambda _: self._on_interpolation_changed())
         self._interp_fps_label = self._filter_tech_label("")
         # Indication discrète, affichée une seule fois, sur machine NVIDIA compatible sans l'extension.
         self._trt_hint = QLabel()
@@ -1983,8 +1975,6 @@ class EncodePanel(QWidget):
             self._trt_hint,
             self._rife_hint,
         ))
-        # Ligne séparée : la case reste lisible avec les réglages de cadence et de TTA.
-        fl.addWidget(self._build_filter_row(self._interp_cache_cb))
         self._sync_interpolation_availability()
 
         cl.addWidget(self._filters_controls)
@@ -2024,7 +2014,6 @@ class EncodePanel(QWidget):
         enabled = self._interp_cb.isChecked() and self._interpolation_tool_flag()
         self._interp_factor_combo.setEnabled(enabled)
         self._interp_quality_combo.setEnabled(enabled)
-        self._interp_cache_cb.setEnabled(enabled)
         # Light impose le mode Fast (v4.15 lite + flux à demi-résolution) ; Ultra impose le mode Normal sans TTA.
         # En quittant ces préréglages, le mode et le TTA choisis auparavant sont rétablis.
         quality = self._interp_quality_combo.currentData()
@@ -2105,11 +2094,10 @@ class EncodePanel(QWidget):
             enabled=self._interp_cb.isChecked() and self._interp_cb.isEnabled(),
             factor=2 if is_target else float(choice),
             target_fps=choice if is_target else "",
-            quality=str(self._interp_quality_combo.currentData() or "balanced"),
+            quality=str(self._interp_quality_combo.currentData() or INTERPOLATION_DEFAULT_QUALITY),
             mode="fast" if self._interp_quality_combo.currentData() == "light"
             else str(self._interp_mode_combo.currentData() or "normal"),
             tta=int(self._interp_tta_combo.currentData() or 1),
-            feature_cache=self._interp_cache_cb.isChecked(),
         )
 
     def _apply_interpolation_settings(self, settings: FrameInterpolationSettings) -> None:
@@ -2134,7 +2122,6 @@ class EncodePanel(QWidget):
         self._set_combo_data(self._interp_quality_combo, quality)
         self._set_combo_data(self._interp_mode_combo, "fast" if settings.fast_mode() else settings.mode)
         self._set_combo_data(self._interp_tta_combo, int(settings.tta) if int(settings.tta) in INTERPOLATION_TTA_LEVELS else 1)
-        self._interp_cache_cb.setChecked(settings.feature_cache)
         self._sync_interpolation_controls()
 
     def _build_filter_row(self, toggle: QCheckBox, *widgets: QWidget) -> QWidget:

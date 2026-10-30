@@ -50,7 +50,7 @@ Si vous souhaitez assembler manuellement un film :
 ### C. Sauvegarder et reprendre : le bouton Workflow
 
 Dans le panneau Conteneur, le bouton **Workflow** vous permet de :
-- **Sauvegarder le workflow…** : enregistre toute votre configuration (sélection des pistes, langues, titres, métadonnées) dans un petit fichier JSON facile à conserver ou à réutiliser.
+- **Sauvegarder le workflow…** : enregistre toute votre configuration (sélection des pistes, langues, titres, métadonnées, synchronisations et références en chaîne) dans un petit fichier JSON facile à conserver ou à réutiliser.
 - **Charger un workflow…** : recharge instantanément un travail précédent, même si vous avez redémarré votre ordinateur.
 - **Reprendre la dernière session** : restaure votre travail en cours en cas de fermeture inopinée.
 

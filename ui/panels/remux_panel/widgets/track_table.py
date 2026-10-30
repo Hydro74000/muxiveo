@@ -29,7 +29,7 @@ from core.workflows.common.sync_rewrite import (
     ui_sync_rewrite_preview_for_track,
 )
 from core.workflows.remux_models import TrackEntry
-from core.workflows.sync_calibration import SyncCalibration, format_calibration_summary
+from core.workflows.sync_calibration import SyncCalibration, effective_calibration, format_calibration_summary
 from ui.panels.remux_panel.models import (
     _TRACK_INFO_CUTS_COLOR,
     _TRACK_INFO_CUTS_LABEL_ROLE,
@@ -50,6 +50,13 @@ from ui.panels.remux_panel.theme import (
     _x_icon,
 )
 from ui.panels.track_edit_dialog import TrackEditDialog
+
+
+def track_sync_active(entry: TrackEntry) -> bool:
+    """Synchro appliquée à une piste : décalage de départ, ou coupures / cadence même sans décalage."""
+    return int(entry.time_shift_ms or 0) != 0 or effective_calibration(
+        entry.sync_calibration, entry.track_type) is not None
+
 
 class _TrackInfoDelegate(QStyledItemDelegate):
     _SYNC_LABEL_COLOR = QColor(_C.ACCENT)
@@ -259,6 +266,7 @@ class _TrackTable(QTableWidget):
     auto_sync_cancel_requested = Signal(object)  # TrackEntry
     sync_rewrite_toggle_requested = Signal(object)  # TrackEntry
     hdr_inspect_requested = Signal(object)  # TrackEntry (vidéo)
+    time_shift_edited = Signal(object)  # TrackEntry — décalage saisi dans le dialogue d'édition
 
     _TYPE_ORDER: dict[str, int] = {"video": 0, "audio": 1, "subtitle": 2}
     _MAX_VISIBLE_ROWS = 15
@@ -808,7 +816,8 @@ class _TrackTable(QTableWidget):
             return False
         if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
             return False
-        return int(entry.time_shift_ms or 0) != 0
+        # Coupures sans décalage de départ : la synchro reste annulable.
+        return track_sync_active(entry)
 
     def _sync_rewrite_preview(self, entry: TrackEntry):
         return ui_sync_rewrite_preview_for_track(
@@ -954,6 +963,7 @@ class _TrackTable(QTableWidget):
     def _open_edit_dialog(self, entry: TrackEntry) -> None:
         if entry.embedded_caption_parent_id:
             return
+        previous_shift = int(entry.time_shift_ms or 0)
         dlg = TrackEditDialog(entry, parent=self)
         if dlg.exec() == TrackEditDialog.DialogCode.Accepted:
             row = self._find_row_for_entry(entry)
@@ -970,6 +980,8 @@ class _TrackTable(QTableWidget):
                 self.blockSignals(False)
                 if lang_item is not None:
                     self.itemChanged.emit(lang_item)
+            if int(entry.time_shift_ms or 0) != previous_shift:
+                self.time_shift_edited.emit(entry)
 
     def update_audio_meta(
         self,

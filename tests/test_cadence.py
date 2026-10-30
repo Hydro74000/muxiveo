@@ -13,8 +13,8 @@ from core.workflows.cadence import (
     parse_framerate,
 )
 from core.workflows.physical_sync import audio_filter, preparation_commands
-from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput, TrackEntry
-from core.workflows.subtitle_sync import parse_time, shift_text
+from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+from core.workflows.subtitle_sync import shift_text
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
 
@@ -352,6 +352,8 @@ def test_audio_sync_scanner_detects_acoustic_cadence(monkeypatch):
     scanner = AudioSyncScanner("ffmpeg", "ffprobe")
     # Simuler duration = 1800s (30 min)
     monkeypatch.setattr(scanner, "duration", lambda track: 1800.0)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "_decoder_args", lambda _track: [])
 
     # Simuler measure retournant une dérive PAL (+0.04167 ms/ms = ~41.67 ms/s)
     # y = 200.0 + 0.04167 * (p * 1000)
@@ -459,6 +461,8 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     scanner = AudioSyncScanner("ffmpeg", "ffprobe")
     monkeypatch.setattr(scanner, "duration", lambda track: 1200.0)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "_decoder_args", lambda _track: [])
 
     # Simuler 2 segments avec un cut à 600s
     # Segment 1 (< 600s) : shift = 100ms
@@ -501,13 +505,18 @@ def test_audio_sync_scanner_with_cadence_and_detect_cuts(monkeypatch):
 
     assert len(calib.segments) == 2
     assert calib.segments[1].start_ms == pytest.approx(600000 * mismatch.speed_factor, abs=50)
-    # Décodages parallèles : ordre d'appel libre.
-    assert sorted(envelope_calls, key=str) == [None, "atempo=24000/25025"]
+    # Mesure exacte (asetrate) ; décodages parallèles : ordre d'appel libre.
+    exact = "aresample=48000,asetrate=46034,aresample=48000"
+    assert sorted(envelope_calls, key=str) == [None, exact]
     assert calib.cadence_mismatch == mismatch
     assert len(measure_calls) > 0
-    # Vérifier que speed_factor et filter ont bien été transmis à measure
-    assert all(c[1] == "atempo=24000/25025" for c in measure_calls)
+    # Mesures ponctuelles en asetrate ; sortie atempo : son écart mesuré ensuite (nul ici), face
+    # aux mesures ponctuelles reprises telles quelles (aucune mesure exacte refaite).
+    assert all(c[1] == exact for c in measure_calls[:6])
+    assert {c[1] for c in measure_calls[6:]} == {"atempo=24000/25025"}
+    assert len(measure_calls) == 6 + 4
     assert all(math.isclose(c[2], 24000.0 / 25025.0) for c in measure_calls)
+    assert calib.cadence_audio_method == "atempo" and calib.segments[0].shift_ms == pytest.approx(100.0)
 
 
 def test_parse_framerate_fraction_canonical_and_custom():
@@ -572,6 +581,52 @@ def test_audio_sync_scanner_auto_falls_back_to_asetrate_when_atempo_never_correl
 
     assert calib.cadence_audio_method == "asetrate"
     assert any("repli automatique" in line for line in logs)
+
+
+@pytest.mark.parametrize("method", ["asetrate", "atempo", "auto"])
+@pytest.mark.parametrize("available", ["asetrate", "atempo"])
+def test_measurement_fallback_respects_requested_output_method(monkeypatch, method, available):
+    from core.workflows.audio_sync import AudioSyncError, AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "duration", lambda _track: 600)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_args: None)
+    monkeypatch.setattr(scanner, "_analyze_cadence_pitch", lambda *_args: None)
+
+    def measure(*_args, cadence_filter=None, **_kwargs):
+        if cadence_filter and available not in cadence_filter:
+            raise AudioSyncError("Cette méthode ne corrèle pas")
+        return 2000, 0.99
+
+    monkeypatch.setattr(scanner, "measure", measure)
+    reference, donor = AudioSyncTrack(Path("ref.mkv"), 0), AudioSyncTrack(Path("donor.mkv"), 0)
+    kwargs = dict(cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"), cadence_audio_method=method)
+    if method == "asetrate" and available == "atempo":
+        with pytest.raises(AudioSyncError, match="Corrélation"):
+            scanner.scan(reference, donor, **kwargs)
+    else:
+        calibration = scanner.scan(reference, donor, **kwargs)
+        assert calibration.cadence_audio_method == (available if method == "auto" else method)
+        assert calibration.cadence_method_auto is (method == "auto")
+        assert calibration.segments[0].shift_ms == pytest.approx(2000)
+
+
+@pytest.mark.parametrize("method", ["asetrate", "atempo", "auto"])
+def test_cadence_measurement_compensates_requested_output_bias(monkeypatch, method):
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "duration", lambda _track: 600)
+    monkeypatch.setattr(scanner, "_analyze_cadence_pitch", lambda *_args: None)
+    monkeypatch.setattr(scanner, "measure", lambda *_a, cadence_filter=None, **_kw:
+                        (120 if "asetrate" in cadence_filter else 137, 0.99))
+    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 0), AudioSyncTrack(Path("donor.mkv"), 0),
+                               cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"),
+                               cadence_audio_method=method)
+    assert calibration.cadence_audio_method == ("atempo" if method == "auto" else method)
+    assert calibration.segments[0].shift_ms == pytest.approx(120 if method == "asetrate" else 137)
 
 
 def test_physical_audio_filter_uses_track_sample_rate_for_asetrate():

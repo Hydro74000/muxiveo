@@ -8,14 +8,50 @@ import subprocess
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 
+if TYPE_CHECKING:
+    from core.workflows.sync_calibration import SyncCalibration
+
 
 class AudioSyncError(RuntimeError):
     """Raised when enhanced audio synchronization cannot compute a reliable delta."""
+
+
+class AudioSyncReviewRequired(AudioSyncError):
+    """Synchro cohérente mais en partie non vérifiée, à valider par l'utilisateur.
+
+    Chaque zone sans correspondance est entourée du même décalage (ou précède
+    le premier plateau). ``calibration`` est la synchro proposée ;
+    ``unverified_ms`` les zones à relire, en instants de la piste synchronisée.
+    Un appelant qui ne la traite pas la refuse comme toute ``AudioSyncError``.
+    """
+
+    def __init__(self, message: str, calibration: SyncCalibration,
+                 unverified_ms: tuple[tuple[float, float], ...]) -> None:
+        super().__init__(message)
+        self.calibration = calibration
+        self.unverified_ms = tuple(unverified_ms)
+
+    def output_ranges_ms(self) -> tuple[tuple[float, float], ...]:
+        """Zones à relire sur l'axe de sortie (chronologie de la référence)."""
+        return tuple(
+            (self.calibration.output_time_ms(start), self.calibration.output_time_ms(stop))
+            for start, stop in self.unverified_ms
+        )
+
+
+def format_sync_ranges(ranges_ms) -> str:
+    """« 0:02:41.500–0:03:13.500, … » pour le journal et les messages."""
+    from core.workflows.sync_calibration import SyncCalibration
+
+    return ", ".join(
+        f"{SyncCalibration.format_timestamp(start)}–{SyncCalibration.format_timestamp(stop)}"
+        for start, stop in ranges_ms
+    )
 
 
 @dataclass(frozen=True)

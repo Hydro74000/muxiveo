@@ -11,6 +11,7 @@ from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sy
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
     build_encoder_vf as _build_encoder_vf_domain,
+    encoder_thread_args as _encoder_thread_args,
     hardware_input_args as _hardware_input_args_domain,
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
@@ -61,7 +62,7 @@ def _video_output_args(
     )
     if vf:
         args.extend(["-vf", vf])
-    args.extend(callbacks.ffmpeg_thread_args(None))
+    args.extend(_encoder_thread_args(video, callbacks.ffmpeg_thread_args(None)))
     return args
 
 

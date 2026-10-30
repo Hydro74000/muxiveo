@@ -345,3 +345,221 @@ def test_waveform_draws_target_cue_text(qt_app, monkeypatch):
     view.grab()
     assert any(text.startswith("REPL") for text in drawn)
     view.close()
+
+
+def _cadence_studio(tmp_path, monkeypatch, calibration, *, record_resolution=True, **kwargs):
+    from core.workflows.remux_models import TrackEntry
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+    monkeypatch.setattr(mod.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    resolutions: list = []
+    if record_resolution:
+        monkeypatch.setattr(mod.SyncStudioDialog, "_resolve_cadence_method",
+                            lambda self: resolutions.append(self.current_calibration))
+    target = TrackEntry(1, "audio", "AAC", "2.0", "fre", "VFF", file_id="src1")
+    reference = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="src0")
+    dialog = mod.SyncStudioDialog(
+        target_entry=target, target_source_path=tmp_path / "t.mkv", target_stream_index=1,
+        reference_entry=reference, reference_source_path=tmp_path / "r.mkv", reference_stream_index=1,
+        calibration=calibration, **kwargs,
+    )
+    return dialog, resolutions
+
+
+def test_studio_offers_the_video_cadence_and_follows_the_detected_method(qt_app, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.cadence_pitch import CadencePitchAnalysis
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    dialog, resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(0),
+                                          cadence_hint=pal, analysis_stream_index=2)
+    # Synchro sans cadence : conversion d'après les vidéos, cochée ; hauteur analysée dès l'ouverture.
+    assert dialog.current_calibration.cadence_mismatch == pal
+    assert dialog.cadence_check.isChecked() and dialog.rb_auto.isChecked()
+    assert dialog.analysis_stream_index == 2 and resolutions
+
+    analysis = CadencePitchAnalysis("asetrate", 0.72, 0.9, 0.8, 0.0, 0.0, details="spectre")
+    changes: list = []
+    dialog.calibration_changed.connect(changes.append)
+    dialog._on_cadence_resolved(dialog.current_calibration, replace(
+        dialog.current_calibration, cadence_audio_method="asetrate", cadence_pitch_analysis=analysis,
+    ))
+    assert dialog.current_calibration.cadence_audio_method == "asetrate"
+    assert "asetrate" in dialog.rb_auto.text() and changes
+
+    # « Auto » : la méthode détectée, jamais le repli atempo d'une méthode non tranchée.
+    dialog.rb_atempo.setChecked(True)
+    dialog._on_cadence_method_changed()
+    assert dialog.current_calibration.cadence_audio_method == "atempo"
+    dialog.rb_auto.setChecked(True)
+    dialog._on_cadence_method_changed()
+    assert dialog.current_calibration.cadence_audio_method == "asetrate"
+
+    # Case décochée : plus de conversion ; recochée : la même revient.
+    dialog.cadence_check.setChecked(False)
+    assert dialog.current_calibration.cadence_mismatch is None and not dialog.rb_auto.isEnabled()
+    dialog.cadence_check.setChecked(True)
+    assert dialog.current_calibration.cadence_mismatch == pal and dialog.rb_auto.isEnabled()
+    calibration, offset = dialog.result_calibration()
+    assert offset == 0 and calibration.cadence_mismatch == pal
+
+
+def test_studio_keeps_an_existing_cadence_and_shows_none_without_hint(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    measured = SyncCalibration((SyncSegment(0, 5150.0),), cadence_mismatch=pal.inverse(),
+                               cadence_audio_method="atempo")
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, measured, cadence_hint=pal)
+    assert dialog.current_calibration is measured and dialog.rb_atempo.isChecked()
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(0))
+    assert not hasattr(dialog, "cadence_check") and dialog.current_calibration.cadence_mismatch is None
+
+
+def test_studio_offers_a_declined_cadence_unchecked(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(120),
+                                           cadence_hint=pal, apply_cadence_hint=False)
+    # Refus antérieur : le panneau le garde (validation sans conversion), le studio n'en crée pas d'autre.
+    assert dialog.current_calibration.cadence_mismatch is None and not dialog.cadence_declined
+    assert not dialog.cadence_check.isChecked() and not dialog.rb_auto.isEnabled()
+    dialog.cadence_check.setChecked(True)
+    # Recochée : méthode des réglages (pas l'atempo par défaut d'une calibration sans cadence).
+    assert dialog.current_calibration.cadence_mismatch == pal and not dialog.cadence_declined
+    assert dialog.current_calibration.cadence_audio_method == "auto" and dialog.rb_auto.isChecked()
+    dialog.rb_asetrate.setChecked(True)
+    dialog._on_cadence_method_changed()
+    dialog.cadence_check.setChecked(False)
+    dialog.cadence_check.setChecked(True)
+    assert dialog.current_calibration.cadence_audio_method == "asetrate"
+
+
+def _recording_executor(submitted: list):
+    """Exécuteur du studio : tâches mémorisées, lancées à la main par le test."""
+    class _Executor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def submit(self, fn, *args):
+            submitted.append(fn)
+
+        def shutdown(self, *_args, **_kwargs):
+            pass
+
+    return _Executor
+
+
+def test_studio_runs_one_pitch_analysis_and_relaunches_a_stale_one(qt_app, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    submitted: list = []
+    analysed: list[float] = []
+
+    def resolve(_self, _reference, _target, calibration, log=None):
+        analysed.append(calibration.segments[0].shift_ms)
+        return replace(calibration, cadence_audio_method="asetrate")
+
+    monkeypatch.setattr(mod, "ThreadPoolExecutor", _recording_executor(submitted))
+    monkeypatch.setattr(mod.AudioSyncScanner, "resolve_cadence_method", resolve)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(0),
+                                           record_resolution=False, cadence_hint=pal)
+    assert len(submitted) == 1
+    dialog._resolve_cadence_method()
+    assert len(submitted) == 1  # une analyse à la fois
+    dialog.spin_shift.setValue(400)  # décalage modifié pendant l'analyse
+    submitted.pop(0)()
+    # Résultat calculé sur l'ancien décalage : écarté, analyse relancée.
+    assert analysed == [0.0] and dialog.current_calibration.cadence_audio_method == "auto"
+    assert len(submitted) == 1
+    submitted.pop(0)()
+    assert analysed == [0.0, 400.0] and dialog.current_calibration.cadence_audio_method == "asetrate"
+    assert submitted == []
+
+
+def test_studio_auto_mode_keeps_the_fallback_once_the_method_is_decided(qt_app, tmp_path, monkeypatch):
+    """« Auto » coché : méthode tranchée par la hauteur (atempo), les synchros du studio demandent
+    toujours « auto » (repli asetrate si atempo ne corrèle pas) ; méthode explicite : transmise."""
+    from dataclasses import replace
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.cadence_pitch import CadencePitchAnalysis
+    from ui.panels.remux_panel.widgets import sync_studio_dialog as mod
+
+    submitted: list = []
+    requested: list[str] = []
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+
+    def scan(_self, _reference, _target, *, cadence_audio_method, **_kwargs):
+        requested.append(cadence_audio_method)
+        # Repli du scanner : seule asetrate corrèle ; mode demandé conservé, comme le vrai scanner.
+        return SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="asetrate",
+                               cadence_method_auto=cadence_audio_method == "auto")
+
+    monkeypatch.setattr(mod, "ThreadPoolExecutor", _recording_executor(submitted))
+    monkeypatch.setattr(mod.AudioSyncScanner, "scan", scan)
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(0), cadence_hint=pal)
+    analysis = CadencePitchAnalysis("atempo", 0.0, 0.5, 0.6, 0.0, 0.0, details="recommandation atempo")
+    dialog._on_cadence_resolved(dialog.current_calibration, replace(
+        dialog.current_calibration, cadence_audio_method="atempo", cadence_pitch_analysis=analysis,
+    ))
+    assert dialog.current_calibration.cadence_audio_method == "atempo" and dialog.rb_auto.isChecked()
+
+    for _ in range(2):
+        dialog._run_auto_audio_sync(deep=False)
+        submitted.pop()()
+        assert dialog.current_calibration.cadence_audio_method == "asetrate" and dialog.rb_auto.isChecked()
+    assert requested == ["auto", "auto"]
+
+    dialog.rb_atempo.setChecked(True)
+    dialog._on_cadence_method_changed()
+    dialog._run_auto_audio_sync(deep=False)
+    submitted.pop()()
+    assert requested[-1] == "atempo" and dialog.rb_asetrate.isChecked()
+
+
+def test_studio_reopens_the_requested_mode_not_the_recommendation(qt_app, tmp_path, monkeypatch):
+    """Mode conservé dans la calibration : asetrate choisie explicitement (égale à la recommandation)
+    reste explicite ; Auto ayant retenu un repli différent de la recommandation reste Auto."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.cadence_pitch import CadencePitchAnalysis
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    recommends_asetrate = CadencePitchAnalysis("asetrate", 0.72, 0.9, 0.8, 0.0, 0.0, details="spectre")
+    explicit = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="asetrate",
+                               cadence_pitch_analysis=recommends_asetrate)
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.from_dict(explicit.to_dict()))
+    assert dialog.rb_asetrate.isChecked() and dialog._requested_cadence_method() == "asetrate"
+
+    fallback = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal, cadence_audio_method="atempo",
+                               cadence_pitch_analysis=recommends_asetrate, cadence_method_auto=True)
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.from_dict(fallback.to_dict()))
+    assert dialog.rb_auto.isChecked() and dialog._requested_cadence_method() == "auto"
+    assert dialog.current_calibration.cadence_audio_method == "atempo"
+
+    # Choix dans le studio : enregistré dans la calibration rendue.
+    dialog.rb_asetrate.setChecked(True)
+    dialog._on_cadence_method_changed()
+    assert dialog.result_calibration()[0].cadence_method_requested == "asetrate"
+    dialog.rb_auto.setChecked(True)
+    dialog._on_cadence_method_changed()
+    returned = dialog.result_calibration()[0]
+    assert returned.cadence_method_auto and returned.cadence_audio_method == "asetrate"
+
+
+def test_studio_records_a_refusal_only_when_the_user_unchecks(qt_app, tmp_path, monkeypatch):
+    """Résultat d'analyse sans conversion (synchro de sous-titres) : pas un refus ; case décochée : refus."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    dialog, _resolutions = _cadence_studio(tmp_path, monkeypatch, SyncCalibration.linear(0), cadence_hint=pal)
+    dialog._on_auto_sub_sync_ready(SyncCalibration.linear(400))
+    assert dialog.current_calibration.cadence_mismatch is None and not dialog.cadence_declined
+    dialog.cadence_check.setChecked(True)
+    dialog.cadence_check.setChecked(False)
+    assert dialog.cadence_declined
+    dialog._reset_shifts()
+    assert not dialog.cadence_declined

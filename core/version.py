@@ -18,7 +18,7 @@ APP_DONATION_URL = "https://paypal.me/muxiveo"
 APP_SCHEMA_BASE_URL = "https://muxiveo.local/schema"
 APP_MACOS_BUNDLE_ID = "com.hydro74000.muxiveo"
 APP_APPSTREAM_ID = "fr.aotr.muxiveo"
-APP_VERSION = "5.0.3"
+APP_VERSION = "5.1.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 
 # Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »). Version épinglée de
@@ -54,4 +54,4 @@ except ImportError:
 APP_BUILD_VERSION = str(_BUILD_VERSION or APP_VERSION)
 APP_IS_UNSTABLE_BUILD = "-unstable" in APP_BUILD_VERSION
 APP_USER_AGENT = f"{APP_NAME}/{APP_VERSION}"
-WRITING_APPLICATION_TAG = f"AOTR {APP_NAME} {APP_VERSION_LABEL} - {APP_REPOSITORY_URL}"
+WRITING_APPLICATION_TAG = f"{APP_NAME} {APP_VERSION_LABEL} - {APP_WEBSITE_URL}"

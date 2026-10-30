@@ -1,11 +1,14 @@
 """
 core/update_install.py — Téléchargement vérifié et installation d'une mise à jour.
 
-Modes supportés :
-- AppImage : remplacement atomique du fichier `$APPIMAGE` puis relance ;
-- Windows : lancement de l'installeur NSIS (élévation UAC gérée par ShellExecute).
+Installation intégrée proposée (`SELF_INSTALL_KINDS`) :
+- Windows : lancement de l'installeur NSIS (élévation UAC gérée par ShellExecute) ;
+- AppImage : remplacement atomique du fichier `$APPIMAGE` puis relance (l'instance en cours garde son image montée) ;
+- archive source (marqueur `.muxiveo-installation`, pas de dépôt git) et application macOS (bundle copié depuis le
+  DMG) : échange de dossiers par `core/update_apply.py`, processus détaché après la sortie de l'application.
 
-Les autres modes (macOS, Homebrew, sources) renvoient vers la page de release.
+Les autres modes relèvent de leur gestionnaire de mises à jour ou de la page de release : Flatpak, Homebrew,
+dépôt git (`git pull`).
 Intégrité : SHA-256 contrôlé contre l'asset `SHA256SUMS` publié avec la release ;
 sans lui, l'installation est refusée.
 """
@@ -13,26 +16,33 @@ sans lui, l'installation est refusée.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import re
+import shutil
 import subprocess  # nosec B404
 import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
 
+from core import update_apply
 from core.subprocess_utils import host_environment
 from core.update_check import RELEASE_DOWNLOAD_URL_PREFIX, ReleaseAsset, UpdateInfo, is_repository_url
-from core.version import APP_USER_AGENT
+from core.version import APP_EXECUTABLE_NAME, APP_MACOS_BUNDLE_ID, APP_USER_AGENT
 
 CHECKSUMS_ASSET_NAME = "SHA256SUMS"
 _MAX_ASSET_BYTES = 2 * 1024**3
 _MAX_CHECKSUMS_BYTES = 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
 _WINDOWS_INSTALLER_RE = re.compile(r"^Muxiveo-Setup-.+\.exe$", re.IGNORECASE)
+_SOURCE_ARCHIVE_RE = re.compile(r"^Muxiveo-.+-source\.tar\.gz$")
+_MACOS_DMG_RE = re.compile(r"^Muxiveo-.+\.dmg$")
+_HELPER_READY_TIMEOUT_S = 15.0
 _CHECKSUM_LINE_RE = re.compile(r"^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$")
 
 ProgressCallback = Callable[[int, int], None]
@@ -43,38 +53,116 @@ class InstallKind(Enum):
     """Mode d'installation de l'application en cours."""
 
     APPIMAGE = "appimage"
+    FLATPAK = "flatpak"
+    MACOS_APP = "macos-app"
+    SOURCE_ARCHIVE = "source-archive"
     WINDOWS_INSTALLER = "windows-installer"
     UNSUPPORTED = "unsupported"
+
+
+# Flatpak, Homebrew et dépôt git : gestionnaire de mises à jour externe ou téléchargement depuis la page de la release.
+SELF_INSTALL_KINDS = frozenset({
+    InstallKind.WINDOWS_INSTALLER, InstallKind.APPIMAGE, InstallKind.SOURCE_ARCHIVE, InstallKind.MACOS_APP,
+})
+_SWAP_KINDS = {InstallKind.SOURCE_ARCHIVE: update_apply.KIND_SOURCE, InstallKind.MACOS_APP: update_apply.KIND_MACOS}
+_FLATPAK_INFO = Path("/.flatpak-info")
+_SOURCE_ROOT = Path(__file__).resolve().parent.parent
+
+# Raisons, propres à cette machine, qui empêchent l'installation intégrée (`self_install_blocker`).
+BLOCKER_NOT_WRITABLE = "not-writable"
+BLOCKER_TRANSLOCATED = "translocated"
+BLOCKER_PYTHON_INSIDE = "python-inside"
+BLOCKER_NO_HDIUTIL = "no-hdiutil"
+BLOCKER_NO_MARKER = "no-marker"
 
 
 class UpdateInstallError(Exception):
     """Échec du téléchargement ou de l'installation d'une mise à jour."""
 
 
+def _is_homebrew(executable: str) -> bool:
+    exe = executable.replace("\\", "/")
+    return "/Cellar/" in exe or "/homebrew/" in exe.lower()
+
+
 def detect_install_kind(
     env: Mapping[str, str] | None = None,
     sys_platform: str | None = None,
     frozen: bool | None = None,
+    executable: str | None = None,
+    source_root: Path | None = None,
 ) -> InstallKind:
-    """Détermine si l'application courante peut se mettre à jour elle-même."""
+    """Mode d'installation de l'application courante (bac à sable Flatpak sondé seulement sur l'environnement réel)."""
+    real_env = env is None
     env = os.environ if env is None else env
     sys_platform = sys.platform if sys_platform is None else sys_platform
     frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if sys_platform.startswith("linux") and env.get("APPIMAGE"):
-        return InstallKind.APPIMAGE
-    if sys_platform == "win32" and frozen:
-        return InstallKind.WINDOWS_INSTALLER
+    executable = sys.executable if executable is None else executable
+    root = _SOURCE_ROOT if source_root is None else source_root
+    if sys_platform.startswith("linux"):
+        if env.get("FLATPAK_ID") or (real_env and _FLATPAK_INFO.exists()):
+            return InstallKind.FLATPAK
+        if env.get("APPIMAGE"):
+            return InstallKind.APPIMAGE
+    if frozen:
+        if sys_platform == "win32":
+            return InstallKind.WINDOWS_INSTALLER
+        if sys_platform == "darwin" and not _is_homebrew(executable):
+            return InstallKind.MACOS_APP
+        return InstallKind.UNSUPPORTED
+    # Sources : dépôt git (développement, `git pull`) jamais remplacé ; archive source reconnue à son marqueur.
+    if not _is_homebrew(executable) and not (root / ".git").exists() and (root / update_apply.MARKER_NAME).is_file():
+        return InstallKind.SOURCE_ARCHIVE
     return InstallKind.UNSUPPORTED
 
 
-def manual_update_hint(executable: str | None = None, frozen: bool | None = None) -> str:
+def manual_update_hint(
+    executable: str | None = None, frozen: bool | None = None, source_root: Path | None = None,
+) -> str:
     """Commande de mise à jour manuelle pour les modes non auto-installables."""
-    exe = (executable or sys.executable).replace("\\", "/")
     frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if "/Cellar/" in exe or "/homebrew/" in exe.lower():
+    if _is_homebrew(executable or sys.executable):
         return "brew upgrade muxiveo"
-    if not frozen:
+    if not frozen and ((_SOURCE_ROOT if source_root is None else source_root) / ".git").exists():
         return "git pull"
+    return ""
+
+
+def installation_root(kind: InstallKind) -> Path:
+    """Fichier ou dossier remplacé par la mise à jour : AppImage, dossier des sources, bundle `.app`."""
+    if kind is InstallKind.APPIMAGE:
+        return _appimage_path()
+    if kind is InstallKind.SOURCE_ARCHIVE:
+        return _SOURCE_ROOT
+    if kind is InstallKind.MACOS_APP:
+        return Path(sys.executable).resolve().parents[2]       # Muxiveo.app/Contents/MacOS/muxiveo
+    raise UpdateInstallError("Mode d'installation sans emplacement remplaçable.")
+
+
+def self_install_blocker(kind: InstallKind) -> str:
+    """Raison, propre à cette machine, qui empêche l'installation intégrée (`BLOCKER_*`), "" sinon."""
+    if kind is InstallKind.UNSUPPORTED:
+        # Sources hors dépôt git ni Homebrew : archive antérieure au marqueur, à remplacer une fois à la main.
+        frozen = bool(getattr(sys, "frozen", False))
+        sources = not frozen and not _is_homebrew(sys.executable) and not (_SOURCE_ROOT / ".git").exists()
+        return BLOCKER_NO_MARKER if sources else ""
+    if kind not in (InstallKind.APPIMAGE, InstallKind.SOURCE_ARCHIVE, InstallKind.MACOS_APP):
+        return ""
+    try:
+        root = installation_root(kind)
+    except UpdateInstallError:
+        return BLOCKER_NOT_WRITABLE
+    if kind is InstallKind.MACOS_APP:
+        if "/AppTranslocation/" in root.as_posix():
+            return BLOCKER_TRANSLOCATED
+        if shutil.which("hdiutil") is None or shutil.which("ditto") is None:
+            return BLOCKER_NO_HDIUTIL
+    if kind is InstallKind.SOURCE_ARCHIVE and os.name == "nt":
+        # Windows : un exécutable en cours bloque le renommage de son dossier.
+        if Path(sys.executable).resolve().is_relative_to(root):
+            return BLOCKER_PYTHON_INSIDE
+    if not os.access(root.parent, os.W_OK) or (kind is not InstallKind.APPIMAGE and not os.access(root, os.W_OK)):
+        return BLOCKER_NOT_WRITABLE
     return ""
 
 
@@ -86,6 +174,10 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
             (a for a in info.assets if a.name.endswith(".AppImage") and arch in a.name.lower()),
             None,
         )
+    if kind is InstallKind.SOURCE_ARCHIVE:
+        return next((a for a in info.assets if _SOURCE_ARCHIVE_RE.match(a.name)), None)
+    if kind is InstallKind.MACOS_APP:
+        return next((a for a in info.assets if _MACOS_DMG_RE.match(a.name)), None)
     if kind is InstallKind.WINDOWS_INSTALLER:
         is_allinc = False
         if getattr(sys, "frozen", False):
@@ -109,9 +201,14 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
 
 
 def can_self_update(info: UpdateInfo, kind: InstallKind | None = None) -> bool:
-    """True si la release fournit un asset installable et ses sommes de contrôle."""
+    """True si le mode d'installation se met à jour lui-même ici et que la release fournit son paquet et ses sommes."""
     kind = detect_install_kind() if kind is None else kind
-    return select_asset(info, kind) is not None and info.asset(CHECKSUMS_ASSET_NAME) is not None
+    return (
+        kind in SELF_INSTALL_KINDS
+        and select_asset(info, kind) is not None
+        and info.asset(CHECKSUMS_ASSET_NAME) is not None
+        and not self_install_blocker(kind)
+    )
 
 
 def parse_checksums(text: str) -> dict[str, str]:
@@ -215,16 +312,122 @@ def download_update(
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
 ) -> Path:
-    """Télécharge et vérifie l'asset de mise à jour ; renvoie le fichier prêt à installer."""
+    """Télécharge et vérifie l'asset de mise à jour ; renvoie le fichier prêt à installer.
+
+    Archive source, application macOS : renvoie le dossier de travail préparé (`update_apply.prepare`).
+    """
     asset = select_asset(info, kind)
     if asset is None:
         raise UpdateInstallError("Aucun paquet compatible dans la release.")
     expected = fetch_expected_sha256(info, asset)
-    return download_asset(asset, _download_target(kind, asset), expected, progress, cancelled)
+    if kind not in _SWAP_KINDS:
+        return download_asset(asset, _download_target(kind, asset), expected, progress, cancelled)
+    root = installation_root(kind)
+    # Dossier de travail à côté de l'installation : même système de fichiers, échange par simple renommage.
+    work = Path(tempfile.mkdtemp(prefix=update_apply.WORKDIR_PREFIX, dir=root.parent))
+    try:
+        (work / update_apply.WORKDIR_TAG).touch()
+        archive = download_asset(asset, work / asset.name, expected, progress, cancelled)
+        if cancelled is not None and cancelled():
+            raise UpdateInstallError("Téléchargement annulé.")
+        probe, relaunch = _swap_commands(kind)
+        update_apply.prepare(
+            _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch, APP_MACOS_BUNDLE_ID,
+            cancelled=cancelled,
+        )
+        if cancelled is not None and cancelled():
+            raise UpdateInstallError("Mise à jour annulée.")
+    except update_apply.UpdateApplyError as exc:
+        shutil.rmtree(work, ignore_errors=True)
+        raise UpdateInstallError(str(exc)) from exc
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    return work
 
 
-def apply_update(kind: InstallKind, downloaded: Path) -> None:
+def _swap_commands(kind: InstallKind) -> tuple[list[str], list[str]]:
+    """Commandes de contrôle (`--cli version` ajouté) et de relance ; `{root}` = dossier contrôlé ou installé."""
+    root = update_apply.ROOT_TOKEN
+    if kind is InstallKind.MACOS_APP:
+        # Nom exact du bundle (`CFBundleExecutable`, package.py) : un volume APFS peut être sensible à la casse.
+        return [os.path.join(root, "Contents", "MacOS", APP_EXECUTABLE_NAME)], ["/usr/bin/open", "-n", root]
+    entry = Path(sys.argv[0]).name if sys.argv and Path(sys.argv[0]).name in ("launcher.py", "main.py") else "main.py"
+    return [sys.executable, os.path.join(root, "main.py")], [sys.executable, os.path.join(root, entry)]
+
+
+def _start_swap_helper(kind: InstallKind, work: Path) -> None:
+    """Lance l'échange détaché, qui attend la sortie de l'application ; rend la main une fois prêt."""
+    try:
+        helper = _launch_swap_helper(kind, work)
+    except OSError as exc:
+        # Copie ou lancement impossible (disque plein, interpréteur absent) : rien n'est engagé.
+        shutil.rmtree(work, ignore_errors=True)
+        raise UpdateInstallError(f"Lancement de la mise à jour impossible : {exc}") from exc
+    deadline = time.monotonic() + _HELPER_READY_TIMEOUT_S
+    while not (work / update_apply.READY_FILE).exists():
+        if helper.poll() is not None or time.monotonic() > deadline:
+            if helper.poll() is None:
+                helper.kill()
+            reason = ""
+            result = work / update_apply.RESULT_FILE
+            if result.is_file():
+                try:
+                    reason = str(json.loads(result.read_text(encoding="utf-8")).get("error") or "")
+                except (OSError, ValueError):
+                    reason = ""
+            shutil.rmtree(work, ignore_errors=True)
+            raise UpdateInstallError(f"Lancement de la mise à jour impossible{' : ' + reason if reason else '.'}")
+        time.sleep(0.05)
+
+
+def _helper_command(kind: InstallKind, work: Path) -> list[str]:
+    """Commande isolée de l'auxiliaire, indépendant des dossiers à échanger ou supprimer."""
+    if kind is InstallKind.MACOS_APP:
+        return [sys.executable, "--apply-update"]
+    script = work / "update_apply.py"
+    shutil.copyfile(Path(update_apply.__file__), script)
+    return [sys.executable, "-I", str(script)]
+
+
+def _launch_swap_helper(kind: InstallKind, work: Path) -> subprocess.Popen:
+    """Copie de l'assistant (archive source) et lancement détaché."""
+    command = _helper_command(kind, work) + ["commit", str(work), "--pid", str(os.getpid())]
+    return update_apply.spawn_detached(command, work)
+
+
+def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> None:
+    """Confie le ménage à un processus détaché, sans retenir la fermeture de l'application."""
+    if not paths:
+        return
+    kind = detect_install_kind() if kind is None else kind
+    work = Path(tempfile.mkdtemp(prefix=update_apply.CLEANUP_PREFIX))
+    try:
+        (work / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path.absolute()) for path in paths]), encoding="utf-8")
+        command = _helper_command(kind, work) + ["cleanup", str(work)]
+        update_apply.spawn_detached(command, work.parent)
+    except OSError:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+
+
+def collect_update_results(kind: InstallKind | None = None, *, discard: list[Path] | None = None) -> list[dict]:
+    """Résultats des mises à jour par échange de dossiers (signalés une fois), ménage des dossiers de travail
+    (`discard` : dossiers à supprimer confiés à l'appelant, voir `update_apply.collect_results`)."""
+    kind = detect_install_kind() if kind is None else kind
+    if kind not in _SWAP_KINDS:
+        return []
+    try:
+        return update_apply.collect_results(installation_root(kind).parent, discard=discard)
+    except OSError:
+        return []
+
+
+def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None) -> None:
     """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application."""
+    if kind in _SWAP_KINDS:
+        _start_swap_helper(kind, downloaded)
+        return
     if kind is InstallKind.APPIMAGE:
         target = _appimage_path()
         try:
@@ -243,12 +446,9 @@ def apply_update(kind: InstallKind, downloaded: Path) -> None:
             raise UpdateInstallError(f"Remplacement de l'AppImage impossible : {exc}") from exc
         return
     if kind is InstallKind.WINDOWS_INSTALLER:
-        startfile = getattr(os, "startfile", None)
-        if not callable(startfile):
-            raise UpdateInstallError("os.startfile indisponible : installeur Windows non lançable.")
+        from core.windows_shell import launch_installer
         try:
-            # ShellExecute : déclenche l'invite UAC requise par l'installeur (admin).
-            startfile(str(downloaded))  # pylint: disable=not-callable
+            launch_installer(downloaded, owner_hwnd)
         except OSError as exc:
             raise UpdateInstallError(f"Lancement de l'installeur impossible : {exc}") from exc
         return

@@ -6,12 +6,25 @@ from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.common.track_types import TrackTimeOffset
 from core.workflows.common.sync_rewrite import normalized_sync_rewrite_mode
 from core.workflows.encode.runtime_helpers import EncodeOffsetInputSpec
+from core.workflows.sync_calibration import SyncCalibration, resolve_track_sync
 
 from .plan_models import MapKey, TrackMapping
 
 
 def offset_seconds(offset_ms: int) -> str:
     return f"{abs(int(offset_ms)) / 1000.0:.3f}"
+
+
+def _resolved_track_sync(raw: TrackTimeOffset, track_type: str) -> tuple[int, SyncCalibration | None]:
+    """Valide le payload avant de le réduire : un document invalide ne devient jamais un simple offset."""
+    calibration = None
+    if raw.calibration is not None and track_type in {"audio", "subtitle"}:
+        try:
+            calibration = SyncCalibration.from_dict(raw.calibration)
+        except ValueError as exc:
+            raise EncodeError(f"Calibration de synchronisation invalide (source={raw.source_path}, "
+                              f"piste={raw.stream_index}).") from exc
+    return resolve_track_sync(calibration, int(raw.offset_ms), track_type)
 
 
 def track_time_offset_lookup(config: EncodeConfig) -> dict[tuple[str, Path, int], int]:
@@ -22,7 +35,8 @@ def track_time_offset_lookup(config: EncodeConfig) -> dict[tuple[str, Path, int]
         track_type = str(raw.track_type or "").strip().lower()
         if track_type not in {"video", "audio", "subtitle"}:
             continue
-        lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = int(raw.offset_ms)
+        offset, _calibration = _resolved_track_sync(raw, track_type)
+        lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = offset
     return lookup
 
 
@@ -46,10 +60,11 @@ def track_time_offset_calibration_lookup(config: EncodeConfig) -> dict[tuple[str
     for raw in config.track_time_offsets:
         if not isinstance(raw, TrackTimeOffset):
             continue
-        calibration = getattr(raw, "calibration", None)
         track_type = str(raw.track_type or "").strip().lower()
-        if isinstance(calibration, dict) and track_type in {"audio", "subtitle"}:
-            lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = calibration
+        if track_type in {"audio", "subtitle"}:
+            _offset, projected = _resolved_track_sync(raw, track_type)
+            if projected is not None:
+                lookup[(track_type, Path(raw.source_path), int(raw.stream_index))] = projected.to_dict()
     return lookup
 
 

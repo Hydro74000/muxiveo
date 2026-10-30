@@ -1,4 +1,52 @@
 {
+  "La vérification recalcule la synchronisation de chaque paire. Les décalages et coupures déjà réglés seront remplacés par l'analyse automatique. Continuer ?": {
+    "fra": "La vérification recalcule la synchronisation de chaque paire. Les décalages et coupures déjà réglés seront remplacés par l'analyse automatique. Continuer ?",
+    "eng": "Verification recalculates synchronization for every pair. Existing offsets and cuts will be replaced by automatic analysis. Continue?"
+  },
+  "Vérifiez la synchronisation audio avant d'ouvrir cet élément dans le Conteneur.": {
+    "fra": "Vérifiez la synchronisation audio avant d'ouvrir cet élément dans le Conteneur.",
+    "eng": "Check audio synchronization before opening this item in Container."
+  },
+  "Les réglages ont changé. Analysez à nouveau cet élément.": {
+    "fra": "Les réglages ont changé. Analysez à nouveau cet élément.",
+    "eng": "Settings have changed. Analyze this item again."
+  },
+  "Le plan a changé pendant l'analyse de hauteur.": {
+    "fra": "Le plan a changé pendant l'analyse de hauteur.",
+    "eng": "The plan changed during pitch analysis."
+  },
+  "La méthode de conversion de cadence n'a pas pu être déterminée.": {
+    "fra": "La méthode de conversion de cadence n'a pas pu être déterminée.",
+    "eng": "The frame rate conversion method could not be determined."
+  },
+  "Nettoyage des anciennes mises à jour différé : {reason}": {
+    "fra": "Nettoyage des anciennes mises à jour différé : {reason}",
+    "eng": "Cleanup of previous updates deferred: {reason}"
+  },
+  "Nom de sortie": {
+    "fra": "Nom de sortie",
+    "eng": "Output name"
+  },
+  "Nom de sortie : {name}": {
+    "fra": "Nom de sortie : {name}",
+    "eng": "Output name: {name}"
+  },
+  "Chargez une source pour voir le nom rendu.": {
+    "fra": "Chargez une source pour voir le nom rendu.",
+    "eng": "Load a source to see the rendered name."
+  },
+  "Sans fiche TMDB, titre, année et épisode restent vides.": {
+    "fra": "Sans fiche TMDB, titre, année et épisode restent vides.",
+    "eng": "Without a TMDB entry, title, year and episode stay empty."
+  },
+  "Nom de sortie du profil : sélectionnez la fiche TMDB pour renseigner titre, année et épisode.": {
+    "fra": "Nom de sortie du profil : sélectionnez la fiche TMDB pour renseigner titre, année et épisode.",
+    "eng": "Profile output name: select the TMDB entry to fill in title, year and episode."
+  },
+  "Nom de sortie du profil ignoré : {err}": {
+    "fra": "Nom de sortie du profil ignoré : {err}",
+    "eng": "Profile output name ignored: {err}"
+  },
   "Vérifier la synchronisation audio": {
     "fra": "Vérifier la synchronisation audio",
     "eng": "Check audio synchronization"
@@ -166,14 +214,6 @@
   "Synchronisation mise à jour : {source} ({count} segments).": {
     "fra": "Synchronisation mise à jour : {source} ({count} segments).",
     "eng": "Synchronization updated: {source} ({count} segments)."
-  },
-  "Cache des caractéristiques": {
-    "fra": "Cache des caractéristiques",
-    "eng": "Feature cache"
-  },
-  "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.": {
-    "fra": "Accélère les sorties successives avec Vulkan pour Qualité, Ultra et Light, y compris en TTA. Conserve les mêmes calculs. Le cache se désactive si la mémoire GPU disponible ne permet pas de garder au moins 1 Gio et 20 % du budget en réserve. Sans effet avec TensorRT ou RIFE v4.6.",
-    "eng": "Speeds up successive outputs with Vulkan for Quality, Ultra and Light, including TTA. Preserves the same calculations. The cache turns off if available GPU memory cannot keep at least 1 GiB and 20% of the budget in reserve. Has no effect with TensorRT or RIFE v4.6."
   },
   "Auto": {
     "fra": "Auto",
@@ -4639,10 +4679,6 @@
     "fra": "Aperçu non disponible : {error}",
     "eng": "Preview unavailable: {error}"
   },
-  "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>": {
-    "fra": "Pitch : {shift} demi-ton (F0 : {f0_ref} Hz vs {f0_donor} Hz) • Corr. spectrale : asetrate {asetrate} | atempo {atempo} • Recommandé : <b>{method}</b>",
-    "eng": "Pitch: {shift} semitone (F0: {f0_ref} Hz vs {f0_donor} Hz) • Spectral corr.: asetrate {asetrate} | atempo {atempo} • Recommended: <b>{method}</b>"
-  },
   "Différence de cadence détectée : {description} — méthode audio : {method}.": {
     "fra": "Différence de cadence détectée : {description} — méthode audio : {method}.",
     "eng": "Frame-rate mismatch detected: {description} — audio method: {method}."
@@ -5202,10 +5238,6 @@
   "Mise à jour disponible": {
     "fra": "Mise à jour disponible",
     "eng": "Update available"
-  },
-  "Muxiveo v{version} est disponible (version actuelle : {current}).": {
-    "fra": "Muxiveo v{version} est disponible (version actuelle : {current}).",
-    "eng": "Muxiveo v{version} is available (current version: {current})."
   },
   "Installer": {
     "fra": "Installer",
@@ -9078,5 +9110,321 @@
   "Tout cocher / tout décocher": {
     "fra": "Tout cocher / tout décocher",
     "eng": "Check all / uncheck all"
+  },
+  "Titre": {
+    "fra": "Titre",
+    "eng": "Title"
+  },
+  "Info": {
+    "fra": "Info",
+    "eng": "Info"
+  },
+  "Sous-titre": {
+    "fra": "Sous-titre",
+    "eng": "Subtitle"
+  },
+  "Afficher uniquement les sélectionnées": {
+    "fra": "Afficher uniquement les sélectionnées",
+    "eng": "Show selected only"
+  },
+  "Afficher toutes les pistes": {
+    "fra": "Afficher toutes les pistes",
+    "eng": "Show all tracks"
+  },
+  "✓ {count} donneurs : {names}": {
+    "fra": "✓ {count} donneurs : {names}",
+    "eng": "✓ {count} donors: {names}"
+  },
+  "Garder uniquement {name}": {
+    "fra": "Garder uniquement {name}",
+    "eng": "Keep only {name}"
+  },
+  "Double-clic pour modifier : appliqué à toute la saison.": {
+    "fra": "Double-clic pour modifier : appliqué à toute la saison.",
+    "eng": "Double-click to edit: applied to the whole season."
+  },
+  "Synchro à valider": {
+    "fra": "Synchro à valider",
+    "eng": "Sync to confirm"
+  },
+  "Synchro proposée : départ {offset} ms, {cuts} coupure(s) (piste #{target}, référence #{reference}).": {
+    "fra": "Synchro proposée : départ {offset} ms, {cuts} coupure(s) (piste #{target}, référence #{reference}).",
+    "eng": "Proposed sync: start {offset} ms, {cuts} cut(s) (track #{target}, reference #{reference})."
+  },
+  "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).": {
+    "fra": "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).",
+    "eng": "Proposed sync: {offset} ms (track #{target}, reference #{reference})."
+  },
+  "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.": {
+    "fra": "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.",
+    "eng": "{count} zone(s) without an acoustic match, with the same offset on both sides: {zones}. Apply directly, or review these zones in Sync Studio before confirming."
+  },
+  "Relire dans le Synchro Studio": {
+    "fra": "Relire dans le Synchro Studio",
+    "eng": "Review in Sync Studio"
+  },
+  "Appliquer": {
+    "fra": "Appliquer",
+    "eng": "Apply"
+  },
+  "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre ({zones}).": {
+    "fra": "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre ({zones}).",
+    "eng": "Consistent sync to confirm: {count} zone(s) without an acoustic match, same offset on both sides ({zones})."
+  },
+  "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).": {
+    "fra": "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).",
+    "eng": "Sync confirmed by the user, zones not reviewed ({zones})."
+  },
+  "Synchro proposée non appliquée : piste #{idx} inchangée.": {
+    "fra": "Synchro proposée non appliquée : piste #{idx} inchangée.",
+    "eng": "Proposed sync not applied: track #{idx} unchanged."
+  },
+  "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).": {
+    "fra": "Synchro validée par l'utilisateur après relecture dans le Synchro Studio ({zones}).",
+    "eng": "Sync confirmed by the user after review in Sync Studio ({zones})."
+  },
+  "Zones à relire :": {
+    "fra": "Zones à relire :",
+    "eng": "Zones to review:"
+  },
+  "Afficher le début de cette zone sans correspondance acoustique": {
+    "fra": "Afficher le début de cette zone sans correspondance acoustique",
+    "eng": "Show the start of this zone without an acoustic match"
+  },
+  "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre. Relire ces zones puis « Valider la synchro des pistes ».": {
+    "fra": "Synchro proposée : {count} zone(s) sans correspondance acoustique, même décalage de part et d'autre. Relire ces zones puis « Valider la synchro des pistes ».",
+    "eng": "Proposed sync: {count} zone(s) without an acoustic match, same offset on both sides. Review these zones, then “Confirm track sync”."
+  },
+  "Valider la synchro des pistes": {
+    "fra": "Valider la synchro des pistes",
+    "eng": "Confirm track sync"
+  },
+  "La source de référence « {reference} » était synchronisée à partir de « {target} » : sa synchro est retirée, la nouvelle mesure prime.": {
+    "fra": "La source de référence « {reference} » était synchronisée à partir de « {target} » : sa synchro est retirée, la nouvelle mesure prime.",
+    "eng": "Reference source “{reference}” was synchronized from “{target}”: its sync is removed, the new measurement prevails."
+  },
+  "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.": {
+    "fra": "La référence « {reference} » est elle-même synchronisée : la cible suit sa position dans la sortie.",
+    "eng": "Reference “{reference}” is itself synchronized: the target follows its position in the output."
+  },
+  "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).": {
+    "fra": "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).",
+    "eng": "Sync of “{source}” recalculated: it follows its reference “{reference}” ({offset} ms)."
+  },
+  "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.": {
+    "fra": "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.",
+    "eng": "Offset of track #{idx} entered manually: source “{source}” no longer follows its reference."
+  },
+  "Synchro Studio : aucune modification, synchro inchangée.": {
+    "fra": "Synchro Studio : aucune modification, synchro inchangée.",
+    "eng": "Sync Studio: no change, sync unchanged."
+  },
+  "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.": {
+    "fra": "Synchro de « {source} » déplacée à {offset} ms : ses coupures et sa cadence sont conservées.",
+    "eng": "Sync of “{source}” moved to {offset} ms: its cuts and cadence are kept."
+  },
+  "Afficher une popup quand une mise à jour est disponible": {
+    "fra": "Afficher une popup quand une mise à jour est disponible",
+    "eng": "Show a popup when an update is available"
+  },
+  "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »).": {
+    "fra": "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »).",
+    "eng": "At startup, a window presents the new version and its release notes (collapsed) and offers to install it. Otherwise, the new version is only shown at the bottom of the sidebar. Can also be turned off from the popup (\"Don't show update popups again\")."
+  },
+  "Muxiveo v{version} est disponible": {
+    "fra": "Muxiveo v{version} est disponible",
+    "eng": "Muxiveo v{version} is available"
+  },
+  "Version actuelle : {current}.": {
+    "fra": "Version actuelle : {current}.",
+    "eng": "Current version: {current}."
+  },
+  "Notes de version": {
+    "fra": "Notes de version",
+    "eng": "Release notes"
+  },
+  "Ne plus afficher de popup de mise à jour": {
+    "fra": "Ne plus afficher de popup de mise à jour",
+    "eng": "Don't show update popups again"
+  },
+  "La nouvelle version reste signalée en bas du menu latéral. Réactivation : Paramètres → Interface.": {
+    "fra": "La nouvelle version reste signalée en bas du menu latéral. Réactivation : Paramètres → Interface.",
+    "eng": "The new version is still shown at the bottom of the sidebar. To turn popups back on: Settings → Interface."
+  },
+  "Chargement des notes de version…": {
+    "fra": "Chargement des notes de version…",
+    "eng": "Loading release notes…"
+  },
+  "Notes de version indisponibles ({reason}). Elles restent consultables sur la page de la release.": {
+    "fra": "Notes de version indisponibles ({reason}). Elles restent consultables sur la page de la release.",
+    "eng": "Release notes unavailable ({reason}). They can still be read on the release page."
+  },
+  "Aucune note de version publiée pour cette version.": {
+    "fra": "Aucune note de version publiée pour cette version.",
+    "eng": "No release notes published for this version."
+  },
+  "Préférence de mise à jour non enregistrée : {reason}": {
+    "fra": "Préférence de mise à jour non enregistrée : {reason}",
+    "eng": "Update preference not saved: {reason}"
+  },
+  "Popup de mise à jour réactivée.": {
+    "fra": "Popup de mise à jour réactivée.",
+    "eng": "Update popup turned back on."
+  },
+  "Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.": {
+    "fra": "Popup de mise à jour désactivée : réactivation dans Paramètres → Interface.",
+    "eng": "Update popup turned off: turn it back on in Settings → Interface."
+  },
+  "Mise à jour d'extension disponible": {
+    "fra": "Mise à jour d'extension disponible",
+    "eng": "Extension update available"
+  },
+  "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible depuis un Flatpak. Mettez à jour avec votre logithèque ou flatpak update, ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible from a Flatpak. Update with your software center or flatpak update, or download the new version from the release page."
+  },
+  "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec {command} ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible for this installation type. Update with {command} or download the new version from the release page."
+  },
+  "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Installation intégrée impossible pour ce mode d'installation. Mettez à jour avec votre gestionnaire de paquets ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Built-in installation is not possible for this installation type. Update with your package manager or download the new version from the release page."
+  },
+  "Déplacez Muxiveo dans le dossier Applications puis relancez-le : ouverte depuis l'image disque ou le dossier de téléchargement, l'application ne peut pas se remplacer.": {
+    "fra": "Déplacez Muxiveo dans le dossier Applications puis relancez-le : ouverte depuis l'image disque ou le dossier de téléchargement, l'application ne peut pas se remplacer.",
+    "eng": "Move Muxiveo to the Applications folder and reopen it: opened from the disk image or the download folder, the application cannot replace itself."
+  },
+  "Emplacement d'installation non modifiable par votre compte. Mettez à jour avec votre gestionnaire ou téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Emplacement d'installation non modifiable par votre compte. Mettez à jour avec votre gestionnaire ou téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "Your account cannot modify the installation location. Update with your package manager or download the new version from the release page."
+  },
+  "Python est installé dans le dossier des sources : Windows empêche alors de le remplacer. Remplacez le dossier par l'archive source de la page de la release.": {
+    "fra": "Python est installé dans le dossier des sources : Windows empêche alors de le remplacer. Remplacez le dossier par l'archive source de la page de la release.",
+    "eng": "Python is installed inside the source folder, so Windows prevents replacing it. Replace the folder with the source archive from the release page."
+  },
+  "Outils système hdiutil et ditto introuvables. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.": {
+    "fra": "Outils système hdiutil et ditto introuvables. Téléchargez la nouvelle image disque (DMG) depuis la page de la release.",
+    "eng": "The hdiutil and ditto system tools are missing. Download the new disk image (DMG) from the release page."
+  },
+  "Sources installées avant l'installation intégrée : remplacez-les une fois par l'archive source de la page de la release, les mises à jour suivantes s'installeront d'un clic.": {
+    "fra": "Sources installées avant l'installation intégrée : remplacez-les une fois par l'archive source de la page de la release, les mises à jour suivantes s'installeront d'un clic.",
+    "eng": "Sources installed before built-in installation existed: replace them once with the source archive from the release page; later updates will install in one click."
+  },
+  "Cette release ne fournit pas de paquet vérifiable pour ce mode d'installation. Téléchargez la nouvelle version depuis la page de la release.": {
+    "fra": "Cette release ne fournit pas de paquet vérifiable pour ce mode d'installation. Téléchargez la nouvelle version depuis la page de la release.",
+    "eng": "This release does not provide a verifiable package for this installation type. Download the new version from the release page."
+  },
+  "Vérification de Muxiveo v{version}…": {
+    "fra": "Vérification de Muxiveo v{version}…",
+    "eng": "Checking Muxiveo v{version}…"
+  },
+  "Suivi des mises à jour illisible : {reason}": {
+    "fra": "Suivi des mises à jour illisible : {reason}",
+    "eng": "Update tracking unreadable: {reason}"
+  },
+  "Mise à jour vers v{version} échouée : {reason}": {
+    "fra": "Mise à jour vers v{version} échouée : {reason}",
+    "eng": "Update to v{version} failed: {reason}"
+  },
+  "Mise à jour vers v{version} installée.": {
+    "fra": "Mise à jour vers v{version} installée.",
+    "eng": "Update to v{version} installed."
+  },
+  "Version précédente conservée dans {path}": {
+    "fra": "Version précédente conservée dans {path}",
+    "eng": "Previous version kept in {path}"
+  },
+  "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}": {
+    "fra": "Fichiers modifiés remplacés par la nouvelle version (copie dans la version précédente) : {files}",
+    "eng": "Modified files replaced by the new version (copy in the previous version): {files}"
+  },
+  "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).": {
+    "fra": "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup).",
+    "eng": "Python dependencies changed: rerun the setup (Settings → Rerun setup)."
+  },
+  "Analyse sur la piste #{measured} ({language}) de la même source, langue de la référence : la synchro vaut pour toutes les pistes de la source.": {
+    "fra": "Analyse sur la piste #{measured} ({language}) de la même source, langue de la référence : la synchro vaut pour toutes les pistes de la source.",
+    "eng": "Analysis on track #{measured} ({language}) of the same source, in the reference language: the sync applies to every track of the source."
+  },
+  "Méthode de conversion de cadence de « {source} » : {method}.": {
+    "fra": "Méthode de conversion de cadence de « {source} » : {method}.",
+    "eng": "Cadence conversion method for “{source}”: {method}."
+  },
+  "Piste #{idx} : cadence vidéo de sa source différente de la vidéo de sortie ({description}). Un décalage seul dérive au fil du film : régler la conversion de cadence dans le Synchro Studio.": {
+    "fra": "Piste #{idx} : cadence vidéo de sa source différente de la vidéo de sortie ({description}). Un décalage seul dérive au fil du film : régler la conversion de cadence dans le Synchro Studio.",
+    "eng": "Track #{idx}: its source video frame rate differs from the output video ({description}). An offset alone drifts over the film: set the cadence conversion in Sync Studio."
+  },
+  "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence.": {
+    "fra": "Cadences vidéo différentes : la piste est ralentie ou accélérée pour suivre la vidéo de la référence.",
+    "eng": "Different video frame rates: the track is slowed down or sped up to follow the reference video."
+  },
+  "Hauteur de la cible : {shift} demi-ton • Recommandé : <b>{method}</b>": {
+    "fra": "Hauteur de la cible : {shift} demi-ton • Recommandé : <b>{method}</b>",
+    "eng": "Target pitch: {shift} semitone • Recommended: <b>{method}</b>"
+  },
+  "Analyse de la hauteur audio en cours (conversion de cadence).": {
+    "fra": "Analyse de la hauteur audio en cours (conversion de cadence).",
+    "eng": "Audio pitch analysis in progress (cadence conversion)."
+  },
+  "Analyse de la hauteur audio (conversion de cadence)…": {
+    "fra": "Analyse de la hauteur audio (conversion de cadence)…",
+    "eng": "Analysing audio pitch (cadence conversion)…"
+  },
+  "Sauvegarde annulée": {
+    "fra": "Sauvegarde annulée",
+    "eng": "Save cancelled"
+  },
+  "Analyse de hauteur interrompue ({error}) : méthode atempo pour les plans restants.": {
+    "fra": "Analyse de hauteur interrompue ({error}) : méthode atempo pour les plans restants.",
+    "eng": "Pitch analysis interrupted ({error}): atempo method for the remaining plans."
+  },
+  "Sauvegarde des workflows": {
+    "fra": "Sauvegarde des workflows",
+    "eng": "Saving workflows"
+  },
+  "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.": {
+    "fra": "Analyse de hauteur impossible ({error}) : méthode atempo, hauteur de la piste conservée.",
+    "eng": "Pitch analysis failed ({error}): atempo method, track pitch kept."
+  },
+  "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.": {
+    "fra": "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.",
+    "eng": "Cadence conversion method for “{source}” not resolved (reference track not found): atempo, track pitch kept."
+  },
+  "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?": {
+    "fra": "La vérification mesure la synchronisation de chaque paire : la stratégie « {strategy} » sera remplacée par l'analyse automatique. Continuer ?",
+    "eng": "Verification measures the sync of every pair: the “{strategy}” strategy will be replaced by automatic analysis. Continue?"
+  },
+  "Lancement de la mise à jour…": {
+    "fra": "Lancement de la mise à jour…",
+    "eng": "Starting the update…"
+  },
+  "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).": {
+    "fra": "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage {offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).",
+    "eng": "Sync of “{source}” is shared by all its tracks (cuts or cadence): offset {offset} ms of track #{idx} kept, {ignored} ms ignored."
+  },
+  "Synchronisation des sous-titres": {
+    "fra": "Synchronisation des sous-titres",
+    "eng": "Subtitle synchronization"
+  },
+  "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (sous-titres sans recalage miroir).": {
+    "fra": "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (sous-titres sans recalage miroir).",
+    "eng": "{origin}: {offset} ms offset applied to track #{idx} only (subtitles without mirroring)."
+  },
+  "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.": {
+    "fra": "{origin} : coupures ou cadence propres à la piste #{idx} (sous-titres sans recalage miroir) : sous-titre réécrit, l'audio de sa source n'est pas concerné.",
+    "eng": "{origin}: cuts or cadence specific to track #{idx} (subtitles without mirroring): subtitle rewritten, its source audio is not affected."
+  },
+  "{origin} : coupures ou cadence propres à la piste #{idx} (synchro propre) : piste réécrite, les autres pistes de sa source ne sont pas concernées.": {
+    "fra": "{origin} : coupures ou cadence propres à la piste #{idx} (synchro propre) : piste réécrite, les autres pistes de sa source ne sont pas concernées.",
+    "eng": "{origin}: cuts or cadence specific to track #{idx} (own sync): track rewritten, the other tracks of its source are not affected."
+  },
+  "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (synchro propre).": {
+    "fra": "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (synchro propre).",
+    "eng": "{origin}: {offset} ms offset applied to track #{idx} only (own sync)."
+  },
+  "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.": {
+    "fra": "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.",
+    "eng": "New audio sync for track #{idx}: its imported own sync is replaced, it follows its source again."
   }
 }

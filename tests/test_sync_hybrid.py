@@ -1,6 +1,7 @@
 """Contrats hybrides, chronologie et intégration sur des médias synthétiques."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -75,6 +76,20 @@ def test_forced_unknown_count_and_language(count, forced):
 def test_sdh_hints():
     assert subtitle_hints("[Musique douce]", count=None, language="fra", audio_language="fra")["hearing_impaired"]
     assert not subtitle_hints("[Bonjour]", count=None, language="fra", audio_language="fra")["hearing_impaired"]
+
+
+def test_sdh_is_detected_without_selected_audio(monkeypatch, tmp_path):
+    from core.inspector import FileInfo
+    from core.workflows import subtitle_heuristics
+    from core.workflows.preparation_cache import SubtitleTextSummary
+    track = TrackEntry(0, "subtitle", "subrip", "", "fra", "VF", file_id="src0")
+    source = SourceInput(tmp_path / "x.mkv", 0, [track])
+    monkeypatch.setattr(subtitle_heuristics, "subtitle_text_summaries",
+                        lambda *_a, **_k: {0: SubtitleTextSummary(5, "[Music]")})
+    subtitle_heuristics.classify_subtitles([source], [FileInfo(source.path, "matroska", 1, 100, None)],
+                                           ffmpeg="ffmpeg", forced=True, sdh=True)
+    # Sans audio, pas de langue de référence pour les forcés ; la détection SDH reste active.
+    assert track.flag_hearing_impaired and not track.flag_forced
 
 
 def test_pairing_case_order_and_missing(tmp_path):
@@ -307,8 +322,8 @@ def test_studio_witness_table_lists_typed_tracks(qt_app, tmp_path):
 
     assert dialog.witness_table.rowCount() == 4
     assert [item["type"] for item in dialog.witness_track_items] == ["video", "audio", "audio", "subtitle"]
-    codec_item = dialog.witness_table.item(2, 4)
-    assert codec_item is not None and codec_item.text() == "ac3 VFF"
+    cells = [dialog.witness_table.item(2, column).text() for column in range(2, 7)]
+    assert cells == ["Audio", "AC3", "fre", "VFF", "5.1"]
     assert dialog.apply_recipe_btn.isEnabled()
     dialog.apply_witness_recipe()
     assert dialog.recipe.keep_master_video and dialog.recipe.donor_audio_langs == ["fre"]
@@ -1021,7 +1036,7 @@ def test_sync_studio_dialog_button_scaling_and_padding(qt_app, tmp_path):
             # Button must be scaled properly (at 125%, 30px scaled is 38px)
             assert btn.width() >= 35
             # Padding must be compact (pad_px <= 4) so content area is wide enough
-            assert "padding: 0 3px" in btn.styleSheet() or "padding: 0 2px" in btn.styleSheet()
+            assert re.search(r"padding:\s*0 [23]px", btn.styleSheet())
 
         # Step buttons: -10 ms, -1 ms, +1 ms, +10 ms
         step_buttons = [
@@ -1218,6 +1233,100 @@ def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
     panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, -420, 0.95, cal)
     assert tgt_sub.time_shift_ms == -420
     assert panel._source_sync_offsets_ms["fid_tgt"] == -420
+
+
+def test_remux_panel_subtitle_sync_without_mirror_shifts_subtitle_only(qt_app, tmp_path):
+    """Miroir désactivé : la synchro explicite d'un sous-titre ne touche que lui, jamais l'audio de sa source."""
+    from unittest.mock import MagicMock
+    from core.config import AppConfig
+    from ui.panels.remux_panel.panel import RemuxPanel
+    from ui.panels.remux_panel.models import SourceFile
+    from core.workflows.remux_models import TrackEntry
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+    panel = RemuxPanel(AppConfig())
+    panel._workflow_options["sync_subtitles"] = "none"
+    src_ref, src_tgt = tmp_path / "ref.mkv", tmp_path / "target.mkv"
+    ref_sub = TrackEntry(2, "subtitle", "SubRip", "", "eng", "English", file_id="fid_ref")
+    tgt_audio = TrackEntry(1, "audio", "AC3", "5.1", "fre", "VF", file_id="fid_tgt")
+    tgt_sub = TrackEntry(2, "subtitle", "SubRip", "", "fre", "French", file_id="fid_tgt")
+    panel._source_files = [
+        SourceFile(id="fid_ref", path=src_ref, color="#111", info=MagicMock(), tracks=[ref_sub]),
+        SourceFile(id="fid_tgt", path=src_tgt, color="#222", info=MagicMock(), tracks=[tgt_audio, tgt_sub]),
+    ]
+    panel._source_names = {"fid_ref": "ref.mkv", "fid_tgt": "target.mkv"}
+    panel._track_table.append_tracks("#111", [ref_sub])
+    panel._track_table.append_tracks("#222", [tgt_audio, tgt_sub])
+    logs = []
+    panel.log_message.connect(lambda level, msg: logs.append((level, msg)))
+
+    panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, -420, 0.95, SyncCalibration.linear(-420))
+    assert tgt_sub.time_shift_ms == -420 and tgt_sub.sync_calibration is None
+    assert tgt_audio.time_shift_ms == 0
+    assert "fid_tgt" not in panel._source_sync_offsets_ms and "fid_tgt" not in panel._sync_links
+    assert not panel._workflow_options.get("sync_calibrations")
+
+    # Coupures propres au sous-titre : stockées sur la piste, signalées ; l'audio et la source restent intacts.
+    cuts = SyncCalibration((SyncSegment(0, -420.0), SyncSegment(600_000, 380.0)))
+    panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, -420, 0.95, cuts)
+    assert SyncCalibration.from_dict(tgt_sub.sync_calibration).segments == cuts.segments
+    assert tgt_sub.time_shift_ms == -420 and tgt_audio.time_shift_ms == 0
+    assert any(level == "WARN" and "#2" in msg for level, msg in logs)
+    panel._sync_entry_calibrations()
+    assert tgt_sub.sync_calibration is not None and tgt_audio.sync_calibration is None
+    assert not panel._workflow_options.get("sync_calibrations")
+
+    # Saisie : les coupures suivent le nouveau départ.
+    tgt_sub.time_shift_ms = -100
+    panel._on_track_time_shift_edited(tgt_sub)
+    moved = SyncCalibration.from_dict(tgt_sub.sync_calibration)
+    assert [round(seg.shift_ms) for seg in moved.segments] == [-100, 700]
+    assert "fid_tgt" not in panel._sync_links
+
+    # Annulation : la piste seule.
+    panel._on_auto_sync_cancel_requested(tgt_sub)
+    assert tgt_sub.sync_calibration is None and tgt_sub.time_shift_ms == 0 and tgt_audio.time_shift_ms == 0
+
+    # Annulation globale : synchro propre comprise.
+    panel._on_subtitle_sync_done(tgt_sub.entry_id, ref_sub.entry_id, 0, 0.95,
+                                 SyncCalibration((SyncSegment(0, 0.0), SyncSegment(600_000, 800.0))))
+    assert tgt_sub.sync_calibration is not None and panel._track_sync_counts()["subtitle"] == 1
+    panel._on_global_sync_cancel_requested()
+    assert tgt_sub.sync_calibration is None and panel._track_sync_counts()["subtitle"] == 0
+
+    # Studio, référence dans la même source : synchro affichée face à l'audio d'origine.
+    tgt_audio.time_shift_ms = 500
+    tgt_sub.time_shift_ms = 200
+    relative = panel._relative_sync_calibration(tgt_sub, tgt_audio)
+    assert relative.segments[0].shift_ms == pytest.approx(-300)
+
+
+def test_own_subtitle_calibration_round_trips_and_rewrites_without_mirror(tmp_path):
+    """Calibration propre d'un sous-titre hors miroir : sauvegardée en exact-job et réécrite même sans décalage de départ."""
+    from core.profiles.selectors import apply_track_spec, remux_config_to_exact_job
+    from core.workflows.physical_sync import preparation_commands
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+    cuts = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(600_000, 800.0))).to_dict()
+    video = TrackEntry(0, "video", "HEVC", "", "", "", file_id="a")
+    audio = TrackEntry(1, "audio", "AC3", "", "fre", "", file_id="b")
+    sub = TrackEntry(2, "subtitle", "SubRip", "", "fre", "", file_id="b", sync_calibration=cuts)
+    config = RemuxConfig(
+        sources=[SourceInput(tmp_path / "a.mkv", 0, [video]), SourceInput(tmp_path / "b.mkv", 1, [audio, sub])],
+        output=tmp_path / "out.mkv", track_order=[(0, 0), (1, 1), (1, 2)],
+        sync_mode="physical", sync_subtitles="none",
+    )
+    job = remux_config_to_exact_job(config, identity_selectors=True)
+    payloads = {item["selector"]["id"]: item for item in job["tracks"] if item["selector"]["source"] == 1}
+    assert payloads[2]["sync_calibration"] == cuts and "sync_calibration" not in payloads[1]
+    restored = TrackEntry(2, "subtitle", "SubRip", "", "fre", "", file_id="b")
+    apply_track_spec(restored, payloads[2])
+    assert restored.sync_calibration == cuts
+
+    commands = preparation_commands(config, tmp_path, "ffmpeg")
+    assert [mapped.track.mkv_tid for mapped, _out, _cmd, _cal in commands] == [2]
+    assert len(commands[0][3].segments) == 2
 
 
 

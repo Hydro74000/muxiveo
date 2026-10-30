@@ -400,6 +400,35 @@ DEFAULT_PROBE_TIMEOUT_S = 120.0
 # FileInspector
 # =============================================================================
 
+def frame_dynamic_hdr_flags(frames: object) -> tuple[bool, bool]:
+    """(has_dovi, has_hdr10plus) d'après les side data de `ffprobe -show_frames`."""
+    has_dovi = False
+    has_hdr10plus = False
+    if not isinstance(frames, list):
+        return has_dovi, has_hdr10plus
+    for frame in frames:
+        side_data_obj = frame.get("side_data_list") if isinstance(frame, dict) else None
+        if not isinstance(side_data_obj, list):
+            continue
+        for side_data in side_data_obj:
+            if not isinstance(side_data, dict):
+                continue
+            side_type = str(side_data.get("side_data_type", "") or "")
+            side_type_lower = side_type.lower()
+            if ("dolby vision" in side_type_lower) or (side_type == "DOVI configuration record"):
+                has_dovi = True
+            if (
+                "hdr dynamic metadata smpte2094-40" in side_type_lower
+                or "hdr10+" in side_type_lower
+                or "smpte st 2094" in side_type_lower
+                or "smpte2094" in side_type_lower
+            ):
+                has_hdr10plus = True
+            if has_dovi and has_hdr10plus:
+                return True, True
+    return has_dovi, has_hdr10plus
+
+
 class FileInspector:
     """
     Analyse un fichier MKV/MP4 via ffprobe et mediainfo.
@@ -436,6 +465,11 @@ class FileInspector:
         # retient ni l'inspection, ni l'aperçu, ni la fermeture.
         self._cancel_event = cancel_event
         self._probe_timeout_s = float(probe_timeout_s)
+
+    @property
+    def tool_signature(self) -> tuple[str, str]:
+        """Outils dont dépend le résultat d'une inspection (clé de cache)."""
+        return str(self._ffprobe), str(self._mediainfo)
 
     def _probe(self, cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess:
         """Lance une sonde ; ``InspectionCancelled`` remonte telle quelle."""
@@ -899,35 +933,7 @@ class FileInspector:
         except json.JSONDecodeError:
             return None
 
-        frames_obj = payload.get("frames")
-        if not isinstance(frames_obj, list):
-            return False, False
-
-        has_dovi = False
-        has_hdr10plus = False
-        for frame in frames_obj:
-            if not isinstance(frame, dict):
-                continue
-            side_data_obj = frame.get("side_data_list")
-            if not isinstance(side_data_obj, list):
-                continue
-            for side_data in side_data_obj:
-                if not isinstance(side_data, dict):
-                    continue
-                side_type = str(side_data.get("side_data_type", "") or "")
-                side_type_lower = side_type.lower()
-                if ("dolby vision" in side_type_lower) or (side_type == "DOVI configuration record"):
-                    has_dovi = True
-                if (
-                    "hdr dynamic metadata smpte2094-40" in side_type_lower
-                    or "hdr10+" in side_type_lower
-                    or "smpte st 2094" in side_type_lower
-                    or "smpte2094" in side_type_lower
-                ):
-                    has_hdr10plus = True
-                if has_dovi and has_hdr10plus:
-                    self._emit_verbose("ffprobe frame HDR : dovi=True hdr10plus=True")
-                    return True, True
+        has_dovi, has_hdr10plus = frame_dynamic_hdr_flags(payload.get("frames"))
         self._emit_verbose(f"ffprobe frame HDR : dovi={has_dovi} hdr10plus={has_hdr10plus}")
         return has_dovi, has_hdr10plus
 

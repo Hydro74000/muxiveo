@@ -268,10 +268,9 @@ class FrameInterpolationSettings:
     enabled: bool = False
     factor: float = 2                 # multiplicateur de cadence (2,5 = 24 -> 60)
     target_fps: str = ""              # cadence cible (ex. "60000/1001"), prioritaire sur factor
-    quality: str = "balanced"         # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
+    quality: str = "quality"          # fast | balanced | quality | ultra | light (moteur + modèle, interpolation.py)
     mode: str = "normal"              # normal | fast (flux optique à demi-résolution, --uhd)
     tta: int = 1                      # moyennage TTA (1 = désactivé, 2 / 4 / 8 passes, coût x n)
-    feature_cache: bool = False       # cache optionnel des caractéristiques, avec réserve VRAM automatique
     scene_threshold: float = 10.0     # seuil de coupe 0-100 (0 = désactivé)
     gpu: int = -1                     # index GPU Vulkan (-1 = automatique)
 
@@ -397,6 +396,9 @@ class VideoEncodeSettings:
     # Recadrage absolu (gauche, haut, droite, bas) que le RPU réinjecté doit suivre
     # (offsets L5 par scène). Posé par le workflow (``resolve_ffmpeg_dovi_geometry``).
     dovi_rpu_crop:    tuple[int, int, int, int] | None = None
+    # Échelle (horizontale, verticale) de l'image recadrée vers la sortie, que les
+    # offsets L5 du RPU suivent après le recadrage (redimensionnement hors NVENC).
+    dovi_rpu_scale:   tuple[float, float] | None = None
     # Normalisation expérimentale du bitstream HEVC après injection
     # HDR dynamique : retire les SEI pic_timing pour rapprocher la
     # structure SEI des encodes fonctionnels observés.

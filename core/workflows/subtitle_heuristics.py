@@ -1,14 +1,14 @@
 """Classification opt-in, à partir de métadonnées et de texte extrait."""
 from __future__ import annotations
 
-import subprocess
-
 from core.i18n import translate_text
-from core.subprocess_utils import subprocess_text_kwargs
 from core.workflows.subtitle_sync import subtitle_hints
+from core.workflows.subtitle_text import TEXT_SUBTITLE_CODECS, SubtitleTextRequest, subtitle_text_summaries
 
 
-def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, threshold=50, all_audio_languages=False):
+def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, threshold=50, all_audio_languages=False,
+                       cache=None, cancel_event=None):
+    """Flags forcés / SDH ; le texte de toutes les pistes d'un fichier est lu en une fois."""
     if not (forced or sdh):
         return
     if threshold <= 0:
@@ -16,29 +16,31 @@ def classify_subtitles(sources, infos, *, ffmpeg, forced=False, sdh=False, thres
     audios = [t for s in sources for t in s.tracks if t.enabled and t.track_type == "audio"]
     default = next((t for t in audios if t.flag_default), audios[0] if audios else None)
     if default is None:
-        return
+        # Sans audio, les forcés n'ont pas de langue de référence ; les SDH restent détectables.
+        forced = False
+        if not sdh:
+            return
+    audio_language = default.language if default is not None else ""
     # Avant un profil, la langue audio par défaut n'est pas encore décidée.
     # Détecter les forcés de chaque langue candidate ; le profil tranchera.
-    languages = list(dict.fromkeys(t.language for t in audios)) if all_audio_languages else [default.language]
+    languages = list(dict.fromkeys(t.language for t in audios)) if all_audio_languages else [audio_language]
     for source, info in zip(sources, infos):
         subtitles = {t.index: t for t in info.subtitle_tracks}
-        for track in source.tracks:
-            if not track.enabled or track.track_type != "subtitle":
-                continue
+        candidates = [track for track in source.tracks if track.enabled and track.track_type == "subtitle"]
+        summaries = subtitle_text_summaries(source.path, [
+            SubtitleTextRequest(track.mkv_tid, track.codec, getattr(subtitles.get(track.mkv_tid), "element_count", None))
+            for track in candidates if track.codec.casefold() in TEXT_SUBTITLE_CODECS
+        ], ffmpeg=str(ffmpeg), cache=cache, cancel_event=cancel_event)
+        for track in candidates:
             details = subtitles.get(track.mkv_tid)
             count = getattr(details, "element_count", None)
             text = ""
-            if track.codec.casefold() in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}:
-                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                result = subprocess.run([str(ffmpeg), "-nostdin", "-v", "error", "-i", str(source.path),  # nosec B603
-                    "-map", f"0:{track.mkv_tid}", "-c:s", "srt", "-f", "srt", "pipe:1"],
-                    capture_output=True, timeout=120, **subprocess_text_kwargs())
-                if result.returncode:
-                    raise ValueError(result.stderr or "Extraction des sous-titres impossible.")
-                text = result.stdout
-                count = text.count(" --> ")
+            summary = summaries.get(track.mkv_tid)
+            if summary is not None:
+                # La première description sonore suffit à la détection SDH.
+                text, count = summary.sound_description, summary.count
             hints = subtitle_hints(text, count=count, language=track.language,
-                audio_language=default.language, threshold=threshold, title=track.title)
+                audio_language=audio_language, threshold=threshold, title=track.title)
             forced_hint = forced and (hints["forced"] or (all_audio_languages and any(
                 subtitle_hints(text, count=count, language=track.language,
                     audio_language=language, threshold=threshold)["forced"] for language in languages

@@ -55,6 +55,30 @@ class CadenceMismatch:
             return 1.0
         return 1.0 / self.speed_factor
 
+    def inverse(self) -> CadenceMismatch:
+        """Conversion réciproque (25 → 23,976 devient 23,976 → 25)."""
+        reverse = {
+            CadenceType.PAL_TO_FILM_23976: CadenceType.FILM_23976_TO_PAL,
+            CadenceType.FILM_23976_TO_PAL: CadenceType.PAL_TO_FILM_23976,
+            CadenceType.PAL_TO_FILM_24: CadenceType.FILM_24_TO_PAL,
+            CadenceType.FILM_24_TO_PAL: CadenceType.PAL_TO_FILM_24,
+        }
+        ratio = ""
+        if self.speed_ratio:
+            try:
+                ratio = str(1 / Fraction(self.speed_ratio))
+            except (ValueError, ZeroDivisionError):
+                ratio = ""
+        return CadenceMismatch(
+            cadence_type=reverse.get(self.cadence_type, self.cadence_type),
+            source_fps=self.target_fps,
+            target_fps=self.source_fps,
+            speed_factor=1.0 / self.speed_factor if self.speed_factor > 0 else 1.0,
+            confidence=self.confidence,
+            detection_method=self.detection_method,
+            speed_ratio=ratio,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "cadence_type": self.cadence_type.value,
@@ -79,6 +103,11 @@ class CadenceMismatch:
             description=str(payload.get("description", "")),
             speed_ratio=str(payload.get("speed_ratio", "")),
         )
+
+
+def active_cadence(mismatch: CadenceMismatch | None) -> CadenceMismatch | None:
+    """La conversion si elle change la cadence, sinon None (absente ou de type « none »)."""
+    return mismatch if mismatch is not None and getattr(mismatch, "cadence_type", None) not in (None, CadenceType.NONE) else None
 
 
 def parse_framerate(value: str | float | int | None) -> float | None:
@@ -341,3 +370,25 @@ def build_cadence_audio_filter(
         return "atempo=25/24"
 
     return f"atempo={speed:.6f}"
+
+
+def build_speed_pitch_audio_filter(
+    speed: Fraction | float,
+    pitch: float,
+    sample_rate: int | None = None,
+) -> str:
+    """Vitesse et hauteur indépendantes (conversions de méthodes différentes composées).
+
+    ``asetrate`` donne la hauteur (et autant de vitesse), ``atempo`` le reste de la vitesse,
+    calculé d'après le débit arrondi : la durée reste exacte. Débit inconnu : piste ramenée à 48 kHz.
+    """
+    rate = sample_rate if sample_rate is not None and sample_rate > 0 else 48000
+    chain = [] if rate == sample_rate else ["aresample=48000"]
+    shifted = round(rate * pitch)
+    if shifted != rate:
+        chain += [f"asetrate={shifted}", f"aresample={rate}"]
+    exact = speed if isinstance(speed, Fraction) else Fraction(speed).limit_denominator(10_000_000)
+    tempo = exact * Fraction(rate, shifted)
+    if tempo != 1:
+        chain.append(f"atempo={tempo.numerator}/{tempo.denominator}")
+    return ",".join(chain) or "anull"

@@ -9,7 +9,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 
 [Français](README.md) | **English**
 
-[![Official Website](https://img.shields.io/badge/Website-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://www.muxiveo.fr/)
+[![Official Website](https://img.shields.io/badge/Website-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://muxiveo.fr/)
 [![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-quick-download--installation)
 [![License](https://img.shields.io/badge/license-GPL--3.0-green.svg?style=flat-square)](LICENSE)
@@ -18,7 +18,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 <br/>
 
 💬 **Discord Community: [https://discord.gg/YGAjNjZHQC](https://discord.gg/YGAjNjZHQC)**  
-🌐 **Official Website: [https://www.muxiveo.fr/](https://www.muxiveo.fr/)**
+🌐 **Official Website: [https://muxiveo.fr/](https://muxiveo.fr/)**
 
 <br/>
 
@@ -53,6 +53,8 @@ Standalone packages bundling all required external tools (`ffmpeg`, `mediainfo`,
 | **Windows** | **`Muxiveo-Setup-*.exe`** | Complete installer with automated tool environment configuration. |
 | **macOS** | **`Muxiveo-*.dmg`** | Native disk image (Intel and Apple Silicon). System tools installed via Homebrew if needed. |
 | **Homebrew** | Linux / macOS formula | `brew tap Hydro74000/muxiveo && brew install muxiveo` |
+
+* **Built-in Updates**: A window automatically notifies you at startup when a new version is available (with detailed release notes). Updates can be installed directly with one click from within the application on Windows (installer), Linux (AppImage), macOS (.app in Applications), and from source archives, with automatic configuration backup and safe rollback upon failure. Homebrew, Flatpak, and git installations are updated through their respective package managers.
 
 > [!TIP]
 > **System Integration**: On Linux, Windows, and macOS, Muxiveo automatically registers into your file manager's *"Open With..."* context menu.
@@ -108,12 +110,15 @@ When recompression, codec conversion, or size reduction is needed, the Encoding 
 
 ![Muxiveo Sync Studio Waveform Viewer](docs/assets/img/Muxiveo-fr-12.png)
 
-* **FFT Acoustic Cross-Correlation**: Muxiveo analyzes the real audio content of both sources to calculate the exact time offset down to the millisecond, independent of container headers.
+* **FFT Acoustic Cross-Correlation**: Muxiveo analyzes the real audio content of both sources to calculate the exact time offset down to the millisecond, independent of container headers. References in any audio layout (stereo ↔ multichannel) are supported by automatically pairing matching languages.
+* **Sync to Confirm & Imperceptible Drift**: When continuous analysis hits non-matching segments (differently dubbed scenes, silence gaps), an interactive dialog lets you inspect the zones in Sync Studio or confirm the proposed sync without blockage.
+* **Chained References & Track-Specific Sync**: Cascade-synchronize multiple sources (adjusting a reference automatically updates dependent sources, including pitch). Subtitles can also receive their own cuts or cadence without altering audio.
+* **Multiple Donors & Assembly Template**: Combine multiple donor files per episode (multilingual audio, various subtitles) and customize languages and titles on a reference episode template applied to the entire season.
 * **Superimposed Waveform Viewer**: Dual-color zoomable waveforms (reference audio in green, donor audio in blue), transient timeline navigation, and instant preview playback to verify sync by ear.
-* **Frame Rate Cadence Compensation**: Automatically detects and adjusts speed differences (e.g., PAL 25 fps to Cinema 23.976 fps conversions via audio resampling).
+* **Frame Rate Cadence Compensation**: Automatically detects and adjusts speed differences (e.g., PAL 25 fps ↔ Cinema 23.976 fps). Automatic mode analyzes pitch to choose between `asetrate` and `atempo`.
 * **Cut Detection & Multi-Segment Calibration**: Automatically identifies commercial breaks or TV broadcast edits, slicing the timeline into independent segments calibrated individually.
 * **Zero Delay Physical Synchronization**: Physically shifts the audio stream (inserting clean silence or precise trimming) and realigns text subtitles (SRT, ASS, VTT). This eliminates playback drift and desync on TVs and soundbars that ignore container delay tags.
-* **Batch Hybridization**: Automatically match and calibrate full seasons of TV shows using filename pattern recognition (`S01E01`).
+* **Batch Hybridization**: Automatically match and calibrate full seasons of TV shows using filename pattern recognition (`S01E01`), with optimized parallel preparation, calibration, and batch execution.
 
 > 📖 See the [Hybridization and Synchronization Guide](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) and [Audio Quality Troubleshooting](https://github.com/Hydro74000/Muxiveo/wiki/Synchronisation-qualite).
 
@@ -182,6 +187,7 @@ Advanced specialized features (including the **MVO-RIFE** frame interpolation en
 ![Muxiveo Decision Profile Editor](docs/assets/img/Muxiveo-fr-14.png)
 
 * **Reusable Conditional Rules**: Define custom selection criteria (e.g., *"Select highest quality VO Atmos and localized 5.1 audio, discard commentary tracks, flag matching forced subtitles"*).
+* **Output Name Template (`output_template`)**: Define dynamic file naming templates (e.g., `{title} ({year}) [{resolution} {hdr_format}]`) that automatically adapt based on selected tracks and TMDB metadata, available in the editor, Container, Hybrid Studio, and CLI.
 * **Pattern-Based Renaming**: Standardize track titles using dynamic tokens (e.g., `{lang_name} {codec} {channels}`).
 * **Low-Code Visual Editor**: Build and test profiles with live preview in the GUI, or apply them via headless CLI.
 

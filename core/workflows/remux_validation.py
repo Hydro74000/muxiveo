@@ -18,6 +18,7 @@ from core.workflows.common.sync_rewrite import (
 )
 from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import RemuxConfig, TrackEntry
+from core.workflows.remux_mapping import track_sync_payload
 from core.workflows.remux_plan import MuxExecutionPlan, select_mux_backend
 
 
@@ -171,7 +172,8 @@ def validate_remux_config(
                 f"file_index={file_index}, stream={mkv_tid}, offset={selected_track.time_shift_ms} ms"
             )
         calibration = effective_calibration(
-            selected_track.sync_calibration or config.sync_calibrations.get(str(file_index))
+            track_sync_payload(config, selected_track, file_index),
+            selected_track.track_type,
         )
         if calibration is not None and selected_track.track_type in {"audio", "subtitle"}:
             codec = normalized_rewrite_codec(selected_track.orig_codec or selected_track.codec)

@@ -36,6 +36,14 @@ def _run(command, _label=""):
     return subprocess.run(command, capture_output=True, check=True, timeout=30).stdout
 
 
+def _decoded_audio(path, stream: str = "0:a"):
+    """Échantillons PCM 48 kHz de `stream`, horodatages conservés depuis l'origine du fichier."""
+    return np.frombuffer(_run([
+        "ffmpeg", "-v", "error", "-copyts", "-i", str(path), "-map", stream,
+        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
+    ]), dtype="<f4")
+
+
 def _streams(path):
     return json.loads(_run([
         "ffprobe", "-v", "error", "-show_entries", "stream=start_time,initial_padding,sample_rate",
@@ -133,10 +141,7 @@ def test_rewritten_audio_keeps_video_origin(tmp_path, codec, mode, backend, offs
 
     # Vérifier aussi le son décodé : supprimer CodecDelay pour masquer le
     # retard déplacerait le repère de 256 échantillons (AC-3/E-AC-3).
-    decoded = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(output), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    decoded = _decoded_audio(output)
     expected_start = (500 + offset) * 48
     assert np.max(np.abs(decoded[:expected_start - 96])) < 0.01
     assert np.max(np.abs(decoded[expected_start:expected_start + 96])) > 0.05
@@ -167,10 +172,7 @@ def test_physical_runtime_normalizes_transport_origin(qt_app, tmp_path, suffix, 
     workflow = RemuxWorkflow(ffmpeg_bin=_FFMPEG, ffprobe_bin=_FFPROBE, generate_nfo=False)
     state = wait_task(workflow.run(config), timeout=60)
     assert state["finished"] is not None and state["failed"] is None, state
-    decoded = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(config.output), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    decoded = _decoded_audio(config.output)
     peaks = np.flatnonzero(np.abs(decoded) > 0.04)
     assert peaks.size
     assert peaks[0] / 48000 == pytest.approx((500 + offset) / 1000, abs=0.012)
@@ -194,10 +196,7 @@ def test_rewrite_preserves_intrinsic_track_delay(qt_app, tmp_path, offset, advan
         offset_ms=offset, tmp_dir=tmp_path, input_idx=1,
     )
     assert prepared is not None
-    samples = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(prepared.path), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    samples = _decoded_audio(prepared.path)
     onset = np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000
     assert onset == pytest.approx((500 + offset) / 1000, abs=0.002)
 
@@ -225,10 +224,7 @@ def test_piecewise_rewrite_uses_relative_time_on_delayed_source(tmp_path, mode):
         )
         assert prepared is not None
         artifact = prepared.path
-    samples = np.frombuffer(_run([
-        "ffmpeg", "-v", "error", "-copyts", "-i", str(artifact), "-map", "0:a",
-        "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-    ]), dtype="<f4")
+    samples = _decoded_audio(artifact)
     assert np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000 == pytest.approx(0.625, abs=0.002)
     assert len(samples) / 48000 == pytest.approx(1.375, abs=0.035)
 
@@ -291,9 +287,41 @@ def test_mixed_audio_sync_keeps_common_origin(qt_app, tmp_path, monkeypatch, bac
     streams = _streams(config.output)
     assert float(streams[0]["start_time"]) == 0, "\n".join(" ".join(cmd) for cmd in commands)
     for index, offset in enumerate((125, second_offset)):
-        samples = np.frombuffer(_run([
-            "ffmpeg", "-v", "error", "-copyts", "-i", str(config.output), "-map", f"0:a:{index}",
-            "-af", "aresample=async=1:first_pts=0", "-ar", "48000", "-f", "f32le", "pipe:1",
-        ]), dtype="<f4")
+        samples = _decoded_audio(config.output, f"0:a:{index}")
         onset = np.flatnonzero(np.abs(samples) > 0.04)[0] / 48000
         assert onset == pytest.approx((500 + offset) / 1000, abs=0.002)
+
+
+@pytest.mark.parametrize("method", ["asetrate", "atempo"])
+def test_cadence_rewrite_timestamps_count_the_inserted_silence(tmp_path, method):
+    """Conversion de cadence + silence inséré (adelay) : l'horodatage de la sortie suit ses échantillons.
+
+    Avec atempo, les images ne reportaient pas le silence : la piste encodée partait en avance de
+    sa durée (repère, saut, muxeur natif décalés ; 5 s sur un épisode réel)."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.sync_calibration import SyncSegment
+
+    source = tmp_path / "source.mkv"
+    _run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=64x64:r=25:d=6",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=5",
+        "-af", "adelay=500:all=1", "-c:v", "ffv1", "-c:a", "aac", str(source),
+    ])
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    video = TrackEntry(0, "video", "FFV1", "", "und", "")
+    audio = TrackEntry(1, "audio", "aac", "", "fra", "")
+    calibration = SyncCalibration((SyncSegment(0, 2000.0), SyncSegment(3000, 2500.0)),
+                                  cadence_mismatch=pal, cadence_audio_method=method)
+    config = RemuxConfig(
+        [SourceInput(source, 0, [video, audio])], tmp_path / "out.mkv",
+        [(0, 0, video.entry_id), (0, 1, audio.entry_id)], sync_mode="physical",
+        sync_calibrations={"0": calibration.to_dict()},
+    )
+    artifact = prepare_physical(config, tmp_path, _FFMPEG, _run, ffprobe=_FFPROBE).sources[-1].path
+    pcm = np.frombuffer(_run(["ffmpeg", "-v", "error", "-i", str(artifact), "-ac", "1", "-f", "f32le", "-"]), "<f4")
+    duration = float(_run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                           str(artifact)]))
+    assert duration == pytest.approx(len(pcm) / 48000, abs=0.05)
+    onset = int(np.argmax(np.abs(pcm) > 0.05)) / 48000
+    # Son à 0,5 s de la source, ralenti (25 → 23,976) puis décalé de 2 s ; atempo : gigue WSOLA.
+    assert onset == pytest.approx(0.5 * 25025 / 24000 + 2.0, abs=0.04)

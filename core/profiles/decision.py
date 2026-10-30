@@ -191,6 +191,8 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
         errors.append("kind: expected decision-profile")
     if not str(profile.get("name") or "").strip():
         errors.append("name: required")
+    if not isinstance(profile.get("output_template", ""), str):
+        errors.append("output_template: expected string")
     rules = profile.get("rules", [])
     if rules is not None and not isinstance(rules, list):
         errors.append("rules: expected array")
@@ -215,6 +217,18 @@ def validate_decision_profile(profile: Mapping[str, Any]) -> list[str]:
     if errors:
         raise DecisionProfileError("; ".join(errors))
     return errors
+
+
+def profile_variables(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Variables de nommage d'un profil, isolées au premier niveau pour l'appelant."""
+    variables = profile.get("variables")
+    return dict(variables) if isinstance(variables, dict) else {}
+
+
+def profile_output_template(profile: Mapping[str, Any]) -> str:
+    """Template du nom de sortie porté par le profil (vide si absent)."""
+    value = profile.get("output_template")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _validate_condition(condition: Any, path: str, errors: list[str]) -> None:
@@ -369,19 +383,7 @@ def _codec_name(codec: str, variables: Mapping[str, Any] | None = None) -> str:
     return keyword_registry.codec_name(codec, variables)
 
 
-def _track_field_values(
-    track: TrackEntry,
-    *,
-    temporary_tags: set[str] | None = None,
-    source_index_by_file_id: Mapping[str, int] | None = None,
-    variables: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    return keyword_registry.track_field_values(
-        track,
-        temporary_tags=temporary_tags,
-        source_index_by_file_id=source_index_by_file_id,
-        variables=variables,
-    )
+_track_field_values = keyword_registry.track_field_values
 
 
 def _flags_label(track: TrackEntry) -> str:
@@ -1402,6 +1404,11 @@ def _apply_decision_profile_rules(
         for entry_id, tags in temporary_tags_by_entry_id.items()
         if tags
     }
+    # Champs écrits par une règle, même à valeur inchangée (piste → champs).
+    written: dict[str, list[str]] = {}
+    for entry_id, field in proposed:
+        written.setdefault(entry_id, []).append(field)
+    report["written_fields"] = {entry_id: sorted(fields) for entry_id, fields in written.items()}
     report["valid"] = not report["conflicts"] and not report["ambiguous_matches"]
     return DecisionProfileResult(tracks=working, report=report, profile=dict(profile))
 
