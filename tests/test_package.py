@@ -316,6 +316,55 @@ def test_rename_unix_executable_handles_existing_samefile_target(tmp_path):
     assert not exe_path.exists()
 
 
+@_UNIX_PACKAGING_ONLY
+def test_bundle_entrypoints_keep_the_executable_on_a_case_insensitive_volume(tmp_path, monkeypatch):
+    """macOS (APFS insensible à la casse) : ``Muxiveo`` désigne ``muxiveo`` lui-même ; le supprimer
+    comme ancien nom vidait ``Contents/MacOS`` des paquets publiés."""
+    bundle = tmp_path / "Muxiveo.app" / "Contents" / "MacOS"
+    bundle.mkdir(parents=True)
+    (bundle / "muxiveo").write_text("bin", encoding="utf-8")
+    (bundle / "muxiveo-cli").write_text("old", encoding="utf-8")
+
+    def insensitive(method):
+        original = getattr(Path, method)
+
+        def call(self, *args, **kwargs):
+            real = self
+            if self.parent == bundle and self.parent.is_dir():
+                real = next((self.parent / name for name in os.listdir(self.parent)
+                             if name.casefold() == self.name.casefold()), self)
+            return original(real, *args, **kwargs)
+        return call
+
+    for method in ("exists", "is_file", "is_symlink", "unlink"):
+        monkeypatch.setattr(Path, method, insensitive(method))
+
+    assert package_mod._ensure_unix_bundle_entrypoints(bundle) == bundle / "muxiveo"
+    assert os.listdir(bundle) == ["muxiveo"]
+
+
+@_UNIX_PACKAGING_ONLY
+@pytest.mark.parametrize("script, error", [
+    ('echo "Muxiveo 1.2.3"', None),
+    ("exit 3", RuntimeError),
+    (None, FileNotFoundError),
+])
+def test_verify_macos_bundle_requires_a_starting_executable(tmp_path, script, error):
+    app = tmp_path / "Muxiveo.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    with (app / "Contents" / "Info.plist").open("wb") as f:
+        plistlib.dump({"CFBundleExecutable": "muxiveo"}, f)
+    if script is not None:
+        executable = app / "Contents" / "MacOS" / "muxiveo"
+        executable.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
+        executable.chmod(0o755)
+    if error is None:
+        package_mod._verify_macos_bundle(app)
+    else:
+        with pytest.raises(error):
+            package_mod._verify_macos_bundle(app)
+
+
 def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
     commands: list[list[str]] = []
 
