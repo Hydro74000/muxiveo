@@ -54,6 +54,8 @@ Des paquets autonomes intégrant l'ensemble des dépendances et outils nécessai
 | **macOS** | **`Muxiveo-*.dmg`** | Paquet pour macOS (Intel et Apple Silicon). Outils système installés automatiquement via Homebrew si absents. |
 | **Homebrew** | Formule Linux / macOS | `brew tap Hydro74000/muxiveo && brew install muxiveo` |
 
+* **Mises à jour intégrées** : Une notification s'affiche au démarrage lorsqu'une nouvelle version est disponible (avec notes de version détaillées). La mise à jour s'installe directement en un clic depuis l'application sous Windows (installeur), Linux (AppImage), macOS (.app dans Applications) et depuis les archives sources, avec sauvegarde automatique de la configuration et retour arrière sécurisé en cas d'échec. Les installations via Homebrew, Flatpak ou git se mettent à jour via leur gestionnaire habituel.
+
 > [!TIP]
 > **Intégration système** : Sur Linux, Windows et macOS, Muxiveo s'intègre automatiquement au menu contextuel *"Ouvrir avec..."* de votre explorateur de fichiers.
 >
@@ -108,12 +110,15 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 
 ![Synchro Studio - Visualiseur de formes d'ondes acoustiques](docs/assets/img/Muxiveo-fr-12.png)
 
-* **Alignement acoustique par corrélation FFT** : Muxiveo analyse le signal audio réel des deux sources pour calculer le décalage temporel exact à la milliseconde près, sans se fier aux métadonnées des conteneurs.
+* **Alignement acoustique par corrélation FFT** : Muxiveo analyse le signal audio réel des deux sources pour calculer le décalage temporel exact à la milliseconde près, sans se fier aux métadonnées des conteneurs. Une référence de n'importe quelle disposition (stéréo ↔ multicanal) est prise en charge en alignant automatiquement la piste de même langue.
+* **Synchro à valider & paliers imperceptibles** : Si l'analyse continue rencontre des passages dissemblables (scènes doublées différemment, silences), une fenêtre interactive vous permet de relire les zones dans le Synchro Studio ou de valider le calage proposé sans blocage.
+* **Références en chaîne & synchro par piste** : Synchronisez plusieurs sources en cascade (la modification d'une référence propage automatiquement son calage aux sources dépendantes, hauteur comprise). Un sous-titre peut également recevoir ses propres coupures ou sa propre cadence indépendamment de l'audio.
+* **Plusieurs donneurs & modèle d'assemblage** : Intégrez plusieurs fichiers donneurs par épisode (audio multilingue, sous-titres variés) et personnalisez langues et titres dans le modèle d'assemblage témoin appliqué à toute la saison.
 * **Visualiseur de formes d'ondes superposées** : Forme d'onde bicolore zoomable (référence VO en vert, donneur VF en bleu), navigation temporelle sur les transitoires sonores et pré-écoute instantanée pour valider le calage à l'oreille.
-* **Compensation de cadence** : Détection et conversion automatique des écarts de vitesse de défilement (ex: conversion PAL 25 i/s vers cinéma 23.976 i/s par rééchantillonnage de débit audio).
+* **Compensation de cadence** : Détection et conversion automatique des écarts de vitesse de défilement (ex: PAL 25 i/s ↔ cinéma 23.976 i/s). Le mode automatique choisit intelligemment entre `asetrate` et `atempo` selon l'analyse de hauteur tonale du son.
 * **Détection des coupures & Calibration multi-segments** : Localisation des coupures publicitaires ou variantes de montage TV avec découpage de la timeline en segments indépendants recalés séparément.
 * **Synchronisation physique (*Zero Delay*)** : Décalage physique réel du flux audio (insertion de silence ou découpe au paquet près) et réalignement des sous-titres texte (SRT, ASS, VTT). Cette méthode évite les désynchronisations constatées sur les téléviseurs et barres de son qui ignorent les tags de décalage virtuel de conteneur.
-* **Hybridation par lots** : Appariement automatique des fichiers d'une saison entière par détection des motifs d'épisodes (`S01E01`), avec calibration et traitement groupé.
+* **Hybridation par lots** : Appariement automatique des fichiers d'une saison entière par détection des motifs d'épisodes (`S01E01`), avec préparation parallèle optimisée, calibration et traitement groupé.
 
 > 📖 Consultez le [Guide d'hybridation et synchronisation](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) ainsi que la page [Qualité et dépannage audio](https://github.com/Hydro74000/Muxiveo/wiki/Synchronisation-qualite).
 
@@ -182,6 +187,7 @@ Certaines fonctionnalités avancées (le moteur d'interpolation **MVO-RIFE**, l'
 ![Éditeur de profils décisionnels dans Muxiveo](docs/assets/img/Muxiveo-fr-14.png)
 
 * **Règles conditionnelles réutilisables** : Définissez vos critères de sélection (ex: *"Sélectionner la meilleure VO Atmos et la meilleure VF EAC3/AC3, exclure les pistes de commentaires, activer le drapeau forcé sur les sous-titres appropriés"*).
+* **Modèle de nom de sortie (`output_template`)** : Définissez un gabarit dynamique de nom de fichier (ex: `{title} ({year}) [{resolution} {hdr_format}]`) qui s'adapte automatiquement aux pistes sélectionnées et aux métadonnées TMDB, utilisable dans l'éditeur, Conteneur, Hybrid Studio et en CLI.
 * **Renommage par gabarits** : Formatez automatiquement les titres de pistes selon vos motifs personnalisés (ex: `{lang_name} {codec} {channels}`).
 * **Éditeur visuel low-code** : Créez et ajustez vos profils directement dans l'interface avec prévisualisation en direct piste par piste, ou appliquez-les par lot en ligne de commande.
 
