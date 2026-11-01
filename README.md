@@ -10,7 +10,7 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 **Français** | [English](README_EN.md)
 
 [![Site officiel](https://img.shields.io/badge/Site%20Web-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://muxiveo.fr/)
-[![Version](https://img.shields.io/badge/version-v5.0.3-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
+[![Version](https://img.shields.io/badge/version-v5.1.1-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Plateformes](https://img.shields.io/badge/plateformes-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-téléchargement--installation-rapide)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-green.svg?style=flat-square)](LICENSE)
 [![Documentation Wiki](https://img.shields.io/badge/Documentation-Wiki-orange?style=flat-square&logo=gitbook&logoColor=white)](https://github.com/Hydro74000/Muxiveo/wiki)
