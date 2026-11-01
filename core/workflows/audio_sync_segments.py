@@ -211,12 +211,15 @@ def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int)
 
 def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
                    speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None,
-                   review: list[tuple[float, float]] | None = None):
+                   review: list[tuple[float, float]] | None = None, one_sided_intro=True):
     """Sonde toute la piste, y compris le début et les plateaux intermédiaires.
 
     ``review`` : reçoit les zones cohérentes non vérifiées (début actif sans
     correspondance, long trou au même décalage de part et d'autre) au lieu de
     les refuser, en instants du donneur d'origine. Sans liste : refus.
+
+    ``one_sided_intro`` : son d'un seul côté avant la première correspondance admis (≤ 30 s).
+    Réservé au mixage complet : des surrounds muets ne prouvent pas une piste muette.
     """
     size = min(8000, min(len(reference), len(donor)) // 3)
     if size < 1000:
@@ -253,7 +256,7 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
         sounding = None if silent_side is None else starts["donneur" if silent_side == "référence" else "référence"]
         if not (_active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any()):
             log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
-        elif silent_side is not None and sounding is not None and sounding <= _MAX_ANCHOR_GAP_MS:
+        elif one_sided_intro and silent_side is not None and sounding is not None and sounding <= _MAX_ANCHOR_GAP_MS:
             log(f"Son d'un seul côté avant la première correspondance ({silent_side} muet jusqu'à "
                 f"{starts[silent_side] / 1000:.1f} s : logos, piste démarrant plus tard) : rien à vérifier, "
                 f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")

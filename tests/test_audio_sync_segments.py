@@ -663,11 +663,16 @@ def test_silent_sample_window_is_skipped_not_failed(monkeypatch):
     from core.workflows.audio_sync import AudioSyncTrack
 
     scanner = _silent_window_scanner(monkeypatch, 100.0)
+    ref, donor = _edited_pair([], [1006])
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "envelope", lambda track, *_a, **_k: ref if track.stream_index == 1 else donor)
     messages: list[str] = []
     calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
                                detect_cuts=True, log=messages.append)
-    assert [s.shift_ms for s in calibration.segments] == [1006] and len(calibration.samples) == 5
+    assert [s.shift_ms for s in calibration.segments] == [1006]
     assert any("fenêtre muette" in message for message in messages)
+    # Moins de points d'appui : l'analyse continue vérifie tout, même en vérification rapide.
+    assert not calibration.quick_check and any("Vérification rapide écartée" in message for message in messages)
 
 
 def test_too_few_measurable_windows_are_refused(monkeypatch):
@@ -723,3 +728,46 @@ def test_start_delay_is_read_from_the_first_packet(monkeypatch):
     # Origine absolue (TS, M2TS) : retard compté depuis le début du fichier.
     assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 2)) == pytest.approx(0.021)
     assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 3)) is None
+
+
+def test_one_sided_intro_is_reserved_to_the_full_mix():
+    # Passe hors dialogues : des surrounds muets ne prouvent pas une piste muette.
+    ref, donor = _edited_pair([], [200])
+    ref[:20000] = 0
+    review: list[tuple[float, float]] = []
+    segments, _, _ = scan_envelopes(ref, donor, review=review, one_sided_intro=False)
+    assert [s.shift_ms for s in segments] == [200] and review and review[0][0] == 0.0
+
+
+def test_unknown_multichannel_layout_uses_standard_channel_positions():
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    # E-AC-3 Atmos de certaines sources WEB : 6 canaux sans disposition déclarée.
+    assert AudioSyncScanner.dialogue_free_downmixes((6, "unknown"), (6, "5.1(side)")) == (
+        "pan=mono|c0=c4+c5", "pan=mono|c0=SL+SR")
+    assert AudioSyncScanner.dialogue_free_downmixes((8, ""), (8, "7.1"))[0] == "pan=mono|c0=c4+c5+c6+c7"
+    with pytest.raises(AudioSyncError, match="non reconnue"):
+        AudioSyncScanner.dialogue_free_downmixes((6, "6.0"), (6, "5.1"))
+
+
+def test_unrecognised_layout_keeps_the_mono_failure(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+
+    def measure(*_args, **_kwargs):
+        raise AudioSyncError("Corrélation insuffisante ou ambiguë ; calibration manuelle requise.")
+
+    def unknown_layout(*_args):
+        raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
+
+    monkeypatch.setattr(scanner, "measure", measure)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", unknown_layout)
+    messages: list[str] = []
+    with pytest.raises(AudioSyncError, match="Corrélation acoustique insuffisante"):
+        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                     detect_cuts=True, log=messages.append)
+    assert any("non reconnue" in message for message in messages)

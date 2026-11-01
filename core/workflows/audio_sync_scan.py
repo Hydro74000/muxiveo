@@ -54,6 +54,15 @@ _SURROUND_BY_LAYOUT = {
 }
 
 
+def _surround_channels(channels: int, layout: str) -> tuple[str, ...] | None:
+    """Canaux d'ambiance d'après la disposition ; inconnue (E-AC-3 Atmos de certaines sources WEB) :
+    par position en 5.1 / 7.1, l'ordre standard plaçant les surrounds après FL FR FC LFE."""
+    named = _SURROUND_BY_LAYOUT.get(layout)
+    if named is None and layout in ("", "unknown") and channels in (6, 8):
+        return tuple(f"c{index}" for index in range(4, channels))
+    return named
+
+
 def _seek_args(start: float) -> tuple[list[str], list[str]]:
     """Retourne les options de seek et les filtres de découpage avant conversion de cadence.
 
@@ -250,8 +259,8 @@ class AudioSyncScanner:
         Stéréo : différence L−R, qui annule les dialogues centrés.
         """
         if min(ref_layout[0], donor_layout[0]) >= 6:
-            reference_channels = _SURROUND_BY_LAYOUT.get(ref_layout[1])
-            donor_channels = _SURROUND_BY_LAYOUT.get(donor_layout[1])
+            reference_channels = _surround_channels(*ref_layout)
+            donor_channels = _surround_channels(*donor_layout)
             if reference_channels is None or donor_channels is None:
                 raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
             return ("pan=mono|c0=" + "+".join(reference_channels),
@@ -649,6 +658,7 @@ class AudioSyncScanner:
                     failed = True
             return silent if silent is not None and not failed else None
 
+        skipped = 0
         for position in positions:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise AudioSyncError("Analyse annulée.")
@@ -669,11 +679,17 @@ class AudioSyncScanner:
                     log(f"Cadence : corrélation obtenue avec la méthode '{alternative}' (repli automatique).")
             if isinstance(measured, SilentWindowError):
                 log(f"{position:.1f} s : fenêtre muette d'un côté (logos, piste démarrant plus tard), mesure ignorée.")
+                skipped += 1
                 continue
             if measured is None:
                 if _downmixes is None:
                     self._check_cancelled()
-                    downmixes = self._dialogue_free_downmixes(reference, donor)
+                    try:
+                        downmixes = self._dialogue_free_downmixes(reference, donor)
+                    except AudioSyncError as exc:
+                        self._check_cancelled()
+                        log(f"{exc} Pas de nouvelle analyse hors dialogues.")
+                        downmixes = None
                     if downmixes is not None:
                         log("Corrélation mono insuffisante ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
                         return self.scan(reference, donor, detect_cuts=detect_cuts,
@@ -707,6 +723,10 @@ class AudioSyncScanner:
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
         weakest = min(s["confidence"] for s in samples)
         quick = detect_cuts and self.quick_check and spread <= drift_threshold_ms
+        if quick and skipped:
+            # Moins de points d'appui : une coupure entre deux mesures passerait inaperçue.
+            log(f"Vérification rapide écartée : {skipped} fenêtre(s) muette(s) d'un côté.")
+            quick = False
         if quick and weakest < _QUICK_CHECK_MIN_CONFIDENCE:
             log(f"Vérification rapide écartée : confiance minimale {weakest:.2f} < {_QUICK_CHECK_MIN_CONFIDENCE:.2f}.")
             quick = False
@@ -760,17 +780,19 @@ class AudioSyncScanner:
         max_offset_ms = round(self.max_offset_s * 1000)
         check_cancelled = self._check_cancelled
 
-        def scan(envelopes: tuple[ndarray, ndarray]):
+        def scan(envelopes: tuple[ndarray, ndarray], *, full_mix: bool):
+            """`full_mix` : mixage complet ; des surrounds muets ne prouvent pas une piste muette."""
             review: list[tuple[float, float]] = []
             result = scan_envelopes(
                 *envelopes,
                 max_offset_ms=max_offset_ms, tolerance_ms=drift_threshold_ms,
                 speed_factor=speed_factor, check_cancelled=check_cancelled, log=log, review=review,
+                one_sided_intro=full_mix,
             )
             return result, tuple(review)
         if _downmixes is not None:
             (segments, confidence, anchors), unverified = scan(
-                self._envelopes(reference, donor, filter_str, _downmixes))
+                self._envelopes(reference, donor, filter_str, _downmixes), full_mix=False)
         else:
             # Pistes de langues différentes : les dialogues masquent la musique
             # et les effets communs. Seconde passe sans le canal central, décodée
@@ -786,7 +808,7 @@ class AudioSyncScanner:
             else:
                 mono, dialogue_free = self._envelope_pairs(reference, donor, filter_str, (None, downmixes))
             try:
-                (segments, confidence, anchors), unverified = scan(mono)
+                (segments, confidence, anchors), unverified = scan(mono, full_mix=True)
             except AudioSyncError as exc:
                 self._check_cancelled()
                 if layout_error is not None:
@@ -794,7 +816,7 @@ class AudioSyncScanner:
                 if dialogue_free is None:
                     raise
                 log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                (segments, confidence, anchors), unverified = scan(dialogue_free)
+                (segments, confidence, anchors), unverified = scan(dialogue_free, full_mix=False)
             else:
                 if unverified and layout_error is not None:
                     # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
@@ -803,7 +825,7 @@ class AudioSyncScanner:
                     # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
                     log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
                     try:
-                        alternative = scan(dialogue_free)
+                        alternative = scan(dialogue_free, full_mix=False)
                     except AudioSyncError as exc:
                         self._check_cancelled()
                         log(f"{exc} Analyse mono conservée.")
