@@ -2531,6 +2531,7 @@ class RemuxPanel(QWidget):
                     cadence_mismatch=cadence_mismatch,
                     cadence_audio_method=cadence_method,
                     log=lambda msg: self.log_message.emit("INFO", f"Analyse acoustique : {msg}"),
+                    warn=lambda msg: self.log_message.emit("WARN", f"Analyse acoustique : {msg}"),
                 )
                 self._audio_sync_done.emit(
                     target_entry_id,

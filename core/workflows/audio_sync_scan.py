@@ -31,6 +31,9 @@ _OUTPUT_BIAS_SPREAD_MS = 20.0
 # Mesures ponctuelles exigées pour proposer leur seul décalage (fenêtres non mesurées,
 # analyse continue sans conclusion).
 _MIN_SAMPLES = 3
+# Synchro incertaine (mesures ponctuelles seules) sous ce décalage : aucune correction, un
+# avertissement seulement ; ne pas confirmer un décalage inaudible, peut-être un biais de mesure.
+_UNCERTAIN_NEGLIGIBLE_MS = 15
 
 # Vérification rapide : confiance minimale de chacune des mesures ponctuelles
 # pour se passer de l'analyse continue quand le décalage est constant.
@@ -609,13 +612,18 @@ class AudioSyncScanner:
     def _uncertain_sync(self, calibration: SyncCalibration, samples, total: int, spread: float,
                         donor: AudioSyncTrack, reason: str, log, warn) -> SyncCalibration:
         """Synchro tirée des seules mesures ponctuelles : proposée à la validation (tout le film à
-        relire), ou acceptée avec un avertissement (`accept_coherent` : Hybrid, CLI)."""
+        relire), ou acceptée avec un avertissement (`accept_coherent` : Hybrid, CLI). Sous
+        `_UNCERTAIN_NEGLIGIBLE_MS` sans conversion de cadence : aucune correction, avertissement seul."""
         if len(samples) < _MIN_SAMPLES:
             raise AudioSyncError(f"{len(samples)} mesure(s) ponctuelle(s) sur {total} : synchro trop incertaine "
                                  f"({reason}) ; calibration manuelle requise.")
         shift = round(calibration.segments[0].shift_ms)
         message = (f"Synchro incertaine ({reason}) : décalage des mesures ponctuelles {shift:+d} ms "
                    f"({len(samples)}/{total} fenêtres concordantes, écart {spread:.0f} ms).")
+        if abs(shift) < _UNCERTAIN_NEGLIGIBLE_MS and not calibration.converts_audio:
+            (warn or log)(f"{message} Moins de {_UNCERTAIN_NEGLIGIBLE_MS} ms : aucune correction appliquée ; "
+                          "vérifier à l'écoute dans le Synchro Studio si besoin.")
+            return replace(calibration, segments=(SyncSegment(0, 0.0),))
         if not self.accept_coherent:
             raise AudioSyncReviewRequired(message, calibration, ((0.0, self.duration(donor) * 1000.0),),
                                           kind="samples", windows=(len(samples), total), spread_ms=spread)

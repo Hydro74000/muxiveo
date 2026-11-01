@@ -784,7 +784,7 @@ def test_unrecognised_layout_keeps_the_mono_failure(monkeypatch):
     assert sum("aucune correspondance, mesure ignorée" in message for message in messages) == 6
 
 
-def _inconclusive_scanner(monkeypatch, *, accept_coherent, shifts=(8.0, 2.0, 6.0, 10.0, 6.0, 11.0)):
+def _inconclusive_scanner(monkeypatch, *, accept_coherent, shifts=(38.0, 32.0, 36.0, 40.0, 36.0, 41.0)):
     """Mesures ponctuelles concordantes ; analyse continue sans aucune correspondance."""
     from core.workflows.audio_sync_scan import AudioSyncScanner
 
@@ -798,39 +798,47 @@ def _inconclusive_scanner(monkeypatch, *, accept_coherent, shifts=(8.0, 2.0, 6.0
     return scanner
 
 
-def test_inconclusive_continuous_scan_proposes_the_spot_offset(monkeypatch):
-    """Autre langue, mixages différents : pas d'abandon direct, le décalage concordant des mesures
-    ponctuelles est proposé à la validation (tout le film à relire)."""
+def _tracks():
     from pathlib import Path
     from core.workflows.audio_sync import AudioSyncTrack
 
+    return AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2)
+
+
+def test_inconclusive_continuous_scan_proposes_the_spot_offset(monkeypatch):
+    """Autre langue, mixages différents : pas d'abandon direct, le décalage concordant des mesures
+    ponctuelles est proposé à la validation (tout le film à relire)."""
     scanner = _inconclusive_scanner(monkeypatch, accept_coherent=False)
     with pytest.raises(AudioSyncReviewRequired) as exc:
-        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True)
+        scanner.scan(*_tracks(), detect_cuts=True)
     proposal = exc.value
     assert proposal.kind == "samples" and proposal.windows == (6, 6) and proposal.spread_ms == 9.0
-    assert proposal.calibration.segments[0].shift_ms == 7.0
+    assert proposal.calibration.segments[0].shift_ms == 37.0
     assert proposal.unverified_ms == ((0.0, 7_600_000.0),)
 
 
 def test_inconclusive_continuous_scan_is_accepted_with_a_warning(monkeypatch):
-    from pathlib import Path
-    from core.workflows.audio_sync import AudioSyncTrack
-
     scanner = _inconclusive_scanner(monkeypatch, accept_coherent=True)
     warnings: list[str] = []
-    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
-                               detect_cuts=True, warn=warnings.append)
-    assert calibration.segments[0].shift_ms == 7.0
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    assert calibration.segments[0].shift_ms == 37.0
     assert len(warnings) == 1 and "Synchro incertaine" in warnings[0]
 
 
-def test_inconclusive_continuous_scan_with_discordant_spots_is_refused(monkeypatch):
-    from pathlib import Path
-    from core.workflows.audio_sync import AudioSyncTrack
+@pytest.mark.parametrize("accept_coherent", [False, True])
+def test_uncertain_offset_under_15_ms_is_not_applied(monkeypatch, accept_coherent):
+    """Hope coréen ↔ doublage français : +2…+11 ms, inaudible et peut-être un biais de mesure."""
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=accept_coherent,
+                                    shifts=(9.0, 2.0, 6.0, 10.0, 6.0, 11.0))
+    warnings: list[str] = []
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    assert [s.shift_ms for s in calibration.segments] == [0.0] and len(calibration.samples) == 6
+    assert len(warnings) == 1 and "aucune correction" in warnings[0] and "+8 ms" in warnings[0]
 
+
+def test_inconclusive_continuous_scan_with_discordant_spots_is_refused(monkeypatch):
     scanner = _inconclusive_scanner(monkeypatch, accept_coherent=True,
                                     shifts=(0.0, 900.0, 0.0, 900.0, 0.0, 900.0))
     with pytest.raises(AudioSyncError, match="Aucune correspondance") as exc:
-        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True)
+        scanner.scan(*_tracks(), detect_cuts=True)
     assert not isinstance(exc.value, AudioSyncReviewRequired)
