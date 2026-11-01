@@ -33,7 +33,7 @@ _OUTPUT_BIAS_SPREAD_MS = 20.0
 _MIN_SAMPLES = 3
 # Synchro incertaine (mesures ponctuelles seules) sous ce décalage : aucune correction, un
 # avertissement seulement ; ne pas confirmer un décalage inaudible, peut-être un biais de mesure.
-_UNCERTAIN_NEGLIGIBLE_MS = 15
+_UNCERTAIN_NEGLIGIBLE_MS = 10
 
 # Vérification rapide : confiance minimale de chacune des mesures ponctuelles
 # pour se passer de l'analyse continue quand le décalage est constant.
