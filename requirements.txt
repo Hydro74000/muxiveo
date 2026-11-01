@@ -4,10 +4,9 @@
 # =============================================================================
  
 # Interface graphique
-# Sous Python < 3.12, 6.12.0 décrémente None à chaque méthode sans retour :
-# « deallocating None », abandon du processus. None est immortel depuis 3.12.
-PySide6>=6.6.0,!=6.12.0; python_version < "3.12"
-PySide6>=6.6.0; python_version >= "3.12"
+# Qt 6.11.3 et 6.12.0 rognent la zone de saisie des spinbox stylées.
+# 6.12.0 provoque aussi « deallocating None » sous Python < 3.12.
+PySide6>=6.6.0,!=6.11.3,!=6.12.0
 
 # Corrélation FFT du scanner hybride
 numpy>=1.24

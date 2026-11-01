@@ -16,6 +16,12 @@ from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_
 if TYPE_CHECKING:
     from core.workflows.sync_calibration import SyncCalibration
 
+# Chronologie de lecture d'une piste audio : départ tardif et trous comblés de silence,
+# chevauchements et pré-roll négatif retirés (avec -copyts, y compris pour les décodeurs
+# FFmpeg 6 qui ne le retirent pas seuls). L'analyse et la réécriture de la synchro lisent
+# ainsi les pistes comme le lecteur, sans compter les échantillons à partir du premier paquet.
+SYNC_AUDIO_ORIGIN_FILTER = "aresample=async=1:first_pts=0"
+
 
 class AudioSyncError(RuntimeError):
     """Raised when enhanced audio synchronization cannot compute a reliable delta."""
@@ -31,10 +37,17 @@ class AudioSyncReviewRequired(AudioSyncError):
     """
 
     def __init__(self, message: str, calibration: SyncCalibration,
-                 unverified_ms: tuple[tuple[float, float], ...]) -> None:
+                 unverified_ms: tuple[tuple[float, float], ...], *, kind: str = "gaps",
+                 windows: tuple[int, int] = (0, 0), spread_ms: float = 0.0) -> None:
+        """``kind`` : « gaps » (zones sans correspondance, même décalage autour) ou « samples »
+        (analyse continue sans conclusion : décalage de ``windows`` = (mesurées, sondées)
+        mesures ponctuelles concordantes à ``spread_ms`` près, tout le film à relire)."""
         super().__init__(message)
         self.calibration = calibration
         self.unverified_ms = tuple(unverified_ms)
+        self.kind = kind
+        self.windows = windows
+        self.spread_ms = spread_ms
 
     def output_ranges_ms(self) -> tuple[tuple[float, float], ...]:
         """Zones à relire sur l'axe de sortie (chronologie de la référence)."""

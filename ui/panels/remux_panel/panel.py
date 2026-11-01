@@ -189,7 +189,8 @@ class RemuxPanel(QWidget):
     _paths_scanned = Signal(object)
     _audio_sync_done = Signal(str, str, int, float, object)
     _audio_sync_error = Signal(str, str)
-    _audio_sync_review = Signal(str, str, object, object)
+    # (piste, référence, calibration proposée, zones sur l'axe de sortie, AudioSyncReviewRequired)
+    _audio_sync_review = Signal(str, str, object, object, object)
     _cadence_method_resolved = Signal(str, str, object, object, object)
     _subtitle_sync_done = Signal(str, str, int, float, object)
     _subtitle_sync_error = Signal(str, str)
@@ -2530,6 +2531,7 @@ class RemuxPanel(QWidget):
                     cadence_mismatch=cadence_mismatch,
                     cadence_audio_method=cadence_method,
                     log=lambda msg: self.log_message.emit("INFO", f"Analyse acoustique : {msg}"),
+                    warn=lambda msg: self.log_message.emit("WARN", f"Analyse acoustique : {msg}"),
                 )
                 self._audio_sync_done.emit(
                     target_entry_id,
@@ -2540,7 +2542,7 @@ class RemuxPanel(QWidget):
                 )
             except AudioSyncReviewRequired as exc:
                 self._audio_sync_review.emit(
-                    target_entry_id, reference_entry_id, exc.calibration, exc.output_ranges_ms(),
+                    target_entry_id, reference_entry_id, exc.calibration, exc.output_ranges_ms(), exc,
                 )
             except Exception as exc:
                 self._audio_sync_error.emit(target_entry_id, str(exc))
@@ -2682,8 +2684,10 @@ class RemuxPanel(QWidget):
         return compose_calibrations(measured, self._track_calibration(reference))
 
     def _confirm_coherent_sync(self, target: TrackEntry, reference: TrackEntry,
-                               calibration: SyncCalibration, ranges_ms) -> str:
-        """Synchro cohérente proposée : « review » (Synchro Studio), « apply » ou « cancel »."""
+                               calibration: SyncCalibration, ranges_ms, proposal=None) -> str:
+        """Synchro proposée : « review » (Synchro Studio), « apply » ou « cancel ».
+
+        `proposal` : `AudioSyncReviewRequired` d'origine (motif « gaps » ou « samples »)."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
         box.setWindowTitle(translate_text("Synchro à valider"))
@@ -2699,11 +2703,20 @@ class RemuxPanel(QWidget):
                 "Synchro proposée : {offset} ms (piste #{target}, référence #{reference}).",
                 offset=offset, target=target.mkv_tid, reference=reference.mkv_tid,
             ))
-        box.setInformativeText(translate_text(
-            "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. "
-            "Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.",
-            count=len(ranges_ms), zones=format_sync_ranges(ranges_ms),
-        ))
+        if getattr(proposal, "kind", "gaps") == "samples":
+            measured, total = proposal.windows
+            box.setInformativeText(translate_text(
+                "Analyse continue sans conclusion (autre langue ou mixages différents) : décalage tiré de "
+                "{measured}/{total} mesures ponctuelles concordantes (écart {spread} ms). "
+                "Appliquer directement, ou vérifier à l'écoute dans le Synchro Studio avant de valider.",
+                measured=measured, total=total, spread=f"{proposal.spread_ms:.0f}",
+            ))
+        else:
+            box.setInformativeText(translate_text(
+                "{count} zone(s) sans correspondance acoustique, avec le même décalage de part et d'autre : {zones}. "
+                "Appliquer directement, ou relire ces zones dans le Synchro Studio avant de valider.",
+                count=len(ranges_ms), zones=format_sync_ranges(ranges_ms),
+            ))
         review = box.addButton(translate_text("Relire dans le Synchro Studio"), QMessageBox.ButtonRole.AcceptRole)
         apply = box.addButton(translate_text("Appliquer"), QMessageBox.ButtonRole.AcceptRole)
         box.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
@@ -2713,22 +2726,31 @@ class RemuxPanel(QWidget):
         return "review" if clicked is review else "apply" if clicked is apply else "cancel"
 
     def _on_audio_sync_review(self, entry_id: str, reference_entry_id: str,
-                              calibration: SyncCalibration, ranges_ms) -> None:
-        """Synchro cohérente en partie non vérifiée : proposée à l'utilisateur."""
+                              calibration: SyncCalibration, ranges_ms, proposal=None) -> None:
+        """Synchro cohérente en partie non vérifiée, ou tirée des seules mesures ponctuelles :
+        proposée à l'utilisateur, jamais abandonnée d'office."""
         ranges_ms = tuple(ranges_ms)
         zones = format_sync_ranges(ranges_ms)
         tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
         target = tracks_by_id.get(entry_id)
         reference = tracks_by_id.get(reference_entry_id)
-        self.log_message.emit("WARN", translate_text(
-            "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, "
-            "même décalage de part et d'autre ({zones}).",
-            count=len(ranges_ms), zones=zones,
-        ))
+        if getattr(proposal, "kind", "gaps") == "samples":
+            measured, total = proposal.windows
+            self.log_message.emit("WARN", translate_text(
+                "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de "
+                "{measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).",
+                measured=measured, total=total, spread=f"{proposal.spread_ms:.0f}",
+            ))
+        else:
+            self.log_message.emit("WARN", translate_text(
+                "Synchro cohérente à valider : {count} zone(s) sans correspondance acoustique, "
+                "même décalage de part et d'autre ({zones}).",
+                count=len(ranges_ms), zones=zones,
+            ))
         if target is None or reference is None:
             self.audio_sync_finished.emit(False, {"entry_id": entry_id})
             return
-        choice = self._confirm_coherent_sync(target, reference, calibration, ranges_ms)
+        choice = self._confirm_coherent_sync(target, reference, calibration, ranges_ms, proposal)
         if choice == "apply":
             self.log_message.emit("INFO", translate_text(
                 "Synchro validée par l'utilisateur, sans relecture des zones ({zones}).", zones=zones,

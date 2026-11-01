@@ -415,7 +415,7 @@ def test_ensure_pyinstaller_deps_list_format():
 
 @pytest.mark.parametrize("module", [package_mod, package_appimage_mod], ids=["native", "appimage"])
 @pytest.mark.parametrize("python_version", [(3, 10), (3, 11), (3, 12), (3, 14)])
-@pytest.mark.parametrize("installed_pyside", ["6.5.3", "6.12.0", "6.12.1"])
+@pytest.mark.parametrize("installed_pyside", ["6.5.3", "6.11.2", "6.11.3", "6.12.0", "6.12.1"])
 def test_packaging_repairs_incompatible_pyside_even_when_importable(
     monkeypatch, module, python_version, installed_pyside,
 ):
@@ -436,7 +436,7 @@ def test_packaging_repairs_incompatible_pyside_even_when_importable(
     else:
         module.ensure_build_deps()
 
-    incompatible = installed_pyside == "6.5.3" or (installed_pyside == "6.12.0" and python_version < (3, 12))
+    incompatible = installed_pyside in {"6.5.3", "6.11.3", "6.12.0"}
     pyside = next(r for r in requirements if r.distribution == "PySide6")
     assert packages == ([pyside.spec] if incompatible else [])
 

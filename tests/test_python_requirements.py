@@ -19,7 +19,7 @@ def test_requirements_file_is_the_single_source(python_version):
     assert set(requirements) == {"PySide6", "numpy", "pymediainfo", "certifi"}
     assert requirements["PySide6"].module == "PySide6"  # casse exacte du module
     assert requirements["PySide6"].minimum == (6, 6, 0)
-    assert requirements["PySide6"].excluded == (((6, 12, 0),) if python_version < (3, 12) else ())
+    assert requirements["PySide6"].excluded == ((6, 11, 3), (6, 12, 0))
     assert requirements["certifi"].minimum is None
 
 
@@ -79,13 +79,13 @@ def test_only_missing_or_outdated_are_installed(setup_module, monkeypatch):
     assert commands == [[sys.executable, "-m", "pip", "install", pyside.spec, "certifi"]]
 
 
-def test_pyside_612_is_reinstalled_only_on_older_python(setup_module, monkeypatch):
+@pytest.mark.parametrize("version", ["6.11.3", "6.12.0"])
+def test_defective_pyside_is_reinstalled_on_all_python_versions(setup_module, monkeypatch, version):
     setup, commands = setup_module
-    _installed(monkeypatch, {"PySide6": "6.12.0", "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"})
+    _installed(monkeypatch, {"PySide6": version, "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"})
     setup.install_python_packages(dry_run=False)
     pyside = next(r for r in setup.PYTHON_REQUIREMENTS if r.distribution == "PySide6")
-    expected = [[sys.executable, "-m", "pip", "install", pyside.spec]] if pyside.excluded else []
-    assert commands == expected
+    assert commands == [[sys.executable, "-m", "pip", "install", pyside.spec]]
 
 
 def test_newer_pyside_remains_allowed(setup_module, monkeypatch):

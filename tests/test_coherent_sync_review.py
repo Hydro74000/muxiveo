@@ -125,7 +125,7 @@ def test_coherent_sync_accepted_unless_rejected():
     assert coherent_sync_accepted(parser.parse_args(["hybrid", "-o", "out"]))
 
 
-def _review_panel(choice):
+def _review_panel(choice, proposal=None):
     from ui.panels.remux_panel import panel
     target = SimpleNamespace(entry_id="target", mkv_tid=2, file_id="f1")
     reference = SimpleNamespace(entry_id="reference", mkv_tid=1, file_id="f0")
@@ -134,14 +134,14 @@ def _review_panel(choice):
         _track_table=SimpleNamespace(current_tracks=lambda: [target, reference]),
         log_message=SimpleNamespace(emit=lambda level, text: calls["log"].append((level, text))),
         audio_sync_finished=SimpleNamespace(emit=lambda ok, _meta: calls["finished"].append(ok)),
-        _confirm_coherent_sync=lambda *_a: choice,
+        _confirm_coherent_sync=lambda *args: calls.setdefault("confirm", []).append(args) or choice,
         _on_audio_sync_done=lambda *args: calls["done"].append(args),
         _review_sync_proposal=lambda *args: calls["studio"].append(args),
         _log_sync_proposal_dropped=lambda _target: calls["log"].append(("INFO", "non appliquée")),
     )
     calibration = SyncCalibration.linear(-5466)
     ranges = ((155998.0, 188000.0),)
-    panel.RemuxPanel._on_audio_sync_review(cast(Any, fake), "target", "reference", calibration, ranges)
+    panel.RemuxPanel._on_audio_sync_review(cast(Any, fake), "target", "reference", calibration, ranges, proposal)
     return calls, target, reference, calibration, ranges
 
 
@@ -152,6 +152,16 @@ def test_panel_applies_confirmed_proposal_and_logs_user_validation():
     assert format_sync_ranges(ranges) in calls["log"][1][1]
     # Terminée par _on_audio_sync_done (non simulé ici).
     assert calls["finished"] == []
+
+
+def test_panel_proposes_offset_of_concordant_spot_measurements():
+    """Analyse continue sans conclusion : même fenêtre « Synchro à valider », motif propre au journal."""
+    proposal = AudioSyncReviewRequired("incertaine", SyncCalibration.linear(-5466), ((0.0, 7_600_000.0),),
+                                       kind="samples", windows=(6, 6), spread_ms=9.0)
+    calls, *_rest = _review_panel("apply", proposal)
+    level, text = calls["log"][0]
+    assert level == "WARN" and "6/6" in text and "9 ms" in text
+    assert calls["confirm"][0][-1] is proposal and len(calls["done"]) == 1
 
 
 def test_panel_review_opens_studio_with_proposal():

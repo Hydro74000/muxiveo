@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import math
 import subprocess
 import re
 import threading
 from typing import TYPE_CHECKING, Any
 
 from core.subprocess_utils import run_interruptible, subprocess_text_kwargs, subprocess_windows_no_window_kwargs
-from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
+from core.workflows.audio_sync import (
+    SYNC_AUDIO_ORIGIN_FILTER, AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges,
+)
 from core.workflows.cadence import active_cadence
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
@@ -24,6 +27,13 @@ _SEEK_PREROLL_S = 5.0
 # ponctuelles les plus sûres ; au-delà de cet étalement, les mesures ne concordent pas.
 _OUTPUT_BIAS_POSITIONS = 4
 _OUTPUT_BIAS_SPREAD_MS = 20.0
+
+# Mesures ponctuelles exigées pour proposer leur seul décalage (fenêtres non mesurées,
+# analyse continue sans conclusion).
+_MIN_SAMPLES = 3
+# Synchro incertaine (mesures ponctuelles seules) sous ce décalage : aucune correction, un
+# avertissement seulement ; ne pas confirmer un décalage inaudible, peut-être un biais de mesure.
+_UNCERTAIN_NEGLIGIBLE_MS = 10
 
 # Vérification rapide : confiance minimale de chacune des mesures ponctuelles
 # pour se passer de l'analyse continue quand le décalage est constant.
@@ -48,14 +58,26 @@ _SURROUND_BY_LAYOUT = {
 }
 
 
+def _surround_channels(channels: int, layout: str) -> tuple[str, ...] | None:
+    """Canaux d'ambiance d'après la disposition ; inconnue (E-AC-3 Atmos de certaines sources WEB) :
+    par position en 5.1 / 7.1, l'ordre standard plaçant les surrounds après FL FR FC LFE."""
+    named = _SURROUND_BY_LAYOUT.get(layout)
+    if named is None and layout in ("", "unknown") and channels in (6, 8):
+        return tuple(f"c{index}" for index in range(4, channels))
+    return named
+
+
 def _seek_args(start: float) -> tuple[list[str], list[str]]:
-    """Retourne les options de seek et les filtres de découpage avant conversion de cadence."""
+    """Retourne les options de seek et les filtres de découpage avant conversion de cadence.
+
+    Les filtres commencent par `SYNC_AUDIO_ORIGIN_FILTER` : le découpage porte sur la
+    chronologie de lecture, même si la piste démarre après le point de seek ou y a un trou."""
     start = max(0.0, float(start))
     pre = max(0.0, start - _SEEK_PREROLL_S)
     trim = start - pre
-    return (["-ss", f"{pre:.6f}"] if pre > 0 else []), (
-        [f"atrim=start={trim:.6f}", "asetpts=PTS-STARTPTS"] if trim > 0 else []
-    )
+    return (["-ss", f"{pre:.6f}"] if pre > 0 else []), [
+        SYNC_AUDIO_ORIGIN_FILTER, *([f"atrim=start={trim:.6f}", "asetpts=PTS-STARTPTS"] if trim > 0 else []),
+    ]
 
 
 def quick_check_enabled(options: Any, config: Any) -> bool:
@@ -73,6 +95,43 @@ def coherent_sync_accepted(options: Any) -> bool:
 
 def _unverified_total_ms(ranges) -> float:
     return float(sum(stop - start for start, stop in ranges))
+
+class SilentWindowError(AudioSyncError):
+    """Corrélation impossible parce qu'un côté de la fenêtre est muet : rien à y mesurer."""
+
+
+def _mostly_silent_samples(values) -> bool:
+    """Échantillons à 16 kHz majoritairement muets (enveloppe 1 kHz, comme l'analyse continue)."""
+    import numpy as np
+    from core.workflows.audio_sync_segments import mostly_silent
+
+    values = np.abs(np.asarray(values, dtype=float))
+    return mostly_silent(values[:len(values) // 16 * 16].reshape(-1, 16).mean(axis=1))
+
+
+def _timestamp(value) -> float | None:
+    try:
+        result = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _ponctual_shift(samples, drift_threshold_ms: float) -> float | None:
+    """Décalage des mesures ponctuelles : médiane si elles concordent, sinon décalage unique
+    sous les seuils de perception (paliers), sinon None."""
+    import numpy as np
+    from core.workflows.audio_sync_segments import Anchor, imperceptible_constant
+
+    shifts = [sample["shift_ms"] for sample in samples]
+    if not shifts:
+        return None
+    if max(shifts) - min(shifts) <= drift_threshold_ms:
+        return float(np.median(shifts))
+    constant = imperceptible_constant([Anchor(round(sample["start_ms"]), round(sample["shift_ms"]),
+                                              float(sample["confidence"])) for sample in samples])
+    return None if constant is None else float(constant)
+
 
 def _stream_spec(track) -> str:
     """Flux FFmpeg de la piste : index absolu (entier) ou spécificateur tel que `0:a:1`."""
@@ -137,18 +196,34 @@ class AudioSyncScanner:
 
     def _probe_stream(self, track) -> dict[str, Any]:
         result = self._run([self.ffprobe, "-v", "error", "-select_streams", str(track.stream_index).removeprefix("0:"),
-                            "-show_entries", "stream=codec_name,profile,channels,channel_layout,sample_rate",
+                            "-read_intervals", "%+#1", "-show_entries",
+                            "stream=codec_name,profile,channels,channel_layout,sample_rate:packet=pts_time:format=start_time",
                             "-of", "json", str(track.source_path)],
                            timeout=30, **subprocess_text_kwargs())
         if result.returncode:
             raise AudioSyncError("Impossible de lire la disposition audio ; revue manuelle de la synchro nécessaire.")
         try:
-            stream = (json.loads(result.stdout or "{}").get("streams") or [])[0]
+            payload = json.loads(result.stdout or "{}")
+            stream = (payload.get("streams") or [])[0]
         except (IndexError, TypeError, ValueError, AttributeError) as exc:
             raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.") from exc
         if not isinstance(stream, dict):
             raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.")
-        return stream
+        packets = payload.get("packets") or [{}]
+        fmt = payload.get("format") or {}
+        return {**stream,
+                "first_packet_s": _timestamp(packets[0].get("pts_time")) if isinstance(packets[0], dict) else None,
+                "format_start_s": _timestamp(fmt.get("start_time")) if isinstance(fmt, dict) else None}
+
+    def start_delay_s(self, track) -> float | None:
+        """Retard du premier paquet de la piste sur l'origine du fichier (None : inconnu)."""
+        try:
+            stream = self._stream(track)
+        except AudioSyncError:
+            self._check_cancelled()
+            return None
+        first = stream.get("first_packet_s")
+        return None if first is None else first - (stream.get("format_start_s") or 0.0)
 
     def _decoder_args(self, track) -> list[str]:
         """DTS 5.1 au plus à 48 kHz au plus : cœur seul (`-core_only`). L'extension sans perte
@@ -204,8 +279,8 @@ class AudioSyncScanner:
         Stéréo : différence L−R, qui annule les dialogues centrés.
         """
         if min(ref_layout[0], donor_layout[0]) >= 6:
-            reference_channels = _SURROUND_BY_LAYOUT.get(ref_layout[1])
-            donor_channels = _SURROUND_BY_LAYOUT.get(donor_layout[1])
+            reference_channels = _surround_channels(*ref_layout)
+            donor_channels = _surround_channels(*donor_layout)
             if reference_channels is None or donor_channels is None:
                 raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
             return ("pan=mono|c0=" + "+".join(reference_channels),
@@ -230,12 +305,14 @@ class AudioSyncScanner:
 
         Le sous-échantillonnage suit le redressement, après le mixage mono
         (`downmix` : filtre pan remplaçant le mixage de tous les canaux).
-        Aucun seek : toutes les positions restent dans la chronologie source.
+        Aucun seek ; chronologie de lecture (`SYNC_AUDIO_ORIGIN_FILTER`, comme la réécriture) :
+        l'échantillon n vaut n ms de lecture, départ tardif et trous comblés de silence.
         """
         import numpy as np
         result = self._run([
             self.ffmpeg, "-nostdin", "-v", "error", *self._decoder_args(track), "-i", str(track.source_path),
-            "-map", _stream_spec(track), "-af", ",".join(self._envelope_chain(cadence_filter, downmix)),
+            "-map", _stream_spec(track),
+            "-af", ",".join([SYNC_AUDIO_ORIGIN_FILTER, *self._envelope_chain(cadence_filter, downmix)]),
             "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
         ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
         if result.returncode:
@@ -251,8 +328,10 @@ class AudioSyncScanner:
         """
         import numpy as np
         count = len(downmixes)
+        # Origine dans chaque branche : avant asplit, aresample adopterait le format commun aux
+        # branches (le mono de la première) et la branche hors dialogues perdrait ses canaux.
         graph = [f"[{_stream_spec(track)}]asplit={count}" + "".join(f"[s{i}]" for i in range(count))]
-        graph += [f"[s{i}]" + ",".join([*self._envelope_chain(cadence_filter, downmix),
+        graph += [f"[s{i}]" + ",".join([SYNC_AUDIO_ORIGIN_FILTER, *self._envelope_chain(cadence_filter, downmix),
                                         "aformat=sample_fmts=flt:channel_layouts=mono"]) + f"[e{i}]"
                   for i, downmix in enumerate(downmixes)]
         graph.append("".join(f"[e{i}]" for i in range(count)) + f"amerge=inputs={count}[out]")
@@ -519,10 +598,37 @@ class AudioSyncScanner:
             reference_samples = self.samples(reference, start, duration, downmix=downmixes[0])
             donor_samples = self.samples(donor, p_donor, duration, cadence_filter=cadence_filter,
                                          downmix=downmixes[1])
-        return self.correlate(
-            reference_samples, donor_samples,
-            self.max_offset_s * 1000,
-        )
+        try:
+            return self.correlate(
+                reference_samples, donor_samples,
+                self.max_offset_s * 1000,
+            )
+        except AudioSyncError as exc:
+            # Logos d'un seul côté, piste qui démarre plus tard : la fenêtre ne porte aucune synchro.
+            if _mostly_silent_samples(reference_samples) or _mostly_silent_samples(donor_samples):
+                raise SilentWindowError("Fenêtre muette d'un côté.") from exc
+            raise
+
+    def _uncertain_sync(self, calibration: SyncCalibration, samples, total: int, spread: float,
+                        donor: AudioSyncTrack, reason: str, log, warn) -> SyncCalibration:
+        """Synchro tirée des seules mesures ponctuelles : proposée à la validation (tout le film à
+        relire), ou acceptée avec un avertissement (`accept_coherent` : Hybrid, CLI). Sous
+        `_UNCERTAIN_NEGLIGIBLE_MS` sans conversion de cadence : aucune correction, avertissement seul."""
+        if len(samples) < _MIN_SAMPLES:
+            raise AudioSyncError(f"{len(samples)} mesure(s) ponctuelle(s) sur {total} : synchro trop incertaine "
+                                 f"({reason}) ; calibration manuelle requise.")
+        shift = round(calibration.segments[0].shift_ms)
+        message = (f"Synchro incertaine ({reason}) : décalage des mesures ponctuelles {shift:+d} ms "
+                   f"({len(samples)}/{total} fenêtres concordantes, écart {spread:.0f} ms).")
+        if abs(shift) < _UNCERTAIN_NEGLIGIBLE_MS and not calibration.converts_audio:
+            (warn or log)(f"{message} Moins de {_UNCERTAIN_NEGLIGIBLE_MS} ms : aucune correction appliquée ; "
+                          "vérifier à l'écoute dans le Synchro Studio si besoin.")
+            return replace(calibration, segments=(SyncSegment(0, 0.0),))
+        if not self.accept_coherent:
+            raise AudioSyncReviewRequired(message, calibration, ((0.0, self.duration(donor) * 1000.0),),
+                                          kind="samples", windows=(len(samples), total), spread_ms=spread)
+        (warn or log)(f"{message} Acceptée, à vérifier à l'écoute.")
+        return calibration
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
              drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="auto",
@@ -534,6 +640,12 @@ class AudioSyncScanner:
             raise ValueError("Le seuil de dérive doit être positif.")
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
+        if _downmixes is None:
+            for label, track in (("la référence", reference), ("la cible", donor)):
+                delay = self.start_delay_s(track)
+                if delay is not None and delay >= 0.001:
+                    log(f"Premier paquet audio de {label} à {delay:.3f} s (rien avant) : "
+                        "analyse sur la chronologie de lecture, silence compris.")
 
         is_auto_method = cadence_audio_method in ("auto", CadenceAudioMethod.AUTO)
         active_cadence_method = "atempo" if is_auto_method else (
@@ -561,7 +673,25 @@ class AudioSyncScanner:
         method_proven_by_fallback = False
         measure_kwargs = {"downmixes": _downmixes} if _downmixes else {}
 
-        def _measure_around(position: float, cadence_filter: str | None):
+        dialogue_free_mixes: list[tuple[str, str] | None] = []
+
+        def _dialogue_free_mix() -> tuple[str, str] | None:
+            """Mixages hors dialogues, sondés une fois (None : mono, disposition non reconnue)."""
+            if not dialogue_free_mixes:
+                try:
+                    dialogue_free_mixes.append(self._dialogue_free_downmixes(reference, donor))
+                except AudioSyncError as exc:
+                    self._check_cancelled()
+                    log(f"{exc} Pas de mesure hors dialogues.")
+                    dialogue_free_mixes.append(None)
+            return dialogue_free_mixes[0]
+
+        def _measure_around(position: float, cadence_filter: str | None, mix: tuple[str, str] | None = None):
+            """(position, décalage, confiance) ; `SilentWindowError` (renvoyée) si chaque essai est
+            muet d'un côté ; None si la corrélation échoue. `mix` : mixages hors dialogues."""
+            kwargs = {"downmixes": mix} if mix else measure_kwargs
+            silent: SilentWindowError | None = None
+            failed = False
             for nudge in (0, -4.0, 4.0, -8.0, 8.0):
                 p = position + nudge
                 if p < 0 or p + window > duration:
@@ -574,13 +704,16 @@ class AudioSyncScanner:
                         window,
                         cadence_filter=cadence_filter,
                         speed_factor=speed_factor,
-                        **measure_kwargs,
+                        **kwargs,
                     )
                     return p, off, conf
+                except SilentWindowError as exc:
+                    silent = exc
                 except AudioSyncError:
-                    continue
-            return None
+                    failed = True
+            return silent if silent is not None and not failed else None
 
+        skipped = failed = 0
         for position in positions:
             if self.cancel_event is not None and self.cancel_event.is_set():
                 raise AudioSyncError("Analyse annulée.")
@@ -593,27 +726,30 @@ class AudioSyncScanner:
                 alternative = "atempo" if measure_method == "asetrate" else "asetrate"
                 alt_filter = build_cadence_audio_filter(cadence_mismatch, alternative)
                 measured = _measure_around(position, alt_filter)
-                if measured is not None:
+                if isinstance(measured, tuple):
                     measure_method, filter_str = alternative, alt_filter
                     if is_auto_method:
                         active_cadence_method = alternative
                         method_proven_by_fallback = True
                     log(f"Cadence : corrélation obtenue avec la méthode '{alternative}' (repli automatique).")
+            via = ""
+            if measured is None and _downmixes is None and (mix := _dialogue_free_mix()) is not None:
+                # Dialogues différents (autre langue) : cette fenêtre seule est retentée sans le
+                # canal central ; les autres restent mesurées sur le mixage complet.
+                self._check_cancelled()
+                measured, via = _measure_around(position, filter_str, mix), " hors dialogues"
+            if isinstance(measured, SilentWindowError):
+                log(f"{position:.1f} s : fenêtre muette d'un côté (logos, piste démarrant plus tard), mesure ignorée.")
+                skipped += 1
+                continue
             if measured is None:
-                if _downmixes is None:
-                    self._check_cancelled()
-                    downmixes = self._dialogue_free_downmixes(reference, donor)
-                    if downmixes is not None:
-                        log("Corrélation mono insuffisante ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                        return self.scan(reference, donor, detect_cuts=detect_cuts,
-                                         drift_threshold_ms=drift_threshold_ms,
-                                         cadence_mismatch=cadence_mismatch,
-                                         cadence_audio_method=cadence_audio_method,
-                                         log=log, warn=warn, _downmixes=downmixes)
-                raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
+                self._check_cancelled()
+                log(f"{position:.1f} s : aucune correspondance, mesure ignorée (l'analyse continue tranchera).")
+                failed += 1
+                continue
             p, offset, confidence = measured
             samples.append({"start_ms": float(p * 1000), "shift_ms": offset, "confidence": confidence})
-            log(f"{p:.1f} s : {offset:+.1f} ms ({confidence:.2f})")
+            log(f"{p:.1f} s : {offset:+.1f} ms ({confidence:.2f}){via}")
 
             # Analyse acoustique de hauteur tonale (sélection auto asetrate vs atempo) au 1er point mesuré
             if is_auto_method and pitch_analysis is None and active_cadence(cadence_mismatch) is not None:
@@ -628,11 +764,19 @@ class AudioSyncScanner:
                     active_cadence_method = pitch_analysis.selected_method
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
 
+        if not samples and not detect_cuts:
+            raise AudioSyncError("Corrélation acoustique insuffisante sur la fenêtre d'analyse.")
+        unmeasured = skipped + failed
         # Filtre des mesures ponctuelles (celui de l'analyse continue peut changer ensuite).
         samples_filter = filter_str
-        spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)
-        weakest = min(s["confidence"] for s in samples)
-        quick = detect_cuts and self.quick_check and spread <= drift_threshold_ms
+        shifts = [s["shift_ms"] for s in samples]
+        spread = max(shifts) - min(shifts) if shifts else 0.0
+        weakest = min((s["confidence"] for s in samples), default=0.0)
+        quick = detect_cuts and self.quick_check and bool(samples) and spread <= drift_threshold_ms
+        if quick and unmeasured:
+            # Moins de points d'appui : une coupure entre deux mesures passerait inaperçue.
+            log(f"Vérification rapide écartée : {unmeasured} fenêtre(s) non mesurée(s).")
+            quick = False
         if quick and weakest < _QUICK_CHECK_MIN_CONFIDENCE:
             log(f"Vérification rapide écartée : confiance minimale {weakest:.2f} < {_QUICK_CHECK_MIN_CONFIDENCE:.2f}.")
             quick = False
@@ -640,7 +784,7 @@ class AudioSyncScanner:
             if quick:
                 log(f"Vérification rapide : {len(samples)} mesures concordantes (écart {spread:.1f} ms), "
                     "analyse continue ignorée.")
-            return self._with_output_method_bias(SyncCalibration(
+            calibration = self._with_output_method_bias(SyncCalibration(
                 (SyncSegment(0, float(np.median([s["shift_ms"] for s in samples]))),),
                 weakest,
                 tuple(samples),
@@ -650,6 +794,11 @@ class AudioSyncScanner:
                 quick_check=quick,
                 cadence_method_auto=is_auto_method,
             ), reference, donor, samples, window, measure_method, measure_kwargs, log, samples_filter)
+            if not unmeasured:
+                return calibration
+            # Sans analyse continue (--detect-cuts absent), des fenêtres non mesurées rendent le résultat incertain.
+            return self._uncertain_sync(calibration, samples, len(positions), spread, donor,
+                                        f"{unmeasured} fenêtre(s) non mesurée(s)", log, warn)
 
         from core.workflows.cadence import detect_cadence_from_acoustic_samples
         acoustic_mismatch = detect_cadence_from_acoustic_samples(samples) if spread > drift_threshold_ms else None
@@ -686,56 +835,78 @@ class AudioSyncScanner:
         max_offset_ms = round(self.max_offset_s * 1000)
         check_cancelled = self._check_cancelled
 
-        def scan(envelopes: tuple[ndarray, ndarray]):
+        def scan(envelopes: tuple[ndarray, ndarray], *, full_mix: bool):
+            """`full_mix` : mixage complet ; des surrounds muets ne prouvent pas une piste muette."""
             review: list[tuple[float, float]] = []
             result = scan_envelopes(
                 *envelopes,
                 max_offset_ms=max_offset_ms, tolerance_ms=drift_threshold_ms,
                 speed_factor=speed_factor, check_cancelled=check_cancelled, log=log, review=review,
+                one_sided_intro=full_mix,
             )
             return result, tuple(review)
-        if _downmixes is not None:
-            (segments, confidence, anchors), unverified = scan(
-                self._envelopes(reference, donor, filter_str, _downmixes))
-        else:
-            # Pistes de langues différentes : les dialogues masquent la musique
-            # et les effets communs. Seconde passe sans le canal central, décodée
-            # avec la première : une seule lecture de chaque fichier.
-            layout_error: Exception | None = None
-            try:
-                downmixes = self._dialogue_free_downmixes(reference, donor)
-            except (AudioSyncError, OSError) as exc:
-                self._check_cancelled()
-                downmixes, layout_error = None, exc
-            if downmixes is None:
-                mono, dialogue_free = self._envelopes(reference, donor, filter_str), None
+        try:
+            if _downmixes is not None:
+                (segments, confidence, anchors), unverified = scan(
+                    self._envelopes(reference, donor, filter_str, _downmixes), full_mix=False)
             else:
-                mono, dialogue_free = self._envelope_pairs(reference, donor, filter_str, (None, downmixes))
-            try:
-                (segments, confidence, anchors), unverified = scan(mono)
-            except AudioSyncError as exc:
-                self._check_cancelled()
-                if layout_error is not None:
-                    raise layout_error from exc
-                if dialogue_free is None:
-                    raise
-                log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                (segments, confidence, anchors), unverified = scan(dialogue_free)
-            else:
-                if unverified and layout_error is not None:
-                    # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
-                    log(f"{layout_error} Analyse mono conservée.")
-                if unverified and dialogue_free is not None:
-                    # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
-                    log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
-                    try:
-                        alternative = scan(dialogue_free)
-                    except AudioSyncError as exc:
-                        self._check_cancelled()
-                        log(f"{exc} Analyse mono conservée.")
-                    else:
-                        if _unverified_total_ms(alternative[1]) < _unverified_total_ms(unverified):
-                            (segments, confidence, anchors), unverified = alternative
+                # Pistes de langues différentes : les dialogues masquent la musique
+                # et les effets communs. Seconde passe sans le canal central, décodée
+                # avec la première : une seule lecture de chaque fichier.
+                layout_error: Exception | None = None
+                try:
+                    downmixes = self._dialogue_free_downmixes(reference, donor)
+                except (AudioSyncError, OSError) as exc:
+                    self._check_cancelled()
+                    downmixes, layout_error = None, exc
+                if downmixes is None:
+                    mono, dialogue_free = self._envelopes(reference, donor, filter_str), None
+                else:
+                    mono, dialogue_free = self._envelope_pairs(reference, donor, filter_str, (None, downmixes))
+                try:
+                    (segments, confidence, anchors), unverified = scan(mono, full_mix=True)
+                except AudioSyncError as exc:
+                    self._check_cancelled()
+                    if layout_error is not None:
+                        # Disposition non reconnue (6.0…) : l'échec mono reste la cause.
+                        log(f"{layout_error} Pas de nouvelle analyse hors dialogues.")
+                    if dialogue_free is None:
+                        raise
+                    log(f"{exc} Nouvelle analyse hors dialogues (surrounds ou L−R)…")
+                    (segments, confidence, anchors), unverified = scan(dialogue_free, full_mix=False)
+                else:
+                    if unverified and layout_error is not None:
+                        # Disposition non reconnue (6.0…) : la proposition mono reste à valider.
+                        log(f"{layout_error} Analyse mono conservée.")
+                    if unverified and dialogue_free is not None:
+                        # Zones mono sans correspondance : la passe hors dialogues peut les vérifier.
+                        log("Zones sans correspondance en mono ; nouvelle analyse hors dialogues (surrounds ou L−R)…")
+                        try:
+                            alternative = scan(dialogue_free, full_mix=False)
+                        except AudioSyncError as exc:
+                            self._check_cancelled()
+                            log(f"{exc} Analyse mono conservée.")
+                        else:
+                            if _unverified_total_ms(alternative[1]) < _unverified_total_ms(unverified):
+                                (segments, confidence, anchors), unverified = alternative
+        except AudioSyncError as exc:
+            # Analyse continue sans conclusion (autre langue, mixages différents) : jamais d'abandon
+            # direct si les mesures ponctuelles s'accordent ; leur décalage est proposé, à valider.
+            self._check_cancelled()
+            shift = _ponctual_shift(samples, drift_threshold_ms)
+            if shift is None or len(samples) < _MIN_SAMPLES:
+                raise
+            return self._uncertain_sync(self._with_output_method_bias(SyncCalibration(
+                (SyncSegment(0, shift),),
+                weakest,
+                tuple(samples),
+                cadence_mismatch=cadence_mismatch,
+                cadence_audio_method=active_cadence_method,
+                cadence_pitch_analysis=pitch_analysis,
+                cadence_method_auto=is_auto_method,
+            ), reference, donor, samples, window, measure_method, measure_kwargs, log, samples_filter),
+                samples, len(positions), spread, donor, str(exc).removesuffix(" ; calibration manuelle requise."),
+                log, warn)
         calibration = self._with_output_method_bias(SyncCalibration(
             segments, confidence, anchors,
             cadence_mismatch=cadence_mismatch,

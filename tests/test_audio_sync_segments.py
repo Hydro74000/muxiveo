@@ -7,7 +7,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from core.workflows.audio_sync import AudioSyncError
+from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired
 from core.workflows.audio_sync_segments import (
     Anchor, _returning_excursion, locate_transition, match_window, scan_envelopes,
 )
@@ -215,6 +215,8 @@ def test_scanner_retries_without_center_channel(monkeypatch):
 
 
 def test_scanner_retries_when_initial_mono_windows_fail(monkeypatch):
+    """Fenêtre mono sans correspondance (autre langue) : seule cette fenêtre est retentée hors
+    dialogues ; l'analyse continue décode les deux mixages en une lecture et tranche."""
     from pathlib import Path
     from core.workflows.audio_sync import AudioSyncTrack
     from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -227,21 +229,21 @@ def test_scanner_retries_when_initial_mono_windows_fail(monkeypatch):
 
     def measure(*args, downmixes=None, **kwargs):
         measured.append(downmixes)
-        if downmixes is None:
+        if downmixes is None and args[2] < 10.0:
             raise AudioSyncError("Corrélation mono insuffisante")
         return 1006.0, .9
 
-    def envelope(track, cadence_filter=None, downmix=None, abort=None):
-        assert downmix == "pan=mono|c0=SL+SR"
-        return ref if track.stream_index == 1 else donor
+    def envelope_mixes(track, cadence_filter, downmixes, abort=None):
+        return [ref if track.stream_index == 1 else donor for _ in downmixes]
 
     monkeypatch.setattr(scanner, "measure", measure)
-    monkeypatch.setattr(scanner, "envelope", envelope)
+    monkeypatch.setattr(scanner, "envelope_mixes", envelope_mixes)
+    messages: list[str] = []
     calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
-                               detect_cuts=True)
+                               detect_cuts=True, log=messages.append)
     assert [s.shift_ms for s in calibration.segments] == [1006]
-    assert None in measured
-    assert ("pan=mono|c0=SL+SR",) * 2 in measured
+    assert measured.count(("pan=mono|c0=SL+SR",) * 2) == 1 and measured.count(None) > 5
+    assert any("hors dialogues" in message for message in messages)
 
 
 def test_dialogue_free_downmixes_follow_layouts():
@@ -624,4 +626,227 @@ def test_envelopes_select_the_requested_stream(monkeypatch, stream_index, spec):
     scanner.envelope(track)
     scanner.envelope_mixes(track, None, (None, "pan=mono|c0=c0"))
     assert commands[0][commands[0].index("-map") + 1] == spec
-    assert commands[1][commands[1].index("-filter_complex") + 1].startswith(f"[{spec}]asplit=2")
+    # Chronologie de lecture établie dans chaque branche, après la séparation des mixages :
+    # avant, aresample prendrait le mono de la première branche pour toutes.
+    assert commands[0][commands[0].index("-af") + 1].startswith("aresample=async=1:first_pts=0,")
+    graph = commands[1][commands[1].index("-filter_complex") + 1]
+    assert graph.startswith(f"[{spec}]asplit=2[s0][s1];[s0]aresample=async=1:first_pts=0,")
+    assert "[s1]aresample=async=1:first_pts=0,pan=mono|c0=c0," in graph
+
+
+def test_one_sided_intro_up_to_30_s_is_accepted():
+    # Logos d'un seul côté (référence muette, piste démarrant plus tard) : rien à vérifier.
+    ref, donor = _edited_pair([], [200])
+    ref[:20000] = 0
+    review: list[tuple[float, float]] = []
+    messages: list[str] = []
+    segments, _, _ = scan_envelopes(ref, donor, log=messages.append, review=review)
+    assert [s.shift_ms for s in segments] == [200] and not review
+    assert any("Son d'un seul côté" in message for message in messages)
+
+
+def _silent_window_scanner(monkeypatch, silent_until_s):
+    from core.workflows.audio_sync_scan import AudioSyncScanner, SilentWindowError
+
+    scanner = AudioSyncScanner(quick_check=True)
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+
+    def measure(_reference, _donor, start, *_args, **_kwargs):
+        if start < silent_until_s:
+            raise SilentWindowError("Fenêtre muette d'un côté.")
+        return 1006.0, .95
+
+    monkeypatch.setattr(scanner, "measure", measure)
+    return scanner
+
+
+def test_silent_sample_window_is_skipped_not_failed(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    scanner = _silent_window_scanner(monkeypatch, 100.0)
+    ref, donor = _edited_pair([], [1006])
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "envelope", lambda track, *_a, **_k: ref if track.stream_index == 1 else donor)
+    messages: list[str] = []
+    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                               detect_cuts=True, log=messages.append)
+    assert [s.shift_ms for s in calibration.segments] == [1006]
+    assert any("fenêtre muette" in message for message in messages)
+    # Moins de points d'appui : l'analyse continue vérifie tout, même en vérification rapide.
+    assert not calibration.quick_check and any("Vérification rapide écartée" in message for message in messages)
+
+
+def test_too_few_measurable_windows_are_refused(monkeypatch):
+    """Analyse continue sans conclusion et moins de 3 mesures ponctuelles : rien de plausible à proposer."""
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    scanner = _silent_window_scanner(monkeypatch, 5000.0)
+    silence = np.zeros(180_000)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    monkeypatch.setattr(scanner, "envelope", lambda *_a, **_k: silence)
+    with pytest.raises(AudioSyncError, match="Aucune correspondance") as exc:
+        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True)
+    assert not isinstance(exc.value, AudioSyncReviewRequired)
+
+
+def test_failed_correlation_with_silent_side_is_flagged(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner, SilentWindowError
+
+    scanner = AudioSyncScanner()
+    rng = np.random.default_rng(3)
+    windows = {"ref.mkv": np.zeros(16000 * 20), "don.mkv": rng.normal(0, .1, 16000 * 20)}
+    monkeypatch.setattr(scanner, "samples", lambda track, *_a, **_k: windows[track.source_path.name])
+    ref, donor = AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2)
+    with pytest.raises(SilentWindowError):
+        scanner.measure(ref, donor, 0.0, 20.0)
+    # Deux côtés sonores sans correspondance : échec ordinaire (relance hors dialogues possible).
+    windows["ref.mkv"] = rng.normal(0, .1, 16000 * 20)
+    with pytest.raises(AudioSyncError) as exc:
+        scanner.measure(ref, donor, 0.0, 20.0)
+    assert not isinstance(exc.value, SilentWindowError)
+
+
+@pytest.mark.real_audio_start_probe
+def test_start_delay_is_read_from_the_first_packet(monkeypatch):
+    import json
+    import subprocess
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    payloads = {
+        1: {"packets": [{"pts_time": "15.057000"}], "streams": [{"codec_name": "eac3"}], "format": {"start_time": "0.000000"}},
+        2: {"packets": [{"pts_time": "600.021"}], "streams": [{"codec_name": "ac3"}], "format": {"start_time": "600.000"}},
+        3: {"streams": [{"codec_name": "aac"}]},
+    }
+    scanner = AudioSyncScanner()
+
+    def run(command, **_kwargs):
+        assert command[command.index("-read_intervals") + 1] == "%+#1"
+        payload = payloads[int(command[command.index("-select_streams") + 1])]
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(scanner, "_run", run)
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 1)) == pytest.approx(15.057)
+    # Origine absolue (TS, M2TS) : retard compté depuis le début du fichier.
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 2)) == pytest.approx(0.021)
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 3)) is None
+
+
+def test_one_sided_intro_is_reserved_to_the_full_mix():
+    # Passe hors dialogues : des surrounds muets ne prouvent pas une piste muette.
+    ref, donor = _edited_pair([], [200])
+    ref[:20000] = 0
+    review: list[tuple[float, float]] = []
+    segments, _, _ = scan_envelopes(ref, donor, review=review, one_sided_intro=False)
+    assert [s.shift_ms for s in segments] == [200] and review and review[0][0] == 0.0
+
+
+def test_unknown_multichannel_layout_uses_standard_channel_positions():
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    # E-AC-3 Atmos de certaines sources WEB : 6 canaux sans disposition déclarée.
+    assert AudioSyncScanner.dialogue_free_downmixes((6, "unknown"), (6, "5.1(side)")) == (
+        "pan=mono|c0=c4+c5", "pan=mono|c0=SL+SR")
+    assert AudioSyncScanner.dialogue_free_downmixes((8, ""), (8, "7.1"))[0] == "pan=mono|c0=c4+c5+c6+c7"
+    with pytest.raises(AudioSyncError, match="non reconnue"):
+        AudioSyncScanner.dialogue_free_downmixes((6, "6.0"), (6, "5.1"))
+
+
+def test_unrecognised_layout_keeps_the_mono_failure(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner()
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+
+    def measure(*_args, **_kwargs):
+        raise AudioSyncError("Corrélation insuffisante ou ambiguë ; calibration manuelle requise.")
+
+    def unknown_layout(*_args):
+        raise AudioSyncError("Disposition multicanal non reconnue ; revue manuelle de la synchro nécessaire.")
+
+    silence = np.zeros(180_000)
+    monkeypatch.setattr(scanner, "measure", measure)
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", unknown_layout)
+    monkeypatch.setattr(scanner, "envelope", lambda *_a, **_k: silence)
+    messages: list[str] = []
+    # L'échec reste celui de la corrélation (mono), pas l'erreur de disposition.
+    with pytest.raises(AudioSyncError, match="Aucune correspondance"):
+        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                     detect_cuts=True, log=messages.append)
+    assert any("non reconnue" in message for message in messages)
+    assert sum("aucune correspondance, mesure ignorée" in message for message in messages) == 6
+
+
+def _inconclusive_scanner(monkeypatch, *, accept_coherent, shifts=(38.0, 32.0, 36.0, 40.0, 36.0, 41.0)):
+    """Mesures ponctuelles concordantes ; analyse continue sans aucune correspondance."""
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    scanner = AudioSyncScanner(accept_coherent=accept_coherent)
+    values = iter(shifts)
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+    monkeypatch.setattr(scanner, "measure", lambda *_a, **_k: (next(values), .5))
+    monkeypatch.setattr(scanner, "_dialogue_free_downmixes", lambda *_a: None)
+    silence = np.zeros(180_000)
+    monkeypatch.setattr(scanner, "envelope", lambda *_a, **_k: silence)
+    return scanner
+
+
+def _tracks():
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    return AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2)
+
+
+def test_inconclusive_continuous_scan_proposes_the_spot_offset(monkeypatch):
+    """Autre langue, mixages différents : pas d'abandon direct, le décalage concordant des mesures
+    ponctuelles est proposé à la validation (tout le film à relire)."""
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=False)
+    with pytest.raises(AudioSyncReviewRequired) as exc:
+        scanner.scan(*_tracks(), detect_cuts=True)
+    proposal = exc.value
+    assert proposal.kind == "samples" and proposal.windows == (6, 6) and proposal.spread_ms == 9.0
+    assert proposal.calibration.segments[0].shift_ms == 37.0
+    assert proposal.unverified_ms == ((0.0, 7_600_000.0),)
+
+
+def test_inconclusive_continuous_scan_is_accepted_with_a_warning(monkeypatch):
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=True)
+    warnings: list[str] = []
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    assert calibration.segments[0].shift_ms == 37.0
+    assert len(warnings) == 1 and "Synchro incertaine" in warnings[0]
+
+
+@pytest.mark.parametrize("accept_coherent", [False, True])
+def test_uncertain_offset_under_10_ms_is_not_applied(monkeypatch, accept_coherent):
+    """Hope coréen ↔ doublage français : +2…+11 ms, inaudible et peut-être un biais de mesure."""
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=accept_coherent,
+                                    shifts=(9.0, 2.0, 6.0, 10.0, 6.0, 11.0))
+    warnings: list[str] = []
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    assert [s.shift_ms for s in calibration.segments] == [0.0] and len(calibration.samples) == 6
+    assert len(warnings) == 1 and "aucune correction" in warnings[0] and "+8 ms" in warnings[0]
+
+
+def test_uncertain_offset_from_10_ms_is_proposed(monkeypatch):
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=False,
+                                    shifts=(12.0, 8.0, 10.0, 14.0, 10.0, 12.0))
+    with pytest.raises(AudioSyncReviewRequired) as exc:
+        scanner.scan(*_tracks(), detect_cuts=True)
+    assert exc.value.calibration.segments[0].shift_ms == 11.0
+
+
+def test_inconclusive_continuous_scan_with_discordant_spots_is_refused(monkeypatch):
+    scanner = _inconclusive_scanner(monkeypatch, accept_coherent=True,
+                                    shifts=(0.0, 900.0, 0.0, 900.0, 0.0, 900.0))
+    with pytest.raises(AudioSyncError, match="Aucune correspondance") as exc:
+        scanner.scan(*_tracks(), detect_cuts=True)
+    assert not isinstance(exc.value, AudioSyncReviewRequired)

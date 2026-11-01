@@ -21,6 +21,7 @@ from core.subprocess_utils import (
 from core.runner import TaskCancelledError
 from core.subtitle_codec import CONVERT_TO_SRT
 from core.workflows.remux_models import RemuxError
+from core.workflows.audio_sync import SYNC_AUDIO_ORIGIN_FILTER  # noqa: F401  (réexport)
 from core.workflows.common.audio_timestamps import (
     common_timestamp_origin, input_timestamp_offset_args, preroll_input_offset, probe_timestamp_payload, timestamp_seconds,
 )
@@ -40,9 +41,6 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
 SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
-# Avec -copyts, élimine le pré-roll négatif avant toute coupe/remise à zéro
-# du PCM, y compris avec les décodeurs FFmpeg 6 qui ne le retirent pas seuls.
-SYNC_AUDIO_ORIGIN_FILTER = "aresample=async=1:first_pts=0"
 SYNC_REWRITE_MODE_AUTO = ""
 SYNC_REWRITE_MODE_OFFSET = "offset"
 SYNC_REWRITE_OFFSET_LABEL = "Sync offset"

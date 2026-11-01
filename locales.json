@@ -9426,5 +9426,13 @@
   "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.": {
     "fra": "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.",
     "eng": "New audio sync for track #{idx}: its imported own sync is replaced, it follows its source again."
+  },
+  "Analyse continue sans conclusion (autre langue ou mixages différents) : décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms). Appliquer directement, ou vérifier à l'écoute dans le Synchro Studio avant de valider.": {
+    "fra": "Analyse continue sans conclusion (autre langue ou mixages différents) : décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms). Appliquer directement, ou vérifier à l'écoute dans le Synchro Studio avant de valider.",
+    "eng": "Continuous analysis inconclusive (other language or different mixes): offset taken from {measured}/{total} matching spot measurements (spread {spread} ms). Apply directly, or check by ear in the Sync Studio before validating."
+  },
+  "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).": {
+    "fra": "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).",
+    "eng": "Uncertain sync to validate: continuous analysis inconclusive, offset taken from {measured}/{total} matching spot measurements (spread {spread} ms)."
   }
 }

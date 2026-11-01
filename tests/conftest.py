@@ -35,6 +35,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_dashboard_probes: sondes réelles du tableau de bord (encodeurs, Vulkan)"
     )
+    config.addinivalue_line(
+        "markers", "real_audio_start_probe: sonde réelle du premier paquet audio (AudioSyncScanner.start_delay_s)"
+    )
 
 
 def pytest_unconfigure(config):
@@ -122,6 +125,16 @@ def _no_vulkan_probe_by_default(monkeypatch):
     from core.workflows.encode.vulkan import VulkanCapability
 
     monkeypatch.setattr(workflow_module, "_detect_vulkan", lambda _ffmpeg: VulkanCapability(reason="tests"))
+
+
+@pytest.fixture(autouse=True)
+def _no_audio_start_probe_by_default(request, monkeypatch):
+    """Synchro audio : aucun FFprobe réel pour le journal du premier paquet au début de ``scan``
+    (``real_audio_start_probe`` : sonde réelle, ``_run`` simulé par le test)."""
+    if request.node.get_closest_marker("real_audio_start_probe") is None:
+        from core.workflows.audio_sync_scan import AudioSyncScanner
+
+        monkeypatch.setattr(AudioSyncScanner, "start_delay_s", lambda _self, _track: None)
 
 
 @pytest.fixture(autouse=True)

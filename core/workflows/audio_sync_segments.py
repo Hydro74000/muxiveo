@@ -45,6 +45,14 @@ def _active_blocks(values):
     return values[:len(values) // 100 * 100].reshape(-1, 100).mean(axis=1) > _ACTIVITY_LEVEL
 
 
+def mostly_silent(values) -> bool:
+    """Enveloppe à 1 kHz dont plus de la moitié des blocs de 100 ms restent sous le plancher de silence."""
+    import numpy as np
+
+    active = _active_blocks(values)
+    return bool(np.count_nonzero(active) * 2 < len(active))
+
+
 def _intro_silence_end(values, window_start: int, size: int) -> int | None:
     """Fin du dernier silence d'au moins 0,5 s commencé avant le centre de la première fenêtre vérifiée."""
     import numpy as np
@@ -91,8 +99,7 @@ def match_window(reference, donor, start: int, size: int, max_offset: int) -> An
         raise AudioSyncError("Fenêtre audio insuffisante.")
     # Une fenêtre surtout silencieuse (début/fin d'épisode) corrèle sur quelques
     # secondes seulement et produit des ancres parasites : exiger ≥ 50 % d'activité.
-    active = _active_blocks(a)
-    if np.count_nonzero(active) * 2 < len(active):
+    if mostly_silent(a):
         raise AudioSyncError("Fenêtre audio majoritairement silencieuse.")
     a = a - a.mean()
     power = float(a @ a)
@@ -204,12 +211,15 @@ def _returning_excursion(anchors, index: int, plateau: float, tolerance_ms: int)
 
 def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
                    speed_factor=1.0, check_cancelled=lambda: None, log=lambda message: None,
-                   review: list[tuple[float, float]] | None = None):
+                   review: list[tuple[float, float]] | None = None, one_sided_intro=True):
     """Sonde toute la piste, y compris le début et les plateaux intermédiaires.
 
     ``review`` : reçoit les zones cohérentes non vérifiées (début actif sans
     correspondance, long trou au même décalage de part et d'autre) au lieu de
     les refuser, en instants du donneur d'origine. Sans liste : refus.
+
+    ``one_sided_intro`` : son d'un seul côté avant la première correspondance admis (≤ 30 s).
+    Réservé au mixage complet : des surrounds muets ne prouvent pas une piste muette.
     """
     size = min(8000, min(len(reference), len(donor)) // 3)
     if size < 1000:
@@ -236,7 +246,21 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
     first = anchors[0]
     unverified = first.donor_ms + first.shift_ms - size // 2 - max(0, first.shift_ms) - size
     if unverified > 0:
-        if _active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any():
+        # Côté muet jusqu'à sa première fenêtre vérifiée (logos d'un seul côté, piste démarrant
+        # plus tard) : le son de l'autre côté n'y rencontre que du silence, rien à vérifier.
+        # Au plus 30 s de son sans correspondance, comme un trou entre deux ancres ; au-delà, à relire.
+        donor_start = first.donor_ms - size // 2
+        starts = {"référence": donor_start + first.shift_ms, "donneur": donor_start}
+        silent_side = next((name for name, values in (("référence", reference), ("donneur", donor))
+                            if not _active_blocks(values[:max(0, starts[name])]).any()), None)
+        sounding = None if silent_side is None else starts["donneur" if silent_side == "référence" else "référence"]
+        if not (_active_blocks(reference[:unverified]).any() or _active_blocks(donor[:unverified]).any()):
+            log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
+        elif one_sided_intro and silent_side is not None and sounding is not None and sounding <= _MAX_ANCHOR_GAP_MS:
+            log(f"Son d'un seul côté avant la première correspondance ({silent_side} muet jusqu'à "
+                f"{starts[silent_side] / 1000:.1f} s : logos, piste démarrant plus tard) : rien à vérifier, "
+                f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
+        else:
             intro = _distinct_intro(reference, donor, first, size, tolerance_ms)
             if intro is None:
                 if review is None:
@@ -249,8 +273,6 @@ def scan_envelopes(reference, donor, *, max_offset_ms=30000, tolerance_ms=25,
                 log(f"Introduction propre à chaque piste (logos), séparée du film par un silence jusqu'à "
                     f"{intro[0] / 1000:.1f} s (référence) / {intro[1] / 1000:.1f} s (donneur) : "
                     f"décalage du premier plateau conservé ({first.shift_ms:+d} ms).")
-        else:
-            log(f"Début silencieux sans correspondance : {unverified / 1000:.1f} s.")
     # Une jonction non vérifiable refuse la calibration, sauf si un décalage unique, sans
     # coupe, garde toutes les ancres sous les seuils de perception (paliers de bobines).
     constant = imperceptible_constant(anchors)
