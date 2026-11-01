@@ -71,9 +71,11 @@ jobs:
       - name: Run all unit tests
         env:
           QT_QPA_PLATFORM: offscreen
+        # -vv compense -q et identifie le test actif ; pile affichée après 120 s.
         # -rs : chaque test ignoré (outil, GPU, plateforme) est listé avec sa raison.
         run: >-
           python -m pytest -q -rs tests
+          -vv --durations=20 -o faulthandler_timeout=120
           -W error::pytest.PytestUnhandledThreadExceptionWarning
           --junitxml=pytest-linux-${{ matrix.python }}.xml
 
