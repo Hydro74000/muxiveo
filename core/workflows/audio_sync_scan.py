@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import math
 import subprocess
 import re
 import threading
 from typing import TYPE_CHECKING, Any
 
 from core.subprocess_utils import run_interruptible, subprocess_text_kwargs, subprocess_windows_no_window_kwargs
-from core.workflows.audio_sync import AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
+from core.workflows.audio_sync import (
+    SYNC_AUDIO_ORIGIN_FILTER, AudioSyncError, AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges,
+)
 from core.workflows.cadence import active_cadence
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 
@@ -24,6 +27,9 @@ _SEEK_PREROLL_S = 5.0
 # ponctuelles les plus sûres ; au-delà de cet étalement, les mesures ne concordent pas.
 _OUTPUT_BIAS_POSITIONS = 4
 _OUTPUT_BIAS_SPREAD_MS = 20.0
+
+# Mesures ponctuelles exigées : une fenêtre muette d'un côté est ignorée, pas davantage.
+_MIN_SAMPLES = 3
 
 # Vérification rapide : confiance minimale de chacune des mesures ponctuelles
 # pour se passer de l'analyse continue quand le décalage est constant.
@@ -49,13 +55,16 @@ _SURROUND_BY_LAYOUT = {
 
 
 def _seek_args(start: float) -> tuple[list[str], list[str]]:
-    """Retourne les options de seek et les filtres de découpage avant conversion de cadence."""
+    """Retourne les options de seek et les filtres de découpage avant conversion de cadence.
+
+    Les filtres commencent par `SYNC_AUDIO_ORIGIN_FILTER` : le découpage porte sur la
+    chronologie de lecture, même si la piste démarre après le point de seek ou y a un trou."""
     start = max(0.0, float(start))
     pre = max(0.0, start - _SEEK_PREROLL_S)
     trim = start - pre
-    return (["-ss", f"{pre:.6f}"] if pre > 0 else []), (
-        [f"atrim=start={trim:.6f}", "asetpts=PTS-STARTPTS"] if trim > 0 else []
-    )
+    return (["-ss", f"{pre:.6f}"] if pre > 0 else []), [
+        SYNC_AUDIO_ORIGIN_FILTER, *([f"atrim=start={trim:.6f}", "asetpts=PTS-STARTPTS"] if trim > 0 else []),
+    ]
 
 
 def quick_check_enabled(options: Any, config: Any) -> bool:
@@ -73,6 +82,27 @@ def coherent_sync_accepted(options: Any) -> bool:
 
 def _unverified_total_ms(ranges) -> float:
     return float(sum(stop - start for start, stop in ranges))
+
+class SilentWindowError(AudioSyncError):
+    """Corrélation impossible parce qu'un côté de la fenêtre est muet : rien à y mesurer."""
+
+
+def _mostly_silent_samples(values) -> bool:
+    """Échantillons à 16 kHz majoritairement muets (enveloppe 1 kHz, comme l'analyse continue)."""
+    import numpy as np
+    from core.workflows.audio_sync_segments import mostly_silent
+
+    values = np.abs(np.asarray(values, dtype=float))
+    return mostly_silent(values[:len(values) // 16 * 16].reshape(-1, 16).mean(axis=1))
+
+
+def _timestamp(value) -> float | None:
+    try:
+        result = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
 
 def _stream_spec(track) -> str:
     """Flux FFmpeg de la piste : index absolu (entier) ou spécificateur tel que `0:a:1`."""
@@ -137,18 +167,34 @@ class AudioSyncScanner:
 
     def _probe_stream(self, track) -> dict[str, Any]:
         result = self._run([self.ffprobe, "-v", "error", "-select_streams", str(track.stream_index).removeprefix("0:"),
-                            "-show_entries", "stream=codec_name,profile,channels,channel_layout,sample_rate",
+                            "-read_intervals", "%+#1", "-show_entries",
+                            "stream=codec_name,profile,channels,channel_layout,sample_rate:packet=pts_time:format=start_time",
                             "-of", "json", str(track.source_path)],
                            timeout=30, **subprocess_text_kwargs())
         if result.returncode:
             raise AudioSyncError("Impossible de lire la disposition audio ; revue manuelle de la synchro nécessaire.")
         try:
-            stream = (json.loads(result.stdout or "{}").get("streams") or [])[0]
+            payload = json.loads(result.stdout or "{}")
+            stream = (payload.get("streams") or [])[0]
         except (IndexError, TypeError, ValueError, AttributeError) as exc:
             raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.") from exc
         if not isinstance(stream, dict):
             raise AudioSyncError("Disposition audio indisponible ; revue manuelle de la synchro nécessaire.")
-        return stream
+        packets = payload.get("packets") or [{}]
+        fmt = payload.get("format") or {}
+        return {**stream,
+                "first_packet_s": _timestamp(packets[0].get("pts_time")) if isinstance(packets[0], dict) else None,
+                "format_start_s": _timestamp(fmt.get("start_time")) if isinstance(fmt, dict) else None}
+
+    def start_delay_s(self, track) -> float | None:
+        """Retard du premier paquet de la piste sur l'origine du fichier (None : inconnu)."""
+        try:
+            stream = self._stream(track)
+        except AudioSyncError:
+            self._check_cancelled()
+            return None
+        first = stream.get("first_packet_s")
+        return None if first is None else first - (stream.get("format_start_s") or 0.0)
 
     def _decoder_args(self, track) -> list[str]:
         """DTS 5.1 au plus à 48 kHz au plus : cœur seul (`-core_only`). L'extension sans perte
@@ -230,12 +276,14 @@ class AudioSyncScanner:
 
         Le sous-échantillonnage suit le redressement, après le mixage mono
         (`downmix` : filtre pan remplaçant le mixage de tous les canaux).
-        Aucun seek : toutes les positions restent dans la chronologie source.
+        Aucun seek ; chronologie de lecture (`SYNC_AUDIO_ORIGIN_FILTER`, comme la réécriture) :
+        l'échantillon n vaut n ms de lecture, départ tardif et trous comblés de silence.
         """
         import numpy as np
         result = self._run([
             self.ffmpeg, "-nostdin", "-v", "error", *self._decoder_args(track), "-i", str(track.source_path),
-            "-map", _stream_spec(track), "-af", ",".join(self._envelope_chain(cadence_filter, downmix)),
+            "-map", _stream_spec(track),
+            "-af", ",".join([SYNC_AUDIO_ORIGIN_FILTER, *self._envelope_chain(cadence_filter, downmix)]),
             "-ac", "1", "-ar", "1000", "-f", "f32le", "pipe:1",
         ], timeout=max(120, self.duration(track) * 2), abort=abort, **subprocess_windows_no_window_kwargs())
         if result.returncode:
@@ -251,8 +299,10 @@ class AudioSyncScanner:
         """
         import numpy as np
         count = len(downmixes)
+        # Origine dans chaque branche : avant asplit, aresample adopterait le format commun aux
+        # branches (le mono de la première) et la branche hors dialogues perdrait ses canaux.
         graph = [f"[{_stream_spec(track)}]asplit={count}" + "".join(f"[s{i}]" for i in range(count))]
-        graph += [f"[s{i}]" + ",".join([*self._envelope_chain(cadence_filter, downmix),
+        graph += [f"[s{i}]" + ",".join([SYNC_AUDIO_ORIGIN_FILTER, *self._envelope_chain(cadence_filter, downmix),
                                         "aformat=sample_fmts=flt:channel_layouts=mono"]) + f"[e{i}]"
                   for i, downmix in enumerate(downmixes)]
         graph.append("".join(f"[e{i}]" for i in range(count)) + f"amerge=inputs={count}[out]")
@@ -519,10 +569,16 @@ class AudioSyncScanner:
             reference_samples = self.samples(reference, start, duration, downmix=downmixes[0])
             donor_samples = self.samples(donor, p_donor, duration, cadence_filter=cadence_filter,
                                          downmix=downmixes[1])
-        return self.correlate(
-            reference_samples, donor_samples,
-            self.max_offset_s * 1000,
-        )
+        try:
+            return self.correlate(
+                reference_samples, donor_samples,
+                self.max_offset_s * 1000,
+            )
+        except AudioSyncError as exc:
+            # Logos d'un seul côté, piste qui démarre plus tard : la fenêtre ne porte aucune synchro.
+            if _mostly_silent_samples(reference_samples) or _mostly_silent_samples(donor_samples):
+                raise SilentWindowError("Fenêtre muette d'un côté.") from exc
+            raise
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
              drift_threshold_ms=25, cadence_mismatch=None, cadence_audio_method="auto",
@@ -534,6 +590,12 @@ class AudioSyncScanner:
             raise ValueError("Le seuil de dérive doit être positif.")
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise AudioSyncError("Analyse annulée.")
+        if _downmixes is None:
+            for label, track in (("la référence", reference), ("la cible", donor)):
+                delay = self.start_delay_s(track)
+                if delay is not None and delay >= 0.001:
+                    log(f"Premier paquet audio de {label} à {delay:.3f} s (rien avant) : "
+                        "analyse sur la chronologie de lecture, silence compris.")
 
         is_auto_method = cadence_audio_method in ("auto", CadenceAudioMethod.AUTO)
         active_cadence_method = "atempo" if is_auto_method else (
@@ -562,6 +624,10 @@ class AudioSyncScanner:
         measure_kwargs = {"downmixes": _downmixes} if _downmixes else {}
 
         def _measure_around(position: float, cadence_filter: str | None):
+            """(position, décalage, confiance) ; `SilentWindowError` (renvoyée) si chaque essai est
+            muet d'un côté ; None si la corrélation échoue."""
+            silent: SilentWindowError | None = None
+            failed = False
             for nudge in (0, -4.0, 4.0, -8.0, 8.0):
                 p = position + nudge
                 if p < 0 or p + window > duration:
@@ -577,9 +643,11 @@ class AudioSyncScanner:
                         **measure_kwargs,
                     )
                     return p, off, conf
+                except SilentWindowError as exc:
+                    silent = exc
                 except AudioSyncError:
-                    continue
-            return None
+                    failed = True
+            return silent if silent is not None and not failed else None
 
         for position in positions:
             if self.cancel_event is not None and self.cancel_event.is_set():
@@ -593,12 +661,15 @@ class AudioSyncScanner:
                 alternative = "atempo" if measure_method == "asetrate" else "asetrate"
                 alt_filter = build_cadence_audio_filter(cadence_mismatch, alternative)
                 measured = _measure_around(position, alt_filter)
-                if measured is not None:
+                if isinstance(measured, tuple):
                     measure_method, filter_str = alternative, alt_filter
                     if is_auto_method:
                         active_cadence_method = alternative
                         method_proven_by_fallback = True
                     log(f"Cadence : corrélation obtenue avec la méthode '{alternative}' (repli automatique).")
+            if isinstance(measured, SilentWindowError):
+                log(f"{position:.1f} s : fenêtre muette d'un côté (logos, piste démarrant plus tard), mesure ignorée.")
+                continue
             if measured is None:
                 if _downmixes is None:
                     self._check_cancelled()
@@ -628,6 +699,9 @@ class AudioSyncScanner:
                     active_cadence_method = pitch_analysis.selected_method
                     log(f"Analyse acoustique de cadence : méthode '{pitch_analysis.selected_method}' sélectionnée — {pitch_analysis.details}")
 
+        if len(samples) < _MIN_SAMPLES:
+            raise AudioSyncError(f"{len(samples)} mesure(s) ponctuelle(s) seulement sur {len(positions)} : "
+                                 "piste muette aux autres positions ; calibration manuelle requise.")
         # Filtre des mesures ponctuelles (celui de l'analyse continue peut changer ensuite).
         samples_filter = filter_str
         spread = max(s["shift_ms"] for s in samples) - min(s["shift_ms"] for s in samples)

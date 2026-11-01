@@ -624,4 +624,102 @@ def test_envelopes_select_the_requested_stream(monkeypatch, stream_index, spec):
     scanner.envelope(track)
     scanner.envelope_mixes(track, None, (None, "pan=mono|c0=c0"))
     assert commands[0][commands[0].index("-map") + 1] == spec
-    assert commands[1][commands[1].index("-filter_complex") + 1].startswith(f"[{spec}]asplit=2")
+    # Chronologie de lecture établie dans chaque branche, après la séparation des mixages :
+    # avant, aresample prendrait le mono de la première branche pour toutes.
+    assert commands[0][commands[0].index("-af") + 1].startswith("aresample=async=1:first_pts=0,")
+    graph = commands[1][commands[1].index("-filter_complex") + 1]
+    assert graph.startswith(f"[{spec}]asplit=2[s0][s1];[s0]aresample=async=1:first_pts=0,")
+    assert "[s1]aresample=async=1:first_pts=0,pan=mono|c0=c0," in graph
+
+
+def test_one_sided_intro_up_to_30_s_is_accepted():
+    # Logos d'un seul côté (référence muette, piste démarrant plus tard) : rien à vérifier.
+    ref, donor = _edited_pair([], [200])
+    ref[:20000] = 0
+    review: list[tuple[float, float]] = []
+    messages: list[str] = []
+    segments, _, _ = scan_envelopes(ref, donor, log=messages.append, review=review)
+    assert [s.shift_ms for s in segments] == [200] and not review
+    assert any("Son d'un seul côté" in message for message in messages)
+
+
+def _silent_window_scanner(monkeypatch, silent_until_s):
+    from core.workflows.audio_sync_scan import AudioSyncScanner, SilentWindowError
+
+    scanner = AudioSyncScanner(quick_check=True)
+    monkeypatch.setattr(scanner, "duration", lambda track: 7600.0)
+
+    def measure(_reference, _donor, start, *_args, **_kwargs):
+        if start < silent_until_s:
+            raise SilentWindowError("Fenêtre muette d'un côté.")
+        return 1006.0, .95
+
+    monkeypatch.setattr(scanner, "measure", measure)
+    return scanner
+
+
+def test_silent_sample_window_is_skipped_not_failed(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    scanner = _silent_window_scanner(monkeypatch, 100.0)
+    messages: list[str] = []
+    calibration = scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
+                               detect_cuts=True, log=messages.append)
+    assert [s.shift_ms for s in calibration.segments] == [1006] and len(calibration.samples) == 5
+    assert any("fenêtre muette" in message for message in messages)
+
+
+def test_too_few_measurable_windows_are_refused(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+
+    scanner = _silent_window_scanner(monkeypatch, 5000.0)
+    with pytest.raises(AudioSyncError, match="mesure"):
+        scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True)
+
+
+def test_failed_correlation_with_silent_side_is_flagged(monkeypatch):
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner, SilentWindowError
+
+    scanner = AudioSyncScanner()
+    rng = np.random.default_rng(3)
+    windows = {"ref.mkv": np.zeros(16000 * 20), "don.mkv": rng.normal(0, .1, 16000 * 20)}
+    monkeypatch.setattr(scanner, "samples", lambda track, *_a, **_k: windows[track.source_path.name])
+    ref, donor = AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2)
+    with pytest.raises(SilentWindowError):
+        scanner.measure(ref, donor, 0.0, 20.0)
+    # Deux côtés sonores sans correspondance : échec ordinaire (relance hors dialogues possible).
+    windows["ref.mkv"] = rng.normal(0, .1, 16000 * 20)
+    with pytest.raises(AudioSyncError) as exc:
+        scanner.measure(ref, donor, 0.0, 20.0)
+    assert not isinstance(exc.value, SilentWindowError)
+
+
+@pytest.mark.real_audio_start_probe
+def test_start_delay_is_read_from_the_first_packet(monkeypatch):
+    import json
+    import subprocess
+    from pathlib import Path
+    from core.workflows.audio_sync import AudioSyncTrack
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    payloads = {
+        1: {"packets": [{"pts_time": "15.057000"}], "streams": [{"codec_name": "eac3"}], "format": {"start_time": "0.000000"}},
+        2: {"packets": [{"pts_time": "600.021"}], "streams": [{"codec_name": "ac3"}], "format": {"start_time": "600.000"}},
+        3: {"streams": [{"codec_name": "aac"}]},
+    }
+    scanner = AudioSyncScanner()
+
+    def run(command, **_kwargs):
+        assert command[command.index("-read_intervals") + 1] == "%+#1"
+        payload = payloads[int(command[command.index("-select_streams") + 1])]
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(scanner, "_run", run)
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 1)) == pytest.approx(15.057)
+    # Origine absolue (TS, M2TS) : retard compté depuis le début du fichier.
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 2)) == pytest.approx(0.021)
+    assert scanner.start_delay_s(AudioSyncTrack(Path("a.mkv"), 3)) is None

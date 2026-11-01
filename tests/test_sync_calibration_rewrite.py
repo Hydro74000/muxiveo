@@ -19,9 +19,11 @@ _EAC3_PROBE = {"codec_name": "eac3", "codec_long_name": "E-AC-3", "profile": "",
 
 def test_seek_args_preroll_before_window():
     # Pas de seek d'entrée près du début : un seek MKV peut perdre les premiers paquets audio.
-    assert _seek_args(0) == ([], [])
-    assert _seek_args(0.1) == ([], ["atrim=start=0.100000", "asetpts=PTS-STARTPTS"])
-    assert _seek_args(197.0) == (["-ss", "192.000000"], ["atrim=start=5.000000", "asetpts=PTS-STARTPTS"])
+    # Découpage toujours sur la chronologie de lecture (départ tardif ou trou comblé avant atrim).
+    origin = "aresample=async=1:first_pts=0"
+    assert _seek_args(0) == ([], [origin])
+    assert _seek_args(0.1) == ([], [origin, "atrim=start=0.100000", "asetpts=PTS-STARTPTS"])
+    assert _seek_args(197.0) == (["-ss", "192.000000"], [origin, "atrim=start=5.000000", "asetpts=PTS-STARTPTS"])
 
 
 def test_scanner_samples_trim_after_input(monkeypatch):
@@ -43,7 +45,8 @@ def test_scanner_samples_trim_after_input(monkeypatch):
     cmd = seen["cmd"]
     assert cmd.index("-ss") < cmd.index("-i")
     assert cmd.count("-ss") == 1
-    assert cmd[cmd.index("-af") + 1].startswith("atrim=start=5.000000,asetpts=PTS-STARTPTS,")
+    assert cmd[cmd.index("-af") + 1].startswith(
+        "aresample=async=1:first_pts=0,atrim=start=5.000000,asetpts=PTS-STARTPTS,")
 
 
 @pytest.mark.parametrize("method", ["samples", "pitch_samples"])

@@ -16,6 +16,12 @@ from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_
 if TYPE_CHECKING:
     from core.workflows.sync_calibration import SyncCalibration
 
+# Chronologie de lecture d'une piste audio : départ tardif et trous comblés de silence,
+# chevauchements et pré-roll négatif retirés (avec -copyts, y compris pour les décodeurs
+# FFmpeg 6 qui ne le retirent pas seuls). L'analyse et la réécriture de la synchro lisent
+# ainsi les pistes comme le lecteur, sans compter les échantillons à partir du premier paquet.
+SYNC_AUDIO_ORIGIN_FILTER = "aresample=async=1:first_pts=0"
+
 
 class AudioSyncError(RuntimeError):
     """Raised when enhanced audio synchronization cannot compute a reliable delta."""
