@@ -145,7 +145,8 @@ def read_frame_statistics(path: Path) -> FrameStatistics:
     return FrameStatistics(int(lines[0]["width"]), int(lines[0]["height"]), tuple(frames), tuple(scenes))
 
 
-#: Écart de MaxFALL entre la source et l'image restaurée tenu pour invisible (moyenne de l'image, arrondis).
+#: Écart de MaxFALL entre la source et l'image restaurée tenu pour invisible : 1 %, au moins 1 nit (arrondi des
+#: valeurs écrites ; contenus sombres, MaxFALL de quelques nits).
 FALL_TOLERANCE = 0.01
 
 
@@ -168,12 +169,12 @@ def _fall(statistics: FrameStatistics) -> float:
 def isolated_light_level_change(source: FrameStatistics, restored: FrameStatistics) -> bool:
     """Vrai si la Restauration ne change MaxCLL / MaxFALL que par des pixels isolés, invisibles : dans chaque image
     de l'image au pic le plus haut, moins de 0,02 % des pixels dépassent le pic de l'autre (percentile 99,98 % de
-    maxRGB sous ce pic, critère d'écrêtage visible du HDR Studio) ; MaxFALL à 1 % près."""
+    maxRGB sous ce pic, critère d'écrêtage visible du HDR Studio) ; MaxFALL à 1 % près (au moins 1 nit)."""
     source_peak, restored_peak = _peak(source), _peak(restored)
     higher, lower_peak = (source, restored_peak) if source_peak >= restored_peak else (restored, source_peak)
     robust = max(frame.percentiles[-1] for frame in higher.frames)
     source_fall, restored_fall = _fall(source), _fall(restored)
-    return robust <= lower_peak and abs(restored_fall - source_fall) <= FALL_TOLERANCE * max(source_fall, 1.0)
+    return robust <= lower_peak and abs(restored_fall - source_fall) <= max(FALL_TOLERANCE * source_fall, 1.0)
 
 
 def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[str, str]:

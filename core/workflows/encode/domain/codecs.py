@@ -1259,7 +1259,8 @@ def build_vf(video: VideoEncodeSettings) -> str:
         "zscale=primaries=bt709,"
         f"tonemap=tonemap={algo}:desat=0,"
         f"zscale=transfer=bt709:matrix=bt709:range=tv{dither},"
-        "format=yuv420p,"
+        # Restauration : 10 bits vers le moteur (aucune quantification 8 bits avant le réseau).
+        f"format={'yuv420p10le' if video.restores() else 'yuv420p'},"
         f"{mark}"
         # Les métadonnées HDR de frame traversent tonemap : l'encodeur les
         # réécrirait en SEI dans un flux SDR.

@@ -194,6 +194,12 @@ class TestPipeline:
         assert rife[rife.index("--restore-dither") + 1] == "8"
         assert encode[encode.index("-vf") + 1].endswith("format=yuv420p")
 
+    def test_tonemap_stays_10_bits_before_the_engine(self):
+        from core.workflows.encode.domain.codecs import build_vf
+        vf = build_vf(_video(tonemap_to_sdr=True))
+        assert "format=yuv420p10le" in vf and "format=yuv420p," not in vf
+        assert "format=yuv420p," in build_vf(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True))
+
     def test_nvencc_decode_stage_in_10_bits(self):
         decode = ["ffmpeg", "-i", "s.mkv", "-map", "0:0", "-f", "yuv4mpegpipe", "-"]
         cmd = _interpolation_decode_cmd(decode, InterpolationSource(), _video())
@@ -275,6 +281,24 @@ class TestWorkflow:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_payload(field_order="tt")), \
                 patch("core.workflows.encode.workflow._rife_capabilities", return_value=_caps()):
             assert workflow._restoration_validation_errors(_cfg(tmp_path, video)) == []
+
+    def test_vfr_with_dynamic_hdr_copy_refused(self, workflow, tmp_path):
+        vfr = _payload(r_frame_rate="30/1", avg_frame_rate="29/1")
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=vfr), \
+                patch.object(EncodeWorkflow, "_load_mediainfo_video_track", return_value={}), \
+                patch("core.workflows.encode.workflow._rife_capabilities", return_value=_caps()):
+            [error] = workflow._restoration_validation_errors(_cfg(tmp_path, _video(copy_dv=True)))
+            assert "VFR" in error
+            assert workflow._restoration_validation_errors(_cfg(tmp_path, _video())) == []  # cadence normalisée
+
+    def test_with_interpolation_no_duplicate_messages(self, qt_app, tmp_path):
+        _ = qt_app
+        wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", rife_bin=None)
+        video = _video(interpolation=FrameInterpolationSettings(enabled=True, factor=2))
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_payload(field_order="tt")):
+            assert wf._restoration_validation_errors(_cfg(tmp_path, video)) == []
+            text = "\n".join(wf.validate(_cfg(tmp_path, video)))
+        assert text.count("introuvable") == 1 and text.count("entrelacée") == 1
 
     def test_copy_refused(self, workflow, tmp_path):
         video = VideoEncodeSettings(codec="copy", restoration=_restore())
@@ -456,6 +480,13 @@ class TestWrittenLightLevels:
         # MaxFALL déplacé de plus de 1 %
         value, _ = written_light_levels(self._video(tmp_path, source), _statistics([1200.0] * 8, [1100.0] * 8, 65.0))
         assert value == "1200,65"
+
+    def test_dark_content_fall_tolerance(self, tmp_path):
+        from core.fel.hdr10plus import written_light_levels
+        source = _statistics([284.0] * 8, [200.0] * 8, avg=3.01)
+        # MaxFALL de quelques nits : quelques centièmes d'écart, invisibles
+        value, _ = written_light_levels(self._video(tmp_path, source, "498,92"), _statistics([288.0] * 8, [199.0] * 8, 3.06))
+        assert value == "498,92"
 
     def test_without_source_values_or_restoration(self, tmp_path):
         from core.fel.hdr10plus import written_light_levels

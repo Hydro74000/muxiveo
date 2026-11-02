@@ -178,11 +178,13 @@ def _measured(path: Path, *args: str) -> tuple[int, int]:
     return round(max(max(f["max_nits"]) for f in frames)), round(max(f["avg_nits"] for f in frames))
 
 
-@pytest.mark.parametrize("codec", ["libx265", "nvencc_hevc"])
+@pytest.mark.parametrize("codec", ["libx265", "hevc_nvenc", "nvencc_hevc"])
 def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> None:
-    if codec == "nvencc_hevc" and ("nvencc" not in os.environ.get("MUXIVEO_TEST_HW", "").split(",")
-                                   or not shutil.which("nvencc")):
+    hardware = set(os.environ.get("MUXIVEO_TEST_HW", "").split(","))
+    if codec == "nvencc_hevc" and ("nvencc" not in hardware or not shutil.which("nvencc")):
         pytest.skip("Activer MUXIVEO_TEST_HW=nvencc (NVEncC requis)")
+    if codec == "hevc_nvenc" and "nvenc" not in hardware:
+        pytest.skip("Activer MUXIVEO_TEST_HW=nvenc")
     if "frame-statistics" not in (rife_capabilities(str(RIFE_BIN)) or _NO_CAPS).options:
         pytest.skip("muxiveo-rife sans --frame-statistics")
     src = tmp_path / "hdr.mkv"
@@ -192,7 +194,8 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> 
         source=src, output=out,
         video=VideoEncodeSettings(
             codec=codec, quality_mode=QualityMode.CRF if codec == "libx265" else QualityMode.CQ, crf=8, cq=12,
-            preset="ultrafast" if codec == "libx265" else "P4", source_color_transfer="smpte2084",
+            preset={"libx265": "ultrafast", "hevc_nvenc": "p4", "nvencc_hevc": "P4"}[codec],
+            source_color_transfer="smpte2084",
             inject_hdr_meta=True, master_display=_MASTER_DISPLAY, max_cll="1000,400",
             static_hdr_light_level_source="source", restoration=RestoreSettings(enabled=True, level="fort"),
         ),

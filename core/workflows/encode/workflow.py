@@ -3525,7 +3525,11 @@ class EncodeWorkflow(QObject):
                                    static_hdr_light_level_source="restore_frame_statistics")
 
     def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
-        """Contrôles propres à la Restauration (outil, graphes livrés, entrelacement)."""
+        """Contrôles propres à la Restauration (outil, graphes livrés, cadence, entrelacement).
+
+        Avec l'interpolation, outil, cadence et entrelacement sont déjà contrôlés par
+        ``_interpolation_validation_errors`` (même pipe y4m) : seules les capacités de Restauration s'ajoutent.
+        """
         errors: list[str] = []
         for video in self._video_tracks(config):
             if not video.restoration.is_active():
@@ -3533,16 +3537,27 @@ class EncodeWorkflow(QObject):
             if video.codec == "copy":
                 errors.append("Restauration : impossible avec le codec vidéo COPY (réencodage requis).")
                 continue
-            source = self._video_source_from_settings(config, video)
             rife_bin = self._rife_bin
-            if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
+            available = bool(rife_bin) and (Path(str(rife_bin)).is_file() or bool(shutil.which(str(rife_bin))))
+            if available:
+                resolved = str(shutil.which(str(rife_bin)) or rife_bin)
+                errors.extend(_restore_support_errors(_rife_capabilities(resolved), video.restoration))
+            if video.interpolates():
+                continue
+            if not available:
                 errors.append(
                     "Restauration : moteur muxiveo-rife introuvable "
                     "(installer l'extension Interpolation depuis la page Extensions)."
                 )
-            else:
-                resolved = str(shutil.which(rife_bin) or rife_bin)
-                errors.extend(_restore_support_errors(_rife_capabilities(resolved), video.restoration))
+            source = self._video_source_from_settings(config, video)
+            # Le y4m ne porte pas d'horodatage : source VFR normalisée CFR, ce qui fausserait les métadonnées
+            # dynamiques indexées par trame.
+            if (video.copy_dv or video.copy_hdr10plus) and self._interpolation_source(video, source).is_vfr:
+                errors.append(
+                    f"Restauration : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
+                    "impose de conserver chaque trame, ce qui fausserait la durée : désactiver la copie DoVi / "
+                    "HDR10+ (la cadence sera alors normalisée) ou la Restauration."
+                )
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):
