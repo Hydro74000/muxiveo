@@ -207,7 +207,8 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> 
     state = wait_task(wf.run(cfg), timeout=300.0)
     assert state["failed"] is None, f"Encode failed: {state['failed']}"
     text = "\n".join(logs + [str(line) for line in state["progress"]])
-    assert "MaxCLL/MaxFALL exacts de l'image restaurée" in text
+    # bruit synthétique très fort : MaxFALL déplacé de plus de 1 %, écart visible, mesure écrite
+    assert "MaxCLL/MaxFALL exacts de l'image restaurée" in text and "écart visible" in text
     colour, sei = _light_levels(out)
     # Image restaurée mesurée avant l'encodage (comme pour le FEL) : Restauration déterministe, mêmes valeurs exactes.
     assert colour == sei == _measured(src, "--restore", "fort") != (1000, 400)

@@ -26,7 +26,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
-    light_level_origin, light_level_statistics_path,
+    light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -356,7 +356,7 @@ class MultiVideoPipelineRunner:
                     )
                     cb.log_info(f"Piste vidéo {index}: HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
                 if light is not None:
-                    exact = light.static_light_levels()
+                    exact, message = written_light_levels(video, light)
                     video = replace(video, max_cll=exact)
                     max_cll, max_fall = (int(value) for value in exact.split(","))
                     light_levels = (max_cll, max_fall)
@@ -368,7 +368,7 @@ class MultiVideoPipelineRunner:
                         current_hevc = cll_out
                     else:
                         cll_out.unlink(missing_ok=True)
-                    cb.log_info(f"Piste vidéo {index}: MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}.")
+                    cb.log_info(f"Piste vidéo {index}: {message}")
                 cb.check_cancelled(signals)
 
             if video.copy_dv or video.copy_hdr10plus:

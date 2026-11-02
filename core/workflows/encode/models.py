@@ -402,6 +402,10 @@ class VideoEncodeSettings:
     fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
     # Restauration en HDR10 : statistiques de l'image restaurée écrites par le moteur (MaxCLL/MaxFALL exacts).
     restore_statistics: Path | None = field(default=None, repr=False, compare=False)
+    # Trames lues mesurées avant la Restauration, et MaxCLL,MaxFALL de la source : conservés si la Restauration ne
+    # les change que par des pixels isolés.
+    restore_source_statistics: Path | None = field(default=None, repr=False, compare=False)
+    restore_source_light_levels: str = field(default="", repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,

@@ -145,6 +145,63 @@ def read_frame_statistics(path: Path) -> FrameStatistics:
     return FrameStatistics(int(lines[0]["width"]), int(lines[0]["height"]), tuple(frames), tuple(scenes))
 
 
+#: Écart de MaxFALL entre la source et l'image restaurée tenu pour invisible (moyenne de l'image, arrondis).
+FALL_TOLERANCE = 0.01
+
+
+def _light_pair(value: str) -> tuple[int, int] | None:
+    """MaxCLL,MaxFALL lus ; None si absents ou nuls (0,0 : inconnus)."""
+    parts = [part.strip() for part in str(value or "").split(",")]
+    if len(parts) != 2 or not all(part.isdigit() for part in parts) or not int(parts[0]):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def _peak(statistics: FrameStatistics) -> float:
+    return max(max(frame.max_nits) for frame in statistics.frames)
+
+
+def _fall(statistics: FrameStatistics) -> float:
+    return max(frame.avg_nits for frame in statistics.frames)
+
+
+def isolated_light_level_change(source: FrameStatistics, restored: FrameStatistics) -> bool:
+    """Vrai si la Restauration ne change MaxCLL / MaxFALL que par des pixels isolés, invisibles : dans chaque image
+    de l'image au pic le plus haut, moins de 0,02 % des pixels dépassent le pic de l'autre (percentile 99,98 % de
+    maxRGB sous ce pic, critère d'écrêtage visible du HDR Studio) ; MaxFALL à 1 % près."""
+    source_peak, restored_peak = _peak(source), _peak(restored)
+    higher, lower_peak = (source, restored_peak) if source_peak >= restored_peak else (restored, source_peak)
+    robust = max(frame.percentiles[-1] for frame in higher.frames)
+    source_fall, restored_fall = _fall(source), _fall(restored)
+    return robust <= lower_peak and abs(restored_fall - source_fall) <= FALL_TOLERANCE * max(source_fall, 1.0)
+
+
+def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[str, str]:
+    """MaxCLL,MaxFALL à écrire après l'encodage et message du journal.
+
+    Image reconstruite (FEL) : toujours la mesure (les valeurs de la source décrivent la BL). Image restaurée : les
+    valeurs de la source restent intactes si la Restauration ne les change que par des pixels isolés
+    (``isolated_light_level_change``, trames lues mesurées par le moteur avant la Restauration) ; sinon, ou sans
+    valeurs dans la source, la mesure de l'image restaurée.
+    """
+    exact = statistics.static_light_levels()
+    declared = _light_pair(getattr(video, "restore_source_light_levels", ""))
+    source_path = getattr(video, "restore_source_statistics", None)
+    if restore_statistics_path(video) is None or declared is None or not isinstance(source_path, Path):
+        return exact, f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}."
+    kept = f"{declared[0]},{declared[1]}"
+    try:
+        source = read_frame_statistics(source_path)
+    except FrameStatisticsError as exc:
+        return exact, f"MaxCLL/MaxFALL exacts de l'image restaurée : {exact} (source non comparée : {exc})."
+    measured_source = source.static_light_levels()
+    if isolated_light_level_change(source, statistics):
+        return kept, (f"MaxCLL/MaxFALL de la source conservés : {kept} (image restaurée {exact}, source mesurée "
+                      f"{measured_source} : écart limité à des pixels isolés, invisible).")
+    return exact, (f"MaxCLL/MaxFALL exacts de l'image restaurée : {exact} (source mesurée {measured_source} : "
+                   "écart visible).")
+
+
 def _tenths(nits: float) -> int:
     return max(0, min(100000, round(nits * 10)))
 

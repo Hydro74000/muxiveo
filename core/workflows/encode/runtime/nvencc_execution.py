@@ -68,7 +68,7 @@ from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
-    light_level_origin, light_level_statistics_path,
+    light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -162,13 +162,13 @@ def _apply_fel_hdr10plus(
             annexb.replace(injected)
         final, levels = injected, None
         if light is not None:
-            exact = light.static_light_levels()
+            exact, message = written_light_levels(video, light)
             if replace_content_light_level_sei_file(injected, with_cll, max_cll=exact).applied:
                 injected.unlink(missing_ok=True)
                 final = with_cll
             max_cll, max_fall = (int(value) for value in exact.split(","))
             levels = (max_cll, max_fall)
-            log(f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}.")
+            log(message)
         progress("Réécriture du flux NVEncC avec les métadonnées recalculées…")
         try:
             MatroskaHevcPayloadRewriter().rewrite(

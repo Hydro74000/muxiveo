@@ -483,6 +483,8 @@ def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *,
                                dither="8" if resolve_output_bit_depth(video) == 8 else "auto")
     if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image restaurée (sources PQ)
         args.extend(["--frame-statistics", str(video.restore_statistics)])
+        if video.restore_source_statistics is not None:
+            args.extend(["--source-statistics", str(video.restore_source_statistics)])
     return args
 
 

@@ -346,8 +346,11 @@ class TestLightLevels:
         prepared = self._prepare(workflow, _hdr10(), tmp_path)
         assert prepared.restore_statistics == tmp_path / "restore_statistics_1.jsonl"
         assert prepared.max_cll == "" and prepared.static_hdr_light_level_source == "restore_frame_statistics"
+        assert prepared.restore_source_light_levels == "1000,400"
+        assert prepared.restore_source_statistics == tmp_path / "restore_source_statistics_1.jsonl"
         args = restore_args_for(prepared, InterpolationSource(transfer="smpte2084"))
         assert args[args.index("--frame-statistics") + 1] == str(prepared.restore_statistics)
+        assert args[args.index("--source-statistics") + 1] == str(prepared.restore_source_statistics)
 
     @pytest.mark.parametrize("kw", [
         {"static_hdr_light_level_source": "manual"},             # valeurs saisies : conservées
@@ -409,3 +412,59 @@ class TestLightLevels:
         assert len(commands) == 1 and "hevc_mp4toannexb" in commands[0]  # HDR10+ de la source intact
         assert sei.call_args.kwargs == {"max_cll": "812,42"} and rewrite.call_args.kwargs["light_levels"] == (812, 42)
         assert any("l'image restaurée" in str(call) for call in log.call_args_list)
+
+
+def _statistics(peaks: list[float], highs: list[float], avg: float = 40.0):
+    from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord
+    frames = tuple(FrameRecord(i == 0, (p, p * 0.8, p * 0.5), avg, h, 0.5, (0, 1, 2, 4, 8, 16, h))
+                   for i, (p, h) in enumerate(zip(peaks, highs)))
+    return FrameStatistics(4, 2, frames, (SceneRecord(0, len(frames)),))
+
+
+def _write(path: Path, statistics) -> Path:
+    lines = [{"format": "mvo-fel-frame-statistics", "version": 1, "bins": 1024, "width": 4, "height": 2}]
+    for index, f in enumerate(statistics.frames):
+        lines.append({"frame": index, "scene_start": f.scene_start, "max_nits": list(f.max_nits), "avg_nits": f.avg_nits,
+                      "y9999_nits": f.y9999_nits, "y100": f.y100, "maxrgb_percentiles": list(f.percentiles)})
+    lines.append({"scene_first": 0, "frames": len(statistics.frames), "maxrgb_hist": []})
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    return path
+
+
+class TestWrittenLightLevels:
+    def _video(self, tmp_path: Path, source_stats, declared: str = "4342,2342") -> VideoEncodeSettings:
+        return _hdr10(restore_statistics=tmp_path / "r.jsonl", restore_source_light_levels=declared,
+                      restore_source_statistics=_write(tmp_path / "s.jsonl", source_stats),
+                      static_hdr_light_level_source="restore_frame_statistics")
+
+    def test_isolated_peaks_keep_source_values(self, tmp_path):
+        from core.fel.hdr10plus import written_light_levels
+        # grain retiré : pic 3494 → 3024, porté par quelques pixels (99,98 % de la source à 1800 nits)
+        source = _statistics([3494.0] * 8, [1800.0] * 8, avg=108.6)
+        value, message = written_light_levels(self._video(tmp_path, source), _statistics([3024.0] * 8, [1750.0] * 8, 108.2))
+        assert value == "4342,2342" and "conservés" in message and "3494,109" in message
+        # pic relevé de quelques pixels seulement
+        value, _ = written_light_levels(self._video(tmp_path, source), _statistics([3600.0] * 8, [1810.0] * 8, 108.6))
+        assert value == "4342,2342"
+
+    def test_visible_change_writes_the_measure(self, tmp_path):
+        from core.fel.hdr10plus import written_light_levels
+        source = _statistics([1200.0] * 8, [1150.0] * 8, avg=70.0)
+        # hautes lumières étendues : plus de 0,02 % des pixels au-delà du pic restauré
+        value, message = written_light_levels(self._video(tmp_path, source), _statistics([1000.0] * 8, [900.0] * 8, 70.0))
+        assert value == "1000,70" and "écart visible" in message
+        # MaxFALL déplacé de plus de 1 %
+        value, _ = written_light_levels(self._video(tmp_path, source), _statistics([1200.0] * 8, [1100.0] * 8, 65.0))
+        assert value == "1200,65"
+
+    def test_without_source_values_or_restoration(self, tmp_path):
+        from core.fel.hdr10plus import written_light_levels
+        stats = _statistics([900.0] * 4, [700.0] * 4)
+        for declared in ("", "0,0"):
+            assert written_light_levels(self._video(tmp_path, stats, declared), stats)[0] == "900,40"
+        fel = _hdr10(static_hdr_light_level_source="fel_frame_statistics", restore_source_light_levels="1000,400")
+        value, message = written_light_levels(fel, stats)
+        assert value == "900,40" and "reconstruite" in message
+        broken = self._video(tmp_path, stats)
+        broken.restore_source_statistics = tmp_path / "absent.jsonl"
+        assert written_light_levels(broken, stats)[0] == "900,40"

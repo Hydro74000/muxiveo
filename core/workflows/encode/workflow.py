@@ -3505,7 +3505,8 @@ class EncodeWorkflow(QObject):
 
     def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
         """Restauration en HDR10 (PQ) : MaxCLL/MaxFALL de l'image restaurée, mesurés par le moteur pendant l'encodage
-        puis écrits après (SEI CLL et élément Colour) ; rien de provisoire n'est transmis à l'encodeur (D-e)."""
+        puis écrits après (SEI CLL et élément Colour) ; ceux de la source restent si la Restauration ne les change que
+        par des pixels isolés (``written_light_levels``) ; rien de provisoire n'est transmis à l'encodeur (D-e)."""
         from core.fel.preparation import measures_light_levels
 
         pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
@@ -3513,13 +3514,15 @@ class EncodeWorkflow(QObject):
             return video
         prefix = f"Piste vidéo #{index} — "
         resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
-        if not resolved or not _rife_supports(resolved, "frame-statistics"):
+        if not resolved or not all(_rife_supports(resolved, option) for option in ("frame-statistics", "source-statistics")):
             self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : MaxCLL/MaxFALL de la "
                                   "source conservés (mettre à jour l'extension Interpolation).")
             return video
         self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image restaurée (statistiques du moteur).")
         return dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
-                                   max_cll="", static_hdr_light_level_source="restore_frame_statistics")
+                                   restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl",
+                                   restore_source_light_levels=video.max_cll, max_cll="",
+                                   static_hdr_light_level_source="restore_frame_statistics")
 
     def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
         """Contrôles propres à la Restauration (outil, graphes livrés, entrelacement)."""
