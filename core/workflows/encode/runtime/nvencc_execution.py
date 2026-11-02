@@ -68,7 +68,7 @@ from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
-    light_level_statistics_path, written_light_levels,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -548,6 +548,7 @@ class NvenccDirectOutputRunnerCallbacks:
     validation_override: ValidationOverride | None = None
     #: Trames d'un fichier vidéo produit (repli si NVEncC n'affiche pas son compte).
     count_video_frames: Callable[[Path], int | None] | None = None
+    log_warn: Callable[[str], None] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -885,6 +886,8 @@ class NvenccDirectOutputRunner:
                         cancelled=signals._cancel_event.is_set, log=cb.log_info, progress=signals.progress.emit,
                     )
                     cb.check_cancelled(signals)
+                if adequacy := dynamic_metadata_adequacy(runtime_video, frame_ratio):
+                    (cb.log_warn if adequacy[0] == "WARN" and cb.log_warn is not None else cb.log_info)(adequacy[1])
                 effective_fps = output_fps or routing.source_fps or routing.input_fps
                 # Record DOVI reconstruit (perdu au muxage) : compatibilité de la matrice V30.
                 dovi_compat = dovi_output_compat_id_for(runtime_video)

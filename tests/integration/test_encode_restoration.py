@@ -178,8 +178,12 @@ def _measured(path: Path, *args: str) -> tuple[int, int]:
     return round(max(max(f["max_nits"]) for f in frames)), round(max(f["avg_nits"] for f in frames))
 
 
-@pytest.mark.parametrize("codec", ["libx265", "hevc_nvenc", "nvencc_hevc"])
-def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> None:
+@pytest.mark.parametrize(("codec", "declared"), [
+    ("libx265", ""), ("hevc_nvenc", ""), ("nvencc_hevc", ""), ("libx265", "1000,400"),
+])
+def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str, declared: str) -> None:
+    """Source sans MaxCLL/MaxFALL : mesure de l'image restaurée écrite. Valeurs déclarées : conservées, la
+    Restauration ne changeant la lumière de cette mire qu'en deçà des tolérances du HDR Studio."""
     hardware = set(os.environ.get("MUXIVEO_TEST_HW", "").split(","))
     if codec == "nvencc_hevc" and ("nvencc" not in hardware or not shutil.which("nvencc")):
         pytest.skip("Activer MUXIVEO_TEST_HW=nvencc (NVEncC requis)")
@@ -196,7 +200,7 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> 
             codec=codec, quality_mode=QualityMode.CRF if codec == "libx265" else QualityMode.CQ, crf=8, cq=12,
             preset={"libx265": "ultrafast", "hevc_nvenc": "p4", "nvencc_hevc": "P4"}[codec],
             source_color_transfer="smpte2084",
-            inject_hdr_meta=True, master_display=_MASTER_DISPLAY, max_cll="1000,400",
+            inject_hdr_meta=True, master_display=_MASTER_DISPLAY, max_cll=declared,
             static_hdr_light_level_source="source", restoration=RestoreSettings(enabled=True, level="fort"),
         ),
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
@@ -210,11 +214,13 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> 
     state = wait_task(wf.run(cfg), timeout=300.0)
     assert state["failed"] is None, f"Encode failed: {state['failed']}"
     text = "\n".join(logs + [str(line) for line in state["progress"]])
-    # bruit synthétique très fort : MaxFALL déplacé de plus de 1 %, écart visible, mesure écrite
-    assert "MaxCLL/MaxFALL exacts de l'image restaurée" in text and "écart visible" in text
+    if declared:
+        assert "MaxCLL/MaxFALL de la source conservés : 1000,400" in text
+    else:
+        assert "MaxCLL/MaxFALL exacts de l'image restaurée" in text
     colour, sei = _light_levels(out)
     # Image restaurée mesurée avant l'encodage (comme pour le FEL) : Restauration déterministe, mêmes valeurs exactes.
-    assert colour == sei == _measured(src, "--restore", "fort") != (1000, 400)
+    assert colour == sei == ((1000, 400) if declared else _measured(src, "--restore", "fort"))
     assert _frames(out) == _frames(src)
 
 
@@ -294,10 +300,14 @@ def test_restoration_keeps_dolby_vision_and_hdr10plus(tmp_path: Path, dynamic_hd
     )
     wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"), rife_bin=RIFE_BIN,
                         ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False)
+    logs: list[str] = []
+    wf.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=300.0)
     assert state["failed"] is None, f"Encode failed: {state['failed']}"
     assert _frames(out) == 48
+    # contrôle d'adéquation des métadonnées copiées (D-e), journalisé
+    assert any("métadonnées Dolby Vision / HDR10+ copiées de la source" in line for line in logs), logs
     rpu = tmp_path / "out.bin"
     _media(["dovi_tool", "extract-rpu", "-i", str(out), "-o", str(rpu)])
     summary = _media(["dovi_tool", "info", "-i", str(rpu), "--summary"])

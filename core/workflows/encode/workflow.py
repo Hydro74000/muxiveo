@@ -350,6 +350,13 @@ def _restore_measures_light_levels(video: VideoEncodeSettings) -> bool:
     return video.restores() and pq and measures_light_levels(video)
 
 
+def _restore_checks_dynamic_metadata(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec copie Dolby Vision / HDR10+ : métadonnées copiées contrôlées après
+    l'encodage (``dynamic_metadata_adequacy``)."""
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and bool(video.copy_dv or video.copy_hdr10plus)
+
+
 def _interpolation_decode_cmd(
     decode_cmd: list[str],
     info: _InterpolationSource,
@@ -1119,6 +1126,7 @@ class EncodeWorkflow(QObject):
                 check_cancelled=self._check_cancelled,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 primary_video_settings=self._primary_video_settings,
                 video_source_path=self._video_source_path,
                 video_stream_index=self._video_stream_index,
@@ -3519,21 +3527,28 @@ class EncodeWorkflow(QObject):
         return errors
 
     def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
-        """Restauration en HDR10 (PQ) : MaxCLL/MaxFALL de l'image restaurée, mesurés par le moteur pendant l'encodage
-        puis écrits après (SEI CLL et élément Colour) ; ceux de la source restent si la Restauration ne les change que
-        par des pixels isolés (``written_light_levels``) ; rien de provisoire n'est transmis à l'encodeur (D-e)."""
-        if not _restore_measures_light_levels(video):
+        """Restauration d'une source PQ : statistiques de la source et de l'image restaurée mesurées par le moteur
+        pendant l'encodage (D-e), pour MaxCLL/MaxFALL (écrits après l'encodage, SEI CLL et élément Colour ; ceux de
+        la source restent si l'écart est invisible, ``written_light_levels`` ; rien de provisoire n'est transmis à
+        l'encodeur) et pour le contrôle des métadonnées Dolby Vision / HDR10+ copiées (``dynamic_metadata_adequacy``)."""
+        measure = _restore_measures_light_levels(video)
+        check = _restore_checks_dynamic_metadata(video)
+        if not (measure or check):
             return video
         prefix = f"Piste vidéo #{index} — "
         resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
         if not resolved or not all(_rife_supports(resolved, option) for option in ("frame-statistics", "source-statistics")):
-            self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : MaxCLL/MaxFALL de la "
-                                  "source conservés (mettre à jour l'extension Interpolation).")
+            self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : "
+                                  + ("MaxCLL/MaxFALL de la source conservés, " if measure else "")
+                                  + ("métadonnées dynamiques copiées sans contrôle, " if check else "")
+                                  + "mettre à jour l'extension Interpolation.")
+            return video
+        video = dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
+                                    restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl")
+        if not measure:
             return video
         self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image restaurée (statistiques du moteur).")
-        return dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
-                                   restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl",
-                                   restore_source_light_levels=video.max_cll, max_cll="",
+        return dataclasses.replace(video, restore_source_light_levels=video.max_cll, max_cll="",
                                    static_hdr_light_level_source="restore_frame_statistics")
 
     def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
@@ -4155,6 +4170,7 @@ class EncodeWorkflow(QObject):
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 ui_encode_progress_message=_ui_encode_progress_message,
                 cleanup_two_pass_logs_for_prefix=self._cleanup_two_pass_logs_for_prefix,
                 build_video_only_mkv_commands=self._build_video_only_mkv_commands,

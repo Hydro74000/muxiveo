@@ -496,9 +496,13 @@ class TestWrittenLightLevels:
         # hautes lumières étendues : plus de 0,02 % des pixels au-delà du pic restauré
         value, message = written_light_levels(self._video(tmp_path, source), _statistics([1000.0] * 8, [900.0] * 8, 70.0))
         assert value == "1000,70" and "écart visible" in message
-        # MaxFALL déplacé de plus de 1 %
-        value, _ = written_light_levels(self._video(tmp_path, source), _statistics([1200.0] * 8, [1100.0] * 8, 65.0))
-        assert value == "1200,65"
+        # MaxFALL déplacé au-delà de la tolérance du HDR Studio (10 %, au moins 5 nits)
+        value, _ = written_light_levels(self._video(tmp_path, source), _statistics([1200.0] * 8, [1100.0] * 8, 50.0))
+        assert value == "1200,50"
+        # petit écart de pic sur un aplat écrêté (bien plus de 0,02 % des pixels au pic) : invisible
+        flat = _statistics([1010.0] * 8, [1008.0] * 8, avg=70.0)
+        value, _ = written_light_levels(self._video(tmp_path, flat), _statistics([1000.0] * 8, [1000.0] * 8, 70.0))
+        assert value == "4342,2342"
 
     def test_dark_content_fall_tolerance(self, tmp_path):
         from core.fel.hdr10plus import written_light_levels
@@ -518,3 +522,46 @@ class TestWrittenLightLevels:
         broken = self._video(tmp_path, stats)
         broken.restore_source_statistics = tmp_path / "absent.jsonl"
         assert written_light_levels(broken, stats)[0] == "900,40"
+
+
+class TestDynamicMetadataAdequacy:
+    def _video(self, tmp_path: Path, source, restored, **kw) -> VideoEncodeSettings:
+        return _hdr10(**{"copy_dv": True, "copy_hdr10plus": True,
+                         "restore_statistics": _write(tmp_path / "r.jsonl", restored),
+                         "restore_source_statistics": _write(tmp_path / "s.jsonl", source), **kw})
+
+    def test_isolated_changes_are_adequate(self, tmp_path):
+        from core.fel.hdr10plus import dynamic_metadata_adequacy
+        source = _statistics([3494.0] * 50, [1800.0] * 50, avg=108.0)
+        level, message = dynamic_metadata_adequacy(self._video(tmp_path, source, _statistics([3024.0] * 50, [1750.0] * 50, 107.0)))
+        assert level == "INFO" and "Dolby Vision / HDR10+" in message and "adéquates" in message
+
+    def test_visible_changes_warn(self, tmp_path):
+        from core.fel.hdr10plus import dynamic_metadata_adequacy
+        source = _statistics([1200.0] * 50, [1150.0] * 50, avg=70.0)
+        restored = _statistics([1200.0] * 48 + [700.0] * 2, [1150.0] * 48 + [650.0] * 2, 70.0)  # 4 % des images
+        level, message = dynamic_metadata_adequacy(self._video(tmp_path, source, restored, copy_hdr10plus=False))
+        assert level == "WARN" and "Dolby Vision copiées" in message and "4,0 %" in message
+        restored = _statistics([1200.0] * 49 + [700.0], [1150.0] * 49 + [650.0], 70.0)  # 2 % : sous le seuil
+        assert dynamic_metadata_adequacy(self._video(tmp_path, source, restored))[0] == "INFO"
+
+    def test_interpolated_frames_follow_their_source_frame(self, tmp_path):
+        from core.fel.hdr10plus import dynamic_metadata_adequacy
+        source = _statistics([1200.0, 600.0] * 5, [1150.0, 550.0] * 5, avg=70.0)
+        same = _statistics([1200.0, 1200.0, 600.0, 600.0] * 5, [1150.0, 1150.0, 550.0, 550.0] * 5, 70.0)
+        assert dynamic_metadata_adequacy(self._video(tmp_path, source, same), Fraction(2))[0] == "INFO"
+        level, message = dynamic_metadata_adequacy(self._video(tmp_path, source, same))  # rapport 1 : comptes faux
+        assert level == "WARN" and "20 images mesurées pour 10 attendues" in message
+
+    def test_not_applicable(self, tmp_path):
+        from core.fel.hdr10plus import dynamic_metadata_adequacy
+        stats = _statistics([1000.0] * 4, [900.0] * 4)
+        assert dynamic_metadata_adequacy(self._video(tmp_path, stats, stats, copy_dv=False, copy_hdr10plus=False)) is None
+        assert dynamic_metadata_adequacy(_hdr10(copy_dv=True)) is None  # pas de mesure
+
+    def test_statistics_requested_for_the_check_only(self, workflow, tmp_path):
+        video = _hdr10(copy_dv=True, static_hdr_light_level_source="manual")
+        with patch("core.workflows.encode.workflow._rife_supports", return_value=True):
+            prepared = workflow._prepare_restore_statistics(video, work_dir=tmp_path, index=2)
+        assert prepared.restore_statistics == tmp_path / "restore_statistics_2.jsonl"
+        assert prepared.max_cll == "1000,400" and prepared.static_hdr_light_level_source == "manual"

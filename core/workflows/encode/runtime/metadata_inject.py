@@ -42,7 +42,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
-    light_level_statistics_path, written_light_levels,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -702,6 +702,8 @@ class MetadataInjectRunner:
                             _free(out_cll)
                         cb.log_info(message)
                     _check()
+                if adequacy := dynamic_metadata_adequacy(video, frame_ratio):
+                    (cb.log_warn if adequacy[0] == "WARN" else cb.log_info)(adequacy[1])
 
                 # Audit frame count : empêche l'injection sur un stream qui
                 # aurait dérapé en frame count (NVENC drop, NVDEC dup, filtre

@@ -26,7 +26,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
-    light_level_statistics_path, written_light_levels,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -108,6 +108,7 @@ class MultiVideoPipelineRunnerCallbacks:
     #: de synchronisation (calibrations multi-segments), comme le chemin direct.
     resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
     validation_override: ValidationOverride | None = None
+    log_warn: Callable[[str], None] | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -370,6 +371,9 @@ class MultiVideoPipelineRunner:
                         cll_out.unlink(missing_ok=True)
                     cb.log_info(f"Piste vidéo {index}: {message}")
                 cb.check_cancelled(signals)
+            if adequacy := dynamic_metadata_adequacy(video, frame_ratio):
+                (cb.log_warn if adequacy[0] == "WARN" and cb.log_warn is not None else cb.log_info)(
+                    f"Piste vidéo {index}: {adequacy[1]}")
 
             if video.copy_dv or video.copy_hdr10plus:
                 guard = FrameCountGuard(
