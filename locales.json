@@ -9434,5 +9434,77 @@
   "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).": {
     "fra": "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).",
     "eng": "Uncertain sync to validate: continuous analysis inconclusive, offset taken from {measured}/{total} matching spot measurements (spread {spread} ms)."
+  },
+  "Restauration": {
+    "fra": "Restauration",
+    "eng": "Restoration"
+  },
+  "Léger": {
+    "fra": "Léger",
+    "eng": "Light"
+  },
+  "Moyen": {
+    "fra": "Moyen",
+    "eng": "Medium"
+  },
+  "Fort": {
+    "fra": "Fort",
+    "eng": "Strong"
+  },
+  "Mode : Rapide": {
+    "fra": "Mode : Rapide",
+    "eng": "Mode: Fast"
+  },
+  "Animation : Auto": {
+    "fra": "Animation : Auto",
+    "eng": "Animation: Auto"
+  },
+  "Animation : Oui": {
+    "fra": "Animation : Oui",
+    "eng": "Animation: Yes"
+  },
+  "Animation : Non": {
+    "fra": "Animation : Non",
+    "eng": "Animation: No"
+  },
+  "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu animé.": {
+    "fra": "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu animé.",
+    "eng": "Auto: the amount of grain removed is set shot by shot from the measured grain; one step towards Strong for animated content."
+  },
+  "Léger : retire moins de grain, texture d'origine davantage préservée.": {
+    "fra": "Léger : retire moins de grain, texture d'origine davantage préservée.",
+    "eng": "Light: removes less grain, preserving more of the original texture."
+  },
+  "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan.": {
+    "fra": "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan.",
+    "eng": "Medium: balance between grain removal and texture, set shot by shot."
+  },
+  "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué.": {
+    "fra": "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué.",
+    "eng": "Strong: removes the most grain, for thick grain or heavy digital noise."
+  },
+  "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.": {
+    "fra": "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.",
+    "eng": "Fast mode: optical flow computed at a quarter of the resolution instead of half; faster, with a very small quality loss."
+  },
+  "Mode rapide absent de l'extension Interpolation installée : la mettre à jour (page Extensions).": {
+    "fra": "Mode rapide absent de l'extension Interpolation installée : la mettre à jour (page Extensions).",
+    "eng": "Fast mode missing from the installed Interpolation extension: update it (Extensions page)."
+  },
+  "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la fiche TMDB de la sortie, sinon de la source.": {
+    "fra": "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la fiche TMDB de la sortie, sinon de la source.",
+    "eng": "Animated content: the Auto level removes one step more. Auto: from the “Animation” genre of the output's TMDB record, otherwise of the source."
+  },
+  "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel.": {
+    "fra": "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel.",
+    "eng": "No effect outside the Auto level: the chosen level applies as is."
+  },
+  "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto.": {
+    "fra": "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto.",
+    "eng": "Removes grain and noise (R2 network, Vulkan GPU or NVIDIA TensorRT), dosed shot by shot to keep texture; applied before interpolation. 10-bit output with Auto bit depth."
+  },
+  "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions).": {
+    "fra": "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions).",
+    "eng": "Restoration missing from the installed Interpolation extension: update it (Extensions page)."
   }
 }

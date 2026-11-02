@@ -44,7 +44,7 @@ from core.workflows.encode import (
     TONEMAP_ALGORITHMS, EncodeConfig,
     EncodePreviewRequest,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    FrameInterpolationSettings, ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings,
+    FrameInterpolationSettings, ProfileManager, QualityMode, RestoreSettings, VideoCropSettings, VideoEncodeSettings,
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
 from core.workflows.encode.interpolation import (
@@ -52,6 +52,7 @@ from core.workflows.encode.interpolation import (
     INTERPOLATION_FACTORS,
     INTERPOLATION_PRESETS,
     INTERPOLATION_TTA_LEVELS,
+    rife_capabilities,
 )
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS,
@@ -131,6 +132,18 @@ _INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
     ("Light", "light",
      "Light : RIFE v4.15 lite en mode Fast, le moins gourmand en mémoire GPU (petites cartes graphiques)."),
 )
+
+
+# Restauration (grain et bruit) : niveaux (libellé, valeur, infobulle), dosage adapté à chaque plan (D-a).
+_RESTORE_LEVEL_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("Auto", "auto",
+     "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu "
+     "animé."),
+    ("Léger", "leger", "Léger : retire moins de grain, texture d'origine davantage préservée."),
+    ("Moyen", "moyen", "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan."),
+    ("Fort", "fort", "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué."),
+)
+_RESTORE_LEVEL_BADGES = {"auto": "Auto", "leger": "Léger", "moyen": "Moyen", "fort": "Fort"}
 
 
 def _format_fps(value: float) -> str:
@@ -1892,6 +1905,41 @@ class EncodePanel(QWidget):
             self._chroma_strength_combo,
         ))
 
+        # Restauration (réseau R2 de muxiveo-rife) : appliquée avant l'interpolation, même moteur.
+        self._restore_cb = QCheckBox("Restauration")
+        self._restore_cb.setStyleSheet(_checkbox_style())
+        self._restore_cb.toggled.connect(lambda _: self._on_restore_changed())
+        self._restore_level_combo = QComboBox()
+        self._restore_level_combo.setStyleSheet(_combo_style())
+        for label, value, _tip in _RESTORE_LEVEL_ITEMS:
+            self._restore_level_combo.addItem(label, value)
+        self._restore_level_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
+        self._restore_mode_combo = QComboBox()
+        self._restore_mode_combo.setStyleSheet(_combo_style())
+        self._restore_mode_tip = (
+            "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, "
+            "perte de qualité très faible."
+        )
+        for label, fast in (("Mode : Normal", False), ("Mode : Rapide", True)):
+            self._restore_mode_combo.addItem(label, fast)
+        self._restore_mode_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
+        self._restore_animation_combo = QComboBox()
+        self._restore_animation_combo.setStyleSheet(_combo_style())
+        self._restore_animation_tip = (
+            "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la "
+            "fiche TMDB de la sortie, sinon de la source."
+        )
+        for label, value in (("Animation : Auto", "auto"), ("Animation : Oui", "on"), ("Animation : Non", "off")):
+            self._restore_animation_combo.addItem(label, value)
+        self._restore_animation_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
+        fl.addWidget(self._build_filter_row(
+            self._restore_cb,
+            self._filter_tech_label("MVO-R2"),
+            self._restore_level_combo,
+            self._restore_mode_combo,
+            self._restore_animation_combo,
+        ))
+
         # mode et TTA choisis hors préréglages qui les imposent (Light, Ultra), rétablis en les quittant
         self._interp_user_mode: object = "normal"
         self._interp_user_tta: object = 1
@@ -2003,6 +2051,83 @@ class EncodePanel(QWidget):
         if not available and self._interp_cb.isChecked():
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
+        self._sync_restore_availability()
+
+    def _restore_capabilities(self) -> tuple[bool, bool, str]:
+        """(Restauration disponible, mode rapide disponible, raison) d'après les capacités du moteur installé."""
+        if not self._interpolation_tool_available():
+            return False, False, "Extension Interpolation d'images non installée : page Extensions."
+        rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
+        capabilities = rife_capabilities(rife)
+        if capabilities is None or not capabilities.supports("restore") or "r2" not in capabilities.restore_models:
+            return False, False, "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions)."
+        return True, "r2q" in capabilities.restore_models, ""
+
+    def _sync_restore_availability(self) -> None:
+        if not hasattr(self, "_restore_cb"):
+            return
+        available, fast, reason = self._restore_capabilities()
+        self._restore_fast_available = fast
+        self._restore_cb.setEnabled(available)
+        self._restore_cb.setToolTip(translate_text(
+            "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour "
+            "garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto."
+            if available else reason
+        ))
+        if not available and self._restore_cb.isChecked():
+            self._restore_cb.setChecked(False)
+        self._sync_restore_controls()
+
+    def _restore_tool_flag(self) -> bool:
+        """État propre de la case Restauration (moteur disponible), indépendant des parents désactivés (codec copy)."""
+        parent = self._restore_cb.parentWidget()
+        return self._restore_cb.isEnabledTo(parent) if parent is not None else self._restore_cb.isEnabled()
+
+    def _sync_restore_controls(self) -> None:
+        enabled = self._restore_cb.isChecked() and self._restore_tool_flag()
+        fast = bool(getattr(self, "_restore_fast_available", False))
+        level = self._restore_level_combo.currentData()
+        self._restore_level_combo.setEnabled(enabled)
+        self._restore_mode_combo.setEnabled(enabled and fast)
+        # L'animation ne déplace que le niveau Auto.
+        self._restore_animation_combo.setEnabled(enabled and level == "auto")
+        for index in range(self._restore_level_combo.count()):
+            item_tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS
+                             if value == self._restore_level_combo.itemData(index)), "")
+            self._restore_level_combo.setItemData(index, translate_text(item_tip), Qt.ItemDataRole.ToolTipRole)
+        tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS if value == level), "")
+        self._restore_level_combo.setToolTip(translate_text(tip))
+        self._restore_mode_combo.setToolTip(translate_text(
+            self._restore_mode_tip if fast
+            else "Mode rapide absent de l'extension Interpolation installée : la mettre à jour (page Extensions)."
+        ))
+        self._restore_animation_combo.setToolTip(translate_text(
+            self._restore_animation_tip if level == "auto"
+            else "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel."
+        ))
+
+    def _on_restore_changed(self) -> None:
+        self._sync_restore_controls()
+        self._rebuild_preview()
+
+    def _current_restore_settings(self) -> RestoreSettings:
+        if not hasattr(self, "_restore_cb"):
+            return RestoreSettings()
+        return RestoreSettings(
+            enabled=self._restore_cb.isChecked() and self._restore_cb.isEnabled(),
+            level=str(self._restore_level_combo.currentData() or "auto"),
+            fast=bool(self._restore_mode_combo.currentData()) and bool(getattr(self, "_restore_fast_available", False)),
+            animation=str(self._restore_animation_combo.currentData() or "auto"),
+        )
+
+    def _apply_restore_settings(self, settings: RestoreSettings) -> None:
+        if not hasattr(self, "_restore_cb"):
+            return
+        self._restore_cb.setChecked(bool(settings.enabled) and self._restore_tool_flag())
+        self._set_combo_data(self._restore_level_combo, settings.level)
+        self._set_combo_data(self._restore_mode_combo, bool(settings.fast))
+        self._set_combo_data(self._restore_animation_combo, settings.animation)
+        self._sync_restore_controls()
 
     def _interpolation_tool_flag(self) -> bool:
         """État propre de la case RIFE (outil disponible), indépendant des parents
@@ -4014,6 +4139,7 @@ class EncodePanel(QWidget):
         self._apply_crop_settings(vs.crop)
         self._apply_filter_settings(vs.filters)
         self._apply_interpolation_settings(vs.interpolation)
+        self._apply_restore_settings(vs.restoration)
         # Les options HDR (inject_hdr_meta / master_display / max_cll /
         # tonemap_to_sdr) dépendent de la source, pas du profil — un même
         # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
@@ -4102,6 +4228,7 @@ class EncodePanel(QWidget):
             crop=vs.crop,
             filters=vs.filters,
             interpolation=vs.interpolation,
+            restoration=vs.restoration,
             bake_dovi_fel=vs.bake_dovi_fel,
             fel_device=vs.fel_device,
             fel_precision=vs.fel_precision,
@@ -4507,6 +4634,7 @@ class EncodePanel(QWidget):
             "crop": VideoCropSettings(),
             "filters": VideoFilterSettings(),
             "interpolation": FrameInterpolationSettings(),
+            "restoration": RestoreSettings(),
             "inject_hdr_meta": is_hdr_source,
             "master_display": master_display,
             "max_cll": max_cll,
@@ -4940,6 +5068,7 @@ class EncodePanel(QWidget):
             "crop": self._current_crop_settings(),
             "filters": self._current_filter_settings(),
             "interpolation": self._current_interpolation_settings(),
+            "restoration": self._current_restore_settings(),
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
             "hdr_disabled_by_codec": self._hdr_disabled_by_codec,
             "dynamic_hdr_disabled_by_codec": self._dynamic_hdr_disabled_by_codec,
@@ -5095,6 +5224,14 @@ class EncodePanel(QWidget):
             badges.append("NLMeans·Vulkan" if gpu else "NLMeans")
         if filters.chroma_smooth_enabled:
             badges.append("Chroma")
+        restoration = RestoreSettings.from_value(state.get("restoration"))
+        if restoration.is_active():
+            badge = "MVO-R2 " + translate_text(_RESTORE_LEVEL_BADGES.get(restoration.level, "Auto"))
+            if restoration.fast:
+                badge += " " + translate_text("Rapide")
+            if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
+                badge += " TRT"
+            badges.append(badge)
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
             badge = (
@@ -5122,6 +5259,7 @@ class EncodePanel(QWidget):
             # V18b : NVEncC filtre lui-même, sauf préfiltres sans équivalent ou RIFE (pipe FFmpeg).
             piped = nvencc_requires_ffmpeg_filter_pipe(VideoEncodeSettings(
                 codec=codec, resize=resize, crop=crop, filters=filters, interpolation=interpolation,
+                restoration=restoration,
             ))
             badges.append(translate_text("Filtres FFmpeg") if piped else translate_text("Filtres NVEncC"))
         return tuple(badges)
@@ -5156,6 +5294,7 @@ class EncodePanel(QWidget):
             or bool(VideoCropSettings.from_value(state.get("crop")).is_active())
             or bool(VideoFilterSettings.from_value(state.get("filters")).is_active())
             or bool(FrameInterpolationSettings.from_value(state.get("interpolation")).is_active())
+            or bool(RestoreSettings.from_value(state.get("restoration")).is_active())
             or bool(state.get("inject_hdr_meta"))
             or bool(state.get("tonemap_to_sdr"))
             or bool(state.get("extra_params"))
@@ -5253,6 +5392,7 @@ class EncodePanel(QWidget):
             self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
             self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
             self._apply_interpolation_settings(FrameInterpolationSettings.from_value(state.get("interpolation")))
+            self._apply_restore_settings(RestoreSettings.from_value(state.get("restoration")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
@@ -5674,6 +5814,7 @@ class EncodePanel(QWidget):
             crop=self._current_crop_settings(),
             filters=self._current_filter_settings(),
             interpolation=self._current_interpolation_settings(),
+            restoration=self._current_restore_settings(),
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
@@ -5745,6 +5886,7 @@ class EncodePanel(QWidget):
             crop=VideoCropSettings.from_value(state.get("crop")),
             filters=VideoFilterSettings.from_value(state.get("filters")),
             interpolation=FrameInterpolationSettings.from_value(state.get("interpolation")),
+            restoration=RestoreSettings.from_value(state.get("restoration")),
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
