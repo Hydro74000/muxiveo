@@ -473,7 +473,7 @@ def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *,
                      animation: bool = False) -> list[str]:
     """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
     (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits,
-    statistiques des trames si MaxCLL/MaxFALL sont mesurés sur l'image restaurée."""
+    statistiques des trames si MaxCLL/MaxFALL sont mesurés sur l'image débruitée."""
     if not video.restores():
         return []
     from core.workflows.encode.domain.codecs import resolve_output_bit_depth
@@ -481,7 +481,7 @@ def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *,
     animated = settings.animation == "on" or (settings.animation == "auto" and animation)
     args = restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
                                dither="8" if resolve_output_bit_depth(video) == 8 else "auto")
-    if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image restaurée (sources PQ)
+    if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image débruitée (sources PQ)
         args.extend(["--frame-statistics", str(video.restore_statistics)])
         if video.restore_source_statistics is not None:
             args.extend(["--source-statistics", str(video.restore_source_statistics)])
@@ -671,15 +671,15 @@ def restore_support_errors(capabilities: RifeCapabilities | None, restore: Resto
         return []
     label = capabilities.label
     if capabilities.contract != MVO_RIFE_CONTRACT:
-        return [f"Restauration : muxiveo-rife {label} (contrat {capabilities.contract}) incompatible avec "
+        return [f"MVO-R2 : muxiveo-rife {label} (contrat {capabilities.contract}) incompatible avec "
                 f"cette version de Muxiveo ; {_RIFE_UPDATE_HINT}."]
     if not capabilities.supports("restore"):
-        return [f"Restauration : muxiveo-rife {'.'.join(map(str, RESTORE_MIN_VERSION))} ou plus récent requis "
+        return [f"MVO-R2 : muxiveo-rife {'.'.join(map(str, RESTORE_MIN_VERSION))} ou plus récent requis "
                 f"(installé : {label}) ; {_RIFE_UPDATE_HINT}."]
     model = restore_model_name(restore)
     if model not in capabilities.restore_models:
         mode = " du mode rapide" if restore.fast else ""
-        return [f"Restauration : graphes{mode} « {model} » absents de l'extension muxiveo-rife {label} ; "
+        return [f"MVO-R2 : graphes{mode} « {model} » absents de l'extension muxiveo-rife {label} ; "
                 f"{_RIFE_UPDATE_HINT}."]
     return []
 

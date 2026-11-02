@@ -7,7 +7,7 @@ Couverture (sans binaire ni GPU) :
     - Profondeur « Auto » → 10 bits sous Restauration (D-h)
     - Pipeline décodage (10 bits) | muxiveo-rife --factor 1 | encodeur ; cumul avec l'interpolation
     - Workflow : validation (capacités, graphes, entrelacement), avertissement 8 bits, genre « Animation »
-    - MaxCLL / MaxFALL mesurés sur l'image restaurée (statistiques du moteur), HDR10+ de la source conservé
+    - MaxCLL / MaxFALL mesurés sur l'image débruitée (statistiques du moteur), HDR10+ de la source conservé
 """
 from __future__ import annotations
 
@@ -327,8 +327,8 @@ class TestWorkflow:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_payload()):
             warned = workflow.config_warnings(_cfg(tmp_path, _video(bit_depth="8")))
             quiet = workflow.config_warnings(_cfg(tmp_path, _video(source_bit_depth=8)))
-        assert any("Restauration avec une sortie 8 bits" in m for m in warned)
-        assert not any("Restauration" in m for m in quiet)
+        assert any("MVO-R2 avec une sortie 8 bits" in m for m in warned)
+        assert not any("MVO-R2" in m for m in quiet)
 
     def test_animation_from_output_genre(self, workflow, tmp_path):
         cfg = _cfg(tmp_path, _video(), tag_overrides={"GENRE": "Animation, Familial"})
@@ -366,7 +366,7 @@ def test_animation_genre_names(genre, expected):
 
 
 # ---------------------------------------------------------------------------
-# MaxCLL / MaxFALL de l'image restaurée (D-e)
+# MaxCLL / MaxFALL de l'image débruitée (D-e)
 # ---------------------------------------------------------------------------
 
 def _hdr10(**kw) -> VideoEncodeSettings:
@@ -404,7 +404,7 @@ class TestLightLevels:
         with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_payload(color_transfer="smpte2084")), \
                 patch("core.workflows.encode.workflow._rife_capabilities", return_value=_caps()):
             text = workflow.preview_command(_cfg(tmp_path, _hdr10()))
-        assert "MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image restaurée" in text
+        assert "MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image débruitée" in text
 
     def test_old_engine_keeps_source_values(self, workflow, tmp_path):
         messages: list[tuple[str, str]] = []
@@ -419,7 +419,7 @@ class TestLightLevels:
         video = _hdr10(static_hdr_light_level_source="restore_frame_statistics", restore_statistics=tmp_path / "r.jsonl")
         assert deferred_light_levels(video)
         video.fel_context = fel  # type: ignore[assignment]
-        assert light_level_statistics_path(video) == tmp_path / "r.jsonl" and light_level_origin(video) == "l'image restaurée"
+        assert light_level_statistics_path(video) == tmp_path / "r.jsonl" and light_level_origin(video) == "l'image débruitée"
         video.restore_statistics = None
         assert light_level_statistics_path(video) == tmp_path / "fel.jsonl"
         assert light_level_origin(video) == "l'image reconstruite"
@@ -454,7 +454,7 @@ class TestLightLevels:
         )
         assert len(commands) == 1 and "hevc_mp4toannexb" in commands[0]  # HDR10+ de la source intact
         assert sei.call_args.kwargs == {"max_cll": "812,42"} and rewrite.call_args.kwargs["light_levels"] == (812, 42)
-        assert any("l'image restaurée" in str(call) for call in log.call_args_list)
+        assert any("l'image débruitée" in str(call) for call in log.call_args_list)
 
 
 def _statistics(peaks: list[float], highs: list[float], avg: float = 40.0):

@@ -227,6 +227,9 @@ class VideoCropSettings:
         return _dataclass_from_value(cls, value)
 
 
+DENOISE_FILTERS = ("mvo-r2", "nlmeans")
+
+
 @dataclass
 class VideoFilterSettings:
     """Filtres vidéo typés appliqués avant encodage."""
@@ -240,8 +243,15 @@ class VideoFilterSettings:
     nlmeans_enabled: bool = False
     nlmeans_strength: str = "light"
     nlmeans_profile: str = "standard"
+    # Filtre de la ligne Débruitage du panneau (mvo-r2 | nlmeans), mémorisé case décochée ; actifs effectifs :
+    # ``nlmeans_enabled`` et ``VideoEncodeSettings.restoration``.
+    denoise_filter: str = "mvo-r2"
     chroma_smooth_enabled: bool = False
     chroma_smooth_strength: str = "medium"
+
+    def __post_init__(self) -> None:
+        if self.denoise_filter not in DENOISE_FILTERS:
+            self.denoise_filter = "mvo-r2"
 
     def field_rate_multiplier(self) -> int:
         """Images produites par trame source au désentrelacement (2 : YADIF une image par champ)."""

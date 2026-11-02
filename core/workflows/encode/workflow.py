@@ -1088,7 +1088,7 @@ class EncodeWorkflow(QObject):
         if not video.uses_engine():
             return decode_cmd
         if not self._rife_bin:
-            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, Restauration).")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, débruitage MVO-R2).")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
         trt_plugin, trt_cache = self._rife_trt_args()
@@ -2260,7 +2260,7 @@ class EncodeWorkflow(QObject):
                 )
             if video.restores() and _restore_measures_light_levels(video):
                 header.append(
-                    f"Piste vidéo #{index} : MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image restaurée "
+                    f"Piste vidéo #{index} : MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image débruitée "
                     "(statistiques du moteur) puis écrits après ; ceux de la source restent si l'écart se limite "
                     "à des pixels isolés ; absent de cet aperçu."
                 )
@@ -3330,7 +3330,7 @@ class EncodeWorkflow(QObject):
             if video.restores() and _resolve_output_bit_depth(video) == 8:
                 # Grain retiré : les dégradés ne sont plus tramés par la source (D-h).
                 messages.append(
-                    f"Piste vidéo #{index} — Restauration avec une sortie 8 bits : tramage à la précision "
+                    f"Piste vidéo #{index} — MVO-R2 avec une sortie 8 bits : tramage à la précision "
                     "8 bits appliqué par le moteur ; une sortie 10 bits limite le banding des dégradés."
                 )
         messages.extend(self.size_target_warnings(config))
@@ -3527,7 +3527,7 @@ class EncodeWorkflow(QObject):
         return errors
 
     def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
-        """Restauration d'une source PQ : statistiques de la source et de l'image restaurée mesurées par le moteur
+        """Restauration d'une source PQ : statistiques de la source et de l'image débruitée mesurées par le moteur
         pendant l'encodage (D-e), pour MaxCLL/MaxFALL (écrits après l'encodage, SEI CLL et élément Colour ; ceux de
         la source restent si l'écart est invisible, ``written_light_levels`` ; rien de provisoire n'est transmis à
         l'encodeur) et pour le contrôle des métadonnées Dolby Vision / HDR10+ copiées (``dynamic_metadata_adequacy``)."""
@@ -3547,7 +3547,7 @@ class EncodeWorkflow(QObject):
                                     restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl")
         if not measure:
             return video
-        self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image restaurée (statistiques du moteur).")
+        self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image débruitée (statistiques du moteur).")
         return dataclasses.replace(video, restore_source_light_levels=video.max_cll, max_cll="",
                                    static_hdr_light_level_source="restore_frame_statistics")
 
@@ -3562,7 +3562,7 @@ class EncodeWorkflow(QObject):
             if not video.restoration.is_active():
                 continue
             if video.codec == "copy":
-                errors.append("Restauration : impossible avec le codec vidéo COPY (réencodage requis).")
+                errors.append("MVO-R2 : impossible avec le codec vidéo COPY (réencodage requis).")
                 continue
             rife_bin = self._rife_bin
             available = bool(rife_bin) and (Path(str(rife_bin)).is_file() or bool(shutil.which(str(rife_bin))))
@@ -3573,7 +3573,7 @@ class EncodeWorkflow(QObject):
                 continue
             if not available:
                 errors.append(
-                    "Restauration : moteur muxiveo-rife introuvable "
+                    "MVO-R2 : moteur muxiveo-rife introuvable "
                     "(installer l'extension Interpolation depuis la page Extensions)."
                 )
             source = self._video_source_from_settings(config, video)
@@ -3581,16 +3581,16 @@ class EncodeWorkflow(QObject):
             # dynamiques indexées par trame.
             if (video.copy_dv or video.copy_hdr10plus) and self._interpolation_source(video, source).is_vfr:
                 errors.append(
-                    f"Restauration : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
+                    f"MVO-R2 : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
                     "impose de conserver chaque trame, ce qui fausserait la durée : désactiver la copie DoVi / "
-                    "HDR10+ (la cadence sera alors normalisée) ou la Restauration."
+                    "HDR10+ (la cadence sera alors normalisée) ou le débruitage MVO-R2."
                 )
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
                 video.filters.yadif_enabled
             ):
                 errors.append(
-                    f"Restauration : {source.name} est entrelacée ; "
-                    "activez le désentrelacement (appliqué avant la Restauration)."
+                    f"MVO-R2 : {source.name} est entrelacée ; "
+                    "activez le désentrelacement (appliqué avant MVO-R2)."
                 )
         return errors
 

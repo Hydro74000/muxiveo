@@ -137,7 +137,7 @@ class VideoOnlyCommandBuilder:
         """
         cb = self._cb
         if not cb.rife_bin or cb.interpolation_source is None:
-            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, Restauration).")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, débruitage MVO-R2).")
         domain = cb.codec_domain_callbacks()
         info = cb.interpolation_source(video, source)
         settings = video.interpolation

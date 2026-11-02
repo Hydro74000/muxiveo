@@ -182,7 +182,7 @@ def _measured(path: Path, *args: str) -> tuple[int, int]:
     ("libx265", ""), ("hevc_nvenc", ""), ("nvencc_hevc", ""), ("libx265", "1000,400"),
 ])
 def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str, declared: str) -> None:
-    """Source sans MaxCLL/MaxFALL : mesure de l'image restaurée écrite. Valeurs déclarées : conservées, la
+    """Source sans MaxCLL/MaxFALL : mesure de l'image débruitée écrite. Valeurs déclarées : conservées, la
     Restauration ne changeant la lumière de cette mire qu'en deçà des tolérances du HDR Studio."""
     hardware = set(os.environ.get("MUXIVEO_TEST_HW", "").split(","))
     if codec == "nvencc_hevc" and ("nvencc" not in hardware or not shutil.which("nvencc")):
@@ -217,7 +217,7 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str, dec
     if declared:
         assert "MaxCLL/MaxFALL de la source conservés : 1000,400" in text
     else:
-        assert "MaxCLL/MaxFALL exacts de l'image restaurée" in text
+        assert "MaxCLL/MaxFALL exacts de l'image débruitée" in text
     colour, sei = _light_levels(out)
     # Image restaurée mesurée avant l'encodage (comme pour le FEL) : Restauration déterministe, mêmes valeurs exactes.
     assert colour == sei == ((1000, 400) if declared else _measured(src, "--restore", "fort"))

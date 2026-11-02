@@ -134,7 +134,15 @@ _INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-# Restauration (grain et bruit) : niveaux (libellé, valeur, infobulle), dosage adapté à chaque plan (D-a).
+# Filtres de débruitage (libellé, valeur) : MVO-R2 par défaut, NLMeans au choix.
+_DENOISE_FILTER_ITEMS: tuple[tuple[str, str], ...] = (("MVO-R2", "mvo-r2"), ("NLMeans", "nlmeans"))
+_DENOISE_FILTER_TIPS = {
+    "mvo-r2": "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain "
+              "et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.",
+    "nlmeans": "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).",
+}
+
+# MVO-R2 : niveaux (libellé, valeur, infobulle), dosage adapté à chaque plan (D-a).
 _RESTORE_LEVEL_ITEMS: tuple[tuple[str, str, str], ...] = (
     ("Auto", "auto",
      "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu "
@@ -1866,23 +1874,57 @@ class EncodePanel(QWidget):
             self._deblock_block_combo,
         ))
 
-        self._nlmeans_cb = QCheckBox("Débruitage")
-        self._nlmeans_cb.setStyleSheet(_checkbox_style())
-        self._nlmeans_cb.setToolTip("Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.")
-        self._nlmeans_cb.toggled.connect(lambda _: self._rebuild_preview())
-        self._nlmeans_filter_combo = QComboBox()
-        self._nlmeans_filter_combo.setStyleSheet(_combo_style())
-        self._nlmeans_filter_combo.setToolTip("Filtre de débruitage utilisé.")
-        self._nlmeans_filter_combo.addItem("NLMeans", "nlmeans")
-        self._nlmeans_filter_combo.setEnabled(False)
-        self._nlmeans_filter_combo.setVisible(False)
+        # Débruitage : MVO-R2 (réseau de muxiveo-rife, par défaut) ou NLMeans (FFmpeg) ; options selon le filtre.
+        self._r2_available = False
+        self._restore_fast_available = False
+        # NLMeans sélectionné faute de MVO-R2 (pas par l'utilisateur) : MVO-R2 rétabli dès qu'il est disponible.
+        self._denoise_fallback = False
+        self._denoise_cb = QCheckBox("Débruitage")
+        self._denoise_cb.setStyleSheet(_checkbox_style())
+        self._denoise_cb.setToolTip(
+            "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg)."
+        )
+        self._denoise_cb.toggled.connect(lambda _: self._on_denoise_changed())
+        self._denoise_filter_combo = QComboBox()
+        self._denoise_filter_combo.setStyleSheet(_combo_style())
+        self._denoise_filter_combo.setToolTip("Filtre de débruitage utilisé.")
+        for label, value in _DENOISE_FILTER_ITEMS:
+            self._denoise_filter_combo.addItem(label, value)
+        self._denoise_filter_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._denoise_filter_combo.activated.connect(lambda _: setattr(self, "_denoise_fallback", False))
         self._nlmeans_strength_combo = self._preset_combo_widget(("ultralight", "light", "medium", "strong"))
         self._nlmeans_strength_combo.setToolTip("Intensité du débruitage NLMeans.")
         self._nlmeans_profile_combo = self._preset_combo_widget(("standard", "grain", "animation", "high motion", "sprite"))
         self._nlmeans_profile_combo.setToolTip("Profil de contenu qui ajuste légèrement les paramètres NLMeans.")
+        self._restore_level_combo = QComboBox()
+        self._restore_level_combo.setStyleSheet(_combo_style())
+        for label, value, _tip in _RESTORE_LEVEL_ITEMS:
+            self._restore_level_combo.addItem(label, value)
+        self._restore_level_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_mode_combo = QComboBox()
+        self._restore_mode_combo.setStyleSheet(_combo_style())
+        self._restore_mode_tip = (
+            "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, "
+            "perte de qualité très faible."
+        )
+        for label, fast in (("Mode : Normal", False), ("Mode : Rapide", True)):
+            self._restore_mode_combo.addItem(label, fast)
+        self._restore_mode_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_animation_combo = QComboBox()
+        self._restore_animation_combo.setStyleSheet(_combo_style())
+        self._restore_animation_tip = (
+            "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la "
+            "fiche TMDB de la sortie, sinon de la source."
+        )
+        for label, value in (("Animation : Auto", "auto"), ("Animation : Oui", "on"), ("Animation : Non", "off")):
+            self._restore_animation_combo.addItem(label, value)
+        self._restore_animation_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
         fl.addWidget(self._build_filter_row(
-            self._nlmeans_cb,
-            self._filter_tech_label(self._nlmeans_filter_combo.currentText()),
+            self._denoise_cb,
+            self._denoise_filter_combo,
+            self._restore_level_combo,
+            self._restore_mode_combo,
+            self._restore_animation_combo,
             self._nlmeans_strength_combo,
             self._nlmeans_profile_combo,
         ))
@@ -1903,41 +1945,6 @@ class EncodePanel(QWidget):
             self._chroma_cb,
             self._filter_tech_label(self._chroma_filter_combo.currentText()),
             self._chroma_strength_combo,
-        ))
-
-        # Restauration (réseau R2 de muxiveo-rife) : appliquée avant l'interpolation, même moteur.
-        self._restore_cb = QCheckBox("Restauration")
-        self._restore_cb.setStyleSheet(_checkbox_style())
-        self._restore_cb.toggled.connect(lambda _: self._on_restore_changed())
-        self._restore_level_combo = QComboBox()
-        self._restore_level_combo.setStyleSheet(_combo_style())
-        for label, value, _tip in _RESTORE_LEVEL_ITEMS:
-            self._restore_level_combo.addItem(label, value)
-        self._restore_level_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
-        self._restore_mode_combo = QComboBox()
-        self._restore_mode_combo.setStyleSheet(_combo_style())
-        self._restore_mode_tip = (
-            "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, "
-            "perte de qualité très faible."
-        )
-        for label, fast in (("Mode : Normal", False), ("Mode : Rapide", True)):
-            self._restore_mode_combo.addItem(label, fast)
-        self._restore_mode_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
-        self._restore_animation_combo = QComboBox()
-        self._restore_animation_combo.setStyleSheet(_combo_style())
-        self._restore_animation_tip = (
-            "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la "
-            "fiche TMDB de la sortie, sinon de la source."
-        )
-        for label, value in (("Animation : Auto", "auto"), ("Animation : Oui", "on"), ("Animation : Non", "off")):
-            self._restore_animation_combo.addItem(label, value)
-        self._restore_animation_combo.currentIndexChanged.connect(lambda _: self._on_restore_changed())
-        fl.addWidget(self._build_filter_row(
-            self._restore_cb,
-            self._filter_tech_label("MVO-R2"),
-            self._restore_level_combo,
-            self._restore_mode_combo,
-            self._restore_animation_combo,
         ))
 
         # mode et TTA choisis hors préréglages qui les imposent (Light, Ultra), rétablis en les quittant
@@ -2051,46 +2058,64 @@ class EncodePanel(QWidget):
         if not available and self._interp_cb.isChecked():
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
-        self._sync_restore_availability()
+        self._sync_denoise_availability()
 
     def _restore_capabilities(self) -> tuple[bool, bool, str]:
-        """(Restauration disponible, mode rapide disponible, raison) d'après les capacités du moteur installé."""
+        """(MVO-R2 disponible, mode rapide disponible, raison) d'après les capacités du moteur installé."""
         if not self._interpolation_tool_available():
-            return False, False, "Extension Interpolation d'images non installée : page Extensions."
+            return False, False, "MVO-R2 : extension Interpolation d'images non installée (page Extensions)."
         rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
         capabilities = rife_capabilities(rife)
         if capabilities is None or not capabilities.supports("restore") or "r2" not in capabilities.restore_models:
-            return False, False, "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions)."
+            return False, False, "MVO-R2 absent de l'extension Interpolation installée : la mettre à jour (page Extensions)."
         return True, "r2q" in capabilities.restore_models, ""
 
-    def _sync_restore_availability(self) -> None:
-        if not hasattr(self, "_restore_cb"):
+    def _sync_denoise_availability(self) -> None:
+        """Entrée MVO-R2 du filtre de débruitage selon le moteur installé ; absent → NLMeans sélectionné (case
+        décochée si MVO-R2 était actif : jamais de substitution silencieuse d'un filtre par l'autre)."""
+        if not hasattr(self, "_denoise_cb"):
             return
         available, fast, reason = self._restore_capabilities()
+        self._r2_available = available
         self._restore_fast_available = fast
-        self._restore_cb.setEnabled(available)
-        self._restore_cb.setToolTip(translate_text(
-            "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour "
-            "garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto."
-            if available else reason
-        ))
-        if not available and self._restore_cb.isChecked():
-            self._restore_cb.setChecked(False)
-        self._sync_restore_controls()
+        combo = self._denoise_filter_combo
+        row = combo.findData("mvo-r2")
+        model = combo.model()
+        item = model.item(row) if isinstance(model, QStandardItemModel) else None
+        if item is not None:
+            item.setEnabled(available)
+        combo.setItemData(row, translate_text(_DENOISE_FILTER_TIPS["mvo-r2"] if available else reason),
+                          Qt.ItemDataRole.ToolTipRole)
+        combo.setItemData(combo.findData("nlmeans"), translate_text(_DENOISE_FILTER_TIPS["nlmeans"]),
+                          Qt.ItemDataRole.ToolTipRole)
+        if not available and combo.currentData() == "mvo-r2":
+            if self._denoise_cb.isChecked():
+                self._denoise_cb.setChecked(False)
+            self._denoise_fallback = True
+            self._set_combo_data(combo, "nlmeans")
+        elif available and self._denoise_fallback and not self._denoise_cb.isChecked():
+            self._denoise_fallback = False
+            self._set_combo_data(combo, "mvo-r2")
+        self._sync_denoise_controls()
 
-    def _restore_tool_flag(self) -> bool:
-        """État propre de la case Restauration (moteur disponible), indépendant des parents désactivés (codec copy)."""
-        parent = self._restore_cb.parentWidget()
-        return self._restore_cb.isEnabledTo(parent) if parent is not None else self._restore_cb.isEnabled()
+    def _denoise_filter(self) -> str:
+        """Filtre de débruitage sélectionné (« mvo-r2 » seulement si disponible)."""
+        value = str(self._denoise_filter_combo.currentData() or "nlmeans")
+        return value if value == "nlmeans" or self._r2_available else "nlmeans"
 
-    def _sync_restore_controls(self) -> None:
-        enabled = self._restore_cb.isChecked() and self._restore_tool_flag()
-        fast = bool(getattr(self, "_restore_fast_available", False))
+    def _sync_denoise_controls(self) -> None:
+        """Options affichées selon le filtre : niveau / mode / animation (MVO-R2), intensité / profil (NLMeans)."""
+        r2 = self._denoise_filter() == "mvo-r2"
+        for widget in (self._restore_level_combo, self._restore_mode_combo, self._restore_animation_combo):
+            widget.setVisible(r2)
+        for widget in (self._nlmeans_strength_combo, self._nlmeans_profile_combo):
+            widget.setVisible(not r2)
+        self._denoise_filter_combo.setToolTip(translate_text(_DENOISE_FILTER_TIPS[self._denoise_filter()]))
+        fast = self._restore_fast_available
         level = self._restore_level_combo.currentData()
-        self._restore_level_combo.setEnabled(enabled)
-        self._restore_mode_combo.setEnabled(enabled and fast)
+        self._restore_mode_combo.setEnabled(fast)
         # L'animation ne déplace que le niveau Auto.
-        self._restore_animation_combo.setEnabled(enabled and level == "auto")
+        self._restore_animation_combo.setEnabled(level == "auto")
         for index in range(self._restore_level_combo.count()):
             item_tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS
                              if value == self._restore_level_combo.itemData(index)), "")
@@ -2106,28 +2131,40 @@ class EncodePanel(QWidget):
             else "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel."
         ))
 
-    def _on_restore_changed(self) -> None:
-        self._sync_restore_controls()
+    def _on_denoise_changed(self) -> None:
+        self._sync_denoise_controls()
         self._rebuild_preview()
 
     def _current_restore_settings(self) -> RestoreSettings:
-        if not hasattr(self, "_restore_cb"):
+        if not hasattr(self, "_denoise_cb"):
             return RestoreSettings()
         return RestoreSettings(
-            enabled=self._restore_cb.isChecked() and self._restore_cb.isEnabled(),
+            enabled=self._denoise_cb.isChecked() and self._denoise_cb.isEnabled() and self._denoise_filter() == "mvo-r2",
             level=str(self._restore_level_combo.currentData() or "auto"),
-            fast=bool(self._restore_mode_combo.currentData()) and bool(getattr(self, "_restore_fast_available", False)),
+            fast=bool(self._restore_mode_combo.currentData()) and self._restore_fast_available,
             animation=str(self._restore_animation_combo.currentData() or "auto"),
         )
 
-    def _apply_restore_settings(self, settings: RestoreSettings) -> None:
-        if not hasattr(self, "_restore_cb"):
+    def _apply_denoise_settings(self, filters: VideoFilterSettings, restoration: RestoreSettings) -> None:
+        """Ligne Débruitage d'après les réglages effectifs : MVO-R2 actif (s'il est disponible), sinon NLMeans
+        actif, sinon case décochée sur le filtre mémorisé."""
+        if not hasattr(self, "_denoise_cb"):
             return
-        self._restore_cb.setChecked(bool(settings.enabled) and self._restore_tool_flag())
-        self._set_combo_data(self._restore_level_combo, settings.level)
-        self._set_combo_data(self._restore_mode_combo, bool(settings.fast))
-        self._set_combo_data(self._restore_animation_combo, settings.animation)
-        self._sync_restore_controls()
+        self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
+        self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
+        self._set_combo_data(self._restore_level_combo, restoration.level)
+        self._set_combo_data(self._restore_mode_combo, bool(restoration.fast))
+        self._set_combo_data(self._restore_animation_combo, restoration.animation)
+        if restoration.enabled and self._r2_available:
+            choice, enabled = "mvo-r2", True
+        elif filters.nlmeans_enabled:
+            choice, enabled = "nlmeans", True
+        else:
+            choice, enabled = filters.denoise_filter, False
+        self._denoise_fallback = choice == "mvo-r2" and not self._r2_available
+        self._set_combo_data(self._denoise_filter_combo, choice if self._r2_available else "nlmeans")
+        self._denoise_cb.setChecked(enabled)
+        self._sync_denoise_controls()
 
     def _interpolation_tool_flag(self) -> bool:
         """État propre de la case RIFE (outil disponible), indépendant des parents
@@ -4139,7 +4176,7 @@ class EncodePanel(QWidget):
         self._apply_crop_settings(vs.crop)
         self._apply_filter_settings(vs.filters)
         self._apply_interpolation_settings(vs.interpolation)
-        self._apply_restore_settings(vs.restoration)
+        self._apply_denoise_settings(vs.filters, vs.restoration)
         # Les options HDR (inject_hdr_meta / master_display / max_cll /
         # tonemap_to_sdr) dépendent de la source, pas du profil — un même
         # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
@@ -5031,9 +5068,10 @@ class EncodePanel(QWidget):
             deblock_enabled=self._deblock_cb.isChecked(),
             deblock_strength=str(self._deblock_strength_combo.currentData() or "medium"),
             deblock_block=int(str(self._deblock_block_combo.currentData() or "8")),
-            nlmeans_enabled=self._nlmeans_cb.isChecked(),
+            nlmeans_enabled=self._denoise_cb.isChecked() and self._denoise_filter() == "nlmeans",
             nlmeans_strength=str(self._nlmeans_strength_combo.currentData() or "light"),
             nlmeans_profile=str(self._nlmeans_profile_combo.currentData() or "standard"),
+            denoise_filter=str(self._denoise_filter_combo.currentData() or "mvo-r2"),
             chroma_smooth_enabled=self._chroma_cb.isChecked(),
             chroma_smooth_strength=str(self._chroma_strength_combo.currentData() or "medium"),
         )
@@ -5392,7 +5430,8 @@ class EncodePanel(QWidget):
             self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
             self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
             self._apply_interpolation_settings(FrameInterpolationSettings.from_value(state.get("interpolation")))
-            self._apply_restore_settings(RestoreSettings.from_value(state.get("restoration")))
+            self._apply_denoise_settings(VideoFilterSettings.from_value(state.get("filters")),
+                                         RestoreSettings.from_value(state.get("restoration")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
@@ -5467,9 +5506,6 @@ class EncodePanel(QWidget):
         self._deblock_cb.setChecked(bool(filters.deblock_enabled))
         self._set_combo_data(self._deblock_strength_combo, filters.deblock_strength)
         self._set_combo_data(self._deblock_block_combo, str(filters.deblock_block))
-        self._nlmeans_cb.setChecked(bool(filters.nlmeans_enabled))
-        self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
-        self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
         self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
         self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
 

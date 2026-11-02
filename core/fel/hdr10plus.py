@@ -53,7 +53,7 @@ MEASURED_LIGHT_LEVEL_SOURCES = frozenset({"fel_frame_statistics", "restore_frame
 
 
 def restore_statistics_path(video: object) -> Path | None:
-    """Statistiques de l'image restaurée (moteur muxiveo-rife ``--frame-statistics``) ; None sans mesure."""
+    """Statistiques de l'image débruitée (moteur muxiveo-rife ``--frame-statistics``) ; None sans mesure."""
     statistics = getattr(video, "restore_statistics", None)
     return statistics if isinstance(statistics, Path) else None
 
@@ -65,7 +65,7 @@ def light_level_statistics_path(video: object) -> Path | None:
 
 def light_level_origin(video: object) -> str:
     """Image mesurée, pour le journal."""
-    return "l'image restaurée" if restore_statistics_path(video) is not None else "l'image reconstruite"
+    return "l'image débruitée" if restore_statistics_path(video) is not None else "l'image reconstruite"
 
 
 def deferred_light_levels(video: object) -> bool:
@@ -156,7 +156,7 @@ def _light_pair(value: str) -> tuple[int, int] | None:
 
 def invisible_light_change(source: tuple[float, float, float], restored: tuple[float, float, float]) -> bool:
     """Vrai si la Restauration ne change pas la lumière à l'œil, d'après (pic, percentile 99,98 % de maxRGB,
-    moyenne) en nits de la source et de l'image restaurée. Mêmes tolérances que le réalignement du HDR Studio
+    moyenne) en nits de la source et de l'image débruitée. Mêmes tolérances que le réalignement du HDR Studio
     (``core/hdr_inspection/realign.py``) : pic à 10 % près ou dépassé par moins de 0,02 % des pixels (pixels isolés,
     critère d'écrêtage visible) ; moyenne à 10 % près, au moins 5 nits."""
     from core.hdr_inspection.realign import TOLERANCE
@@ -210,13 +210,13 @@ def dynamic_metadata_adequacy(video: object, ratio: Fraction | int = 1) -> tuple
     try:
         pair = _restore_statistics_pair(video)
     except FrameStatisticsError as exc:
-        return "WARN", f"Restauration : contrôle des métadonnées {copied} copiées impossible ({exc})."
+        return "WARN", f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({exc})."
     if pair is None:
         return None
     source, restored = pair
     expected = sum(frame_repeats(index, ratio) for index in range(len(source.frames)))
     if expected != len(restored.frames):
-        return "WARN", (f"Restauration : contrôle des métadonnées {copied} copiées impossible ({len(restored.frames)} "
+        return "WARN", (f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({len(restored.frames)} "
                         f"images mesurées pour {expected} attendues).")
     changed, produced = 0, iter(restored.frames)
     for index, frame in enumerate(source.frames):
@@ -226,9 +226,9 @@ def dynamic_metadata_adequacy(video: object, ratio: Fraction | int = 1) -> tuple
     share = changed / len(restored.frames)
     percent = f"{100 * share:.1f}".replace(".", ",")
     if share > DYNAMIC_SHARE:
-        return "WARN", (f"Restauration : métadonnées {copied} copiées de la source, lumière visiblement changée sur "
+        return "WARN", (f"MVO-R2 : métadonnées {copied} copiées de la source, lumière visiblement changée sur "
                         f"{percent} % des images (pic ou moyenne) : à vérifier dans le HDR Studio.")
-    return "INFO", (f"Restauration : métadonnées {copied} copiées de la source, adéquates (lumière visiblement changée "
+    return "INFO", (f"MVO-R2 : métadonnées {copied} copiées de la source, adéquates (lumière visiblement changée "
                     f"sur {percent} % des images).")
 
 
@@ -238,7 +238,7 @@ def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[st
     Image reconstruite (FEL) : toujours la mesure (les valeurs de la source décrivent la BL). Image restaurée : les
     valeurs de la source restent intactes si la Restauration ne les change pas à l'œil
     (``isolated_light_level_change``, trames lues mesurées par le moteur avant la Restauration) ; sinon, ou sans
-    valeurs dans la source, la mesure de l'image restaurée.
+    valeurs dans la source, la mesure de l'image débruitée.
     """
     exact = statistics.static_light_levels()
     declared = _light_pair(getattr(video, "restore_source_light_levels", ""))
@@ -249,12 +249,12 @@ def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[st
     try:
         source = read_frame_statistics(source_path)
     except FrameStatisticsError as exc:
-        return exact, f"MaxCLL/MaxFALL exacts de l'image restaurée : {exact} (source non comparée : {exc})."
+        return exact, f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source non comparée : {exc})."
     measured_source = source.static_light_levels()
     if isolated_light_level_change(source, statistics):
         return kept, (f"MaxCLL/MaxFALL de la source conservés : {kept} (image restaurée {exact}, source mesurée "
                       f"{measured_source} : écart invisible).")
-    return exact, (f"MaxCLL/MaxFALL exacts de l'image restaurée : {exact} (source mesurée {measured_source} : "
+    return exact, (f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source mesurée {measured_source} : "
                    "écart visible).")
 
 

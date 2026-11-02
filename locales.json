@@ -4043,10 +4043,6 @@
     "fra": "Taille de bloc analysée par le filtre deblock.",
     "eng": "Block size analyzed by the deblock filter."
   },
-  "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.": {
-    "fra": "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.",
-    "eng": "Spatial/temporal denoise. Slower, but useful on noisy sources."
-  },
   "Débruitage": {
     "fra": "Débruitage",
     "eng": "Denoise"
@@ -9435,10 +9431,6 @@
     "fra": "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).",
     "eng": "Uncertain sync to validate: continuous analysis inconclusive, offset taken from {measured}/{total} matching spot measurements (spread {spread} ms)."
   },
-  "Restauration": {
-    "fra": "Restauration",
-    "eng": "Restoration"
-  },
   "Léger": {
     "fra": "Léger",
     "eng": "Light"
@@ -9499,12 +9491,24 @@
     "fra": "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel.",
     "eng": "No effect outside the Auto level: the chosen level applies as is."
   },
-  "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto.": {
-    "fra": "Retire le grain et le bruit (réseau R2, GPU Vulkan ou NVIDIA TensorRT), dosé plan par plan pour garder la texture ; appliquée avant l'interpolation. Sortie en 10 bits en profondeur Auto.",
-    "eng": "Removes grain and noise (R2 network, Vulkan GPU or NVIDIA TensorRT), dosed shot by shot to keep texture; applied before interpolation. 10-bit output with Auto bit depth."
+  "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg).": {
+    "fra": "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg).",
+    "eng": "Removes grain and noise: MVO-R2 (trained network, GPU) by default, or NLMeans (FFmpeg)."
   },
-  "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions).": {
-    "fra": "Restauration absente de l'extension Interpolation installée : la mettre à jour (page Extensions).",
-    "eng": "Restoration missing from the installed Interpolation extension: update it (Extensions page)."
+  "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.": {
+    "fra": "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.",
+    "eng": "MVO-R2: network trained on several motion-aligned frames (Vulkan GPU or NVIDIA TensorRT); removes grain and noise while keeping detail, dosed shot by shot. 10-bit output with Auto depth."
+  },
+  "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).": {
+    "fra": "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).",
+    "eng": "NLMeans: frame-by-frame FFmpeg filter (CPU, or Vulkan GPU in 10-bit)."
+  },
+  "MVO-R2 : extension Interpolation d'images non installée (page Extensions).": {
+    "fra": "MVO-R2 : extension Interpolation d'images non installée (page Extensions).",
+    "eng": "MVO-R2: Frame interpolation extension not installed (Extensions page)."
+  },
+  "MVO-R2 absent de l'extension Interpolation installée : la mettre à jour (page Extensions).": {
+    "fra": "MVO-R2 absent de l'extension Interpolation installée : la mettre à jour (page Extensions).",
+    "eng": "MVO-R2 missing from the installed Interpolation extension: update it (Extensions page)."
   }
 }
