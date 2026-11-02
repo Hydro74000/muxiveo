@@ -37,7 +37,10 @@ from core.pipeline_command import PipelineCommand, command_stages
 from core.version import MVO_RIFE_CONTRACT
 
 if TYPE_CHECKING:
-    from core.workflows.encode.models import VideoEncodeSettings
+    from core.workflows.encode.models import RestoreSettings, VideoEncodeSettings
+
+# Images transmises au moteur sous Restauration : 10 bits (précision de sortie du réseau, tramage), 4:2:0
+RESTORE_DECODE_FORMAT = "yuv420p10le"
 
 @dataclass(frozen=True)
 class InterpolationPreset:
@@ -438,6 +441,47 @@ def build_decode_stage(
     return cmd
 
 
+def restore_transfer(source: InterpolationSource) -> str:
+    """Fonction de transfert des images transmises au moteur (après tone mapping éventuel) : pq | hlg | sdr."""
+    transfer = (source.transfer or "").strip().lower()
+    return "pq" if transfer == "smpte2084" else ("hlg" if transfer == "arib-std-b67" else "sdr")
+
+
+def restore_engine_args(
+    restore: RestoreSettings,
+    *,
+    transfer: str,
+    model_dir: str = "",
+    animation: bool = False,
+    dither: str = "auto",
+) -> list[str]:
+    """Options de Restauration de muxiveo-rife (``--restore`` …) ; ``dither`` « 8 » : sortie 10 bits destinée à un
+    encodeur 8 bits (codes multiples de 4, conversion exacte en aval)."""
+    args = ["--restore", restore.level, "--transfer", transfer or "sdr"]
+    if restore.fast:
+        args.append("--restore-fast")
+    if model_dir:
+        args.extend(["--restore-model", str(model_dir)])
+    if animation and restore.level == "auto":
+        args.append("--restore-animation")
+    if dither != "auto":
+        args.extend(["--restore-dither", dither])
+    return args
+
+
+def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *, model_dir: str = "",
+                     animation: bool = False) -> list[str]:
+    """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
+    (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits."""
+    if not video.restores():
+        return []
+    from core.workflows.encode.domain.codecs import resolve_output_bit_depth
+    settings = video.restoration
+    animated = settings.animation == "on" or (settings.animation == "auto" and animation)
+    return restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
+                               dither="8" if resolve_output_bit_depth(video) == 8 else "auto")
+
+
 def build_rife_stage(
     rife_bin: str,
     *,
@@ -451,8 +495,13 @@ def build_rife_stage(
     tta: int = 1,
     trt_plugin: str = "",
     trt_cache: str = "",
+    interpolate: bool = True,
+    restore_args: Sequence[str] = (),
 ) -> list[str]:
     """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
+
+    ``restore_args`` (``restore_engine_args``) : Restauration avant l'interpolation ; ``interpolate=False`` :
+    Restauration seule (``--factor 1``, sans les options d'interpolation).
 
     ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
     ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
@@ -462,6 +511,22 @@ def build_rife_stage(
     elle est inutilisable (ne le passer qu'à un binaire qui prend en charge ``--trt-plugin``).
     Moteur, modèle et arguments supplémentaires : préréglage de l'extension (``presets.json``).
     """
+    if not interpolate:
+        cmd = [
+            str(rife_bin), "--factor", "1",
+            "--matrix", source.matrix,
+            "--range", source.color_range,
+            "--chroma-loc", source.chroma_location,
+            "--progress-interval", str(_RIFE_PROGRESS_INTERVAL_S),
+            *restore_args,
+        ]
+        if int(gpu) >= 0:
+            cmd.extend(["--gpu", str(int(gpu))])
+        if trt_plugin:
+            cmd.extend(["--trt-plugin", str(trt_plugin)])
+            if trt_cache:
+                cmd.extend(["--trt-cache", str(trt_cache)])
+        return cmd
     preset = interpolation_preset(quality, rife_bin)
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(Fraction(str(factor)))]
     cmd = [
@@ -477,6 +542,7 @@ def build_rife_stage(
     if preset.engine != "rife":
         cmd.extend(["--engine", preset.engine])
     cmd.extend(preset.args)
+    cmd.extend(restore_args)
     if preset.ultra:
         cmd.append("--ultra")
     elif mode == "fast" or preset.force_fast:
@@ -513,6 +579,7 @@ class RifeCapabilities:
     options: frozenset[str] = frozenset()
     models: frozenset[str] | None = None  # None : binaire sans --capabilities (contrôle par dossier)
     selector_status: str = ""             # « ok », raison d'indisponibilité, ou "" (inconnu)
+    restore_models: frozenset[str] = frozenset()  # graphes de Restauration livrés (<exe>/restore-models/<nom>)
 
     @property
     def label(self) -> str:
@@ -581,6 +648,36 @@ def rife_support_errors(
     return []
 
 
+RESTORE_MIN_VERSION = (1, 12, 0)  # premier muxiveo-rife à étage de Restauration (--restore)
+
+
+def restore_model_name(restore: RestoreSettings) -> str:
+    """Graphes de Restauration utilisés par défaut : r2 (flux au demi), r2q (mode rapide, flux au quart)."""
+    return "r2q" if restore.fast else "r2"
+
+
+def restore_support_errors(capabilities: RifeCapabilities | None, restore: RestoreSettings) -> list[str]:
+    """Restauration non prise en charge par le binaire (option ``restore``, graphes livrés).
+
+    Capacités illisibles (None) : aucun blocage ici, muxiveo-rife signalera lui-même une option inconnue.
+    """
+    if capabilities is None:
+        return []
+    label = capabilities.label
+    if capabilities.contract != MVO_RIFE_CONTRACT:
+        return [f"Restauration : muxiveo-rife {label} (contrat {capabilities.contract}) incompatible avec "
+                f"cette version de Muxiveo ; {_RIFE_UPDATE_HINT}."]
+    if not capabilities.supports("restore"):
+        return [f"Restauration : muxiveo-rife {'.'.join(map(str, RESTORE_MIN_VERSION))} ou plus récent requis "
+                f"(installé : {label}) ; {_RIFE_UPDATE_HINT}."]
+    model = restore_model_name(restore)
+    if model not in capabilities.restore_models:
+        mode = " du mode rapide" if restore.fast else ""
+        return [f"Restauration : graphes{mode} « {model} » absents de l'extension muxiveo-rife {label} ; "
+                f"{_RIFE_UPDATE_HINT}."]
+    return []
+
+
 def rife_supports(rife_bin: str, option: str) -> bool:
     """Vrai si le binaire déclare l'option (capacités illisibles : faux)."""
     capabilities = rife_capabilities(rife_bin)
@@ -618,6 +715,8 @@ def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> 
         return _legacy_capabilities(version)
     selector = data.get("selector")
     selector = selector if isinstance(selector, dict) else {}
+    restore = data.get("restore")
+    restore = restore if isinstance(restore, dict) else {}
     contract = data.get("contract")
     return RifeCapabilities(
         version,
@@ -625,6 +724,7 @@ def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> 
         frozenset(str(o) for o in data.get("options") or [] if isinstance(o, str)),
         frozenset(str(m) for m in data.get("models") or [] if isinstance(m, str)),
         str(selector.get("status") or ""),
+        frozenset(str(m) for m in restore.get("models") or [] if isinstance(m, str)),
     )
 
 
@@ -1099,6 +1199,13 @@ __all__ = [
     "rife_capabilities",
     "rife_support_errors",
     "rife_model_available",
+    "RESTORE_MIN_VERSION",
+    "restore_model_name",
+    "restore_support_errors",
+    "restore_args_for",
+    "restore_engine_args",
+    "restore_transfer",
+    "RESTORE_DECODE_FORMAT",
     "rife_presets",
     "RifeCapabilities",
     "RIFE_CAPABILITIES_MIN_VERSION",

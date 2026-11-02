@@ -136,7 +136,7 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         context.source.device_plan.commands = tuple(tuple(s) for s in stages)
     upstream = [list(s) for s in command.upstream] if isinstance(command, PipelineCommand) else []
     output = list(command)
-    if upstream and video.interpolates() and "-i" in output:
+    if upstream and video.uses_engine() and "-i" in output:
         # RIFE transporte du y4m : la position chroma doit aussi parvenir au
         # dernier encodeur, après le pipe qui a perdu le marquage des images.
         pos = output.index("-i") + 2

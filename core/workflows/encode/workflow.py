@@ -124,9 +124,12 @@ from core.workflows.encode.interpolation import (
     interpolation_preset as _interpolation_preset,
     rife_capabilities as _rife_capabilities,
     rife_support_errors as _rife_support_errors,
+    restore_support_errors as _restore_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     decode_normalization_rate as _decode_normalization_rate,
+    restore_args_for as _restore_args_for,
+    RESTORE_DECODE_FORMAT as _RESTORE_DECODE_FORMAT,
     parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
@@ -268,6 +271,7 @@ from core.workflows.encode.dovi_policy import (
 )
 from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
 from core.workflows.encode.domain.codecs import preset_problem as _preset_problem
+from core.workflows.encode.domain.codecs import resolve_output_bit_depth as _resolve_output_bit_depth
 from core.workflows.encode.domain.codecs import vulkan_filters_compatible as _vulkan_filters_compatible
 from core.workflows.encode.vulkan import VulkanCapability as _VulkanCapability
 from core.workflows.encode.vulkan import detect_vulkan as _detect_vulkan
@@ -350,18 +354,21 @@ def _interpolation_decode_cmd(
     """
     cmd = list(decode_cmd)
     rate = _decode_normalization_rate(info, video) if video is not None else info.cfr_rate
+    restore_format = f"format={_RESTORE_DECODE_FORMAT}" if video is not None and video.restores() else ""
 
     def insert_before_output(args: list[str]) -> None:
         # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
         at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
         cmd[at:at] = args
 
-    if rate:
+    # un seul fps= (source VFR, YADIF par champ), puis 10 bits sous Restauration (précision de sortie du réseau)
+    extra = ",".join(part for part in (f"fps={rate}" if rate else "", restore_format) if part)
+    if extra:
         if "-vf" in cmd:
             index = cmd.index("-vf") + 1
-            cmd[index] = f"{cmd[index]},fps={rate}"
+            cmd[index] = f"{cmd[index]},{extra}"
         else:
-            insert_before_output(["-vf", f"fps={rate}"])
+            insert_before_output(["-vf", extra])
     if "-fps_mode" not in cmd:
         insert_before_output(["-fps_mode", "passthrough"])
     return cmd
@@ -1061,10 +1068,10 @@ class EncodeWorkflow(QObject):
         source: Path,
     ) -> list[str]:
         """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
-        if not video.interpolates():
+        if not video.uses_engine():
             return decode_cmd
         if not self._rife_bin:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, Restauration).")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
         trt_plugin, trt_cache = self._rife_trt_args()
@@ -1080,6 +1087,8 @@ class EncodeWorkflow(QObject):
             tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
+            interpolate=video.interpolates(),
+            restore_args=_restore_args_for(video, info),
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 
@@ -2832,6 +2841,7 @@ class EncodeWorkflow(QObject):
         errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
         errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
+        errors.extend(self._restoration_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
         mux_decision = self.select_mux_backend(config)
@@ -3290,8 +3300,30 @@ class EncodeWorkflow(QObject):
                     f"{video.source_bit_depth} bits réduite à 8 bits avant le débruitage "
                     "(risque de banding, surtout en HDR)."
                 )
+            if video.restores() and _resolve_output_bit_depth(video) == 8:
+                # Grain retiré : les dégradés ne sont plus tramés par la source (D-h).
+                messages.append(
+                    f"Piste vidéo #{index} — Restauration avec une sortie 8 bits : tramage à la précision "
+                    "8 bits appliqué par le moteur ; une sortie 10 bits limite le banding des dégradés."
+                )
         messages.extend(self.size_target_warnings(config))
         return messages
+
+    def _is_animation(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
+        """Genre « Animation » : balise GENRE écrite en sortie (TMDB), sinon celle de la source de la piste."""
+        from core.media_info_fetcher import is_animation_genre
+
+        tags = config.tag_overrides if isinstance(config.tag_overrides, dict) else None
+        if tags is not None:
+            genre = next((str(v) for k, v in tags.items() if str(k).upper() == "GENRE"), None)
+            if genre is not None:
+                return is_animation_genre(genre)
+        payload = self._ffprobe_streams_payload(self._video_source_from_settings(config, video)) or {}
+        fmt = payload.get("format")
+        source_tags = fmt.get("tags") if isinstance(fmt, dict) else None
+        if isinstance(source_tags, dict):
+            return any(str(k).upper() == "GENRE" and is_animation_genre(str(v)) for k, v in source_tags.items())
+        return False
 
     def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
         """Renseigne transfert, profondeur et capacité matérielle depuis les sondes en cache."""
@@ -3342,6 +3374,10 @@ class EncodeWorkflow(QObject):
                 updates.update({
                     key: value for key, value in vulkan_updates.items() if getattr(video, key) != value
                 })
+                if video.restores() and video.restoration.animation == "auto":
+                    # Restauration Auto : contenu animé d'après le genre (fiche TMDB de la sortie, sinon la source).
+                    animated = self._is_animation(config, video)
+                    updates["restoration"] = dataclasses.replace(video.restoration, animation="on" if animated else "off")
                 if updates:
                     video = dataclasses.replace(video, **updates)
                     changed = True
@@ -3352,7 +3388,7 @@ class EncodeWorkflow(QObject):
         if any(
             v.codec in (NVENC_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
             and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
-            and not has_cpu_video_filter(v) and not v.interpolates()
+            and not has_cpu_video_filter(v) and not v.uses_engine()
             for v in resolved
         ):
             self._depth_conversion_filters()
@@ -3463,6 +3499,34 @@ class EncodeWorkflow(QObject):
                 )
         return errors
 
+    def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
+        """Contrôles propres à la Restauration (outil, graphes livrés, entrelacement)."""
+        errors: list[str] = []
+        for video in self._video_tracks(config):
+            if not video.restoration.is_active():
+                continue
+            if video.codec == "copy":
+                errors.append("Restauration : impossible avec le codec vidéo COPY (réencodage requis).")
+                continue
+            source = self._video_source_from_settings(config, video)
+            rife_bin = self._rife_bin
+            if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
+                errors.append(
+                    "Restauration : moteur muxiveo-rife introuvable "
+                    "(installer l'extension Interpolation depuis la page Extensions)."
+                )
+            else:
+                resolved = str(shutil.which(rife_bin) or rife_bin)
+                errors.extend(_restore_support_errors(_rife_capabilities(resolved), video.restoration))
+            if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
+                video.filters.yadif_enabled
+            ):
+                errors.append(
+                    f"Restauration : {source.name} est entrelacée ; "
+                    "activez le désentrelacement (appliqué avant la Restauration)."
+                )
+        return errors
+
     def _video_stream_is_interlaced(self, source: Path, stream_index: int) -> bool:
         payload = self._ffprobe_streams_payload(source) or {}
         for stream in self._ffprobe_stream_dicts(payload):
@@ -3488,7 +3552,7 @@ class EncodeWorkflow(QObject):
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
-        if not (video.interpolates() or _needs_static_hdr_sei_reinjection_domain(video)):
+        if not (video.uses_engine() or _needs_static_hdr_sei_reinjection_domain(video)):
             return False
         return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
 

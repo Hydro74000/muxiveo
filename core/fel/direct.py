@@ -154,7 +154,7 @@ def direct_command(fallback: PipelineCommand, original: list[str], video: VideoE
     binary = getattr(context.source.engine, "direct_ffmpeg", None) if context else None
     if (sys.platform != "linux" or not isinstance(binary, Path) or not binary.is_file() or context is None
             or context.source.device_plan is None or video.codec != "hevc_nvenc"
-            or video.interpolates() or video.tonemap_to_sdr or video.p5_to_hdr10 or fallback.upstream
+            or video.uses_engine() or video.tonemap_to_sdr or video.p5_to_hdr10 or fallback.upstream
             # Statistiques de l'image (HDR10+ recalculé) : transports NUT seulement.
             or context.source.statistics_path is not None):
         return fallback

@@ -27,10 +27,12 @@ from core.workflows.encode.domain import (
     video_codec_args_bitrate,
 )
 from core.workflows.encode.interpolation import (
+    RESTORE_DECODE_FORMAT,
     InterpolationSource,
     build_decode_stage,
     build_rife_stage,
     decode_normalization_rate,
+    restore_args_for,
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
@@ -95,7 +97,7 @@ class VideoOnlyCommandBuilder:
         thread_count: int | None = None,
     ) -> list[str]:
         cb = self._cb
-        if video.interpolates():
+        if video.uses_engine():
             return self._build_interpolated_base_cmd(
                 video=video,
                 source=source,
@@ -135,7 +137,7 @@ class VideoOnlyCommandBuilder:
         """
         cb = self._cb
         if not cb.rife_bin or cb.interpolation_source is None:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, Restauration).")
         domain = cb.codec_domain_callbacks()
         info = cb.interpolation_source(video, source)
         settings = video.interpolation
@@ -148,7 +150,11 @@ class VideoOnlyCommandBuilder:
         # après YADIF « une image par champ » ; les trames dupliquées deviennent des
         # paires figées, recopiées par RIFE.
         rate = decode_normalization_rate(info, video)
-        decode_vf = ",".join(part for part in (build_vf(video), f"fps={rate}" if rate else "") if part)
+        decode_vf = ",".join(part for part in (
+            build_vf(video),
+            f"fps={rate}" if rate else "",
+            f"format={RESTORE_DECODE_FORMAT}" if video.restores() else "",
+        ) if part)
         decode = build_decode_stage(
             cb.ffmpeg_bin,
             source,
@@ -169,6 +175,8 @@ class VideoOnlyCommandBuilder:
             tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
+            interpolate=video.interpolates(),
+            restore_args=restore_args_for(video, info),
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

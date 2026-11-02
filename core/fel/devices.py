@@ -163,7 +163,7 @@ def pipeline_devices(video: VideoEncodeSettings, devices: tuple[FelDevice, ...],
         occupied.update(d.uuid for d in devices if d.vendor in {0x8086, 0x1002})
     # Les indices Vulkan de FFmpeg/ncnn ne sont pas assimilés à ceux du plugin.
     # Sans identité confirmée, réserver leurs candidats évite une fausse certitude.
-    if video.interpolation.is_active():
+    if video.interpolation.is_active() or video.restoration.is_active():
         matched: set[str] = set()
         for stage in commands:
             if not stage or "rife" not in Path(stage[0]).stem.lower():

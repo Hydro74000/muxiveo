@@ -113,8 +113,9 @@ def resolve_output_bit_depth(video: VideoEncodeSettings, source_bit_depth: int |
         return int(video.bit_depth)
     if output_hdr_transfer(video):
         return 10
-    # Source > 8 bits (10, 12, 16) : 10 bits, la plus proche que les encodeurs proposent.
-    if source > 8 and supports_output_10bit(video):
+    # Source > 8 bits (10, 12, 16) : 10 bits, la plus proche que les encodeurs proposent. Restauration : 10 bits
+    # aussi (grain retiré, les dégradés ne sont plus tramés : marches visibles après un encodage 8 bits, D-h).
+    if (source > 8 or video.restores()) and supports_output_10bit(video):
         return 10
     return 8
 
@@ -463,7 +464,7 @@ def needs_static_hdr_sei_reinjection(video: VideoEncodeSettings) -> bool:
     return (
         video.codec in _SIDE_DATA_HDR_HEVC_ENCODERS
         and should_reinject_static_hdr_metadata(video)
-        and (video.interpolates() or supports_manual_static_hdr_metadata(video.codec))
+        and (video.uses_engine() or supports_manual_static_hdr_metadata(video.codec))
     )
 
 
@@ -486,9 +487,9 @@ def strips_source_static_hdr_side_data(video: VideoEncodeSettings) -> bool:
 
 
 def interpolated_static_hdr_lost(video: VideoEncodeSettings) -> bool:
-    """Vrai si l'interpolation fait perdre un HDR10 statique impossible à réinjecter (AV1)."""
+    """Vrai si le moteur muxiveo-rife (interpolation, Restauration) fait perdre un HDR10 statique impossible à réinjecter (AV1)."""
     return (
-        video.interpolates()
+        video.uses_engine()
         and video.codec in _SIDE_DATA_HDR_AV1_ENCODERS
         and bool(video.inject_hdr_meta)
         and requests_hdr_metadata(video)
@@ -1216,7 +1217,9 @@ def build_encoder_vf(
         return f"{vf},{upload}" if vf else upload
     # Une entrée auxiliaire ou un pipe n'a pas les surfaces GPU prévues par
     # les options du codec : convertir ici plutôt que laisser l'encodeur deviner.
-    if (piped_frames or not hw_decoded) and not frames_match_target(video, target):
+    # Pipe y4m sous Restauration : images du moteur en 4:2:0 10 bits, quelle que soit la source.
+    matches = target == 10 if piped_frames and video.restores() else frames_match_target(video, target)
+    if (piped_frames or not hw_decoded) and not matches:
         fmt = "yuv420p10le" if target == 10 else "yuv420p"
         vf = ",".join(part for part in (vf, f"format={fmt}") if part)
     return vf
@@ -1297,7 +1300,7 @@ def hardware_input_args(
     # Étage qui filtre : périphérique Vulkan des filtres GPU (jamais l'étage encodeur d'un pipe).
     args: list[str] = [] if piped_frames else vulkan_filter_device_args(video)
     tonemap = bool(video.tonemap_to_sdr)
-    software_filtering = has_cpu_video_filter(video) or piped_frames or video.interpolates()
+    software_filtering = has_cpu_video_filter(video) or piped_frames or video.uses_engine()
     # H.264 High10 est décodé en logiciel : FFmpeg peut se replier seul,
     # mais un scale_cuda ou un encodeur VAAPI recevrait alors des images CPU.
     software_filtering |= video.source_codec in {"h264", "avc"} and video.source_bit_depth > 8

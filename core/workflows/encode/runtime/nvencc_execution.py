@@ -803,7 +803,7 @@ class NvenccDirectOutputRunner:
                         frame_exact=bool(
                             (runtime_video.copy_dv and dovi_rpu_path is not None) or hdr10plus_json_path is not None
                         ),
-                        nut=runtime_video.fel_context is not None and not runtime_video.interpolates(),
+                        nut=runtime_video.fel_context is not None and not runtime_video.uses_engine(),
                     )
                     if cb.wrap_decode_with_interpolation is not None:
                         decode_cmd = cb.wrap_decode_with_interpolation(
@@ -981,7 +981,7 @@ def build_nvencc_pipeline_commands(
     if routing.video.copy_dv:
         if routing.needs_rpu_alignment:
             dovi_rpu_preview = work_dir / "rpu_aligned.bin"
-        elif routing.video.p5_to_hdr10 or routing.video.interpolates():
+        elif routing.video.p5_to_hdr10 or routing.video.uses_engine():
             dovi_rpu_preview = work_dir / "source_rpu.bin"
     # Cadence encodée comme à l'exécution (interpolation : GOP Dolby Vision borné sur la cadence de sortie).
     preview_fps = routing.source_fps or routing.input_fps
@@ -1013,7 +1013,7 @@ def build_nvencc_pipeline_commands(
             extra_input_args=_vulkan_filter_device_args(routing.video),
             vf=_nvencc_ffmpeg_filter_vf_runtime(routing.video),
             frame_exact=dovi_rpu_preview is not None,
-            nut=routing.video.fel_context is not None and not routing.video.interpolates(),
+            nut=routing.video.fel_context is not None and not routing.video.uses_engine(),
         )
         if wrap_decode_with_interpolation is not None:
             # aperçu : décodage | muxiveo-rife sur une seule ligne de jetons

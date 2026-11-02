@@ -342,8 +342,8 @@ def build_decode_pipe_cmd(
 
 
 def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
-    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or RIFE interpolation)."""
-    return nvencc_requires_ffmpeg_prefilter(video) or video.interpolates()
+    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or muxiveo-rife: interpolation, Restauration)."""
+    return nvencc_requires_ffmpeg_prefilter(video) or video.uses_engine()
 
 
 def nvencc_requires_ffmpeg_prefilter(video: VideoEncodeSettings) -> bool:
@@ -977,7 +977,7 @@ def build_nvencc_command(
 
     cmd: list[str] = [str(nvencc_bin), "-c", codec_flag]
     if input_path is None:
-        if video.fel_context is not None and not video.interpolates():
+        if video.fel_context is not None and not video.uses_engine():
             # Le NUT conserve les PTS du producteur FEL, même en cadence variable.
             # Analyse d'entrée courte : le NUT décrit son flux, et l'analyse par défaut (5 s)
             # accumule ~100 images brutes UHD avant la première image encodée (7 à 10 s perdues).
