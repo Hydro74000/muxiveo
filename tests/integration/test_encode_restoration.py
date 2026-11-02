@@ -216,3 +216,92 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str) -> 
     # Image restaurée mesurée avant l'encodage (comme pour le FEL) : Restauration déterministe, mêmes valeurs exactes.
     assert colour == sei == _measured(src, "--restore", "fort") != (1000, 400)
     assert _frames(out) == _frames(src)
+
+
+def _media(cmd: list[str]) -> str:
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=False)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+@pytest.fixture(scope="module")
+def dynamic_hdr_source(tmp_path_factory) -> Path:
+    """HEVC 10 bits PQ granuleux, RPU Dolby Vision P8.1 et HDR10+ par image (48 images), une piste audio."""
+    if not all(shutil.which(tool) for tool in ("dovi_tool", "hdr10plus_tool")):
+        pytest.skip("dovi_tool et hdr10plus_tool requis")
+    root = tmp_path_factory.mktemp("restoration-dynamic-hdr")
+    frames = 48
+    base = root / "base.hevc"
+    _media(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+            f"gradients=size={W}x{H}:rate=24000/1001:speed=0.02:seed=7,noise=alls=12:allf=t",
+            "-frames:v", str(frames), "-pix_fmt", "yuv420p10le", "-c:v", "libx265", "-preset", "ultrafast",
+            "-x265-params", "log-level=none:bframes=0:keyint=24:colorprim=bt2020:transfer=smpte2084:"
+            f"colormatrix=bt2020nc:master-display={_MASTER_DISPLAY}:max-cll=1000,400", "-f", "hevc", str(base)])
+    config = root / "dovi.json"
+    config.write_text(json.dumps({"cm_version": "V40", "profile": "8.1", "length": frames}), encoding="utf-8")
+    rpu = root / "source.bin"
+    _media(["dovi_tool", "generate", "-j", str(config), "-o", str(rpu)])
+    dovi = root / "dovi.hevc"
+    _media(["dovi_tool", "inject-rpu", "-i", str(base), "-r", str(rpu), "-o", str(dovi)])
+    hdr_json = root / "hdr10plus.json"
+    hdr_json.write_text(json.dumps({
+        "JSONInfo": {"HDR10plusProfile": "B", "Version": "1.0"},
+        "ToolInfo": {"Tool": "hdr10plus_tool", "Version": "1.7.1"},
+        "SceneInfoSummary": {"SceneFirstFrameIndex": [0, 24], "SceneFrameNumbers": [24, 24]},
+        "SceneInfo": [{
+            "BezierCurveData": {"Anchors": [256, 512, 768, 1023, 1023, 1023, 1023, 1023, 1023],
+                                "KneePointX": 0, "KneePointY": 0},
+            "LuminanceParameters": {
+                "AverageRGB": 1000 + index,
+                "LuminanceDistributions": {"DistributionIndex": [1, 5, 10, 25, 50, 75, 90, 95, 99],
+                                           "DistributionValues": [10, 50, 100, 500, 1000, 2000, 3000, 4000, 5000]},
+                "MaxScl": [5000, 5000, 5000],
+            },
+            "NumberOfWindows": 1, "TargetedSystemDisplayMaximumLuminance": 400,
+            "SceneFrameIndex": index % 24, "SceneId": index // 24, "SequenceFrameIndex": index,
+        } for index in range(frames)],
+    }), encoding="utf-8")
+    combined = root / "combined.hevc"
+    _media(["hdr10plus_tool", "inject", "-i", str(dovi), "-j", str(hdr_json), "-o", str(combined)])
+    source = root / "source.mkv"
+    _media(["ffmpeg", "-v", "error", "-y", "-r", "24000/1001", "-i", str(combined), "-f", "lavfi", "-i",
+            "sine=f=440:r=48000:d=2.002", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "flac", str(source)])
+    assert _frames(source) == frames
+    return source
+
+
+@pytest.mark.parametrize("codec", ["libx265", "hevc_nvenc", "nvencc_hevc"])
+def test_restoration_keeps_dolby_vision_and_hdr10plus(tmp_path: Path, dynamic_hdr_source: Path, codec: str) -> None:
+    """Copie DV / HDR10+ sous Restauration seule (cadence inchangée) : une métadonnée par image, depuis des fichiers
+    (le pipe y4m ne les transporte pas)."""
+    hardware = set(os.environ.get("MUXIVEO_TEST_HW", "").split(","))
+    if codec == "nvencc_hevc" and ("nvencc" not in hardware or not shutil.which("nvencc")):
+        pytest.skip("Activer MUXIVEO_TEST_HW=nvencc (NVEncC requis)")
+    if codec == "hevc_nvenc" and "nvenc" not in hardware:
+        pytest.skip("Activer MUXIVEO_TEST_HW=nvenc")
+    out = tmp_path / f"dv-{codec}.mkv"
+    cfg = EncodeConfig(
+        source=dynamic_hdr_source, output=out,
+        video=VideoEncodeSettings(
+            codec=codec, quality_mode=QualityMode.CRF if codec == "libx265" else QualityMode.CQ, crf=20, cq=20,
+            preset={"libx265": "ultrafast", "hevc_nvenc": "p4", "nvencc_hevc": "P4"}[codec], bit_depth="10",
+            copy_dv=True, copy_hdr10plus=True, dovi_source_profile="p8_1", source_color_transfer="smpte2084",
+            inject_hdr_meta=True, master_display=_MASTER_DISPLAY, max_cll="1000,400",
+            static_hdr_light_level_source="source", restoration=RestoreSettings(enabled=True),
+        ),
+        audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
+        copy_subtitles=False, keep_chapters=False, duration_s=2.002, work_dir=tmp_path / "work",
+    )
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"), rife_bin=RIFE_BIN,
+                        ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False)
+    assert wf.validate(cfg) == []
+    state = wait_task(wf.run(cfg), timeout=300.0)
+    assert state["failed"] is None, f"Encode failed: {state['failed']}"
+    assert _frames(out) == 48
+    rpu = tmp_path / "out.bin"
+    _media(["dovi_tool", "extract-rpu", "-i", str(out), "-o", str(rpu)])
+    summary = _media(["dovi_tool", "info", "-i", str(rpu), "--summary"])
+    assert "Frames: 48" in summary and "Profile: 8" in summary
+    meta = tmp_path / "out.json"
+    _media(["hdr10plus_tool", "extract", "-i", str(out), "-o", str(meta)])
+    assert len(json.loads(meta.read_text())["SceneInfo"]) == 48

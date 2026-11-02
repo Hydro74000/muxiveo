@@ -200,6 +200,19 @@ class TestPipeline:
         assert "format=yuv420p10le" in vf and "format=yuv420p," not in vf
         assert "format=yuv420p," in build_vf(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True))
 
+    def test_fel_plugin_feeds_10_bits_to_the_engine(self, tmp_path):
+        from core.fel.context import FelExecution
+        from core.fel.engine import FelSource
+        from core.fel.pipeline import with_fel_input
+        engine = SimpleNamespace(capabilities={"output_formats": ["rgb48le", "yuv420p10le", "yuv420p"]})
+        fel = FelExecution(FelSource(engine, tmp_path / "o.mkv", 0, 2, "24000/1001"), tmp_path / "rpu.bin", "", "",
+                           "topleft", chroma_setparams=True)
+        decode = ["ffmpeg", "-i", "o.mkv", "-map", "0:0", "-vf", "format=yuv420p10le", "-f", "yuv4mpegpipe", "-"]
+        command = PipelineCommand(["ffmpeg", "-i", "pipe:0", "out.mkv"], [decode, ["rife"]])
+        for video, expected in ((_video(fel_context=fel, bit_depth="8"), "yuv420p10le"),
+                                (VideoEncodeSettings(codec="libx265", fel_context=fel, bit_depth="8"), "yuv420p")):
+            assert with_fel_input(command, video).producer.pixel_format == expected
+
     def test_nvencc_decode_stage_in_10_bits(self):
         decode = ["ffmpeg", "-i", "s.mkv", "-map", "0:0", "-f", "yuv4mpegpipe", "-"]
         cmd = _interpolation_decode_cmd(decode, InterpolationSource(), _video())
@@ -386,6 +399,12 @@ class TestLightLevels:
     def test_not_measured(self, workflow, tmp_path, kw):
         video = _hdr10(**kw)
         assert self._prepare(workflow, video, tmp_path) is video
+
+    def test_command_preview_mentions_the_measure(self, workflow, tmp_path):
+        with patch.object(EncodeWorkflow, "_ffprobe_streams_payload", return_value=_payload(color_transfer="smpte2084")), \
+                patch("core.workflows.encode.workflow._rife_capabilities", return_value=_caps()):
+            text = workflow.preview_command(_cfg(tmp_path, _hdr10()))
+        assert "MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image restaurée" in text
 
     def test_old_engine_keeps_source_values(self, workflow, tmp_path):
         messages: list[tuple[str, str]] = []

@@ -341,6 +341,15 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
+def _restore_measures_light_levels(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec HDR10 écrit, valeurs non saisies, sortie HEVC : MaxCLL/MaxFALL mesurés
+    pendant l'encodage (``_prepare_restore_statistics``)."""
+    from core.fel.preparation import measures_light_levels
+
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and measures_light_levels(video)
+
+
 def _interpolation_decode_cmd(
     decode_cmd: list[str],
     info: _InterpolationSource,
@@ -2241,6 +2250,12 @@ class EncodeWorkflow(QObject):
                     f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
                     "Dolby Vision (P5), absent de cet aperçu."
                 )
+            if video.restores() and _restore_measures_light_levels(video):
+                header.append(
+                    f"Piste vidéo #{index} : MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image restaurée "
+                    "(statistiques du moteur) puis écrits après ; ceux de la source restent si l'écart se limite "
+                    "à des pixels isolés ; absent de cet aperçu."
+                )
         # Commentaires du shell cible (REM sous cmd.exe) : l'aperçu se colle tel quel.
         return "\n".join((*(_preview_comment(line) for line in header), command_text))
 
@@ -3507,10 +3522,7 @@ class EncodeWorkflow(QObject):
         """Restauration en HDR10 (PQ) : MaxCLL/MaxFALL de l'image restaurée, mesurés par le moteur pendant l'encodage
         puis écrits après (SEI CLL et élément Colour) ; ceux de la source restent si la Restauration ne les change que
         par des pixels isolés (``written_light_levels``) ; rien de provisoire n'est transmis à l'encodeur (D-e)."""
-        from core.fel.preparation import measures_light_levels
-
-        pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
-        if not video.restores() or not pq or not measures_light_levels(video):
+        if not _restore_measures_light_levels(video):
             return video
         prefix = f"Piste vidéo #{index} — "
         resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""

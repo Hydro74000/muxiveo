@@ -705,9 +705,11 @@ class NvenccDirectOutputRunner:
                     else Fraction(1)
                 )
                 # RPU indispensable en fichier : converti à l'extraction (P7, P5, FEL ;
-                # NVEncC ne convertit pas le profil du RPU) ou pipe y4m.
+                # NVEncC ne convertit pas le profil du RPU) ou pipe y4m du moteur (interpolation,
+                # Restauration : aucune copie possible depuis le pipe, même à cadence inchangée).
+                engine_pipe = needs_ffmpeg_pipe and runtime_video.uses_engine()
                 if runtime_video.copy_dv and dovi_rpu_path is None and (
-                    rpu_extract_mode(runtime_video) is not None or frame_ratio > 1
+                    rpu_extract_mode(runtime_video) is not None or frame_ratio > 1 or engine_pipe
                 ):
                     dovi_rpu_path = source_rpu(cwd / "source_rpu.bin")
                 expected_frames: int | None = None
@@ -730,7 +732,8 @@ class NvenccDirectOutputRunner:
                     if source_frames:
                         expected_frames = math.ceil(source_frames * frame_ratio)
                 hdr10plus_json_path: Path | None = None
-                if (frame_ratio > 1 or runtime_video.fel_context) and (runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                if (frame_ratio > 1 or engine_pipe or runtime_video.fel_context) and (
+                        runtime_video.copy_dv or runtime_video.copy_hdr10plus):
                     def run_interp_metadata(cmd: list[str]) -> object:
                         cb.check_cancelled(signals)
                         return cb.run_cmd(cmd, cwd, "interpolation-metadata",
@@ -993,6 +996,10 @@ def build_nvencc_pipeline_commands(
             dovi_rpu_preview = work_dir / "rpu_aligned.bin"
         elif routing.video.p5_to_hdr10 or routing.video.uses_engine():
             dovi_rpu_preview = work_dir / "source_rpu.bin"
+    # Pipe y4m du moteur : HDR10+ extrait en fichier, comme à l'exécution (aucune copie depuis le pipe).
+    hdr10plus_preview = (work_dir / "source_hdr10plus.json"
+                         if needs_ffmpeg_pipe and routing.video.uses_engine() and routing.video.copy_hdr10plus
+                         and not hdr10plus_recomputed(routing.video) else None)
     # Cadence encodée comme à l'exécution (interpolation : GOP Dolby Vision borné sur la cadence de sortie).
     preview_fps = routing.source_fps or routing.input_fps
     if needs_ffmpeg_pipe and routing.video.interpolates() and preview_fps:
@@ -1011,6 +1018,7 @@ def build_nvencc_pipeline_commands(
         input_fps=None if needs_ffmpeg_pipe else routing.input_fps,
         source_fps=preview_fps,
         input_avsync=None if needs_ffmpeg_pipe else routing.input_avsync,
+        hdr10plus_json=hdr10plus_preview,
         dovi_rpu=dovi_rpu_preview,
         dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
         source_dimensions=routing.source_dimensions,
