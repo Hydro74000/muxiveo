@@ -7,11 +7,15 @@ Couverture (sans binaire ni GPU) :
     - Profondeur « Auto » → 10 bits sous Restauration (D-h)
     - Pipeline décodage (10 bits) | muxiveo-rife --factor 1 | encodeur ; cumul avec l'interpolation
     - Workflow : validation (capacités, graphes, entrelacement), avertissement 8 bits, genre « Animation »
+    - MaxCLL / MaxFALL mesurés sur l'image restaurée (statistiques du moteur), HDR10+ de la source conservé
 """
 from __future__ import annotations
 
+import json
+from fractions import Fraction
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -322,3 +326,86 @@ class TestWorkflow:
 ])
 def test_animation_genre_names(genre, expected):
     assert is_animation_genre(genre) is expected
+
+
+# ---------------------------------------------------------------------------
+# MaxCLL / MaxFALL de l'image restaurée (D-e)
+# ---------------------------------------------------------------------------
+
+def _hdr10(**kw) -> VideoEncodeSettings:
+    return _video(**{"source_color_transfer": "smpte2084", "inject_hdr_meta": True, "max_cll": "1000,400",
+                     "static_hdr_light_level_source": "source", **kw})
+
+
+class TestLightLevels:
+    def _prepare(self, workflow, video, tmp_path, supported=True):
+        with patch("core.workflows.encode.workflow._rife_supports", return_value=supported):
+            return workflow._prepare_restore_statistics(video, work_dir=tmp_path, index=1)
+
+    def test_measured_on_restored_image(self, workflow, tmp_path):
+        prepared = self._prepare(workflow, _hdr10(), tmp_path)
+        assert prepared.restore_statistics == tmp_path / "restore_statistics_1.jsonl"
+        assert prepared.max_cll == "" and prepared.static_hdr_light_level_source == "restore_frame_statistics"
+        args = restore_args_for(prepared, InterpolationSource(transfer="smpte2084"))
+        assert args[args.index("--frame-statistics") + 1] == str(prepared.restore_statistics)
+
+    @pytest.mark.parametrize("kw", [
+        {"static_hdr_light_level_source": "manual"},             # valeurs saisies : conservées
+        {"source_color_transfer": "bt709"},                      # SDR
+        {"inject_hdr_meta": False},
+        {"restoration": RestoreSettings()},                      # sans Restauration
+        {"tonemap_to_sdr": True},
+    ])
+    def test_not_measured(self, workflow, tmp_path, kw):
+        video = _hdr10(**kw)
+        assert self._prepare(workflow, video, tmp_path) is video
+
+    def test_old_engine_keeps_source_values(self, workflow, tmp_path):
+        messages: list[tuple[str, str]] = []
+        workflow.log_message.connect(lambda level, text: messages.append((level, text)))
+        video = _hdr10()
+        assert self._prepare(workflow, video, tmp_path, supported=False) is video
+        assert any(level == "WARN" and "conservés" in text for level, text in messages)
+
+    def test_restored_statistics_take_precedence(self, tmp_path):
+        from core.fel.hdr10plus import deferred_light_levels, light_level_origin, light_level_statistics_path
+        fel = SimpleNamespace(statistics=tmp_path / "fel.jsonl")
+        video = _hdr10(static_hdr_light_level_source="restore_frame_statistics", restore_statistics=tmp_path / "r.jsonl")
+        assert deferred_light_levels(video)
+        video.fel_context = fel  # type: ignore[assignment]
+        assert light_level_statistics_path(video) == tmp_path / "r.jsonl" and light_level_origin(video) == "l'image restaurée"
+        video.restore_statistics = None
+        assert light_level_statistics_path(video) == tmp_path / "fel.jsonl"
+        assert light_level_origin(video) == "l'image reconstruite"
+
+    def test_nvencc_writes_restored_levels_without_recomputing_hdr10plus(self, tmp_path, monkeypatch):
+        import core.workflows.encode.runtime.nvencc_execution as execution
+        statistics = tmp_path / "r.jsonl"
+        lines = [{"format": "mvo-fel-frame-statistics", "version": 1, "bins": 1024, "width": 4, "height": 2}]
+        for index in range(2):
+            lines.append({"frame": index, "scene_start": index == 0, "max_nits": [812.4, 500.0, 100.0], "avg_nits": 41.6,
+                          "y9999_nits": 600.0, "y100": 0.5, "maxrgb_percentiles": [0, 1, 2, 4, 8, 16, 64]})
+        lines.append({"scene_first": 0, "frames": 2, "maxrgb_hist": [[600, 16]]})
+        statistics.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+        intermediate = tmp_path / "nvencc.mkv"
+        intermediate.write_bytes(b"mkv")
+        commands: list[list[str]] = []
+
+        def run(cmd, _label):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"hevc")
+        rewrite = Mock(side_effect=lambda **kw: kw["output"].write_bytes(b"new"))
+        monkeypatch.setattr(execution.MatroskaHevcPayloadRewriter, "rewrite", lambda self, **kw: rewrite(**kw))
+        sei = Mock(side_effect=lambda src, dst, **kw: (dst.write_bytes(b"cll"), SimpleNamespace(applied=True))[1])
+        monkeypatch.setattr(execution, "replace_content_light_level_sei_file", sei)
+        log = Mock()
+        video = _hdr10(codec="nvencc_hevc", copy_hdr10plus=True, static_hdr_light_level_source="restore_frame_statistics",
+                       restore_statistics=statistics)
+        execution._apply_fel_hdr10plus(
+            video=video, intermediate=intermediate, statistics_path=None, light_statistics_path=statistics, cwd=tmp_path,
+            frame_ratio=Fraction(1), encoded_frames=2, ffmpeg_bin="ffmpeg", hdr10plus_bin="hdr10plus_tool",
+            dovi_bin="dovi_tool", run=run, cancelled=lambda: False, log=log, progress=Mock(),
+        )
+        assert len(commands) == 1 and "hevc_mp4toannexb" in commands[0]  # HDR10+ de la source intact
+        assert sei.call_args.kwargs == {"max_cll": "812,42"} and rewrite.call_args.kwargs["light_levels"] == (812, 42)
+        assert any("l'image restaurée" in str(call) for call in log.call_args_list)

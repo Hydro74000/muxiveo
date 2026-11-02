@@ -472,14 +472,18 @@ def restore_engine_args(
 def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *, model_dir: str = "",
                      animation: bool = False) -> list[str]:
     """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
-    (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits."""
+    (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits,
+    statistiques des trames si MaxCLL/MaxFALL sont mesurés sur l'image restaurée."""
     if not video.restores():
         return []
     from core.workflows.encode.domain.codecs import resolve_output_bit_depth
     settings = video.restoration
     animated = settings.animation == "on" or (settings.animation == "auto" and animation)
-    return restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
+    args = restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
                                dither="8" if resolve_output_bit_depth(video) == 8 else "auto")
+    if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image restaurée (sources PQ)
+        args.extend(["--frame-statistics", str(video.restore_statistics)])
+    return args
 
 
 def build_rife_stage(

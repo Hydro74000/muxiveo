@@ -68,6 +68,7 @@ from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    light_level_origin, light_level_statistics_path,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -98,7 +99,7 @@ def _apply_fel_hdr10plus(
     *,
     video: VideoEncodeSettings,
     intermediate: Path,
-    statistics_path: Path,
+    statistics_path: Path | None,
     cwd: Path,
     frame_ratio: Fraction,
     encoded_frames: int | None,
@@ -109,24 +110,29 @@ def _apply_fel_hdr10plus(
     cancelled: Callable[[], bool],
     log: Callable[[str], None],
     progress: Callable[[str], None],
+    light_statistics_path: Path | None = None,
 ) -> None:
-    """HDR10+ et MaxCLL/MaxFALL de l'image reconstruite (statistiques du plugin) injectés dans la sortie NVEncC.
+    """HDR10+ (image reconstruite, statistiques du plugin FEL) et MaxCLL/MaxFALL (image produite :
+    ``light_statistics_path``, restaurée par le moteur ; sinon les statistiques FEL) injectés dans la sortie NVEncC.
 
     Flux extrait en annexB, HDR10+ puis SEI CLL injectés, payloads réécrits dans le MKV de NVEncC
     (horodatages et TrackEntry conservés, MaxCLL/MaxFALL posés dans Colour).
     """
+    # Statistiques FEL fournies par l'appelant : HDR10+ recalculé selon le choix.
+    recompute = statistics_path is not None and bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
+    light_path = (light_statistics_path or statistics_path) if deferred_light_levels(video) else None
     try:
-        statistics = read_frame_statistics(statistics_path)
+        statistics = read_frame_statistics(statistics_path) if recompute and statistics_path is not None else None
+        light = (statistics if statistics is not None and light_path == statistics_path
+                 else read_frame_statistics(light_path) if light_path is not None else None)
     except FrameStatisticsError as exc:
         raise EncodeError(str(exc)) from exc
-    # Statistiques fournies par l'appelant : HDR10+ recalculé selon le choix, sinon MaxCLL/MaxFALL seuls.
-    recompute = bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
     json_path = cwd / "fel_hdr10plus.json"
     annexb, injected, with_cll, rewritten = (
         cwd / name for name in ("fel_annexb.hevc", "fel_hdr10plus.hevc", "fel_cll.hevc", "nvencc_hdr10plus.mkv")
     )
     try:
-        if recompute:
+        if statistics is not None:
             write_hdr10plus_json(statistics, json_path)
             _expand_dynamic_hdr_metadata(
                 ratio=frame_ratio, rpu_bin=None, hdr10p_json=json_path, dovi_tool_bin=dovi_bin,
@@ -155,14 +161,14 @@ def _apply_fel_hdr10plus(
         else:
             annexb.replace(injected)
         final, levels = injected, None
-        if deferred_light_levels(video):
-            exact = statistics.static_light_levels()
+        if light is not None:
+            exact = light.static_light_levels()
             if replace_content_light_level_sei_file(injected, with_cll, max_cll=exact).applied:
                 injected.unlink(missing_ok=True)
                 final = with_cll
             max_cll, max_fall = (int(value) for value in exact.split(","))
             levels = (max_cll, max_fall)
-            log(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+            log(f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}.")
         progress("Réécriture du flux NVEncC avec les métadonnées recalculées…")
         try:
             MatroskaHevcPayloadRewriter().rewrite(
@@ -175,7 +181,7 @@ def _apply_fel_hdr10plus(
     finally:
         for path in (annexb, injected, with_cll, rewritten, json_path):
             path.unlink(missing_ok=True)
-    if recompute:
+    if statistics is not None:
         log(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
 
 
@@ -861,11 +867,15 @@ class NvenccDirectOutputRunner:
                 if runtime_video.fel_context is not None:
                     cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
                 statistics_path = fel_statistics_path(runtime_video)
-                if statistics_path is not None and intermediate.is_file() and (
-                        hdr10plus_recomputed(runtime_video) or deferred_light_levels(runtime_video)):
+                light_statistics = light_level_statistics_path(runtime_video)
+                if intermediate.is_file() and (
+                        (statistics_path is not None and hdr10plus_recomputed(runtime_video))
+                        or (light_statistics is not None and deferred_light_levels(runtime_video))):
                     cb.check_cancelled(signals)
                     _apply_fel_hdr10plus(
-                        video=runtime_video, intermediate=intermediate, statistics_path=statistics_path, cwd=cwd,
+                        video=runtime_video, intermediate=intermediate,
+                        statistics_path=statistics_path if hdr10plus_recomputed(runtime_video) else None,
+                        light_statistics_path=light_statistics, cwd=cwd,
                         frame_ratio=frame_ratio, encoded_frames=monitor.encoded_frames, ffmpeg_bin=cb.ffmpeg_bin,
                         hdr10plus_bin=hdr10plus_bin, dovi_bin=dovi_bin,
                         run=lambda cmd, label: cb.run_cmd(cmd, cwd, label, lambda line: signals.progress.emit(line), signals),

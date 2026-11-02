@@ -400,6 +400,8 @@ class VideoEncodeSettings:
     # reconstruite (plugin ≥ 0.3.0, MaxCLL/MaxFALL exacts) ; « source » : celui de la source (BL).
     fel_hdr10plus: str = "recompute"
     fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
+    # Restauration en HDR10 : statistiques de l'image restaurée écrites par le moteur (MaxCLL/MaxFALL exacts).
+    restore_statistics: Path | None = field(default=None, repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,

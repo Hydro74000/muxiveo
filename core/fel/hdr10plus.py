@@ -47,10 +47,30 @@ def hdr10plus_recomputed(video: object) -> bool:
                 and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
 
 
+#: Provenances des MaxCLL/MaxFALL mesurés pendant l'encodage (statistiques de l'image produite).
+MEASURED_LIGHT_LEVEL_SOURCES = frozenset({"fel_frame_statistics", "restore_frame_statistics"})
+
+
+def restore_statistics_path(video: object) -> Path | None:
+    """Statistiques de l'image restaurée (moteur muxiveo-rife ``--frame-statistics``) ; None sans mesure."""
+    statistics = getattr(video, "restore_statistics", None)
+    return statistics if isinstance(statistics, Path) else None
+
+
+def light_level_statistics_path(video: object) -> Path | None:
+    """Statistiques des MaxCLL/MaxFALL : image restaurée (dernière transformation), sinon image reconstruite (FEL)."""
+    return restore_statistics_path(video) or fel_statistics_path(video)
+
+
+def light_level_origin(video: object) -> str:
+    """Image mesurée, pour le journal."""
+    return "l'image restaurée" if restore_statistics_path(video) is not None else "l'image reconstruite"
+
+
 def deferred_light_levels(video: object) -> bool:
     """MaxCLL/MaxFALL différés jusqu'aux statistiques (aucune valeur transmise à l'encodeur)."""
     return bool(getattr(video, "inject_hdr_meta", False)
-                and getattr(video, "static_hdr_light_level_source", "") == "fel_frame_statistics")
+                and getattr(video, "static_hdr_light_level_source", "") in MEASURED_LIGHT_LEVEL_SOURCES)
 
 
 def pq_eotf(signal: float) -> float:

@@ -124,6 +124,7 @@ from core.workflows.encode.interpolation import (
     interpolation_preset as _interpolation_preset,
     rife_capabilities as _rife_capabilities,
     rife_support_errors as _rife_support_errors,
+    rife_supports as _rife_supports,
     restore_support_errors as _restore_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
@@ -3165,6 +3166,9 @@ class EncodeWorkflow(QObject):
             )
             changed = changed or prepared_fel is not video
             video = prepared_fel
+            prepared_restore = self._prepare_restore_statistics(video, work_dir=work_dir, index=index)
+            changed = changed or prepared_restore is not video
+            video = prepared_restore
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
                 resolved.append(video)
                 continue
@@ -3498,6 +3502,24 @@ class EncodeWorkflow(QObject):
                     "activez le désentrelacement (appliqué avant l'interpolation)."
                 )
         return errors
+
+    def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
+        """Restauration en HDR10 (PQ) : MaxCLL/MaxFALL de l'image restaurée, mesurés par le moteur pendant l'encodage
+        puis écrits après (SEI CLL et élément Colour) ; rien de provisoire n'est transmis à l'encodeur (D-e)."""
+        from core.fel.preparation import measures_light_levels
+
+        pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+        if not video.restores() or not pq or not measures_light_levels(video):
+            return video
+        prefix = f"Piste vidéo #{index} — "
+        resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
+        if not resolved or not _rife_supports(resolved, "frame-statistics"):
+            self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : MaxCLL/MaxFALL de la "
+                                  "source conservés (mettre à jour l'extension Interpolation).")
+            return video
+        self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image restaurée (statistiques du moteur).")
+        return dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
+                                   max_cll="", static_hdr_light_level_source="restore_frame_statistics")
 
     def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
         """Contrôles propres à la Restauration (outil, graphes livrés, entrelacement)."""

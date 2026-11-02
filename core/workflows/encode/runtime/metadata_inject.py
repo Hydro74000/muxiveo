@@ -42,6 +42,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    light_level_origin, light_level_statistics_path,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -659,21 +660,27 @@ class MetadataInjectRunner:
                     )
 
                 light_levels: tuple[int, int] | None = None
-                if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
-                    # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+                light_statistics = light_level_statistics_path(video)
+                if (fel_statistics is not None and hdr10plus_recomputed(video)) or (
+                        light_statistics is not None and deferred_light_levels(video)):
+                    # HDR10+ de l'image reconstruite (FEL) et MaxCLL/MaxFALL de l'image produite (restaurée par le
+                    # moteur, sinon reconstruite), mesurés pendant l'encodage.
                     try:
-                        statistics = read_frame_statistics(fel_statistics)
+                        statistics = (read_frame_statistics(fel_statistics)
+                                      if fel_statistics is not None and hdr10plus_recomputed(video) else None)
+                        light = (read_frame_statistics(light_statistics)
+                                 if light_statistics is not None and deferred_light_levels(video) else None)
                     except FrameStatisticsError as exc:
                         raise EncodeError(str(exc)) from exc
-                    if hdr10plus_recomputed(video):
+                    if statistics is not None:
                         write_hdr10plus_json(statistics, hdr10p_json)
                         expand_dynamic_hdr_metadata(
                             ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,
                             dovi_tool_bin=cb.bins.get("dovi_tool"), run_cmd=_run, log=cb.log_info,
                         )
                         cb.log_info(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
-                    if deferred_light_levels(video):
-                        exact = statistics.static_light_levels()
+                    if light is not None:
+                        exact = light.static_light_levels()
                         video = dataclasses.replace(video, max_cll=exact)
                         max_cll, max_fall = (int(value) for value in exact.split(","))
                         light_levels = (max_cll, max_fall)
@@ -693,7 +700,7 @@ class MetadataInjectRunner:
                             current_hevc = out_cll
                         else:
                             _free(out_cll)
-                        cb.log_info(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                        cb.log_info(f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}.")
                     _check()
 
                 # Audit frame count : empêche l'injection sur un stream qui
