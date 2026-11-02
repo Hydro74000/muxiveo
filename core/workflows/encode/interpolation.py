@@ -611,7 +611,7 @@ def _option_min_version(option: str) -> str:
     return ".".join(map(str, RIFE_CAPABILITIES_MIN_VERSION))
 
 
-_RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
+_RIFE_UPDATE_HINT = "mettre à jour le moteur vidéo MVO (page Extensions)"
 
 
 def rife_support_errors(

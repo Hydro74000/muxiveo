@@ -203,10 +203,10 @@ class ExtensionsPanel(QWidget):
         layout.addWidget(self._incompatible_container)
 
         self._rife_card = _ExtensionCard(
-            plugins.RIFE_PLUGIN_ID, "Interpolation d'images (MVO-RIFE)",
-            "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires "
-            "sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de "
-            "Muxiveo (nouveaux modèles, réglages).",
+            plugins.RIFE_PLUGIN_ID, "Moteur vidéo MVO (débruitage, interpolation)",
+            "Traitements GPU (Vulkan) de l'encodage : débruitage MVO-R2 (débruiteur par défaut) et interpolation "
+            "d'images MVO-RIFE (×2, ×3, ×4, 59,94 / 60 i/s), avec leurs modèles et préréglages. Mis à jour "
+            "indépendamment de Muxiveo (nouveaux modèles, réglages).",
         )
         self._trt_card = _ExtensionCard(
             plugins.TRT_PLUGIN_ID, "Accélération NVIDIA (TensorRT)",
@@ -337,7 +337,7 @@ class ExtensionsPanel(QWidget):
         elif installed is None:
             status = translate_text("Non installée. GPU compatible : {device}.", device=device or "?")
             if not self._rife_ready:
-                status += " " + translate_text("Requiert l'extension Interpolation d'images.")
+                status += " " + translate_text("Requiert le moteur vidéo MVO.")
         else:
             ready = bool(getattr(state, "ready", False))
             status = _installed_status(installed) + " " + (

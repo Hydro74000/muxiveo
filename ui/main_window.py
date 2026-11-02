@@ -614,11 +614,11 @@ class DashboardPage(QWidget):
         availability = self._config.all_tools_available()
         for tool_name, available in availability.items():
             if tool_name == "muxiveo-rife":
-                # Moteur de l'extension Interpolation : badge cliquable vers la page Extensions.
+                # Moteur vidéo MVO (extension mvo-rife) : badge cliquable vers la page Extensions.
                 self._rife_badge = _ClickableBadge()
                 self._rife_badge.clicked.connect(self.rife_badge_clicked.emit)
                 badge = self._make_tool_badge(tool_name, available, self._rife_badge)
-                badge.setToolTip(translate_text("Interpolation d'images (extension MVO-RIFE) : page Extensions."))
+                badge.setToolTip(translate_text("Moteur vidéo MVO (débruitage, interpolation) : page Extensions."))
             else:
                 badge = self._make_tool_badge(tool_name, available)
             grid_layout.addWidget(badge)
@@ -947,7 +947,7 @@ class DashboardPage(QWidget):
             self.trt_capability.emit(trt)
 
     def set_rife_state(self, state: object) -> None:
-        """Badge muxiveo-rife selon l'extension Interpolation (RifeState) : disponible, téléchargement."""
+        """Badge muxiveo-rife selon le moteur vidéo MVO (RifeState) : disponible, téléchargement."""
         badge = self._rife_badge
         if badge is None:
             return
@@ -2194,10 +2194,10 @@ class MainWindow(QMainWindow):
             return
         answer = QMessageBox.question(
             self,
-            translate_text("Interpolation d'images (MVO-RIFE)"),
+            translate_text("Moteur vidéo MVO (débruitage, interpolation)"),
             translate_text(
-                "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à "
-                "l'encodage ; l'extension peut être réinstallée à tout moment."
+                "Supprimer le moteur vidéo MVO ? Le débruitage MVO-R2 et l'interpolation ne seront plus proposés "
+                "à l'encodage ; l'extension peut être réinstallée à tout moment."
             ),
         )
         if answer == QMessageBox.StandardButton.Yes:

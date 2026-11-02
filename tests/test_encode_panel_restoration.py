@@ -59,7 +59,7 @@ def test_unavailable_engine_falls_back_to_nlmeans_without_substitution(panel, mo
     assert panel._denoise_filter() == "nlmeans" and not panel._denoise_cb.isChecked()  # jamais NLMeans à la place
     monkeypatch.setattr(panel, "_interpolation_tool_available", lambda: False)
     _sync(panel, _caps())
-    assert not _r2_item_enabled(panel) and "non installée" in _tip(panel, "mvo-r2")
+    assert not _r2_item_enabled(panel) and "non installé" in _tip(panel, "mvo-r2")
 
 
 

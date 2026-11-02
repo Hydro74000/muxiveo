@@ -3509,7 +3509,7 @@ class EncodeWorkflow(QObject):
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
                     "Interpolation d'images : moteur muxiveo-rife introuvable "
-                    "(installer l'extension Interpolation depuis la page Extensions)."
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
                 )
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
@@ -3541,7 +3541,7 @@ class EncodeWorkflow(QObject):
             self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : "
                                   + ("MaxCLL/MaxFALL de la source conservés, " if measure else "")
                                   + ("métadonnées dynamiques copiées sans contrôle, " if check else "")
-                                  + "mettre à jour l'extension Interpolation.")
+                                  + "mettre à jour le moteur vidéo MVO.")
             return video
         video = dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
                                     restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl")
@@ -3574,7 +3574,7 @@ class EncodeWorkflow(QObject):
             if not available:
                 errors.append(
                     "MVO-R2 : moteur muxiveo-rife introuvable "
-                    "(installer l'extension Interpolation depuis la page Extensions)."
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
                 )
             source = self._video_source_from_settings(config, video)
             # Le y4m ne porte pas d'horodatage : source VFR normalisée CFR, ce qui fausserait les métadonnées

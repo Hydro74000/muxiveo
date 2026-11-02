@@ -905,7 +905,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
-            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire."},
         ),
     },
     {

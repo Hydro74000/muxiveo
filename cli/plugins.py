@@ -13,7 +13,7 @@ from core.config import AppConfig
 from core.workflows.encode.interpolation import detect_gpu_acceleration
 
 _LABELS = {
-    plugins.RIFE_PLUGIN_ID: "Interpolation d'images (MVO-RIFE)",
+    plugins.RIFE_PLUGIN_ID: "Moteur vidéo MVO (débruitage, interpolation)",
     plugins.TRT_PLUGIN_ID: "Accélération NVIDIA (TensorRT)",
     plugins.FEL_PLUGIN_ID: "Reconstruction Dolby Vision FEL",
 }

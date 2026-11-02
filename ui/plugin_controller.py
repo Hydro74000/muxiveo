@@ -268,10 +268,10 @@ class FelPluginController(PluginController):
 
 
 class RifePluginController(PluginController):
-    """Extension d'interpolation d'images (mvo-rife) : moteur muxiveo-rife, modèles, préréglages."""
+    """Moteur vidéo MVO (mvo-rife) : moteur muxiveo-rife (débruitage, interpolation), modèles, préréglages."""
 
     spec = plugins.RIFE
-    label = "Interpolation d'images (MVO-RIFE)"
+    label = "Moteur vidéo MVO (débruitage, interpolation)"
 
     def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
         installed = plugins.installed_plugin(plugins.RIFE)

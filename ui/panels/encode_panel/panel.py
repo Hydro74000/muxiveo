@@ -189,7 +189,7 @@ class EncodePanel(QWidget):
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
     hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
     fel_analysis_requested = Signal(object, int)  # « Analyser l'apport du FEL… » : chemin, index ffprobe
-    rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
+    rife_install_requested   = Signal()       # lien « Installer » du moteur vidéo MVO (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
     _hw_detected             = Signal(object, object, object, object, object, object, object)
@@ -2010,7 +2010,7 @@ class EncodePanel(QWidget):
         self._rife_hint.setTextFormat(Qt.TextFormat.RichText)
         self._rife_hint.setText(
             "<a href='install' style='color:" + _C.ACCENT + ";'>"
-            + translate_text("Interpolation non installée — Installer…") + "</a>"
+            + translate_text("Moteur vidéo MVO non installé — Installer…") + "</a>"
             + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
             + translate_text("Gérer les extensions") + "</a>"
         )
@@ -2052,7 +2052,7 @@ class EncodePanel(QWidget):
                 "Dolby Vision et HDR10+ suivent la nouvelle cadence."
             )
             if available
-            else translate_text("Extension Interpolation d'images non installée : page Extensions.")
+            else translate_text("Moteur vidéo MVO non installé : page Extensions.")
         )
         self._rife_hint.setVisible(not available and not getattr(self._rife_state, "busy", ""))
         if not available and self._interp_cb.isChecked():
@@ -2063,11 +2063,11 @@ class EncodePanel(QWidget):
     def _restore_capabilities(self) -> tuple[bool, bool, str]:
         """(MVO-R2 disponible, mode rapide disponible, raison) d'après les capacités du moteur installé."""
         if not self._interpolation_tool_available():
-            return False, False, "MVO-R2 : extension Interpolation d'images non installée (page Extensions)."
+            return False, False, "MVO-R2 : moteur vidéo MVO non installé (page Extensions)."
         rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
         capabilities = rife_capabilities(rife)
         if capabilities is None or not capabilities.supports("restore") or "r2" not in capabilities.restore_models:
-            return False, False, "MVO-R2 absent de l'extension Interpolation installée : la mettre à jour (page Extensions)."
+            return False, False, "MVO-R2 absent du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
         return True, "r2q" in capabilities.restore_models, ""
 
     def _sync_denoise_availability(self) -> None:
@@ -2124,7 +2124,7 @@ class EncodePanel(QWidget):
         self._restore_level_combo.setToolTip(translate_text(tip))
         self._restore_mode_combo.setToolTip(translate_text(
             self._restore_mode_tip if fast
-            else "Mode rapide absent de l'extension Interpolation installée : la mettre à jour (page Extensions)."
+            else "Mode rapide absent du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
         ))
         self._restore_animation_combo.setToolTip(translate_text(
             self._restore_animation_tip if level == "auto"
@@ -2845,7 +2845,7 @@ class EncodePanel(QWidget):
         self._rebuild_preview()
 
     def set_rife_state(self, state: object) -> None:
-        """État de l'extension Interpolation (RifeState) : indication d'installation pendant le téléchargement."""
+        """État du moteur vidéo MVO (RifeState) : indication d'installation pendant le téléchargement."""
         self._rife_state = state
         self._sync_interpolation_availability()
 
