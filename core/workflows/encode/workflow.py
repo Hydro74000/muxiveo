@@ -127,7 +127,7 @@ from core.workflows.encode.interpolation import (
     rife_supports as _rife_supports,
     restore_support_errors as _restore_support_errors,
     InterpolationSource as _InterpolationSource,
-    build_rife_stage as _build_rife_stage,
+    build_engine_stages as _build_engine_stages,
     decode_normalization_rate as _decode_normalization_rate,
     restore_args_for as _restore_args_for,
     RESTORE_DECODE_FORMAT as _RESTORE_DECODE_FORMAT,
@@ -1092,7 +1092,7 @@ class EncodeWorkflow(QObject):
         settings = video.interpolation
         info = self._interpolation_source(video, source)
         trt_plugin, trt_cache = self._rife_trt_args()
-        rife = _build_rife_stage(
+        stages = _build_engine_stages(
             self._rife_bin,
             factor=settings.factor,
             target_fps=settings.target_fps,
@@ -1107,7 +1107,7 @@ class EncodeWorkflow(QObject):
             interpolate=video.interpolates(),
             restore_args=_restore_args_for(video, info),
         )
-        return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
+        return _PipelineCommand(stages[-1], [_interpolation_decode_cmd(decode_cmd, info, video), *stages[:-1]])
 
     def _run_nvencc_direct_output(
         self,

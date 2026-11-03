@@ -11,7 +11,7 @@ Public:
     PipelineCommand          — commande finale précédée d'étages amont
     InterpolationSource      — couleur / décalage de départ de la source
     probe_interpolation_source(...)
-    build_decode_stage(...), build_rife_stage(...)
+    build_decode_stage(...), build_rife_stage(...), build_engine_stages(...)
     expand_rpu_file(...), expand_hdr10plus_json(...)
 """
 
@@ -566,6 +566,48 @@ def build_rife_stage(
         if trt_cache:
             cmd.extend(["--trt-cache", str(trt_cache)])
     return cmd
+
+
+def build_engine_stages(
+    rife_bin: str,
+    *,
+    interpolate: bool = True,
+    restore_args: Sequence[str] = (),
+    **stage_options,
+) -> list[list[str]]:
+    """Étages muxiveo-rife d'une piste : un moteur, ou deux moteurs enchaînés quand débruitage et interpolation sont
+    actifs (débruitage seul | interpolation seule).
+
+    Un même processus qui cumule l'interpolation hybride et MVO-R2 perd le périphérique GPU par intermittence
+    (VK_ERROR_DEVICE_LOST, cause non identifiée ; aucune perte en deux processus) ; deux moteurs donnent les mêmes
+    trames et les mêmes statistiques, avec un débit supérieur (bancs du 2026-11-03). Exige un binaire qui transmet
+    les débuts de plan (``--scene-marks`` : statistiques de sortie groupées par plan comme en un seul moteur) ; sinon
+    un seul moteur. Statistiques de la source sur le premier moteur, statistiques de sortie sur le second ; le premier
+    n'affiche pas de ligne de progression (position en avance sur l'interpolation, qui reste la référence).
+    """
+    restore_args = list(restore_args)
+    if not (interpolate and restore_args) or not rife_supports(rife_bin, "scene-marks"):
+        return [build_rife_stage(rife_bin, interpolate=interpolate, restore_args=restore_args, **stage_options)]
+    first_args: list[str] = []
+    frame_stats: list[str] = []
+    transfer = "sdr"
+    i = 0
+    while i < len(restore_args):
+        token = restore_args[i]
+        if token == "--frame-statistics" and i + 1 < len(restore_args):
+            frame_stats = [token, restore_args[i + 1]]
+            i += 2
+            continue
+        if token == "--transfer" and i + 1 < len(restore_args):
+            transfer = restore_args[i + 1]
+        first_args.append(token)
+        i += 1
+    restore_stage = build_rife_stage(rife_bin, interpolate=False, restore_args=first_args, **stage_options)
+    restore_stage[restore_stage.index("--progress-interval") + 1] = "86400"
+    restore_stage.append("--scene-marks")
+    second_args = ["--transfer", transfer, *frame_stats] if frame_stats else []
+    interp_stage = build_rife_stage(rife_bin, interpolate=True, restore_args=second_args, **stage_options)
+    return [restore_stage, interp_stage]
 
 
 def rife_model_available(rife_bin: str, model: str, capabilities: RifeCapabilities | None = None) -> bool:
@@ -1239,6 +1281,7 @@ __all__ = [
     "decode_normalization_rate",
     "multiply_fps_expr",
     "parse_rife_progress",
+    "build_engine_stages",
     "required_dovi_level",
     "resolve_frame_ratio",
 ]
