@@ -9546,5 +9546,25 @@
   "Traitements GPU (Vulkan) de l'encodage : débruitage MVO-R2 (débruiteur par défaut) et interpolation d'images MVO-RIFE (×2, ×3, ×4, 59,94 / 60 i/s), avec leurs modèles et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
     "fra": "Traitements GPU (Vulkan) de l'encodage : débruitage MVO-R2 (débruiteur par défaut) et interpolation d'images MVO-RIFE (×2, ×3, ×4, 59,94 / 60 i/s), avec leurs modèles et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
     "eng": "GPU (Vulkan) encoding processing: MVO-R2 denoising (default denoiser) and MVO-RIFE frame interpolation (×2, ×3, ×4, 59.94 / 60 fps), with their models and presets. Updated independently of Muxiveo (new models, settings)."
+  },
+  "Échec de l'encodage": {
+    "fra": "Échec de l'encodage",
+    "eng": "Encoding failed"
+  },
+  "L'encodage a échoué.": {
+    "fra": "L'encodage a échoué.",
+    "eng": "Encoding failed."
+  },
+  "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}": {
+    "fra": "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}",
+    "eng": "The work folder already holds {size} of temporary files:\n{path}"
+  },
+  "Conserver les fichiers temporaires (récupération, analyse)": {
+    "fra": "Conserver les fichiers temporaires (récupération, analyse)",
+    "eng": "Keep the temporary files (recovery, analysis)"
+  },
+  "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).": {
+    "fra": "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).",
+    "eng": "Temporary files kept: {path} (offered for cleanup at next startup)."
   }
 }

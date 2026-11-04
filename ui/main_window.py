@@ -89,9 +89,11 @@ from core.version import (
     APP_BUILD_VERSION, APP_DONATION_URL, APP_IS_UNSTABLE_BUILD,
     APP_VERSION_LABEL, WRITING_APPLICATION_TAG,
 )
+from core.workdir import RetainedProcessWorkDir
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
 from core.workflows.encode import EncodeError, HardwareEncoderDetector
+from core.workflows.encode.runtime.storage_guard import format_bytes
 from core.workflows.encode.vulkan import detect_vulkan
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
@@ -1566,6 +1568,8 @@ class MainWindow(QMainWindow):
         # silencieuses côté UI (mais visibles dans le verbose file).
         self._ffmpeg_version_logged: bool = False
         self._op_encode_config: EncodeConfig | None = None
+        # Encodage en échec : dossier de travail gardé jusqu'au choix de l'utilisateur (popup).
+        self._failed_work_dir: RetainedProcessWorkDir | None = None
         self._op_extract_duration_s: float | None = None
         self._op_encode_fps: float | None = None
         self._op_encode_frame: int | None = None
@@ -2069,6 +2073,7 @@ class MainWindow(QMainWindow):
             lambda level, message: self.log_requested.emit(level, "[ENCODE] " + message),
             Qt.ConnectionType.QueuedConnection,
         )
+        self._encode_panel.failed_work_dir_retained.connect(self._on_failed_work_dir_retained)
         # RemuxPanel → LogPanel global
         self._remux_panel.log_message.connect(
             lambda level, message: self.log_requested.emit(level, "[REMUX] " + message),
@@ -3240,6 +3245,55 @@ class MainWindow(QMainWindow):
             self._expand_log_panel()
             if error:
                 self.log_requested.emit("ERROR", f"[MEDIA] {error}")
+            self._prompt_failed_work_dir(first_line)
+
+    def _on_failed_work_dir_retained(self, retained: object) -> None:
+        """Encodage en échec, fichiers déjà produits : choix proposé à la fin de l'opération."""
+        if not isinstance(retained, RetainedProcessWorkDir):
+            return
+        previous, self._failed_work_dir = self._failed_work_dir, retained
+        if previous is not None:
+            self._discard_failed_work_dir(previous)
+        if not self._running:
+            # Échec déjà affiché (notification arrivée après la fin).
+            self._prompt_failed_work_dir("")
+
+    def _prompt_failed_work_dir(self, reason: str) -> None:
+        """Annonce l'échec ; dossier de travail conservé seulement si l'utilisateur le demande."""
+        retained, self._failed_work_dir = self._failed_work_dir, None
+        if retained is None:
+            return
+        if self._ask_keep_failed_work_dir(retained, reason):
+            retained.keep()
+            self.log_requested.emit("INFO", "[MEDIA] " + translate_text(
+                "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).",
+                path=str(retained.path),
+            ))
+        else:
+            self._discard_failed_work_dir(retained)
+
+    def _ask_keep_failed_work_dir(self, retained: RetainedProcessWorkDir, reason: str) -> bool:
+        """Popup d'échec : OK + case « Conserver les fichiers temporaires » (décochée)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(translate_text("Échec de l'encodage"))
+        box.setText(translate_text("L'encodage a échoué."))
+        details = translate_text(
+            "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}",
+            size=format_bytes(retained.payload_bytes),
+            path=str(retained.path),
+        )
+        box.setInformativeText(f"{reason}\n\n{details}" if reason else details)
+        keep_box = QCheckBox(translate_text("Conserver les fichiers temporaires (récupération, analyse)"))
+        box.setCheckBox(keep_box)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+        return keep_box.isChecked()
+
+    @staticmethod
+    def _discard_failed_work_dir(retained: RetainedProcessWorkDir) -> None:
+        """Suppression hors du fil de l'interface (fichiers intermédiaires volumineux)."""
+        threading.Thread(target=retained.discard, name="muxiveo-failed-work-dir", daemon=True).start()
 
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()

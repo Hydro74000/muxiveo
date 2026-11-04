@@ -189,6 +189,7 @@ class EncodePanel(QWidget):
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
     hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
     fel_analysis_requested = Signal(object, int)  # « Analyser l'apport du FEL… » : chemin, index ffprobe
+    failed_work_dir_retained = Signal(object)  # encodage en échec : dossier de travail gardé (RetainedProcessWorkDir)
     rife_install_requested   = Signal()       # lien « Installer » du moteur vidéo MVO (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
@@ -323,6 +324,9 @@ class EncodePanel(QWidget):
 
         self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
+        self._workflow.failed_work_dir_retained.connect(
+            self.failed_work_dir_retained, Qt.ConnectionType.QueuedConnection,
+        )
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._hdr_meta_frame_probe_ready.connect(
             self._on_hdr_meta_frame_probe_ready,
@@ -4406,10 +4410,14 @@ class EncodePanel(QWidget):
         return getattr(self, "_preview_signals", None) is not None
 
     def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
-        """Lance l'encodage et retourne les signaux de progression."""
+        """Lance l'encodage et retourne les signaux de progression.
+
+        En cas d'échec, le dossier de travail qui contient déjà des fichiers produits
+        est gardé : ``failed_work_dir_retained`` laisse l'utilisateur décider.
+        """
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
         # dans le thread UI au moment de démarrer l'encodage.
-        return self._workflow.run(config, validate=False)
+        return self._workflow.run(config, validate=False, retain_failed_work_dir=True)
 
     def validate_config(self, config: "EncodeConfig") -> list[str]:
         """Retourne la liste des erreurs de validation (vide = OK)."""

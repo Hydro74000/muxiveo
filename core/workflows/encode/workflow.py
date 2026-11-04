@@ -33,8 +33,11 @@ from core.subprocess_utils import (
 from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
+    FailedWorkDirRetention,
+    RetainedProcessWorkDir,
     download_tmdb_cover,
     prepare_process_work_dir,
+    process_dir_payload_bytes,
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
@@ -342,6 +345,11 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
+def _is_prepared_attachment_entry(entry: Path) -> bool:
+    """Pièces jointes préparées dans le dossier de travail (covers TMDB, extraites des sources)."""
+    return entry.name == "attachments" or entry.name.startswith("enc_attachments_")
+
+
 def _restore_measures_light_levels(video: VideoEncodeSettings) -> bool:
     """Restauration d'une source PQ avec HDR10 écrit, valeurs non saisies, sortie HEVC : MaxCLL/MaxFALL mesurés
     pendant l'encodage (``_prepare_restore_statistics``)."""
@@ -434,6 +442,9 @@ class EncodeWorkflow(QObject):
     log_message = Signal(str, str)
     static_hdr_estimate_ready = Signal(str, object)
     static_hdr_estimate_failed = Signal(str, str)
+    #: Encodage en échec lancé avec ``retain_failed_work_dir`` : dossier de travail gardé
+    #: (RetainedProcessWorkDir), l'utilisateur choisit de le conserver ou de le supprimer.
+    failed_work_dir_retained = Signal(object)
 
     def __init__(
         self,
@@ -529,6 +540,7 @@ class EncodeWorkflow(QObject):
             log_cb=self.log_message.emit,
             enabled=regenerate_statistics,
         )
+        self._failed_work_dir_retention = FailedWorkDirRetention()
         self._signal_binding_service = _SignalBindingService(
             _SignalBindingServiceCallbacks(
                 write_nfo=lambda output: write_mediainfo_nfo(
@@ -537,6 +549,7 @@ class EncodeWorkflow(QObject):
                     mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
                 ),
                 remove_path=remove_path,
+                retain_failed=self._retain_failed_work_dir,
             )
         )
 
@@ -3785,13 +3798,24 @@ class EncodeWorkflow(QObject):
             ],
         )
 
-    def run(self, config: EncodeConfig, *, validate: bool = True) -> TaskSignals:
+    def run(
+        self,
+        config: EncodeConfig,
+        *,
+        validate: bool = True,
+        retain_failed_work_dir: bool = False,
+    ) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
 
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
+
+        ``retain_failed_work_dir`` (GUI) : en cas d'échec, un dossier de travail
+        contenant déjà des fichiers produits (hors pièces jointes) n'est pas
+        supprimé ; ``failed_work_dir_retained`` le remet à l'interface.
         """
+        retain_kwargs: dict[str, Any] = {"retain_failed_work_dir": True} if retain_failed_work_dir else {}
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
@@ -3803,9 +3827,9 @@ class EncodeWorkflow(QObject):
             raise EncodeError(str(exc)) from exc
         try:
             if not validate:
-                signals = self._run_async_preparation(config)
+                signals = self._run_async_preparation(config, **retain_kwargs)
             else:
-                signals = self._run_with_preparation(config, validate=True)
+                signals = self._run_with_preparation(config, validate=True, **retain_kwargs)
         except BaseException:
             reservation.release()
             raise
@@ -3817,8 +3841,10 @@ class EncodeWorkflow(QObject):
         )
         return signals
 
-    def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
-        return self._preparation_runner().run_async_preparation(config)
+    def _run_async_preparation(self, config: EncodeConfig, *, retain_failed_work_dir: bool = False) -> TaskSignals:
+        return self._preparation_runner().run_async_preparation(
+            config, retain_failed_work_dir=retain_failed_work_dir,
+        )
 
     @staticmethod
     def _check_cancelled(signals: TaskSignals | None) -> None:
@@ -3831,6 +3857,7 @@ class EncodeWorkflow(QObject):
         *,
         validate: bool,
         prep_signals: TaskSignals | None = None,
+        retain_failed_work_dir: bool = False,
     ) -> TaskSignals:
         # Ce prérequis reste obligatoire pour run(validate=False), avant
         # préparation et encodage des artefacts vidéo.
@@ -3841,6 +3868,7 @@ class EncodeWorkflow(QObject):
             config,
             validate=validate,
             prep_signals=prep_signals,
+            retain_failed_work_dir=retain_failed_work_dir,
         )
 
     def _sync_rewrite_errors(self, config: EncodeConfig) -> list[str]:
@@ -3883,6 +3911,8 @@ class EncodeWorkflow(QObject):
                 resolve_source_color_transfer=self.resolve_source_color_transfer,
                 resolve_dovi_sources=self.resolve_dovi_sources,
                 prepare_dovi_sources=self.prepare_dovi_sources,
+                request_failed_work_dir_retention=self._failed_work_dir_retention.request,
+                retain_failed_work_dir=self._retain_failed_work_dir,
             )
         )
 
@@ -4201,6 +4231,29 @@ class EncodeWorkflow(QObject):
         session: LiveSyncSession | None,
     ) -> None:
         self._signal_binding_service.bind_live_sync_cleanup(signals, session)
+
+    def _retain_failed_work_dir(self, cleanup_paths: list[Path]) -> bool:
+        """Échec : dossier de travail demandé gardé s'il contient déjà des fichiers produits.
+
+        Les pièces jointes préparées ne comptent pas. Les chemins temporaires hors
+        de ce dossier sont supprimés comme d'habitude. False : nettoyage normal.
+        """
+        for path in cleanup_paths:
+            owned = self._failed_work_dir_retention.claim(path)
+            if owned is None:
+                continue
+            payload = process_dir_payload_bytes(owned.path, excluded=_is_prepared_attachment_entry)
+            if payload <= 0:
+                return False
+            for other in cleanup_paths:
+                if other != owned.path and not other.is_relative_to(owned.path):
+                    try:
+                        remove_path(other)
+                    except OSError:
+                        pass
+            self.failed_work_dir_retained.emit(RetainedProcessWorkDir(owned, payload))
+            return True
+        return False
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""

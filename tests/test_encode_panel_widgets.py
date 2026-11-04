@@ -2015,15 +2015,17 @@ class TestEncodePanelRunOperation:
         captured: dict[str, object] = {}
         expected_signals = object()
 
-        def fake_run(cfg, *, validate=True):
+        def fake_run(cfg, *, validate=True, retain_failed_work_dir=False):
             captured["config"] = cfg
             captured["validate"] = validate
+            captured["retain_failed_work_dir"] = retain_failed_work_dir
             return expected_signals
 
         monkeypatch.setattr(panel._workflow, "run", fake_run)
 
         assert panel.run_operation(cast(Any, config)) is expected_signals
-        assert captured == {"config": config, "validate": False}
+        # Échec : dossier de travail gardé pour la popup de l'interface.
+        assert captured == {"config": config, "validate": False, "retain_failed_work_dir": True}
         panel.close()
 
 
