@@ -34,7 +34,6 @@ from core.workflows.encode.domain.codecs import resolve_output_bit_depth
 from core.workflows.encode.interpolation import (
     InterpolationSource,
     RifeCapabilities,
-    build_engine_stages,
     build_rife_stage,
     restore_args_for,
     restore_engine_args,
@@ -149,42 +148,6 @@ class TestRifeStage:
         assert cmd[cmd.index("--restore") + 1] == "leger"
 
 
-class TestEngineStages:
-    """Débruitage + interpolation : deux moteurs enchaînés si le binaire transmet les débuts de plan."""
-
-    STATS = ["--restore", "auto", "--transfer", "pq", "--frame-statistics", "/t/out.jsonl", "--source-statistics", "/t/src.jsonl"]
-
-    def test_two_engines_when_scene_marks_supported(self):
-        with patch("core.workflows.encode.interpolation.rife_supports", return_value=True):
-            first, second = build_engine_stages("r", factor=2, quality="quality", source=InterpolationSource(),
-                                                restore_args=self.STATS)
-        assert first[first.index("--factor") + 1] == "1" and "--model" not in first
-        assert first[first.index("--restore") + 1] == "auto" and "--scene-marks" in first
-        assert first[first.index("--source-statistics") + 1] == "/t/src.jsonl" and "--frame-statistics" not in first
-        assert first[first.index("--progress-interval") + 1] == "86400"  # position en avance : seule l'interpolation rapporte
-        assert second[second.index("--factor") + 1] == "2" and "--restore" not in second
-        assert second[second.index("--transfer") + 1] == "pq"
-        assert second[second.index("--frame-statistics") + 1] == "/t/out.jsonl" and "--source-statistics" not in second
-
-    def test_second_engine_without_statistics(self):
-        with patch("core.workflows.encode.interpolation.rife_supports", return_value=True):
-            _first, second = build_engine_stages("r", factor=2, quality="fast", source=InterpolationSource(),
-                                                 restore_args=["--restore", "leger", "--transfer", "sdr"])
-        assert "--transfer" not in second and "--frame-statistics" not in second
-
-    def test_single_engine_on_older_binary(self):
-        with patch("core.workflows.encode.interpolation.rife_supports", return_value=False):
-            [cmd] = build_engine_stages("r", factor=2, quality="quality", source=InterpolationSource(), restore_args=self.STATS)
-        assert "--restore" in cmd and "--model" in cmd and "--frame-statistics" in cmd
-
-    @pytest.mark.parametrize("interpolate,restore_args", [(True, []), (False, ["--restore", "auto"])])
-    def test_single_engine_for_one_feature(self, interpolate, restore_args):
-        with patch("core.workflows.encode.interpolation.rife_supports", return_value=True):
-            stages = build_engine_stages("r", factor=2, quality="quality", source=InterpolationSource(),
-                                         interpolate=interpolate, restore_args=restore_args)
-        assert len(stages) == 1 and "--scene-marks" not in stages[0]
-
-
 def _builder(source_info: InterpolationSource | None = None) -> VideoOnlyCommandBuilder:
     def primary_video_settings(cfg: EncodeConfig) -> VideoEncodeSettings:
         assert cfg.video is not None
@@ -230,15 +193,6 @@ class TestPipeline:
         assert rife[rife.index("--factor") + 1] == "2" and "--restore" in rife
         assert rife[rife.index("--restore-dither") + 1] == "8"
         assert encode[encode.index("-vf") + 1].endswith("format=yuv420p")
-
-    def test_restore_with_interpolation_two_engines(self, tmp_path):
-        video = _video(interpolation=FrameInterpolationSettings(enabled=True, factor=2))
-        cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video)
-        with patch("core.workflows.encode.interpolation.rife_supports", return_value=True):
-            [cmd] = _builder(InterpolationSource()).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
-        _decode, restore, interp, _encode = command_stages(cmd)
-        assert "--restore" in restore and "--scene-marks" in restore and "--model" not in restore
-        assert interp[interp.index("--factor") + 1] == "2" and "--restore" not in interp
 
     def test_tonemap_stays_10_bits_before_the_engine(self):
         from core.workflows.encode.domain.codecs import build_vf

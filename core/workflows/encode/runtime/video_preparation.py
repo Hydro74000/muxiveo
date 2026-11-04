@@ -30,7 +30,7 @@ from core.workflows.encode.interpolation import (
     RESTORE_DECODE_FORMAT,
     InterpolationSource,
     build_decode_stage,
-    build_engine_stages,
+    build_rife_stage,
     decode_normalization_rate,
     restore_args_for,
 )
@@ -163,7 +163,7 @@ class VideoOnlyCommandBuilder:
             pre_input_args=decode_pre,
         )
         trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
-        engine_stages = build_engine_stages(
+        rife = build_rife_stage(
             cb.rife_bin,
             factor=settings.factor,
             target_fps=settings.target_fps,
@@ -196,7 +196,7 @@ class VideoOnlyCommandBuilder:
             cmd.extend(["-vf", vf])
         cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
         cmd.extend(["-map", "0:0"])
-        return PipelineCommand(cmd, [decode, *engine_stages])
+        return PipelineCommand(cmd, [decode, rife])
 
     def append_video_codec_and_hdr_args(
         self,
