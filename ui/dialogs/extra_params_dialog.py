@@ -2820,8 +2820,8 @@ class ExtraParamsDialog(QDialog):
         return _serialize(self._schema, values)
 
     def _refresh_preview(self) -> None:
-        if self._schema is None:
-            return
+        if self._schema is None or not hasattr(self, "_preview"):
+            return   # exclusions NVEncC appliquées à l'ouverture, avant l'aperçu
         self._preview.setPlainText(self._collect())
 
     def _accept(self) -> None:
