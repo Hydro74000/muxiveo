@@ -973,17 +973,23 @@ _X265_LIBX265 = CodecSchema(
         ParamGroup("Adaptive Quant.", (
             ParamSpec("aq-mode", "AQ mode", "enum", default="3",
                       options=(("0", "0 — off"), ("1", "1 — variance"),
-                               ("2", "2 — auto"), ("3", "3 — auto+bias"), ("4", "4 — auto+bias+select")),
+                               ("2", "2 — auto"), ("3", "3 — auto+bias"), ("4", "4 — auto+edges")),
                       tooltip="Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n"
                               "• 0 : désactivé.\n"
                               "• 1 : basé sur la variance.\n"
-                              "• 2 : auto-variance.\n"
-                              "• 3 : auto-variance + bias zones sombres (recommandé).\n"
-                              "• 4 : ajoute la sélection adaptative de profondeur de bits."),
+                              "• 2 : auto-variance (défaut x265).\n"
+                              "• 3 : auto-variance + biais vers les zones sombres (recommandé).\n"
+                              "• 4 : auto-variance + détection des contours."),
             ParamSpec("aq-strength", "AQ strength", "float", default=1.0,
                       minimum=0.0, maximum=3.0, step=0.1,
                       tooltip="Intensité de l'AQ (0.0-3.0).\n"
                               "1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou)."),
+            ParamSpec("qg-size", "QG size", "enum", default="32",
+                      options=(("64", "64"), ("32", "32"), ("16", "16"), ("8", "8")),
+                      tooltip="Quantization Group : plus petit bloc (en pixels) dont l'AQ peut changer "
+                              "le quantificateur.\n"
+                              "32 = défaut x265. 16 ou 8 = adaptation plus fine (dégradés, grain), "
+                              "débit légèrement ↑. Ne peut dépasser la taille de CTU."),
             ParamSpec("psy-rd", "Psy RD", "float", default=2.0, minimum=0.0, maximum=5.0, step=0.1,
                       tooltip="Psy-RD : favorise la préservation visuelle des détails au prix d'une "
                               "métrique PSNR/SSIM moindre.\n"
@@ -996,6 +1002,28 @@ _X265_LIBX265 = CodecSchema(
                       tooltip="Profondeur du Rate-Distortion Optimized Quantization.\n"
                               "• 0 : désactivé. • 1 : niveau modéré. • 2 : complet (qualité maximale, "
                               "lent)."),
+        )),
+        ParamGroup("Rate control", (
+            ParamSpec("rc-lookahead", "Lookahead (frames)", "int", default=20, minimum=0, maximum=250,
+                      tooltip="Images analysées à l'avance pour le contrôle de débit, le cu-tree et le "
+                              "placement des B-frames.\n"
+                              "20 = défaut x265, 250 au plus, jamais moins que B-frames. "
+                              "Plus = décisions mieux informées, RAM ↑."),
+            ParamSpec("qcomp", "QComp", "float", default=0.6, minimum=0.5, maximum=1.0, step=0.05,
+                      tooltip="Compression de la courbe de quantification (0.5-1.0), 0.6 = défaut x265.\n"
+                              "Plus haut = quantificateur plus constant : les scènes complexes ou rapides "
+                              "reçoivent plus de débit (grain mieux tenu en mouvement), fichier plus gros en "
+                              "CRF. 1.0 ≈ QP constant."),
+            ParamSpec("cbqpoffs", "Cb QP offset", "int", default=0, minimum=-12, maximum=12,
+                      tooltip="Décalage du QP de la chrominance bleue (Cb) par rapport à la luminance "
+                              "(-12 à 12, défaut 0).\n"
+                              "Négatif = plus de précision et de débit sur la couleur : limite la "
+                              "postérisation des ciels et aplats colorés."),
+            ParamSpec("crqpoffs", "Cr QP offset", "int", default=0, minimum=-12, maximum=12,
+                      tooltip="Décalage du QP de la chrominance rouge (Cr) par rapport à la luminance "
+                              "(-12 à 12, défaut 0).\n"
+                              "Négatif = plus de précision et de débit sur la couleur : limite la "
+                              "postérisation des couchers de soleil, néons et peaux."),
         )),
         ParamGroup("GOP / Slices", (
             ParamSpec("keyint", "Keyint", "int", default=250, minimum=1, maximum=600,
@@ -1015,11 +1043,16 @@ _X265_LIBX265 = CodecSchema(
                               "• 0 : nombre fixe.\n"
                               "• 1 : rapide (compromis).\n"
                               "• 2 : optimal (lent mais qualité maximale)."),
+            ParamSpec("b-intra", "B-intra", "bool", default="1", bool_repr=("0", "1"),
+                      tooltip="Évalue aussi les modes intra dans les B-frames (activé par les presets "
+                              "slower et au-delà).\n"
+                              "Mieux armé pour les apparitions soudaines (flashs, objets entrants), "
+                              "encodage un peu plus lent."),
             ParamSpec("ref", "References", "int", default=4, minimum=1, maximum=16,
                       tooltip="Nombre de frames de référence pour la prédiction inter-image.\n"
                               "Plus = qualité ↑ sur scènes complexes, encodage plus lent.\n"
                               "Limité par le level HEVC choisi."),
-            ParamSpec("no-open-gop", "No open GOP", "bool", bool_repr=("0", "1"),
+            ParamSpec("no-open-gop", "No open GOP", "bool", default="1", bool_repr=("0", "1"),
                       tooltip="Force des GOP fermés (closed GOP) : pas de référence à des frames "
                               "antérieures à la dernière keyframe.\n"
                               "Recommandé pour : streaming HLS/DASH, montage/découpe, Blu-ray."),
@@ -1070,6 +1103,10 @@ _X265_LIBX265 = CodecSchema(
                       tooltip="Sample Adaptive Offset : filtre in-loop qui réduit les artefacts de "
                               "compression (ringing).\n"
                               "Recommandé toujours actif (gain qualité visuel, coût mineur)."),
+            ParamSpec("deblock", "Deblock (tC,beta)", "text", default="-1,-1",
+                      tooltip="Décalages du filtre de déblocage « tC,beta » (-6 à 6 chacun), défaut 0,0.\n"
+                              "Négatif = filtre plus doux, conserve la texture fine à haut débit ; "
+                              "positif = lisse davantage les blocs à bas débit."),
         )),
         ParamGroup("Threading / Misc", (
             ParamSpec("pools", "Thread pools", "text", default="*",
@@ -1999,6 +2036,9 @@ def _serialize(schema: CodecSchema, values: dict[str, tuple[bool, Any]]) -> str:
                 val = _serialize_value(spec, raw)
                 if val is None:
                     continue
+                if schema.style == "x265_params" and spec.kind == "text":
+                    # ':' sépare les paramètres x265 : virgule dans une valeur (deblock=-1,-1).
+                    val = val.replace(":", ",")
                 if spec.kind == "bool" and spec.bool_repr[1] == "":
                     parts.append(spec.key)   # flag x265 sans valeur
                 else:
@@ -2118,6 +2158,38 @@ def _strip_unit_suffix(spec: ParamSpec | None, token: str) -> str:
         return token
 
 
+def _widget_accepts(spec: ParamSpec, raw: Any) -> bool:
+    """Valeur représentable telle quelle par le widget (sinon il la bornerait ou l'ignorerait)."""
+    if spec.kind == "bool":
+        return isinstance(raw, bool) or _parse_bool_token(raw) is not None
+    if spec.kind == "enum":
+        return str(raw) in {value for value, _label in spec.options}
+    if spec.kind in ("int", "float"):
+        try:
+            number = int(str(raw).strip()) if spec.kind == "int" else float(str(raw).strip())
+        except ValueError:
+            return False
+        return (spec.minimum is None or number >= spec.minimum) and (
+            spec.maximum is None or number <= spec.maximum
+        )
+    return not isinstance(raw, bool)   # texte : un flag nu n'a pas de valeur à afficher
+
+
+def _x265_bool_alias(spec_map: dict[str, ParamSpec], key: str, raw: Any) -> tuple[str, bool] | None:
+    """x265 accepte ``no-X`` pour tout booléen ``X`` : ``no-sao=1`` → (``sao``, False)."""
+    state = raw if isinstance(raw, bool) else _parse_bool_token(raw)
+    if state is None:
+        return None
+    if key.startswith("no-"):
+        alias = key[3:]
+    else:
+        alias = f"no-{key}"
+    spec = spec_map.get(alias)
+    if spec is None or spec.kind != "bool":
+        return None
+    return alias, not state
+
+
 def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, Any]]:
     """Pré-remplit les widgets en parsant la valeur existante.
 
@@ -2137,18 +2209,15 @@ def _parse_existing(schema: CodecSchema, current: str) -> dict[str, tuple[bool, 
             chunk = chunk.strip()
             if not chunk:
                 continue
-            if "=" in chunk:
-                k, v = chunk.split("=", 1)
-                if k in spec_keys:
-                    values[k] = (True, v)
-                else:
-                    leftovers.append(chunk)
+            k, raw = chunk.split("=", 1) if "=" in chunk else (chunk, True)   # flag sans valeur = activé
+            alias = _x265_bool_alias(spec_map, k, raw) if schema.style == "x265_params" else None
+            if k in spec_keys and _widget_accepts(spec_map[k], raw):
+                values[k] = (True, raw)
+            elif k not in spec_keys and alias is not None:
+                values[alias[0]] = (True, alias[1])
             else:
-                # flag sans valeur
-                if chunk in spec_keys:
-                    values[chunk] = (True, True)
-                else:
-                    leftovers.append(chunk)
+                # Inconnu, ou hors des valeurs du widget (aq-mode=5, keyint=1000) : gardé tel quel.
+                leftovers.append(chunk)
         if leftovers:
             values["__free__"] = (True, ":".join(leftovers))
         return values

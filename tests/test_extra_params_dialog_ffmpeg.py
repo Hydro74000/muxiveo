@@ -93,3 +93,56 @@ def test_review_workflow_rate_units_prefill_in_kbps(qt_app):
         assert _pairs(tokens)["-bufsize"] == "16000k"
     finally:
         dialog.close()
+
+
+_X265_FILM = (
+    "no-sao=1:psy-rd=1.2:psy-rdoq=1.5:rdoq-level=2:aq-mode=3:aq-strength=0.75:cbqpoffs=-2:crqpoffs=-2"
+    ":qg-size=32:deblock=-1,-1:qcomp=0.65:b-adapt=2:b-intra=1:rc-lookahead=48:no-open-gop=1"
+    ":keyint=240:min-keyint=24"
+)
+
+
+def _x265_dialog_roundtrip(text: str) -> tuple[dict[str, tuple[bool, object]], list[str]]:
+    """Ouvre le dialogue libx265 sur ``text`` et relit ce qu'il écrirait (valeurs des widgets)."""
+    from ui.dialogs.extra_params_dialog import ExtraParamsDialog
+
+    dialog = ExtraParamsDialog("libx265", text)
+    try:
+        values = {key: row.value() for key, row in dialog._rows.items()}
+        return values, _serialize(dialog._schema, values).split(":")
+    finally:
+        dialog.close()
+
+
+def test_x265_film_params_each_have_a_widget(qt_app):
+    _ = qt_app
+    values, tokens = _x265_dialog_roundtrip(_X265_FILM)
+
+    assert values["__free__"] == (False, "")  # tout est reconnu, rien en tokens libres
+    assert values["sao"] == (True, False)  # no-sao=1 → case SAO décochée
+    assert values["aq-strength"] == (True, 0.75)
+    assert values["qcomp"] == (True, 0.65)
+    assert values["cbqpoffs"] == (True, -2) and values["crqpoffs"] == (True, -2)
+    assert values["b-intra"] == (True, True)
+    assert set(tokens) == {
+        "sao=0", "psy-rd=1.2", "psy-rdoq=1.5", "rdoq-level=2", "aq-mode=3", "aq-strength=0.75",
+        "qg-size=32", "qcomp=0.65", "cbqpoffs=-2", "crqpoffs=-2", "rc-lookahead=48",
+        "keyint=240", "min-keyint=24", "b-adapt=2", "b-intra=1", "no-open-gop=1", "deblock=-1,-1",
+    }
+
+
+def test_x265_negated_and_out_of_widget_values_are_kept(qt_app):
+    _ = qt_app
+    values, tokens = _x265_dialog_roundtrip("open-gop=0:no-b-intra:aq-mode=5:keyint=1000")
+
+    assert values["no-open-gop"] == (True, True)
+    assert values["b-intra"] == (True, False)
+    # Hors des valeurs du widget : jamais ramené au défaut ni borné, recopié tel quel.
+    assert values["aq-mode"][0] is False and values["keyint"][0] is False
+    assert tokens[-2:] == ["aq-mode=5", "keyint=1000"]
+
+
+def test_x265_deblock_colon_becomes_comma():
+    schema = schema_for("libx265")
+    assert schema is not None
+    assert _serialize(schema, {"deblock": (True, "-2:-1")}) == "deblock=-2,-1"

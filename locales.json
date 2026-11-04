@@ -3267,9 +3267,37 @@
     "fra": "Matrice de conversion YCbCr↔RGB :\n• bt709 : HD SDR.\n• bt2020nc : non-constant luminance (UHD/HDR standard).\n• bt2020c : constant luminance (rare).",
     "eng": "YCbCr↔RGB conversion matrix:\n• bt709: HD SDR.\n• bt2020nc: non-constant luminance (UHD/HDR standard).\n• bt2020c: constant luminance (rare)."
   },
-  "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.": {
-    "fra": "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.",
-    "eng": "Adaptive Quantization algorithm (differential bit allocation).\n• 0: disabled.\n• 1: variance-based.\n• 2: auto-variance.\n• 3: auto-variance + dark-scene bias (recommended).\n• 4: adds adaptive bit-depth selection."
+  "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance (défaut x265).\n• 3 : auto-variance + biais vers les zones sombres (recommandé).\n• 4 : auto-variance + détection des contours.": {
+    "fra": "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance (défaut x265).\n• 3 : auto-variance + biais vers les zones sombres (recommandé).\n• 4 : auto-variance + détection des contours.",
+    "eng": "Adaptive Quantization algorithm (differential bit allocation).\n• 0: disabled.\n• 1: variance-based.\n• 2: auto-variance (x265 default).\n• 3: auto-variance + bias towards dark areas (recommended).\n• 4: auto-variance + edge detection."
+  },
+  "Quantization Group : plus petit bloc (en pixels) dont l'AQ peut changer le quantificateur.\n32 = défaut x265. 16 ou 8 = adaptation plus fine (dégradés, grain), débit légèrement ↑. Ne peut dépasser la taille de CTU.": {
+    "fra": "Quantization Group : plus petit bloc (en pixels) dont l'AQ peut changer le quantificateur.\n32 = défaut x265. 16 ou 8 = adaptation plus fine (dégradés, grain), débit légèrement ↑. Ne peut dépasser la taille de CTU.",
+    "eng": "Quantization Group: smallest block (in pixels) whose quantizer AQ can change.\n32 = x265 default. 16 or 8 = finer adaptation (gradients, grain), slightly higher bitrate. Cannot exceed the CTU size."
+  },
+  "Images analysées à l'avance pour le contrôle de débit, le cu-tree et le placement des B-frames.\n20 = défaut x265, 250 au plus, jamais moins que B-frames. Plus = décisions mieux informées, RAM ↑.": {
+    "fra": "Images analysées à l'avance pour le contrôle de débit, le cu-tree et le placement des B-frames.\n20 = défaut x265, 250 au plus, jamais moins que B-frames. Plus = décisions mieux informées, RAM ↑.",
+    "eng": "Frames analysed ahead for rate control, cu-tree and B-frame placement.\n20 = x265 default, 250 max, never fewer than B-frames. Higher = better-informed decisions, more RAM."
+  },
+  "Compression de la courbe de quantification (0.5-1.0), 0.6 = défaut x265.\nPlus haut = quantificateur plus constant : les scènes complexes ou rapides reçoivent plus de débit (grain mieux tenu en mouvement), fichier plus gros en CRF. 1.0 ≈ QP constant.": {
+    "fra": "Compression de la courbe de quantification (0.5-1.0), 0.6 = défaut x265.\nPlus haut = quantificateur plus constant : les scènes complexes ou rapides reçoivent plus de débit (grain mieux tenu en mouvement), fichier plus gros en CRF. 1.0 ≈ QP constant.",
+    "eng": "Quantizer curve compression (0.5-1.0), 0.6 = x265 default.\nHigher = more constant quantizer: complex or fast scenes get more bitrate (grain better kept in motion), larger file in CRF. 1.0 ≈ constant QP."
+  },
+  "Décalage du QP de la chrominance bleue (Cb) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des ciels et aplats colorés.": {
+    "fra": "Décalage du QP de la chrominance bleue (Cb) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des ciels et aplats colorés.",
+    "eng": "Offset of the blue chroma (Cb) QP from the luma QP (-12 to 12, default 0).\nNegative = more precision and bitrate for colour: limits banding in skies and flat coloured areas."
+  },
+  "Décalage du QP de la chrominance rouge (Cr) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des couchers de soleil, néons et peaux.": {
+    "fra": "Décalage du QP de la chrominance rouge (Cr) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des couchers de soleil, néons et peaux.",
+    "eng": "Offset of the red chroma (Cr) QP from the luma QP (-12 to 12, default 0).\nNegative = more precision and bitrate for colour: limits banding in sunsets, neon lights and skin tones."
+  },
+  "Évalue aussi les modes intra dans les B-frames (activé par les presets slower et au-delà).\nMieux armé pour les apparitions soudaines (flashs, objets entrants), encodage un peu plus lent.": {
+    "fra": "Évalue aussi les modes intra dans les B-frames (activé par les presets slower et au-delà).\nMieux armé pour les apparitions soudaines (flashs, objets entrants), encodage un peu plus lent.",
+    "eng": "Also evaluates intra modes in B-frames (enabled by the slower presets and above).\nBetter at sudden appearances (flashes, objects entering), slightly slower encoding."
+  },
+  "Décalages du filtre de déblocage « tC,beta » (-6 à 6 chacun), défaut 0,0.\nNégatif = filtre plus doux, conserve la texture fine à haut débit ; positif = lisse davantage les blocs à bas débit.": {
+    "fra": "Décalages du filtre de déblocage « tC,beta » (-6 à 6 chacun), défaut 0,0.\nNégatif = filtre plus doux, conserve la texture fine à haut débit ; positif = lisse davantage les blocs à bas débit.",
+    "eng": "Deblocking filter offsets \"tC,beta\" (-6 to 6 each), default 0,0.\nNegative = gentler filter, keeps fine texture at high bitrate; positive = smooths blocks more at low bitrate."
   },
   "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).": {
     "fra": "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).",
