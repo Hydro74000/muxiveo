@@ -47,6 +47,7 @@ from core.workflows.common.ffmpeg_runtime import (
     ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+    normalize_x265_frame_threads as _normalize_x265_frame_threads,
 )
 from core.workflows.common.metadata import (
     resolve_global_tags as _common_resolve_global_tags,
@@ -444,6 +445,7 @@ class EncodeWorkflow(QObject):
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
         max_parallel_video_encodes: int | None = 1,
+        x265_frame_threads:        int | None = 0,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
@@ -503,6 +505,7 @@ class EncodeWorkflow(QObject):
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
         self._writing_application = writing_application.strip()
         self._postprocess_service = RemuxPostprocessService(
             ffprobe_bin=self._ffprobe_path(),
@@ -558,6 +561,10 @@ class EncodeWorkflow(QObject):
     def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
         """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+
+    def set_x265_frame_threads(self, x265_frame_threads: int | None) -> None:
+        """Met à jour le nombre d'images encodées en parallèle par libx265 (0 = automatique)."""
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
 
     def set_max_parallel_video_encodes(self, max_parallel_video_encodes: int | None) -> None:
         """Met à jour le niveau max de parallélisme pour la préparation multi-pistes vidéo."""
@@ -1827,6 +1834,7 @@ class EncodeWorkflow(QObject):
             amf_device=self._amf_device(),
             nvenc_device=self._nvenc_device(),
             depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
+            x265_frame_threads=self.__dict__.get("_x265_frame_threads", 0),
         )
 
     def set_vulkan_capability(self, ffmpeg_bin: str, capability: _VulkanCapability) -> None:

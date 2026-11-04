@@ -2243,9 +2243,17 @@
     "fra": "Nombre de threads FFmpeg",
     "eng": "FFmpeg thread count"
   },
-  "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.": {
-    "fra": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
-    "eng": "Number of threads passed to FFmpeg via -threads. 0 lets FFmpeg choose automatically. The default value is calculated from the number of cores x 1.5."
+  "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.": {
+    "fra": "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.",
+    "eng": "Worker threads passed to FFmpeg (-threads): decoding, filters, and encoders that use it as a core count (x264, SVT-AV1…). No effect on x265, which has its own setting below. 0 lets FFmpeg choose; default: logical cores × 0.75."
+  },
+  "Images en parallèle x265 (frame-threads)": {
+    "fra": "Images en parallèle x265 (frame-threads)",
+    "eng": "x265 parallel frames (frame-threads)"
+  },
+  "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.": {
+    "fra": "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.",
+    "eng": "Number of frames x265 encodes at the same time (16 max), not a core count: x265 always uses all logical cores, each frame being split into rows processed in parallel (WPP). More parallel frames is not necessarily faster, increases RAM (≈ +1.4 GB in 4K at 16) and slightly reduces compression efficiency. 0 = x265's automatic choice (recommended: 6 in 4K on 32 threads). To limit x265's cores: pools=N in the track's x265 parameters."
   },
   "Encodages vidéo parallèles max": {
     "fra": "Encodages vidéo parallèles max",
@@ -3343,13 +3351,13 @@
     "fra": "Sample Adaptive Offset : filtre in-loop qui réduit les artefacts de compression (ringing).\nRecommandé toujours actif (gain qualité visuel, coût mineur).",
     "eng": "Sample Adaptive Offset: in-loop filter that reduces compression artifacts (ringing).\nRecommended to keep enabled (visual quality gain, minor cost)."
   },
-  "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.": {
-    "fra": "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.",
-    "eng": "NUMA thread pool configuration.\n• '*': auto (uses all cores).\n• '4,4': 2 pools of 4 threads (explicit NUMA).\n• '+': limit to a single pool."
+  "Threads de calcul de x265 (pools) : c'est ce réglage qui fixe le nombre de cœurs utilisés.\n• '*' : auto (tous les cœurs logiques).\n• 'N' : N threads au plus (ex. 16), sur une machine à un seul nœud NUMA.\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.": {
+    "fra": "Threads de calcul de x265 (pools) : c'est ce réglage qui fixe le nombre de cœurs utilisés.\n• '*' : auto (tous les cœurs logiques).\n• 'N' : N threads au plus (ex. 16), sur une machine à un seul nœud NUMA.\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.",
+    "eng": "x265 worker threads (pools): this setting sets how many cores are used.\n• '*': auto (all logical cores).\n• 'N': at most N threads (e.g. 16), on a single-NUMA-node machine.\n• '4,4': 2 pools of 4 threads (explicit NUMA).\n• '+': limit to a single pool."
   },
-  "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.": {
-    "fra": "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.",
-    "eng": "Number of frames encoded in parallel.\n0 = auto, based on RAM/CPU. Higher values increase throughput, latency, and RAM usage.\nLower it to save RAM on 4K content."
+  "Nombre d'images encodées en même temps (16 au plus), pas un nombre de cœurs :\nles cœurs utilisés dépendent de pools (tous par défaut).\n0 = auto (choix de x265, recommandé). Plus = RAM ↑ et compression légèrement ↓, rarement plus rapide.\nRemplace pour cette piste le réglage « Images en parallèle x265 » des Paramètres.": {
+    "fra": "Nombre d'images encodées en même temps (16 au plus), pas un nombre de cœurs :\nles cœurs utilisés dépendent de pools (tous par défaut).\n0 = auto (choix de x265, recommandé). Plus = RAM ↑ et compression légèrement ↓, rarement plus rapide.\nRemplace pour cette piste le réglage « Images en parallèle x265 » des Paramètres.",
+    "eng": "Number of frames encoded at the same time (16 max), not a core count:\nthe cores used depend on pools (all by default).\n0 = auto (x265's choice, recommended). Higher = more RAM and slightly lower compression, rarely faster.\nOverrides the \"x265 parallel frames\" setting from Settings for this track."
   },
   "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.": {
     "fra": "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.",

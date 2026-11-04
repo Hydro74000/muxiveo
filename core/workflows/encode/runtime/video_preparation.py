@@ -111,10 +111,11 @@ class VideoOnlyCommandBuilder:
         cmd.extend(hardware_input_args(video, callbacks=cb.codec_domain_callbacks()))
         cmd.extend(raw_input_rate_args(video, source))
         append_ffmpeg_input_args(cmd, source)
-        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks(), hw_decoded=video.fel_context is None)
+        domain_callbacks = cb.codec_domain_callbacks()
+        vf = build_encoder_vf(video, callbacks=domain_callbacks, hw_decoded=video.fel_context is None)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count), callbacks=domain_callbacks))
         cmd.extend(["-map", f"0:{int(stream_index)}"])
         return cmd
 
@@ -194,7 +195,7 @@ class VideoOnlyCommandBuilder:
         ) if part)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count), callbacks=domain))
         cmd.extend(["-map", "0:0"])
         return PipelineCommand(cmd, [decode, rife])
 

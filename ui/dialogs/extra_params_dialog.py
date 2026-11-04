@@ -1073,14 +1073,16 @@ _X265_LIBX265 = CodecSchema(
         )),
         ParamGroup("Threading / Misc", (
             ParamSpec("pools", "Thread pools", "text", default="*",
-                      tooltip="Configuration des pools de threads NUMA.\n"
-                              "• '*' : auto (utilise tous les cores).\n"
+                      tooltip="Threads de calcul de x265 (pools) : c'est ce réglage qui fixe le nombre de cœurs utilisés.\n"
+                              "• '*' : auto (tous les cœurs logiques).\n"
+                              "• 'N' : N threads au plus (ex. 16), sur une machine à un seul nœud NUMA.\n"
                               "• '4,4' : 2 pools de 4 threads (NUMA explicite).\n"
                               "• '+' : limite à 1 pool unique."),
             ParamSpec("frame-threads", "Frame threads", "int", default=0, minimum=0, maximum=16,
-                      tooltip="Nombre de frames encodées en parallèle.\n"
-                              "0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\n"
-                              "Réduire pour économiser la RAM sur 4K."),
+                      tooltip="Nombre d'images encodées en même temps (16 au plus), pas un nombre de cœurs :\n"
+                              "les cœurs utilisés dépendent de pools (tous par défaut).\n"
+                              "0 = auto (choix de x265, recommandé). Plus = RAM ↑ et compression légèrement ↓, rarement plus rapide.\n"
+                              "Remplace pour cette piste le réglage « Images en parallèle x265 » des Paramètres."),
             ParamSpec("wpp", "Wavefront parallel proc.", "bool", bool_repr=("0", "1"),
                       tooltip="Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\n"
                               "Recommandé toujours actif. Permet une accélération multi-cœurs efficace."),

@@ -26,6 +26,17 @@ def normalize_ffmpeg_thread_count(value: int | None) -> int:
     return value
 
 
+# libx265 refuse de s'ouvrir au-delà de 16 images encodées en parallèle (frame-threads).
+X265_MAX_FRAME_THREADS = 16
+
+
+def normalize_x265_frame_threads(value: int | None) -> int:
+    """frame-threads de libx265 borné à [0, 16] ; 0 (ou absent) = choix automatique de x265."""
+    if value is None:
+        return 0
+    return max(0, min(int(value), X265_MAX_FRAME_THREADS))
+
+
 def normalize_max_parallel_video_encodes(value: int | None) -> int:
     """Return a safe per-workflow parallelism value for multi-video preparation."""
     if value is None:

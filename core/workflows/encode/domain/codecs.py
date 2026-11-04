@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from core.workflows.common.ffmpeg_runtime import normalize_x265_frame_threads
 from core.workflows.encode.catalog import (
     RateControlSpec,
     StaticHdrMetadataMode,
@@ -41,6 +42,7 @@ class EncodeCodecDomainCallbacks:
     amf_device: str | None = None
     nvenc_device: str | None = None
     depth_conversion_filters: frozenset[str] = frozenset()
+    x265_frame_threads: int = 0
 
 
 def rate_control_values(video: VideoEncodeSettings) -> tuple[RateControlSpec | None, int]:
@@ -327,17 +329,23 @@ def nvenc_effective_preset(video: VideoEncodeSettings) -> str:
     return video.preset
 
 
-# libx265 (FFmpeg) reçoit ``-threads`` comme ``frame-threads``, borné à 16 par x265 :
-# au-delà, l'encodeur refuse de s'ouvrir (défaut cœurs × 0,75 > 16 dès 22 cœurs logiques).
-# Les pools de x265 occupent de toute façon tous les cœurs.
-X265_MAX_FRAME_THREADS = 16
+def encoder_thread_args(
+    video: VideoEncodeSettings,
+    args: list[str],
+    *,
+    callbacks: EncodeCodecDomainCallbacks | None = None,
+) -> list[str]:
+    """``-threads`` de l'encodeur vidéo ; libx265 : réglage frame-threads dédié (0 = automatique).
 
-
-def encoder_thread_args(video: VideoEncodeSettings, args: list[str]) -> list[str]:
-    """``-threads N`` de l'encodeur vidéo, ramené au maximum accepté par libx265 (0 = automatique)."""
+    FFmpeg transmet ``-threads`` à x265 comme ``frame-threads`` (images encodées en
+    parallèle, 16 au plus), pas comme nombre de cœurs : le pool de x265 occupe tous
+    les cœurs logiques quelle que soit cette valeur. Le nombre de threads FFmpeg
+    n'y est donc jamais appliqué (16 images en vol : même débit, RAM accrue).
+    """
     if video.codec != "libx265" or len(args) != 2 or args[0] != "-threads":
         return args
-    return ["-threads", str(min(int(args[1]), X265_MAX_FRAME_THREADS))]
+    frame_threads = callbacks.x265_frame_threads if callbacks is not None else 0
+    return ["-threads", str(normalize_x265_frame_threads(frame_threads))]
 
 
 def x265_params(video: VideoEncodeSettings) -> str:

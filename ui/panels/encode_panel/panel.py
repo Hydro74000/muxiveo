@@ -222,6 +222,7 @@ class EncodePanel(QWidget):
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
             max_parallel_video_encodes=config.max_parallel_video_encodes,
+            x265_frame_threads=getattr(config, "x265_frame_threads", 0),
             parent=self,
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
@@ -6155,6 +6156,7 @@ class EncodePanel(QWidget):
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffprobe_bin(getattr(self._config, "tool_ffprobe", None) or None)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow.set_x265_frame_threads(getattr(self._config, "x265_frame_threads", 0))
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
