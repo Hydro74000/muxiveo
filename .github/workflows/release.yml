@@ -36,6 +36,32 @@ jobs:
         run: |
           python -c 'from pathlib import Path; Path("core/_build_version.py").write_text("BUILD_VERSION = \"5.1.1\"\n")'
           python package.py --dmg --version 5.1.1
+      - name: Smoke test the packaged Qt interface
+        run: |
+          python - <<'PYGUI'
+          import os, subprocess, tempfile
+          from pathlib import Path
+          config = Path(tempfile.mkdtemp(prefix='muxiveo-gui-smoke-'))
+          (config / 'muxiveo').mkdir()
+          (config / 'muxiveo' / 'config.ini').write_text('[ui]\ncheck_updates = false\n')
+          env = dict(os.environ, MUXIVEO_CONFIG_HOME=str(config / 'muxiveo'), XDG_CONFIG_HOME=str(config), QT_QPA_PLATFORM='offscreen')
+          with (config / 'gui.log').open('w+') as log:
+              process = subprocess.Popen(['dist/Muxiveo.app/Contents/MacOS/muxiveo'], env=env, stdout=log, stderr=log)
+              try:
+                  process.wait(timeout=20)
+              except subprocess.TimeoutExpired:
+                  print('Packaged Qt interface stayed running for 20 seconds')
+              else:
+                  log.seek(0)
+                  raise RuntimeError(f'Packaged GUI exited early ({process.returncode}): {log.read()}')
+              finally:
+                  process.terminate()
+                  try:
+                      process.wait(timeout=10)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.wait()
+          PYGUI
       - name: Package all three macOS distributions
         run: |
           mkdir -p release-assets

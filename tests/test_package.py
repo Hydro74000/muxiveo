@@ -299,6 +299,8 @@ def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo").exists()
     assert not (tmp_path / "dist" / "Muxiveo" / ("muxiveo" + "-cli")).exists()
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+    assert "--collect-binaries" in commands[0]
+    assert "--collect-data" in commands[0]
 
 
 @_UNIX_PACKAGING_ONLY
@@ -382,6 +384,8 @@ def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
 
     assert result == tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+    assert "--collect-binaries" not in commands[0]
+    assert not any(commands[0][i:i + 2] == ["--collect-data", "PySide6"] for i in range(len(commands[0])))
 
 
 def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():

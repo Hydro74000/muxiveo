@@ -1378,10 +1378,6 @@ def _build_pyinstaller(onefile: bool) -> Path:
         "--hidden-import", "PySide6.QtSvg",
         "--hidden-import", "PySide6.QtMultimedia",
         "--hidden-import", "pymediainfo",
-        # Collecte ciblée PySide6 : évite le scan des scripts de déploiement
-        # (PySide6.scripts.deploy_lib) qui déclenche des warnings inutiles.
-        "--collect-binaries", "PySide6",
-        "--collect-data", "PySide6",
         "--collect-all", "pymediainfo",
         "--collect-data", "certifi",
         # Modules du projet
@@ -1392,6 +1388,12 @@ def _build_pyinstaller(onefile: bool) -> Path:
         # Exclusions
         *[arg for mod in EXCLUDED_MODULES for arg in ("--exclude-module", mod)],
     ]
+
+    if OS != "Darwin":
+        cmd += ["--collect-binaries", "PySide6", "--collect-data", "PySide6"]
+    # Sur macOS, les hooks Qt des modules importés collectent le runtime requis.
+    # Collecter tout PySide6 ajoute les outils Qt (.app) et objets de compilation
+    # (.o) : liens de bundles cassés et code non signé empêchent alors codesign.
 
     if OS == "Windows":
         _ensure_windows_runtime_dlls_available()
