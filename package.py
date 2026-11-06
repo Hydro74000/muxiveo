@@ -3339,6 +3339,20 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
     _ok(f"Info.plist mis à jour (version {version}, min macOS {_MACOS_MIN_VERSION})")
 
 
+def _sign_macos_bundle(app_path: Path) -> None:
+    """Scelle le bundle final après les renommages, l'icône et Info.plist.
+
+    PyInstaller signe déjà les binaires embarqués, mais les modifications du
+    bundle après son exécution invalident sa signature externe. Une signature
+    ad hoc conserve la distribution sans certificat Developer ID ; elle ne
+    remplace pas la notarisation Apple.
+    """
+    _title("Signature du bundle macOS final")
+    _run(["codesign", "--force", "--sign", "-", str(app_path)])
+    _run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app_path)])
+    _ok("Signature macOS vérifiée")
+
+
 def _build_macos_dmg(app_path: Path, version_tag: str | None) -> Path:
     """Crée un .dmg compressé depuis Muxiveo.app."""
     _title("Étape 3 — DMG")
@@ -3432,6 +3446,7 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
         shutil.copy2(icns_path, resources / "icon.icns")
 
     _patch_macos_info_plist(app_final, version_tag=version_tag)
+    _sign_macos_bundle(app_final)
     _verify_macos_bundle(app_final)
 
     if dmg:

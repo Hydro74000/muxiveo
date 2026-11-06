@@ -1,811 +1,123 @@
-name: Build and Release
-
-# Canaux (calculés par release-metadata, jamais saisis) :
-# - stable   : branche `main` uniquement. Tag `vX.Y.Z` = APP_VERSION, release « latest ».
-#              Le tag ne doit pas exister ailleurs (relance du même commit acceptée) et
-#              la version doit dépasser la dernière stable.
-# - unstable : branche `devel-cli`. Pré-version `vX.Y.Z-unstable.<date>.<run>.<sha>`,
-#              X.Y.Z strictement supérieure à la dernière stable (sinon incrémenter APP_VERSION).
-# - build    : lancement manuel sur toute autre branche. Paquets en artefacts, rien de publié
-#              (ni release, ni tag).
-# Aucun déclenchement par push de tag : les tags `v*` sont créés par ce workflow seul.
-
+name: Rebuild existing macOS 5.1.1 assets
+run-name: macOS 5.1.1 — ${{ inputs.mode }}
 on:
-  push:
-    branches:
-      - devel-cli
-      - main
   workflow_dispatch:
-
+    inputs:
+      mode:
+        type: choice
+        options: [build, publish]
+        default: build
+        required: true
+      build_run_id:
+        description: Successful build run to publish
+        type: string
+        default: ''
 permissions:
-  contents: write
-
+  contents: read
+  actions: read
 concurrency:
-  group: release-${{ github.ref }}
+  group: macos-5.1.1-repair
   cancel-in-progress: false
-
-env:
-  PYTHON_VERSION: "3.11"
-  HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-Muxiveo', github.repository_owner) }}
-
 jobs:
-  release-metadata:
-    name: Prepare release metadata
-    runs-on: ubuntu-latest
-    outputs:
-      package_version: ${{ steps.metadata.outputs.package_version }}
-      release_tag: ${{ steps.metadata.outputs.release_tag }}
-      release_name: ${{ steps.metadata.outputs.release_name }}
-      prerelease: ${{ steps.metadata.outputs.prerelease }}
-      channel: ${{ steps.metadata.outputs.channel }}
-      publish: ${{ steps.metadata.outputs.publish }}
-      appimage_update_release: ${{ steps.metadata.outputs.appimage_update_release }}
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Compute release identity
-        id: metadata
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          base_version="$(python -c 'from core.version import APP_VERSION; print(APP_VERSION)')"
-          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::APP_VERSION (core/version.py) doit être de la forme X.Y.Z : ${base_version}"
-            exit 1
-          fi
-
-          case "${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}" in
-            branch:main) channel="stable" ;;
-            branch:devel-cli) channel="unstable" ;;
-            branch:*) channel="build" ;;
-            *)
-              echo "::error::Référence non gérée : ${GITHUB_REF} (stable depuis main uniquement)"
-              exit 1
-              ;;
-          esac
-
-          if [ "$channel" = "stable" ]; then
-            package_version="$base_version"
-            release_name="Muxiveo ${package_version}"
-            prerelease="false"
-            appimage_update_release="latest"
-          else
-            # Date du commit (et non de l'exécution) : une relance garde le même tag.
-            date_id="$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y%m%d)"
-            short_sha="$(git rev-parse --short=7 HEAD)"
-            package_version="${base_version}-unstable.${date_id}.${GITHUB_RUN_NUMBER}.${short_sha}"
-            release_name="Unstable v${package_version}"
-            prerelease="true"
-            appimage_update_release="latest-pre"
-          fi
-          release_tag="v${package_version}"
-
-          # Dernière stable publiée (tags vX.Y.Z stricts : pré-versions et outils exclus).
-          last_stable="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref' \
-            | sed -nE 's#^refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$#\1#p' | sort -V | tail -1)"
-          above_last_stable() {
-            [ -z "$last_stable" ] || { [ "$base_version" != "$last_stable" ] \
-              && [ "$(printf '%s\n%s\n' "$last_stable" "$base_version" | sort -V | tail -1)" = "$base_version" ]; }
-          }
-
-          if [ "$channel" = "build" ]; then
-            publish="false"
-            if ! above_last_stable; then
-              echo "::warning::APP_VERSION ${base_version} <= dernière stable v${last_stable} (build non publié)"
-            fi
-          else
-            publish="true"
-            tag_state="$(bash scripts/check_release_tag.sh "$release_tag" "$GITHUB_SHA")"
-            if [ "$tag_state" = "absent" ] && ! above_last_stable; then
-              if [ "$channel" = "stable" ]; then
-                echo "::error::Version ${base_version} non supérieure à la dernière stable v${last_stable} : incrémenter APP_VERSION (core/version.py)"
-              else
-                echo "::error::v${base_version} déjà publiée en stable : incrémenter APP_VERSION (core/version.py) sur devel-cli, sinon la pré-version serait antérieure à la stable"
-              fi
-              exit 1
-            fi
-          fi
-
-          echo "::notice::Canal ${channel} : ${release_tag} (publication : ${publish}, dernière stable : ${last_stable:-aucune})"
-          {
-            echo "package_version=$package_version"
-            echo "release_tag=$release_tag"
-            echo "release_name=$release_name"
-            echo "prerelease=$prerelease"
-            echo "channel=$channel"
-            echo "publish=$publish"
-            echo "appimage_update_release=$appimage_update_release"
-          } >> "$GITHUB_OUTPUT"
-
-  # Extensions proposées par Muxiveo (dépôt muxiveo-plugins) : la version épinglée de chacune (plancher, paquets
-  # hors ligne : mvo-rife préinstallée) doit être publiée et vérifiable. Contrôle au départ, sans dépendance :
-  # aucun paquet n'est construit avant (tous canaux, builds manuels compris).
-  plugins-state:
-    name: Extensions épinglées
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Releases épinglées publiées (archives par plate-forme et SHA-256)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/check_plugin_release.py
-
-  # Suite applicative complète (Linux + contrats Windows) sur le même SHA :
-  # condition de la publication, pour les branches, tags et lancements manuels.
-  unit-tests:
-    name: Unit tests (gate)
-    uses: ./.github/workflows/ci-unit-all.yml
-
-  media-regressions:
-    name: Media regressions (gate)
-    uses: ./.github/workflows/ci-media-regressions.yml
-
-  # Mise à jour intégrée (archive source, application macOS) sur Linux, Windows et macOS.
-  update-process:
-    name: Update process (gate)
-    uses: ./.github/workflows/ci-update-process.yml
-
-  build-linux:
-    name: Build Linux AppImage
-    runs-on: ubuntu-latest
-    # Extension mvo-rife préinstallée : release du dépôt des extensions, contrôlée avant le build.
-    needs: [release-metadata, plugins-state]
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install Linux packaging tools
-        uses: ./.github/actions/apt-install
-        with:
-          packages: squashfs-tools zsync
-
-      - name: Install Linux packaging dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
-
-      - name: Embed build version
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          python - <<'PYTHON'
-          import os
-          from pathlib import Path
-          Path("core/_build_version.py").write_text(
-              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
-          )
-          PYTHON
-
-      - name: Build all-inclusive AppImage
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-          MUXIVEO_APPIMAGE_UPDATE_RELEASE: ${{ needs.release-metadata.outputs.appimage_update_release }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python package_appimage.py --allinc --version "$PACKAGE_VERSION"
-
-      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
-      - name: Verify embedded muxiveo-rife
-        shell: bash
-        run: python scripts/check_allinc_rife.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
-
-      - name: Collect Linux assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets/linux
-          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage release-assets/linux/
-          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage.zsync release-assets/linux/
-          ls -la release-assets/linux
-
-      - name: Upload Linux assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: appimage-linux
-          path: release-assets/linux/*
-          if-no-files-found: error
-
-  build-windows:
-    name: Build Windows installer
-    runs-on: windows-latest
-    # Extension mvo-rife préinstallée : release du dépôt des extensions, contrôlée avant le build.
-    needs: [release-metadata, plugins-state]
-    steps:
-      - name: Checkout
-        shell: pwsh
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          git init .
-          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --no-tags --depth=1 origin "$env:CHECKOUT_SHA"
-          git checkout --detach --force "$env:CHECKOUT_SHA"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install Python dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
-
-      - name: Install NSIS
-        shell: pwsh
-        run: |
-          winget install --id NSIS.NSIS -e --silent --accept-source-agreements --accept-package-agreements
-
-      - name: Embed build version
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          python - <<'PYTHON'
-          import os
-          from pathlib import Path
-          Path("core/_build_version.py").write_text(
-              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
-          )
-          PYTHON
-
-      - name: Build all-inclusive PyInstaller and NSIS package
-        shell: pwsh
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
-
-      # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
-      - name: Verify embedded muxiveo-rife
-        shell: pwsh
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          python scripts/check_allinc_rife.py `
-            "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
-            "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
-
-      - name: Collect Windows assets
-        shell: pwsh
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          $version = $env:PACKAGE_VERSION
-          $std_file = "dist\releases\Muxiveo-Setup-$version.exe"
-          $allinc_file = "dist\releases\Muxiveo-Setup-AllInc-$version.exe"
-          $portable_file = "dist\releases\Muxiveo-Windows-x64-allinc-$version.zip"
-          if (-not (Test-Path $std_file)) {
-            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
-            throw "Standard Windows installer not found: $std_file"
-          }
-          if (-not (Test-Path $allinc_file)) {
-            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
-            throw "AllInc Windows installer not found: $allinc_file"
-          }
-          if (-not (Test-Path $portable_file)) {
-            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
-            throw "Portable Windows ZIP not found: $portable_file"
-          }
-          New-Item -ItemType Directory -Force -Path release-assets\windows | Out-Null
-          Get-ChildItem -Path dist\releases -Filter "*$version*" | Copy-Item -Destination release-assets\windows\ -Force
-          Get-ChildItem release-assets\windows
-
-      - name: Upload Windows assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-windows
-          path: release-assets/windows/*
-          if-no-files-found: error
-
   build-macos:
-    name: Build macOS packages
+    if: inputs.mode == 'build'
     runs-on: macos-latest
-    needs: [release-metadata, plugins-state]
+    timeout-minutes: 45
     steps:
-      - name: Checkout
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install packaging and test dependencies
+        run: python -m pip install -r requirements.txt pyinstaller pillow pytest pytest-qt
+      - name: Test final signing and refusal of an invalid signature
+        run: python -m pytest -q tests/test_package.py -k test_build_macos_seals_final_bundle_before_distribution
+      - name: Embed stable version and build
+        run: |
+          python -c 'from pathlib import Path; Path("core/_build_version.py").write_text("BUILD_VERSION = \"5.1.1\"\n")'
+          python package.py --dmg --version 5.1.1
+      - name: Package all three macOS distributions
+        run: |
+          mkdir -p release-assets
+          cp dist/releases/Muxiveo-5.1.1.dmg release-assets/
+          (cd dist && zip -qr --symlinks ../release-assets/Muxiveo-5.1.1-macos.zip Muxiveo.app)
+          tar -C dist -czf release-assets/Muxiveo-5.1.1-homebrew-macos.tar.gz Muxiveo.app
+      - name: Verify signed app from the DMG, ZIP and Homebrew archive
         shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-
-      - name: Install macOS packaging dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller pillow
-
-      - name: Embed build version
-        shell: bash
-        env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          python - <<'PYTHON'
-          import os
+          codesign --verify --deep --strict --verbose=2 dist/Muxiveo.app
+          archs="$(lipo -archs dist/Muxiveo.app/Contents/MacOS/muxiveo)"
+          test "$archs" = arm64
+          file dist/Muxiveo.app/Contents/MacOS/muxiveo
+          mkdir -p "$RUNNER_TEMP/macos-dmg-check" "$RUNNER_TEMP/macos-zip-check" "$RUNNER_TEMP/macos-tar-check"
+          hdiutil attach release-assets/Muxiveo-5.1.1.dmg -nobrowse -readonly -mountpoint "$RUNNER_TEMP/macos-dmg-check"
+          trap 'hdiutil detach "$RUNNER_TEMP/macos-dmg-check" || true' EXIT
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/macos-dmg-check/Muxiveo.app"
+          version="$("$RUNNER_TEMP/macos-dmg-check/Muxiveo.app/Contents/MacOS/muxiveo" --cli version)"
+          test "$version" = 'Muxiveo 5.1.1'
+          hdiutil detach "$RUNNER_TEMP/macos-dmg-check"
+          trap - EXIT
+          ditto -x -k release-assets/Muxiveo-5.1.1-macos.zip "$RUNNER_TEMP/macos-zip-check"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/macos-zip-check/Muxiveo.app"
+          tar -xzf release-assets/Muxiveo-5.1.1-homebrew-macos.tar.gz -C "$RUNNER_TEMP/macos-tar-check"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/macos-tar-check/Muxiveo.app"
+          python - <<'PY'
+          import json, os
           from pathlib import Path
-          Path("core/_build_version.py").write_text(
-              "BUILD_VERSION = " + repr(os.environ["PACKAGE_VERSION"]) + "\n", encoding="utf-8"
-          )
-          PYTHON
-
-      - name: Build macOS app and DMG
+          report = {'version': '5.1.1', 'source_sha': os.environ['GITHUB_SHA'], 'architecture': 'arm64',
+                    'codesign_deep_strict': True, 'verified': ['app', 'dmg', 'zip', 'homebrew'],
+                    'dmg_cli_version': 'Muxiveo 5.1.1', 'notarized': False}
+          Path('release-assets/macos-validation.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-5.1.1-rebuilt
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+  publish-macos:
+    if: inputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require a successful build of this exact source
         env:
-          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
-          python package.py --dmg --version "$PACKAGE_VERSION"
-
-      - name: Collect macOS assets
-        shell: bash
+          python - <<'PY'
+          import json, os, re, subprocess
+          run_id = os.environ['BUILD_RUN_ID']
+          assert re.fullmatch(r'[0-9]+', run_id), 'Invalid build run ID'
+          run = json.loads(subprocess.check_output(['gh', 'api', f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run_id}']))
+          assert run['conclusion'] == 'success' and run['status'] == 'completed', run
+          assert run['head_sha'] == os.environ['GITHUB_SHA'], 'Build source differs from publication source'
+          assert run['event'] == 'workflow_dispatch' and run['path'] == '.github/workflows/release.yml'
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-5.1.1-rebuilt
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Replace existing assets and synchronize checksums
         env:
-          VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets/macos
-
-          cp "dist/releases/Muxiveo-${VERSION}.dmg" release-assets/macos/
-          (cd dist && zip -qr --symlinks "../release-assets/macos/Muxiveo-${VERSION}-macos.zip" Muxiveo.app)
-
-          ls -la release-assets/macos
-
-      - name: Collect Homebrew macOS asset
-        if: ${{ needs.release-metadata.outputs.channel == 'stable' }}
-        shell: bash
-        env:
-          VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets/homebrew
-          tar -C dist -czf "release-assets/homebrew/Muxiveo-${VERSION}-homebrew-macos.tar.gz" Muxiveo.app
-          ls -la release-assets/homebrew
-
-      - name: Upload macOS assets
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+        run: python3 scripts/replace_macos_511_assets.py
+      - name: Preserve publication metadata and validation report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: binary-macos
-          path: release-assets/macos/*
-          if-no-files-found: error
-
-      - name: Upload Homebrew macOS asset
-        if: ${{ needs.release-metadata.outputs.channel == 'stable' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: homebrew-macos-assets
-          path: release-assets/homebrew/*
-          if-no-files-found: error
-
-  homebrew-formula:
-    name: Generate Homebrew formula
-    runs-on: ubuntu-latest
-    # !cancelled() : un job amont sauté (canal sans publication) ne doit pas faire sauter la formule.
-    if: ${{ !cancelled() && needs.release-metadata.outputs.channel == 'stable' && needs.build-linux.result == 'success' && needs.build-macos.result == 'success' }}
-    needs:
-      - release-metadata
-      - build-linux
-      - build-macos
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "$CHECKOUT_SHA"
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Download Linux assets
-        uses: actions/download-artifact@v4
-        with:
-          name: appimage-linux
-          path: release-assets/linux
-
-      - name: Download Homebrew macOS asset
-        uses: actions/download-artifact@v4
-        with:
-          name: homebrew-macos-assets
-          path: release-assets/macos
-
-      - name: Resolve external macOS tool assets
-        id: tools
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || '' }}
-        run: |
-          set -euo pipefail
-          DOVI_JSON=$(python scripts/github_release_asset.py --repo quietvoid/dovi_tool --pattern universal-macOS.zip --sha256)
-          HDR_JSON=$(python scripts/github_release_asset.py --repo quietvoid/hdr10plus_tool --pattern universal-macOS.zip --sha256)
-          echo "dovi_json=$DOVI_JSON" >> "$GITHUB_OUTPUT"
-          echo "hdr_json=$HDR_JSON" >> "$GITHUB_OUTPUT"
-
-      - name: Generate Homebrew formula
-        shell: bash
-        env:
-          REPO: ${{ github.repository }}
-          VERSION: ${{ needs.release-metadata.outputs.package_version }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-          DOVI_JSON: ${{ steps.tools.outputs.dovi_json }}
-          HDR_JSON: ${{ steps.tools.outputs.hdr_json }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets/formula
-          LINUX_FILE=$(basename "$(find release-assets/linux -maxdepth 1 -type f -name '*.AppImage' | head -1)")
-          MACOS_FILE=$(basename "$(find release-assets/macos -maxdepth 1 -type f -name '*.tar.gz' | head -1)")
-          LINUX_SHA=$(sha256sum "release-assets/linux/${LINUX_FILE}" | awk '{print $1}')
-          MACOS_SHA=$(sha256sum "release-assets/macos/${MACOS_FILE}" | awk '{print $1}')
-          DOVI_URL=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["url"])')
-          DOVI_SHA=$(python -c 'import json, os; print(json.loads(os.environ["DOVI_JSON"])["sha256"])')
-          HDR_URL=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["url"])')
-          HDR_SHA=$(python -c 'import json, os; print(json.loads(os.environ["HDR_JSON"])["sha256"])')
-          python scripts/render_homebrew_formula.py \
-            --version "$VERSION" \
-            --linux-url "https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${LINUX_FILE}" \
-            --linux-sha256 "$LINUX_SHA" \
-            --macos-url "https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${MACOS_FILE}" \
-            --macos-sha256 "$MACOS_SHA" \
-            --dovi-tool-macos-url "$DOVI_URL" \
-            --dovi-tool-macos-sha256 "$DOVI_SHA" \
-            --hdr10plus-tool-macos-url "$HDR_URL" \
-            --hdr10plus-tool-macos-sha256 "$HDR_SHA" \
-            --homepage "https://github.com/${REPO}" \
-            --output release-assets/formula/Muxiveo.rb
-
-      - name: Upload formula artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: homebrew-formula
-          path: release-assets/formula/Muxiveo.rb
-          if-no-files-found: error
-
-  release:
-    name: Create or update GitHub Release
-    runs-on: ubuntu-latest
-    # Canal build (branche quelconque, lancement manuel) : aucun tag ni release.
-    if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.media-regressions.result == 'success' && needs.update-process.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
-    needs:
-      - release-metadata
-      - plugins-state
-      - unit-tests
-      - media-regressions
-      - update-process
-      - build-linux
-      - build-windows
-      - build-macos
-      - homebrew-formula
-    steps:
-      - name: Checkout
-        shell: bash
-        env:
-          CHECKOUT_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags origin "$CHECKOUT_SHA"
-          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
-          git checkout --detach --force "$CHECKOUT_SHA"
-
-      - name: Download release assets
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: '{appimage-linux,binary-windows,binary-macos,homebrew-macos-assets,homebrew-formula}'
-          merge-multiple: true
-
-      - name: Add source archives
-        shell: bash
-        env:
-          VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        run: |
-          set -euo pipefail
-          PREFIX="Muxiveo-${VERSION}"
-          # Version exacte (comme les paquets) et marqueur d'installation : mise à jour intégrée des sources.
-          EXTRA="$(mktemp -d)"
-          printf 'BUILD_VERSION = %s\n' "$(python3 -c 'import os; print(repr(os.environ["VERSION"]))')" > "$EXTRA/_build_version.py"
-          python3 scripts/write_source_marker.py --version "$VERSION" --extra core/_build_version.py \
-            --out "$EXTRA/.muxiveo-installation"
-          extras=(--prefix="${PREFIX}/core/" --add-file="$EXTRA/_build_version.py"
-                  --prefix="${PREFIX}/" --add-file="$EXTRA/.muxiveo-installation")
-          git archive --format=tar "${extras[@]}" HEAD | gzip -9 > "artifacts/${PREFIX}-source.tar.gz"
-          git archive --format=zip "${extras[@]}" HEAD -o "artifacts/${PREFIX}-source.zip"
-          # grep sans -q : il lit toute la liste (sinon tar reçoit SIGPIPE, code 141 avec pipefail).
-          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -x "${PREFIX}/.muxiveo-installation" > /dev/null
-          tar -tzf "artifacts/${PREFIX}-source.tar.gz" | grep -x "${PREFIX}/core/_build_version.py" > /dev/null
-          ls -la artifacts
-
-      # Sommes SHA-256 de tous les assets : requises par la mise à jour intégrée
-      # (core/update_install.py refuse d'installer un asset absent de ce fichier).
-      - name: Generate SHA256SUMS
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd artifacts
-          rm -f SHA256SUMS
-          find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs -d '\n' sha256sum > ../SHA256SUMS
-          mv ../SHA256SUMS SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Generate release notes
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-          RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
-          CHANNEL: ${{ needs.release-metadata.outputs.channel }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          git fetch --tags --force
-
-          previous_tag=""
-          # Brouillons exclus : une release republiée (tag supprimé) n'est pas la précédente.
-          # Tags de l'app uniquement (muxiveo-rife-v*, muxiveo-mvtools-v*… ont leurs propres releases).
-          if [ "$CHANNEL" = "unstable" ]; then
-            previous_tag="$(gh release list --exclude-drafts --limit 100 --json tagName,isPrerelease \
-              --jq '[.[] | select(.isPrerelease == true and (.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-unstable\\.")))][0].tagName // ""')"
-          else
-            previous_tag="$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName \
-              --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].tagName // ""')"
-          fi
-
-          if [ -z "$previous_tag" ]; then
-            previous_tag="$(gh release list --exclude-drafts --limit 100 --json tagName \
-              --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+"))][0].tagName // ""')"
-          fi
-
-          range=""
-          if [ -n "$previous_tag" ] && git rev-parse -q --verify "refs/tags/$previous_tag" >/dev/null; then
-            range="${previous_tag}..HEAD"
-          fi
-
-          if [ -n "$range" ]; then
-            git log "$range" --no-merges --pretty=format:'- %s (%h)' | sed '/^- $/d' > commits.md
-          else
-            git log --no-merges --pretty=format:'- %s (%h)' | sed '/^- $/d' > commits.md
-          fi
-
-          if [ ! -s commits.md ]; then
-            printf '%s\n' '- No commit found since the previous release.' > commits.md
-          fi
-
-          win_installer=""
-          linux_appimage=""
-          macos_dmg=""
-
-          for f in artifacts/*; do
-            [ -f "$f" ] || continue
-            fname="$(basename "$f")"
-            case "$fname" in
-              Muxiveo-Setup-AllInc-*.exe|*allinc*.exe)
-                win_installer="$fname"
-                ;;
-              *.AppImage)
-                if [[ "$fname" != *.zsync ]]; then
-                  linux_appimage="$fname"
-                fi
-                ;;
-              *.dmg)
-                macos_dmg="$fname"
-                ;;
-            esac
-          done
-
-          if [ -z "$win_installer" ]; then
-            for f in artifacts/*; do
-              [ -f "$f" ] || continue
-              fname="$(basename "$f")"
-              case "$fname" in
-                Muxiveo-Setup-*.exe)
-                  win_installer="$fname"
-                  ;;
-              esac
-            done
-          fi
-
-          base_download_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-
-          {
-            echo "# ${RELEASE_NAME}"
-            echo
-            if [ -n "$win_installer" ] || [ -n "$linux_appimage" ] || [ -n "$macos_dmg" ]; then
-              echo "### 📥 Téléchargements / Direct Downloads"
-              echo
-              if [ -n "$win_installer" ]; then
-                echo "- 🪟 **Windows (Allinc setup)** : [${win_installer}](${base_download_url}/${win_installer})"
-              fi
-              if [ -n "$linux_appimage" ]; then
-                echo "- 🐧 **Linux (AppImage)** : [${linux_appimage}](${base_download_url}/${linux_appimage})"
-              fi
-              if [ -n "$macos_dmg" ]; then
-                echo "- 🍏 **macOS (DMG)** : [${macos_dmg}](${base_download_url}/${macos_dmg})"
-              fi
-              echo
-              echo "---"
-              echo
-            fi
-            echo "- Channel: ${CHANNEL}"
-            echo "- Commit: ${GITHUB_SHA}"
-            if [ -n "$previous_tag" ]; then
-              echo "- Previous release: ${previous_tag}"
-            else
-              echo "- Previous release: none found"
-            fi
-            echo
-            echo "## Changes since previous release"
-            echo
-            cat commits.md
-            echo
-          } > release-body.md
-
-      - name: Create release when needed, then upload assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-          RELEASE_NAME: ${{ needs.release-metadata.outputs.release_name }}
-          PRERELEASE: ${{ needs.release-metadata.outputs.prerelease }}
-          CHANNEL: ${{ needs.release-metadata.outputs.channel }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          mapfile -t files < <(find artifacts -maxdepth 1 -type f | sort)
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "No release asset found under artifacts/" >&2
-            exit 1
-          fi
-
-          # Contrôle définitif juste avant publication : tag absent, ou déjà sur ce commit.
-          bash scripts/check_release_tag.sh "$RELEASE_TAG" "$GITHUB_SHA"
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; uploading assets and updating notes."
-            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-            edit_args=(--title "$RELEASE_NAME" --notes-file release-body.md)
-            if [ "$CHANNEL" = "stable" ]; then
-              edit_args+=(--latest)
-            fi
-            if [ "$PRERELEASE" = "true" ]; then
-              edit_args+=(--prerelease)
-            fi
-            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft // false')"
-            if [ "$is_draft" = "true" ]; then
-              # Brouillon sans tag : le tag sera créé sur ce commit.
-              edit_args+=(--draft=false --target "$GITHUB_SHA")
-            fi
-            gh release edit "$RELEASE_TAG" "${edit_args[@]}"
-          else
-            create_args=()
-            if [ "$PRERELEASE" = "true" ]; then
-              create_args+=(--prerelease)
-            else
-              create_args+=(--latest)
-            fi
-            gh release create "$RELEASE_TAG" \
-              "${files[@]}" \
-              --target "$GITHUB_SHA" \
-              --title "$RELEASE_NAME" \
-              --notes-file release-body.md \
-              "${create_args[@]}"
-          fi
-
-      # Dernière étape : la release et ses fichiers sont publiés, le flux du canal peut pointer dessus.
-      # Muxiveo lit releases/download/update-feed/<canal>.json au lieu de parcourir la liste des releases.
-      - name: Publish update feed
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-          CHANNEL: ${{ needs.release-metadata.outputs.channel }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          python3 scripts/write_update_feed.py --channel "$CHANNEL" --tag "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" --artifacts artifacts --out "feed/${CHANNEL}.json"
-          if ! gh release view update-feed >/dev/null 2>&1; then
-            # Pré-version : jamais « latest » ; tag ignoré par la vérification des mises à jour (pas vX.Y.Z).
-            gh release create update-feed --prerelease --target "$GITHUB_SHA" \
-              --title "Flux de mise à jour" \
-              --notes "Fichiers lus par Muxiveo pour détecter les mises à jour (un par canal). Ne pas supprimer."
-          fi
-          gh release upload update-feed "feed/${CHANNEL}.json" --clobber
-
-  publish-homebrew-tap:
-    name: Publish Homebrew tap
-    runs-on: ubuntu-latest
-    needs:
-      - release-metadata
-      - release
-    # !cancelled() : voir homebrew-formula.
-    if: ${{ !cancelled() && needs.release-metadata.outputs.channel == 'stable' && needs.release.result == 'success' }}
-    steps:
-      - name: Download formula artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: homebrew-formula
-          path: release-assets/formula
-
-      - name: Publish formula to tap repository
-        env:
-          TAP_REPO: ${{ env.HOMEBREW_TAP_REPO }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ needs.release-metadata.outputs.package_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${TAP_TOKEN:-}" ]; then
-            echo "HOMEBREW_TAP_TOKEN absent, skipping tap publication."
-            exit 0
-          fi
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" homebrew-tap
-          mkdir -p homebrew-tap/Formula
-          cp release-assets/formula/Muxiveo.rb homebrew-tap/Formula/Muxiveo.rb
-          cd homebrew-tap
-          if [ -z "$(git status --porcelain Formula/Muxiveo.rb)" ]; then
-            echo "Formula unchanged"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/Muxiveo.rb
-          git commit -m "Muxiveo ${VERSION}"
-          git push
+          name: macos-5.1.1-publication-metadata
+          path: |
+            publication-backup/*
+            publication-result.json
+            release-assets/macos-validation.json
+          retention-days: 30

@@ -850,6 +850,65 @@ def test_patch_macos_info_plist_uses_lowercase_bundle_executable(tmp_path):
     assert plist["CFBundleShortVersionString"] == "1.2.3"
 
 
+@pytest.mark.parametrize("invalid_signature", [False, True])
+def test_build_macos_seals_final_bundle_before_distribution(tmp_path, monkeypatch, invalid_signature):
+    app = tmp_path / "dist" / "Muxiveo.app"
+    executable = app / "Contents" / "MacOS" / "muxiveo"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"executable")
+    plist_path = app / "Contents" / "Info.plist"
+    plist_path.write_bytes(plistlib.dumps({"CFBundleExecutable": "Muxiveo"}))
+    sealed = {}
+    commands = []
+
+    def make_icon(_source, dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"custom icon")
+        return dest
+
+    def snapshot():
+        return {str(p.relative_to(app)): p.read_bytes() for p in app.rglob("*") if p.is_file()}
+
+    def codesign(cmd, **_kwargs):
+        commands.append(cmd)
+        assert cmd[0] == "codesign"
+        assert cmd[-1] == str(app)
+        if "--sign" in cmd:
+            assert plistlib.loads(plist_path.read_bytes())["CFBundleExecutable"] == "muxiveo"
+            assert plistlib.loads(plist_path.read_bytes())["CFBundleShortVersionString"] == "5.1.1"
+            assert (app / "Contents" / "Resources" / "icon.icns").read_bytes() == b"custom icon"
+            sealed.update(snapshot())
+        else:
+            assert "--verify" in cmd and "--deep" in cmd and "--strict" in cmd
+            assert sealed and snapshot() == sealed
+            if invalid_signature:
+                raise subprocess.CalledProcessError(1, cmd)
+
+    def require_sealed(*_args, **_kwargs):
+        assert sealed and snapshot() == sealed
+
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_build_icns_from_png", make_icon)
+    monkeypatch.setattr(package_mod, "_build_pyinstaller", lambda **_kwargs: executable)
+    monkeypatch.setattr(package_mod, "_run", codesign)
+    verify_runtime = MagicMock(side_effect=require_sealed)
+    build_dmg = MagicMock(side_effect=lambda *_args, **_kwargs: require_sealed() or tmp_path / "Muxiveo.dmg")
+    monkeypatch.setattr(package_mod, "_verify_macos_bundle", verify_runtime)
+    monkeypatch.setattr(package_mod, "_build_macos_dmg", build_dmg)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda path, *_args, **_kwargs: path)
+
+    if invalid_signature:
+        with pytest.raises(subprocess.CalledProcessError):
+            package_mod.build_macos(dmg=True, version_tag="5.1.1")
+        verify_runtime.assert_not_called()
+        build_dmg.assert_not_called()
+    else:
+        package_mod.build_macos(dmg=True, version_tag="5.1.1")
+        verify_runtime.assert_called_once_with(app)
+        build_dmg.assert_called_once_with(app, version_tag="5.1.1")
+    assert len(commands) == 2
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(
