@@ -33,8 +33,11 @@ from core.subprocess_utils import (
 from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
+    FailedWorkDirRetention,
+    RetainedProcessWorkDir,
     download_tmdb_cover,
     prepare_process_work_dir,
+    process_dir_payload_bytes,
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
@@ -47,6 +50,7 @@ from core.workflows.common.ffmpeg_runtime import (
     ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+    normalize_x265_frame_threads as _normalize_x265_frame_threads,
 )
 from core.workflows.common.metadata import (
     resolve_global_tags as _common_resolve_global_tags,
@@ -124,9 +128,13 @@ from core.workflows.encode.interpolation import (
     interpolation_preset as _interpolation_preset,
     rife_capabilities as _rife_capabilities,
     rife_support_errors as _rife_support_errors,
+    rife_supports as _rife_supports,
+    restore_support_errors as _restore_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     decode_normalization_rate as _decode_normalization_rate,
+    restore_args_for as _restore_args_for,
+    RESTORE_DECODE_FORMAT as _RESTORE_DECODE_FORMAT,
     parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
 )
@@ -268,6 +276,7 @@ from core.workflows.encode.dovi_policy import (
 )
 from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
 from core.workflows.encode.domain.codecs import preset_problem as _preset_problem
+from core.workflows.encode.domain.codecs import resolve_output_bit_depth as _resolve_output_bit_depth
 from core.workflows.encode.domain.codecs import vulkan_filters_compatible as _vulkan_filters_compatible
 from core.workflows.encode.vulkan import VulkanCapability as _VulkanCapability
 from core.workflows.encode.vulkan import detect_vulkan as _detect_vulkan
@@ -336,6 +345,27 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
+def _is_prepared_attachment_entry(entry: Path) -> bool:
+    """Pièces jointes préparées dans le dossier de travail (covers TMDB, extraites des sources)."""
+    return entry.name == "attachments" or entry.name.startswith("enc_attachments_")
+
+
+def _restore_measures_light_levels(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec HDR10 écrit, valeurs non saisies, sortie HEVC : MaxCLL/MaxFALL mesurés
+    pendant l'encodage (``_prepare_restore_statistics``)."""
+    from core.fel.preparation import measures_light_levels
+
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and measures_light_levels(video)
+
+
+def _restore_checks_dynamic_metadata(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec copie Dolby Vision / HDR10+ : métadonnées copiées contrôlées après
+    l'encodage (``dynamic_metadata_adequacy``)."""
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and bool(video.copy_dv or video.copy_hdr10plus)
+
+
 def _interpolation_decode_cmd(
     decode_cmd: list[str],
     info: _InterpolationSource,
@@ -350,18 +380,21 @@ def _interpolation_decode_cmd(
     """
     cmd = list(decode_cmd)
     rate = _decode_normalization_rate(info, video) if video is not None else info.cfr_rate
+    restore_format = f"format={_RESTORE_DECODE_FORMAT}" if video is not None and video.restores() else ""
 
     def insert_before_output(args: list[str]) -> None:
         # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
         at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
         cmd[at:at] = args
 
-    if rate:
+    # un seul fps= (source VFR, YADIF par champ), puis 10 bits sous Restauration (précision de sortie du réseau)
+    extra = ",".join(part for part in (f"fps={rate}" if rate else "", restore_format) if part)
+    if extra:
         if "-vf" in cmd:
             index = cmd.index("-vf") + 1
-            cmd[index] = f"{cmd[index]},fps={rate}"
+            cmd[index] = f"{cmd[index]},{extra}"
         else:
-            insert_before_output(["-vf", f"fps={rate}"])
+            insert_before_output(["-vf", extra])
     if "-fps_mode" not in cmd:
         insert_before_output(["-fps_mode", "passthrough"])
     return cmd
@@ -409,6 +442,9 @@ class EncodeWorkflow(QObject):
     log_message = Signal(str, str)
     static_hdr_estimate_ready = Signal(str, object)
     static_hdr_estimate_failed = Signal(str, str)
+    #: Encodage en échec lancé avec ``retain_failed_work_dir`` : dossier de travail gardé
+    #: (RetainedProcessWorkDir), l'utilisateur choisit de le conserver ou de le supprimer.
+    failed_work_dir_retained = Signal(object)
 
     def __init__(
         self,
@@ -420,6 +456,7 @@ class EncodeWorkflow(QObject):
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
         max_parallel_video_encodes: int | None = 1,
+        x265_frame_threads:        int | None = 0,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
@@ -479,6 +516,7 @@ class EncodeWorkflow(QObject):
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
         self._writing_application = writing_application.strip()
         self._postprocess_service = RemuxPostprocessService(
             ffprobe_bin=self._ffprobe_path(),
@@ -502,6 +540,7 @@ class EncodeWorkflow(QObject):
             log_cb=self.log_message.emit,
             enabled=regenerate_statistics,
         )
+        self._failed_work_dir_retention = FailedWorkDirRetention()
         self._signal_binding_service = _SignalBindingService(
             _SignalBindingServiceCallbacks(
                 write_nfo=lambda output: write_mediainfo_nfo(
@@ -510,6 +549,7 @@ class EncodeWorkflow(QObject):
                     mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
                 ),
                 remove_path=remove_path,
+                retain_failed=self._retain_failed_work_dir,
             )
         )
 
@@ -534,6 +574,10 @@ class EncodeWorkflow(QObject):
     def set_ffmpeg_threads(self, ffmpeg_threads: int | None) -> None:
         """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
+
+    def set_x265_frame_threads(self, x265_frame_threads: int | None) -> None:
+        """Met à jour le nombre d'images encodées en parallèle par libx265 (0 = automatique)."""
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
 
     def set_max_parallel_video_encodes(self, max_parallel_video_encodes: int | None) -> None:
         """Met à jour le niveau max de parallélisme pour la préparation multi-pistes vidéo."""
@@ -1061,10 +1105,10 @@ class EncodeWorkflow(QObject):
         source: Path,
     ) -> list[str]:
         """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
-        if not video.interpolates():
+        if not video.uses_engine():
             return decode_cmd
         if not self._rife_bin:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, débruitage MVO-R2).")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
         trt_plugin, trt_cache = self._rife_trt_args()
@@ -1080,6 +1124,8 @@ class EncodeWorkflow(QObject):
             tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
+            interpolate=video.interpolates(),
+            restore_args=_restore_args_for(video, info, rife_bin=self._rife_bin or ""),
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 
@@ -1100,6 +1146,7 @@ class EncodeWorkflow(QObject):
                 check_cancelled=self._check_cancelled,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 primary_video_settings=self._primary_video_settings,
                 video_source_path=self._video_source_path,
                 video_stream_index=self._video_stream_index,
@@ -1800,6 +1847,7 @@ class EncodeWorkflow(QObject):
             amf_device=self._amf_device(),
             nvenc_device=self._nvenc_device(),
             depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
+            x265_frame_threads=self.__dict__.get("_x265_frame_threads", 0),
         )
 
     def set_vulkan_capability(self, ffmpeg_bin: str, capability: _VulkanCapability) -> None:
@@ -2230,6 +2278,12 @@ class EncodeWorkflow(QObject):
                 header.append(
                     f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
                     "Dolby Vision (P5), absent de cet aperçu."
+                )
+            if video.restores() and _restore_measures_light_levels(video):
+                header.append(
+                    f"Piste vidéo #{index} : MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image débruitée "
+                    "(statistiques du moteur) puis écrits après ; ceux de la source restent si l'écart se limite "
+                    "à des pixels isolés ; absent de cet aperçu."
                 )
         # Commentaires du shell cible (REM sous cmd.exe) : l'aperçu se colle tel quel.
         return "\n".join((*(_preview_comment(line) for line in header), command_text))
@@ -2832,6 +2886,7 @@ class EncodeWorkflow(QObject):
         errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
         errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
+        errors.extend(self._restoration_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
         mux_decision = self.select_mux_backend(config)
@@ -3155,6 +3210,9 @@ class EncodeWorkflow(QObject):
             )
             changed = changed or prepared_fel is not video
             video = prepared_fel
+            prepared_restore = self._prepare_restore_statistics(video, work_dir=work_dir, index=index)
+            changed = changed or prepared_restore is not video
+            video = prepared_restore
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
                 resolved.append(video)
                 continue
@@ -3290,8 +3348,30 @@ class EncodeWorkflow(QObject):
                     f"{video.source_bit_depth} bits réduite à 8 bits avant le débruitage "
                     "(risque de banding, surtout en HDR)."
                 )
+            if video.restores() and _resolve_output_bit_depth(video) == 8:
+                # Grain retiré : les dégradés ne sont plus tramés par la source (D-h).
+                messages.append(
+                    f"Piste vidéo #{index} — MVO-R2 avec une sortie 8 bits : tramage à la précision "
+                    "8 bits appliqué par le moteur ; une sortie 10 bits limite le banding des dégradés."
+                )
         messages.extend(self.size_target_warnings(config))
         return messages
+
+    def _is_animation(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
+        """Genre « Animation » : balise GENRE écrite en sortie (TMDB), sinon celle de la source de la piste."""
+        from core.media_info_fetcher import is_animation_genre
+
+        tags = config.tag_overrides if isinstance(config.tag_overrides, dict) else None
+        if tags is not None:
+            genre = next((str(v) for k, v in tags.items() if str(k).upper() == "GENRE"), None)
+            if genre is not None:
+                return is_animation_genre(genre)
+        payload = self._ffprobe_streams_payload(self._video_source_from_settings(config, video)) or {}
+        fmt = payload.get("format")
+        source_tags = fmt.get("tags") if isinstance(fmt, dict) else None
+        if isinstance(source_tags, dict):
+            return any(str(k).upper() == "GENRE" and is_animation_genre(str(v)) for k, v in source_tags.items())
+        return False
 
     def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
         """Renseigne transfert, profondeur et capacité matérielle depuis les sondes en cache."""
@@ -3342,6 +3422,10 @@ class EncodeWorkflow(QObject):
                 updates.update({
                     key: value for key, value in vulkan_updates.items() if getattr(video, key) != value
                 })
+                if video.restores() and video.restoration.animation == "auto":
+                    # Restauration Auto : contenu animé d'après le genre (fiche TMDB de la sortie, sinon la source).
+                    animated = self._is_animation(config, video)
+                    updates["restoration"] = dataclasses.replace(video.restoration, animation="on" if animated else "off")
                 if updates:
                     video = dataclasses.replace(video, **updates)
                     changed = True
@@ -3352,7 +3436,7 @@ class EncodeWorkflow(QObject):
         if any(
             v.codec in (NVENC_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
             and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
-            and not has_cpu_video_filter(v) and not v.interpolates()
+            and not has_cpu_video_filter(v) and not v.uses_engine()
             for v in resolved
         ):
             self._depth_conversion_filters()
@@ -3446,7 +3530,7 @@ class EncodeWorkflow(QObject):
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
                     "Interpolation d'images : moteur muxiveo-rife introuvable "
-                    "(installer l'extension Interpolation depuis la page Extensions)."
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
                 )
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
@@ -3460,6 +3544,74 @@ class EncodeWorkflow(QObject):
                 errors.append(
                     f"Interpolation d'images : {source.name} est entrelacée ; "
                     "activez le désentrelacement (appliqué avant l'interpolation)."
+                )
+        return errors
+
+    def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
+        """Restauration d'une source PQ : statistiques de la source et de l'image débruitée mesurées par le moteur
+        pendant l'encodage (D-e), pour MaxCLL/MaxFALL (écrits après l'encodage, SEI CLL et élément Colour ; ceux de
+        la source restent si l'écart est invisible, ``written_light_levels`` ; rien de provisoire n'est transmis à
+        l'encodeur) et pour le contrôle des métadonnées Dolby Vision / HDR10+ copiées (``dynamic_metadata_adequacy``)."""
+        measure = _restore_measures_light_levels(video)
+        check = _restore_checks_dynamic_metadata(video)
+        if not (measure or check):
+            return video
+        prefix = f"Piste vidéo #{index} — "
+        resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
+        if not resolved or not all(_rife_supports(resolved, option) for option in ("frame-statistics", "source-statistics")):
+            self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : "
+                                  + ("MaxCLL/MaxFALL de la source conservés, " if measure else "")
+                                  + ("métadonnées dynamiques copiées sans contrôle, " if check else "")
+                                  + "mettre à jour le moteur vidéo MVO.")
+            return video
+        video = dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
+                                    restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl")
+        if not measure:
+            return video
+        self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image débruitée (statistiques du moteur).")
+        return dataclasses.replace(video, restore_source_light_levels=video.max_cll, max_cll="",
+                                   static_hdr_light_level_source="restore_frame_statistics")
+
+    def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
+        """Contrôles propres à la Restauration (outil, graphes livrés, cadence, entrelacement).
+
+        Avec l'interpolation, outil, cadence et entrelacement sont déjà contrôlés par
+        ``_interpolation_validation_errors`` (même pipe y4m) : seules les capacités de Restauration s'ajoutent.
+        """
+        errors: list[str] = []
+        for video in self._video_tracks(config):
+            if not video.restoration.is_active():
+                continue
+            if video.codec == "copy":
+                errors.append("MVO-R2 : impossible avec le codec vidéo COPY (réencodage requis).")
+                continue
+            rife_bin = self._rife_bin
+            available = bool(rife_bin) and (Path(str(rife_bin)).is_file() or bool(shutil.which(str(rife_bin))))
+            if available:
+                resolved = str(shutil.which(str(rife_bin)) or rife_bin)
+                errors.extend(_restore_support_errors(_rife_capabilities(resolved), video.restoration))
+            if video.interpolates():
+                continue
+            if not available:
+                errors.append(
+                    "MVO-R2 : moteur muxiveo-rife introuvable "
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
+                )
+            source = self._video_source_from_settings(config, video)
+            # Le y4m ne porte pas d'horodatage : source VFR normalisée CFR, ce qui fausserait les métadonnées
+            # dynamiques indexées par trame.
+            if (video.copy_dv or video.copy_hdr10plus) and self._interpolation_source(video, source).is_vfr:
+                errors.append(
+                    f"MVO-R2 : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
+                    "impose de conserver chaque trame, ce qui fausserait la durée : désactiver la copie DoVi / "
+                    "HDR10+ (la cadence sera alors normalisée) ou le débruitage MVO-R2."
+                )
+            if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
+                video.filters.yadif_enabled
+            ):
+                errors.append(
+                    f"MVO-R2 : {source.name} est entrelacée ; "
+                    "activez le désentrelacement (appliqué avant MVO-R2)."
                 )
         return errors
 
@@ -3488,7 +3640,7 @@ class EncodeWorkflow(QObject):
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
-        if not (video.interpolates() or _needs_static_hdr_sei_reinjection_domain(video)):
+        if not (video.uses_engine() or _needs_static_hdr_sei_reinjection_domain(video)):
             return False
         return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
 
@@ -3646,13 +3798,24 @@ class EncodeWorkflow(QObject):
             ],
         )
 
-    def run(self, config: EncodeConfig, *, validate: bool = True) -> TaskSignals:
+    def run(
+        self,
+        config: EncodeConfig,
+        *,
+        validate: bool = True,
+        retain_failed_work_dir: bool = False,
+    ) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
 
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
+
+        ``retain_failed_work_dir`` (GUI) : en cas d'échec, un dossier de travail
+        contenant déjà des fichiers produits (hors pièces jointes) n'est pas
+        supprimé ; ``failed_work_dir_retained`` le remet à l'interface.
         """
+        retain_kwargs: dict[str, Any] = {"retain_failed_work_dir": True} if retain_failed_work_dir else {}
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
@@ -3664,9 +3827,9 @@ class EncodeWorkflow(QObject):
             raise EncodeError(str(exc)) from exc
         try:
             if not validate:
-                signals = self._run_async_preparation(config)
+                signals = self._run_async_preparation(config, **retain_kwargs)
             else:
-                signals = self._run_with_preparation(config, validate=True)
+                signals = self._run_with_preparation(config, validate=True, **retain_kwargs)
         except BaseException:
             reservation.release()
             raise
@@ -3678,8 +3841,10 @@ class EncodeWorkflow(QObject):
         )
         return signals
 
-    def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
-        return self._preparation_runner().run_async_preparation(config)
+    def _run_async_preparation(self, config: EncodeConfig, *, retain_failed_work_dir: bool = False) -> TaskSignals:
+        return self._preparation_runner().run_async_preparation(
+            config, retain_failed_work_dir=retain_failed_work_dir,
+        )
 
     @staticmethod
     def _check_cancelled(signals: TaskSignals | None) -> None:
@@ -3692,6 +3857,7 @@ class EncodeWorkflow(QObject):
         *,
         validate: bool,
         prep_signals: TaskSignals | None = None,
+        retain_failed_work_dir: bool = False,
     ) -> TaskSignals:
         # Ce prérequis reste obligatoire pour run(validate=False), avant
         # préparation et encodage des artefacts vidéo.
@@ -3702,6 +3868,7 @@ class EncodeWorkflow(QObject):
             config,
             validate=validate,
             prep_signals=prep_signals,
+            retain_failed_work_dir=retain_failed_work_dir,
         )
 
     def _sync_rewrite_errors(self, config: EncodeConfig) -> list[str]:
@@ -3744,6 +3911,8 @@ class EncodeWorkflow(QObject):
                 resolve_source_color_transfer=self.resolve_source_color_transfer,
                 resolve_dovi_sources=self.resolve_dovi_sources,
                 prepare_dovi_sources=self.prepare_dovi_sources,
+                request_failed_work_dir_retention=self._failed_work_dir_retention.request,
+                retain_failed_work_dir=self._retain_failed_work_dir,
             )
         )
 
@@ -4039,6 +4208,7 @@ class EncodeWorkflow(QObject):
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 ui_encode_progress_message=_ui_encode_progress_message,
                 cleanup_two_pass_logs_for_prefix=self._cleanup_two_pass_logs_for_prefix,
                 build_video_only_mkv_commands=self._build_video_only_mkv_commands,
@@ -4061,6 +4231,29 @@ class EncodeWorkflow(QObject):
         session: LiveSyncSession | None,
     ) -> None:
         self._signal_binding_service.bind_live_sync_cleanup(signals, session)
+
+    def _retain_failed_work_dir(self, cleanup_paths: list[Path]) -> bool:
+        """Échec : dossier de travail demandé gardé s'il contient déjà des fichiers produits.
+
+        Les pièces jointes préparées ne comptent pas. Les chemins temporaires hors
+        de ce dossier sont supprimés comme d'habitude. False : nettoyage normal.
+        """
+        for path in cleanup_paths:
+            owned = self._failed_work_dir_retention.claim(path)
+            if owned is None:
+                continue
+            payload = process_dir_payload_bytes(owned.path, excluded=_is_prepared_attachment_entry)
+            if payload <= 0:
+                return False
+            for other in cleanup_paths:
+                if other != owned.path and not other.is_relative_to(owned.path):
+                    try:
+                        remove_path(other)
+                    except OSError:
+                        pass
+            self.failed_work_dir_retained.emit(RetainedProcessWorkDir(owned, payload))
+            return True
+        return False
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""

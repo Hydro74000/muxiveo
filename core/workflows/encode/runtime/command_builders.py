@@ -57,12 +57,11 @@ def _video_output_args(
     matériel (``-hwaccel``) ne concerne que l'entrée 0.
     """
     args: list[str] = []
-    vf = _build_encoder_vf_domain(
-        video, callbacks=callbacks.codec_domain_callbacks(), hw_decoded=video_input == 0,
-    )
+    domain_callbacks = callbacks.codec_domain_callbacks()
+    vf = _build_encoder_vf_domain(video, callbacks=domain_callbacks, hw_decoded=video_input == 0)
     if vf:
         args.extend(["-vf", vf])
-    args.extend(_encoder_thread_args(video, callbacks.ffmpeg_thread_args(None)))
+    args.extend(_encoder_thread_args(video, callbacks.ffmpeg_thread_args(None), callbacks=domain_callbacks))
     return args
 
 

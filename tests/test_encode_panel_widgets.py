@@ -1556,7 +1556,7 @@ class TestEncodePanelDynamicHdrDefaults:
         panel._crop_left_spin.setValue(8)
         panel._yadif_cb.setChecked(True)
         panel._deblock_cb.setChecked(True)
-        panel._nlmeans_cb.setChecked(True)
+        panel._denoise_cb.setChecked(True)  # MVO-R2 absent des tests : NLMeans
         panel._chroma_cb.setChecked(True)
 
         row_item = panel._video_list.item(0)
@@ -1571,11 +1571,11 @@ class TestEncodePanelDynamicHdrDefaults:
 
         assert panel._yadif_cb.text() in {"Désentrelacement", "Deinterlacing"}
         assert panel._deblock_cb.text() == "Deblock"
-        assert panel._nlmeans_cb.text() in {"Débruitage", "Denoise"}
+        assert panel._denoise_cb.text() in {"Débruitage", "Denoise"}
         assert panel._chroma_cb.text() == "Color Smooth"
         assert panel._yadif_filter_combo.itemText(0) == "Yadif"
         assert panel._deblock_filter_combo.itemText(0) == "deblock"
-        assert panel._nlmeans_filter_combo.itemText(0) == "NLMeans"
+        assert [panel._denoise_filter_combo.itemText(i) for i in range(2)] == ["MVO-R2", "NLMeans"]
         assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
@@ -2015,15 +2015,17 @@ class TestEncodePanelRunOperation:
         captured: dict[str, object] = {}
         expected_signals = object()
 
-        def fake_run(cfg, *, validate=True):
+        def fake_run(cfg, *, validate=True, retain_failed_work_dir=False):
             captured["config"] = cfg
             captured["validate"] = validate
+            captured["retain_failed_work_dir"] = retain_failed_work_dir
             return expected_signals
 
         monkeypatch.setattr(panel._workflow, "run", fake_run)
 
         assert panel.run_operation(cast(Any, config)) is expected_signals
-        assert captured == {"config": config, "validate": False}
+        # Échec : dossier de travail gardé pour la popup de l'interface.
+        assert captured == {"config": config, "validate": False, "retain_failed_work_dir": True}
         panel.close()
 
 

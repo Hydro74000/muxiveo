@@ -99,9 +99,9 @@ def prepare_fel(
             log("WARN", prefix + "GPU FEL mémorisé indisponible : choix automatique pour cette exécution.")
             choice = "auto"
         plan = FelDevicePlan(choice, devices, video, log, precision_supported=precision_supported(engine))
-        # Interpolation RIFE : elle limite le débit et partage le GPU ; une seule image FEL en vol
-        # suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
-        workers = 1 if video.interpolation.enabled else None
+        # Moteur muxiveo-rife (interpolation RIFE, Restauration) : il limite le débit et partage le GPU ;
+        # une seule image FEL en vol suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
+        workers = 1 if video.interpolation.enabled or video.restoration.enabled else None
         statistics: Path | None = None
         if recomputes_hdr10plus(video) or measures_light_levels(video):
             if frame_statistics_supported(engine):

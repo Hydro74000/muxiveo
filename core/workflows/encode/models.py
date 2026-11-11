@@ -227,6 +227,9 @@ class VideoCropSettings:
         return _dataclass_from_value(cls, value)
 
 
+DENOISE_FILTERS = ("mvo-r2", "nlmeans")
+
+
 @dataclass
 class VideoFilterSettings:
     """Filtres vidéo typés appliqués avant encodage."""
@@ -240,8 +243,15 @@ class VideoFilterSettings:
     nlmeans_enabled: bool = False
     nlmeans_strength: str = "light"
     nlmeans_profile: str = "standard"
+    # Filtre de la ligne Débruitage du panneau (mvo-r2 | nlmeans), mémorisé case décochée ; actifs effectifs :
+    # ``nlmeans_enabled`` et ``VideoEncodeSettings.restoration``.
+    denoise_filter: str = "mvo-r2"
     chroma_smooth_enabled: bool = False
     chroma_smooth_strength: str = "medium"
+
+    def __post_init__(self) -> None:
+        if self.denoise_filter not in DENOISE_FILTERS:
+            self.denoise_filter = "mvo-r2"
 
     def field_rate_multiplier(self) -> int:
         """Images produites par trame source au désentrelacement (2 : YADIF une image par champ)."""
@@ -307,6 +317,41 @@ class FrameInterpolationSettings:
         return _dataclass_from_value(cls, value)
 
 
+RESTORE_LEVELS = ("auto", "leger", "moyen", "fort")
+RESTORE_ANIMATION = ("auto", "on", "off")
+RESTORE_MODES = ("auto", "normal", "fast")
+
+
+@dataclass
+class RestoreSettings:
+    """Restauration (grain et bruit, réseau R2 de muxiveo-rife ``--restore``), appliquée avant l'interpolation."""
+    enabled: bool = False
+    level: str = "auto"         # auto | leger | moyen | fort (part du résidu réinjectée, adaptée par plan)
+    # auto (rapide au-delà de 2560 px de large : même détail mesuré en UHD, 34–38 % de temps en moins) | normal | fast
+    # (flux optique au quart de la définition, poids du mode rapide)
+    mode: str = "auto"
+    animation: str = "auto"     # auto (genre TMDB « Animation ») | on | off : niveau auto un cran vers fort
+    sharpen: bool = True        # compensation de netteté (contre-accentuage temporel du moteur, si disponible)
+
+    def __post_init__(self) -> None:
+        if self.level not in RESTORE_LEVELS:
+            self.level = "auto"
+        if self.mode not in RESTORE_MODES:
+            self.mode = "auto"
+        if self.animation not in RESTORE_ANIMATION:
+            self.animation = "auto"
+
+    def is_active(self) -> bool:
+        return bool(self.enabled)
+
+    @classmethod
+    def from_value(cls, value: object) -> "RestoreSettings":
+        # réglages antérieurs à 5.2.0 : « fast » booléen ; vrai → rapide, faux (ancien défaut) → auto
+        if isinstance(value, dict) and "mode" not in value and "fast" in value:
+            value = {**value, "mode": "fast" if value.get("fast") is True else "auto"}
+        return _dataclass_from_value(cls, value)
+
+
 def fel_hdr10plus_choice(value: object) -> str:
     """HDR10+ d'une sortie FEL : « recompute » (défaut) ou « source » ; valeur inconnue → défaut."""
     return value if isinstance(value, str) and value in {"recompute", "source"} else "recompute"
@@ -353,6 +398,7 @@ class VideoEncodeSettings:
     crop:             VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:          VideoFilterSettings = field(default_factory=VideoFilterSettings)
     interpolation:    FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
+    restoration:      RestoreSettings = field(default_factory=RestoreSettings)
     # HDR statique
     inject_hdr_meta:  bool         = False
     master_display:   str          = ""   # ex. "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)"
@@ -373,6 +419,12 @@ class VideoEncodeSettings:
     # reconstruite (plugin ≥ 0.3.0, MaxCLL/MaxFALL exacts) ; « source » : celui de la source (BL).
     fel_hdr10plus: str = "recompute"
     fel_context: FelExecution | None = field(default=None, repr=False, compare=False)
+    # Restauration en HDR10 : statistiques de l'image restaurée écrites par le moteur (MaxCLL/MaxFALL exacts).
+    restore_statistics: Path | None = field(default=None, repr=False, compare=False)
+    # Trames lues mesurées avant la Restauration, et MaxCLL,MaxFALL de la source : conservés si la Restauration ne
+    # les change que par des pixels isolés.
+    restore_source_statistics: Path | None = field(default=None, repr=False, compare=False)
+    restore_source_light_levels: str = field(default="", repr=False, compare=False)
     copy_hdr10plus:   bool         = False
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
@@ -414,6 +466,7 @@ class VideoEncodeSettings:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        self.restoration = RestoreSettings.from_value(self.restoration)
         from core.fel.devices import device_choice, precision_choice
         self.fel_device = device_choice(self.fel_device)
         self.fel_precision = precision_choice(self.fel_precision)
@@ -434,13 +487,23 @@ class VideoEncodeSettings:
             or self.crop.is_active()
             or self.filters.is_active()
             or self.interpolation.is_active()
+            or self.restoration.is_active()
             or self.tonemap_to_sdr
             or self.p5_to_hdr10
         )
 
     def interpolates(self) -> bool:
-        """Interpolation RIFE active sur une piste réencodée."""
+        """Interpolation RIFE active sur une piste réencodée (changement de cadence)."""
         return self.codec != "copy" and self.interpolation.is_active()
+
+    def restores(self) -> bool:
+        """Restauration active sur une piste réencodée."""
+        return self.codec != "copy" and self.restoration.is_active()
+
+    def uses_engine(self) -> bool:
+        """Moteur muxiveo-rife dans le pipeline (interpolation et / ou Restauration) : images transmises en y4m,
+        sans marquage couleur ni métadonnées (rétablis par l'encodeur)."""
+        return self.interpolates() or self.restores()
 
     def frame_ratio(self, source_rate: str | None = None) -> Fraction:
         """Trames encodées par trame source (1 sans interpolation ; x2,5 pour 23,976 -> 59,94)."""
@@ -640,6 +703,7 @@ class EncodePreset:
     crop:                       VideoCropSettings = field(default_factory=VideoCropSettings)
     filters:                    VideoFilterSettings = field(default_factory=VideoFilterSettings)
     interpolation:              FrameInterpolationSettings = field(default_factory=FrameInterpolationSettings)
+    restoration:                RestoreSettings = field(default_factory=RestoreSettings)
     inject_hdr_meta:            bool = False
     fel_device: str = "auto"
     fel_precision: str = "exact"  # Profils antérieurs : Lent (recommandé).
@@ -658,6 +722,7 @@ class EncodePreset:
         self.crop = VideoCropSettings.from_value(self.crop)
         self.filters = VideoFilterSettings.from_value(self.filters)
         self.interpolation = FrameInterpolationSettings.from_value(self.interpolation)
+        self.restoration = RestoreSettings.from_value(self.restoration)
         from core.fel.devices import device_choice, precision_choice
         self.fel_device = device_choice(self.fel_device)
         self.fel_precision = precision_choice(self.fel_precision)
@@ -682,6 +747,7 @@ class EncodePreset:
             crop=self.crop,
             filters=self.filters,
             interpolation=self.interpolation,
+            restoration=self.restoration,
             inject_hdr_meta=self.inject_hdr_meta,
             bake_dovi_fel=self.bake_dovi_fel,
             fel_device=self.fel_device,

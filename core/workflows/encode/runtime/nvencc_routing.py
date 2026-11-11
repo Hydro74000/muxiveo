@@ -338,7 +338,7 @@ class NvenccInputRouter:
             and not nvencc_raw_input_needs_fps_hint(input_path)
             and not is_bluray_playlist(input_path)
             and not video.tonemap_to_sdr
-            and not video.interpolates()
+            and not video.uses_engine()
             and not nvencc_requires_ffmpeg_prefilter(video)
         )
         if p5_native and input_reader is None:

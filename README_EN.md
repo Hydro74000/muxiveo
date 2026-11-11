@@ -38,6 +38,7 @@ Comprehensive software suite for preparing, zero-loss remuxing, and encoding vid
 | **Merge a 4K video master with foreign audio/subs** | **Hybrid Studio** | Acoustic FFT alignment (*Zero Delay*) | [Hybridization & Sync Guide](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) |
 | **Inspect, measure, or fix HDR (MaxCLL, DoVi)** | **HDR Studio** | Analysis & metadata edition without re-encoding | [HDR Studio Guide](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) |
 | **Transfer Dolby Vision / HDR10+ between files** | **Merge DoVi / HDR10+** | Lossless metadata injection | [DoVi Merge Guide](https://github.com/Hydro74000/Muxiveo/wiki/Interface-et-usage#fusion-dovi--hdr10) |
+| **Remove grain and noise while keeping detail** | **MVO-R2** (MVO video engine, plugin) | GPU Neural Denoising | [Video Encoding & HDR Guide](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR) |
 | **Boost motion fluidity (24 → 60 fps)** | **MVO-RIFE** (Plugin) | GPU Neural Interpolation | [MVO-RIFE Guide](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) |
 | **Automate decisions across series or batch folders** | **Profiles** / **CLI** | Decision profiles & scripts | [Profiles Guide](https://github.com/Hydro74000/Muxiveo/wiki/Profils) & [CLI Guide](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless) |
 
@@ -143,12 +144,20 @@ When recompression, codec conversion, or size reduction is needed, the Encoding 
 
 ---
 
+### 🧽 AI Denoising (MVO-R2)
+*Learned denoiser of the MVO video engine, default "Denoise" filter of the Encoding panel.*
+
+* **Temporal window**: each frame is denoised from 5 frames aligned by the network's own optical flow; grain and noise go, detail confirmed by neighbouring frames stays.
+* **Per-shot Auto**: strength follows the measured grain of each shot (a clean source is barely touched); Light, Medium and Strong levels, Animation setting, fast mode (automatic in UHD).
+* **Sharpness compensation**: restores part of the fine detail removed, only where it is stable from frame to frame.
+* **HDR, Dolby Vision, FEL**: 10-bit processing, MaxCLL / MaxFALL kept or measured on the denoised picture, dynamic metadata copied and checked; denoising then interpolation in a single pass.
+
 ### 🏎️ AI Frame Interpolation (MVO-RIFE)
 *Boost video frame rates using deep learning neural networks with GPU acceleration.*
 
 * **Target Frame Rates**: Fixed multipliers (×2, ×3, ×4) or cinema-to-high-rate conversion (23.976/24 → 59.94/60 fps via ×2.5 factor).
 * **Hybrid Motion Engine**: Combines the RIFE v4 model, block motion compensation, and NVIDIA Optical Flow (NVOF). A trained selector chooses the best candidate per zone to prevent edge warping on repetitive patterns and fast pans.
-* **TensorRT Acceleration**: Optional plugin harnessing NVIDIA RTX Tensor Cores for high-speed inference.
+* **TensorRT Acceleration**: Optional plugin harnessing NVIDIA RTX Tensor Cores to accelerate inference (interpolation and denoising).
 
 > 📖 See the [MVO-RIFE Interpolation Guide](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) and [TensorRT Acceleration](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-TensorRT).
 

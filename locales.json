@@ -2243,9 +2243,17 @@
     "fra": "Nombre de threads FFmpeg",
     "eng": "FFmpeg thread count"
   },
-  "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.": {
-    "fra": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
-    "eng": "Number of threads passed to FFmpeg via -threads. 0 lets FFmpeg choose automatically. The default value is calculated from the number of cores x 1.5."
+  "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.": {
+    "fra": "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.",
+    "eng": "Worker threads passed to FFmpeg (-threads): decoding, filters, and encoders that use it as a core count (x264, SVT-AV1…). No effect on x265, which has its own setting below. 0 lets FFmpeg choose; default: logical cores × 0.75."
+  },
+  "Images en parallèle x265 (frame-threads)": {
+    "fra": "Images en parallèle x265 (frame-threads)",
+    "eng": "x265 parallel frames (frame-threads)"
+  },
+  "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.": {
+    "fra": "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.",
+    "eng": "Number of frames x265 encodes at the same time (16 max), not a core count: x265 always uses all logical cores, each frame being split into rows processed in parallel (WPP). More parallel frames is not necessarily faster, increases RAM (≈ +1.4 GB in 4K at 16) and slightly reduces compression efficiency. 0 = x265's automatic choice (recommended: 6 in 4K on 32 threads). To limit x265's cores: pools=N in the track's x265 parameters."
   },
   "Encodages vidéo parallèles max": {
     "fra": "Encodages vidéo parallèles max",
@@ -3259,9 +3267,37 @@
     "fra": "Matrice de conversion YCbCr↔RGB :\n• bt709 : HD SDR.\n• bt2020nc : non-constant luminance (UHD/HDR standard).\n• bt2020c : constant luminance (rare).",
     "eng": "YCbCr↔RGB conversion matrix:\n• bt709: HD SDR.\n• bt2020nc: non-constant luminance (UHD/HDR standard).\n• bt2020c: constant luminance (rare)."
   },
-  "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.": {
-    "fra": "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance.\n• 3 : auto-variance + bias zones sombres (recommandé).\n• 4 : ajoute la sélection adaptative de profondeur de bits.",
-    "eng": "Adaptive Quantization algorithm (differential bit allocation).\n• 0: disabled.\n• 1: variance-based.\n• 2: auto-variance.\n• 3: auto-variance + dark-scene bias (recommended).\n• 4: adds adaptive bit-depth selection."
+  "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance (défaut x265).\n• 3 : auto-variance + biais vers les zones sombres (recommandé).\n• 4 : auto-variance + détection des contours.": {
+    "fra": "Algorithme d'Adaptive Quantization (allocation différentielle de bits).\n• 0 : désactivé.\n• 1 : basé sur la variance.\n• 2 : auto-variance (défaut x265).\n• 3 : auto-variance + biais vers les zones sombres (recommandé).\n• 4 : auto-variance + détection des contours.",
+    "eng": "Adaptive Quantization algorithm (differential bit allocation).\n• 0: disabled.\n• 1: variance-based.\n• 2: auto-variance (x265 default).\n• 3: auto-variance + bias towards dark areas (recommended).\n• 4: auto-variance + edge detection."
+  },
+  "Quantization Group : plus petit bloc (en pixels) dont l'AQ peut changer le quantificateur.\n32 = défaut x265. 16 ou 8 = adaptation plus fine (dégradés, grain), débit légèrement ↑. Ne peut dépasser la taille de CTU.": {
+    "fra": "Quantization Group : plus petit bloc (en pixels) dont l'AQ peut changer le quantificateur.\n32 = défaut x265. 16 ou 8 = adaptation plus fine (dégradés, grain), débit légèrement ↑. Ne peut dépasser la taille de CTU.",
+    "eng": "Quantization Group: smallest block (in pixels) whose quantizer AQ can change.\n32 = x265 default. 16 or 8 = finer adaptation (gradients, grain), slightly higher bitrate. Cannot exceed the CTU size."
+  },
+  "Images analysées à l'avance pour le contrôle de débit, le cu-tree et le placement des B-frames.\n20 = défaut x265, 250 au plus, jamais moins que B-frames. Plus = décisions mieux informées, RAM ↑.": {
+    "fra": "Images analysées à l'avance pour le contrôle de débit, le cu-tree et le placement des B-frames.\n20 = défaut x265, 250 au plus, jamais moins que B-frames. Plus = décisions mieux informées, RAM ↑.",
+    "eng": "Frames analysed ahead for rate control, cu-tree and B-frame placement.\n20 = x265 default, 250 max, never fewer than B-frames. Higher = better-informed decisions, more RAM."
+  },
+  "Compression de la courbe de quantification (0.5-1.0), 0.6 = défaut x265.\nPlus haut = quantificateur plus constant : les scènes complexes ou rapides reçoivent plus de débit (grain mieux tenu en mouvement), fichier plus gros en CRF. 1.0 ≈ QP constant.": {
+    "fra": "Compression de la courbe de quantification (0.5-1.0), 0.6 = défaut x265.\nPlus haut = quantificateur plus constant : les scènes complexes ou rapides reçoivent plus de débit (grain mieux tenu en mouvement), fichier plus gros en CRF. 1.0 ≈ QP constant.",
+    "eng": "Quantizer curve compression (0.5-1.0), 0.6 = x265 default.\nHigher = more constant quantizer: complex or fast scenes get more bitrate (grain better kept in motion), larger file in CRF. 1.0 ≈ constant QP."
+  },
+  "Décalage du QP de la chrominance bleue (Cb) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des ciels et aplats colorés.": {
+    "fra": "Décalage du QP de la chrominance bleue (Cb) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des ciels et aplats colorés.",
+    "eng": "Offset of the blue chroma (Cb) QP from the luma QP (-12 to 12, default 0).\nNegative = more precision and bitrate for colour: limits banding in skies and flat coloured areas."
+  },
+  "Décalage du QP de la chrominance rouge (Cr) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des couchers de soleil, néons et peaux.": {
+    "fra": "Décalage du QP de la chrominance rouge (Cr) par rapport à la luminance (-12 à 12, défaut 0).\nNégatif = plus de précision et de débit sur la couleur : limite la postérisation des couchers de soleil, néons et peaux.",
+    "eng": "Offset of the red chroma (Cr) QP from the luma QP (-12 to 12, default 0).\nNegative = more precision and bitrate for colour: limits banding in sunsets, neon lights and skin tones."
+  },
+  "Évalue aussi les modes intra dans les B-frames (activé par les presets slower et au-delà).\nMieux armé pour les apparitions soudaines (flashs, objets entrants), encodage un peu plus lent.": {
+    "fra": "Évalue aussi les modes intra dans les B-frames (activé par les presets slower et au-delà).\nMieux armé pour les apparitions soudaines (flashs, objets entrants), encodage un peu plus lent.",
+    "eng": "Also evaluates intra modes in B-frames (enabled by the slower presets and above).\nBetter at sudden appearances (flashes, objects entering), slightly slower encoding."
+  },
+  "Décalages du filtre de déblocage « tC,beta » (-6 à 6 chacun), défaut 0,0.\nNégatif = filtre plus doux, conserve la texture fine à haut débit ; positif = lisse davantage les blocs à bas débit.": {
+    "fra": "Décalages du filtre de déblocage « tC,beta » (-6 à 6 chacun), défaut 0,0.\nNégatif = filtre plus doux, conserve la texture fine à haut débit ; positif = lisse davantage les blocs à bas débit.",
+    "eng": "Deblocking filter offsets \"tC,beta\" (-6 to 6 each), default 0,0.\nNegative = gentler filter, keeps fine texture at high bitrate; positive = smooths blocks more at low bitrate."
   },
   "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).": {
     "fra": "Intensité de l'AQ (0.0-3.0).\n1.0 = défaut équilibré. 1.5-2.0 = plus agressif (peut introduire du flou).",
@@ -3343,13 +3379,13 @@
     "fra": "Sample Adaptive Offset : filtre in-loop qui réduit les artefacts de compression (ringing).\nRecommandé toujours actif (gain qualité visuel, coût mineur).",
     "eng": "Sample Adaptive Offset: in-loop filter that reduces compression artifacts (ringing).\nRecommended to keep enabled (visual quality gain, minor cost)."
   },
-  "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.": {
-    "fra": "Configuration des pools de threads NUMA.\n• '*' : auto (utilise tous les cores).\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.",
-    "eng": "NUMA thread pool configuration.\n• '*': auto (uses all cores).\n• '4,4': 2 pools of 4 threads (explicit NUMA).\n• '+': limit to a single pool."
+  "Threads de calcul de x265 (pools) : c'est ce réglage qui fixe le nombre de cœurs utilisés.\n• '*' : auto (tous les cœurs logiques).\n• 'N' : N threads au plus (ex. 16), sur une machine à un seul nœud NUMA.\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.": {
+    "fra": "Threads de calcul de x265 (pools) : c'est ce réglage qui fixe le nombre de cœurs utilisés.\n• '*' : auto (tous les cœurs logiques).\n• 'N' : N threads au plus (ex. 16), sur une machine à un seul nœud NUMA.\n• '4,4' : 2 pools de 4 threads (NUMA explicite).\n• '+' : limite à 1 pool unique.",
+    "eng": "x265 worker threads (pools): this setting sets how many cores are used.\n• '*': auto (all logical cores).\n• 'N': at most N threads (e.g. 16), on a single-NUMA-node machine.\n• '4,4': 2 pools of 4 threads (explicit NUMA).\n• '+': limit to a single pool."
   },
-  "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.": {
-    "fra": "Nombre de frames encodées en parallèle.\n0 = auto (selon RAM/CPU). Plus = throughput ↑ mais latence et RAM ↑.\nRéduire pour économiser la RAM sur 4K.",
-    "eng": "Number of frames encoded in parallel.\n0 = auto, based on RAM/CPU. Higher values increase throughput, latency, and RAM usage.\nLower it to save RAM on 4K content."
+  "Nombre d'images encodées en même temps (16 au plus), pas un nombre de cœurs :\nles cœurs utilisés dépendent de pools (tous par défaut).\n0 = auto (choix de x265, recommandé). Plus = RAM ↑ et compression légèrement ↓, rarement plus rapide.\nRemplace pour cette piste le réglage « Images en parallèle x265 » des Paramètres.": {
+    "fra": "Nombre d'images encodées en même temps (16 au plus), pas un nombre de cœurs :\nles cœurs utilisés dépendent de pools (tous par défaut).\n0 = auto (choix de x265, recommandé). Plus = RAM ↑ et compression légèrement ↓, rarement plus rapide.\nRemplace pour cette piste le réglage « Images en parallèle x265 » des Paramètres.",
+    "eng": "Number of frames encoded at the same time (16 max), not a core count:\nthe cores used depend on pools (all by default).\n0 = auto (x265's choice, recommended). Higher = more RAM and slightly lower compression, rarely faster.\nOverrides the \"x265 parallel frames\" setting from Settings for this track."
   },
   "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.": {
     "fra": "Wavefront Parallel Processing : parallélise l'encodage par lignes de CTU.\nRecommandé toujours actif. Permet une accélération multi-cœurs efficace.",
@@ -4042,10 +4078,6 @@
   "Taille de bloc analysée par le filtre deblock.": {
     "fra": "Taille de bloc analysée par le filtre deblock.",
     "eng": "Block size analyzed by the deblock filter."
-  },
-  "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.": {
-    "fra": "Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.",
-    "eng": "Spatial/temporal denoise. Slower, but useful on noisy sources."
   },
   "Débruitage": {
     "fra": "Débruitage",
@@ -6247,26 +6279,6 @@
     "fra": "Téléchargement : {approx}{size} Mo, installé dans {path}. Mises à jour automatiques ; suppression à tout moment dans la page Extensions.",
     "eng": "Download: {approx}{size} MB, installed in {path}. Automatic updates; remove it at any time in the Extensions page."
   },
-  "Extension Interpolation d'images non installée : page Extensions.": {
-    "fra": "Extension Interpolation d'images non installée : page Extensions.",
-    "eng": "Frame interpolation extension not installed: see the Extensions page."
-  },
-  "Interpolation d'images (MVO-RIFE)": {
-    "fra": "Interpolation d'images (MVO-RIFE)",
-    "eng": "Frame interpolation (MVO-RIFE)"
-  },
-  "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.": {
-    "fra": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire.",
-    "eng": "Frame interpolation (MVO-RIFE): path used only without the Interpolation extension (Extensions page), which takes priority."
-  },
-  "Interpolation d'images (extension MVO-RIFE) : page Extensions.": {
-    "fra": "Interpolation d'images (extension MVO-RIFE) : page Extensions.",
-    "eng": "Frame interpolation (MVO-RIFE extension): Extensions page."
-  },
-  "Interpolation non installée — Installer…": {
-    "fra": "Interpolation non installée — Installer…",
-    "eng": "Interpolation not installed — Install…"
-  },
   "Mettre à jour automatiquement les extensions installées": {
     "fra": "Mettre à jour automatiquement les extensions installées",
     "eng": "Automatically update installed extensions"
@@ -6282,14 +6294,6 @@
   "Non installée : moteur hors extension utilisé ({path}).": {
     "fra": "Non installée : moteur hors extension utilisé ({path}).",
     "eng": "Not installed: engine outside the extension in use ({path})."
-  },
-  "Requiert l'extension Interpolation d'images.": {
-    "fra": "Requiert l'extension Interpolation d'images.",
-    "eng": "Requires the Frame interpolation extension."
-  },
-  "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.": {
-    "fra": "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à l'encodage ; l'extension peut être réinstallée à tout moment.",
-    "eng": "Remove the frame interpolation extension? Interpolation will no longer be offered when encoding; the extension can be reinstalled at any time."
   },
   "Version {version} disponible.": {
     "fra": "Version {version} disponible.",
@@ -6314,10 +6318,6 @@
   "{label} {done} : version {version}.": {
     "fra": "{label} {done} : version {version}.",
     "eng": "{label} {done}: version {version}."
-  },
-  "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
-    "fra": "Multiplie la cadence à l'encodage (×2, ×3, ×4, 59,94 / 60 i/s) en générant les images intermédiaires sur le GPU (Vulkan) : moteur MVO-RIFE, modèles RIFE et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
-    "eng": "Multiplies the frame rate when encoding (×2, ×3, ×4, 59.94 / 60 fps) by generating in-between frames on the GPU (Vulkan): MVO-RIFE engine, RIFE models and presets. Updated independently of Muxiveo (new models, settings)."
   },
   "Précision de la reconstruction FEL": {
     "fra": "Précision de la reconstruction FEL",
@@ -9434,5 +9434,161 @@
   "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).": {
     "fra": "Synchro incertaine à valider : analyse continue sans conclusion, décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms).",
     "eng": "Uncertain sync to validate: continuous analysis inconclusive, offset taken from {measured}/{total} matching spot measurements (spread {spread} ms)."
+  },
+  "Léger": {
+    "fra": "Léger",
+    "eng": "Light"
+  },
+  "Moyen": {
+    "fra": "Moyen",
+    "eng": "Medium"
+  },
+  "Fort": {
+    "fra": "Fort",
+    "eng": "Strong"
+  },
+  "Mode : Rapide": {
+    "fra": "Mode : Rapide",
+    "eng": "Mode: Fast"
+  },
+  "Animation : Auto": {
+    "fra": "Animation : Auto",
+    "eng": "Animation: Auto"
+  },
+  "Animation : Oui": {
+    "fra": "Animation : Oui",
+    "eng": "Animation: Yes"
+  },
+  "Animation : Non": {
+    "fra": "Animation : Non",
+    "eng": "Animation: No"
+  },
+  "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu animé.": {
+    "fra": "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu animé.",
+    "eng": "Auto: the amount of grain removed is set shot by shot from the measured grain; one step towards Strong for animated content."
+  },
+  "Léger : retire moins de grain, texture d'origine davantage préservée.": {
+    "fra": "Léger : retire moins de grain, texture d'origine davantage préservée.",
+    "eng": "Light: removes less grain, preserving more of the original texture."
+  },
+  "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan.": {
+    "fra": "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan.",
+    "eng": "Medium: balance between grain removal and texture, set shot by shot."
+  },
+  "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué.": {
+    "fra": "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué.",
+    "eng": "Strong: removes the most grain, for thick grain or heavy digital noise."
+  },
+  "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.": {
+    "fra": "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.",
+    "eng": "Fast mode: optical flow computed at a quarter of the resolution instead of half; faster, with a very small quality loss."
+  },
+  "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la fiche TMDB de la sortie, sinon de la source.": {
+    "fra": "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la fiche TMDB de la sortie, sinon de la source.",
+    "eng": "Animated content: the Auto level removes one step more. Auto: from the “Animation” genre of the output's TMDB record, otherwise of the source."
+  },
+  "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel.": {
+    "fra": "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel.",
+    "eng": "No effect outside the Auto level: the chosen level applies as is."
+  },
+  "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg).": {
+    "fra": "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg).",
+    "eng": "Removes grain and noise: MVO-R2 (trained network, GPU) by default, or NLMeans (FFmpeg)."
+  },
+  "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.": {
+    "fra": "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.",
+    "eng": "MVO-R2: network trained on several motion-aligned frames (Vulkan GPU or NVIDIA TensorRT); removes grain and noise while keeping detail, dosed shot by shot. 10-bit output with Auto depth."
+  },
+  "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).": {
+    "fra": "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).",
+    "eng": "NLMeans: frame-by-frame FFmpeg filter (CPU, or Vulkan GPU in 10-bit)."
+  },
+  "Moteur vidéo MVO (débruitage, interpolation)": {
+    "fra": "Moteur vidéo MVO (débruitage, interpolation)",
+    "eng": "MVO video engine (denoising, interpolation)"
+  },
+  "Requiert le moteur vidéo MVO.": {
+    "fra": "Requiert le moteur vidéo MVO.",
+    "eng": "Requires the MVO video engine."
+  },
+  "Moteur vidéo MVO (débruitage, interpolation) : page Extensions.": {
+    "fra": "Moteur vidéo MVO (débruitage, interpolation) : page Extensions.",
+    "eng": "MVO video engine (denoising, interpolation): Extensions page."
+  },
+  "Moteur vidéo MVO non installé — Installer…": {
+    "fra": "Moteur vidéo MVO non installé — Installer…",
+    "eng": "MVO video engine not installed — Install…"
+  },
+  "Moteur vidéo MVO non installé : page Extensions.": {
+    "fra": "Moteur vidéo MVO non installé : page Extensions.",
+    "eng": "MVO video engine not installed: Extensions page."
+  },
+  "MVO-R2 : moteur vidéo MVO non installé (page Extensions).": {
+    "fra": "MVO-R2 : moteur vidéo MVO non installé (page Extensions).",
+    "eng": "MVO-R2: MVO video engine not installed (Extensions page)."
+  },
+  "MVO-R2 absent du moteur vidéo MVO installé : le mettre à jour (page Extensions).": {
+    "fra": "MVO-R2 absent du moteur vidéo MVO installé : le mettre à jour (page Extensions).",
+    "eng": "MVO-R2 missing from the installed MVO video engine: update it (Extensions page)."
+  },
+  "Mode rapide absent du moteur vidéo MVO installé : le mettre à jour (page Extensions).": {
+    "fra": "Mode rapide absent du moteur vidéo MVO installé : le mettre à jour (page Extensions).",
+    "eng": "Fast mode missing from the installed MVO video engine: update it (Extensions page)."
+  },
+  "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire.": {
+    "fra": "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire.",
+    "eng": "MVO video engine (MVO-R2 denoising, MVO-RIFE interpolation): path used only without the extension (Extensions page), takes precedence."
+  },
+  "Supprimer le moteur vidéo MVO ? Le débruitage MVO-R2 et l'interpolation ne seront plus proposés à l'encodage ; l'extension peut être réinstallée à tout moment.": {
+    "fra": "Supprimer le moteur vidéo MVO ? Le débruitage MVO-R2 et l'interpolation ne seront plus proposés à l'encodage ; l'extension peut être réinstallée à tout moment.",
+    "eng": "Remove the MVO video engine? MVO-R2 denoising and interpolation will no longer be offered when encoding; the extension can be reinstalled at any time."
+  },
+  "Traitements GPU (Vulkan) de l'encodage : débruitage MVO-R2 (débruiteur par défaut) et interpolation d'images MVO-RIFE (×2, ×3, ×4, 59,94 / 60 i/s), avec leurs modèles et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).": {
+    "fra": "Traitements GPU (Vulkan) de l'encodage : débruitage MVO-R2 (débruiteur par défaut) et interpolation d'images MVO-RIFE (×2, ×3, ×4, 59,94 / 60 i/s), avec leurs modèles et préréglages. Mis à jour indépendamment de Muxiveo (nouveaux modèles, réglages).",
+    "eng": "GPU (Vulkan) encoding processing: MVO-R2 denoising (default denoiser) and MVO-RIFE frame interpolation (×2, ×3, ×4, 59.94 / 60 fps), with their models and presets. Updated independently of Muxiveo (new models, settings)."
+  },
+  "Échec de l'encodage": {
+    "fra": "Échec de l'encodage",
+    "eng": "Encoding failed"
+  },
+  "L'encodage a échoué.": {
+    "fra": "L'encodage a échoué.",
+    "eng": "Encoding failed."
+  },
+  "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}": {
+    "fra": "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}",
+    "eng": "The work folder already holds {size} of temporary files:\n{path}"
+  },
+  "Conserver les fichiers temporaires (récupération, analyse)": {
+    "fra": "Conserver les fichiers temporaires (récupération, analyse)",
+    "eng": "Keep the temporary files (recovery, analysis)"
+  },
+  "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).": {
+    "fra": "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).",
+    "eng": "Temporary files kept: {path} (offered for cleanup at next startup)."
+  },
+  "Netteté : Compensée": {
+    "fra": "Netteté : Compensée",
+    "eng": "Sharpness: Compensated"
+  },
+  "Netteté : Telle quelle": {
+    "fra": "Netteté : Telle quelle",
+    "eng": "Sharpness: As is"
+  },
+  "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré).": {
+    "fra": "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré).",
+    "eng": "Sharpness compensation: restores a small part of the fine detail removed by denoising, only where it is stable from frame to frame (never the grain, never more than what was removed)."
+  },
+  "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).": {
+    "fra": "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).",
+    "eng": "Sharpness compensation is missing from the installed MVO video engine: update it (Extensions page)."
+  },
+  "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.": {
+    "fra": "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.",
+    "eng": "Auto mode: fast above 2560 px wide (UHD), normal below. Fast mode: optical flow computed at a quarter of the resolution instead of half; faster, with a very small quality loss."
+  },
+  "Mode : Auto": {
+    "fra": "Mode : Auto",
+    "eng": "Mode: Auto"
   }
 }

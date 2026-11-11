@@ -206,3 +206,39 @@ def test_encode_multi_video_keeps_copy_and_transcoded_tracks(tmp_path: Path) -> 
     assert state["failed"] is None, f"Encode failed: {state['failed']}"
     assert out.exists() and out.stat().st_size > 0
     assert _video_dims(out) == [(64, 48), (128, 96)]
+
+
+def test_failed_gui_encode_keeps_work_dir_with_produced_tracks(tmp_path: Path) -> None:
+    """Échec après une piste déjà encodée (GUI) : dossier de travail gardé pour la popup."""
+    from PySide6.QtCore import Qt
+
+    src = tmp_path / "multi-fail.mkv"
+    make_multi_video_mkv(src, videos=[(64, 48, "red"), (128, 96, "blue")])
+    tracks = [
+        VideoEncodeSettings(
+            codec="libx264", quality_mode=QualityMode.CRF, crf=35, preset="ultrafast",
+            source_path=src, stream_index=0, track_entry_id="video-ok",
+        ),
+        VideoEncodeSettings(
+            codec="libx265", quality_mode=QualityMode.CRF, crf=35, preset="ultrafast",
+            extra_params="aq-mode=9",  # refusé par x265 : échec à l'ouverture de l'encodeur
+            source_path=src, stream_index=1, track_entry_id="video-ko",
+        ),
+    ]
+    cfg = EncodeConfig(
+        source=src, output=tmp_path / "out.mkv", video=tracks[0], video_tracks=tracks,
+        audio_tracks=[], copy_subtitles=False, keep_chapters=False, duration_s=1.0,
+        work_dir=tmp_path / "work",
+    )
+    wf = _workflow()
+    retained: list = []
+    wf.failed_work_dir_retained.connect(retained.append, Qt.ConnectionType.DirectConnection)
+
+    state = wait_task(wf.run(cfg, validate=False, retain_failed_work_dir=True), timeout=120.0)
+
+    assert state["failed"] is not None
+    assert len(retained) == 1 and retained[0].payload_bytes > 0
+    assert retained[0].path.parent == tmp_path / "work" and any(retained[0].path.iterdir())
+    retained[0].discard()
+    assert not retained[0].path.exists()
+    assert not (tmp_path / "out.mkv").exists()

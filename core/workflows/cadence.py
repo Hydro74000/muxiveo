@@ -175,7 +175,11 @@ def parse_framerate_fraction(value: str | float | int | Fraction | None) -> Frac
             num = int(float(parts[0].strip()))
             den = int(float(parts[1].strip()))
             if den > 0 and num > 0:
-                return Fraction(num, den)
+                frac = Fraction(num, den)
+                # Artefact fréquent de ffprobe sur conteneurs MKV sans DefaultDuration explicite (1000 ms / 42 ms = 500/21 ≈ 23.81 FPS au lieu de 23.976)
+                if frac == Fraction(500, 21) or abs(float(frac) - (500 / 21)) < 0.0001:
+                    return Fraction(24000, 1001)
+                return frac
             return None
         except (ValueError, ZeroDivisionError):
             return None

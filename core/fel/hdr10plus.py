@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 DISTRIBUTION_INDEX = (1, 5, 10, 25, 50, 75, 90, 95, 99)
@@ -47,10 +48,30 @@ def hdr10plus_recomputed(video: object) -> bool:
                 and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
 
 
+#: Provenances des MaxCLL/MaxFALL mesurés pendant l'encodage (statistiques de l'image produite).
+MEASURED_LIGHT_LEVEL_SOURCES = frozenset({"fel_frame_statistics", "restore_frame_statistics"})
+
+
+def restore_statistics_path(video: object) -> Path | None:
+    """Statistiques de l'image débruitée (moteur muxiveo-rife ``--frame-statistics``) ; None sans mesure."""
+    statistics = getattr(video, "restore_statistics", None)
+    return statistics if isinstance(statistics, Path) else None
+
+
+def light_level_statistics_path(video: object) -> Path | None:
+    """Statistiques des MaxCLL/MaxFALL : image restaurée (dernière transformation), sinon image reconstruite (FEL)."""
+    return restore_statistics_path(video) or fel_statistics_path(video)
+
+
+def light_level_origin(video: object) -> str:
+    """Image mesurée, pour le journal."""
+    return "l'image débruitée" if restore_statistics_path(video) is not None else "l'image reconstruite"
+
+
 def deferred_light_levels(video: object) -> bool:
     """MaxCLL/MaxFALL différés jusqu'aux statistiques (aucune valeur transmise à l'encodeur)."""
     return bool(getattr(video, "inject_hdr_meta", False)
-                and getattr(video, "static_hdr_light_level_source", "") == "fel_frame_statistics")
+                and getattr(video, "static_hdr_light_level_source", "") in MEASURED_LIGHT_LEVEL_SOURCES)
 
 
 def pq_eotf(signal: float) -> float:
@@ -123,6 +144,118 @@ def read_frame_statistics(path: Path) -> FrameStatistics:
     if expected != len(frames):
         raise FrameStatisticsError(f"Statistiques de l'image : {expected} images en plans pour {len(frames)} mesurées.")
     return FrameStatistics(int(lines[0]["width"]), int(lines[0]["height"]), tuple(frames), tuple(scenes))
+
+
+def _light_pair(value: str) -> tuple[int, int] | None:
+    """MaxCLL,MaxFALL lus ; None si absents ou nuls (0,0 : inconnus)."""
+    parts = [part.strip() for part in str(value or "").split(",")]
+    if len(parts) != 2 or not all(part.isdigit() for part in parts) or not int(parts[0]):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def invisible_light_change(source: tuple[float, float, float], restored: tuple[float, float, float]) -> bool:
+    """Vrai si la Restauration ne change pas la lumière à l'œil, d'après (pic, percentile 99,98 % de maxRGB,
+    moyenne) en nits de la source et de l'image débruitée. Mêmes tolérances que le réalignement du HDR Studio
+    (``core/hdr_inspection/realign.py``) : pic à 10 % près ou dépassé par moins de 0,02 % des pixels (pixels isolés,
+    critère d'écrêtage visible) ; moyenne à 10 % près, au moins 5 nits."""
+    from core.hdr_inspection.realign import TOLERANCE
+
+    (source_peak, source_high, source_fall), (restored_peak, restored_high, restored_fall) = source, restored
+    higher_high, lower_peak = ((source_high, restored_peak) if source_peak >= restored_peak
+                               else (restored_high, source_peak))
+    peak = abs(restored_peak - source_peak) <= TOLERANCE * source_peak or higher_high <= lower_peak
+    return peak and abs(restored_fall - source_fall) <= max(5.0, TOLERANCE * source_fall)
+
+
+def _film_light(statistics: FrameStatistics) -> tuple[float, float, float]:
+    return (max(max(frame.max_nits) for frame in statistics.frames),
+            max(frame.percentiles[-1] for frame in statistics.frames),
+            max(frame.avg_nits for frame in statistics.frames))
+
+
+def _frame_light(frame: FrameRecord) -> tuple[float, float, float]:
+    return max(frame.max_nits), frame.percentiles[-1], frame.avg_nits
+
+
+def isolated_light_level_change(source: FrameStatistics, restored: FrameStatistics) -> bool:
+    """Vrai si la Restauration ne change MaxCLL / MaxFALL qu'invisiblement (``invisible_light_change`` sur le film :
+    pic, percentile 99,98 % le plus haut, moyenne la plus haute)."""
+    return invisible_light_change(_film_light(source), _film_light(restored))
+
+
+def _restore_statistics_pair(video: object) -> tuple[FrameStatistics, FrameStatistics] | None:
+    """(source, image restaurée) mesurées par le moteur ; None sans mesure. Lève FrameStatisticsError."""
+    restored_path, source_path = restore_statistics_path(video), getattr(video, "restore_source_statistics", None)
+    if restored_path is None or not isinstance(source_path, Path):
+        return None
+    return read_frame_statistics(source_path), read_frame_statistics(restored_path)
+
+
+def dynamic_metadata_adequacy(video: object, ratio: Fraction | int = 1) -> tuple[str, str] | None:
+    """Restauration avec copie Dolby Vision / HDR10+ : (niveau, message) du contrôle d'adéquation (D-e).
+
+    Les métadonnées copiées décrivent la source image par image ; elles restent adéquates si la Restauration ne
+    change pas la lumière à l'œil (``invisible_light_change`` par image, trame source de chaque trame produite selon
+    ``ratio`` comme muxiveo-rife). Plus de 2 % des images changées (seuil du HDR Studio) : avertissement.
+    None : pas de copie dynamique ou pas de mesure.
+    """
+    from core.hdr_inspection.realign import DYNAMIC_SHARE
+    from core.workflows.encode.interpolation import frame_repeats
+
+    copied = " / ".join(name for name, on in (("Dolby Vision", getattr(video, "copy_dv", False)),
+                                              ("HDR10+", getattr(video, "copy_hdr10plus", False))) if on)
+    if not copied:
+        return None
+    try:
+        pair = _restore_statistics_pair(video)
+    except FrameStatisticsError as exc:
+        return "WARN", f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({exc})."
+    if pair is None:
+        return None
+    source, restored = pair
+    expected = sum(frame_repeats(index, ratio) for index in range(len(source.frames)))
+    if expected != len(restored.frames):
+        return "WARN", (f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({len(restored.frames)} "
+                        f"images mesurées pour {expected} attendues).")
+    changed, produced = 0, iter(restored.frames)
+    for index, frame in enumerate(source.frames):
+        light = _frame_light(frame)
+        for _ in range(frame_repeats(index, ratio)):
+            changed += not invisible_light_change(light, _frame_light(next(produced)))
+    share = changed / len(restored.frames)
+    percent = f"{100 * share:.1f}".replace(".", ",")
+    if share > DYNAMIC_SHARE:
+        return "WARN", (f"MVO-R2 : métadonnées {copied} copiées de la source, lumière visiblement changée sur "
+                        f"{percent} % des images (pic ou moyenne) : à vérifier dans le HDR Studio.")
+    return "INFO", (f"MVO-R2 : métadonnées {copied} copiées de la source, adéquates (lumière visiblement changée "
+                    f"sur {percent} % des images).")
+
+
+def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[str, str]:
+    """MaxCLL,MaxFALL à écrire après l'encodage et message du journal.
+
+    Image reconstruite (FEL) : toujours la mesure (les valeurs de la source décrivent la BL). Image restaurée : les
+    valeurs de la source restent intactes si la Restauration ne les change pas à l'œil
+    (``isolated_light_level_change``, trames lues mesurées par le moteur avant la Restauration) ; sinon, ou sans
+    valeurs dans la source, la mesure de l'image débruitée.
+    """
+    exact = statistics.static_light_levels()
+    declared = _light_pair(getattr(video, "restore_source_light_levels", ""))
+    source_path = getattr(video, "restore_source_statistics", None)
+    if restore_statistics_path(video) is None or declared is None or not isinstance(source_path, Path):
+        return exact, f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}."
+    kept = f"{declared[0]},{declared[1]}"
+    try:
+        source = read_frame_statistics(source_path)
+    except FrameStatisticsError as exc:
+        return exact, f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source non comparée : {exc})."
+    measured_source = source.static_light_levels()
+    if isolated_light_level_change(source, statistics):
+        return kept, (f"MaxCLL/MaxFALL de la source conservés : {kept} (image restaurée {exact}, source mesurée "
+                      f"{measured_source} : écart invisible).")
+    return exact, (f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source mesurée {measured_source} : "
+                   "écart visible).")
 
 
 def _tenths(nits: float) -> int:

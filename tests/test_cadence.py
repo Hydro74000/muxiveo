@@ -531,6 +531,7 @@ def test_parse_framerate_fraction_canonical_and_custom():
     assert parse_framerate_fraction(25.0) == Fraction(25, 1)
     assert parse_framerate_fraction(24.0) == Fraction(24, 1)
     assert parse_framerate_fraction("50/1 fps") == Fraction(50, 1)
+    assert parse_framerate_fraction("500/21") == Fraction(24000, 1001)
     assert parse_framerate_fraction(None) is None
 
 

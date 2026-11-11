@@ -38,6 +38,7 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 | **Marier une vidéo 4K et l'audio/subs d'une autre édition** | **Studio d'Hybridation** | Calage acoustique FFT (*Zero Delay*) | [Guide Hybridation & Synchro](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) |
 | **Inspecter, mesurer ou corriger le HDR (MaxCLL, DoVi)** | **HDR Studio** | Analyse et édition sans réencodage | [Guide HDR Studio](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) |
 | **Transférer Dolby Vision / HDR10+ entre deux fichiers** | **Fusion DoVi / HDR10+** | Injection de métadonnées sans perte | [Guide Fusion DoVi](https://github.com/Hydro74000/Muxiveo/wiki/Interface-et-usage#fusion-dovi--hdr10) |
+| **Retirer le grain et le bruit en gardant le détail** | **MVO-R2** (Moteur vidéo MVO, extension) | Débruitage neuronal GPU | [Guide Encodage vidéo et HDR](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR) |
 | **Fluidifier les mouvements (24 → 60 i/s)** | **MVO-RIFE** (Extension) | Interpolation neuronale GPU | [Guide MVO-RIFE](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) |
 | **Automatiser les choix sur une série ou un lot** | **Profils** / **CLI** | Profils décisionnels & scripts | [Guide Profils](https://github.com/Hydro74000/Muxiveo/wiki/Profils) & [Guide CLI](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless) |
 
@@ -143,12 +144,20 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 
 ---
 
+### 🧽 Débruitage IA (MVO-R2)
+*Débruiteur appris du moteur vidéo MVO, filtre « Débruitage » par défaut du panneau Encodage.*
+
+* **Fenêtre temporelle** : chaque image est débruitée à partir de 5 images recalées par le flux optique du réseau ; le grain et le bruit partent, le détail confirmé par les images voisines reste.
+* **Auto par plan** : le dosage suit le grain mesuré de chaque plan (une source propre est à peine touchée) ; niveaux Léger, Moyen, Fort, réglage Animation, mode rapide (automatique en UHD).
+* **Compensation de netteté** : rend une partie du détail fin retiré, seulement là où il est stable d'une image à l'autre.
+* **HDR, Dolby Vision, FEL** : traitement en 10 bits, MaxCLL / MaxFALL conservés ou mesurés sur l'image débruitée, métadonnées dynamiques copiées et contrôlées ; débruitage puis interpolation dans le même passage.
+
 ### 🏎️ Fluidification d'image IA (MVO-RIFE)
 *Multiplication de la cadence d'images par réseau de neurones avec accélération GPU.*
 
 * **Cadences cibles** : Facteurs fixes (×2, ×3, ×4) ou normalisation cinéma vers haute cadence (23,976/24 → 59,94/60 i/s via facteur ×2.5).
 * **Moteur hybride** : Associe le modèle d'interpolation RIFE v4, la compensation de mouvement par blocs et le flux optique matériel NVIDIA (NVOF). Un sélecteur entraîné choisit pour chaque zone de l'image le meilleur candidat afin d'éliminer les déformations sur les textures répétitives et les mouvements rapides.
-* **Accélération TensorRT** : Extension optionnelle exploitant les cœurs Tensor des cartes NVIDIA RTX pour décupler la cadence d'inférence.
+* **Accélération TensorRT** : Extension optionnelle exploitant les cœurs Tensor des cartes NVIDIA RTX pour accélérer l'inférence (interpolation et débruitage).
 
 > 📖 Consultez le [Guide de l'interpolation MVO-RIFE](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) et l'[Accélération TensorRT](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-TensorRT).
 

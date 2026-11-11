@@ -39,6 +39,7 @@ from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+    normalize_x265_frame_threads as _normalize_x265_frame_threads,
 )
 from core.workdir import (
     active_process_dirs,
@@ -905,7 +906,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
             {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
-            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire."},
         ),
     },
     {
@@ -917,7 +918,16 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "attr": "ffmpeg_threads",
                 "kind": "int",
                 "label": "Nombre de threads FFmpeg",
-                "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+                "description": "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.",
+            },
+            {
+                "key": "x265_frame_threads",
+                "attr": "x265_frame_threads",
+                "kind": "int",
+                "min": 0,
+                "max": 16,
+                "label": "Images en parallèle x265 (frame-threads)",
+                "description": "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.",
             },
         ),
     },
@@ -1297,6 +1307,9 @@ class AppConfig:
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
         )
+        self.x265_frame_threads = _normalize_x265_frame_threads(
+            self._resolve_int("ffmpeg", "x265_frame_threads", "ffmpeg/x265_frame_threads", 0)
+        )
         self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
         self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
         self.display_peak_nits = normalize_display_peak_nits(
@@ -1477,6 +1490,7 @@ class AppConfig:
         s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
+        s.setValue("ffmpeg/x265_frame_threads", self.x265_frame_threads)
 
         s.setValue("hdr/dovi_profile", self.dovi_profile)
         s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
@@ -1715,6 +1729,7 @@ class AppConfig:
             },
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,
+                "x265_frame_threads": self.x265_frame_threads,
             },
             "hdr": {
                 "dovi_profile": self.dovi_profile,

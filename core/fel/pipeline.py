@@ -136,7 +136,7 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
         context.source.device_plan.commands = tuple(tuple(s) for s in stages)
     upstream = [list(s) for s in command.upstream] if isinstance(command, PipelineCommand) else []
     output = list(command)
-    if upstream and video.interpolates() and "-i" in output:
+    if upstream and video.uses_engine() and "-i" in output:
         # RIFE transporte du y4m : la position chroma doit aussi parvenir au
         # dernier encodeur, après le pipe qui a perdu le marquage des images.
         pos = output.index("-i") + 2
@@ -170,7 +170,8 @@ def with_fel_input(command: list[str], video: VideoEncodeSettings, threads: int 
                 *first[index+2:]]
     if "-map" in first:
         first[first.index("-map")+1] = "0:0"
-    depth = resolve_output_bit_depth(video)
+    # Restauration : le moteur reçoit du 10 bits et trame lui-même à la profondeur de sortie.
+    depth = 10 if video.restores() else resolve_output_bit_depth(video)
     chain = first[first.index("-vf")+1] if "-vf" in first else ""
     final = (final_output_format(chain, depth)
              if "yuv420p10le" in listed_capability(source.engine, "output_formats") else None)

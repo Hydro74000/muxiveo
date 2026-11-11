@@ -29,6 +29,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from core.file_lock import FileLock, lock_is_free
 from core.file_types import _WINDOWS_RESERVED_STEMS
@@ -207,6 +208,67 @@ class ProcessWorkDir:
         return True
 
 
+    def release(self) -> None:
+        """Libère le verrou du job sans rien supprimer : dossier conservé, abandonné.
+
+        Le marqueur reste : le nettoyage du démarrage suivant le proposera.
+        """
+        lock = _take_held_lock(self.token)
+        if lock is not None:
+            lock.release(unlink=True)
+
+
+@dataclass(frozen=True)
+class RetainedProcessWorkDir:
+    """Dossier process d'un job en échec, gardé jusqu'à la décision de l'utilisateur."""
+
+    work_dir: ProcessWorkDir
+    payload_bytes: int
+
+    @property
+    def path(self) -> Path:
+        return self.work_dir.path
+
+    def keep(self) -> None:
+        """Contenu conservé pour l'utilisateur (proposé au nettoyage du démarrage suivant)."""
+        self.work_dir.release()
+
+    def discard(self) -> None:
+        """Suppression ; un reste (fichier verrouillé) est repris par le nettoyage de démarrage."""
+        try:
+            self.work_dir.remove()
+        except OSError:
+            pass
+
+
+class FailedWorkDirRetention:
+    """Dossiers process à garder si leur job échoue, le temps que l'utilisateur décide.
+
+    Le job demande la conservation à la création du dossier ; le premier crochet
+    de fin en échec la réclame, une seule fois (plusieurs crochets peuvent voir
+    le même dossier).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tokens: set[str] = set()
+
+    def request(self, work_dir: ProcessWorkDir) -> None:
+        with self._lock:
+            self._tokens.add(work_dir.token)
+
+    def claim(self, path: Path) -> ProcessWorkDir | None:
+        """Dossier process ``path`` s'il a été demandé et pas encore réclamé."""
+        owned = capture_process_work_dir(path, root=path.parent)
+        if owned is None:
+            return None
+        with self._lock:
+            if owned.token not in self._tokens:
+                return None
+            self._tokens.discard(owned.token)
+        return owned
+
+
 def _register_held_lock(token: str, lock: FileLock) -> None:
     with _HELD_LOCKS_GUARD:
         _HELD_LOCKS[token] = lock
@@ -359,6 +421,30 @@ def work_dir_entries(path: Path) -> list[Path]:
         [p for p in path.iterdir() if not _is_ignorable_work_dir_entry(p)],
         key=lambda p: p.name.lower(),
     )
+
+
+def process_dir_payload_bytes(path: Path, *, excluded: Callable[[Path], bool] = lambda _entry: False) -> int:
+    """Octets des fichiers produits dans un dossier process (marqueurs et entrées ``excluded`` à part).
+
+    Liens jamais suivis ; fichier illisible ignoré.
+    """
+    total = 0
+    for entry in work_dir_entries(path):
+        if excluded(entry) or _is_link_or_junction(entry):
+            continue
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+                continue
+        except OSError:
+            continue
+        for root, _dirs, files in os.walk(entry):
+            for name in files:
+                try:
+                    total += (Path(root) / name).lstat().st_size
+                except OSError:
+                    pass
+    return total
 
 
 def work_dir_has_entries(path: Path) -> bool:

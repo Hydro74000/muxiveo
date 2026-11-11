@@ -433,6 +433,31 @@ def test_settings_panel_writes_ffmpeg_threads_to_ini(tmp_path, qt_app):
         assert cfg.ffmpeg_threads == 18
 
 
+def test_settings_panel_writes_x265_frame_threads_to_ini(tmp_path, qt_app):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ffmpeg]\nx265_frame_threads = 40\n", encoding="utf-8")
+
+    with patch("core.config.QSettings") as mock_qs, \
+         patch("core.config._app_data_dir", return_value=tmp_path), \
+         patch.object(cfg_mod, "_INI_PATH", ini_path):
+        mock_qs.return_value = _mock_qsettings()
+        cfg = AppConfig()
+        assert cfg.x265_frame_threads == 16  # borné : x265 refuse plus de 16 images en parallèle
+
+        panel = SettingsPanel(cfg)
+        spin = _field_widget(panel, "ffmpeg", "x265_frame_threads")
+        assert spin.maximum() == 16
+        spin.setValue(6)
+        panel._on_save_clicked()
+
+        assert "x265_frame_threads = 6" in ini_path.read_text(encoding="utf-8")
+        assert cfg.x265_frame_threads == 6
+
+
 def test_settings_panel_writes_max_parallel_video_encodes_to_ini(tmp_path, qt_app):
     import core.config as cfg_mod
     from core.config import AppConfig

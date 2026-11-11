@@ -26,6 +26,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -107,6 +108,7 @@ class MultiVideoPipelineRunnerCallbacks:
     #: de synchronisation (calibrations multi-segments), comme le chemin direct.
     resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
     validation_override: ValidationOverride | None = None
+    log_warn: Callable[[str], None] | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -332,13 +334,19 @@ class MultiVideoPipelineRunner:
             remove_path(enc_video_mkv)
 
             light_levels: tuple[int, int] | None = None
-            if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
-                # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+            light_statistics = light_level_statistics_path(video)
+            if (fel_statistics is not None and hdr10plus_recomputed(video)) or (
+                    light_statistics is not None and deferred_light_levels(video)):
+                # HDR10+ de l'image reconstruite (FEL) et MaxCLL/MaxFALL de l'image produite (restaurée par le
+                # moteur, sinon reconstruite), mesurés pendant l'encodage.
                 try:
-                    statistics = read_frame_statistics(fel_statistics)
+                    statistics = (read_frame_statistics(fel_statistics)
+                                  if fel_statistics is not None and hdr10plus_recomputed(video) else None)
+                    light = (read_frame_statistics(light_statistics)
+                             if light_statistics is not None and deferred_light_levels(video) else None)
                 except FrameStatisticsError as exc:
                     raise EncodeError(str(exc)) from exc
-                if hdr10plus_recomputed(video):
+                if statistics is not None:
                     write_hdr10plus_json(statistics, hdr10p_json)
                     local_cleanup.append(hdr10p_json)
                     expand_dynamic_hdr_metadata(
@@ -348,8 +356,8 @@ class MultiVideoPipelineRunner:
                         log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
                     )
                     cb.log_info(f"Piste vidéo {index}: HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
-                if deferred_light_levels(video):
-                    exact = statistics.static_light_levels()
+                if light is not None:
+                    exact, message = written_light_levels(video, light)
                     video = replace(video, max_cll=exact)
                     max_cll, max_fall = (int(value) for value in exact.split(","))
                     light_levels = (max_cll, max_fall)
@@ -361,8 +369,11 @@ class MultiVideoPipelineRunner:
                         current_hevc = cll_out
                     else:
                         cll_out.unlink(missing_ok=True)
-                    cb.log_info(f"Piste vidéo {index}: MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                    cb.log_info(f"Piste vidéo {index}: {message}")
                 cb.check_cancelled(signals)
+            if adequacy := dynamic_metadata_adequacy(video, frame_ratio):
+                (cb.log_warn if adequacy[0] == "WARN" and cb.log_warn is not None else cb.log_info)(
+                    f"Piste vidéo {index}: {adequacy[1]}")
 
             if video.copy_dv or video.copy_hdr10plus:
                 guard = FrameCountGuard(
