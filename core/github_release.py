@@ -78,7 +78,7 @@ def github_release_asset(repo: str, tag: str | None, *patterns: str) -> ReleaseA
     """Asset ``patterns`` d'une release GitHub quelconque, SHA-256 publié obligatoire.
 
     Sert aux binaires hors ``THIRD_PARTY_TOOLS`` : muxiveo-rife (release
-    épinglée du dépôt) et FFmpeg BtbN (release roulante ``latest``).
+    épinglée du dépôt) et FFmpeg-Builds (ex-BtbN, release roulante ``latest``).
     """
     return select_asset(fetch_release_by_repo(repo, tag), repo, *patterns)
 

@@ -615,21 +615,21 @@ def _extract_from_tar(archive: Path, binary_names: list[str], dest_dir: Path) ->
 
 def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
     """
-    Télécharge ffmpeg/ffprobe depuis BtbN/FFmpeg-Builds (master, GPL static).
+    Télécharge ffmpeg/ffprobe depuis FFmpeg-Builds/FFmpeg-Builds (ex-BtbN) (master, GPL static).
 
     Ces builds incluent NVENC, VAAPI, QSV, AMF, libsvtav1.
     Ce sont des binaires statiques — aucune lib externe à embarquer.
-    URL directe : github.com/BtbN/FFmpeg-Builds/releases/download/latest/
+    URL directe : github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/
                   ffmpeg-master-latest-linux64-gpl.tar.xz
     """
-    step("Téléchargement ffmpeg + ffprobe (BtbN/FFmpeg-Builds, master GPL static)")
+    step("Téléchargement ffmpeg + ffprobe (FFmpeg-Builds/FFmpeg-Builds, master GPL static)")
 
     _arch_tag = {"x86_64": "linux64", "aarch64": "linuxarm64"}.get(arch, f"linux{arch}")
     filename = f"ffmpeg-master-latest-{_arch_tag}-gpl.tar.xz"
     info(f"Asset : {filename}")
     # Release roulante « latest » : SHA-256 publié par l'API GitHub vérifié,
     # archive consignée dans le manifeste (le build du jour change).
-    asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", filename)
+    asset = github_release_asset("FFmpeg-Builds/FFmpeg-Builds", "latest", filename)
 
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.tar.xz"

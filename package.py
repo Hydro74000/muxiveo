@@ -2834,7 +2834,7 @@ def _dl_windows_ffmpeg(tools_dir: Path) -> None:
         archive = Path(tmp) / "ffmpeg.zip"
         try:
             # Release roulante « latest » : SHA-256 publié par l'API GitHub.
-            asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
+            asset = github_release_asset("FFmpeg-Builds/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
             _download_file(asset.url, archive, timeout=180)
             version, url, verification = f"{asset.repo}@{asset.tag}", asset.url, VERIFIED_GITHUB_DIGEST
         except (OSError, urllib.error.URLError) as exc:

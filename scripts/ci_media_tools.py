@@ -16,7 +16,7 @@ from core.github_release import github_release_asset, verify_download  # noqa: E
 
 TOOLS = {
     "dovi": ("quietvoid/dovi_tool", "2.3.2", "dovi_tool-2.3.2-x86_64-unknown-linux-musl.tar.gz", ("dovi_tool",)),
-    "ffmpeg": ("BtbN/FFmpeg-Builds", "latest", "ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz", ("ffmpeg", "ffprobe")),
+    "ffmpeg": ("FFmpeg-Builds/FFmpeg-Builds", "latest", "ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz", ("ffmpeg", "ffprobe")),
 }
 
 
