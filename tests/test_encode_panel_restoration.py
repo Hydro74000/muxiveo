@@ -85,16 +85,16 @@ def test_options_follow_the_selected_filter(panel):
 
 def test_fast_mode_needs_its_graphs(panel):
     _sync(panel, _caps(models=("r2",)))
-    panel._apply_denoise_settings(VideoFilterSettings(), RestoreSettings(enabled=True, fast=True))
+    panel._apply_denoise_settings(VideoFilterSettings(), RestoreSettings(enabled=True, mode="fast"))
     assert not panel._restore_mode_combo.isEnabled()
-    assert panel._current_restore_settings().fast is False
+    assert panel._current_restore_settings().mode == "auto"  # rapide indisponible : Auto (→ normal)
     _sync(panel, _caps())
-    assert panel._restore_mode_combo.isEnabled() and panel._current_restore_settings().fast is True
+    assert panel._restore_mode_combo.isEnabled() and panel._current_restore_settings().mode == "fast"
 
 
 def test_settings_roundtrip_and_animation_only_for_auto(panel):
     _sync(panel, _caps())
-    settings = RestoreSettings(enabled=True, level="fort", fast=True, animation="off")
+    settings = RestoreSettings(enabled=True, level="fort", mode="fast", animation="off")
     panel._apply_denoise_settings(VideoFilterSettings(), settings)
     assert panel._current_restore_settings() == settings
     assert not panel._restore_animation_combo.isEnabled()
@@ -117,7 +117,7 @@ def test_apply_restores_the_effective_filter(panel):
 
 
 def test_badge_and_modified_state(panel):
-    badges = panel._video_filter_badges_from_state({"restoration": RestoreSettings(enabled=True, level="fort", fast=True)})
+    badges = panel._video_filter_badges_from_state({"restoration": RestoreSettings(enabled=True, level="fort", mode="fast")})
     assert "MVO-R2 Fort Rapide" in badges
     assert not any("MVO-R2" in badge for badge in panel._video_filter_badges_from_state({"restoration": RestoreSettings()}))
 
@@ -163,3 +163,8 @@ def test_sharpen_option_follows_the_engine(panel):
     panel._denoise_cb.setChecked(True)
     panel._set_combo_data(panel._denoise_filter_combo, "nlmeans")
     assert panel._restore_sharpen_combo.isHidden()
+
+
+def test_mode_defaults_to_auto(panel):
+    _sync(panel, _caps())
+    assert panel._restore_mode_combo.currentData() == "auto" and panel._current_restore_settings().mode == "auto"

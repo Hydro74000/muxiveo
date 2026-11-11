@@ -1910,11 +1910,11 @@ class EncodePanel(QWidget):
         self._restore_mode_combo = QComboBox()
         self._restore_mode_combo.setStyleSheet(_combo_style())
         self._restore_mode_tip = (
-            "Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, "
-            "perte de qualité très faible."
+            "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique "
+            "calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible."
         )
-        for label, fast in (("Mode : Normal", False), ("Mode : Rapide", True)):
-            self._restore_mode_combo.addItem(label, fast)
+        for label, mode in (("Mode : Auto", "auto"), ("Mode : Normal", "normal"), ("Mode : Rapide", "fast")):
+            self._restore_mode_combo.addItem(label, mode)
         self._restore_mode_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
         self._restore_animation_combo = QComboBox()
         self._restore_animation_combo.setStyleSheet(_combo_style())
@@ -2160,13 +2160,18 @@ class EncodePanel(QWidget):
         self._sync_denoise_controls()
         self._rebuild_preview()
 
+    def _current_restore_mode(self) -> str:
+        """Mode choisi ; rapide sans ses graphes → Auto (qui retombe alors sur le mode normal)."""
+        mode = str(self._restore_mode_combo.currentData() or "auto")
+        return "auto" if mode == "fast" and not self._restore_fast_available else mode
+
     def _current_restore_settings(self) -> RestoreSettings:
         if not hasattr(self, "_denoise_cb"):
             return RestoreSettings()
         return RestoreSettings(
             enabled=self._denoise_cb.isChecked() and self._denoise_cb.isEnabled() and self._denoise_filter() == "mvo-r2",
             level=str(self._restore_level_combo.currentData() or "auto"),
-            fast=bool(self._restore_mode_combo.currentData()) and self._restore_fast_available,
+            mode=self._current_restore_mode(),
             animation=str(self._restore_animation_combo.currentData() or "auto"),
             sharpen=bool(self._restore_sharpen_combo.currentData()),
         )
@@ -2179,7 +2184,7 @@ class EncodePanel(QWidget):
         self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
         self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
         self._set_combo_data(self._restore_level_combo, restoration.level)
-        self._set_combo_data(self._restore_mode_combo, bool(restoration.fast))
+        self._set_combo_data(self._restore_mode_combo, restoration.mode)
         self._set_combo_data(self._restore_animation_combo, restoration.animation)
         self._set_combo_data(self._restore_sharpen_combo, bool(restoration.sharpen))
         if restoration.enabled and self._r2_available:
@@ -5296,7 +5301,7 @@ class EncodePanel(QWidget):
         restoration = RestoreSettings.from_value(state.get("restoration"))
         if restoration.is_active():
             badge = "MVO-R2 " + translate_text(_RESTORE_LEVEL_BADGES.get(restoration.level, "Auto"))
-            if restoration.fast:
+            if restoration.mode == "fast":
                 badge += " " + translate_text("Rapide")
             if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
                 badge += " TRT"

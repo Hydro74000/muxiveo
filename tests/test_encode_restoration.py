@@ -27,7 +27,9 @@ from core.workflows.encode import (
     EncodeWorkflow,
     FrameInterpolationSettings,
     RestoreSettings,
+    VideoCropSettings,
     VideoEncodeSettings,
+    VideoResizeSettings,
 )
 from core.workflows.encode.domain import EncodeCodecDomainCallbacks
 from core.workflows.encode.domain.codecs import resolve_output_bit_depth
@@ -38,6 +40,7 @@ from core.workflows.encode.interpolation import (
     build_rife_stage,
     restore_args_for,
     restore_engine_args,
+    restore_fast,
     restore_support_errors,
 )
 from core.workflows.encode.runtime.video_preparation import (
@@ -79,12 +82,15 @@ class TestSettings:
 
     def test_unknown_values_fall_back_to_auto(self):
         settings = RestoreSettings.from_value({"enabled": True, "level": "max", "animation": "yes", "fast": True})
-        assert (settings.level, settings.animation, settings.fast) == ("auto", "auto", True)
+        assert (settings.level, settings.animation, settings.mode) == ("auto", "auto", "fast")
+        assert RestoreSettings.from_value({"enabled": True, "fast": False}).mode == "auto"  # ancien défaut → Auto
+        assert RestoreSettings.from_value({"enabled": True, "mode": "normal", "fast": True}).mode == "normal"
+        assert RestoreSettings(mode="turbo").mode == "auto"
 
     def test_preset_roundtrip(self):
         preset = EncodePreset(name="p", restoration={"enabled": True, "level": "fort", "fast": True})  # type: ignore[arg-type]
         restored = preset.to_video_settings().restoration
-        assert (restored.enabled, restored.level, restored.fast) == (True, "fort", True)
+        assert (restored.enabled, restored.level, restored.mode) == (True, "fort", "fast")
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +99,7 @@ class TestSettings:
 
 class TestEngineArgs:
     def test_level_fast_animation_dither(self):
-        args = restore_engine_args(_restore(level="fort", fast=True), transfer="pq", animation=True, dither="8")
+        args = restore_engine_args(_restore(level="fort", mode="fast"), transfer="pq", animation=True, dither="8")
         assert args[:4] == ["--restore", "fort", "--transfer", "pq"]
         assert "--restore-fast" in args
         assert "--restore-animation" not in args  # niveau imposé : l'animation ne déplace que l'Auto
@@ -136,6 +142,26 @@ class TestEngineArgs:
         assert RestoreSettings().sharpen is True
         assert RestoreSettings.from_value({"enabled": True}).sharpen is True  # anciens profils : compensation active
         assert RestoreSettings.from_value({"enabled": True, "sharpen": False}).sharpen is False
+
+    @pytest.mark.parametrize("mode, width, crop, resize, expected", [
+        ("auto", 3840, 0, None, True), ("auto", 1920, 0, None, False), ("auto", 2560, 0, None, False),
+        ("auto", 3840, 700, None, False),  # recadré sous 2560 px
+        ("auto", 3840, 0, "1080p", False),  # redimensionné avant le moteur
+        ("normal", 3840, 0, None, False), ("fast", 1920, 0, None, True),
+    ])
+    def test_fast_mode_follows_engine_width(self, mode, width, crop, resize, expected):
+        video = _video(restoration=_restore(mode=mode),
+                       crop=VideoCropSettings(enabled=True, left=crop, right=crop) if crop else VideoCropSettings(),
+                       resize=VideoResizeSettings(enabled=True, preset=resize) if resize else VideoResizeSettings())
+        source = InterpolationSource(width=width, height=width * 9 // 16)
+        assert restore_fast(video, source) is expected
+        assert ("--restore-fast" in restore_args_for(video, source)) is expected
+
+    def test_auto_fast_needs_its_graphs(self):
+        source = InterpolationSource(width=3840, height=2160)
+        assert restore_fast(_video(), source, _caps()) is True
+        assert restore_fast(_video(), source, _caps(restore_models=("r2",))) is False  # Auto → normal
+        assert restore_support_errors(_caps(restore_models=("r2",)), _restore()) == []  # Auto n'exige que r2
 
     def test_without_restoration_no_args(self):
         assert restore_args_for(VideoEncodeSettings(codec="libx265"), InterpolationSource()) == []
@@ -250,7 +276,7 @@ class TestPipeline:
 class TestSupport:
     def test_supported(self):
         assert restore_support_errors(_caps(), _restore()) == []
-        assert restore_support_errors(_caps(), _restore(fast=True)) == []
+        assert restore_support_errors(_caps(), _restore(mode="fast")) == []
         assert restore_support_errors(None, _restore()) == []
 
     def test_old_binary(self):
@@ -258,7 +284,7 @@ class TestSupport:
         assert "1.12.0" in error
 
     def test_missing_graphs(self):
-        [error] = restore_support_errors(_caps(restore_models=("r2",)), _restore(fast=True))
+        [error] = restore_support_errors(_caps(restore_models=("r2",)), _restore(mode="fast"))
         assert "r2q" in error and "mode rapide" in error
         assert restore_support_errors(_caps(restore_models=()), _restore())
 

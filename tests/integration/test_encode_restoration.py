@@ -127,7 +127,7 @@ def test_restoration_with_interpolation_8_bits(tmp_path: Path) -> None:
     _grainy_source(src)
     out, _ = _encode(
         tmp_path, src, "both.mkv", bit_depth="8",
-        restoration=RestoreSettings(enabled=True, fast=True),
+        restoration=RestoreSettings(enabled=True, mode="fast"),
         interpolation=FrameInterpolationSettings(enabled=True, factor=2, quality="fast"),
     )
     [video] = streams_of_type(ffprobe_json(out), "video")

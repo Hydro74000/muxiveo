@@ -148,7 +148,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 *Débruiteur appris du moteur vidéo MVO, filtre « Débruitage » par défaut du panneau Encodage.*
 
 * **Fenêtre temporelle** : chaque image est débruitée à partir de 5 images recalées par le flux optique du réseau ; le grain et le bruit partent, le détail confirmé par les images voisines reste.
-* **Auto par plan** : le dosage suit le grain mesuré de chaque plan (une source propre est à peine touchée) ; niveaux Léger, Moyen, Fort, réglage Animation, mode rapide.
+* **Auto par plan** : le dosage suit le grain mesuré de chaque plan (une source propre est à peine touchée) ; niveaux Léger, Moyen, Fort, réglage Animation, mode rapide (automatique en UHD).
 * **Compensation de netteté** : rend une partie du détail fin retiré, seulement là où il est stable d'une image à l'autre.
 * **HDR, Dolby Vision, FEL** : traitement en 10 bits, MaxCLL / MaxFALL conservés ou mesurés sur l'image débruitée, métadonnées dynamiques copiées et contrôlées ; débruitage puis interpolation dans le même passage.
 

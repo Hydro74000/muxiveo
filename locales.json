@@ -9582,5 +9582,13 @@
   "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).": {
     "fra": "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).",
     "eng": "Sharpness compensation is missing from the installed MVO video engine: update it (Extensions page)."
+  },
+  "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.": {
+    "fra": "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible.",
+    "eng": "Auto mode: fast above 2560 px wide (UHD), normal below. Fast mode: optical flow computed at a quarter of the resolution instead of half; faster, with a very small quality loss."
+  },
+  "Mode : Auto": {
+    "fra": "Mode : Auto",
+    "eng": "Mode: Auto"
   }
 }

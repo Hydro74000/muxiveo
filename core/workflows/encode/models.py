@@ -319,6 +319,7 @@ class FrameInterpolationSettings:
 
 RESTORE_LEVELS = ("auto", "leger", "moyen", "fort")
 RESTORE_ANIMATION = ("auto", "on", "off")
+RESTORE_MODES = ("auto", "normal", "fast")
 
 
 @dataclass
@@ -326,13 +327,17 @@ class RestoreSettings:
     """Restauration (grain et bruit, réseau R2 de muxiveo-rife ``--restore``), appliquée avant l'interpolation."""
     enabled: bool = False
     level: str = "auto"         # auto | leger | moyen | fort (part du résidu réinjectée, adaptée par plan)
-    fast: bool = False          # flux optique au quart de la définition (poids du mode rapide)
+    # auto (rapide au-delà de 2560 px de large : même détail mesuré en UHD, 34–38 % de temps en moins) | normal | fast
+    # (flux optique au quart de la définition, poids du mode rapide)
+    mode: str = "auto"
     animation: str = "auto"     # auto (genre TMDB « Animation ») | on | off : niveau auto un cran vers fort
     sharpen: bool = True        # compensation de netteté (contre-accentuage temporel du moteur, si disponible)
 
     def __post_init__(self) -> None:
         if self.level not in RESTORE_LEVELS:
             self.level = "auto"
+        if self.mode not in RESTORE_MODES:
+            self.mode = "auto"
         if self.animation not in RESTORE_ANIMATION:
             self.animation = "auto"
 
@@ -341,6 +346,9 @@ class RestoreSettings:
 
     @classmethod
     def from_value(cls, value: object) -> "RestoreSettings":
+        # réglages antérieurs à 5.2.0 : « fast » booléen ; vrai → rapide, faux (ancien défaut) → auto
+        if isinstance(value, dict) and "mode" not in value and "fast" in value:
+            value = {**value, "mode": "fast" if value.get("fast") is True else "auto"}
         return _dataclass_from_value(cls, value)
 
 

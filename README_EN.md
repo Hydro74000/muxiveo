@@ -148,7 +148,7 @@ When recompression, codec conversion, or size reduction is needed, the Encoding 
 *Learned denoiser of the MVO video engine, default "Denoise" filter of the Encoding panel.*
 
 * **Temporal window**: each frame is denoised from 5 frames aligned by the network's own optical flow; grain and noise go, detail confirmed by neighbouring frames stays.
-* **Per-shot Auto**: strength follows the measured grain of each shot (a clean source is barely touched); Light, Medium and Strong levels, Animation setting, fast mode.
+* **Per-shot Auto**: strength follows the measured grain of each shot (a clean source is barely touched); Light, Medium and Strong levels, Animation setting, fast mode (automatic in UHD).
 * **Sharpness compensation**: restores part of the fine detail removed, only where it is stable from frame to frame.
 * **HDR, Dolby Vision, FEL**: 10-bit processing, MaxCLL / MaxFALL kept or measured on the denoised picture, dynamic metadata copied and checked; denoising then interpolation in a single pass.
 
