@@ -135,7 +135,8 @@ def test_editors_do_not_expose_workflow_post_actions() -> None:
 
 def test_signal_bindings_have_no_container_post_patch_hooks() -> None:
     callback_fields = set(SignalBindingServiceCallbacks.__dataclass_fields__)
-    assert callback_fields == {"write_nfo", "remove_path"}
+    # retain_failed : conservation du dossier de travail après un échec d'encodage (sans rapport avec le conteneur)
+    assert callback_fields == {"write_nfo", "remove_path", "retain_failed"}
     assert not hasattr(SignalBindingService, "bind_matroska_segment_muxing_patch")
     for source in (
         ROOT / "core" / "workflows" / "encode" / "workflow.py",
