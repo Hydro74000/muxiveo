@@ -18,7 +18,7 @@ APP_DONATION_URL = "https://paypal.me/muxiveo"
 APP_SCHEMA_BASE_URL = "https://muxiveo.local/schema"
 APP_MACOS_BUNDLE_ID = "com.hydro74000.muxiveo"
 APP_APPSTREAM_ID = "fr.aotr.muxiveo"
-APP_VERSION = "5.1.1"
+APP_VERSION = "5.2.0"
 APP_VERSION_LABEL = f"v{APP_VERSION}"
 
 # Extensions facultatives (dépôt séparé, releases taguées par plugin, jamais « latest »). Version épinglée de
@@ -26,12 +26,12 @@ APP_VERSION_LABEL = f"v{APP_VERSION}"
 # Au-delà, Muxiveo installe la version la plus récente compatible annoncée par le flux (core/plugins.py).
 MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
 # Moteur vidéo MVO (muxiveo-rife : débruitage MVO-R2, interpolation ; modèles, poids du sélecteur, préréglages) : extension mvo-rife.
-MVO_RIFE_VERSION = "1.9.0"
+MVO_RIFE_VERSION = "1.13.0"
 MVO_RIFE_RELEASE_TAG = f"mvo-rife-v{MVO_RIFE_VERSION}"
 # Contrat avec le moteur (muxiveo-rife --capabilities) : flux y4m, nombre de trames, stderr, codes de sortie.
 MVO_RIFE_CONTRACT = 1
 # Accélération NVIDIA (TensorRT for RTX) de muxiveo-rife : extension mvo-rife-trt.
-MVO_RIFE_TRT_VERSION = "1.2.0"
+MVO_RIFE_TRT_VERSION = "1.3.0"
 MVO_RIFE_TRT_RELEASE_TAG = f"mvo-rife-trt-v{MVO_RIFE_TRT_VERSION}"
 # Plancher de mvo-fel dans le flux des extensions (version testée avec ce Muxiveo) ; pas de préinstallation.
 MVO_FEL_VERSION = "0.5.0"
