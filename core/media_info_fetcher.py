@@ -406,6 +406,11 @@ class TmdbFetcher:
     ) -> None:
         self._key = api_key.strip()
         self._bearer_token = bearer_token.strip()
+        if self._key and self._key.startswith("eyJ") and not self._bearer_token:
+            self._bearer_token = self._key
+            self._key = ""
+        if not self._key and not self._bearer_token:
+            self._bearer_token = default_tmdb_bearer_token()
         if not self._key and not self._bearer_token:
             raise TmdbError("Authentification TMDB manquante (clé API ou token Bearer).")
         self._lang = language or "en-US"

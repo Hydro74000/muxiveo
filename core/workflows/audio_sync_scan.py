@@ -134,9 +134,14 @@ def _ponctual_shift(samples, drift_threshold_ms: float) -> float | None:
 
 
 def _stream_spec(track) -> str:
-    """Flux FFmpeg de la piste : index absolu (entier) ou spécificateur tel que `0:a:1`."""
+    """Flux FFmpeg de la piste : index absolu (entier ou chaîne numérique) ou spécificateur tel que `0:a:1`."""
     index = track.stream_index
-    return f"0:{index}" if isinstance(index, int) else str(index)
+    if isinstance(index, int):
+        return f"0:{index}"
+    raw = str(index).strip()
+    if raw.isdigit():
+        return f"0:{raw}"
+    return raw
 
 
 class AudioSyncScanner:
