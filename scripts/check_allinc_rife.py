@@ -29,16 +29,17 @@ sys.path.insert(0, str(ROOT))
 
 from core.version import MVO_RIFE_CONTRACT, MVO_RIFE_VERSION  # noqa: E402
 
-_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/|manifest\.json$|presets\.json$)")
+_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/|restore-models/|manifest\.json$|presets\.json$)")
 
 
 def _extract(package: Path, dest: Path) -> None:
-    """Extrait muxiveo-rife, rife-models/, manifest.json et presets.json de ``package`` dans ``dest``."""
+    """Extrait muxiveo-rife, rife-models/, restore-models/ (graphes MVO-R2), manifest.json et presets.json de
+    ``package`` dans ``dest``."""
     name = package.name
     if name.endswith(".AppImage"):
         package.chmod(package.stat().st_mode | 0o111)
-        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*", "usr/bin/tools/manifest.json",
-                        "usr/bin/tools/presets.json"):
+        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*", "usr/bin/tools/restore-models/*",
+                        "usr/bin/tools/manifest.json", "usr/bin/tools/presets.json"):
             subprocess.run(
                 [str(package.resolve()), "--appimage-extract", pattern],
                 cwd=dest, check=True, stdout=subprocess.DEVNULL,
@@ -48,8 +49,8 @@ def _extract(package: Path, dest: Path) -> None:
             zf.extractall(dest, [n for n in zf.namelist() if _TOOLS_MEMBER.search(n)])
     elif name.endswith(".exe"):
         subprocess.run(
-            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/manifest.json",
-             "tools/presets.json", "-r", "-y"],
+            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/restore-models",
+             "tools/manifest.json", "tools/presets.json", "-r", "-y"],
             check=True, stdout=subprocess.DEVNULL,
         )
     else:
@@ -94,7 +95,7 @@ def check(package: Path) -> list[str]:
             errors.append(f"contrat {manifest.get('contract')} au lieu de {MVO_RIFE_CONTRACT}")
         checked = 0
         for rel, digest in (manifest.get("files") or {}).items():
-            if not (rel.startswith("rife-models/") or rel in (exe.name, "presets.json")):
+            if not (rel.startswith(("rife-models/", "restore-models/")) or rel in (exe.name, "presets.json")):
                 continue
             path = exe.parent / rel
             if not path.is_file():
