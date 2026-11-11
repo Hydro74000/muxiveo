@@ -1882,6 +1882,7 @@ class EncodePanel(QWidget):
         # Débruitage : MVO-R2 (réseau de muxiveo-rife, par défaut) ou NLMeans (FFmpeg) ; options selon le filtre.
         self._r2_available = False
         self._restore_fast_available = False
+        self._restore_sharpen_available = False
         # NLMeans sélectionné faute de MVO-R2 (pas par l'utilisateur) : MVO-R2 rétabli dès qu'il est disponible.
         self._denoise_fallback = False
         self._denoise_cb = QCheckBox("Débruitage")
@@ -1924,12 +1925,22 @@ class EncodePanel(QWidget):
         for label, value in (("Animation : Auto", "auto"), ("Animation : Oui", "on"), ("Animation : Non", "off")):
             self._restore_animation_combo.addItem(label, value)
         self._restore_animation_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_sharpen_combo = QComboBox()
+        self._restore_sharpen_combo.setStyleSheet(_combo_style())
+        self._restore_sharpen_tip = (
+            "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où "
+            "il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré)."
+        )
+        for label, sharpen in (("Netteté : Compensée", True), ("Netteté : Telle quelle", False)):
+            self._restore_sharpen_combo.addItem(label, sharpen)
+        self._restore_sharpen_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
         fl.addWidget(self._build_filter_row(
             self._denoise_cb,
             self._denoise_filter_combo,
             self._restore_level_combo,
             self._restore_mode_combo,
             self._restore_animation_combo,
+            self._restore_sharpen_combo,
             self._nlmeans_strength_combo,
             self._nlmeans_profile_combo,
         ))
@@ -2083,6 +2094,9 @@ class EncodePanel(QWidget):
         available, fast, reason = self._restore_capabilities()
         self._r2_available = available
         self._restore_fast_available = fast
+        rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
+        capabilities = rife_capabilities(rife) if available else None
+        self._restore_sharpen_available = capabilities is not None and capabilities.supports("restore-sharpen")
         combo = self._denoise_filter_combo
         row = combo.findData("mvo-r2")
         model = combo.model()
@@ -2111,7 +2125,8 @@ class EncodePanel(QWidget):
     def _sync_denoise_controls(self) -> None:
         """Options affichées selon le filtre : niveau / mode / animation (MVO-R2), intensité / profil (NLMeans)."""
         r2 = self._denoise_filter() == "mvo-r2"
-        for widget in (self._restore_level_combo, self._restore_mode_combo, self._restore_animation_combo):
+        for widget in (self._restore_level_combo, self._restore_mode_combo, self._restore_animation_combo,
+                       self._restore_sharpen_combo):
             widget.setVisible(r2)
         for widget in (self._nlmeans_strength_combo, self._nlmeans_profile_combo):
             widget.setVisible(not r2)
@@ -2121,6 +2136,11 @@ class EncodePanel(QWidget):
         self._restore_mode_combo.setEnabled(fast)
         # L'animation ne déplace que le niveau Auto.
         self._restore_animation_combo.setEnabled(level == "auto")
+        self._restore_sharpen_combo.setEnabled(self._restore_sharpen_available)
+        self._restore_sharpen_combo.setToolTip(translate_text(
+            self._restore_sharpen_tip if self._restore_sharpen_available
+            else "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
+        ))
         for index in range(self._restore_level_combo.count()):
             item_tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS
                              if value == self._restore_level_combo.itemData(index)), "")
@@ -2148,6 +2168,7 @@ class EncodePanel(QWidget):
             level=str(self._restore_level_combo.currentData() or "auto"),
             fast=bool(self._restore_mode_combo.currentData()) and self._restore_fast_available,
             animation=str(self._restore_animation_combo.currentData() or "auto"),
+            sharpen=bool(self._restore_sharpen_combo.currentData()),
         )
 
     def _apply_denoise_settings(self, filters: VideoFilterSettings, restoration: RestoreSettings) -> None:
@@ -2160,6 +2181,7 @@ class EncodePanel(QWidget):
         self._set_combo_data(self._restore_level_combo, restoration.level)
         self._set_combo_data(self._restore_mode_combo, bool(restoration.fast))
         self._set_combo_data(self._restore_animation_combo, restoration.animation)
+        self._set_combo_data(self._restore_sharpen_combo, bool(restoration.sharpen))
         if restoration.enabled and self._r2_available:
             choice, enabled = "mvo-r2", True
         elif filters.nlmeans_enabled:

@@ -25,7 +25,7 @@ from core.workflows.encode import (
     RestoreSettings,
     VideoEncodeSettings,
 )
-from core.workflows.encode.interpolation import RifeCapabilities, rife_capabilities
+from core.workflows.encode.interpolation import RESTORE_SHARPEN_STRENGTH, RifeCapabilities, rife_capabilities
 from tests.integration._synth import ffprobe_json, streams_of_type, wait_task
 
 
@@ -220,7 +220,10 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str, dec
         assert "MaxCLL/MaxFALL exacts de l'image débruitée" in text
     colour, sei = _light_levels(out)
     # Image restaurée mesurée avant l'encodage (comme pour le FEL) : Restauration déterministe, mêmes valeurs exactes.
-    assert colour == sei == ((1000, 400) if declared else _measured(src, "--restore", "fort"))
+    # compensation de netteté active par défaut : passée au moteur s'il la propose
+    sharpen = (["--restore-sharpen", f"{RESTORE_SHARPEN_STRENGTH:g}"]
+               if "restore-sharpen" in (rife_capabilities(str(RIFE_BIN)) or _NO_CAPS).options else [])
+    assert colour == sei == ((1000, 400) if declared else _measured(src, "--restore", "fort", *sharpen))
     assert _frames(out) == _frames(src)
 
 

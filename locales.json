@@ -9566,5 +9566,21 @@
   "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).": {
     "fra": "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).",
     "eng": "Temporary files kept: {path} (offered for cleanup at next startup)."
+  },
+  "Netteté : Compensée": {
+    "fra": "Netteté : Compensée",
+    "eng": "Sharpness: Compensated"
+  },
+  "Netteté : Telle quelle": {
+    "fra": "Netteté : Telle quelle",
+    "eng": "Sharpness: As is"
+  },
+  "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré).": {
+    "fra": "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré).",
+    "eng": "Sharpness compensation: restores a small part of the fine detail removed by denoising, only where it is stable from frame to frame (never the grain, never more than what was removed)."
+  },
+  "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).": {
+    "fra": "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions).",
+    "eng": "Sharpness compensation is missing from the installed MVO video engine: update it (Extensions page)."
   }
 }

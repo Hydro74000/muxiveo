@@ -32,6 +32,7 @@ from core.workflows.encode import (
 from core.workflows.encode.domain import EncodeCodecDomainCallbacks
 from core.workflows.encode.domain.codecs import resolve_output_bit_depth
 from core.workflows.encode.interpolation import (
+    RESTORE_SHARPEN_STRENGTH,
     InterpolationSource,
     RifeCapabilities,
     build_rife_stage,
@@ -114,6 +115,27 @@ class TestEngineArgs:
         assert "--restore-animation" not in restore_args_for(_video(restoration=_restore(animation="off")),
                                                              InterpolationSource(), animation=True)
         assert "--restore-animation" in restore_args_for(_video(), InterpolationSource(), animation=True)
+
+    def test_sharpen_only_when_the_engine_offers_it(self):
+        assert "--restore-sharpen" not in restore_engine_args(_restore(), transfer="pq")  # moteur sans l'option
+        args = restore_engine_args(_restore(), transfer="pq", sharpen=True)
+        assert args[args.index("--restore-sharpen") + 1] == f"{RESTORE_SHARPEN_STRENGTH:g}"
+        assert "--restore-sharpen" not in restore_engine_args(_restore(sharpen=False), transfer="pq", sharpen=True)
+
+    def test_sharpen_follows_engine_capabilities(self):
+        target = "core.workflows.encode.interpolation.rife_capabilities"
+        with patch(target, return_value=_caps(options=("restore", "restore-sharpen"))):
+            assert "--restore-sharpen" in restore_args_for(_video(), InterpolationSource(), rife_bin="/opt/rife")
+            assert "--restore-sharpen" not in restore_args_for(_video(restoration=_restore(sharpen=False)),
+                                                               InterpolationSource(), rife_bin="/opt/rife")
+        with patch(target, return_value=_caps()):
+            assert "--restore-sharpen" not in restore_args_for(_video(), InterpolationSource(), rife_bin="/opt/rife")
+        assert "--restore-sharpen" not in restore_args_for(_video(), InterpolationSource())  # moteur inconnu
+
+    def test_sharpen_setting_defaults_on_and_survives_roundtrip(self):
+        assert RestoreSettings().sharpen is True
+        assert RestoreSettings.from_value({"enabled": True}).sharpen is True  # anciens profils : compensation active
+        assert RestoreSettings.from_value({"enabled": True, "sharpen": False}).sharpen is False
 
     def test_without_restoration_no_args(self):
         assert restore_args_for(VideoEncodeSettings(codec="libx265"), InterpolationSource()) == []

@@ -328,6 +328,7 @@ class RestoreSettings:
     level: str = "auto"         # auto | leger | moyen | fort (part du résidu réinjectée, adaptée par plan)
     fast: bool = False          # flux optique au quart de la définition (poids du mode rapide)
     animation: str = "auto"     # auto (genre TMDB « Animation ») | on | off : niveau auto un cran vers fort
+    sharpen: bool = True        # compensation de netteté (contre-accentuage temporel du moteur, si disponible)
 
     def __post_init__(self) -> None:
         if self.level not in RESTORE_LEVELS:

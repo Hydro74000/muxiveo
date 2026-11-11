@@ -1125,7 +1125,7 @@ class EncodeWorkflow(QObject):
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
             interpolate=video.interpolates(),
-            restore_args=_restore_args_for(video, info),
+            restore_args=_restore_args_for(video, info, rife_bin=self._rife_bin or ""),
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 

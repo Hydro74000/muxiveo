@@ -177,7 +177,7 @@ class VideoOnlyCommandBuilder:
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
             interpolate=video.interpolates(),
-            restore_args=restore_args_for(video, info),
+            restore_args=restore_args_for(video, info, rife_bin=cb.rife_bin),
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

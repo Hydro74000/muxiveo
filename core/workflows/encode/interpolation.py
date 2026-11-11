@@ -454,9 +454,11 @@ def restore_engine_args(
     model_dir: str = "",
     animation: bool = False,
     dither: str = "auto",
+    sharpen: bool = False,
 ) -> list[str]:
     """Options de Restauration de muxiveo-rife (``--restore`` …) ; ``dither`` « 8 » : sortie 10 bits destinée à un
-    encodeur 8 bits (codes multiples de 4, conversion exacte en aval)."""
+    encodeur 8 bits (codes multiples de 4, conversion exacte en aval) ; ``sharpen`` : le moteur accepte
+    ``--restore-sharpen`` (compensation de netteté appliquée si ``restore.sharpen``)."""
     args = ["--restore", restore.level, "--transfer", transfer or "sdr"]
     if restore.fast:
         args.append("--restore-fast")
@@ -466,21 +468,25 @@ def restore_engine_args(
         args.append("--restore-animation")
     if dither != "auto":
         args.extend(["--restore-dither", dither])
+    if sharpen and restore.sharpen:
+        args.extend(["--restore-sharpen", f"{RESTORE_SHARPEN_STRENGTH:g}"])
     return args
 
 
 def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *, model_dir: str = "",
-                     animation: bool = False) -> list[str]:
+                     animation: bool = False, rife_bin: str = "") -> list[str]:
     """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
     (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits,
-    statistiques des trames si MaxCLL/MaxFALL sont mesurés sur l'image débruitée."""
+    compensation de netteté si le moteur ``rife_bin`` la propose, statistiques des trames si MaxCLL/MaxFALL sont
+    mesurés sur l'image débruitée."""
     if not video.restores():
         return []
     from core.workflows.encode.domain.codecs import resolve_output_bit_depth
     settings = video.restoration
     animated = settings.animation == "on" or (settings.animation == "auto" and animation)
     args = restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
-                               dither="8" if resolve_output_bit_depth(video) == 8 else "auto")
+                               dither="8" if resolve_output_bit_depth(video) == 8 else "auto",
+                               sharpen=bool(rife_bin) and settings.sharpen and rife_supports(rife_bin, "restore-sharpen"))
     if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image débruitée (sources PQ)
         args.extend(["--frame-statistics", str(video.restore_statistics)])
         if video.restore_source_statistics is not None:
@@ -655,6 +661,10 @@ def rife_support_errors(
 
 
 RESTORE_MIN_VERSION = (1, 12, 0)  # premier muxiveo-rife à étage de Restauration (--restore)
+# Compensation de netteté (--restore-sharpen) : force du contre-accentuage temporel (décision 24 ; banc du 2026-11-11 :
+# détail + 0,044, grain + 0,016, pompage inchangé) ; le moteur ne rend jamais plus que ce que le débruitage a retiré.
+# Option du moteur détectée par ses capacités
+RESTORE_SHARPEN_STRENGTH = 1.0
 
 
 def restore_model_name(restore: RestoreSettings) -> str:
@@ -1206,6 +1216,7 @@ __all__ = [
     "rife_support_errors",
     "rife_model_available",
     "RESTORE_MIN_VERSION",
+    "RESTORE_SHARPEN_STRENGTH",
     "restore_model_name",
     "restore_support_errors",
     "restore_args_for",

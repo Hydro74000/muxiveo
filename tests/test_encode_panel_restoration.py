@@ -149,3 +149,17 @@ def test_profile_roundtrip(panel, tmp_path):
     panel._load_profile()
     assert panel._denoise_filter() == "nlmeans" and panel._current_filter_settings().nlmeans_enabled
     assert not panel._current_restore_settings().enabled
+
+
+def test_sharpen_option_follows_the_engine(panel):
+    _sync(panel, _caps())
+    assert not panel._restore_sharpen_combo.isEnabled() and "mettre à jour" in panel._restore_sharpen_combo.toolTip()
+    _sync(panel, _caps(options=("restore", "restore-sharpen")))
+    assert panel._restore_sharpen_combo.isEnabled() and not panel._restore_sharpen_combo.isHidden()
+    panel._apply_denoise_settings(VideoFilterSettings(), RestoreSettings(enabled=True, sharpen=False))
+    assert panel._current_restore_settings().sharpen is False
+    panel._apply_denoise_settings(VideoFilterSettings(), RestoreSettings(enabled=True))
+    assert panel._current_restore_settings().sharpen is True
+    panel._denoise_cb.setChecked(True)
+    panel._set_combo_data(panel._denoise_filter_combo, "nlmeans")
+    assert panel._restore_sharpen_combo.isHidden()
