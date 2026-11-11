@@ -407,6 +407,9 @@ class VideoEncodeSettings:
     # Provenance de MaxCLL/MaxFALL quand elle diffère de celle du Master Display
     # ("rpu_estimate" : complété au lancement depuis le RPU d'une source P5).
     static_hdr_light_level_source: str = ""
+    # Provenance du Master Display saisi dans le panneau : "source" (valeur de la source, non modifiée),
+    # "manual" (saisie) ; "" inconnu (profils antérieurs, CLI : la valeur est conservée).
+    static_hdr_master_display_source: str = ""
     static_hdr_metadata_confidence: str = ""
     static_hdr_metadata_analysis_mode: str = ""
     static_hdr_metadata_analysis_request: str = ""
@@ -445,6 +448,10 @@ class VideoEncodeSettings:
     # RPU d'une source P5 converti en P8.1 (``dovi_tool -m 3 extract-rpu``), extrait
     # une fois à la préparation et réutilisé par les runtimes (copie DV active).
     p5_rpu_path:      Path | None  = None
+    # RPU Dolby Vision complet de la source (mode 0), extrait une fois à la préparation et
+    # complété si des images n'en portent pas (``dovi_rpu_gaps``) ; les runtimes en dérivent
+    # leur RPU (P8.1, recadrage) au lieu de relire la source.
+    source_rpu_path:  Path | None  = None
     # Recadrage absolu (gauche, haut, droite, bas) que le RPU réinjecté doit suivre
     # (offsets L5 par scène). Posé par le workflow (``resolve_ffmpeg_dovi_geometry``).
     dovi_rpu_crop:    tuple[int, int, int, int] | None = None

@@ -21,3 +21,6 @@ class FelExecution:
     # Statistiques de l'image produite (plugin ≥ 0.3.0) : HDR10+ et MaxCLL/MaxFALL recalculés après
     # l'encodage ; None : HDR10+ de la source conservé.
     statistics: Path | None = None
+    # Master Display d'origine (BL) quand la préparation le remplace par celui du master DV (L6) ;
+    # "" : inchangé. Restauré lors d'une reprise BL.
+    original_master_display: str = ""

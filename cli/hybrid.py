@@ -55,7 +55,8 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
         ]
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         res = subprocess.run(cmd, capture_output=True, timeout=10, **subprocess_text_kwargs())  # nosec B603
-        output = res.stdout.strip().lower()
+        # CSV : champs vides ajoutés par les side data de flux (Dolby Vision) → « video, ».
+        output = res.stdout.strip().split(",", 1)[0].strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output
     except Exception:  # nosec B110

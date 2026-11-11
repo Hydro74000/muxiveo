@@ -580,7 +580,8 @@ class HdrMetadataProbeService:
             return ""
         if result.returncode != 0:
             return ""
-        transfer = (result.stdout or "").strip().lower()
+        # Sortie CSV : FFmpeg ≥ 8.1 ajoute un champ (vide) par side data de flux (Dolby Vision) → « smpte2084, ».
+        transfer = (result.stdout or "").strip().split(",", 1)[0].strip().lower()
         if transfer in {"smpte2084", "smpte2084le"}:
             return "pq"
         if transfer in {"arib-std-b67", "bt2020-10", "bt2020-12"}:

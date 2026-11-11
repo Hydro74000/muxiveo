@@ -10,7 +10,9 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import run_cancellable_capture
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
-from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, dovi_geometry_edit_json
+from core.workflows.encode.runtime.dovi_geometry import (
+    convert_p7_rpu_to_p81, crop_dovi_rpu, dovi_geometry_edit_json, prepared_source_rpu,
+)
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
@@ -197,7 +199,9 @@ class MultiVideoPipelineRunner:
             # FEL : le RPU original extrait à la préparation évite une relecture complète de la source.
             fel_rpu = video.fel_context.original_rpu if video.fel_context is not None else None
             reuse_fel_rpu = bool(video.copy_dv and fel_rpu is not None and fel_rpu.is_file())
-            if needs_annexb and ((video.copy_dv and not reuse_fel_rpu) or video.copy_hdr10plus):
+            # RPU de la source extrait (et complété) à la préparation : dérivé sans relecture.
+            prepared_rpu = bool(video.copy_dv and video.source_rpu_path is not None and video.source_rpu_path.is_file())
+            if needs_annexb and ((video.copy_dv and not reuse_fel_rpu and not prepared_rpu) or video.copy_hdr10plus):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
@@ -222,10 +226,14 @@ class MultiVideoPipelineRunner:
                     if reuse_fel_rpu and needs_annexb:
                         raise EncodeError("Dolby Vision : RPU FEL original inattendu (profil autre que 7).")
                     mode = rpu_extract_mode(video)
-                    run_cmd([
-                        cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
-                        "-i", str(meta_input), "-o", str(rpu_bin),
-                    ], f"dovi-extract-{index}")
+                    if prepared_source_rpu(
+                        video, dovi_tool_bin=cb.bins["dovi_tool"], target=rpu_bin, mode=mode,
+                        run_cmd=lambda cmd: run_cmd(cmd, f"dovi-source-rpu-{index}"),
+                    ) is None:
+                        run_cmd([
+                            cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
+                            "-i", str(meta_input), "-o", str(rpu_bin),
+                        ], f"dovi-extract-{index}")
                     local_cleanup.append(rpu_bin)
                     rpu_p81 = rpu_bin.with_name(f"{rpu_bin.stem}.p81.bin")
                     # Source au record P8 portant un RPU P7 : image réencodée sans couche d'amélioration.

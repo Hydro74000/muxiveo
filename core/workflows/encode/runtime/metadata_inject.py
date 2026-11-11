@@ -48,7 +48,9 @@ from core.fel.hdr10plus import (
 )
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
-from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu
+from core.workflows.encode.runtime.dovi_geometry import (
+    convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu, prepared_source_rpu,
+)
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
@@ -393,7 +395,13 @@ class MetadataInjectRunner:
                     # non respectée) : illisible par dovi_tool / hdr10plus_tool.
                     or (meta_src_ext == ".mkv" and not strict_demuxer_reads_tracks(meta_src))
                 )
-                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                # RPU de la source extrait (et complété) à la préparation : dérivé sans relecture.
+                prepared_rpu = bool(
+                    video.copy_dv and not rpu_preextracted and video.source_rpu_path is not None
+                    and video.source_rpu_path.is_file()
+                )
+                extract_annexb = needs_annexb and ((video.copy_dv and not prepared_rpu) or video.copy_hdr10plus)
+                if extract_annexb:
                     annexb_src = _alloc("source.hevc", src_size_est)
                     signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")
                     annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
@@ -410,11 +418,14 @@ class MetadataInjectRunner:
                     meta_input = meta_src
 
                 if video.copy_dv and not rpu_preextracted:
-                    signals.progress.emit("Extraction RPU Dolby Vision…")
-                    _run([
-                        cb.bins["dovi_tool"], "extract-rpu",
-                        "-i", str(meta_input), "-o", str(rpu_bin),
-                    ])
+                    if not prepared_rpu or prepared_source_rpu(
+                        video, dovi_tool_bin=cb.bins["dovi_tool"], target=rpu_bin, mode=None, run_cmd=lambda c: _run(c),
+                    ) is None:
+                        signals.progress.emit("Extraction RPU Dolby Vision…")
+                        _run([
+                            cb.bins["dovi_tool"], "extract-rpu",
+                            "-i", str(meta_input), "-o", str(rpu_bin),
+                        ])
                     _check()
                     # Vidéo injectée toujours sans couche d'amélioration (P7 converti
                     # en amont) : un RPU P7 restant (record P8 d'un fichier mal
@@ -446,7 +457,7 @@ class MetadataInjectRunner:
                     ])
                     _check()
 
-                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                if extract_annexb:
                     _free(meta_input)
 
                 # Interpolation RIFE : une trame source -> ``factor`` trames

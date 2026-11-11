@@ -627,6 +627,7 @@ class NvenccDirectOutputRunner:
                     )
                 from core.workflows.encode.runtime.dovi_geometry import (
                     align_dovi_rpu_geometry, convert_p7_rpu_to_p81, dovi_geometry_edit_json, extract_dovi_rpu,
+                    prepared_source_rpu,
                 )
 
                 dovi_bin = (cb.bins.get("dovi_tool") if cb.bins else None) or "dovi_tool"
@@ -654,15 +655,19 @@ class NvenccDirectOutputRunner:
                         dovi_tool_bin=dovi_bin, rpu_bin=fel.original_rpu, output_rpu=target, run_cmd=run_metadata,
                     ):
                         return target
-                    signals.progress.emit("Extraction RPU Dolby Vision…")
                     mode = rpu_extract_mode(runtime_video)
-                    rpu = extract_dovi_rpu(
-                        source=routing.input_path, stream_index=routing.stream_index,
-                        ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
-                        output_rpu=target, work_dir=cwd, run_cmd=run_metadata,
-                        cleanup_paths=cleanup_paths,
-                        mode=mode,
-                    )
+                    # RPU de la source extrait (et complété) à la préparation : dérivé sans relecture.
+                    rpu = prepared_source_rpu(runtime_video, dovi_tool_bin=dovi_bin, target=target, mode=mode,
+                                              run_cmd=run_metadata)
+                    if rpu is None:
+                        signals.progress.emit("Extraction RPU Dolby Vision…")
+                        rpu = extract_dovi_rpu(
+                            source=routing.input_path, stream_index=routing.stream_index,
+                            ffmpeg_bin=cb.ffmpeg_bin, dovi_tool_bin=dovi_bin,
+                            output_rpu=target, work_dir=cwd, run_cmd=run_metadata,
+                            cleanup_paths=cleanup_paths,
+                            mode=mode,
+                        )
                     # Source au record P8 portant un RPU P7 (fichier mal étiqueté).
                     converted = target.with_name(f"{target.stem}.p81.bin")
                     cleanup_paths.append(converted)
@@ -709,8 +714,10 @@ class NvenccDirectOutputRunner:
                 # NVEncC ne convertit pas le profil du RPU) ou pipe y4m du moteur (interpolation,
                 # Restauration : aucune copie possible depuis le pipe, même à cadence inchangée).
                 engine_pipe = needs_ffmpeg_pipe and runtime_video.uses_engine()
+                # RPU préparé (complété des images sans RPU) : transmis en fichier plutôt que recopié du flux.
+                prepared_rpu = runtime_video.source_rpu_path is not None and runtime_video.source_rpu_path.is_file()
                 if runtime_video.copy_dv and dovi_rpu_path is None and (
-                    rpu_extract_mode(runtime_video) is not None or frame_ratio > 1 or engine_pipe
+                    rpu_extract_mode(runtime_video) is not None or frame_ratio > 1 or engine_pipe or prepared_rpu
                 ):
                     dovi_rpu_path = source_rpu(cwd / "source_rpu.bin")
                 expected_frames: int | None = None

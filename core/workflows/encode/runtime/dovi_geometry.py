@@ -299,6 +299,32 @@ def convert_p7_rpu_to_p81(
     return True
 
 
+def prepared_source_rpu(
+    video: object, *, dovi_tool_bin: str, target: Path, mode: str | None,
+    run_cmd: Callable[[list[str]], object],
+) -> Path | None:
+    """RPU dérivé de celui que la préparation a extrait et complété (``source_rpu_path``), sans relire la source.
+
+    ``mode`` : mode d'extraction du runtime (``"2"`` : P8.1 par l'éditeur, identique octet pour octet à
+    ``-m 2 extract-rpu`` ; ``None``/``"0"`` : copie). P5 (``"3"``) : RPU préparé à part (``p5_rpu_path``).
+    None sans RPU préparé. ``target`` reçoit toujours une copie : l'appelant peut la supprimer.
+    """
+    prepared = getattr(video, "source_rpu_path", None)
+    if prepared is None or not Path(prepared).is_file() or mode == "3":
+        return None
+    target.unlink(missing_ok=True)
+    if mode and mode != "0":
+        edit_json = target.with_suffix(f".mode{mode}.json")
+        edit_json.write_text(json.dumps({"mode": int(mode)}), encoding="utf-8")
+        try:
+            run_cmd([dovi_tool_bin, "editor", "-i", str(prepared), "-j", str(edit_json), "-o", str(target)])
+        finally:
+            edit_json.unlink(missing_ok=True)
+    else:
+        shutil.copyfile(Path(prepared), target)
+    return target
+
+
 def align_dovi_rpu_geometry(
     *, dovi_tool_bin: str, rpu_input: Path, output_rpu: Path,
     crop_offsets: tuple[int, int, int, int] = (0, 0, 0, 0),

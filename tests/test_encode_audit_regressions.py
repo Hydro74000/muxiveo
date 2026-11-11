@@ -1055,3 +1055,31 @@ def test_audit_a10_measured_costs_still_block_in_mib(qt_app, tmp_path, monkeypat
                        audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")], copy_subtitles=False)
     errors = wf.size_target_errors(cfg)
     assert errors and "inatteignable" in errors[0] and "Mio demandés" in errors[0]
+
+
+@pytest.mark.parametrize(("stdout", "expected"), [
+    ("smpte2084\n", "pq"),
+    ("smpte2084,\n", "pq"),  # FFmpeg 8.1 : champ vide de la side data Dolby Vision
+    ("arib-std-b67,,\n", "hlg"),
+    ("bt709,\n", ""),
+])
+def test_source_hdr_transfer_reads_first_csv_field(monkeypatch, stdout, expected):
+    import subprocess
+
+    from core.workflows.encode.runtime import hdr_metadata
+
+    service = hdr_metadata.HdrMetadataProbeService.__new__(hdr_metadata.HdrMetadataProbeService)
+    monkeypatch.setattr(service, "_ffprobe_bin", lambda: "ffprobe", raising=False)
+    monkeypatch.setattr(hdr_metadata.subprocess, "run",
+                        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=""))
+    assert service.source_hdr_transfer(Path("/x.mkv"), 0) == expected
+
+
+def test_detect_stream_kind_reads_first_csv_field(monkeypatch):
+    import subprocess
+
+    import cli.hybrid as hybrid
+
+    monkeypatch.setattr(hybrid.subprocess, "run",
+                        lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, stdout="video,\n", stderr=""))
+    assert hybrid.detect_stream_kind("ffprobe", Path("/x.mkv"), "0", default="audio") == "video"
