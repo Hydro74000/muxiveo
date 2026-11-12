@@ -14,7 +14,7 @@
 
 ## Nouveautés
 
-* **Débruitage MVO-R2 (moteur vidéo MVO 1.13.0).** Nouveau débruiteur appris, proposé par défaut dans le filtre « Débruitage » du panneau Encodage (NLMeans reste disponible au choix). Chaque image est débruitée à partir d'une fenêtre de 5 images recalées par le flux optique du réseau : le grain et le bruit sont retirés, le détail confirmé par les images voisines est gardé.
+* **Débruitage MVO-R2 (moteur vidéo MVO 1.14.0).** Nouveau débruiteur appris, proposé par défaut dans le filtre « Débruitage » du panneau Encodage (NLMeans reste disponible au choix). Chaque image est débruitée à partir d'une fenêtre de 5 images recalées par le flux optique du réseau : le grain et le bruit sont retirés, le détail confirmé par les images voisines est gardé.
   * **Niveaux** : *Auto* (dosage décidé plan par plan d'après le grain mesuré : une source propre est à peine touchée), *Léger*, *Moyen*, *Fort*. Contenu animé (genre « Animation » de la fiche TMDB, ou réglage manuel) : l'Auto retire un cran de plus.
   * **Compensation de netteté** (liste « Netteté », active par défaut) : rend une partie du détail fin que le débruitage a retiré, seulement là où il est stable d'une image à l'autre — jamais le grain, jamais plus que ce qui a été retiré.
   * **Mode Auto (par défaut)** : mode rapide au-delà de 2560 px de large — en UHD, il garde le même détail que le mode normal pour environ un tiers de temps en moins — et mode normal en dessous. Mode rapide : flux optique calculé au quart de la définition.
@@ -47,7 +47,7 @@
 
 ## New features
 
-* **MVO-R2 denoising (MVO video engine 1.13.0).** A new learned denoiser, now the default in the Encoding panel's "Denoise" filter (NLMeans remains available). Each frame is denoised from a window of 5 frames aligned by the network's own optical flow: grain and noise are removed while detail confirmed by neighbouring frames is kept.
+* **MVO-R2 denoising (MVO video engine 1.14.0).** A new learned denoiser, now the default in the Encoding panel's "Denoise" filter (NLMeans remains available). Each frame is denoised from a window of 5 frames aligned by the network's own optical flow: grain and noise are removed while detail confirmed by neighbouring frames is kept.
   * **Levels**: *Auto* (strength decided shot by shot from the measured grain: a clean source is barely touched), *Light*, *Medium*, *Strong*. Animated content (TMDB "Animation" genre, or manual setting): Auto removes one step more.
   * **Sharpness compensation** ("Sharpness" list, on by default): restores part of the fine detail removed by denoising, only where it is stable from frame to frame — never the grain, never more than what was removed.
   * **Auto mode (default)**: fast mode above 2560 px wide — in UHD it keeps the same detail as normal mode in about a third less time — and normal mode below. Fast mode: optical flow computed at a quarter of the resolution.
