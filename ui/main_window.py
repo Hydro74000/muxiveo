@@ -114,7 +114,13 @@ from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.dialogs.update_dialog import UpdateDialog, install_unavailable_reason
 from ui.panels.extensions_panel import ExtensionsPanel
-from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
+from ui.plugin_controller import (
+    FelPluginController,
+    NvenccController,
+    PluginController,
+    RifePluginController,
+    TrtPluginController,
+)
 from ui.operation_bar import OperationBar, OperationState
 from ui.styles import workflow_icon
 from ui.widgets.log_panel import LogPanel, split_log_source
@@ -1021,6 +1027,10 @@ class DashboardPage(QWidget):
             )
         )
 
+    def start_hw_detection(self) -> None:
+        """Relance la détection des encodeurs (outil NVEncC installé ou supprimé depuis la page Extensions)."""
+        self._start_hw_detection()
+
     def _on_hw_detected(self, available: set[str]) -> None:
         """Slot Qt (thread principal) : met à jour les badges HW."""
         for codec_id, (badge, label) in self._hw_badges.items():
@@ -1721,6 +1731,7 @@ class MainWindow(QMainWindow):
         self._rife_controller = RifePluginController(self._config, self)
         self._fel_controller = FelPluginController(self._config, self)
         self._trt_controller = TrtPluginController(self._config, self)
+        self._nvencc_controller = NvenccController(self._config, self)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
@@ -2173,15 +2184,38 @@ class MainWindow(QMainWindow):
         for ctrl in (rife, trt, fel):
             ctrl.cleanup()
             ctrl.refresh_feed()
+        self._wire_nvencc_extension()
+
+    def _wire_nvencc_extension(self) -> None:
+        """NVEncC (extension externe) : carte de la page Extensions ; outil changé → configuration, encodeurs."""
+        nvencc = self._nvencc_controller
+        panel = self._extensions_panel
+        nvencc.state_changed.connect(panel.set_nvencc_state)
+        nvencc.state_changed.connect(self._refresh_extensions_update_dot, Qt.ConnectionType.QueuedConnection)
+        nvencc.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
+        nvencc.tool_changed.connect(self._on_nvencc_tool_changed, Qt.ConnectionType.QueuedConnection)
+        panel.set_nvencc_state(nvencc.state())
+        nvencc.refresh(fetch_target=True)
+
+    def _on_nvencc_tool_changed(self) -> None:
+        """NVEncC installé ou supprimé : nouvelle résolution, détection des encodeurs, nouvel état de la carte."""
+        self._config.refresh_nvencc_tool()
+        self._encode_panel.refresh_nvencc_tool()
+        self._dashboard.start_hw_detection()
+        self._nvencc_controller.refresh()
 
     def _refresh_extensions_update_dot(self, *_args: object) -> None:
         """Point vert sur « Extensions » : une mise à jour attend une action de l'utilisateur."""
         pending = any(
-            ctrl.manual_update_pending for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)
+            ctrl.manual_update_pending for ctrl in (
+                self._rife_controller, self._trt_controller, self._fel_controller, self._nvencc_controller,
+            )
         )
         self._sidebar.set_page_update_available(self._PAGE_INDEX_BY_PANEL_KEY["extensions"], pending)
 
-    def _extension_controller(self, plugin_id: str) -> PluginController:
+    def _extension_controller(self, plugin_id: str) -> PluginController | NvenccController:
+        if plugin_id == NvenccController.plugin_id:
+            return self._nvencc_controller
         return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
 
     def _on_extension_install_requested(self, plugin_id: str) -> None:
@@ -2191,6 +2225,18 @@ class MainWindow(QMainWindow):
             self._extension_controller(plugin_id).install()
 
     def _on_extension_remove_requested(self, plugin_id: str) -> None:
+        if plugin_id == NvenccController.plugin_id:
+            answer = QMessageBox.question(
+                self,
+                translate_text("NVEncC (encodeur NVIDIA)"),
+                translate_text(
+                    "Supprimer NVEncC du dossier utilisateur ? Les encodeurs NVEncC ne seront plus proposés ; "
+                    "il peut être réinstallé à tout moment depuis la page Extensions."
+                ),
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._nvencc_controller.remove()
+            return
         if plugin_id == self._fel_controller.spec.id:
             self._fel_controller.remove()
             return
@@ -3563,7 +3609,7 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
-            for name in ("_rife_controller", "_trt_controller", "_fel_controller"):
+            for name in ("_rife_controller", "_trt_controller", "_fel_controller", "_nvencc_controller"):
                 controller = getattr(self, name, None)
                 if controller is not None:
                     controller.shutdown()

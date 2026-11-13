@@ -3,7 +3,8 @@ ui/panels/extensions_panel.py — Page « Extensions » : installation, mise à 
 
 Extensions compatibles avec la machine en tête ; les incompatibles sont repliées avec leur raison (jamais
 masquées sans explication). Les opérations sont confiées aux contrôleurs (ui/plugin_controller.py) par signaux,
-avec l'identifiant de l'extension (``mvo-rife``, ``mvo-rife-trt``).
+avec l'identifiant de l'extension (``mvo-rife``, ``mvo-rife-trt``, ``mvo-fel``, ``nvencc``). NVEncC est une
+extension externe (rigaya/NVEnc) : paquet système, dossier utilisateur, ou intégrée au paquet AllInc.
 """
 
 from __future__ import annotations
@@ -22,10 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import plugins
+from core import nvencc_install, plugins
 from core.config import AppConfig
 from core.i18n import apply_translations, translate_text
 from ui.design_system import font_px as _font_px, scale as _scale
+from ui.plugin_controller import NvenccController, nvencc_method_label
 from ui.panels.encode_panel.theme import (
     _C,
     _card,
@@ -37,7 +39,7 @@ from ui.panels.encode_panel.theme import (
 )
 
 # Ordre d'affichage des cartes.
-_ORDER = (plugins.RIFE_PLUGIN_ID, plugins.TRT_PLUGIN_ID, plugins.FEL_PLUGIN_ID)
+_ORDER = (plugins.RIFE_PLUGIN_ID, plugins.TRT_PLUGIN_ID, plugins.FEL_PLUGIN_ID, NvenccController.plugin_id)
 
 
 class _ExtensionCard(QFrame):
@@ -224,7 +226,13 @@ class ExtensionsPanel(QWidget):
             "Intègre la couche FEL à l’image avant les filtres et l’encodage. "
             "Fonctionne sur CPU, avec ou sans conservation du RPU Dolby Vision.",
         )
-        for card in (self._rife_card, self._trt_card, self._fel_card):
+        self._nvencc_card = _ExtensionCard(
+            NvenccController.plugin_id, "NVEncC (encodeur NVIDIA) — extension externe",
+            "Encodeur NVIDIA autonome NVEncC (rigaya/NVEnc) proposé par le panneau Encodage. Installé par le "
+            "gestionnaire de paquets du système (apt, dnf), sinon dans votre dossier utilisateur (distribution "
+            "immuable, Windows) ; déjà intégré au paquet AllInc. Requiert un GPU NVIDIA.",
+        )
+        for card in (self._rife_card, self._trt_card, self._fel_card, self._nvencc_card):
             card.install_btn.clicked.connect(lambda _=False, c=card: self.install_requested.emit(c.plugin_id))
             card.update_btn.clicked.connect(lambda _=False, c=card: self.update_requested.emit(c.plugin_id))
             card.remove_btn.clicked.connect(lambda _=False, c=card: self.remove_requested.emit(c.plugin_id))
@@ -310,6 +318,52 @@ class ExtensionsPanel(QWidget):
             "" if published else translate_text("Version publiée indisponible.")
         )))
         card.sync_buttons(state, offer_install=compatible, install_enabled=compatible and published)
+        self._sync_sections()
+
+    def set_nvencc_state(self, state: object) -> None:
+        """Carte NVEncC selon l'état de l'extension externe (NvenccState)."""
+        card = self._nvencc_card
+        tool = getattr(state, "tool", None)
+        supported = bool(getattr(state, "supported", False))
+        nvidia = getattr(state, "nvidia", None)
+        probing = supported and nvidia is None and tool is None
+        compatible = supported and (bool(nvidia) or tool is not None)
+        self._place(card, compatible=compatible or probing)
+        status = _busy_status(state)
+        if status and getattr(state, "busy", "") in ("install", "update") and getattr(state, "progress", -1) >= 100:
+            status = translate_text("Installation en cours…")
+        if status:
+            pass
+        elif probing:
+            status = translate_text("Vérification de la compatibilité de cette machine…")
+        elif tool is None and not supported:
+            status = translate_text("Non compatible : NVEncC n'existe que pour Linux et Windows x86-64.")
+        elif tool is None and not nvidia:
+            status = translate_text("Non compatible : aucun GPU NVIDIA détecté.")
+        elif tool is None:
+            status = translate_text(
+                "Non installée. Installation : {method}.",
+                method=translate_text(nvencc_method_label(str(getattr(state, "method", "") or ""))),
+            )
+        else:
+            version = getattr(tool, "version", "") or "?"
+            path = str(getattr(tool, "path", ""))
+            provenance = getattr(tool, "provenance", "")
+            if provenance == nvencc_install.PROVENANCE_BUNDLED:
+                status = translate_text("Version {version} intégrée au paquet ({path}).", version=version, path=path)
+            elif provenance == nvencc_install.PROVENANCE_USER:
+                status = translate_text("Version {version} installée dans {path}.", version=version, path=path)
+                if getattr(state, "update_available", False):
+                    status += " " + translate_text("Version {version} disponible.", version=getattr(state, "target", ""))
+            else:
+                status = translate_text(
+                    "Version {version} installée ({path}) : mise à jour par le gestionnaire de paquets du système.",
+                    version=version, path=path,
+                )
+        card.status.setText(status)
+        card.show_message(str(getattr(state, "message", "") or ""))
+        card.sync_buttons(state, offer_install=compatible, install_enabled=compatible and not probing)
+        card.remove_btn.setVisible(bool(getattr(state, "managed", False)))
         self._sync_sections()
 
     def set_trt_state(self, state: object) -> None:

@@ -257,3 +257,51 @@ def test_apply_update_phase_routes_before_anything(monkeypatch):
     monkeypatch.setattr(launcher, "_run_first_time_setup", MagicMock(side_effect=AssertionError("setup lancé")))
     assert launcher.main() == 0
     assert calls == [["commit", "/w", "--pid", "1"]]
+
+
+class TestLauncherAllIncNoVidia:
+    """AllInc NoVidia : étape NVEncC une seule fois, au premier lancement ; AllInc : jamais."""
+
+    def _setup(self, tmp_path):
+        return SimpleNamespace(
+            _default_prefix=lambda: tmp_path / "tools",
+            initialize_config_ini_language=MagicMock(),
+        )
+
+    def test_marker_detection(self, tmp_path):
+        exe = tmp_path / "muxiveo"
+        (tmp_path / "_ALLINC").touch()
+        with patch.object(launcher.sys, "executable", str(exe)), \
+             patch.object(launcher.sys, "frozen", True, create=True):
+            assert launcher._is_allinc_novidia() is False
+            (tmp_path / "_ALLINC_NOVIDIA").touch()
+            assert launcher._is_allinc_novidia() is True
+
+    def test_novidia_first_launch_runs_nvencc_step(self, tmp_path):
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(launcher, "_is_allinc", return_value=True), \
+             patch.object(launcher, "_is_allinc_novidia", return_value=True), \
+             patch.dict(sys.modules, {"setup": self._setup(tmp_path)}), \
+             patch("core.nvencc_install.first_run_step") as step:
+            rc = launcher._run_first_time_setup(tmp_path)
+        assert rc == launcher.SETUP_RC_OK
+        step.assert_called_once()
+        assert (tmp_path / "config.ini").is_file()
+
+    def test_allinc_first_launch_skips_nvencc_step(self, tmp_path):
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(launcher, "_is_allinc", return_value=True), \
+             patch.object(launcher, "_is_allinc_novidia", return_value=False), \
+             patch.dict(sys.modules, {"setup": self._setup(tmp_path)}), \
+             patch("core.nvencc_install.first_run_step") as step:
+            assert launcher._run_first_time_setup(tmp_path) == launcher.SETUP_RC_OK
+        step.assert_not_called()
+
+    def test_nvencc_step_failure_never_blocks_first_launch(self, tmp_path, capsys):
+        with patch("platform.system", return_value="Linux"), \
+             patch.object(launcher, "_is_allinc", return_value=True), \
+             patch.object(launcher, "_is_allinc_novidia", return_value=True), \
+             patch.dict(sys.modules, {"setup": self._setup(tmp_path)}), \
+             patch("core.nvencc_install.first_run_step", side_effect=RuntimeError("réseau")):
+            assert launcher._run_first_time_setup(tmp_path) == launcher.SETUP_RC_OK
+        assert "Extensions" in capsys.readouterr().err

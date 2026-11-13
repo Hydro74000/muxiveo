@@ -1270,3 +1270,143 @@ def test_appimage_bundles_ui_assets(tmp_path, monkeypatch):
         package_appimage_mod.build_onedir()
     sep = ";" if sys.platform == "win32" else ":"
     assert f"--add-data={package_appimage_mod.ROOT / 'ui' / 'assets'}{sep}ui/assets" in seen[0]
+
+
+def test_package_appimage_novidia_variant_never_matches_allinc_update_pattern():
+    """« _allinc_novidia » : hors du motif zsync « _allinc-* » des AppImage AllInc installées."""
+    import fnmatch
+
+    with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        novidia = package_appimage_mod._appimage_update_information("x86_64", allinc=True, novidia=True)
+        allinc = package_appimage_mod._appimage_update_information("x86_64", allinc=True)
+    assert novidia == "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64_allinc_novidia-*.AppImage.zsync"
+    allinc_glob = allinc.rsplit("|", 1)[1]
+    novidia_glob = novidia.rsplit("|", 1)[1]
+    assert not fnmatch.fnmatch("Muxiveo-x86_64_allinc_novidia-4.2.0.AppImage.zsync", allinc_glob)
+    assert not fnmatch.fnmatch("Muxiveo-x86_64_allinc-4.2.0.AppImage.zsync", novidia_glob)
+    assert package_appimage_mod._variant_suffix(False, True) == ""
+
+
+def test_package_appimage_novidia_appdir_skips_nvencc_and_sets_marker(tmp_path, monkeypatch):
+    calls: list[str] = []
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_appimage_mod, f"_dl_{name}", lambda d, a, n=name: calls.append(n))
+    monkeypatch.setattr(package_appimage_mod, "_bundle_licenses", lambda appdir: None)
+    package_appimage_mod.bundle_tools(tmp_path, "x86_64", nvencc=False)
+    assert "nvencc" not in calls and "ffmpeg" in calls
+    calls.clear()
+    package_appimage_mod.bundle_tools(tmp_path, "x86_64")
+    assert "nvencc" in calls
+
+
+def test_bundle_windows_tools_novidia_then_nvencc(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo"
+    bundle.mkdir()
+    calls: list[str] = []
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_mod, f"_dl_windows_{name}", lambda d, n=name: calls.append(n))
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+
+    package_mod.bundle_windows_tools(bundle, nvencc=False)
+    assert "nvencc" not in calls
+    assert (bundle / "_ALLINC").is_file() and (bundle / "_ALLINC_NOVIDIA").is_file()
+
+    package_mod.add_windows_nvencc(bundle)
+    assert calls[-1] == "nvencc"
+    assert (bundle / "_ALLINC").is_file() and not (bundle / "_ALLINC_NOVIDIA").exists()
+
+
+def test_build_nsis_installer_names_novidia_variant(tmp_path, monkeypatch):
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_find_makensis", lambda: "makensis")
+
+    def fake_run(cmd):
+        nsi_text = (tmp_path / "Muxiveo.nsi").read_text(encoding="utf-8")
+        for line in nsi_text.splitlines():
+            if line.startswith("OutFile "):
+                Path(line.split("OutFile ", 1)[1].strip('"')).write_bytes(b"SETUP_EXE")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_mod, "_run", fake_run)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    (bundle / "_ALLINC").touch()
+    (bundle / "_ALLINC_NOVIDIA").touch()
+    assert package_mod._build_nsis_installer(bundle, version_tag="4.0.3") == tmp_path / "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe"
+
+
+def test_build_windows_novidia_before_allinc_and_portable_with_nvencc(tmp_path, monkeypatch):
+    """Même bundle : standard → NoVidia (sans NVEncC) → AllInc + ZIP portable (avec NVEncC)."""
+    bundle = tmp_path / "Muxiveo-win"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    nsis_calls: list[str] = []
+    zip_markers: list[bool] = []
+
+    monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
+    monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_mod, f"_dl_windows_{name}", lambda d, n=name: (d / n).touch())
+
+    def fake_build_nsis(b, version_tag=None):
+        if (b / "_ALLINC_NOVIDIA").exists():
+            name = "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe"
+            assert not (b / "tools" / "nvencc").exists()
+        elif (b / "_ALLINC").exists():
+            name = "Muxiveo-Setup-AllInc-4.0.3.exe"
+            assert (b / "tools" / "nvencc").exists()
+        else:
+            name = "Muxiveo-Setup-4.0.3.exe"
+        nsis_calls.append(name)
+        return tmp_path / name
+
+    monkeypatch.setattr(package_mod, "_build_nsis_installer", fake_build_nsis)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda p, d, version_tag=None: p)
+    monkeypatch.setattr(
+        package_mod, "_build_windows_portable_zip",
+        lambda b, version_tag=None: (zip_markers.append((b / "_ALLINC_NOVIDIA").exists()), tmp_path / "p.zip")[1],
+    )
+
+    package_mod.build_windows(
+        skip_wine=True, dest=None, version_tag="4.0.3", allinc=True, portable=True, allinc_novidia=True,
+    )
+
+    assert nsis_calls == [
+        "Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe",
+    ]
+    assert zip_markers == [False]
+
+
+def _check_allinc_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_allinc_rife", Path(__file__).resolve().parent.parent / "scripts" / "check_allinc_rife.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("novidia", [False, True])
+def test_check_allinc_nvencc_variant(tmp_path, novidia):
+    check = _check_allinc_module()
+    tools = tmp_path / "usr" / "bin" / "tools"
+    tools.mkdir(parents=True)
+    entries = [{"tool": "ffmpeg"}] + ([] if novidia else [{"tool": "nvencc"}])
+    (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries}), encoding="utf-8")
+    if novidia:
+        (tmp_path / "usr" / "bin" / "_ALLINC_NOVIDIA").touch()
+    else:
+        (tools / "nvencc").write_bytes(b"x")
+    name = "Muxiveo-x86_64_allinc_novidia-1.AppImage" if novidia else "Muxiveo-x86_64_allinc-1.AppImage"
+    assert check.nvencc_errors(name, tmp_path) == []
+    # Variante inversée : anomalies signalées.
+    other = "Muxiveo-x86_64_allinc-1.AppImage" if novidia else "Muxiveo-x86_64_allinc_novidia-1.AppImage"
+    assert check.nvencc_errors(other, tmp_path)

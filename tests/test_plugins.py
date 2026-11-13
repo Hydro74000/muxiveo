@@ -412,6 +412,97 @@ def test_extensions_page_rife_card_and_trt_dependency(qt_app, tmp_path):
         panel.close()
 
 
+def test_extensions_page_nvencc_card(qt_app, tmp_path):
+    from core import nvencc_install
+    from core.config import AppConfig
+    from core.i18n import translate_text
+    from ui.panels.extensions_panel import ExtensionsPanel
+    from ui.plugin_controller import NvenccState
+
+    panel = ExtensionsPanel(AppConfig())
+    card = panel._nvencc_card
+    emitted: list[tuple[str, str]] = []
+    panel.install_requested.connect(lambda name: emitted.append(("install", name)))
+    panel.update_requested.connect(lambda name: emitted.append(("update", name)))
+    panel.remove_requested.connect(lambda name: emitted.append(("remove", name)))
+
+    def tool(provenance: str, version: str = "9.40") -> nvencc_install.NvenccTool:
+        return nvencc_install.NvenccTool(tmp_path / "nvencc", version, provenance)
+
+    try:
+        # sonde en cours
+        panel.set_nvencc_state(NvenccState())
+        assert panel._available_box.indexOf(card) >= 0 and card.install_btn.isHidden()
+        # sans GPU NVIDIA : repliée avec la raison
+        panel.set_nvencc_state(NvenccState(nvidia=False))
+        assert panel._incompatible_box.indexOf(card) >= 0
+        assert card.status.text() == translate_text("Non compatible : aucun GPU NVIDIA détecté.")
+        # macOS / ARM
+        panel.set_nvencc_state(NvenccState(supported=False, nvidia=False))
+        assert "Linux" in card.status.text() and panel._incompatible_box.indexOf(card) >= 0
+        # GPU NVIDIA, non installée : méthode annoncée, installation proposée
+        panel.set_nvencc_state(NvenccState(nvidia=True, method=nvencc_install.METHOD_DNF))
+        assert panel._available_box.indexOf(card) >= 0
+        assert not card.install_btn.isHidden() and card.install_btn.isEnabled() and card.remove_btn.isHidden()
+        assert "dnf" in card.status.text()
+        card.install_btn.click()
+        assert emitted == [("install", "nvencc")]
+        # intégrée au paquet AllInc : aucun bouton
+        panel.set_nvencc_state(NvenccState(nvidia=False, tool=tool(nvencc_install.PROVENANCE_BUNDLED), target="99.0"))
+        assert panel._available_box.indexOf(card) >= 0
+        assert card.install_btn.isHidden() and card.remove_btn.isHidden() and card.update_btn.isHidden()
+        # paquet système : ni suppression ni mise à jour par Muxiveo
+        panel.set_nvencc_state(NvenccState(nvidia=True, tool=tool(nvencc_install.PROVENANCE_SYSTEM), target="99.0"))
+        assert card.remove_btn.isHidden() and card.update_btn.isHidden()
+        # dossier utilisateur : suppression et mise à jour proposées
+        panel.set_nvencc_state(NvenccState(nvidia=True, tool=tool(nvencc_install.PROVENANCE_USER), target="99.0"))
+        assert not card.remove_btn.isHidden() and not card.update_btn.isHidden() and "99.0" in card.status.text()
+        card.update_btn.click()
+        card.remove_btn.click()
+        assert emitted[-2:] == [("update", "nvencc"), ("remove", "nvencc")]
+        # en cours
+        panel.set_nvencc_state(NvenccState(nvidia=True, busy="install", progress=42))
+        assert "42" in card.status.text() and not card.install_btn.isEnabled()
+    finally:
+        panel.close()
+
+
+def test_nvencc_controller_install_and_refresh(qt_app, monkeypatch, tmp_path):
+    from core import nvencc_install
+    from core.config import AppConfig
+    from ui.plugin_controller import NvenccController
+
+    config = AppConfig()
+    monkeypatch.setattr(config, "tool_nvencc", "")
+    controller = NvenccController(config)
+    states = []
+    changed = []
+    controller.state_changed.connect(states.append)
+    controller.tool_changed.connect(lambda: changed.append(True))
+    monkeypatch.setattr(nvencc_install, "nvidia_present", lambda: True)
+    monkeypatch.setattr(nvencc_install, "plan_method", lambda: nvencc_install.METHOD_USER)
+    monkeypatch.setattr(nvencc_install, "latest_version", lambda: "9.41")
+    calls = []
+    monkeypatch.setattr(
+        nvencc_install, "install",
+        lambda method=None, **kw: (calls.append((method, kw["interactive"])), tmp_path / "nvencc")[1],
+    )
+    try:
+        controller._refresh_job("", True)
+        state = controller.state()
+        assert state.tool is None and state.nvidia is True and state.target == "9.41"
+        controller._install_job("install")
+        assert calls == [(None, False)] and changed == [True]
+        assert controller.state().busy == "" and "nvencc" in controller.state().message
+        # mise à jour d'une installation utilisateur : même méthode
+        controller._set_state(tool=nvencc_install.NvenccTool(tmp_path / "nvencc", "9.40", nvencc_install.PROVENANCE_USER))
+        assert controller.manual_update_pending
+        controller._install_job("update")
+        assert calls[-1] == (nvencc_install.METHOD_USER, False)
+    finally:
+        controller.shutdown()
+
+
 def test_settings_no_longer_hosts_extensions(qt_app):
     from core.config import AppConfig
     from ui.panels.settings_panel import SettingsPanel

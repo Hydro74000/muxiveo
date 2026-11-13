@@ -40,6 +40,7 @@ _MAX_ASSET_BYTES = 2 * 1024**3
 _MAX_CHECKSUMS_BYTES = 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
 _WINDOWS_INSTALLER_RE = re.compile(r"^Muxiveo-Setup-.+\.exe$", re.IGNORECASE)
+_NOVIDIA_INSTALLER_RE = re.compile(r"^Muxiveo-Setup-AllInc_NoVidia-.+\.exe$", re.IGNORECASE)
 _SOURCE_ARCHIVE_RE = re.compile(r"^Muxiveo-.+-source\.tar\.gz$")
 _MACOS_DMG_RE = re.compile(r"^Muxiveo-.+\.dmg$")
 _HELPER_READY_TIMEOUT_S = 15.0
@@ -166,12 +167,23 @@ def self_install_blocker(kind: InstallKind) -> str:
     return ""
 
 
+def _bundle_marker(name: str) -> bool:
+    """Marqueur posé à côté de l'exécutable figé (``_ALLINC``, ``_ALLINC_NOVIDIA``)."""
+    return bool(getattr(sys, "frozen", False)) and (Path(sys.executable).parent / name).exists()
+
+
 def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None) -> ReleaseAsset | None:
-    """Choisit l'asset de release adapté au mode d'installation."""
+    """Choisit l'asset de release adapté au mode d'installation.
+
+    Variante AllInc NoVidia (marqueur ``_ALLINC_NOVIDIA``, sans NVEncC) : seuls ses paquets
+    (``…_allinc_novidia-…``, ``Muxiveo-Setup-AllInc_NoVidia-…``) ; les autres installations ne les prennent jamais.
+    """
+    novidia = _bundle_marker("_ALLINC_NOVIDIA")
     if kind is InstallKind.APPIMAGE:
         arch = (machine or platform.machine()).lower()
         return next(
-            (a for a in info.assets if a.name.endswith(".AppImage") and arch in a.name.lower()),
+            (a for a in info.assets if a.name.endswith(".AppImage") and arch in a.name.lower()
+             and ("_allinc_novidia" in a.name.lower()) == novidia),
             None,
         )
     if kind is InstallKind.SOURCE_ARCHIVE:
@@ -179,9 +191,11 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
     if kind is InstallKind.MACOS_APP:
         return next((a for a in info.assets if _MACOS_DMG_RE.match(a.name)), None)
     if kind is InstallKind.WINDOWS_INSTALLER:
-        is_allinc = False
-        if getattr(sys, "frozen", False):
-            is_allinc = (Path(sys.executable).parent / "_ALLINC").exists()
+        if novidia:
+            return next(
+                (a for a in info.assets if _NOVIDIA_INSTALLER_RE.match(a.name)), None,
+            )
+        is_allinc = _bundle_marker("_ALLINC")
         if is_allinc:
             allinc_asset = next(
                 (a for a in info.assets if re.match(r"^Muxiveo-Setup-AllInc-.+\.exe$", a.name, re.IGNORECASE)),
@@ -196,7 +210,10 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
             )
             if std_asset is not None:
                 return std_asset
-        return next((a for a in info.assets if _WINDOWS_INSTALLER_RE.match(a.name)), None)
+        return next(
+            (a for a in info.assets if _WINDOWS_INSTALLER_RE.match(a.name) and not _NOVIDIA_INSTALLER_RE.match(a.name)),
+            None,
+        )
     return None
 
 

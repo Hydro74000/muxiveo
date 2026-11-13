@@ -51,6 +51,7 @@ Des paquets autonomes intégrant l'ensemble des dépendances et outils nécessai
 | Système | Format recommandé | Instructions de démarrage |
 |---|---|---|
 | **Linux** | **`Muxiveo-x86_64_allinc-*.AppImage`** | Rendre exécutable (`chmod +x`) et lancer. Tous les outils sont intégrés. Compatible avec *Gear Lever*. |
+| **Linux / Windows sans NVEncC** | **`Muxiveo-x86_64_allinc_novidia-*.AppImage`**, **`Muxiveo-Setup-AllInc_NoVidia-*.exe`** | Variante AllInc plus légère, sans NVEncC : installé au premier lancement si un GPU NVIDIA est détecté (apt/dnf, sinon dossier utilisateur), ou plus tard depuis la page **Extensions**. |
 | **Windows** | **`Muxiveo-Setup-*.exe`** | Installateur complet. Détecte et configure automatiquement l'environnement et les outils. |
 | **macOS** | **`Muxiveo-*.dmg`** | Paquet pour macOS (Intel et Apple Silicon). Outils système installés automatiquement via Homebrew si absents. |
 | **Homebrew** | Formule Linux / macOS | `brew tap Hydro74000/muxiveo && brew install muxiveo` |

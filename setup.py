@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.ui_language import system_ui_language
+from core import nvencc_install
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
 from core.version import APP_CONFIG_DIR_NAME
 from core.python_requirements import installed_version, is_excluded, read_requirements, unsatisfied_requirements
@@ -2313,6 +2314,11 @@ def ensure_windows_required_tools(
     autofill_windows_config_ini(prefix, dry_run, force=force)
     return check_windows_required_tools(prefix)
 
+def _nvencc_log(level: str, message: str) -> None:
+    """Journal de l'étape NVEncC partagée vers la sortie du setup."""
+    {"WARN": warn, "ERROR": warn, "OK": ok}.get(level, info)(message)
+
+
 def install_github_tools(
     prefix: Path,
     dry_run: bool,
@@ -2388,6 +2394,18 @@ def install_github_tools(
             info(f"[dry-run] Would download and install {exe} to {dest}")
             detected_tool_paths[exe] = str(dest)
             ok(f"{exe} installed → {dest}")
+            continue
+
+        if exe == "nvencc" and OS == "Linux":
+            # Étape partagée avec l'AllInc NoVidia et la page Extensions (core/nvencc_install.py) :
+            # .deb via apt, .rpm via dnf, sinon (distribution immuable, élévation refusée) dossier utilisateur.
+            try:
+                installed_nvencc = nvencc_install.install(log=_nvencc_log)
+            except nvencc_install.NvenccInstallError as exc:
+                warn(f"{exe}: {exc}. Skipping.")
+                continue
+            detected_tool_paths[exe] = str(installed_nvencc)
+            ok(f"{exe} installed → {installed_nvencc}")
             continue
 
         # Décision par outil : le préfixe peut être accessible alors que son

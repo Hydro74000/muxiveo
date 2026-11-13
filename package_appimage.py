@@ -6,6 +6,9 @@ Modes :
   AppImage Linux (défaut)
     Muxiveo-<arch>.AppImage          outils installés au 1er lancement
     Muxiveo-<arch>_allinc.AppImage   tous les outils embarqués (--allinc)
+    Muxiveo-<arch>_allinc_novidia.AppImage
+                                     idem sans NVEncC (--allinc --novidia) : installé
+                                     au 1er lancement si un GPU NVIDIA est détecté
 
   Installateur Windows (--windows)
     Muxiveo-Setup.exe                construit via Wine + PyInstaller + NSIS
@@ -35,6 +38,7 @@ Usage :
 
 Options :
     --allinc             Embarque tous les outils externes dans l'AppImage
+    --novidia            Avec --allinc : variante sans NVEncC (marqueur _ALLINC_NOVIDIA)
     --skip-pyinstaller   Réutilise le bundle PyInstaller existant dans dist/
     --arch ARCH          Architecture cible AppImage : x86_64 (défaut) ou aarch64
     --version TAG        Suffixe de version pour le fichier final (défaut: APP_VERSION)
@@ -860,8 +864,8 @@ def _bundle_licenses(appdir: Path) -> None:
     ok(f"Fichiers de licence embarqués dans {dest}")
 
 
-def bundle_tools(appdir: Path, arch: str) -> None:
-    """Télécharge tous les outils externes et les place dans usr/bin/tools/."""
+def bundle_tools(appdir: Path, arch: str, nvencc: bool = True) -> None:
+    """Télécharge les outils externes et les place dans usr/bin/tools/ (NVEncC seulement si ``nvencc``)."""
     step("Téléchargement des outils externes (mode all-inclusive)")
     tools_dir = appdir / "usr" / "bin" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
@@ -871,7 +875,8 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_mediainfo(tools_dir, arch)
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
-    _dl_nvencc(tools_dir, arch)
+    if nvencc:
+        _dl_nvencc(tools_dir, arch)
     _dl_muxiveo_rife(tools_dir, arch)
     _bundle_licenses(appdir)
     manifest = TOOL_MANIFEST.write(tools_dir)
@@ -902,7 +907,7 @@ def _clean_appdir(path: Path) -> None:
         )
 
 
-def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -> Path:
+def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64", novidia: bool = False) -> Path:
     step("Construction de l'AppDir")
 
     appdir = APPDIR
@@ -938,7 +943,10 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:
         (usr_bin / "_ALLINC").touch()
-        bundle_tools(appdir, arch)
+        if novidia:
+            # Variante sans NVEncC : étape NVEncC du setup au 1er lancement (launcher.py).
+            (usr_bin / "_ALLINC_NOVIDIA").touch()
+        bundle_tools(appdir, arch, nvencc=not novidia)
     else:
         _bundle_licenses(appdir)
 
@@ -1059,10 +1067,11 @@ def build_appimage(
     arch: str,
     allinc: bool = False,
     version_tag: str | None = None,
+    novidia: bool = False,
 ) -> Path:
     step("Création de l'AppImage")
 
-    suffix = "_allinc" if allinc else ""
+    suffix = _variant_suffix(allinc, novidia)
     output = _versioned_output_path(ROOT / f"{APP_DISPLAY_NAME}-{arch}{suffix}.AppImage", version_tag)
     if output.exists():
         output.unlink()
@@ -1073,6 +1082,7 @@ def build_appimage(
         arch,
         allinc=allinc,
         version_tag=version_tag,
+        novidia=novidia,
     )
     env["UPDATE_INFORMATION"] = update_information
     info(f"UPDATE_INFORMATION: {update_information}")
@@ -1096,10 +1106,22 @@ def build_appimage(
     return output
 
 
+def _variant_suffix(allinc: bool, novidia: bool = False) -> str:
+    """Suffixe de variante du nom de l'AppImage.
+
+    ``_allinc_novidia`` (séparateur « _ ») : jamais capté par le motif zsync ``…_allinc-*`` des AppImage
+    all-inclusive déjà installées, qui restent sur la variante avec NVEncC.
+    """
+    if not allinc:
+        return ""
+    return "_allinc_novidia" if novidia else "_allinc"
+
+
 def _appimage_update_information(
     arch: str,
     allinc: bool = False,
     version_tag: str | None = None,
+    novidia: bool = False,
 ) -> str:
     """
     Chaîne UPDATE_INFORMATION AppImage pour GitHub Releases.
@@ -1109,7 +1131,7 @@ def _appimage_update_information(
     directement la release cible et le nom exact du .zsync pour éviter toute
     configuration manuelle dans Gear Lever.
     """
-    suffix = "_allinc" if allinc else ""
+    suffix = _variant_suffix(allinc, novidia)
     normalized_tag = _normalize_version_tag(version_tag)
     reuse_channel = normalized_tag == "latest" or normalized_tag.startswith("latest-")
     release = normalized_tag if reuse_channel and _APPIMAGE_UPDATE_RELEASE == "latest" else _APPIMAGE_UPDATE_RELEASE
@@ -1181,6 +1203,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--novidia",
+        action="store_true",
+        help=(
+            "Avec --allinc : variante sans NVEncC, Muxiveo-<arch>_allinc_novidia.AppImage. "
+            "Au premier lancement, NVEncC est installé si un GPU NVIDIA est détecté."
+        ),
+    )
+    p.add_argument(
         "--skip-pyinstaller",
         action="store_true",
         help="Réutilise le bundle PyInstaller existant dans dist/Muxiveo/",
@@ -1219,7 +1249,11 @@ def main() -> None:
     args = parse_args()
     arch = args.arch
     allinc = args.allinc
+    novidia = args.novidia
     version_tag = args.version
+    if novidia and not allinc:
+        err("--novidia exige --allinc.")
+        sys.exit(1)
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
@@ -1227,7 +1261,10 @@ def main() -> None:
 ╚══════════════════════════════════════════╝
 """))
     info(f"Architecture  : {arch}")
-    info(f"Mode          : {'all-inclusive (outils embarqués)' if allinc else 'standard (outils installés au 1er lancement)'}")
+    mode = "standard (outils installés au 1er lancement)"
+    if allinc:
+        mode = "all-inclusive sans NVEncC (outils embarqués)" if novidia else "all-inclusive (outils embarqués)"
+    info(f"Mode          : {mode}")
     info(f"Racine projet : {ROOT}")
 
     ensure_build_deps()
@@ -1242,7 +1279,7 @@ def main() -> None:
     else:
         bundle_dir = build_onedir()
 
-    appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch)
+    appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch, novidia=novidia)
     appimagetool = get_appimagetool(arch)
     appimage_path = build_appimage(
         appimagetool,
@@ -1250,6 +1287,7 @@ def main() -> None:
         arch,
         allinc=allinc,
         version_tag=version_tag,
+        novidia=novidia,
     )
     final_appimage = _copy_final_file_if_requested(appimage_path, args.dest, version_tag=version_tag)
 

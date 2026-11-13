@@ -3045,8 +3045,12 @@ def bundle_windows_licenses(bundle_dir: Path) -> None:
     _ok(f"Fichiers de licence embarqués dans {bundle_dir}")
 
 
-def bundle_windows_tools(bundle_dir: Path) -> Path:
-    """Télécharge et embarque tous les outils externes pour Windows dans bundle_dir/tools."""
+def bundle_windows_tools(bundle_dir: Path, nvencc: bool = True) -> Path:
+    """Télécharge et embarque les outils externes pour Windows dans bundle_dir/tools.
+
+    ``nvencc=False`` : variante AllInc NoVidia (marqueur ``_ALLINC_NOVIDIA``) ; NVEncC est installé au premier
+    lancement si un GPU NVIDIA est détecté. :func:`add_windows_nvencc` le complète ensuite pour l'AllInc.
+    """
     _title("Embarquement des outils externes Windows (--allinc)")
     tools_dir = bundle_dir / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
@@ -3056,7 +3060,8 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_mediainfo(tools_dir)
     _dl_windows_dovi_tool(tools_dir)
     _dl_windows_hdr10plus_tool(tools_dir)
-    _dl_windows_nvencc(tools_dir)
+    if nvencc:
+        _dl_windows_nvencc(tools_dir)
     _dl_windows_muxiveo_rife(tools_dir)
     bundle_windows_licenses(bundle_dir)
     manifest = TOOL_MANIFEST.write(tools_dir)
@@ -3064,8 +3069,59 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
 
     # Pose le marqueur _ALLINC à côté de l'exécutable
     (bundle_dir / "_ALLINC").touch()
-    _ok(f"Tous les outils Windows embarqués dans {tools_dir} (mode AllInc activé)")
+    novidia_marker = bundle_dir / "_ALLINC_NOVIDIA"
+    if nvencc:
+        novidia_marker.unlink(missing_ok=True)
+        _ok(f"Tous les outils Windows embarqués dans {tools_dir} (mode AllInc activé)")
+    else:
+        novidia_marker.touch()
+        _ok(f"Outils Windows embarqués sans NVEncC dans {tools_dir} (mode AllInc NoVidia activé)")
     return tools_dir
+
+
+def add_windows_nvencc(bundle_dir: Path) -> None:
+    """Complète un bundle AllInc NoVidia avec NVEncC : bundle AllInc (manifeste réécrit, marqueur retiré)."""
+    tools_dir = bundle_dir / "tools"
+    _dl_windows_nvencc(tools_dir)
+    TOOL_MANIFEST.write(tools_dir)
+    (bundle_dir / "_ALLINC_NOVIDIA").unlink(missing_ok=True)
+    _ok("NVEncC ajouté au bundle AllInc")
+
+
+def _build_windows_allinc_installers(
+    bundle_dir: Path,
+    dest: str | None,
+    version_tag: str | None,
+    *,
+    allinc: bool,
+    allinc_novidia: bool,
+) -> tuple[Path | None, Path | None]:
+    """Installeurs AllInc NoVidia puis AllInc sur le même bundle (outils téléchargés une fois).
+
+    Retourne ``(installeur AllInc, installeur AllInc NoVidia)``, ``None`` pour une variante non demandée.
+    """
+    final_allinc: Path | None = None
+    final_novidia: Path | None = None
+    if allinc_novidia:
+        bundle_windows_tools(bundle_dir, nvencc=False)
+        novidia_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_novidia = _copy_final_file_if_requested(novidia_installer, dest, version_tag=version_tag)
+        if allinc:
+            add_windows_nvencc(bundle_dir)
+    elif allinc:
+        bundle_windows_tools(bundle_dir)
+    if allinc:
+        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+    return final_allinc, final_novidia
+
+
+def _ensure_full_allinc_bundle(bundle_dir: Path) -> None:
+    """Bundle AllInc complet (NVEncC compris) pour l'archive portable, seule variante publiée en ZIP."""
+    if not (bundle_dir / "_ALLINC").exists():
+        bundle_windows_tools(bundle_dir)
+    elif (bundle_dir / "_ALLINC_NOVIDIA").exists():
+        add_windows_nvencc(bundle_dir)
 
 
 def _build_windows_portable_zip(bundle_dir: Path, version_tag: str | None = None) -> Path:
@@ -3191,7 +3247,13 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     _title("Étape NSIS — Installateur Windows")
 
     is_allinc = (bundle_dir / "_ALLINC").exists()
-    base_name = f"{APP_NAME}-Setup-AllInc.exe" if is_allinc else f"{APP_NAME}-Setup.exe"
+    if is_allinc and (bundle_dir / "_ALLINC_NOVIDIA").exists():
+        # « _ » : jamais capté par le motif AllInc des installations existantes (core/update_install.py).
+        base_name = f"{APP_NAME}-Setup-AllInc_NoVidia.exe"
+    elif is_allinc:
+        base_name = f"{APP_NAME}-Setup-AllInc.exe"
+    else:
+        base_name = f"{APP_NAME}-Setup.exe"
     output = _versioned_output_path(ROOT / base_name, version_tag)
     nsi    = ROOT / "Muxiveo.nsi"
     win_icon = _resolve_windows_icon_ico()
@@ -3472,6 +3534,7 @@ def build_windows(
     version_tag: str | None = None,
     allinc: bool = False,
     portable: bool = False,
+    allinc_novidia: bool = False,
 ) -> None:
     """Orchestre le build Windows cross depuis Linux."""
     _title("Build Windows (Wine + PyInstaller + NSIS)")
@@ -3493,17 +3556,14 @@ def build_windows(
     installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
     final_std = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
 
-    final_allinc = None
     final_portable = None
 
-    if allinc:
-        bundle_windows_tools(bundle_dir)
-        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
-        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+    final_allinc, final_novidia = _build_windows_allinc_installers(
+        bundle_dir, dest, version_tag, allinc=allinc, allinc_novidia=allinc_novidia,
+    )
 
     if portable or allinc:
-        if not (bundle_dir / "_ALLINC").exists():
-            bundle_windows_tools(bundle_dir)
+        _ensure_full_allinc_bundle(bundle_dir)
         portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=version_tag)
         if dest:
             final_portable = _copy_final_file_if_requested(portable_zip, dest, version_tag=version_tag)
@@ -3512,11 +3572,15 @@ def build_windows(
     _ok(f"Installateur Standard : {final_std}")
     if final_allinc:
         _ok(f"Installateur AllInc   : {final_allinc}")
+    if final_novidia:
+        _ok(f"Installateur NoVidia  : {final_novidia}")
     if final_portable:
         _ok(f"Archive Portable      : {final_portable}")
     msg = f"\n  Distribuer :\n    {final_std.name} (standard, outils téléchargés au 1er lancement)\n"
     if final_allinc:
         msg += f"    {final_allinc.name} (AllInc avec ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc embarqués)\n"
+    if final_novidia:
+        msg += f"    {final_novidia.name} (AllInc sans NVEncC, installé au 1er lancement si GPU NVIDIA)\n"
     if final_portable:
         msg += f"    {final_portable.name} (archive portable sans installation)\n"
     print(msg)
@@ -3650,6 +3714,15 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--allinc-novidia",
+        action="store_true",
+        help=(
+            "Variante AllInc sans NVEncC (installé au premier lancement si un GPU NVIDIA est détecté). "
+            "Sur Windows : Muxiveo-Setup-AllInc_NoVidia-<version>.exe, cumulable avec --allinc. "
+            "Sur Linux : délègue à package_appimage.py --allinc --novidia."
+        ),
+    )
+    p.add_argument(
         "--portable",
         action="store_true",
         help="Sur Windows : produit une archive ZIP portable contenant l'application complète sans installation.",
@@ -3711,8 +3784,8 @@ if __name__ == "__main__":
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
         if args.exe:
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
+            if args.allinc or args.allinc_novidia:
+                bundle_windows_tools(bundle_dir, nvencc=args.allinc)
             if args.onefile or args.dest:
                 final_exe = _copy_final_file_if_requested(
                     exe_path,
@@ -3728,8 +3801,8 @@ if __name__ == "__main__":
                 _ok(f"Dossier    : {bundle_dir}")
                 _ok(f"Exécutable : {exe_path}")
         elif args.msix or args.msixupload:
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
+            if args.allinc or args.allinc_novidia:
+                bundle_windows_tools(bundle_dir, nvencc=args.allinc)
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,
@@ -3746,17 +3819,14 @@ if __name__ == "__main__":
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
             final_std = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
 
-            final_allinc = None
             final_portable = None
 
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
-                allinc_installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
-                final_allinc = _copy_final_file_if_requested(allinc_installer, args.dest, version_tag=args.version)
+            final_allinc, final_novidia = _build_windows_allinc_installers(
+                bundle_dir, args.dest, args.version, allinc=args.allinc, allinc_novidia=args.allinc_novidia,
+            )
 
             if args.portable or args.allinc:
-                if not (bundle_dir / "_ALLINC").exists():
-                    bundle_windows_tools(bundle_dir)
+                _ensure_full_allinc_bundle(bundle_dir)
                 portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=args.version)
                 if args.dest:
                     final_portable = _copy_final_file_if_requested(portable_zip, args.dest, version_tag=args.version)
@@ -3765,6 +3835,8 @@ if __name__ == "__main__":
             _ok(f"Installateur Standard : {final_std}")
             if final_allinc:
                 _ok(f"Installateur AllInc   : {final_allinc}")
+            if final_novidia:
+                _ok(f"Installateur NoVidia  : {final_novidia}")
             if final_portable:
                 _ok(f"Archive Portable      : {final_portable}")
     elif args.windows:
@@ -3778,14 +3850,20 @@ if __name__ == "__main__":
             version_tag=args.version,
             allinc=args.allinc,
             portable=args.portable,
+            allinc_novidia=args.allinc_novidia,
         )
-    elif args.allinc:
-        # Délègue à package_appimage.py --allinc
+    elif args.allinc or args.allinc_novidia:
+        # Délègue à package_appimage.py --allinc (--novidia : variante sans NVEncC)
         script = ROOT / "package_appimage.py"
         if not script.exists():
             print(f"  package_appimage.py introuvable : {script}", file=sys.stderr)
             sys.exit(1)
         argv = [sys.executable, str(script), "--allinc"]
+        if args.allinc and args.allinc_novidia:
+            print("  Linux : --allinc et --allinc-novidia produisent deux AppImages, lancer deux builds.", file=sys.stderr)
+            sys.exit(1)
+        if args.allinc_novidia:
+            argv.append("--novidia")
         if args.dest:
             argv += ["--dest", args.dest]
         if args.version:

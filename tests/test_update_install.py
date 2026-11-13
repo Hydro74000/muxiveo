@@ -375,3 +375,42 @@ def test_apply_update_wraps_helper_launch_errors(tmp_path, monkeypatch):
     with pytest.raises(UpdateInstallError, match="python introuvable"):
         apply_update(InstallKind.SOURCE_ARCHIVE, work)
     assert not work.exists()
+
+
+def test_select_asset_keeps_novidia_variant_apart(tmp_path, monkeypatch):
+    """AllInc NoVidia (marqueur _ALLINC_NOVIDIA) : ses paquets seulement ; les autres installations jamais."""
+    import sys
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    exe = exe_dir / "Muxiveo.exe"
+    exe.write_bytes(b"MZ")
+    info = _info(
+        "Muxiveo-Setup-99.0.0.exe",
+        "Muxiveo-Setup-AllInc-99.0.0.exe",
+        "Muxiveo-Setup-AllInc_NoVidia-99.0.0.exe",
+        "Muxiveo-x86_64_allinc-99.0.0.AppImage",
+        "Muxiveo-x86_64_allinc_novidia-99.0.0.AppImage",
+        "SHA256SUMS",
+    )
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-99.0.0.exe"
+    assert _selected(info, InstallKind.APPIMAGE, machine="x86_64").name == "Muxiveo-x86_64_allinc-99.0.0.AppImage"
+    (exe_dir / "_ALLINC").touch()
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-AllInc-99.0.0.exe"
+    assert _selected(info, InstallKind.APPIMAGE, machine="x86_64").name == "Muxiveo-x86_64_allinc-99.0.0.AppImage"
+    (exe_dir / "_ALLINC_NOVIDIA").touch()
+    assert _selected(info, InstallKind.WINDOWS_INSTALLER).name == "Muxiveo-Setup-AllInc_NoVidia-99.0.0.exe"
+    assert _selected(info, InstallKind.APPIMAGE, machine="x86_64").name == "Muxiveo-x86_64_allinc_novidia-99.0.0.AppImage"
+
+
+def test_select_asset_standard_fallback_never_takes_novidia(tmp_path, monkeypatch):
+    import sys
+    exe_dir = tmp_path / "app"
+    exe_dir.mkdir()
+    (exe_dir / "_ALLINC").touch()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "Muxiveo.exe"))
+    info = _info("Muxiveo-Setup-AllInc_NoVidia-99.0.0.exe", "SHA256SUMS")
+    assert select_asset(info, InstallKind.WINDOWS_INSTALLER) is None

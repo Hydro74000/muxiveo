@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Vérifie qu'un paquet all-inclusive embarque l'extension mvo-rife préinstallée (version épinglée, contrat,
-SHA-256 du moteur, des modèles, des poids du sélecteur et des préréglages d'après son manifest.json).
+SHA-256 du moteur, des modèles, des poids du sélecteur et des préréglages d'après son manifest.json), et NVEncC
+selon la variante : présent (binaire + tools-manifest.json) dans l'AllInc, absent avec le marqueur
+``_ALLINC_NOVIDIA`` dans l'AllInc NoVidia (nom de paquet contenant « novidia »).
 
 Le packaging se contente d'un avertissement quand l'extension est indisponible :
 ce contrôle fait échouer la release dans ce cas.
@@ -29,7 +31,13 @@ sys.path.insert(0, str(ROOT))
 
 from core.version import MVO_RIFE_CONTRACT, MVO_RIFE_VERSION  # noqa: E402
 
-_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/|restore-models/|manifest\.json$|presets\.json$)")
+_TOOLS_MEMBER = re.compile(
+    r"(^|/)(tools/(muxiveo-rife(\.exe)?$|rife-models/|restore-models/|manifest\.json$|presets\.json$"
+    r"|tools-manifest\.json$|nvencc$|NVEncC64\.exe$)|_ALLINC_NOVIDIA$)"
+)
+# Membres facultatifs selon la variante (NVEncC, marqueur NoVidia) : extraction sans échec s'ils manquent.
+_APPIMAGE_VARIANT_MEMBERS = ("usr/bin/tools/tools-manifest.json", "usr/bin/tools/nvencc", "usr/bin/_ALLINC_NOVIDIA")
+_NSIS_VARIANT_MEMBERS = ("tools/tools-manifest.json", "tools/NVEncC64.exe", "_ALLINC_NOVIDIA")
 
 
 def _extract(package: Path, dest: Path) -> None:
@@ -44,6 +52,11 @@ def _extract(package: Path, dest: Path) -> None:
                 [str(package.resolve()), "--appimage-extract", pattern],
                 cwd=dest, check=True, stdout=subprocess.DEVNULL,
             )
+        for pattern in _APPIMAGE_VARIANT_MEMBERS:
+            subprocess.run(
+                [str(package.resolve()), "--appimage-extract", pattern],
+                cwd=dest, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     elif name.endswith(".zip"):
         with zipfile.ZipFile(package) as zf:
             zf.extractall(dest, [n for n in zf.namelist() if _TOOLS_MEMBER.search(n)])
@@ -52,6 +65,10 @@ def _extract(package: Path, dest: Path) -> None:
             ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/restore-models",
              "tools/manifest.json", "tools/presets.json", "-r", "-y"],
             check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["7z", "x", str(package), f"-o{dest}", *_NSIS_VARIANT_MEMBERS, "-r", "-y"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:
         raise ValueError(f"format de paquet non géré : {name}")
@@ -65,16 +82,45 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def nvencc_errors(package_name: str, dest: Path) -> list[str]:
+    """Anomalies NVEncC de la variante : embarqué dans l'AllInc, absent (marqueur posé) dans l'AllInc NoVidia."""
+    novidia = "novidia" in package_name.lower()
+    files = [p for p in dest.rglob("*") if p.is_file()]
+    binary = any(p.name in ("nvencc", "NVEncC64.exe") for p in files)
+    marker = any(p.name == "_ALLINC_NOVIDIA" for p in files)
+    manifest_path = next((p for p in files if p.name == "tools-manifest.json"), None)
+    if manifest_path is None:
+        return ["tools-manifest.json absent"]
+    try:
+        tools = {entry.get("tool") for entry in json.loads(manifest_path.read_text(encoding="utf-8")).get("tools", [])}
+    except (OSError, ValueError, AttributeError) as exc:
+        return [f"tools-manifest.json illisible ({exc})"]
+    errors: list[str] = []
+    if novidia:
+        if binary or "nvencc" in tools:
+            errors.append("NVEncC embarqué dans la variante NoVidia")
+        if not marker:
+            errors.append("marqueur _ALLINC_NOVIDIA absent")
+    else:
+        if not binary or "nvencc" not in tools:
+            errors.append("NVEncC absent de la variante AllInc")
+        if marker:
+            errors.append("marqueur _ALLINC_NOVIDIA présent dans la variante AllInc")
+    if not errors:
+        print(f"  NVEncC {'absent (NoVidia)' if novidia else 'embarqué'}")
+    return errors
+
+
 def check(package: Path) -> list[str]:
-    """Renvoie la liste des anomalies (vide si muxiveo-rife est correctement embarqué)."""
+    """Renvoie la liste des anomalies (vide si muxiveo-rife et la variante NVEncC sont corrects)."""
     with tempfile.TemporaryDirectory(prefix="rife-check-") as tmp:
         dest = Path(tmp)
         _extract(package, dest)
+        errors = nvencc_errors(package.name, dest)
         binaries = [p for p in dest.rglob("*") if p.is_file() and p.name in ("muxiveo-rife", "muxiveo-rife.exe")]
         if not binaries:
-            return ["muxiveo-rife absent"]
+            return errors + ["muxiveo-rife absent"]
         exe = binaries[0]
-        errors: list[str] = []
         if exe.suffix == ".exe" and os.name != "nt":
             print(f"  {exe.name} : version non vérifiée (hôte non Windows)")
         else:

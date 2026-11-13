@@ -1,5 +1,6 @@
 """
-ui/plugin_controller.py — état et opérations des extensions (interpolation mvo-rife, accélération NVIDIA mvo-rife-trt).
+ui/plugin_controller.py — état et opérations des extensions (interpolation mvo-rife, accélération NVIDIA mvo-rife-trt,
+FEL) et de l'extension externe NVEncC (rigaya/NVEnc, ``core/nvencc_install.py``).
 
 Un contrôleur par extension, propriété de la fenêtre principale : la page Extensions, le tableau de bord et le
 panneau Encodage lisent son état. Flux des versions publiées, téléchargement, installation, préparation des
@@ -16,8 +17,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from core import plugins
-from core.config import AppConfig
+from core import nvencc_install, plugins
+from core.config import AppConfig, bundled_tools_dir
 from core.i18n import translate_text
 from core.workflows.encode.interpolation import TrtCapability
 
@@ -337,3 +338,167 @@ class TrtPluginController(PluginController):
             "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : "
             "l'interpolation reste sur Vulkan.", reason="; ".join(failures[:2]),
         )
+
+
+_NVENCC_METHOD_LABELS = {
+    nvencc_install.METHOD_APT: "paquet système (apt, mot de passe administrateur demandé)",
+    nvencc_install.METHOD_DNF: "paquet système (dnf, mot de passe administrateur demandé)",
+    nvencc_install.METHOD_USER: "dossier utilisateur, sans droits administrateur",
+    nvencc_install.METHOD_WINDOWS: "dossier utilisateur, sans droits administrateur",
+}
+
+
+def nvencc_method_label(method: str) -> str:
+    """Libellé (à traduire) de la méthode d'installation de NVEncC."""
+    return _NVENCC_METHOD_LABELS.get(method, method)
+
+
+@dataclass(frozen=True)
+class NvenccState:
+    """Extension externe NVEncC : outil résolu, machine, dernière version publiée, opération en cours."""
+
+    tool: nvencc_install.NvenccTool | None = None
+    supported: bool = True           # Linux ou Windows x86-64
+    nvidia: bool | None = None       # None : sonde pas encore faite
+    method: str = ""                 # méthode d'installation prévue (core/nvencc_install.plan_method)
+    target: str = ""                 # dernière version publiée (rigaya/NVEnc)
+    busy: str = ""                   # "" | "install" | "update" | "remove"
+    progress: int = -1
+    message: str = ""
+
+    @property
+    def installed(self) -> nvencc_install.NvenccTool | None:
+        return self.tool
+
+    @property
+    def managed(self) -> bool:
+        """Installation faite par Muxiveo dans le dossier utilisateur : mise à jour et suppression possibles."""
+        return self.tool is not None and self.tool.provenance == nvencc_install.PROVENANCE_USER
+
+    @property
+    def compatible(self) -> bool:
+        return self.supported and bool(self.nvidia)
+
+    @property
+    def update_available(self) -> bool:
+        return (
+            self.managed and bool(self.target) and self.tool is not None and bool(self.tool.version)
+            and plugins.version_key(self.tool.version) < plugins.version_key(self.target)
+        )
+
+
+class NvenccController(QObject):
+    """NVEncC, extension externe : sonde (GPU NVIDIA, outil résolu, version publiée), installation, suppression.
+
+    Jobs hors du thread de l'interface ; ``tool_changed`` demande à la fenêtre de résoudre à nouveau
+    ``AppConfig.tool_nvencc`` (thread principal) puis d'appeler :meth:`refresh`.
+    """
+
+    state_changed = Signal(object)        # NvenccState
+    log_message = Signal(str, str)        # (niveau, message)
+    tool_changed = Signal()
+
+    plugin_id = "nvencc"
+    label = "NVEncC (encodeur NVIDIA)"
+
+    def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._config = config
+        self._state = NvenccState(supported=nvencc_install.supported_platform())
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvencc")
+        self._cancel = threading.Event()
+
+    def state(self) -> NvenccState:
+        return self._state
+
+    def _set_state(self, **changes: object) -> None:
+        self._state = replace(self._state, **changes)  # type: ignore[arg-type]
+        self.state_changed.emit(self._state)
+
+    @property
+    def manual_update_pending(self) -> bool:
+        """Nouvelle version d'une installation faite par Muxiveo (jamais mise à jour automatiquement)."""
+        return self._state.update_available and not self._state.busy
+
+    def refresh(self, *, fetch_target: bool = False) -> None:
+        """Sonde en arrière-plan l'outil résolu et le GPU ; ``fetch_target`` : dernière version publiée aussi."""
+        tool = str(getattr(self._config, "tool_nvencc", "") or "")
+        self._executor.submit(self._refresh_job, tool, fetch_target)
+
+    def _refresh_job(self, tool: str, fetch_target: bool) -> None:
+        supported = self._state.supported
+        described = nvencc_install.describe(tool, bundled_tools_dir())
+        self._set_state(
+            tool=described,
+            nvidia=nvencc_install.nvidia_present() if supported else False,
+            method=nvencc_install.plan_method() if supported else "",
+        )
+        if fetch_target and supported:
+            self._set_state(target=nvencc_install.latest_version())
+
+    def install(self) -> None:
+        self._start("install")
+
+    def update(self) -> None:
+        self._start("update")
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def _start(self, op: str) -> None:
+        if self._state.busy:
+            return
+        self._cancel.clear()
+        self._set_state(busy=op, progress=0, message="")
+        self._executor.submit(self._install_job, op)
+
+    def _progress(self, done: int, total: int) -> None:
+        percent = int(done * 100 / total) if total > 0 else -1
+        if percent != self._state.progress:
+            self._set_state(progress=percent)
+
+    def _log(self, level: str, message: str) -> None:
+        self.log_message.emit(level, message)
+
+    def _install_job(self, op: str) -> None:
+        label = translate_text(self.label)
+        # Mise à jour : même méthode que l'installation existante (dossier utilisateur, Windows compris).
+        method = nvencc_install.METHOD_USER if op == "update" and self._state.managed else None
+        try:
+            installed = nvencc_install.install(
+                method, progress=self._progress, cancel=self._cancel, log=self._log, interactive=False,
+            )
+        except nvencc_install.NvenccCancelled:
+            self._finish(translate_text("Installation annulée."), level="WARN")
+            return
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=label, reason=str(exc)), level="ERROR")
+            return
+        done = "mise à jour" if op == "update" else "installée"
+        self._finish(translate_text(
+            "{label} {done} : {path}.", label=label, done=translate_text(done), path=str(installed),
+        ), level="OK")
+
+    def remove(self) -> None:
+        if self._state.busy or not self._state.managed:
+            return
+        self._set_state(busy="remove", progress=-1, message="")
+        self._executor.submit(self._remove_job)
+
+    def _remove_job(self) -> None:
+        label = translate_text(self.label)
+        if nvencc_install.remove_user():
+            self._finish(translate_text("{label} supprimée.", label=label), level="OK")
+        else:
+            self._finish(translate_text(
+                "{label} : suppression impossible, fichiers encore utilisés (encodage en cours ?).", label=label,
+            ), level="WARN")
+
+    def _finish(self, message: str, level: str) -> None:
+        self._set_state(busy="", progress=-1, message=message)
+        self.log_message.emit(level, message)
+        self.tool_changed.emit()
+
+    def shutdown(self) -> None:
+        self._cancel.set()
+        self._executor.shutdown(wait=False, cancel_futures=True)

@@ -9590,5 +9590,69 @@
   "Mode : Auto": {
     "fra": "Mode : Auto",
     "eng": "Mode: Auto"
+  },
+  "{label} {done} : {path}.": {
+    "fra": "{label} {done} : {path}.",
+    "eng": "{label} {done}: {path}."
+  },
+  "{label} : suppression impossible, fichiers encore utilisés (encodage en cours ?).": {
+    "fra": "{label} : suppression impossible, fichiers encore utilisés (encodage en cours ?).",
+    "eng": "{label}: cannot remove, files still in use (encoding in progress?)."
+  },
+  "Installation en cours…": {
+    "fra": "Installation en cours…",
+    "eng": "Installing…"
+  },
+  "Non compatible : NVEncC n'existe que pour Linux et Windows x86-64.": {
+    "fra": "Non compatible : NVEncC n'existe que pour Linux et Windows x86-64.",
+    "eng": "Not compatible: NVEncC is only available for Linux and Windows x86-64."
+  },
+  "Non compatible : aucun GPU NVIDIA détecté.": {
+    "fra": "Non compatible : aucun GPU NVIDIA détecté.",
+    "eng": "Not compatible: no NVIDIA GPU detected."
+  },
+  "Non installée. Installation : {method}.": {
+    "fra": "Non installée. Installation : {method}.",
+    "eng": "Not installed. Installation: {method}."
+  },
+  "Version {version} intégrée au paquet ({path}).": {
+    "fra": "Version {version} intégrée au paquet ({path}).",
+    "eng": "Version {version} included in the package ({path})."
+  },
+  "Version {version} installée dans {path}.": {
+    "fra": "Version {version} installée dans {path}.",
+    "eng": "Version {version} installed in {path}."
+  },
+  "Version {version} installée ({path}) : mise à jour par le gestionnaire de paquets du système.": {
+    "fra": "Version {version} installée ({path}) : mise à jour par le gestionnaire de paquets du système.",
+    "eng": "Version {version} installed ({path}): updated by the system package manager."
+  },
+  "NVEncC (encodeur NVIDIA)": {
+    "fra": "NVEncC (encodeur NVIDIA)",
+    "eng": "NVEncC (NVIDIA encoder)"
+  },
+  "Supprimer NVEncC du dossier utilisateur ? Les encodeurs NVEncC ne seront plus proposés ; il peut être réinstallé à tout moment depuis la page Extensions.": {
+    "fra": "Supprimer NVEncC du dossier utilisateur ? Les encodeurs NVEncC ne seront plus proposés ; il peut être réinstallé à tout moment depuis la page Extensions.",
+    "eng": "Remove NVEncC from the user folder? NVEncC encoders will no longer be offered; it can be reinstalled at any time from the Extensions page."
+  },
+  "NVEncC (encodeur NVIDIA) — extension externe": {
+    "fra": "NVEncC (encodeur NVIDIA) — extension externe",
+    "eng": "NVEncC (NVIDIA encoder) — external extension"
+  },
+  "Encodeur NVIDIA autonome NVEncC (rigaya/NVEnc) proposé par le panneau Encodage. Installé par le gestionnaire de paquets du système (apt, dnf), sinon dans votre dossier utilisateur (distribution immuable, Windows) ; déjà intégré au paquet AllInc. Requiert un GPU NVIDIA.": {
+    "fra": "Encodeur NVIDIA autonome NVEncC (rigaya/NVEnc) proposé par le panneau Encodage. Installé par le gestionnaire de paquets du système (apt, dnf), sinon dans votre dossier utilisateur (distribution immuable, Windows) ; déjà intégré au paquet AllInc. Requiert un GPU NVIDIA.",
+    "eng": "Standalone NVIDIA encoder NVEncC (rigaya/NVEnc) offered by the Encoding panel. Installed by the system package manager (apt, dnf), otherwise in your user folder (immutable distribution, Windows); already included in the AllInc package. Requires an NVIDIA GPU."
+  },
+  "paquet système (apt, mot de passe administrateur demandé)": {
+    "fra": "paquet système (apt, mot de passe administrateur demandé)",
+    "eng": "system package (apt, administrator password required)"
+  },
+  "paquet système (dnf, mot de passe administrateur demandé)": {
+    "fra": "paquet système (dnf, mot de passe administrateur demandé)",
+    "eng": "system package (dnf, administrator password required)"
+  },
+  "dossier utilisateur, sans droits administrateur": {
+    "fra": "dossier utilisateur, sans droits administrateur",
+    "eng": "user folder, no administrator rights"
   }
 }

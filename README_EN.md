@@ -51,6 +51,7 @@ Standalone packages bundling all required external tools (`ffmpeg`, `mediainfo`,
 | Operating System | Recommended Package | Getting Started |
 |---|---|---|
 | **Linux** | **`Muxiveo-x86_64_allinc-*.AppImage`** | Make executable (`chmod +x`) and run. All binaries are bundled. Compatible with *Gear Lever*. |
+| **Linux / Windows without NVEncC** | **`Muxiveo-x86_64_allinc_novidia-*.AppImage`**, **`Muxiveo-Setup-AllInc_NoVidia-*.exe`** | Lighter AllInc variant without NVEncC: installed on first launch when an NVIDIA GPU is detected (apt/dnf, otherwise user folder), or later from the **Extensions** page. |
 | **Windows** | **`Muxiveo-Setup-*.exe`** | Complete installer with automated tool environment configuration. |
 | **macOS** | **`Muxiveo-*.dmg`** | Native disk image (Intel and Apple Silicon). System tools installed via Homebrew if needed. |
 | **Homebrew** | Linux / macOS formula | `brew tap Hydro74000/muxiveo && brew install muxiveo` |

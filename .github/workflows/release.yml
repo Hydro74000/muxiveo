@@ -222,18 +222,34 @@ jobs:
         run: |
           python package_appimage.py --allinc --version "$PACKAGE_VERSION"
 
+      # Même bundle PyInstaller, outils sans NVEncC (installé au 1er lancement si GPU NVIDIA).
+      - name: Build all-inclusive AppImage without NVEncC (NoVidia)
+        env:
+          PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          MUXIVEO_APPIMAGE_UPDATE_RELEASE: ${{ needs.release-metadata.outputs.appimage_update_release }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python package_appimage.py --allinc --novidia --skip-pyinstaller --version "$PACKAGE_VERSION"
+
       # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
-      - name: Verify embedded muxiveo-rife
+      # NVEncC : embarqué dans l'AllInc, absent (marqueur _ALLINC_NOVIDIA) dans l'AllInc NoVidia.
+      - name: Verify embedded muxiveo-rife and NVEncC variant
         shell: bash
-        run: python scripts/check_allinc_rife.py dist/releases/Muxiveo-x86_64_allinc-*.AppImage
+        run: |
+          python scripts/check_allinc_rife.py \
+            dist/releases/Muxiveo-x86_64_allinc-*.AppImage \
+            dist/releases/Muxiveo-x86_64_allinc_novidia-*.AppImage
 
       - name: Collect Linux assets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-assets/linux
-          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage release-assets/linux/
-          cp dist/releases/Muxiveo-x86_64_allinc-*.AppImage.zsync release-assets/linux/
+          for variant in allinc allinc_novidia; do
+            cp dist/releases/Muxiveo-x86_64_${variant}-*.AppImage release-assets/linux/
+            cp dist/releases/Muxiveo-x86_64_${variant}-*.AppImage.zsync release-assets/linux/
+          done
           ls -la release-assets/linux
 
       - name: Upload Linux assets
@@ -290,22 +306,25 @@ jobs:
           )
           PYTHON
 
+      # Standard, AllInc NoVidia (sans NVEncC), AllInc et ZIP portable (avec NVEncC) sur le même bundle.
       - name: Build all-inclusive PyInstaller and NSIS package
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python package.py --nsis --allinc --portable --version "$env:PACKAGE_VERSION"
+          python package.py --nsis --allinc --allinc-novidia --portable --version "$env:PACKAGE_VERSION"
 
       # Le packaging n'émet qu'un avertissement si muxiveo-rife manque : bloquant ici.
-      - name: Verify embedded muxiveo-rife
+      # NVEncC : embarqué dans l'AllInc et le ZIP, absent (marqueur _ALLINC_NOVIDIA) dans l'AllInc NoVidia.
+      - name: Verify embedded muxiveo-rife and NVEncC variant
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           python scripts/check_allinc_rife.py `
             "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
+            "dist\releases\Muxiveo-Setup-AllInc_NoVidia-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
 
       - name: Collect Windows assets
@@ -316,6 +335,7 @@ jobs:
           $version = $env:PACKAGE_VERSION
           $std_file = "dist\releases\Muxiveo-Setup-$version.exe"
           $allinc_file = "dist\releases\Muxiveo-Setup-AllInc-$version.exe"
+          $novidia_file = "dist\releases\Muxiveo-Setup-AllInc_NoVidia-$version.exe"
           $portable_file = "dist\releases\Muxiveo-Windows-x64-allinc-$version.zip"
           if (-not (Test-Path $std_file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
@@ -324,6 +344,10 @@ jobs:
           if (-not (Test-Path $allinc_file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
             throw "AllInc Windows installer not found: $allinc_file"
+          }
+          if (-not (Test-Path $novidia_file)) {
+            Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
+            throw "AllInc NoVidia Windows installer not found: $novidia_file"
           }
           if (-not (Test-Path $portable_file)) {
             Get-ChildItem -Recurse dist | Select-Object -First 200 FullName
@@ -628,20 +652,27 @@ jobs:
           fi
 
           win_installer=""
+          win_novidia=""
           linux_appimage=""
+          linux_novidia=""
           macos_dmg=""
 
+          # Variantes NoVidia (sans NVEncC, installé au 1er lancement si GPU NVIDIA) avant les motifs AllInc.
           for f in artifacts/*; do
             [ -f "$f" ] || continue
             fname="$(basename "$f")"
             case "$fname" in
+              Muxiveo-Setup-AllInc_NoVidia-*.exe)
+                win_novidia="$fname"
+                ;;
               Muxiveo-Setup-AllInc-*.exe|*allinc*.exe)
                 win_installer="$fname"
                 ;;
+              *_allinc_novidia-*.AppImage)
+                linux_novidia="$fname"
+                ;;
               *.AppImage)
-                if [[ "$fname" != *.zsync ]]; then
-                  linux_appimage="$fname"
-                fi
+                linux_appimage="$fname"
                 ;;
               *.dmg)
                 macos_dmg="$fname"
@@ -666,17 +697,28 @@ jobs:
           {
             echo "# ${RELEASE_NAME}"
             echo
-            if [ -n "$win_installer" ] || [ -n "$linux_appimage" ] || [ -n "$macos_dmg" ]; then
+            if [ -n "$win_installer$win_novidia$linux_appimage$linux_novidia$macos_dmg" ]; then
               echo "### 📥 Téléchargements / Direct Downloads"
               echo
               if [ -n "$win_installer" ]; then
                 echo "- 🪟 **Windows (Allinc setup)** : [${win_installer}](${base_download_url}/${win_installer})"
               fi
+              if [ -n "$win_novidia" ]; then
+                echo "- 🪟 **Windows (Allinc setup, sans NVEncC / without NVEncC)** : [${win_novidia}](${base_download_url}/${win_novidia})"
+              fi
               if [ -n "$linux_appimage" ]; then
                 echo "- 🐧 **Linux (AppImage)** : [${linux_appimage}](${base_download_url}/${linux_appimage})"
               fi
+              if [ -n "$linux_novidia" ]; then
+                echo "- 🐧 **Linux (AppImage, sans NVEncC / without NVEncC)** : [${linux_novidia}](${base_download_url}/${linux_novidia})"
+              fi
               if [ -n "$macos_dmg" ]; then
                 echo "- 🍏 **macOS (DMG)** : [${macos_dmg}](${base_download_url}/${macos_dmg})"
+              fi
+              if [ -n "$win_novidia$linux_novidia" ]; then
+                echo
+                echo "> Sans NVEncC : installé au premier lancement si un GPU NVIDIA est détecté, ou depuis la page Extensions."
+                echo "> Without NVEncC: installed on first launch when an NVIDIA GPU is detected, or from the Extensions page."
               fi
               echo
               echo "---"

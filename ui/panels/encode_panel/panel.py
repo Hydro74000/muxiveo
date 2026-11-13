@@ -2881,6 +2881,11 @@ class EncodePanel(QWidget):
         self._rife_state = state
         self._sync_interpolation_availability()
 
+    def refresh_nvencc_tool(self) -> None:
+        """NVEncC installé ou supprimé (page Extensions) : workflow et nouvelle détection des encodeurs."""
+        self._workflow.set_nvencc_bin(getattr(self._config, "tool_nvencc", None) or None)
+        self._executor.submit(self._detect_hw_encoders)
+
     def refresh_rife_tool(self) -> None:
         """Moteur muxiveo-rife changé (extension installée ou supprimée) : workflow, disponibilité, aperçu."""
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)

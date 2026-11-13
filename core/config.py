@@ -27,6 +27,7 @@ from PySide6.QtCore import QSettings, QStandardPaths
 
 from core import plugins
 from core.lang_tags import Rfc5646LanguageTags
+from core.nvencc_install import user_binary as nvencc_user_binary
 from core.subprocess_utils import subprocess_text_kwargs
 from core.ui_language import system_ui_language
 from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
@@ -270,6 +271,11 @@ def _bundled_tools_dir() -> Path | None:
                 return tools
 
     return None
+
+
+def bundled_tools_dir() -> Path | None:
+    """Dossier des outils embarqués d'une distribution all-inclusive, ``None`` sinon."""
+    return _bundled_tools_dir()
 
 
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
@@ -1239,6 +1245,30 @@ class AppConfig:
             "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
         )
 
+    def _resolve_nvencc_tool(self) -> str:
+        """NVEncC : embarqué, config.ini, QSettings, système ; en dernier l'installation utilisateur faite par
+        Muxiveo (page Extensions, premier lancement de l'AllInc NoVidia, ``core/nvencc_install.py``)."""
+        if _is_windows():
+            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC64.exe")
+        else:
+            # Essai PascalCase d'abord (.deb), puis minuscules (.rpm).
+            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC")
+            if shutil.which(resolved) is None and not Path(resolved).is_file():
+                fallback = shutil.which("nvencc")
+                if fallback:
+                    resolved = fallback
+        if _command_path(resolved) is None:
+            installed = nvencc_user_binary()
+            if installed is not None:
+                return str(installed)
+        return resolved
+
+    def refresh_nvencc_tool(self) -> str:
+        """Nouvelle résolution de NVEncC après installation ou suppression (page Extensions)."""
+        self.tool_nvencc = self._resolve_nvencc_tool()
+        self.refresh_tool_versions()
+        return self.tool_nvencc
+
     def refresh_rife_tool(self) -> str:
         """Nouvelle résolution de muxiveo-rife après installation ou suppression de l'extension mvo-rife."""
         self.tool_muxiveo_rife = self._resolve_rife_tool()
@@ -1291,16 +1321,7 @@ class AppConfig:
         #   • Linux .deb (Debian/Ubuntu) : NVEncC (PascalCase, /usr/bin/NVEncC)
         #   • Linux .rpm (Fedora/RHEL) : nvencc (minuscules, /usr/bin/nvencc)
         # Pas de support macOS — sera résolu en None silencieusement si introuvable.
-        if _is_windows():
-            self.tool_nvencc = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC64.exe")
-        else:
-            # Essai PascalCase d'abord (.deb), puis minuscules (.rpm).
-            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC")
-            if shutil.which(resolved) is None and not Path(resolved).is_file():
-                fallback = shutil.which("nvencc")
-                if fallback:
-                    resolved = fallback
-            self.tool_nvencc = resolved
+        self.tool_nvencc = self._resolve_nvencc_tool()
         self.tool_muxiveo_rife = self._resolve_rife_tool()
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
