@@ -111,6 +111,13 @@ def _variables_schema() -> dict[str, Any]:
     }
 
 
+def _encode_schema() -> dict[str, Any]:
+    """Bloc ``encode`` (contrat strict de la couche de service)."""
+    from core.service.schemas.encode import EncodeBlock
+
+    return EncodeBlock.json_schema()
+
+
 def build_cli_json_schema() -> dict[str, Any]:
     flag_properties = _flag_properties()
     return {
@@ -154,6 +161,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "tracks": {"type": "array", "items": {"$ref": "#/$defs/track_edit"}},
             "track_order": {"type": "array", "items": {"$ref": "#/$defs/track_order_item"}},
             "audio_variants": {"type": "array", "items": {"$ref": "#/$defs/audio_variant"}},
+            "encode": _encode_schema(),
             "chapters": {"oneOf": [{"const": False}, {"$ref": "#/$defs/chapters"}]},
             "tmdb": {"oneOf": [{"type": "boolean"}, {"$ref": "#/$defs/tmdb"}]},
             "extra_attachments": {"type": "array", "items": {"type": "string"}},

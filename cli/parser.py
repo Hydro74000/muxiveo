@@ -7,6 +7,7 @@ import argparse
 from cli.hdr import add_hdr_options
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from cli.constants import LOG_FORMATS
+from cli.encode_options import add_encode_options
 from cli.plugins import add_plugins_parser
 from cli.service_adapter import cmd_call, cmd_operations
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
@@ -175,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--nfo", dest="nfo", action="store_true", default=None)
         p.add_argument("--no-nfo", dest="nfo", action="store_false")
         p.add_argument("--writing-application", default="")
+        add_encode_options(p)
         if name in {"validate", "preview"}:
             p.add_argument("--json", dest="json_output", action="store_true", help="Sortie JSON structurée.")
         if name == "remux":

@@ -1132,7 +1132,7 @@ class TestEncodePanelDynamicHdrDefaults:
         def fail_subprocess_run(*_args, **_kwargs):
             raise AssertionError("mediainfo should be reused from FileInfo, not relaunched")
 
-        monkeypatch.setattr("ui.panels.encode_panel.panel.subprocess.run", fail_subprocess_run)
+        monkeypatch.setattr("core.workflows.encode.planning.track_settings.subprocess.run", fail_subprocess_run)
 
         panel.set_video_tracks([(info, entry, _COLOR)])
 

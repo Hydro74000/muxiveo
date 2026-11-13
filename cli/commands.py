@@ -25,6 +25,7 @@ from cli.logging import Logger
 from cli.options import JobOverrides, common_options
 from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
 from cli.remux_config import config_to_template
+from cli.encode_options import apply_encode_options
 from cli.interrupts import interrupt_guard
 from cli.service_adapter import envelope, overrides_from_options, print_json, render_api_error, run_operation
 
@@ -167,7 +168,7 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
             include_command=False,
             metadata_job=_metadata_job_from_args(args),
         )
-    job = load_job(JobOverrides.from_namespace(args))
+    job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     result, ctx = run_operation("media.validate", _job_payload(job, options), config=config, logger=logger,
                                 overrides=_job_overrides(options))
     assert isinstance(result, MediaValidateResult)
@@ -177,6 +178,8 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
         return exit_code
     if getattr(args, "json_output", False):
         payload = {"valid": result.valid, "errors": list(result.errors), **result.config}
+        if result.encode is not None:
+            payload["encode"] = result.encode
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
         return exit_code
     if result.errors:
@@ -203,7 +206,7 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
         )
-    job = load_job(JobOverrides.from_namespace(args))
+    job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     return _render_preview(_preview_job(job, options, config, logger), args, logger, json_output=bool(
         getattr(args, "json_output", False)))
 
@@ -236,6 +239,8 @@ def _render_preview(preview: tuple[MediaPreviewResult, str], args: argparse.Name
                 "native_diagnostics": execution["native_diagnostics"],
                 "execution_preview": execution,
             })
+        if result.encode is not None:
+            payload["encode"] = result.encode
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
         return exit_code
     if result.errors:
@@ -263,7 +268,7 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
         )
-    job = load_job(JobOverrides.from_namespace(args))
+    job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     if args.save:
         write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
@@ -488,5 +493,5 @@ def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
         )
-    job = load_job(JobOverrides.from_namespace(args))
+    job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     return _run_job(job, args, config, options, logger)

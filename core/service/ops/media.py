@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from core.inspector import FileInspector
+from core.jobs.encode import ResolvedEncode, preset_loader, resolve_encode
 from core.jobs.inspection import config_template_from_info
 from core.jobs.logging import EmitterLogger
 from core.jobs.options import CommonOptions
@@ -19,6 +21,9 @@ from core.service.context import ExecutionContext, Overrides
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
+from core.service.schemas.encode import EncodeBlock
+from core.workflows.encode.runtime.crop_detector import detect_video_crop
+from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig
 
 # ---------------------------------------------------------------------------
@@ -151,6 +156,8 @@ class MediaValidateResult(Model):
     valid: bool
     errors: tuple[str, ...] = ()
     config: dict[str, Any] = field(default_factory=dict, description="Job résolu (sources, pistes, sortie…).")
+    encode: dict[str, Any] | None = field(default=None,
+                                          description="Encodage résolu (bloc `encode` du job) : pistes, avertissements.")
 
 
 @dataclass(frozen=True)
@@ -163,6 +170,7 @@ class MediaPreviewResult(Model):
     command: Any = field(default=None, description="Commande FFmpeg prévue (arguments).")
     command_text: str | None = field(default=None, description="Commande(s) prévue(s), copiables.")
     execution: dict[str, Any] | None = field(default=None, description="Plan d'exécution (backend, préparations…).")
+    encode: dict[str, Any] | None = field(default=None, description="Encodage résolu (bloc `encode` du job).")
 
 
 @dataclass(frozen=True)
@@ -175,10 +183,46 @@ class MediaRunResult(Model):
 
 
 def _build(request: MediaJobRequest, ctx: ExecutionContext) -> tuple[RemuxConfig, CommonOptions]:
-    options = request.options.to_common(ctx.overrides)
-    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
-                                      EmitterLogger(ctx.events))
+    remux_config, options, _cache = _build_cached(request, ctx)
     return remux_config, options
+
+
+def _build_cached(request: MediaJobRequest, ctx: ExecutionContext,
+                  **extra: Any) -> tuple[RemuxConfig, CommonOptions, PreparationCache]:
+    """Job de remux construit avec un cache d'inspection réutilisé par la résolution de l'encodage."""
+    options = request.options.to_common(ctx.overrides, **extra)
+    cache = PreparationCache()
+    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
+                                      EmitterLogger(ctx.events), context=PreparationContext(cache=cache))
+    return remux_config, options, cache
+
+
+def resolve_job_encode(request: MediaJobRequest, remux_config: RemuxConfig, options: CommonOptions,
+                       cache: PreparationCache, ctx: ExecutionContext) -> ResolvedEncode | None:
+    """Bloc ``encode`` du job résolu (règles du panneau Encodage) ; ``None`` sans bloc."""
+    raw = request.job.get("encode")
+    if raw is None:
+        return None
+    block = EncodeBlock.from_dict(raw)
+    inspector = FileInspector(ffprobe_bin=str(options.ffprobe or ctx.config.tool_ffprobe),
+                              mediainfo_bin=str(options.mediainfo or ctx.config.tool_mediainfo))
+    infos = {str(source.path): cache.inspect(inspector, Path(source.path)) for source in remux_config.sources}
+    ffmpeg = str(options.ffmpeg or ctx.config.tool_ffmpeg)
+    return resolve_encode(
+        block, remux_config, infos=infos, config=ctx.config,
+        load_preset=preset_loader(Path(ctx.config.app_data_dir) / "encode_profiles"),
+        detect_crop=functools.partial(detect_video_crop, ffmpeg_bin=ffmpeg,
+                                      dovi_tool_bin=str(getattr(ctx.config, "tool_dovi_tool", "dovi_tool")),
+                                      ffprobe_bin=str(options.ffprobe or ctx.config.tool_ffprobe)),
+        logger=EmitterLogger(ctx.events),
+    )
+
+
+def _encode_plan(resolved: ResolvedEncode | None) -> dict[str, Any] | None:
+    if resolved is None:
+        return None
+    return {"pure_copy": resolved.pure_copy, "video": list(resolved.video), "audio": list(resolved.audio),
+            "warnings": list(resolved.warnings)}
 
 
 _JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED)
@@ -192,9 +236,11 @@ _JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_
     errors=_JOB_ERRORS,
 )
 def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaValidateResult:
-    remux_config, options = _build(request, ctx)
+    remux_config, options, cache = _build_cached(request, ctx)
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
     errors = remux_workflow(ctx.config, options).validate(remux_config)
-    return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config))
+    return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config),
+                               encode=_encode_plan(resolved))
 
 
 @operation(
@@ -205,18 +251,20 @@ def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaVali
     errors=_JOB_ERRORS,
 )
 def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPreviewResult:
-    remux_config, options = _build(request, ctx)
+    remux_config, options, cache = _build_cached(request, ctx)
+    plan = _encode_plan(resolve_job_encode(request, remux_config, options, cache, ctx))
     wf = remux_workflow(ctx.config, options)
     errors = wf.validate(remux_config)
     config = serialize_remux_config(remux_config)
     if errors:
-        return MediaPreviewResult(valid=False, errors=tuple(errors), config=config)
+        return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
     return MediaPreviewResult(
         valid=True,
         config=config,
         command=wf.build_command(remux_config),
         command_text=wf.preview_command(remux_config),
         execution=dict(wf.execution_preview(remux_config)),
+        encode=plan,
     )
 
 
