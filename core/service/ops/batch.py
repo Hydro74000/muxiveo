@@ -14,6 +14,8 @@ from typing import Any, Literal
 from core.jobs.batch import BatchOutcome, BatchSteps, discover_direct_batch_jobs, run_batch
 from core.jobs.constants import EXIT_OK, EXIT_VALIDATION
 from core.jobs.errors import exit_code_for
+from core.jobs.encode import resolve_from_job
+from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import ProfileBatchSteps, build_profile_remux_config, load_decision_profile, run_profile_batch
 from core.jobs.remux_config import build_remux_config
@@ -61,6 +63,7 @@ class BatchRequest(Model):
     metadata: BatchMetadata = field(default_factory=BatchMetadata)
     mux_backend: Literal["auto", "native", "ffmpeg"] | None = None
     options: JobOptions = field(default_factory=JobOptions)
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` fusionné dans chaque job (prime).")
     dry_run: bool = field(default=False, description="Aperçu de chaque job, sans écriture.")
     force: bool = field(default=False, description="Remplacer les sorties existantes.")
     continue_on_error: bool = field(default=False, description="Poursuivre après un job en échec.")
@@ -76,6 +79,7 @@ class ProfileBatchRequest(Model):
     sources: BatchSelection = field(default_factory=BatchSelection)
     metadata: BatchMetadata = field(default_factory=BatchMetadata)
     options: JobOptions = field(default_factory=JobOptions)
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque job.")
     dry_run: bool = False
     force: bool = False
     continue_on_error: bool = False
@@ -147,6 +151,44 @@ class _Children:
         self._final(logger, JobState.SUCCEEDED)
         return EXIT_OK
 
+    def encode(self, job: dict[str, Any], remux_config: Any, config: Any, options: Any, logger: Any) -> Any:
+        resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger)
+        return None if resolved is None else resolved.config
+
+    def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any) -> int:
+        wf = encode_workflow(config, options)
+        prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
+        errors = wf.validate(encode_config)
+        for error in errors:
+            logger.emit("error", error)
+        if not errors:
+            logger.emit("info", preview_encode(encode_config, wf), event="batch_preview")
+        self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
+        return EXIT_OK if not errors else EXIT_VALIDATION
+
+    def run_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *, force: bool,
+                   accept_dovi_nvenc_crop: bool = False) -> int:
+        try:
+            run_encode(encode_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
+                       force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
+                       on_progress=lambda event: logger.events.progress(pct=event.percent, stage=event.stage_label,
+                                                                        fps=event.fps, eta_s=event.eta_seconds))
+        except ApiError as error:
+            if not error.logged:
+                logger.emit("error", error.render())
+            self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
+            return exit_code_for(error)
+        except BaseException:
+            self._final(logger, JobState.FAILED)
+            raise
+        logger.events.artifact("output", str(encode_config.output))
+        self._final(logger, JobState.SUCCEEDED)
+        return EXIT_OK
+
+    def steps(self, build: Any) -> BatchSteps:
+        return BatchSteps(build=build, preview=self.preview, run=self.run, encode=self.encode,
+                          preview_encode=self.preview_encode, run_encode=self.run_encode)
+
     @staticmethod
     def _final(logger: Any, state: JobState) -> None:
         events = getattr(logger, "events", None)
@@ -198,7 +240,8 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
         no_cover=meta.no_cover,
         no_attach=meta.no_attach,
         mux_backend=request.mux_backend,
-        steps=BatchSteps(build=build_remux_config, preview=children.preview, run=children.run),
+        encode_overrides=request.encode,
+        steps=children.steps(build_remux_config),
         cancel=ctx.cancel,
         job_logger=children.logger,
     )
@@ -239,8 +282,11 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         output_all=meta.output_all,
         no_cover=meta.no_cover,
         no_attach=meta.no_attach,
+        encode_block=request.encode,
         steps=ProfileBatchSteps(load=load_decision_profile, discover=discover_direct_batch_jobs,
-                                build=build_profile_remux_config, preview=children.preview, run=children.run),
+                                build=build_profile_remux_config, preview=children.preview, run=children.run,
+                                encode=children.encode, preview_encode=children.preview_encode,
+                                run_encode=children.run_encode),
         cancel=ctx.cancel,
         job_logger=children.logger,
     )

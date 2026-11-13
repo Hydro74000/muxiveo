@@ -8,6 +8,7 @@ from core.service.ops import batch, hdr, hybrid, media, plugins, profile, sync, 
 CATALOG = Catalog((
     system.system_version,
     system.system_tools,
+    system.system_capabilities,
     system.schema_get,
     media.media_inspect,
     media.media_validate,

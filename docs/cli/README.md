@@ -41,6 +41,8 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
 | `sync-scan` | corrélation acoustique FFT et extraction de calibration |
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
+| `encode` | encode (job + bloc `encode` ou options d'encodage) ; voir « Encodage » |
+| `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
 | `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
 
@@ -662,6 +664,66 @@ compatibilité des consommateurs v1. `selected_backend`, `plan_version`,
 l'exécution réelle. La preview texte commence par le backend choisi. En JSONL,
 l'événement `mux_backend` expose séparément le backend demandé/sélectionné, le
 repli, sa raison et les diagnostics.
+
+## Encodage : commande `encode` et bloc `encode`
+
+Un job encode dès qu'il contient un bloc `encode` qui demande autre chose qu'une copie (même
+règle que la barre d'exécution de l'interface) ; sinon il reste un remux. `encode` est la commande
+dédiée (mêmes options que `remux`), mais `run`, `remux`, `batch` (template) et `profile` acceptent
+aussi le bloc et les options d'encodage. Exemple complet : [examples/encode.json](examples/encode.json).
+
+```bash
+Muxiveo-cli encode -i film.mkv -o film.x265.mkv --video-codec libx265 --crf 18 --encoder-preset slow
+Muxiveo-cli encode -i film.mkv -o film.mkv --video-codec hevc_nvenc --rate-control vbr_cq --cq 24 --dv copy
+Muxiveo-cli encode -i film.mkv -o film.mkv --video-codec libx265 --crop auto --denoise mvo-r2:moyen \
+    --audio-codec 0:1=eac3:640
+Muxiveo-cli encode --config job.json --dry-run          # commandes prévues, sans écriture
+Muxiveo-cli validate --config job.json --json           # plan d'encodage résolu (clé "encode")
+Muxiveo-cli capabilities                                # encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO
+```
+
+**Couches**, de la plus basse à la plus haute : réglages par défaut de la source (copie, HDR de la
+source) → preset d'encodage (`preset` : nom enregistré par l'interface ou fichier JSON ; les
+réglages HDR propres à la source ne sont jamais repris du preset) → `video.default` (toutes les
+pistes vidéo) → `video.tracks[]` (une piste, désignée par `select` : `source` + `stream` index
+ffprobe, `index` rang parmi les pistes vidéo, ou `entry_id`) → options courtes du CLI.
+
+**Champs vidéo** : `codec`, `rate_control` (modes du codec), `crf`, `cq`, `bitrate_kbps`,
+`encoder_preset`, `extra_params`, `bit_depth` (`auto` / `8` / `10`), `crop` (`auto` mesure les
+bandes noires comme le bouton Auto-crop ; sinon `top` / `bottom` / `left` / `right` en pixels),
+`resize`, `filters` (YADIF, deblock, NLMeans…), `interpolation` (MVO-RIFE : `factor` ou
+`target_fps`, `quality`, `mode`), `restoration` (débruitage MVO-R2 : `level`, `mode`, `animation`,
+`sharpen`), `static_hdr` (`mode` `source` / `manual` / `off`, `master_display`, `max_cll`,
+`estimate` `fast` / `precise`), `dolby_vision` (`mode` `copy` / `off`, `profile`), `hdr10plus`
+(`mode`), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
+`algorithm`). Fournir un bloc `resize`, `interpolation` ou `restoration` l'active (sauf
+`"enabled": false`). Le bloc est validé strictement : clé inconnue ou valeur hors bornes refusée.
+
+**Audio** : `audio[]` = `select`, `codec` (`copy`, `aac`, `ac3`, `eac3`, `flac`), `bitrate_kbps`
+(défaut selon les canaux, réglages `[audio_encoding]`), `truehd_core`. Les pistes non citées
+sont copiées ; les variantes (`audio_variants`) gardent leur codec.
+
+**Politique HDR (identique à l'interface)** : en copie, Dolby Vision, HDR10+ et HDR10 statique de
+la source sont conservés — `dolby_vision.mode: off` (ou `--dv off`), `static_hdr.mode: off` ou le
+tone mapping sur une piste copiée sont refusés (code 3) : il faut réencoder. Une copie Dolby
+Vision ou HDR10+ demandée mais impossible (source sans métadonnées, codec incompatible) donne un
+avertissement.
+
+**Dolby Vision + NVENC** : quand l'alignement sur 32 lignes impose un recadrage, l'encodage est
+refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués) sauf
+`accept_dovi_nvenc_crop: true` (`--accept-dovi-nvenc-crop`).
+
+**Options courtes** : `--encode-preset`, `--video-codec`, `--rate-control`, `--crf`, `--cq`,
+`--bitrate`, `--target-size`, `--encoder-preset`, `--bit-depth`, `--crop auto|HAUT,BAS,GAUCHE,DROITE`,
+`--resize PRESET|LxH|N%`, `--deinterlace`, `--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off`,
+`--interpolate xN|CADENCE`, `--interpolation-preset`, `--tonemap [ALGO]`, `--dv copy|off`,
+`--hdr10plus copy|off`, `--bake-fel`, `--audio-codec SOURCE:FLUX=CODEC[:KBPS]` (répétable),
+`--video-track SOURCE:FLUX` (options vidéo pour cette piste seulement), `--video-set
+CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-nvenc-crop`.
+
+Sans `--verbose`, la sortie brute de FFmpeg n'est pas affichée ; avec `--log-format events`, la
+progression (`pct`, `fps`, `eta_s`) est publiée en événements `progress`. Ctrl+C annule
+l'encodage proprement.
 
 ## Couche de service : `call`, `operations`, `--log-format events`
 

@@ -25,6 +25,9 @@ from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, no
 
 from core.jobs.batch import (
     BatchDiscovery,
+    BatchSteps,
+    execute_job,
+    plan_job_encode,
     BatchOutcome,
     PlannedBatchJob,
     PreviewStep,
@@ -299,13 +302,24 @@ def profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class ProfileBatchSteps:
-    """Étapes d'un lot profilé : chargement du profil, découverte, construction, aperçu, exécution."""
+    """Étapes d'un lot profilé : chargement du profil, découverte, construction, aperçu, exécution
+    (et encodage : voir ``core.jobs.batch.BatchSteps``)."""
 
     load: Callable[[str, AppConfig], dict[str, Any]]
     discover: Callable[..., BatchDiscovery]
     build: Callable[..., tuple[RemuxConfig, Any]]
     preview: PreviewStep
     run: RunStep
+    encode: Callable[..., Any] | None = None
+    preview_encode: Callable[..., int] | None = None
+    run_encode: Callable[..., int] | None = None
+
+    def as_batch_steps(self) -> BatchSteps:
+        def unused_build(*_args: Any, **_kwargs: Any) -> RemuxConfig:
+            raise RuntimeError("construction propre au profil (ProfileBatchSteps.build)")
+
+        return BatchSteps(build=unused_build, preview=self.preview, run=self.run, encode=self.encode,
+                          preview_encode=self.preview_encode, run_encode=self.run_encode)
 
 
 def run_profile_batch(
@@ -332,11 +346,13 @@ def run_profile_batch(
     output_all: bool = False,
     no_cover: bool = False,
     no_attach: bool = False,
+    encode_block: dict[str, Any] | None = None,
     steps: ProfileBatchSteps,
     cancel: CancelToken | None = None,
     job_logger: Callable[[int], Logger] | None = None,
 ) -> BatchOutcome:
     """Applique un profil à un lot de fichiers ; étapes injectées, annulation = arrêt du lot."""
+    batch_steps = steps.as_batch_steps()
     if not output_dir:
         raise JobError("`profile batch` requiert `--output-dir`.", EXIT_ARGS)
     profile = steps.load(profile_path, config)
@@ -401,6 +417,8 @@ def run_profile_batch(
             )
             entry.remux_config = remux_config
             entry.output_label = str(remux_config.output)
+            if encode_block:
+                plan_job_encode(batch_steps, entry, {"encode": encode_block}, remux_config, config, options, logger)
         except Exception as exc:
             entry.error = exc
             if not continue_on_error:
@@ -425,13 +443,7 @@ def run_profile_batch(
             remux_config = entry.remux_config
             if not dry_run and output_label:
                 Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            rc = steps.preview(config, options, job_log, remux_config) if dry_run else steps.run(
-                config,
-                options,
-                job_log,
-                remux_config,
-                force=force,
-            )
+            rc = execute_job(batch_steps, entry, config, options, job_log, dry_run=dry_run, force=force)
             status = "success" if rc == EXIT_OK else "failed"
             if rc != EXIT_OK and cancel is not None and cancel.cancelled:
                 status = "cancelled"

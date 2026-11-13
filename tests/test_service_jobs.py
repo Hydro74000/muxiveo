@@ -219,7 +219,7 @@ def _ctx() -> tuple[ExecutionContext, ListSink]:
 def test_media_preview_and_validate_share_the_job_resolution(monkeypatch, tmp_path):
     built: list[dict] = []
 
-    def build(job, config, options, logger):
+    def build(job, config, options, logger, **_kwargs):
         built.append(job)
         return SimpleNamespace(output=tmp_path / "out.mkv")
 
@@ -235,7 +235,8 @@ def test_media_preview_and_validate_share_the_job_resolution(monkeypatch, tmp_pa
     ctx, _ = _ctx()
     validate = call(CATALOG, "media.validate", {"job": job, "options": {"sync_mode": "physical"}}, ctx,
                     base_dir=tmp_path)
-    assert validate.to_dict() == {"valid": True, "errors": [], "config": {"output": str(tmp_path / "out.mkv")}}
+    assert validate.to_dict() == {"valid": True, "errors": [], "config": {"output": str(tmp_path / "out.mkv")},
+                                  "encode": None}
 
 
 def test_media_job_options_are_strict():
@@ -247,7 +248,7 @@ def test_media_job_options_are_strict():
 
 def test_media_run_reports_output_artifact(monkeypatch, tmp_path):
     output = tmp_path / "out.mkv"
-    monkeypatch.setattr(media, "build_remux_config", lambda job, config, options, logger: SimpleNamespace(output=output))
+    monkeypatch.setattr(media, "build_remux_config", lambda job, config, options, logger, **_k: SimpleNamespace(output=output))
     seen: dict[str, Any] = {}
 
     def run(remux_config, *, config, options, logger, cancel, force):

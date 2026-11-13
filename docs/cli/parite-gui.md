@@ -5,7 +5,8 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
-Opérations publiées : toutes les commandes existantes du CLI (voir `Muxiveo-cli operations`).
+Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage (`media.run` avec bloc
+`encode`) et `system.capabilities` (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -13,7 +14,7 @@ Opérations publiées : toutes les commandes existantes du CLI (voir `Muxiveo-cl
 |---|---|---|---|
 | Version, recherche de mise à jour | `version [--check]` | `system.version` | ✅ |
 | Outils détectés et leurs chemins | `tools` | `system.tools` | ✅ |
-| Encodeurs logiciels / matériels, presets, Vulkan, NVOF, TensorRT | `capabilities` | `system.capabilities` | ⏳ L3 |
+| Encodeurs logiciels / matériels, presets, Vulkan, NVOF, TensorRT | `capabilities` | `system.capabilities` | ✅ |
 | Nettoyage du dossier de travail au démarrage | `workdir list\|clean` | `workdir.list/clean` | ⏳ L10 |
 
 ## Conteneur (remux)
@@ -56,22 +57,22 @@ Opérations publiées : toutes les commandes existantes du CLI (voir `Muxiveo-cl
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Codec, mode de débit, qualité, débit, taille cible, 2 passes | bloc `encode`, `--video-codec`, `--crf`… | `media.run` | ⏳ L2–L3 |
-| Préréglage de l'encodeur, paramètres libres | `--encoder-preset`, `--video-set extra_params=…` | `media.run` | ⏳ L2 |
-| Profondeur Auto / 8 / 10 bits | `--bit-depth` | `media.run` | ⏳ L2 |
-| Recadrage (manuel, détection automatique), redimensionnement | `--crop auto\|…`, `--resize` | `media.run` | ⏳ L2 |
-| Désentrelacement, NLMeans | `--deinterlace`, `--denoise nlmeans` | `media.run` | ⏳ L2 |
-| Débruitage MVO-R2 (niveau, mode, animation, netteté) | `--denoise mvo-r2`, `--video-set restoration.*` | `media.run` | ⏳ L2 |
-| Interpolation MVO-RIFE (facteur, cadence, préréglage, mode) | `--interpolate`, `--interpolation-preset` | `media.run` | ⏳ L2 |
-| Tone mapping | `--tonemap` | `media.run` | ⏳ L2 |
-| HDR10 statique (source, saisie, estimation rapide / précise) | bloc `encode.static_hdr` | `media.run` | ⏳ L2 |
-| Dolby Vision (copie, profil), HDR10+ | `--dv`, `--hdr10plus` | `media.run` | ⏳ L2 |
-| Intégrer la couche FEL (précision, périphérique, HDR10+ recalculé) | `--bake-fel`, `--video-set fel.*` | `media.run` | ⏳ L2 |
-| Pistes audio : codec, débit, cœur TrueHD | `--audio-codec`, bloc `encode.audio` | `media.run` | ⏳ L2 |
-| Appliquer à toutes les pistes vidéo | `video.default` du bloc `encode` | `media.run` | ⏳ L2 |
-| Alignement Dolby Vision NVENC (recadrage proposé) | `accept_dovi_nvenc_crop` | `media.run` | ⏳ L3 (refus par défaut) |
-| Lancer l'encodage, progression | `run`, `remux`, `encode` | `media.run` | ⏳ L3 |
-| Conserver les fichiers temporaires après un échec | option dédiée | `media.run` | ⏳ L3 |
+| Codec, mode de débit, qualité, débit, taille cible, 2 passes | bloc `encode`, `--video-codec`, `--crf`… | `media.run` | ✅ |
+| Préréglage de l'encodeur, paramètres libres | `--encoder-preset`, `--video-set extra_params=…` | `media.run` | ✅ |
+| Profondeur Auto / 8 / 10 bits | `--bit-depth` | `media.run` | ✅ |
+| Recadrage (manuel, détection automatique), redimensionnement | `--crop auto\|…`, `--resize` | `media.run` | ✅ |
+| Désentrelacement, NLMeans | `--deinterlace`, `--denoise nlmeans` | `media.run` | ✅ |
+| Débruitage MVO-R2 (niveau, mode, animation, netteté) | `--denoise mvo-r2`, `--video-set restoration.*` | `media.run` | ✅ |
+| Interpolation MVO-RIFE (facteur, cadence, préréglage, mode) | `--interpolate`, `--interpolation-preset` | `media.run` | ✅ |
+| Tone mapping | `--tonemap` | `media.run` | ✅ |
+| HDR10 statique (source, saisie, estimation rapide / précise) | bloc `encode.static_hdr` | `media.run` | ✅ |
+| Dolby Vision (copie, profil), HDR10+ | `--dv`, `--hdr10plus` | `media.run` | ✅ |
+| Intégrer la couche FEL (précision, périphérique, HDR10+ recalculé) | `--bake-fel`, `--video-set fel.*` | `media.run` | ✅ |
+| Pistes audio : codec, débit, cœur TrueHD | `--audio-codec`, bloc `encode.audio` | `media.run` | ✅ |
+| Appliquer à toutes les pistes vidéo | `video.default` du bloc `encode` | `media.run` | ✅ |
+| Alignement Dolby Vision NVENC (recadrage proposé) | `accept_dovi_nvenc_crop` | `media.run` | ✅ |
+| Lancer l'encodage, progression | `run`, `remux`, `encode` | `media.run` | ✅ |
+| Conserver les fichiers temporaires après un échec | option dédiée | `media.run` | ✅ |
 | Aperçu image / vidéo | `encode --preview-image\|--preview-video` | `encode.preview_capture` | ⏳ L4 |
 | Aperçu / copie de la commande | `preview` | `media.preview` | ⏳ L4 |
 | Profils d'encodage : charger, enregistrer, supprimer | `--encode-preset`, `encode-preset …` | `encode_preset.*` | ⏳ L4 |

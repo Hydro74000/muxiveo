@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.jobs.encode import resolve_from_job
+from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import build_profile_remux_config, load_decision_profile, profile_summary
 from core.jobs.runtime import remux_workflow, run_remux
@@ -43,6 +45,7 @@ class ProfileJobRequest(Model):
     options: JobOptions = field(default_factory=JobOptions)
     metadata: dict[str, Any] = field(default_factory=dict,
                                      description="Métadonnées du job (tmdb, output_template, mux_backend…).")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` (voir le schéma des jobs).")
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,7 @@ class ProfilePreviewResult(Model):
     command: Any = None
     command_text: str | None = None
     execution: dict[str, Any] | None = None
+    encode: dict[str, Any] | None = None
 
 
 @operation("profile.validate", request=ProfileRequest, result=ProfileValidateResult,
@@ -97,19 +101,37 @@ def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
            errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED))
 def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> ProfilePreviewResult:
     remux_config, report, options = _build(request, ctx, preview=True)
-    wf = remux_workflow(ctx.config, options)
-    errors = wf.validate(remux_config)
+    resolved = _resolve(request, remux_config, options, ctx)
+    plan = None if resolved is None else {"pure_copy": resolved.pure_copy, "video": list(resolved.video),
+                                          "audio": list(resolved.audio), "warnings": list(resolved.warnings)}
     base: dict[str, Any] = dict(
-        valid=not errors,
-        errors=tuple(errors),
         profile_report=report,
         tracks=tuple(serialize_track_preview(track) for source in remux_config.sources for track in source.tracks),
         config=serialize_remux_config(remux_config),
+        encode=plan,
     )
+    if resolved is not None and resolved.config is not None:
+        encode_wf = encode_workflow(ctx.config, options)
+        prepare_vulkan(encode_wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg))
+        errors = encode_wf.validate(resolved.config)
+        base.update(valid=not errors, errors=tuple(errors))
+        if not errors and request.include_command:
+            base.update(command_text=preview_encode(resolved.config, encode_wf),
+                        execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
+                                   "preparation_commands": [], "native_diagnostics": []})
+        return ProfilePreviewResult(**base)
+    wf = remux_workflow(ctx.config, options)
+    errors = wf.validate(remux_config)
+    base.update(valid=not errors, errors=tuple(errors))
     if not errors and request.include_command:
         base.update(command=wf.build_command(remux_config), command_text=wf.preview_command(remux_config),
                     execution=dict(wf.execution_preview(remux_config)))
     return ProfilePreviewResult(**base)
+
+
+def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: ExecutionContext):
+    return resolve_from_job(request.encode, remux_config, config=ctx.config, options=options,
+                            logger=EmitterLogger(ctx.events))
 
 
 @operation("profile.apply", request=ProfileApplyRequest, result=MediaRunResult,
@@ -118,6 +140,15 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaRunResult:
     remux_config, _report, options = _build(request, ctx, preview=False)
+    resolved = _resolve(request, remux_config, options, ctx)
+    if resolved is not None and resolved.config is not None:
+        message = run_encode(resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
+                             cancel=ctx.cancel, force=request.force,
+                             accept_dovi_nvenc_crop=bool((request.encode or {}).get("accept_dovi_nvenc_crop")),
+                             on_progress=lambda event: ctx.events.progress(pct=event.percent, stage=event.stage_label,
+                                                                           fps=event.fps, eta_s=event.eta_seconds))
+        ctx.events.artifact("output", str(resolved.config.output))
+        return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
     message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
                         cancel=ctx.cancel, force=request.force)
     ctx.events.artifact("output", str(remux_config.output))

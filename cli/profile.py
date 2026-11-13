@@ -27,7 +27,13 @@ from cli.interrupts import interrupt_guard
 from cli.json_io import json_default
 from cli.logging import Logger
 from cli.options import CommonOptions
-from cli.runtime import preview_remux_config, run_remux_config
+from cli.runtime import (
+    preview_encode_config,
+    preview_remux_config,
+    resolve_job_encode_config,
+    run_encode_config,
+    run_remux_config,
+)
 from cli.service_adapter import envelope, overrides_from_options, print_json, run_operation
 
 
@@ -67,8 +73,11 @@ def profile_preview(
     logger: Logger,
     include_command: bool = True,
     metadata_job: dict[str, Any] | None = None,
+    encode_block: dict[str, Any] | None = None,
 ) -> int:
     payload = {**_job_payload(profile_path, inputs, output, options, metadata_job), "include_command": include_command}
+    if encode_block:
+        payload["encode"] = encode_block
     try:
         result, ctx = run_operation("profile.preview", payload, config=config, logger=logger,
                                     overrides=_overrides(options))
@@ -101,6 +110,8 @@ def profile_preview(
             "native_diagnostics": execution["native_diagnostics"],
             "execution_preview": execution,
         })
+    if result.encode is not None:
+        rendered["encode"] = result.encode
     if json_output:
         print(json.dumps(rendered, ensure_ascii=False, indent=2, default=json_default))
         return exit_code
@@ -126,11 +137,14 @@ def profile_apply(
     options: CommonOptions,
     logger: Logger,
     metadata_job: dict[str, Any] | None = None,
+    encode_block: dict[str, Any] | None = None,
 ) -> int:
     if dry_run:
         return profile_preview(profile_path, inputs=inputs, output=output, json_output=False, config=config,
-                               options=options, logger=logger, metadata_job=metadata_job)
+                               options=options, logger=logger, metadata_job=metadata_job, encode_block=encode_block)
     payload = {**_job_payload(profile_path, inputs, output, options, metadata_job), "force": bool(force)}
+    if encode_block:
+        payload["encode"] = encode_block
     with interrupt_guard(CancelToken()) as cancel:
         try:
             result, ctx = run_operation("profile.apply", payload, config=config, logger=logger,
@@ -155,6 +169,12 @@ def cli_profile_batch_steps() -> ProfileBatchSteps:
         # Ctrl+C : la garde du job annule le job puis prévient celle du lot (gardes imbriquées).
         run=lambda config, options, logger, remux_config, *, force: run_remux_config(
             config, options, logger, remux_config, force=force),
+        encode=lambda job, remux_config, config, options, logger: resolve_job_encode_config(
+            job, remux_config, config, options, logger),
+        preview_encode=lambda config, options, logger, encode_config: preview_encode_config(
+            config, options, logger, encode_config),
+        run_encode=lambda config, options, logger, encode_config, *, force, accept_dovi_nvenc_crop: run_encode_config(
+            config, options, logger, encode_config, force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop),
     )
 
 

@@ -1,4 +1,4 @@
-"""Opérations système : version, outils résolus, schémas publiés."""
+"""Opérations système : version, outils résolus, capacités de la machine, schémas publiés."""
 
 from __future__ import annotations
 
@@ -104,3 +104,69 @@ def schema_get(request: SchemaRequest, _ctx: ExecutionContext) -> SchemaResult:
                 "decision-profile": schema.build_decision_profile_schema_v1,
                 "all": schema.build_cli_json_schema_bundle}
     return SchemaResult(schema=builders[request.version]())
+
+
+CapabilitySection = Literal["encoders", "presets", "vulkan", "gpu", "rife"]
+
+
+@dataclass(frozen=True)
+class CapabilitiesRequest(Model):
+    """Capacités de la machine (équivalent du tableau de bord)."""
+
+    sections: tuple[CapabilitySection, ...] = field(
+        default=(), description="encoders, presets, vulkan, gpu (NVOF, TensorRT), rife ; vide : toutes.")
+
+
+@dataclass(frozen=True)
+class CapabilitiesResult(Model):
+    """Sections demandées ; ``None`` : section non sondée."""
+
+    encoders: dict[str, Any] | None = field(default=None, description="Encodeurs logiciels et matériels utilisables.")
+    presets: dict[str, Any] | None = field(default=None, description="Préréglages acceptés par codec.")
+    vulkan: dict[str, Any] | None = field(default=None, description="Filtres GPU Vulkan (NLMeans 10 bits).")
+    gpu: dict[str, Any] | None = field(default=None, description="Flux optique NVIDIA (NVOF), TensorRT.")
+    rife: dict[str, Any] | None = field(default=None, description="Moteur vidéo MVO (muxiveo-rife) : version, options.")
+
+
+@operation("system.capabilities", request=CapabilitiesRequest, result=CapabilitiesResult,
+           summary="Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO.",
+           uses_gpu=True)
+def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> CapabilitiesResult:
+    import dataclasses
+
+    from core import plugins
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+    from core.workflows.encode.interpolation import detect_gpu_acceleration, rife_capabilities
+    from core.workflows.encode.vulkan import detect_vulkan
+
+    wanted = set(request.sections) or {"encoders", "presets", "vulkan", "gpu", "rife"}
+    ffmpeg = ctx.tool("ffmpeg")
+    rife = str(getattr(ctx.config, "tool_muxiveo_rife", "") or "")
+    values: dict[str, Any] = {}
+    detector = HardwareEncoderDetector()
+    software: set[str] = set()
+    hardware: set[str] = set()
+    if wanted & {"encoders", "presets"}:
+        software = set(detector.detect_software(ffmpeg))
+        detected = detector.detect(ffmpeg, nvencc_bin=getattr(ctx.config, "tool_nvencc", None) or None)
+        hardware = set(detected[0] if isinstance(detected, tuple) else detected)
+    if "encoders" in wanted:
+        values["encoders"] = {"software": sorted(software), "hardware": sorted(hardware)}
+    if "presets" in wanted:
+        presets = detector.detect_presets(ffmpeg, software | hardware)
+        values["presets"] = {codec: sorted(items) for codec, items in sorted(presets.items())}
+    if "vulkan" in wanted:
+        values["vulkan"] = dataclasses.asdict(detect_vulkan(ffmpeg))
+    if "gpu" in wanted:
+        installed = plugins.installed_plugin(plugins.TRT)
+        acceleration = detect_gpu_acceleration(rife, trt_plugin=str(installed.path) if installed else "")
+        values["gpu"] = {"nvof": dataclasses.asdict(acceleration.nvof),
+                         "tensorrt": dataclasses.asdict(acceleration.trt)}
+    if "rife" in wanted:
+        caps = rife_capabilities(rife) if rife else None
+        values["rife"] = None if caps is None else {
+            "executable": rife, "version": caps.label, "contract": caps.contract, "options": sorted(caps.options),
+            "models": sorted(caps.models) if caps.models is not None else None,
+            "restore_models": sorted(caps.restore_models), "selector_status": caps.selector_status,
+        }
+    return CapabilitiesResult(**values)

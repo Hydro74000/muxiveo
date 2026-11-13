@@ -21,7 +21,13 @@ from core.service.context import CancelToken
 
 from cli.interrupts import interrupt_guard
 from cli.remux_config import build_remux_config
-from cli.runtime import preview_remux_config, run_remux_config
+from cli.runtime import (
+    preview_encode_config,
+    preview_remux_config,
+    resolve_job_encode_config,
+    run_encode_config,
+    run_remux_config,
+)
 
 
 def cli_batch_steps() -> BatchSteps:
@@ -33,6 +39,12 @@ def cli_batch_steps() -> BatchSteps:
         # Ctrl+C : la garde du job annule le job puis prévient celle du lot (gardes imbriquées).
         run=lambda config, options, logger, remux_config, *, force: run_remux_config(
             config, options, logger, remux_config, force=force),
+        encode=lambda job, remux_config, config, options, logger: resolve_job_encode_config(
+            job, remux_config, config, options, logger),
+        preview_encode=lambda config, options, logger, encode_config: preview_encode_config(
+            config, options, logger, encode_config),
+        run_encode=lambda config, options, logger, encode_config, *, force, accept_dovi_nvenc_crop: run_encode_config(
+            config, options, logger, encode_config, force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop),
     )
 
 

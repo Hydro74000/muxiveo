@@ -9,7 +9,7 @@ from typing import Any
 
 from core.jobs.constants import EXIT_ARGS
 from core.jobs.errors import JobError
-from core.jobs.json_io import deep_merge
+from core.jobs.batch import merge_encode_block
 
 
 def add_encode_options(parser: argparse.ArgumentParser) -> None:
@@ -40,6 +40,8 @@ def add_encode_options(parser: argparse.ArgumentParser) -> None:
                        help="Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable.")
     group.add_argument("--video-track", metavar="SOURCE:FLUX",
                        help="Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes).")
+    group.add_argument("--accept-dovi-nvenc-crop", action="store_true",
+                       help="Accepter le recadrage aligné sur 32 imposé par Dolby Vision + NVENC.")
     group.add_argument("--video-set", action="append", metavar="CLÉ.POINTÉE=VALEUR",
                        help="Champ vidéo du bloc encode (ex. restoration.mode=fast) ; valeur JSON ou texte.")
 
@@ -149,6 +151,8 @@ def encode_block_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
         block["preset"] = args.encode_preset
     if getattr(args, "target_size", None) is not None:
         block["target_size_mb"] = args.target_size
+    if getattr(args, "accept_dovi_nvenc_crop", False):
+        block["accept_dovi_nvenc_crop"] = True
     spec = _video_spec(args)
     if spec:
         track = getattr(args, "video_track", None)
@@ -178,16 +182,4 @@ def encode_block_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
 def apply_encode_options(job: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     """Job avec les options courtes fusionnées dans son bloc ``encode`` (elles priment)."""
     block = encode_block_from_args(args)
-    if block is None:
-        return job
-    merged = dict(job)
-    existing = merged.get("encode")
-    base = existing if isinstance(existing, dict) else {}
-    tracks = [*(base.get("video", {}) or {}).get("tracks", []), *block.get("video", {}).get("tracks", [])]
-    combined = deep_merge(base, block)
-    if tracks:
-        combined.setdefault("video", {})["tracks"] = tracks
-    if base.get("audio") or block.get("audio"):
-        combined["audio"] = [*base.get("audio", []), *block.get("audio", [])]
-    merged["encode"] = combined
-    return merged
+    return job if block is None else merge_encode_block(job, block)

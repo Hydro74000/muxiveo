@@ -25,9 +25,9 @@ from cli.logging import Logger
 from cli.options import JobOverrides, common_options
 from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
 from cli.remux_config import config_to_template
-from cli.encode_options import apply_encode_options
+from cli.encode_options import apply_encode_options, encode_block_from_args
 from cli.interrupts import interrupt_guard
-from cli.service_adapter import envelope, overrides_from_options, print_json, render_api_error, run_operation
+from cli.service_adapter import envelope, overrides_from_args, overrides_from_options, print_json, render_api_error, run_operation
 
 
 def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
@@ -37,6 +37,18 @@ def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         print_json(envelope("system.tools", ctx.events.job, result=result))
     else:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+def cmd_capabilities(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    """Capacités de la machine (opération system.capabilities), en JSON."""
+    payload = {"sections": list(args.section or [])}
+    result, ctx = run_operation("system.capabilities", payload, config=config, logger=logger,
+                                overrides=overrides_from_args(args))
+    if args.log_format == "events":
+        print_json(envelope("system.capabilities", ctx.events.job, result=result))
+    else:
+        print_json(result.to_dict(omit_none=True))
     return EXIT_OK
 
 
@@ -167,6 +179,7 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
             logger=logger,
             include_command=False,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     result, ctx = run_operation("media.validate", _job_payload(job, options), config=config, logger=logger,
@@ -205,6 +218,7 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             options=options,
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     return _render_preview(_preview_job(job, options, config, logger), args, logger, json_output=bool(
@@ -267,6 +281,7 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             options=options,
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     if args.save:
@@ -323,6 +338,7 @@ def _batch_via_operation(args: argparse.Namespace, config: AppConfig, logger: Lo
             "output_all": bool(getattr(args, "output_all", False)),
         },
         "options": JobOptions.from_common(options),
+        "encode": encode_block_from_args(args),
         "dry_run": bool(args.dry_run),
         "force": bool(args.force),
         "continue_on_error": bool(args.continue_on_error),
@@ -381,6 +397,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
             output_all=bool(getattr(args, "output_all", False)),
             no_cover=bool(getattr(args, "no_cover", False)),
             no_attach=bool(getattr(args, "no_attach", False)),
+            encode_block=encode_block_from_args(args),
             config=config,
             options=common_options(args),
             logger=logger,
@@ -409,6 +426,7 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         no_cover=bool(getattr(args, "no_cover", False)),
         no_attach=bool(getattr(args, "no_attach", False)),
         mux_backend=getattr(args, "mux_backend", None),
+        encode_overrides=encode_block_from_args(args),
         config=config,
         options=common_options(args),
         logger=logger,
@@ -433,6 +451,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             options=common_options(args),
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     if command == "apply":
         return profile_apply(
@@ -445,6 +464,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             options=common_options(args),
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     if command == "batch":
         if args.log_format == "events":
@@ -469,6 +489,7 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             output_all=bool(getattr(args, "output_all", False)),
             no_cover=bool(getattr(args, "no_cover", False)),
             no_attach=bool(getattr(args, "no_attach", False)),
+            encode_block=encode_block_from_args(args),
             config=config,
             options=common_options(args),
             logger=logger,
@@ -492,6 +513,7 @@ def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
             options=options,
             logger=logger,
             metadata_job=_metadata_job_from_args(args),
+            encode_block=encode_block_from_args(args),
         )
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     return _run_job(job, args, config, options, logger)

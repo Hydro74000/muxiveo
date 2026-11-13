@@ -479,3 +479,38 @@ def preset_loader(profiles_dir: Path) -> Callable[[str], EncodePreset]:
         raise _fail(f"preset d'encodage introuvable : {name_or_path}")
 
     return load
+
+
+def resolve_from_job(
+    raw_block: Any,
+    remux_config: RemuxConfig,
+    *,
+    config: Any,
+    options: Any,
+    logger: JobLogger | None = None,
+    cache: Any = None,
+) -> ResolvedEncode | None:
+    """Bloc ``encode`` brut d'un job résolu ; ``None`` sans bloc. Sources inspectées (cache réutilisé si fourni)."""
+    if raw_block is None:
+        return None
+    import functools
+
+    from core.inspector import FileInspector
+    from core.workflows.encode.runtime.crop_detector import detect_video_crop
+
+    block = EncodeBlock.from_dict(raw_block)
+    ffprobe = str(getattr(options, "ffprobe", None) or config.tool_ffprobe)
+    inspector = FileInspector(ffprobe_bin=ffprobe, mediainfo_bin=str(getattr(options, "mediainfo", None)
+                                                                      or config.tool_mediainfo))
+    infos = {str(source.path): (cache.inspect(inspector, Path(source.path)) if cache is not None
+                                else inspector.inspect(Path(source.path)))
+             for source in remux_config.sources}
+    ffmpeg = str(getattr(options, "ffmpeg", None) or config.tool_ffmpeg)
+    return resolve_encode(
+        block, remux_config, infos=infos, config=config,
+        load_preset=preset_loader(Path(config.app_data_dir) / "encode_profiles"),
+        detect_crop=functools.partial(detect_video_crop, ffmpeg_bin=ffmpeg,
+                                      dovi_tool_bin=str(getattr(config, "tool_dovi_tool", "dovi_tool")),
+                                      ffprobe_bin=ffprobe),
+        logger=logger,
+    )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from cli.hdr import add_hdr_options
-from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
+from cli.commands import cmd_batch, cmd_capabilities, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from cli.constants import LOG_FORMATS
 from cli.encode_options import add_encode_options
 from cli.plugins import add_plugins_parser
@@ -128,6 +128,13 @@ def build_parser() -> argparse.ArgumentParser:
     tools.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     tools.set_defaults(func=cmd_tools)
 
+    capabilities = sub.add_parser("capabilities", help="Capacités de la machine (encodeurs, Vulkan, NVOF, TensorRT…).")
+    capabilities.add_argument("--section", action="append", choices=("encoders", "presets", "vulkan", "gpu", "rife"),
+                              help="Section à sonder ; répétable (défaut : toutes).")
+    capabilities.add_argument("--ffmpeg", help="Chemin ffmpeg pour cette sonde.")
+    capabilities.add_argument("--log-format", choices=LOG_FORMATS, default="text")
+    capabilities.set_defaults(func=cmd_capabilities)
+
     version = sub.add_parser("version", help="Afficher la version de Muxiveo.")
     version.add_argument("--check", action="store_true", help="Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).")
     version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
@@ -164,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("preview", "Afficher la commande ffmpeg prévue.", cmd_preview),
         ("remux", "Exécuter un remux.", cmd_remux),
         ("run", "Exécuter un job remux.", cmd_run),
+        ("encode", "Encoder (job remux + bloc `encode` ou options d'encodage).", cmd_run),
     ):
         p = sub.add_parser(name, help=help_text)
         _add_common_options(p)
@@ -202,6 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--nfo", dest="nfo", action="store_true", default=None)
     batch.add_argument("--no-nfo", dest="nfo", action="store_false")
     batch.add_argument("--writing-application", default="")
+    add_encode_options(batch)
     batch.set_defaults(func=cmd_batch)
 
     profile = sub.add_parser("profile", help="Valider, prévisualiser ou appliquer un profil décisionnel.")
@@ -220,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_preview.add_argument("-o", "--output")
     _add_tmdb_options(profile_preview)
     profile_preview.add_argument("--json", dest="json_output", action="store_true")
+    add_encode_options(profile_preview)
     profile_preview.set_defaults(func=cmd_profile)
 
     profile_apply = profile_sub.add_parser("apply", help="Appliquer un profil et remuxer.")
@@ -230,6 +240,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tmdb_options(profile_apply)
     profile_apply.add_argument("--force", action="store_true")
     profile_apply.add_argument("--dry-run", action="store_true")
+    add_encode_options(profile_apply)
     profile_apply.set_defaults(func=cmd_profile)
 
     profile_batch = profile_sub.add_parser("batch", help="Appliquer un profil à un lot de fichiers.")
@@ -246,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_batch.add_argument("--force", action="store_true")
     profile_batch.add_argument("--continue-on-error", action="store_true")
     profile_batch.add_argument("--summary")
+    add_encode_options(profile_batch)
     profile_batch.set_defaults(func=cmd_profile)
     from cli.hybrid import cmd_hybrid, cmd_sync_scan, cmd_shift_subs
     scan = sub.add_parser("sync-scan", help="Analyser le calage acoustique ou par sous-titres.")

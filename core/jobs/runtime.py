@@ -34,8 +34,11 @@ def remux_workflow(config: AppConfig, options: CommonOptions) -> RemuxWorkflow:
     )
 
 
-def export_exact_job(remux_config: RemuxConfig, options: CommonOptions) -> Path:
-    """Enregistre le job exact (``--export-workflow``) au lieu de l'exécuter ; renvoie le fichier écrit."""
+def export_exact_job(remux_config: RemuxConfig, options: CommonOptions, *, encode: Any = None) -> Path:
+    """Enregistre le job exact (``--export-workflow``) au lieu de l'exécuter ; renvoie le fichier écrit.
+
+    ``encode`` : bloc d'encodage du job, conservé tel quel dans le job exact.
+    """
     from core.profiles.selectors import remux_config_to_exact_job
     from core.workflows.workflow_store import save_workflow
 
@@ -43,7 +46,10 @@ def export_exact_job(remux_config: RemuxConfig, options: CommonOptions) -> Path:
     if options.export_directory:
         destination.mkdir(parents=True, exist_ok=True)
         destination /= remux_config.output.stem + ".exact-job.json"
-    save_workflow(destination, remux_config_to_exact_job(remux_config))
+    job = remux_config_to_exact_job(remux_config)
+    if encode is not None:
+        job = {**job, "encode": encode}
+    save_workflow(destination, job)
     return destination
 
 

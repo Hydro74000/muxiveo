@@ -41,11 +41,41 @@ RunStep = Callable[..., int]  # (config, options, logger, remux_config, *, force
 
 @dataclass(frozen=True)
 class BatchSteps:
-    """Étapes d'un job du lot : construction du remux, aperçu (``--dry-run``), exécution."""
+    """Étapes d'un job du lot : construction du remux, aperçu (``--dry-run``), exécution.
+
+    ``encode`` résout le bloc ``encode`` d'un job (``None`` : copie pure, le job reste un remux) ;
+    ``preview_encode`` / ``run_encode`` traitent les jobs encodés.
+    """
 
     build: BuildStep
     preview: PreviewStep
     run: RunStep
+    encode: Callable[..., Any] | None = None  # (job, remux_config, config, options, logger) -> EncodeConfig | None
+    preview_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config) -> code
+    run_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config, *, force, accept) -> code
+
+
+def plan_job_encode(steps: BatchSteps, entry: PlannedBatchJob, job: dict[str, Any], remux_config: RemuxConfig,
+                    config: AppConfig, options: CommonOptions, logger: Logger) -> None:
+    """Encodage du job résolu dès la planification (erreurs connues avant le premier traitement)."""
+    block = job.get("encode")
+    if steps.encode is None or block is None:
+        return
+    entry.encode_config = steps.encode(job, remux_config, config, options, logger)
+    entry.accept_dovi_nvenc_crop = bool(isinstance(block, dict) and block.get("accept_dovi_nvenc_crop"))
+
+
+def execute_job(steps: BatchSteps, entry: PlannedBatchJob, config: AppConfig, options: CommonOptions,
+                logger: Logger, *, dry_run: bool, force: bool) -> int:
+    """Aperçu ou exécution d'un job planifié (encodage ou remux)."""
+    if entry.encode_config is not None and steps.run_encode is not None and steps.preview_encode is not None:
+        if dry_run:
+            return steps.preview_encode(config, options, logger, entry.encode_config)
+        return steps.run_encode(config, options, logger, entry.encode_config, force=force,
+                                accept_dovi_nvenc_crop=entry.accept_dovi_nvenc_crop)
+    if dry_run:
+        return steps.preview(config, options, logger, entry.remux_config)
+    return steps.run(config, options, logger, entry.remux_config, force=force)
 
 
 @dataclass(frozen=True)
@@ -55,6 +85,21 @@ class BatchOutcome:
     exit_code: int
     summary: dict[str, Any] = field(default_factory=dict)
     cancelled: bool = False
+
+
+def merge_encode_block(job: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
+    """Job avec ``block`` fusionné dans son bloc ``encode`` (``block`` prime ; pistes et audio ajoutés)."""
+    merged = dict(job)
+    existing = merged.get("encode")
+    base = existing if isinstance(existing, dict) else {}
+    tracks = [*(base.get("video", {}) or {}).get("tracks", []), *(block.get("video", {}) or {}).get("tracks", [])]
+    combined = deep_merge(base, block)
+    if tracks:
+        combined.setdefault("video", {})["tracks"] = tracks
+    if base.get("audio") or block.get("audio"):
+        combined["audio"] = [*base.get("audio", []), *block.get("audio", [])]
+    merged["encode"] = combined
+    return merged
 
 
 @dataclass(frozen=True)
@@ -146,6 +191,9 @@ class PlannedBatchJob:
     error: Exception | None = None
     generated_output: bool = False
     template: str = ""
+    #: Encodage résolu du job (bloc ``encode`` ; ``None`` : remux) et acceptation du recadrage DV NVENC.
+    encode_config: Any = None
+    accept_dovi_nvenc_crop: bool = False
 
 
 def _destination_keys(output: Path) -> list[str]:
@@ -336,6 +384,7 @@ def run_batch(
     no_cover: bool = False,
     no_attach: bool = False,
     mux_backend: str | None = None,
+    encode_overrides: dict[str, Any] | None = None,
     steps: BatchSteps,
     cancel: CancelToken | None = None,
     job_logger: Callable[[int], Logger] | None = None,
@@ -394,6 +443,8 @@ def run_batch(
         job = deep_merge(template, item)
         if mux_backend:
             job["mux_backend"] = mux_backend
+        if encode_overrides:
+            job = merge_encode_block(job, encode_overrides)
         if str(template.get("kind") or "") == "exact-job":
             job["_relaxed_selectors"] = True
         apply_metadata_overrides(
@@ -438,6 +489,7 @@ def run_batch(
                 remux_config.allow_missing_output_dir = allow_missing
             entry.remux_config = remux_config
             entry.output_label = str(remux_config.output)
+            plan_job_encode(steps, entry, job, remux_config, config, options, logger)
         except Exception as exc:
             entry.error = exc
             if not continue_on_error:
@@ -475,10 +527,7 @@ def run_batch(
                 raise ValueError("Configuration remux absente du job planifié")
             if not dry_run and entry.generated_output:
                 Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            if dry_run:
-                rc = steps.preview(config, options, job_log, remux_config)
-            else:
-                rc = steps.run(config, options, job_log, remux_config, force=force)
+            rc = execute_job(steps, entry, config, options, job_log, dry_run=dry_run, force=force)
             if rc != EXIT_OK:
                 failures += 1
                 status = "cancelled" if cancel is not None and cancel.cancelled else "failed"

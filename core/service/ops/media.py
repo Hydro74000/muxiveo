@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import copy
-import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from core.inspector import FileInspector
-from core.jobs.encode import ResolvedEncode, preset_loader, resolve_encode
+from core.jobs.encode import ResolvedEncode, resolve_from_job
+from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
 from core.jobs.inspection import config_template_from_info
 from core.jobs.logging import EmitterLogger
 from core.jobs.options import CommonOptions
@@ -21,8 +21,6 @@ from core.service.context import ExecutionContext, Overrides
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
-from core.service.schemas.encode import EncodeBlock
-from core.workflows.encode.runtime.crop_detector import detect_video_crop
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig
 
@@ -200,22 +198,8 @@ def _build_cached(request: MediaJobRequest, ctx: ExecutionContext,
 def resolve_job_encode(request: MediaJobRequest, remux_config: RemuxConfig, options: CommonOptions,
                        cache: PreparationCache, ctx: ExecutionContext) -> ResolvedEncode | None:
     """Bloc ``encode`` du job résolu (règles du panneau Encodage) ; ``None`` sans bloc."""
-    raw = request.job.get("encode")
-    if raw is None:
-        return None
-    block = EncodeBlock.from_dict(raw)
-    inspector = FileInspector(ffprobe_bin=str(options.ffprobe or ctx.config.tool_ffprobe),
-                              mediainfo_bin=str(options.mediainfo or ctx.config.tool_mediainfo))
-    infos = {str(source.path): cache.inspect(inspector, Path(source.path)) for source in remux_config.sources}
-    ffmpeg = str(options.ffmpeg or ctx.config.tool_ffmpeg)
-    return resolve_encode(
-        block, remux_config, infos=infos, config=ctx.config,
-        load_preset=preset_loader(Path(ctx.config.app_data_dir) / "encode_profiles"),
-        detect_crop=functools.partial(detect_video_crop, ffmpeg_bin=ffmpeg,
-                                      dovi_tool_bin=str(getattr(ctx.config, "tool_dovi_tool", "dovi_tool")),
-                                      ffprobe_bin=str(options.ffprobe or ctx.config.tool_ffprobe)),
-        logger=EmitterLogger(ctx.events),
-    )
+    return resolve_from_job(request.job.get("encode"), remux_config, config=ctx.config, options=options,
+                            logger=EmitterLogger(ctx.events), cache=cache)
 
 
 def _encode_plan(resolved: ResolvedEncode | None) -> dict[str, Any] | None:
@@ -252,7 +236,21 @@ def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaVali
 )
 def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPreviewResult:
     remux_config, options, cache = _build_cached(request, ctx)
-    plan = _encode_plan(resolve_job_encode(request, remux_config, options, cache, ctx))
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    plan = _encode_plan(resolved)
+    if resolved is not None and resolved.config is not None:
+        # Encodage : commandes de l'EncodeWorkflow (préparation « à blanc »), comme « Copier » du panneau.
+        encode_wf = encode_workflow(ctx.config, options)
+        prepare_vulkan(encode_wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg))
+        errors = encode_wf.validate(resolved.config)
+        config = serialize_remux_config(remux_config)
+        if errors:
+            return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
+        return MediaPreviewResult(
+            valid=True, config=config, command_text=preview_encode(resolved.config, encode_wf), encode=plan,
+            execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
+                       "preparation_commands": [], "native_diagnostics": []},
+        )
     wf = remux_workflow(ctx.config, options)
     errors = wf.validate(remux_config)
     config = serialize_remux_config(remux_config)
@@ -283,12 +281,26 @@ def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult
         export_workflow=str(request.export_workflow) if request.export_workflow is not None else None,
         export_directory=request.export_directory,
     )
+    cache = PreparationCache()
     remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
-                                      EmitterLogger(ctx.events))
+                                      EmitterLogger(ctx.events), context=PreparationContext(cache=cache))
     if options.export_workflow:
-        destination = export_exact_job(remux_config, options)
+        destination = export_exact_job(remux_config, options, encode=request.job.get("encode"))
         ctx.events.artifact("exact-job", str(destination))
         return MediaRunResult(status="exported", output=str(destination))
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    if resolved is not None and resolved.config is not None:
+        encode = request.job.get("encode") or {}
+        message = run_encode(
+            resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
+            cancel=ctx.cancel, force=request.force,
+            accept_dovi_nvenc_crop=bool(encode.get("accept_dovi_nvenc_crop")),
+            on_progress=lambda event: ctx.events.progress(
+                pct=event.percent, stage=event.stage_label, fps=event.fps, frame=event.frame,
+                eta_s=event.eta_seconds),
+        )
+        ctx.events.artifact("output", str(resolved.config.output))
+        return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
     message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
                         cancel=ctx.cancel, force=request.force)
     ctx.events.artifact("output", str(remux_config.output))
