@@ -6,7 +6,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSizePolicy, QVBoxLayout, QWidget
 
-from cli.output_template import render_output_filename
+from core.jobs.output_template import render_output_filename
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
 from ui.widgets.token_line_edit import TokenChoice, TokenLineEdit, add_token_submenu, populate_token_menu

@@ -197,7 +197,7 @@ def test_prepare_without_acoustic_scan(tmp_path, monkeypatch, strategy, shift, m
     def forbidden(*args, **kwargs):
         raise AssertionError("Scanner appelé en mode sans analyse")
 
-    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr("core.jobs.remux_config.build_remux_config", build)
     monkeypatch.setattr(AudioSyncScanner, "scan", forbidden)
     monkeypatch.setattr(SubtitleSyncScanner, "scan", forbidden)
     recipe = HybridRecipe(sync_strategy=strategy, manual_shift_ms=shift, sync_subtitles=mirror)
@@ -250,7 +250,7 @@ def test_manual_shift_follows_the_video_cadence(tmp_path, monkeypatch, auto_appl
         from dataclasses import replace
         return replace(calibration, cadence_audio_method="asetrate")
 
-    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr("core.jobs.remux_config.build_remux_config", build)
     monkeypatch.setattr(AudioSyncScanner, "scan", lambda *_a, **_k: pytest.fail("analyse en mode manuel"))
     monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
     recipe = HybridRecipe(sync_strategy="manual", manual_shift_ms=300, sync_mode="container",
@@ -322,7 +322,7 @@ def test_prepare_scans_matching_language_even_when_track_is_not_kept(tmp_path, m
         scanned.append((reference.stream_index, target.stream_index))
         return SyncCalibration.linear(0)
 
-    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr("core.jobs.remux_config.build_remux_config", build)
     monkeypatch.setattr(AudioSyncScanner, "scan", scan)
     result, calibration = prepare_matrix_episode(
         episode, HybridRecipe(), tmp_path / "out",
@@ -483,7 +483,7 @@ def test_supplied_pitch_only_calibration_forces_the_physical_rewrite(tmp_path, m
                                         TrackEntry(1, "audio", "AAC", "", "eng", "", file_id="src0")]),
                               (donor, [TrackEntry(0, "audio", "AC3", "", "fra", "", file_id="src1")]))
 
-    monkeypatch.setattr("cli.remux_config.build_remux_config", build)
+    monkeypatch.setattr("core.jobs.remux_config.build_remux_config", build)
     result, _calibration = prepare_matrix_episode(
         episode, HybridRecipe(sync_strategy="auto", sync_mode="container", cadence_auto_apply=auto_apply),
         tmp_path / "out",

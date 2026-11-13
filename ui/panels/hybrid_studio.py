@@ -1357,8 +1357,8 @@ class HybridStudio(QWidget):
         """Template et variables du document courant, sans se fier à sa seule date."""
         if not profile:
             return "", {}
-        from cli.errors import CliError
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.errors import JobError as CliError
+        from core.jobs.profile import snapshot_decision_profile
         from core.profiles.decision import profile_output_template, profile_variables
         try:
             _version, loaded = snapshot_decision_profile(profile, self.config)
@@ -1368,8 +1368,8 @@ class HybridStudio(QWidget):
             return "", {}
 
     def _profile_version(self):
-        from cli.errors import CliError
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.errors import JobError as CliError
+        from core.jobs.profile import snapshot_decision_profile
         profile = self.profile.text().strip()
         if not profile:
             return ()
@@ -1566,7 +1566,7 @@ class HybridStudio(QWidget):
                 # laisser son verrou d'exécution actif.
                 raise ValueError(errors.getvalue().strip().splitlines()[-1]) from exc
         args.cancel_event = self.cancel_event
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.profile import snapshot_decision_profile
         args.profile_version, args.profile_snapshot = (
             snapshot_decision_profile(args.profile, self.config) if args.profile else ((), None)
         )

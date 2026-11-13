@@ -791,8 +791,8 @@ def prepare_matrix_episode(
     ``cache`` (session) évite de relire inspections, sous-titres et réponses
     TMDB déjà obtenus ; la durée de chaque étape est consignée au journal.
     """
-    from cli.remux_config import build_remux_config
-    from cli.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+    from core.jobs.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
     from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
@@ -845,7 +845,7 @@ def prepare_matrix_episode(
 
     profile = None
     if profile_name:
-        from cli.profile import build_profile_remux_config, load_decision_profile
+        from core.jobs.profile import build_profile_remux_config, load_decision_profile
         snapshot = getattr(options, "profile_snapshot", None)
         profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(profile_name, config))
         profile.pop("auto_sync", None)
@@ -1090,7 +1090,7 @@ def matrix_output_context(
     variables: dict[str, Any] | None = None, group: str = "", output_all: bool = False,
 ) -> dict[str, Any]:
     """Même contexte pour l'aperçu UI et le nom réel du fichier assemblé."""
-    from cli.output_template import build_output_context
+    from core.jobs.output_template import build_output_context
 
     output_variables = dict(variables or {})
     if group:
@@ -1116,8 +1116,8 @@ def _finalize_matrix_metadata(
     final_order: list[tuple[int, int, str]], preparation: PreparationContext | None = None,
 ) -> None:
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
-    from cli.output_template import render_output_filename
-    from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
+    from core.jobs.output_template import render_output_filename
+    from core.jobs.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
     from core.profiles.decision import profile_output_template, profile_variables
 
     details = None

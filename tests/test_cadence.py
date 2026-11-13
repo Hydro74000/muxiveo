@@ -412,8 +412,8 @@ def test_prepare_matrix_episode_with_cadence_auto_apply(monkeypatch, tmp_path):
         sync_mode="container",  # Même si la recette était container, la cadence doit forcer physical
     )
 
-    import cli.remux_config
-    monkeypatch.setattr(cli.remux_config, "build_remux_config", lambda *args, **kwargs: mock_remux_config)
+    import core.jobs.remux_config
+    monkeypatch.setattr(core.jobs.remux_config, "build_remux_config", lambda *args, **kwargs: mock_remux_config)
 
     # Mock audio scanner
     from core.workflows.audio_sync_scan import AudioSyncScanner

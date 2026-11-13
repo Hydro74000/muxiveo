@@ -134,7 +134,7 @@ def test_witness_profile_template_and_export_match_the_real_mkv(window, tmp_path
         details = MediaDetails(title="Crystal Lake", season="1", episode="1", episode_title="Camp Crystal")
         return details.formatted_container_title(), details.to_mkv_tags(), None, details
 
-    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr("core.jobs.remux_config.resolve_tmdb_metadata", metadata)
     window._stack.setCurrentIndex(4)
     window._refresh_operation_bar()
     window._run_btn.click()

@@ -21,7 +21,7 @@ from cli.profile import build_profile_remux_config
 from cli.remux_config import build_remux_config
 
 
-def _mock_inspected(monkeypatch, *sources: SourceInput, target: str = "cli.remux_config.inspect_sources") -> None:
+def _mock_inspected(monkeypatch, *sources: SourceInput, target: str = "core.jobs.remux_config.inspect_sources") -> None:
     """`inspect_sources` simulé : sources données, toutes leurs pistes dans l'ordre."""
     tracks = [track for source in sources for track in source.tracks]
     monkeypatch.setattr(target, lambda job, conf, opts, log, cli_inputs=None, **_kwargs: (
@@ -366,7 +366,7 @@ def test_profile_calibration_with_cadence_switches_to_physical(tmp_path, monkeyp
     calib_file = tmp_path / "calib.json"
     calib_file.write_text(json.dumps(calibration.to_dict()))
     ref_audio, tgt_audio, src0, src1 = _audio_sources(tmp_path)
-    _mock_inspected(monkeypatch, src0, src1, target="cli.profile.inspect_sources")
+    _mock_inspected(monkeypatch, src0, src1, target="core.jobs.profile.inspect_sources")
     profile = {"version": 1, "kind": "decision-profile", "name": "Cadence", "rules": []}
     conf, _ = build_profile_remux_config(
         profile, cli_inputs=[str(src0.path), str(src1.path)], cli_output=str(tmp_path / "out.mkv"),
@@ -472,7 +472,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
             return calib_pair2
         return None
 
-    monkeypatch.setattr("cli.hybrid.perform_dynamic_sync", mock_perform_dynamic_sync)
+    monkeypatch.setattr("core.jobs.dynamic_sync.perform_dynamic_sync", mock_perform_dynamic_sync)
 
     # Exécution Paire 1
     t1_ref_v = TrackEntry(0, "video", "HEVC", "1080p", "und", "", file_id="src0")
@@ -481,7 +481,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
     s1_0 = SourceInput(path=src1_ref, file_index=0, tracks=[t1_ref_v, t1_ref_a])
     s1_1 = SourceInput(path=src1_donor, file_index=1, tracks=[t1_donor_a])
 
-    _mock_inspected(monkeypatch, s1_0, s1_1, target="cli.profile.inspect_sources")
+    _mock_inspected(monkeypatch, s1_0, s1_1, target="core.jobs.profile.inspect_sources")
 
     conf1, _ = build_profile_remux_config(
         profile,
@@ -499,7 +499,7 @@ def test_profile_dynamic_sync_reanalyzes_for_each_different_source_pair(tmp_path
     s2_0 = SourceInput(path=src2_ref, file_index=0, tracks=[t2_ref_v, t2_ref_a])
     s2_1 = SourceInput(path=src2_donor, file_index=1, tracks=[t2_donor_a])
 
-    _mock_inspected(monkeypatch, s2_0, s2_1, target="cli.profile.inspect_sources")
+    _mock_inspected(monkeypatch, s2_0, s2_1, target="core.jobs.profile.inspect_sources")
 
     conf2, _ = build_profile_remux_config(
         profile,
@@ -590,7 +590,7 @@ def test_build_remux_config_auto_sync_flag_runs_dynamic_sync(tmp_path, monkeypat
 
     mock_calib = SyncCalibration.linear(150.0)
     monkeypatch.setattr(
-        "cli.hybrid.perform_dynamic_sync",
+        "core.jobs.dynamic_sync.perform_dynamic_sync",
         lambda sources, tracks, config, options, logger: mock_calib,
     )
 
@@ -905,8 +905,8 @@ def test_container_document_calibration_keeps_the_other_sources(tmp_path, monkey
     sources = [SourceInput(path=tmp_path / f"{name}.mkv", file_index=index, tracks=[track])
                for index, (name, track) in enumerate((("ref", ref_audio), ("first", first), ("second", second)))]
     inspected = lambda job, conf, opts, log, cli_inputs=None, **_kwargs: (sources, [MagicMock()] * 3, [ref_audio, first, second])  # noqa: E731
-    monkeypatch.setattr("cli.remux_config.inspect_sources", inspected)
-    monkeypatch.setattr("cli.profile.inspect_sources", inspected)
+    monkeypatch.setattr("core.jobs.remux_config.inspect_sources", inspected)
+    monkeypatch.setattr("core.jobs.profile.inspect_sources", inspected)
     cuts = {"segments": [{"start_ms": 0.0, "shift_ms": 0.0}, {"start_ms": 5000.0, "shift_ms": 100.0}]}
     document = {"sync_mode": "container", "sync_calibrations": {"1": payload, "2": cuts}}
     job = {"sources": [{"path": str(source.path)} for source in sources], "output": str(tmp_path / "out.mkv"), **document}

@@ -69,8 +69,8 @@ def assembly(tmp_path, monkeypatch):
         infos = [FileInfo(s.path, "matroska", 1, 100, None) for s in inspected]
         return inspected, infos, [t for s in inspected for t in s.tracks]
 
-    monkeypatch.setattr("cli.remux_config.inspect_sources", inspect)
-    monkeypatch.setattr("cli.profile.inspect_sources", inspect)
+    monkeypatch.setattr("core.jobs.remux_config.inspect_sources", inspect)
+    monkeypatch.setattr("core.jobs.profile.inspect_sources", inspect)
     return episode, recipe, sources
 
 
@@ -304,7 +304,7 @@ def test_metadata_template_and_advanced_options_use_final_tracks(assembly, tmp_p
     def classify(sources, infos, **kwargs):
         classified.append(([(s.file_index, t.orig_title) for s in sources for t in s.tracks if t.enabled], kwargs))
 
-    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr("core.jobs.remux_config.resolve_tmdb_metadata", metadata)
     monkeypatch.setattr("core.workflows.subtitle_heuristics.classify_subtitles", classify)
     options = SimpleNamespace(**vars(CommonOptions(ffmpeg="ffmpeg", clean_nfo=False, crossfade_ms=137, auto_forced_subs=True, auto_sdh=True, forced_threshold=17)),
                               auto_tmdb=213562, no_cover=not cover, tag="MVO",
@@ -339,7 +339,7 @@ def test_live_name_preview_matches_prepared_jobs_and_preserves_metadata_and_alia
         details = MediaDetails(title="Crystal Lake", year="2026", season="1", episode=number, episode_title=f"Épisode {number}")
         return details.formatted_container_title(), details.to_mkv_tags(), None, details
 
-    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr("core.jobs.remux_config.resolve_tmdb_metadata", metadata)
     monkeypatch.setattr(SyncStudioDialog, "_load_segment_audio_async", lambda *_a: None)
     template = "{title:release}.{season_episode}.{episode_title:release}.{audio-multi}.{audio-codec:best}.{release_group}"
     options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile), auto_tmdb=213562,

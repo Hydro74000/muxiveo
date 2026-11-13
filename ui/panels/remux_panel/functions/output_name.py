@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cli.output_template import build_output_context, render_output_filename
+from core.jobs.output_template import build_output_context, render_output_filename
 from core.i18n import translate_text
 from core.profiles.decision import profile_output_template, profile_variables
 from core.workflows.remux_models import TrackEntry

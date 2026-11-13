@@ -343,8 +343,8 @@ def load(panel, path):
     panel.setEnabled(False)
     def task():
         try:
-            from cli.remux_config import build_remux_config
-            from cli.options import CommonOptions
+            from core.jobs.remux_config import build_remux_config
+            from core.jobs.options import CommonOptions
             from cli.logging import Logger
             from core.inspector import FileInspector
             config = build_remux_config(job, panel._config, CommonOptions(), Logger())
