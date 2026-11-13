@@ -154,8 +154,16 @@ def run_encode(
         if event is not None and on_progress is not None:
             on_progress(event)
 
-    signals = wf.run(encode_config, validate=False)
+    keep = bool(getattr(options, "keep_failed_work_dir", False))
+    retained: list[Any] = []
+    if keep:
+        wf.failed_work_dir_retained.connect(retained.append)
+    signals = wf.run(encode_config, validate=False, retain_failed_work_dir=keep)
     outcome = await_task(signals, cancel, on_progress=progress)
+    for item in retained:  # échec avec fichiers produits : dossier gardé, proposé au prochain « Nettoyer »
+        item.keep()
+        logger.emit("info", f"Fichiers temporaires conservés : {item.path} (proposés au nettoyage au prochain "
+                            "démarrage).", path=str(item.path))
     if outcome.status == "finished":
         # Le workflow rend la sortie brute de FFmpeg : publiée seulement en mode verbeux (comme la progression).
         if outcome.result and options.verbose:

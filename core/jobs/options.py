@@ -39,6 +39,8 @@ class CommonOptions:
     drift_threshold_ms: int = 25
     cadence_auto: bool = True
     cadence_method: str = "auto"
+    #: Encodage en échec : dossier de travail conservé (fichiers produits) au lieu d'être supprimé.
+    keep_failed_work_dir: bool = False
 
     @classmethod
     def from_namespace(cls, args: Any) -> "CommonOptions":
@@ -70,6 +72,7 @@ class CommonOptions:
             drift_threshold_ms=getattr(args, "drift_threshold_ms", 25),
             cadence_auto=getattr(args, "cadence_auto", True) if getattr(args, "cadence_auto", None) is not None else True,
             cadence_method=str(getattr(args, "cadence_method", "auto") or "auto"),
+            keep_failed_work_dir=bool(getattr(args, "keep_failed_work_dir", False)),
         )
 
 

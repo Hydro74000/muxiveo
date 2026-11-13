@@ -37,6 +37,7 @@ def _config(tmp_path: Path, **video: Any) -> EncodeConfig:
 
 class _FakeWorkflow(QObject):
     log_message = Signal(str, str)
+    failed_work_dir_retained = Signal(object)
 
     def __init__(self, work=None, errors=()) -> None:
         super().__init__()
@@ -51,8 +52,9 @@ class _FakeWorkflow(QObject):
         return SimpleNamespace(percent=50.0, stage_label=None, fps=24.0, frame=12, eta_seconds=1.0) \
             if line.startswith("frame=") else None
 
-    def run(self, config, validate=True):
+    def run(self, config, validate=True, retain_failed_work_dir=False):
         self.ran.append(config)
+        self.retain = retain_failed_work_dir
         signals = TaskSignals()
         executor = ThreadPoolExecutor(max_workers=1)
 
@@ -158,3 +160,21 @@ def test_capabilities_operation_reports_requested_sections(monkeypatch):
     result = call(CATALOG, "system.capabilities", {"sections": ["encoders", "vulkan"]}, ctx)
     assert result.encoders == {"software": ["libx265"], "hardware": ["hevc_nvenc"]}
     assert result.vulkan["reason"] == "test" and result.presets is None and result.rife is None
+
+
+def test_keep_failed_work_dir_keeps_the_retained_folder(qapp, tmp_path):
+    kept: list[str] = []
+    retained = SimpleNamespace(path=tmp_path / "work" / "job", keep=lambda: kept.append("keep"))
+    wf = _FakeWorkflow()
+
+    def fail(signals):
+        wf.failed_work_dir_retained.emit(retained)
+        signals.failed.emit("x265 KO", RuntimeError("x"))
+
+    wf._work = fail
+    result, logger, _e = _run(tmp_path, wf, options={"keep_failed_work_dir": True})
+    assert isinstance(result, ApiError) and wf.retain is True and kept == ["keep"]
+    assert any("Fichiers temporaires conservés" in message for _l, message, _f in logger.records)
+    wf2 = _FakeWorkflow(lambda s: s.failed.emit("KO", None))
+    _run(tmp_path, wf2)
+    assert wf2.retain is False

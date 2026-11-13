@@ -719,7 +719,9 @@ refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués
 `--interpolate xN|CADENCE`, `--interpolation-preset`, `--tonemap [ALGO]`, `--dv copy|off`,
 `--hdr10plus copy|off`, `--bake-fel`, `--audio-codec SOURCE:FLUX=CODEC[:KBPS]` (répétable),
 `--video-track SOURCE:FLUX` (options vidéo pour cette piste seulement), `--video-set
-CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-nvenc-crop`.
+CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-nvenc-crop`,
+`--keep-failed-work-dir` (encodage en échec : dossier de travail conservé pour examen, proposé au
+prochain « Nettoyer » de l'interface ; option `keep_failed_work_dir` des requêtes).
 
 Sans `--verbose`, la sortie brute de FFmpeg n'est pas affichée ; avec `--log-format events`, la
 progression (`pct`, `fps`, `eta_s`) est publiée en événements `progress`. Ctrl+C annule

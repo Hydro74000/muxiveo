@@ -96,6 +96,8 @@ class JobOptions(Model):
     drift_threshold_ms: int = field(default=25, description="Seuil de dérive d'une coupure (ms).")
     cadence_auto: bool = field(default=True, description="Conversion de cadence PAL ↔ cinéma automatique.")
     cadence_method: Literal["auto", "atempo", "asetrate"] = "auto"
+    keep_failed_work_dir: bool = field(
+        default=False, description="Encodage en échec : conserver le dossier de travail (fichiers produits).")
 
     @classmethod
     def from_common(cls, options: CommonOptions) -> dict[str, Any]:

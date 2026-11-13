@@ -42,6 +42,8 @@ def add_encode_options(parser: argparse.ArgumentParser) -> None:
                        help="Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes).")
     group.add_argument("--accept-dovi-nvenc-crop", action="store_true",
                        help="Accepter le recadrage aligné sur 32 imposé par Dolby Vision + NVENC.")
+    group.add_argument("--keep-failed-work-dir", action="store_true",
+                       help="Encodage en échec : conserver le dossier de travail (fichiers produits).")
     group.add_argument("--video-set", action="append", metavar="CLÉ.POINTÉE=VALEUR",
                        help="Champ vidéo du bloc encode (ex. restoration.mode=fast) ; valeur JSON ou texte.")
 
