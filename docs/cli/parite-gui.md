@@ -73,9 +73,9 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Alignement Dolby Vision NVENC (recadrage proposé) | `accept_dovi_nvenc_crop` | `media.run` | ✅ |
 | Lancer l'encodage, progression | `run`, `remux`, `encode` | `media.run` | ✅ |
 | Conserver les fichiers temporaires après un échec | option dédiée | `media.run` | ✅ |
-| Aperçu image / vidéo | `encode --preview-image\|--preview-video` | `encode.preview_capture` | ⏳ L4 |
-| Aperçu / copie de la commande | `preview` | `media.preview` | ⏳ L4 |
-| Profils d'encodage : charger, enregistrer, supprimer | `--encode-preset`, `encode-preset …` | `encode_preset.*` | ⏳ L4 |
+| Aperçu image / vidéo | `encode --preview-image\|--preview-video` | `encode.preview_capture` | ✅ |
+| Aperçu / copie de la commande | `preview` | `media.preview` | ✅ |
+| Profils d'encodage : charger, enregistrer, supprimer, importer, exporter | `--encode-preset`, `encode-preset …` | `encode_preset.*` | ✅ |
 | Analyser l'apport du FEL | `inspect --hdr-fel` | `hdr.inspect` | ✅ |
 
 ## Hybrid Studio

@@ -9,6 +9,7 @@ from cli.commands import cmd_batch, cmd_capabilities, cmd_inspect, cmd_preview, 
 from cli.constants import LOG_FORMATS
 from cli.encode_options import add_encode_options
 from cli.plugins import add_plugins_parser
+from cli.encode_commands import cmd_encode_preset
 from cli.service_adapter import cmd_call, cmd_operations
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
@@ -113,6 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_options(inspect)
     inspect.add_argument("input", nargs="+")
     inspect.add_argument("--config-template", action="store_true")
+    inspect.add_argument("--with-encode", action="store_true",
+                         help="Avec --config-template : bloc `encode` de départ (copie, HDR de la source).")
     inspect.add_argument("--output")
     add_hdr_options(inspect)
     inspect.set_defaults(func=cmd_inspect)
@@ -142,6 +145,31 @@ def build_parser() -> argparse.ArgumentParser:
     version.set_defaults(func=cmd_version)
 
     add_plugins_parser(sub)
+
+    presets = sub.add_parser("encode-preset", help="Presets d'encodage enregistrés (communs avec l'interface).")
+    preset_sub = presets.add_subparsers(dest="preset_command", required=True)
+    for action, help_text in (
+        ("list", "Lister les presets."),
+        ("show", "Afficher un preset (JSON)."),
+        ("save", "Enregistrer un preset d'après les options d'encodage."),
+        ("import", "Importer un preset depuis un fichier JSON."),
+        ("export", "Exporter un preset dans un fichier JSON."),
+        ("delete", "Supprimer un preset."),
+    ):
+        action_parser = preset_sub.add_parser(action, help=help_text)
+        if action in ("show", "save", "export", "delete"):
+            action_parser.add_argument("name", metavar="NOM")
+        if action in ("import", "export"):
+            action_parser.add_argument("file", metavar="FICHIER")
+        if action == "import":
+            action_parser.add_argument("--name", dest="import_name", help="Nom enregistré (défaut : celui du fichier).")
+        if action == "save":
+            action_parser.add_argument("--description", default="")
+            add_encode_options(action_parser)
+        if action in ("save", "import", "export"):
+            action_parser.add_argument("--force", action="store_true", help="Remplacer l'existant.")
+        action_parser.add_argument("--log-format", choices=LOG_FORMATS, default="text")
+        action_parser.set_defaults(func=cmd_encode_preset)
 
     call = sub.add_parser(
         "call",
@@ -189,6 +217,15 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--json", dest="json_output", action="store_true", help="Sortie JSON structurée.")
         if name == "remux":
             p.add_argument("--save", help="Sauvegarder les options/règles en template réutilisable.")
+        if name == "encode":
+            preview = p.add_argument_group("Aperçu (au lieu d'encoder)")
+            preview.add_argument("--preview-image", action="append", type=float, metavar="SECONDES",
+                                 help="Image(s) encodée(s) à cet instant ; répétable.")
+            preview.add_argument("--preview-video", metavar="SECONDES:DURÉE",
+                                 help="Extrait vidéo encodé (ex. 600:10 ; durée 5–30 s).")
+            preview.add_argument("--random-scene", action="store_true", help="Instant d'aperçu tiré au hasard.")
+            preview.add_argument("--preview-dir", metavar="DOSSIER",
+                                 help="Dossier des aperçus (défaut : celui de la sortie).")
         p.set_defaults(func=func)
 
     batch = sub.add_parser("batch", help="Appliquer un template à plusieurs jobs.")

@@ -10,7 +10,7 @@ from typing import Any, Literal
 from core.inspector import FileInspector
 from core.jobs.encode import ResolvedEncode, resolve_from_job
 from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
-from core.jobs.inspection import config_template_from_info
+from core.jobs.inspection import config_template_from_info, encode_template_from_info
 from core.jobs.logging import EmitterLogger
 from core.jobs.options import CommonOptions
 from core.jobs.remux_config import build_remux_config
@@ -38,6 +38,8 @@ class InspectRequest(Model):
         default=False, description="Renvoyer un exact-job minimal de la première source au lieu des fiches.")
     output: str | None = field(
         default=None, description="Sortie inscrite dans le modèle de job (avec config_template).")
+    with_encode: bool = field(
+        default=False, description="Modèle de job avec un bloc `encode` (copie, HDR de la source).")
 
 
 @dataclass(frozen=True)
@@ -62,7 +64,10 @@ def media_inspect(request: InspectRequest, ctx: ExecutionContext) -> InspectResu
         ctx.cancel.raise_if_cancelled()
         infos.append(inspector.inspect(path))
     if request.config_template:
-        return InspectResult(template=config_template_from_info(infos[0], output=request.output or ""))
+        template = config_template_from_info(infos[0], output=request.output or "")
+        if request.with_encode:
+            template["encode"] = encode_template_from_info(infos[0])
+        return InspectResult(template=template)
     return InspectResult(files=tuple(serialize_file_info(info) for info in infos))
 
 

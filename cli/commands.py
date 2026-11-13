@@ -126,6 +126,8 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
         return cmd_inspect_hdr(args, config, logger)
     options = common_options(args)
     payload: dict = {"inputs": list(args.input), "config_template": bool(args.config_template)}
+    if getattr(args, "with_encode", False):
+        payload["with_encode"] = True
     if args.output:
         payload["output"] = args.output
     overrides = Overrides(ffprobe=options.ffprobe or None, mediainfo=options.mediainfo or None)
@@ -292,6 +294,10 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 
 def _run_job(job: dict, args: argparse.Namespace, config: AppConfig, options, logger: Logger) -> int:
     """``remux`` / ``run`` d'un job : aperçu (``--dry-run``) ou exécution (opération media.run, Ctrl+C = annulation)."""
+    if getattr(args, "preview_image", None) or getattr(args, "preview_video", None):
+        from cli.encode_commands import run_previews
+
+        return run_previews(job, args, config, options, logger)
     if getattr(args, "dry_run", False):
         return _render_preview(_preview_job(job, options, config, logger), args, logger, json_output=False)
     payload = {**_job_payload(job, options), "force": bool(getattr(args, "force", False))}

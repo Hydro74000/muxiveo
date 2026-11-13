@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.service.operations import Catalog
-from core.service.ops import batch, hdr, hybrid, media, plugins, profile, sync, system
+from core.service.ops import batch, encode, hdr, hybrid, media, plugins, profile, sync, system
 
 CATALOG = Catalog((
     system.system_version,
@@ -27,4 +27,11 @@ CATALOG = Catalog((
     sync.sync_shift_subtitles,
     hdr.hdr_inspect,
     hybrid.hybrid_run,
+    encode.encode_preview_capture,
+    encode.preset_list,
+    encode.preset_show,
+    encode.preset_save,
+    encode.preset_import,
+    encode.preset_export,
+    encode.preset_delete,
 ))

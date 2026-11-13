@@ -129,3 +129,19 @@ def config_template_from_info(info: FileInfo, *, output: str = "") -> dict[str, 
         "output": output or str(info.path.with_suffix(".remux.mkv")),
         "chapters": {"source_index": 0},
     }
+
+
+def encode_template_from_info(info: FileInfo) -> dict[str, Any]:
+    """Bloc ``encode`` de départ : copie, HDR de la source explicite (à modifier : codec, qualité…)."""
+    from core.inspector import HDRType
+
+    video = info.primary_video
+    hdr = video.hdr_type if video is not None else info.hdr_type
+    spec: dict[str, Any] = {"codec": "copy"}
+    if hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS):
+        spec["dolby_vision"] = {"mode": "copy"}
+    if hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS):
+        spec["hdr10plus"] = {"mode": "copy"}
+    if str(getattr(video, "color_transfer", "") or "").lower() == "smpte2084":
+        spec["static_hdr"] = {"mode": "source"}
+    return {"video": {"default": spec}, "audio": []}

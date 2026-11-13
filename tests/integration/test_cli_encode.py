@@ -92,3 +92,14 @@ def test_call_media_run_with_encode_block_streams_progress(tmp_path):
     events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
     assert any(e["type"] == "artifact" and e.get("kind") == "output" for e in events)
     assert _codecs(tmp_path / "out.mkv", "video") == ["hevc"]
+
+
+def test_encode_preview_image_writes_captures_next_to_the_output(tmp_path):
+    src, out = tmp_path / "src.mkv", tmp_path / "sortie" / "film.mkv"
+    make_av_container(src, duration=12.0)
+    out.parent.mkdir()
+    result = _cli(tmp_path, "encode", "-i", str(src), "-o", str(out), *FAST, "--preview-image", "6")
+    assert result.returncode == 0, result.stderr
+    captures = json.loads(result.stdout)[0]["captures"]
+    assert captures and all(Path(c["path"]).parent == out.parent and Path(c["path"]).exists() for c in captures)
+    assert not out.exists()

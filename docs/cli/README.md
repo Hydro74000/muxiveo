@@ -41,7 +41,8 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
 | `sync-scan` | corrélation acoustique FFT et extraction de calibration |
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
-| `encode` | encode (job + bloc `encode` ou options d'encodage) ; voir « Encodage » |
+| `encode` | encode (job + bloc `encode` ou options d'encodage), ou aperçus `--preview-image/--preview-video` ; voir « Encodage » |
+| `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
 | `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
@@ -722,6 +723,18 @@ refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués
 CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-nvenc-crop`,
 `--keep-failed-work-dir` (encodage en échec : dossier de travail conservé pour examen, proposé au
 prochain « Nettoyer » de l'interface ; option `keep_failed_work_dir` des requêtes).
+
+**Aperçus** (au lieu d'encoder, comme les boutons Aperçu du panneau) : `encode … --preview-image
+SECONDES` (répétable ; images encodées des scènes autour de l'instant), `--preview-video
+SECONDES:DURÉE` (extrait encodé, 5–30 s), `--random-scene`, `--preview-dir DOSSIER` (défaut : dossier de
+la sortie). Opération : `encode.preview_capture`.
+
+**Presets d'encodage** (les mêmes que ceux de l'interface) : `encode-preset list`, `show NOM`,
+`save NOM [options d'encodage] [--description …]`, `import FICHIER [--name NOM]`, `export NOM FICHIER`,
+`delete NOM` ; utilisation : `--encode-preset NOM|FICHIER` ou `"preset"` dans le bloc. Un preset ne
+contient que des réglages d'encodeur : HDR statique, copie Dolby Vision / HDR10+ et tone mapping
+restent ceux de la source (refusés à l'enregistrement). Gabarit de départ :
+`inspect film.mkv --config-template --with-encode`.
 
 Sans `--verbose`, la sortie brute de FFmpeg n'est pas affichée ; avec `--log-format events`, la
 progression (`pct`, `fps`, `eta_s`) est publiée en événements `progress`. Ctrl+C annule
