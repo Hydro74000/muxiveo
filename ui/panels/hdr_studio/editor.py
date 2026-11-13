@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from core.hdr_inspection import InspectionReport
 from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.patch import Hdr10PlusEdit, MasteringEdit, PatchPlan, RpuEdit, StaticEdit, suggested_mastering
-from core.hdr_inspection.realign import Realignment, scene_cuts
+from core.hdr_inspection.realign import Realignment, chosen_edits, recompute_scenes
 from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
@@ -199,23 +199,23 @@ class EditionTab(QWidget):
         realignment = self._realignment
         if realignment is None:
             return
-        chosen = {key for key, box in self._realign_boxes.items() if box.isChecked()}
-        if "static" in chosen and realignment.light_levels is not None:
-            self.light_levels_requested.emit(*realignment.light_levels)
+        edits = chosen_edits(realignment, (key for key, box in self._realign_boxes.items() if box.isChecked()))
+        if edits.light_levels is not None:
+            self.light_levels_requested.emit(*edits.light_levels)
             self.static_box.setChecked(True)
-        if "mdcv" in chosen and realignment.mastering is not None:
-            edit = realignment.mastering
+        if edits.mastering is not None:
+            edit = edits.mastering
             self._set_mdcv(edit.primaries, edit.min_nits, edit.max_nits)
             self.mdcv_box.setChecked(True)
             self._mastering_edited("mdcv")
-        if "l6" in chosen and realignment.l6 is not None:
-            max_mastering, min_mastering, cll, fall = realignment.l6
+        if edits.l6 is not None:
+            max_mastering, min_mastering, cll, fall = edits.l6
             self.l6_max_mastering.setValue(int(max_mastering))
             self.l6_min_mastering.setValue(float(min_mastering))
             self.l6_cll.setValue(int(cll))
             self.l6_fall.setValue(int(fall))
             self.l6_box.setChecked(True)
-        if "hdr10plus" in chosen and realignment.hdr10plus_scenes is not None:
+        if edits.hdr10plus_scenes is not None:
             self.h10_remove.setChecked(False)
             self.h10_recompute.setChecked(True)
         self._sync()
@@ -498,15 +498,9 @@ class EditionTab(QWidget):
     def _recompute_source(self) -> tuple[object, object] | None:
         """Mesure et débuts de plans du HDR10+ recalculé (plans du HDR10+ actuel si cohérents)."""
         measurement = self._measurement
-        if measurement is None:
+        if measurement is None or self._report is None:
             return None
-        realignment = self._realignment
-        if realignment is not None and realignment.hdr10plus_scenes is not None:
-            return measurement, realignment.hdr10plus_scenes
-        hdr10plus = self._report.hdr10plus if self._report is not None else None
-        if hdr10plus is not None and hdr10plus.scenes >= 2 and hdr10plus.frames == measurement.frames:
-            return measurement, hdr10plus.scene_starts
-        return measurement, scene_cuts(measurement)
+        return measurement, recompute_scenes(self._report, measurement, self._realignment)
 
     def _mastering_edit(self) -> MasteringEdit:
         return MasteringEdit(str(self.mdcv_primaries.currentData()), self.mdcv_min.value(), float(self.mdcv_max.value()))

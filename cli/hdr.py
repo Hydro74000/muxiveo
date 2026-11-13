@@ -69,6 +69,18 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).")
     group.add_argument("--hdr-fel-min", choices=tuple(_FEL_MIN), default=None,
                        help="Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).")
+    group.add_argument("--hdr-fel-moments", default=None, metavar="DOSSIER",
+                       help="Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, "
+                            "carte de l'écart).")
+    group.add_argument("--hdr-fel-exposure", type=float, default=0.0, metavar="EV",
+                       help="Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0).")
+    group.add_argument("--hdr-advice", action="store_true",
+                       help="Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone "
+                            "mapping d'une TV, réalignement d'après la mesure de l'image.")
+    group.add_argument("--hdr-display-peak", type=float, default=None, metavar="NITS",
+                       help="Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).")
+    group.add_argument("--hdr-tv-model", choices=("maxcll", "mdcv", "dynamic"), default="maxcll",
+                       help="Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence).")
 
 
 def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
@@ -81,6 +93,12 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
         "fel": bool(args.hdr_fel),
         "fel_interval": int(args.hdr_fel_interval),
     }
+    if getattr(args, "hdr_advice", False):
+        payload.update(advice=True, tv_model=args.hdr_tv_model)
+        if args.hdr_display_peak is not None:
+            payload["display_peak"] = args.hdr_display_peak
+    if getattr(args, "hdr_fel_moments", None):
+        payload.update(fel_moments_dir=args.hdr_fel_moments, fel_exposure=float(args.hdr_fel_exposure))
     for key, value in (("level", args.hdr), ("track", args.hdr_track), ("report", args.hdr_report or None),
                        ("offset", args.hdr_offset), ("fail_on", args.hdr_fail_on), ("fel_min", args.hdr_fel_min)):
         if value is not None:

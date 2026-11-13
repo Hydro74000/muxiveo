@@ -44,6 +44,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `encode` | encode (job + bloc `encode` ou options d'encodage), ou aperçus `--preview-image/--preview-video` ; voir « Encodage » |
 | `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
 | `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
+| `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
 | `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
@@ -1080,4 +1081,35 @@ Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "
 | `--hdr-fail-on warn\|error` | code de sortie 3 si un contrôle atteint ce niveau (contrôle qualité en lot) |
 | `--hdr-fast` | avec `measure` : mesure rapide (images clés, mvo-fel ≥ 0.5.0) ; estimation, MaxFALL souvent sous-estimée |
 | `--hdr-no-cache` | relit les fichiers au lieu des résultats en cache |
+| `--hdr-advice` | ajoute la clé `advice` (et la section « Recommandations » du rapport) : MaxCLL/MaxFALL et écran de mastering proposés, simulation du tone mapping d'une TV sur les valeurs du fichier puis proposées, réalignement d'après la mesure |
+| `--hdr-display-peak NITS` | avec `--hdr-advice` : pic de l'écran simulé (défaut : réglage `[hdr] display_peak_nits`) |
+| `--hdr-tv-model maxcll\|mdcv\|dynamic` | avec `--hdr-advice` : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence) |
+| `--hdr-fel-moments DOSSIER` | avec `--hdr-fel` : moments les plus marqués en PNG pleine définition (`<nom>.fel-HHhMMmSSs.sans-fel.png`, `.avec-fel.png`, `.ecart.png`) |
+| `--hdr-fel-exposure EV` | exposition des PNG des moments (−6 à 6) |
+
+### Correction des métadonnées (`hdr-patch`)
+
+Équivalent de l'onglet Édition du HDR Studio (opération `hdr.patch`) : copie corrigée d'un MKV ou
+d'un HEVC brut, sans réencodage (autres pistes, chapitres, pièces jointes et balises conservés).
+
+```bash
+Muxiveo-cli hdr-patch -i film.mkv -o film.hdrfix.mkv --max-cll 1000 --max-fall 400
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --light-levels suggested --mdcv suggested --dry-run
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --mdcv "Display P3:0.0001:1000" --l11 1
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --realign all --measure fast
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --hdr10plus-recompute --measure full
+```
+
+| Option | Effet |
+|---|---|
+| `--max-cll`, `--max-fall` / `--light-levels suggested` | MaxCLL/MaxFALL écrits (SEI et conteneur) ; `suggested` = mesure > HDR10+ > L1 (onglet Luminance), les valeurs saisies remplacent les proposées une à une |
+| `--mdcv suggested\|PRIMAIRES:MIN:MAX` | écran de mastering ; `suggested` = L6 > écran du RPU > écran usuel couvrant le pic |
+| `--l6 MAX:MIN:CLL:FALL`, `--l5 G,D,H,B`, `--l11 TYPE[:POINT_BLANC[:ref]]`, `--rpu-display MIN:MAX`, `--remove-cmv4` | corrections du RPU Dolby Vision (`dovi_tool editor`) ; le L11 n'est écrit que dans un RPU CM v4.0 (avertissement sinon) |
+| `--no-mastering-sync` | Dolby Vision : ne pas recopier le mastering saisi (MDCV, L6, écran du RPU) dans les deux autres (« Garder identiques », actif par défaut) |
+| `--hdr10plus-remove`, `--hdr10plus-target NITS`, `--hdr10plus-profile-a`, `--hdr10plus-cap NITS`, `--hdr10plus-recompute` | corrections HDR10+ ; le recalcul exige une mesure complète |
+| `--realign all\|static,mdcv,l6,hdr10plus` | retient les propositions de réalignement d'après la mesure (valeurs saisies prioritaires) |
+| `--measure cached\|fast\|full` | mesure de l'image : en cache seulement (défaut) ou lancée (extension mvo-fel) |
+| `--dry-run` | plan résolu (valeurs écrites) en JSON, sans écrire ; `--force` remplace une sortie existante |
+
+Requête équivalente pour `call hdr.patch` : `docs/cli/examples/hdr-patch.json`.
 

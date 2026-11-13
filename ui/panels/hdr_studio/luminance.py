@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 from core.hdr_inspection import InspectionReport
+from core.hdr_inspection.advice import LEVEL_SOURCES, TV_MODELS, describe_risk
 from core.hdr_inspection.audit import Severity
 from core.hdr_inspection.measure import ImageMeasurement
 from core.hdr_inspection.pq import pq12_to_nits
@@ -22,17 +23,8 @@ from ui.design_system import colors as C, font_px, scale
 from ui.panels.hdr_studio.chart import ChartMarker, ChartSeries, LuminanceChart, chart_controls
 from ui.styles import _card, _checkbox_style, _combo_style, _primary_button, _secondary_button, _section_label
 
-_SOURCE_LABELS = {
-    "measure": "mesure de l'image (exacte)",
-    "measure_fast": "mesure rapide de l'image (images clés, estimation)",
-    "hdr10plus": "MaxScl HDR10+ (valeurs saturées écartées)",
-    "l1": "L1 Dolby Vision : pic robuste, écrêtage sous-estimé ; mesurer l'image pour un résultat exact",
-}
-_MODELS = (
-    (TvModel.MAXCLL, "TV suivant la MaxCLL (BT.2390)"),
-    (TvModel.MDCV, "TV suivant le MDCV seul"),
-    (TvModel.DYNAMIC, "TV à analyse dynamique (référence)"),
-)
+_SOURCE_LABELS = LEVEL_SOURCES
+_MODELS = tuple(TV_MODELS.items())
 
 
 def _spin(maximum: int, suffix: str = "") -> QSpinBox:
@@ -52,37 +44,6 @@ def _text(text: str = "", *, color: str | None = None, size: int = 11) -> QLabel
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     label.setStyleSheet(f"color:{color or C.TEXT_PRI};font-size:{font_px(size)}px;background:transparent;")
     return label
-
-
-def _percent(value: float) -> str:
-    return f"{value * 100:.3f}".rstrip("0").rstrip(".") if value < 0.01 else f"{value * 100:.1f}"
-
-
-def describe_risk(risk: ToneMapRisk) -> tuple[str, str, str]:
-    """Écrêtage, assombrissement, compression : trois phrases du bilan."""
-    frames = max(1, risk.frames)
-    if risk.clipped_frames:
-        clip = translate_text("Écrêtage : {time} % du temps ({scenes} plan(s)), jusqu'à +{ev} EV au-delà de {level} nits",
-                              time=_percent(risk.clipped_frames / frames), scenes=risk.clipped_scenes,
-                              ev=f"{risk.worst_clip_ev:.1f}", level=round(risk.clip_level))
-        if risk.clipped_pixels is not None:
-            clip += translate_text(" ; {pixels} % des pixels du film", pixels=_percent(risk.clipped_pixels))
-    else:
-        clip = translate_text("Aucun écrêtage")
-    if risk.darkened_frames:
-        dark = translate_text("Hautes lumières assombries de {median} EV (médiane, p90 {p90} EV) sur {time} % du temps",
-                              median=f"{risk.darkening_median_ev:.2f}", p90=f"{risk.darkening_p90_ev:.2f}",
-                              time=_percent(risk.darkened_frames / frames))
-    else:
-        dark = translate_text("Pas d'assombrissement notable des hautes lumières")
-    if risk.model is TvModel.DYNAMIC:
-        knee = translate_text("Courbe adaptée à chaque image")
-    elif risk.knee is None:
-        knee = translate_text("Aucune compression : écran au moins aussi lumineux que le pic annoncé")
-    else:
-        knee = translate_text("Compression des hautes lumières à partir de {knee} nits (pic supposé {peak} nits)",
-                              knee=round(risk.knee), peak=round(risk.source_peak or 0))
-    return clip, dark, knee
 
 
 class LuminanceTab(QWidget):

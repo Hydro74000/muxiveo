@@ -16,10 +16,12 @@ from typing import Any, Literal
 
 from core.config import AppConfig
 from core.hdr_inspection import DynamicInspector, InspectionCache, InspectionReport, Severity, audit, snapshot_report
+from core.hdr_inspection.advice import Advice, build_advice
 from core.hdr_inspection.compare import Side, compare
 from core.hdr_inspection.fel_analyzer import FelReport, verdict
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
 from core.hdr_inspection.report import report_data, write_report
+from core.hdr_inspection.tonemap import TvModel
 from core.i18n import translate_text
 from core.inspector import FileInspector
 from core.jobs.constants import EXIT_ARGS, EXIT_TOOL
@@ -70,6 +72,16 @@ class HdrInspectRequest(Model):
     fel_survival: FelSurvival | None = None
     fel_min: Literal["moderate", "useful"] | None = field(
         default=None, description="Signaler (fel_below_min) un verdict FEL inférieur.")
+    fel_moments_dir: Path | None = field(
+        default=None, description="FEL Analyzer : moments les plus marqués en PNG (sans FEL, avec FEL, écart).")
+    fel_exposure: float = field(default=0.0, minimum=-6, maximum=6,
+                                description="Exposition (EV) des PNG des moments FEL.")
+    advice: bool = field(default=False, description="Recommandations : valeurs proposées, simulation TV, "
+                                                     "réalignement d'après la mesure (clé `advice`).")
+    display_peak: float | None = field(default=None, minimum=100, maximum=10000,
+                                       description="Écran simulé (nits ; défaut : [hdr] display_peak_nits).")
+    tv_model: Literal["maxcll", "mdcv", "dynamic"] = field(
+        default="maxcll", description="Modèle de TV simulé : suit la MaxCLL, le MDCV seul, ou dynamique.")
 
 
 @dataclass(frozen=True)
@@ -82,6 +94,7 @@ class HdrInspectResult(Model):
     fel_verdicts: tuple[dict[str, Any], ...] = ()
     fel_below_min: bool = False
     fail_on_triggered: bool = False
+    fel_moments: tuple[str, ...] = field(default=(), description="PNG des moments FEL écrits.")
 
 
 def dynamic_report(config: AppConfig, info, stream: int | None, cache: InspectionCache | None, refresh: bool,
@@ -241,6 +254,68 @@ def fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: int
 
 
 
+def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path, *, exposure: float, ffmpeg: str,
+                      threads: int, logger: Logger, token: CancelToken | None = None) -> list[Path]:
+    """Moments les plus marqués du FEL Analyzer en pleine définition : PNG sans FEL, avec FEL et carte de l'écart
+    (comparateur avant / après du HDR Studio)."""
+    from core.fel.engine import FelEngine, FelError
+    from core.hdr_inspection.fel_analyzer import (
+        active_rows,
+        area_at,
+        close_capture,
+        moment_images,
+        plugin_capture,
+        render_sdr,
+    )
+    from core.hdr_inspection.report import png_bytes
+    from core.atomic_io import atomic_write_bytes
+
+    if not fel.moments:
+        return []
+    snapshot = report.snapshot
+    fps = snapshot.fps or 24000 / 1001
+    rate = Fraction(fps).limit_denominator(1001)
+    area = area_at(report.dovi, fps)
+    cancel = threading.Event()
+    if token is not None:
+        token.on_cancel(cancel.set)
+    directory.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    capture = None
+    try:
+        capture = plugin_capture(FelEngine.installed(), Path(snapshot.path), snapshot.stream_index, ffmpeg_bin=ffmpeg,
+                                 width=snapshot.width or 3840, height=snapshot.height or 2160,
+                                 frame_rate=f"{rate.numerator}/{rate.denominator}", threads=threads,
+                                 cancelled=cancel)
+        stem = Path(snapshot.path).stem
+        for moment in fel.moments:
+            if cancel.is_set():
+                break
+            pair = getattr(capture, "pair", None)
+            if callable(pair):  # session : les deux couches d'un seul décodage
+                both = pair(moment.time_s, 1)
+                reconstructed, mapped = both[0][0], both[1][0]
+            else:
+                reconstructed = capture("reconstructed", moment.time_s, 1)[0]
+                mapped = capture("mapped", moment.time_s, 1)[0]
+            images = moment_images(reconstructed, mapped, active_rows(mapped, area(moment.time_s)), moment.time_s)
+            seconds = int(moment.time_s)
+            base = f"{stem}.fel-{seconds // 3600:02d}h{seconds // 60 % 60:02d}m{seconds % 60:02d}s"
+            for suffix, image in (("sans-fel", render_sdr(images.mapped, exposure)),
+                                  ("avec-fel", render_sdr(images.reconstructed, exposure)),
+                                  ("ecart", images.difference)):
+                path = directory / f"{base}.{suffix}.png"
+                atomic_write_bytes(path, png_bytes(image), mode=0o644)  # images à partager
+                written.append(path)
+            logger.emit("info", f"FEL Analyzer : moment {base[len(stem) + 5:]} écrit")
+    except (RuntimeError, FelError, OSError) as exc:
+        raise JobError(f"FEL Analyzer : capture des moments impossible ({exc}).", EXIT_TOOL) from exc
+    finally:
+        cancel.set()
+        close_capture(capture)
+    return written
+
+
 @operation(
     "hdr.inspect",
     request=HdrInspectRequest,
@@ -274,6 +349,7 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
     fel_interval = request.fel_interval if request.fel else None
     sides: list[Side] = []
     fel_reports: list[FelReport] = []
+    moments: list[Path] = []
     for path in inputs:
         ctx.cancel.raise_if_cancelled()
         info = inspector.inspect(path)
@@ -295,15 +371,26 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
                                                                  measurement))
         if fel_interval is not None:
-            fel_reports.append(fel_analysis(config, report, interval_s=fel_interval, survival=survival,
-                                             ffmpeg=ffmpeg, threads=threads, logger=logger,
-                                             cache=None if request.no_cache else cache,
-                                            token=ctx.cancel))
+            fel = fel_analysis(config, report, interval_s=fel_interval, survival=survival, ffmpeg=ffmpeg,
+                               threads=threads, logger=logger, cache=None if request.no_cache else cache,
+                               token=ctx.cancel)
+            fel_reports.append(fel)
+            if request.fel_moments_dir is not None:
+                written = write_fel_moments(report, fel, Path(request.fel_moments_dir), exposure=request.fel_exposure,
+                                            ffmpeg=ffmpeg, threads=threads, logger=logger, token=ctx.cancel)
+                for path in written:
+                    ctx.events.artifact("fel-moment", str(path))
+                moments += written
         sides.append(Side(report, measurement))
     comparison = compare(sides[0], sides[1], request.offset) if request.compare else None
     fels: list[FelReport | None] = list(fel_reports) if fel_reports else [None] * len(sides)
-    payload: dict = {"hdr": [report_data(side.report, measurement=side.measurement, fel=fel)
-                             for side, fel in zip(sides, fels)]}
+    advices: list[Advice | None] = [None] * len(sides)
+    if request.advice:
+        peak = float(request.display_peak or getattr(config, "display_peak_nits", 1000) or 1000)
+        advices = [build_advice(side.report, side.measurement, display_peak=peak, tv_model=TvModel(request.tv_model))
+                   for side in sides]
+    payload: dict = {"hdr": [report_data(side.report, measurement=side.measurement, fel=fel, advice=advice)
+                             for side, fel, advice in zip(sides, fels, advices)]}
     if comparison is not None:
         payload["comparison"] = report_data(sides[0].report, measurement=sides[0].measurement, comparison=comparison,
                                             other=sides[1].report)["comparison"]
@@ -311,7 +398,7 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
     if request.report:
         report_path = write_report(Path(request.report), sides[0].report, measurement=sides[0].measurement,
                                    fel=fels[0], comparison=comparison,
-                                   other=sides[1].report if comparison is not None else None)
+                                   other=sides[1].report if comparison is not None else None, advice=advices[0])
         logger.emit("info", f"Rapport HDR écrit : {report_path}")
         ctx.events.artifact("report", str(report_path))
     verdicts = []
@@ -328,4 +415,5 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
             side.report.errors for side in sides)
     return HdrInspectResult(hdr=tuple(payload["hdr"]), comparison=payload.get("comparison"),
                             report=str(report_path) if report_path is not None else None,
-                            fel_verdicts=tuple(verdicts), fel_below_min=below_min, fail_on_triggered=fail_on)
+                            fel_verdicts=tuple(verdicts), fel_below_min=below_min, fail_on_triggered=fail_on,
+                            fel_moments=tuple(str(path) for path in moments))

@@ -124,3 +124,35 @@ def test_mastering_display_rewritten_without_reencoding(tmp_path):
     assert ("Content light level metadata" in container) == ("Content light level metadata" in source_container)
     assert _md5(output, "0:a:0") == _md5(source, "0:a:0")
     assert not list(work.iterdir())
+
+
+def test_cli_hdr_patch_writes_and_reports(tmp_path):
+    """Commande ``hdr-patch`` (opération hdr.patch) : plan résolu, écriture, refus d'écraser."""
+    import os
+    import sys
+
+    source = _source(tmp_path / "source.mkv")
+    output = tmp_path / "corrige.mkv"
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+           "XDG_DATA_HOME": str(tmp_path / "xdg-data")}
+
+    def cli(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(root / "main.py"), "--cli", "hdr-patch", "-i", str(source),
+                               "-o", str(output), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe", "--work-dir",
+                               str(tmp_path / "work"), *args], cwd=root, env=env, capture_output=True, text=True,
+                              check=False, timeout=300)
+
+    planned = cli("--max-cll", "640", "--max-fall", "120", "--mdcv", "BT.2020:0.0001:1000", "--dry-run")
+    assert planned.returncode == 0, planned.stderr
+    changes = json.loads(planned.stdout)["changes"]
+    assert changes["static"]["max_cll"] == 640 and changes["static"]["mastering"]["primaries"] == "BT.2020"
+    assert changes["rpu"] is None and not output.exists()
+    written = cli("--max-cll", "640", "--max-fall", "120", "--mdcv", "BT.2020:0.0001:1000")
+    assert written.returncode == 0, written.stderr
+    assert _first_frame_cll(output) == (640, 120)
+    mastering = _first_frame_side_data(output, "Mastering display metadata")
+    assert Fraction(mastering["max_luminance"]) == 1000 and Fraction(mastering["red_x"]) == Fraction(35400, 50000)
+    assert cli("--max-cll", "500", "--max-fall", "100").returncode == 5
+    refused = cli("--hdr10plus-remove", "--dry-run")
+    assert refused.returncode == 3 and "HDR10+" in refused.stderr

@@ -9694,5 +9694,45 @@
   "La sortie ne peut pas être la source.": {
     "fra": "La sortie ne peut pas être la source.",
     "eng": "The output cannot be the source."
+  },
+  "Écran simulé": {
+    "fra": "Écran simulé",
+    "eng": "Simulated display"
+  },
+  "Écran de mastering proposé": {
+    "fra": "Écran de mastering proposé",
+    "eng": "Suggested mastering display"
+  },
+  "Niveaux": {
+    "fra": "Niveaux",
+    "eng": "Levels"
+  },
+  "MaxCLL / MaxFALL proposés": {
+    "fra": "MaxCLL / MaxFALL proposés",
+    "eng": "Suggested MaxCLL / MaxFALL"
+  },
+  "Recommandations": {
+    "fra": "Recommandations",
+    "eng": "Recommendations"
+  },
+  "Correction": {
+    "fra": "Correction",
+    "eng": "Correction"
+  },
+  "Actuel": {
+    "fra": "Actuel",
+    "eng": "Current"
+  },
+  "Proposé": {
+    "fra": "Proposé",
+    "eng": "Suggested"
+  },
+  "Effet": {
+    "fra": "Effet",
+    "eng": "Effect"
+  },
+  "Réalignement d’après la mesure": {
+    "fra": "Réalignement d’après la mesure",
+    "eng": "Realignment from the measurement"
   }
 }

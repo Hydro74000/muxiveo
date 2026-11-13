@@ -1,0 +1,11 @@
+{
+  "source": "/media/films/film.mkv",
+  "output": "/media/films/film.hdrfix.mkv",
+  "light_levels": {"mode": "suggested"},
+  "mastering": {"mode": "suggested"},
+  "rpu": {"active_area": {"top": 276, "bottom": 276}},
+  "hdr10plus": {"cap_nits": 4000},
+  "realign": ["l6"],
+  "measurement": "cached",
+  "dry_run": true
+}

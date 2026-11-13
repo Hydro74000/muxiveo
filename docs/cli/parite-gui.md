@@ -6,7 +6,7 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
 Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage (`media.run` avec bloc
-`encode`), `system.capabilities` et l'extraction `media.extract` (voir `Muxiveo-cli operations`).
+`encode`), `system.capabilities`, l'extraction `media.extract` et la correction HDR `hdr.patch` (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -102,12 +102,12 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Mesure rapide / complète | `inspect --hdr measure [--hdr-fast]` | `hdr.inspect` | ✅ |
 | Comparer deux pistes | `inspect --hdr-compare` | `hdr.inspect` | ✅ |
 | Exporter le rapport | `--hdr-report` | `hdr.inspect` | ✅ |
-| Luminance : modèle de TV, pic de l'écran, simulation | `--hdr-tv-model`, `--hdr-display-peak` | `hdr.inspect` | ⏳ L6 |
-| Valeurs proposées (MaxCLL / MaxFALL, écran de mastering) | `inspect --hdr` (`suggested`) | `hdr.inspect` | ⏳ L6 |
-| Réalignement d'après la mesure | `hdr-patch --realign` | `hdr.patch` | ⏳ L6 |
-| Édition : HDR10 statique, MDCV, RPU (L5, L6, L11, écran, CMv4), HDR10+ | `hdr-patch` | `hdr.patch` | ⏳ L6 |
+| Luminance : modèle de TV, pic de l'écran, simulation | `inspect --hdr … --hdr-advice --hdr-tv-model --hdr-display-peak` | `hdr.inspect` (`advice`) | ✅ |
+| Valeurs proposées (MaxCLL / MaxFALL, écran de mastering) | `--hdr-advice` (`advice.suggested`) ; `hdr-patch --light-levels suggested --mdcv suggested` | `hdr.inspect`, `hdr.patch` | ✅ |
+| Réalignement d'après la mesure (propositions, « Reporter les propositions cochées ») | `--hdr-advice` (`advice.realignment`) ; `hdr-patch --realign` | `hdr.inspect`, `hdr.patch` | ✅ |
+| Édition : HDR10 statique, MDCV, RPU (L5, L6, L11, écran, CMv4), HDR10+, « Garder identiques » | `hdr-patch` | `hdr.patch` | ✅ |
 | FEL Analyzer, test de survie | `inspect --hdr-fel [--hdr-fel-survival]` | `hdr.inspect` | ✅ |
-| Moments FEL : comparaison avant / après | `--hdr-fel-moments DIR` | `hdr.inspect` | ⏳ L6 |
+| Moments FEL : comparaison avant / après | `--hdr-fel-moments DIR [--hdr-fel-exposure EV]` (PNG sans FEL, avec FEL, écart) | `hdr.inspect` | ✅ (images fixes ; zoom / trait à glisser : ⛔ rendu interactif) |
 | Appliquer les valeurs au panneau Encodage | bloc `encode.static_hdr` | — | ⛔ lien entre panneaux (équivalent : saisir les valeurs) |
 
 ## Paramètres, extensions, mises à jour

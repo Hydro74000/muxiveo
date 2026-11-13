@@ -9,6 +9,7 @@ from cli.commands import cmd_batch, cmd_capabilities, cmd_inspect, cmd_preview, 
 from cli.constants import LOG_FORMATS
 from cli.encode_options import add_encode_options
 from cli.extract import add_extract_parser
+from cli.hdr_patch import add_hdr_patch_parser
 from cli.plugins import add_plugins_parser
 from cli.encode_commands import cmd_encode_preset
 from cli.service_adapter import cmd_call, cmd_operations
@@ -147,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_plugins_parser(sub)
     add_extract_parser(sub)
+    add_hdr_patch_parser(sub)
 
     presets = sub.add_parser("encode-preset", help="Presets d'encodage enregistrés (communs avec l'interface).")
     preset_sub = presets.add_subparsers(dest="preset_command", required=True)

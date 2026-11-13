@@ -120,6 +120,10 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
     if not getattr(args, "hdr_fel", False) and (getattr(args, "hdr_fel_survival", None)
                                                 or getattr(args, "hdr_fel_min", None)):
         raise CliError("--hdr-fel-survival et --hdr-fel-min s'utilisent avec --hdr-fel.", EXIT_ARGS)
+    if not getattr(args, "hdr_fel", False) and getattr(args, "hdr_fel_moments", None):
+        raise CliError("--hdr-fel-moments s'utilise avec --hdr-fel.", EXIT_ARGS)
+    if getattr(args, "hdr_advice", False) and not getattr(args, "hdr", None):
+        raise CliError("--hdr-advice s'utilise avec --hdr static|dynamic|measure.", EXIT_ARGS)
     if getattr(args, "hdr", None) or getattr(args, "hdr_fel", False):
         from cli.hdr import cmd_inspect_hdr
 
