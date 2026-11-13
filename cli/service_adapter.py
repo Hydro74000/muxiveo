@@ -177,8 +177,11 @@ def cmd_operations(args: argparse.Namespace, config: Any, logger: Logger) -> int
 
 
 def render_api_error(logger: Logger, error: ApiError) -> int:
-    """Erreur publique d'une commande historique : message au journal, code de sortie."""
-    logger.emit("error", error.render(), code=error.code.value)
+    """Erreur publique d'une commande historique : message au journal (forme historique), code de sortie.
+
+    Le code public reste disponible dans l'événement ``error`` (``--log-format events``).
+    """
+    logger.emit("error", error.render())
     return exit_code_for(error)
 
 

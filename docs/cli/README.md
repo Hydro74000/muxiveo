@@ -698,8 +698,9 @@ historiques (`--config`, `--template`, `--batch`) restent tolérants.
 **Événements** (stderr, toujours avec `call`, sur demande ailleurs avec `--log-format events`) :
 une ligne JSON par événement, `{"v": 1, "job", "parent", "seq", "ts", "type", …}` avec
 `type` parmi `state`, `log`, `progress`, `warning`, `artifact`, `result`, `error`. Sur une
-commande historique, `--log-format events` remplace aussi la sortie stdout par la réponse
-ci-dessus.
+commande déjà migrée vers la couche de service (`version`, `inspect` hors `--hdr`),
+`--log-format events` remplace aussi la sortie stdout par la réponse ci-dessus ; les autres
+commandes gardent leur sortie stdout et publient leur journal en événements.
 
 **Codes d'erreur** et codes retour :
 
