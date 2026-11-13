@@ -1,9 +1,9 @@
-"""Opérations système : version de l'application."""
+"""Opérations système : version, outils résolus, schémas publiés."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from core.service.context import ExecutionContext
 from core.service.models import Model, field
@@ -56,3 +56,51 @@ def system_version(request: VersionRequest, ctx: ExecutionContext) -> VersionRes
         return VersionResult(name=APP_NAME, version=APP_BUILD_VERSION, channel=channel, check_failed=True)
     return VersionResult(name=APP_NAME, version=APP_BUILD_VERSION, channel=channel, latest=info.version,
                          update_available=info.is_newer, url=info.url)
+
+
+@dataclass(frozen=True)
+class ToolsRequest(Model):
+    """Commandes d'outils résolues par Muxiveo (configuration, extensions, PATH)."""
+
+
+@dataclass(frozen=True)
+class ToolsResult(Model):
+    version: int = 1
+    tools: dict[str, str] = field(default_factory=dict, description="Outil → commande exécutée.")
+
+
+@operation("system.tools", request=ToolsRequest, result=ToolsResult,
+           summary="Commandes d'outils externes résolues par Muxiveo.")
+def system_tools(_request: ToolsRequest, ctx: ExecutionContext) -> ToolsResult:
+    return ToolsResult(tools=dict(ctx.config.tool_commands()))
+
+
+SchemaVersion = Literal["1", "exact-job", "decision-profile", "all", "api"]
+
+
+@dataclass(frozen=True)
+class SchemaRequest(Model):
+    """Schéma JSON publié."""
+
+    version: SchemaVersion = field(
+        default="1", description="« 1 » : job ; exact-job ; decision-profile ; all ; api : catalogue des opérations.")
+
+
+@dataclass(frozen=True)
+class SchemaResult(Model):
+    schema: dict[str, Any]
+
+
+@operation("schema.get", request=SchemaRequest, result=SchemaResult,
+           summary="Schémas JSON publiés : contrat des jobs, profils, catalogue de l'API.")
+def schema_get(request: SchemaRequest, _ctx: ExecutionContext) -> SchemaResult:
+    from core.jobs import schema
+
+    if request.version == "api":
+        from core.service.catalog import CATALOG
+
+        return SchemaResult(schema=CATALOG.describe())
+    builders = {"1": schema.build_cli_json_schema, "exact-job": schema.build_exact_job_schema_v1,
+                "decision-profile": schema.build_decision_profile_schema_v1,
+                "all": schema.build_cli_json_schema_bundle}
+    return SchemaResult(schema=builders[request.version]())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,7 @@ def run_remux(
     logger: JobLogger,
     cancel: CancelToken,
     force: bool = False,
+    workflow_factory: Callable[[], RemuxWorkflow] | None = None,
 ) -> str:
     """Remuxe ``remux_config`` jusqu'au nettoyage complet ; renvoie le message de fin du workflow.
 
@@ -62,7 +64,7 @@ def run_remux(
     """
     if remux_config.output.exists() and not force:
         raise JobError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
-    wf = remux_workflow(config, options)
+    wf = workflow_factory() if workflow_factory is not None else remux_workflow(config, options)
     wf.log_message.connect(lambda level, message: logger.emit(level, message))
     wf.backend_event.connect(
         lambda report: logger.emit("info", "Sélection du backend de remuxage.", event="mux_backend", **dict(report))

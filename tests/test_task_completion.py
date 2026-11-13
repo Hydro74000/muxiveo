@@ -74,7 +74,7 @@ def test_cli_receives_completion_before_run_returns(qt_app, tmp_path, monkeypatc
     timed_out = []
     timer.timeout.connect(lambda: (timed_out.append(True), loop.quit()))
     monkeypatch.setattr(runtime, "workflow", lambda *_args: wf)
-    monkeypatch.setattr(runtime, "QEventLoop", lambda: loop)
+    monkeypatch.setattr("core.service.jobs.QEventLoop", lambda: loop)
     timer.start(1000)
     try:
         result = runtime.run_remux_config(
@@ -95,7 +95,7 @@ def test_cli_transmits_sync_preferences(monkeypatch):
         sync_advanced_audio_rewrite_enabled=True,
         aac_bitrate_per_channel_kbps=80, eac3_bitrate_per_channel_kbps=112,
     )
-    monkeypatch.setattr(runtime, "RemuxWorkflow", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr("core.jobs.runtime.RemuxWorkflow", lambda **kwargs: captured.update(kwargs))
     runtime.workflow(cast(Any, config), CommonOptions(), Logger())
     assert captured["sync_rewrite_enabled"] is True
     assert captured["sync_advanced_audio_rewrite_enabled"] is True

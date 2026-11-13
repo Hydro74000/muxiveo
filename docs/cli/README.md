@@ -670,9 +670,11 @@ service (`core/service/`) : requête JSON typée → événements → résultat 
 historiques gardent leurs sorties ; `call` expose le même contrat que celui d'un futur
 service (daemon), utilisable dès maintenant par un autre programme.
 
-Opérations disponibles (`operations`) : `system.version`, `media.inspect`, `media.validate`,
-`media.preview`, `media.run` (requête `{"job": {…document de job…}, "options": {…}}`, plus `force` pour
-`media.run`), `media.batch`, `profile.validate`, `profile.preview`, `profile.apply`, `profile.batch`.
+Opérations disponibles (`operations`) : toutes les commandes du CLI — `system.version`,
+`system.tools`, `schema.get`, `media.inspect`, `media.validate`, `media.preview`, `media.run`
+(requête `{"job": {…document de job…}, "options": {…}}`, plus `force`), `media.batch`, `profile.validate`,
+`profile.preview`, `profile.apply`, `profile.batch`, `sync.scan`, `sync.shift_subtitles`, `hdr.inspect`,
+`hybrid.run`, `plugins.list` / `install` / `update` / `remove`.
 
 **Lots** (`media.batch`, `profile.batch`, et `batch` en `--log-format events`) : chaque job est un job
 enfant (`parent` = lot) avec ses propres états ; le résultat donne `status` = `succeeded`, `partial`

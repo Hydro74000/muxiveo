@@ -55,7 +55,8 @@ def run_remux_config(
 def _run(remux_config: RemuxConfig, config: AppConfig, options: CommonOptions, logger: JobLogger, cancel: CancelToken,
          force: bool) -> int:
     try:
-        run_remux(remux_config, config=config, options=options, logger=logger, cancel=cancel, force=force)
+        run_remux(remux_config, config=config, options=options, logger=logger, cancel=cancel, force=force,
+                  workflow_factory=lambda: workflow(config, options, logger))
     except ApiError as error:
         if not error.logged:
             raise

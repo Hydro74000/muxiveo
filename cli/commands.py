@@ -7,13 +7,12 @@ import json
 from pathlib import Path
 
 from core.config import AppConfig
-from core.service.catalog import CATALOG
 from core.service.context import Overrides
 from core.service.errors import ApiError
 from core.jobs.errors import exit_code_for
 from core.service.context import CancelToken
 from core.service.ops.media import InspectResult, JobOptions, MediaPreviewResult, MediaValidateResult
-from core.service.ops.system import VersionResult
+from core.service.ops.system import SchemaResult, VersionResult
 from core.update_check import query_latest_release
 
 from cli.batch import run_batch
@@ -26,20 +25,17 @@ from cli.logging import Logger
 from cli.options import JobOverrides, common_options
 from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
 from cli.remux_config import config_to_template
-from cli.schema import (
-    build_cli_json_schema,
-    build_cli_json_schema_bundle,
-    build_decision_profile_schema_v1,
-    build_exact_job_schema_v1,
-)
 from cli.interrupts import interrupt_guard
 from cli.service_adapter import envelope, overrides_from_options, print_json, render_api_error, run_operation
 
 
-def cmd_tools(_args: argparse.Namespace, config: AppConfig, _logger: Logger) -> int:
-    """Expose the exact commands resolved from Muxiveo configuration."""
-    commands = config.tool_commands()
-    print(json.dumps({"version": 1, "tools": commands}, ensure_ascii=False, indent=2))
+def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    """Commandes d'outils résolues (opération system.tools)."""
+    result, ctx = run_operation("system.tools", {}, config=config, logger=logger)
+    if getattr(args, "log_format", "text") == "events":
+        print_json(envelope("system.tools", ctx.events.job, result=result))
+    else:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return EXIT_OK
 
 
@@ -134,22 +130,17 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
 
 def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    """Schémas JSON publiés (opération schema.get)."""
     version = str(getattr(args, "schema_version", "1") or "1")
-    if version == "exact-job":
-        payload = build_exact_job_schema_v1()
-    elif version == "decision-profile":
-        payload = build_decision_profile_schema_v1()
-    elif version == "all":
-        payload = build_cli_json_schema_bundle()
-    elif version == "api":
-        payload = CATALOG.describe()
-    else:
-        payload = build_cli_json_schema()
-    if args.output:
-        write_json(Path(args.output).expanduser(), payload)
+    result, ctx = run_operation("schema.get", {"version": version}, config=config, logger=logger)
+    assert isinstance(result, SchemaResult)
+    if args.log_format == "events":
+        print_json(envelope("schema.get", ctx.events.job, result=result))
+    elif args.output:
+        write_json(Path(args.output).expanduser(), result.schema)
         logger.emit("info", f"Schéma JSON sauvegardé : {args.output}")
     else:
-        print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+        print(json.dumps(result.schema, ensure_ascii=False, indent=2, default=json_default))
     return EXIT_OK
 
 

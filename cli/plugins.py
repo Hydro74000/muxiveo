@@ -3,51 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
+from typing import Any
 import json
 import sys
 
-from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_TOOL, EXIT_WORKFLOW, LOG_FORMATS
+from cli.constants import EXIT_OK, LOG_FORMATS
 from cli.logging import Logger
+from cli.service_adapter import envelope, print_json, render_api_error, run_operation
 from core import plugins
 from core.config import AppConfig
-from core.workflows.encode.interpolation import detect_gpu_acceleration
-
-_LABELS = {
-    plugins.RIFE_PLUGIN_ID: "Moteur vidéo MVO (débruitage, interpolation)",
-    plugins.TRT_PLUGIN_ID: "Accélération NVIDIA (TensorRT)",
-    plugins.FEL_PLUGIN_ID: "Reconstruction Dolby Vision FEL",
-}
-
-
-def _status(spec: plugins.PluginSpec, config: AppConfig, feed: list[dict] | None) -> dict:
-    platform = plugins.platform_tag()
-    installed = plugins.installed_plugin(spec)
-    target = plugins.target_version(spec, feed, platform)
-    status = {
-        "name": spec.id,
-        "label": _LABELS[spec.id],
-        "platform": platform,
-        "pinned_version": spec.min_version,
-        "available_version": target,
-        "installed_version": installed.version if installed else None,
-        "path": str(installed.path) if installed else None,
-        "update_available": plugins.update_available(spec, target),
-        "compatible": spec.supports(platform),
-        "status": "" if spec.supports(platform) else "plate-forme non prise en charge",
-    }
-    if spec is plugins.TRT:
-        rife = getattr(config, "tool_muxiveo_rife", None) or ""
-        trt = detect_gpu_acceleration(rife, trt_plugin=str(installed.path) if installed else "").trt
-        status.update(
-            enabled=bool(getattr(config, "trt_enabled", True)), compatible=trt.compatible, ready=trt.ready,
-            device=trt.device, status=trt.reason, engine_cache=str(plugins.trt_engine_cache_dir()),
-        )
-    elif spec is plugins.FEL:
-        status["library"] = str(plugins.main_file(spec, installed)) if installed else None
-    else:
-        status["executable"] = str(plugins.main_file(spec, installed)) if installed else None
-    return status
-
+from core.service.errors import ApiError
 
 class _Progress:
     """Progression du téléchargement : ligne réécrite sur un terminal, palier de 10 % sinon."""
@@ -72,36 +38,6 @@ class _Progress:
             sys.stderr.write("\n")
 
 
-def _install(spec: plugins.PluginSpec, args: argparse.Namespace, config: AppConfig, logger: Logger, status: dict) -> int:
-    if not status["available_version"]:
-        logger.emit("error", "Aucune version publiée compatible disponible pour cette extension.")
-        return EXIT_WORKFLOW
-    if spec is plugins.TRT and not args.accept_license:
-        logger.emit("error", "Installation de NVIDIA TensorRT for RTX : licence à accepter avec --accept-license "
-                             f"({plugins.TRT_LICENSE_URL}).")
-        return EXIT_ARGS
-    if not status["compatible"] and not args.force:
-        reason = status["status"] or ("GPU NVIDIA Turing ou plus récent requis" if spec is plugins.TRT else "")
-        logger.emit("error", f"Machine incompatible ({reason}) ; --force pour installer quand même.")
-        return EXIT_TOOL
-    progress = _Progress()
-    try:
-        installed = plugins.install(spec, version=status["available_version"], progress=progress)
-    except plugins.PluginError as exc:
-        progress.end()
-        logger.emit("error", f"Installation impossible : {exc}")
-        return EXIT_WORKFLOW
-    progress.end()
-    if spec is plugins.TRT:
-        rife = getattr(config, "tool_muxiveo_rife", None) or ""
-        failures = plugins.warm_up(rife, installed, log=lambda m: logger.emit("info", f"Préparation du moteur {m}")) if rife else []
-        if failures:
-            logger.emit("warning", "Extension installée mais inutilisable ici : " + "; ".join(failures[:2]))
-            return EXIT_TOOL
-    logger.emit("info", f"{status['label']} {installed.version} installée dans {installed.path}.")
-    return EXIT_OK
-
-
 def _print_status(status: dict) -> None:
     state = f"installée ({status['installed_version']})" if status["installed_version"] else "non installée"
     print(f"{status['label']} [{status['name']}] : {state} ; version disponible {status['available_version']}")
@@ -116,43 +52,34 @@ def _print_status(status: dict) -> None:
 
 
 def cmd_plugins(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
-    """list | install | update | remove des extensions."""
-    if plugins.platform_tag() is None:
-        logger.emit("error", "Extensions non prises en charge sur cette plate-forme.")
-        return EXIT_TOOL
+    """list | install | update | remove des extensions (opérations ``plugins.*``)."""
     action = args.plugins_command
-    names = [args.name] if getattr(args, "name", None) else list(plugins.EXTENSIONS)
-    if action == "remove":
-        spec = plugins.EXTENSIONS[args.name]
-        complete = plugins.remove(spec)
-        logger.emit("info" if complete else "warning", f"{_LABELS[spec.id]} supprimée." if complete else
-                    "Extension désactivée ; fichiers encore utilisés retirés au prochain lancement.")
-        return EXIT_OK
-    statuses = {name: _status(plugins.EXTENSIONS[name], config, plugins.fetch_feed(plugins.EXTENSIONS[name]))
-                for name in names}
+    progress = _Progress()
+    ports: dict[str, Callable[..., Any]] = {"download_progress": progress, "download_progress_end": progress.end}
+    name = getattr(args, "name", None)
+    payload: dict = {}
     if action == "list":
-        for status in statuses.values():
+        payload = {"names": [name]} if name else {}
+    elif action == "install":
+        payload = {"name": name, "accept_license": bool(args.accept_license), "force": bool(args.force)}
+    elif action in ("update", "remove"):
+        payload = {"name": name} if name else {}
+    try:
+        result, ctx = run_operation(f"plugins.{action}", payload, config=config, logger=logger, ports=ports)
+    except ApiError as error:
+        return render_api_error(logger, error)
+    if args.log_format == "events":
+        print_json(envelope(f"plugins.{action}", ctx.events.job, result=result))
+    if action == "list" and args.log_format != "events":
+        for status in getattr(result, "extensions", ()):
             if args.log_format == "jsonl":
                 print(json.dumps(status, ensure_ascii=False))
             else:
                 _print_status(status)
-        return EXIT_OK
-    if action == "install":
-        return _install(plugins.EXTENSIONS[args.name], args, config, logger, statuses[args.name])
-    # update : extensions nommées, sinon toutes celles installées
-    code = EXIT_OK
-    installed = [s for s in statuses.values() if s["installed_version"] is not None]
-    if args.name and not installed:
-        logger.emit("error", f"Extension non installée : muxiveo --cli plugins install {args.name}")
-        return EXIT_ARGS
-    for status in installed:
-        if not status["update_available"]:
-            logger.emit("info", f"{status['label']} à jour ({status['installed_version']}).")
-            continue
-        args.accept_license = True  # licence déjà acceptée à l'installation
-        args.force = True
-        code = max(code, _install(plugins.EXTENSIONS[status["name"]], args, config, logger, status))
-    return code
+    if action == "update":
+        return max((int(item.get("exit_code", EXIT_OK)) for item in getattr(result, "extensions", ())),
+                   default=EXIT_OK)
+    return EXIT_OK
 
 
 def add_plugins_parser(sub: argparse._SubParsersAction) -> None:

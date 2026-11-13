@@ -31,6 +31,11 @@ class CancelToken:
     def cancelled(self) -> bool:
         return self._event.is_set()
 
+    @property
+    def event(self) -> threading.Event:
+        """Événement levé à l'annulation (analyseurs qui attendent un ``cancel_event``)."""
+        return self._event
+
     def cancel(self) -> None:
         with self._lock:
             if self._event.is_set():

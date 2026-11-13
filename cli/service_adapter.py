@@ -68,7 +68,8 @@ class LoggerSink:
 
 
 def sink_for(logger: Logger) -> Any:
-    return logger.event_sink if logger.event_sink is not None else LoggerSink(logger)
+    event_sink = getattr(logger, "event_sink", None)  # journal minimal accepté (tests, appels internes)
+    return event_sink if event_sink is not None else LoggerSink(logger)
 
 
 def run_operation(

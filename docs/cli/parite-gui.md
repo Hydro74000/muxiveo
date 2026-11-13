@@ -5,16 +5,14 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
-Opérations déjà publiées : `system.version`, `media.inspect`, `media.validate`, `media.preview`,
-`media.run`, `media.batch`, `profile.validate`, `profile.preview`, `profile.apply`, `profile.batch`
-(voir `Muxiveo-cli operations`).
+Opérations publiées : toutes les commandes existantes du CLI (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
 | Version, recherche de mise à jour | `version [--check]` | `system.version` | ✅ |
-| Outils détectés et leurs chemins | `tools` | `system.tools` | 🟡 commande ; opération ⏳ L1 |
+| Outils détectés et leurs chemins | `tools` | `system.tools` | ✅ |
 | Encodeurs logiciels / matériels, presets, Vulkan, NVOF, TensorRT | `capabilities` | `system.capabilities` | ⏳ L3 |
 | Nettoyage du dossier de travail au démarrage | `workdir list\|clean` | `workdir.list/clean` | ⏳ L10 |
 
@@ -43,9 +41,9 @@ Opérations déjà publiées : `system.version`, `media.inspect`, `media.validat
 | Aperçu de la commande | `preview` | `media.preview` | ✅ |
 | Extraire une piste de sous-titres | `extract` | `media.extract` | ⏳ L5 |
 | Extraire audio, vidéo, couche EL (FEL/MEL), RPU, HDR10+, pièces jointes | `extract` | `media.extract` | ⏳ L5 (la GUI suit) |
-| Inspecter le HDR d'une piste | `inspect --hdr` | `hdr.inspect` | 🟡 opération ⏳ L1 |
+| Inspecter le HDR d'une piste | `inspect --hdr` | `hdr.inspect` | ✅ |
 | Synchronisation automatique / approfondie d'une source | `--auto-sync`, `--quick-sync-check` | `media.run` | 🟡 une seule source ; toutes ⏳ L7 (`--auto-sync-all`) |
-| Synchroniser une piste de sous-titres | `sync-scan --type subtitle` | `sync.scan` | 🟡 opération ⏳ L1 |
+| Synchroniser une piste de sous-titres | `sync-scan --type subtitle` | `sync.scan` | ✅ |
 | Références de synchro en chaîne (source synchronisée sur une autre source) | job JSON `sources[i].sync` | `media.run` | ⏳ L7 |
 | Synchro propre à une piste, décalage manuel | job JSON (`tracks[].sync`, `time_shift_ms`) | `media.run` | 🟡 décalage ; liens ⏳ L7 |
 | Synchro Studio : coupes, silences, jonctions, décalage depuis un segment | `calibration edit` | `calibration.edit` | ⏳ L7 |
@@ -77,13 +75,13 @@ Opérations déjà publiées : `system.version`, `media.inspect`, `media.validat
 | Aperçu image / vidéo | `encode --preview-image\|--preview-video` | `encode.preview_capture` | ⏳ L4 |
 | Aperçu / copie de la commande | `preview` | `media.preview` | ⏳ L4 |
 | Profils d'encodage : charger, enregistrer, supprimer | `--encode-preset`, `encode-preset …` | `encode_preset.*` | ⏳ L4 |
-| Analyser l'apport du FEL | `inspect --hdr-fel` | `hdr.inspect` | 🟡 opération ⏳ L1 |
+| Analyser l'apport du FEL | `inspect --hdr-fel` | `hdr.inspect` | ✅ |
 
 ## Hybrid Studio
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Référence + donneur (paire ou saison) | `hybrid --ref/--donor`, `--ref-dir/--donor-dir` | `hybrid.run` | 🟡 opération ⏳ L1 |
+| Référence + donneur (paire ou saison) | `hybrid --ref/--donor`, `--ref-dir/--donor-dir` | `hybrid.run` | ✅ |
 | Plusieurs donneurs, rôles (audio seul, sous-titres seuls) | `--source RÔLE=CHEMIN` | `hybrid.plan/run` | ⏳ L8 |
 | Mode de correspondance (épisodes, titres, ordre, manuel) | `--matching`, `--pair` | `hybrid.plan` | ⏳ L8 |
 | Modèle de l'épisode témoin (pistes à conserver) | `--recipe` (recette exportée du Studio) | `hybrid.plan` | ⏳ L8 |
@@ -97,15 +95,15 @@ Opérations déjà publiées : `system.version`, `media.inspect`, `media.validat
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Vue d'ensemble, contrôles, métadonnées dynamiques | `inspect --hdr static\|dynamic` | `hdr.inspect` | 🟡 opération ⏳ L1 |
-| Mesure rapide / complète | `inspect --hdr measure [--hdr-fast]` | `hdr.inspect` | 🟡 opération ⏳ L1 |
-| Comparer deux pistes | `inspect --hdr-compare` | `hdr.inspect` | 🟡 opération ⏳ L1 |
-| Exporter le rapport | `--hdr-report` | `hdr.inspect` | 🟡 opération ⏳ L1 |
+| Vue d'ensemble, contrôles, métadonnées dynamiques | `inspect --hdr static\|dynamic` | `hdr.inspect` | ✅ |
+| Mesure rapide / complète | `inspect --hdr measure [--hdr-fast]` | `hdr.inspect` | ✅ |
+| Comparer deux pistes | `inspect --hdr-compare` | `hdr.inspect` | ✅ |
+| Exporter le rapport | `--hdr-report` | `hdr.inspect` | ✅ |
 | Luminance : modèle de TV, pic de l'écran, simulation | `--hdr-tv-model`, `--hdr-display-peak` | `hdr.inspect` | ⏳ L6 |
 | Valeurs proposées (MaxCLL / MaxFALL, écran de mastering) | `inspect --hdr` (`suggested`) | `hdr.inspect` | ⏳ L6 |
 | Réalignement d'après la mesure | `hdr-patch --realign` | `hdr.patch` | ⏳ L6 |
 | Édition : HDR10 statique, MDCV, RPU (L5, L6, L11, écran, CMv4), HDR10+ | `hdr-patch` | `hdr.patch` | ⏳ L6 |
-| FEL Analyzer, test de survie | `inspect --hdr-fel [--hdr-fel-survival]` | `hdr.inspect` | 🟡 opération ⏳ L1 |
+| FEL Analyzer, test de survie | `inspect --hdr-fel [--hdr-fel-survival]` | `hdr.inspect` | ✅ |
 | Moments FEL : comparaison avant / après | `--hdr-fel-moments DIR` | `hdr.inspect` | ⏳ L6 |
 | Appliquer les valeurs au panneau Encodage | bloc `encode.static_hdr` | — | ⛔ lien entre panneaux (équivalent : saisir les valeurs) |
 
@@ -115,7 +113,7 @@ Opérations déjà publiées : `system.version`, `media.inspect`, `media.validat
 |---|---|---|---|
 | Lire / modifier un réglage, recharger `config.ini` | `config get\|set\|unset\|reset\|show` | `config.*` | ⏳ L10 |
 | Thème, échelle, langue de l'interface | `config set ui.*` | `config.set` | ⏳ L10 |
-| Extensions MVO-RIFE, TensorRT, FEL : installer, mettre à jour, supprimer | `plugins install\|update\|remove` | `plugins.*` | 🟡 opération ⏳ L1 |
+| Extensions MVO-RIFE, TensorRT, FEL : installer, mettre à jour, supprimer | `plugins install\|update\|remove` | `plugins.*` | ✅ |
 | Réglages des extensions (TensorRT, mise à jour automatique) | `config set plugins.*` | `config.set` | ⏳ L10 |
 | NVEncC : installer, mettre à jour, supprimer | `tools install\|remove nvencc` | `tools.install/remove` | ⏳ L10 |
 | Installer une mise à jour de Muxiveo | `version --install --yes` | `app.update_install` | ⏳ L11 |
