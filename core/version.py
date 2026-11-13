@@ -26,7 +26,7 @@ APP_VERSION_LABEL = f"v{APP_VERSION}"
 # Au-delà, Muxiveo installe la version la plus récente compatible annoncée par le flux (core/plugins.py).
 MUXIVEO_PLUGINS_REPOSITORY = "Hydro74000/muxiveo-plugins"
 # Moteur vidéo MVO (muxiveo-rife : débruitage MVO-R2, interpolation ; modèles, poids du sélecteur, préréglages) : extension mvo-rife.
-MVO_RIFE_VERSION = "1.14.0"
+MVO_RIFE_VERSION = "1.15.0"
 MVO_RIFE_RELEASE_TAG = f"mvo-rife-v{MVO_RIFE_VERSION}"
 # Contrat avec le moteur (muxiveo-rife --capabilities) : flux y4m, nombre de trames, stderr, codes de sortie.
 MVO_RIFE_CONTRACT = 1
