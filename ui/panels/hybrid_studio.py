@@ -2557,7 +2557,7 @@ class HybridStudio(QWidget):
         self._save_jobs(Path(directory))
 
     def _save_jobs(self, directory: Path, *, finalized: bool = False):
-        from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+        from core.jobs.batch import PlannedBatchJob, assert_unique_batch_outputs
         from core.profiles.selectors import remux_config_to_exact_job
         from core.workflows.workflow_store import save_workflow
 
@@ -2614,7 +2614,7 @@ class HybridStudio(QWidget):
             return
         self.execution_rows = [row for row in sorted(self.jobs) if not self._job_already_completed(row)]
         try:
-            from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+            from core.jobs.batch import PlannedBatchJob, assert_unique_batch_outputs
             assert_unique_batch_outputs([
                 PlannedBatchJob(row, str(config.sources[0].path), str(config.output), remux_config=config)
                 for row, (config, _calibration) in sorted(self.jobs.items())

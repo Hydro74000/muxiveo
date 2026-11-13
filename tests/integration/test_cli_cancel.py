@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -76,3 +77,46 @@ def test_sigint_cancels_remux_and_cleans_work_dir(tmp_path, monkeypatch):
     assert not list(out.parent.glob("*.partial")), list(out.parent.iterdir())
     leftovers = [path for path in work.rglob(PROCESS_DIR_MARKER)] if work.exists() else []
     assert leftovers == []
+
+
+def test_sigint_during_batch_cancels_current_job_and_stops(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    sources = [tmp_path / "a.mkv", tmp_path / "b.mkv"]
+    for src in sources:
+        make_av_container(src)
+    out = tmp_path / "out"
+    out.mkdir()
+    work = tmp_path / "work"
+    mark = tmp_path / "ffmpeg-started"
+    template = tmp_path / "template.json"
+    template.write_text('{"version": 1}', encoding="utf-8")
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"jobs": [{"sources": [{"path": str(src)}], "output": str(out / src.name)}
+                                          for src in sources]}), encoding="utf-8")
+    summary = tmp_path / "summary.json"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "batch", "--template", str(template), "--batch", str(batch),
+         "--summary", str(summary), "--continue-on-error", "--mux-backend", "ffmpeg", "--no-nfo",
+         "--ffmpeg", str(_slow_ffmpeg(tmp_path, mark)), "--ffprobe", "ffprobe", "--mediainfo", "/bin/false",
+         "--work-dir", str(work)],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not mark.exists():
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "FFmpeg jamais lancé"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGINT)
+        _stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 7, stderr
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert payload["cancelled"] is True and payload["total"] == 1
+    assert [job["status"] for job in payload["jobs"]] == ["cancelled"]
+    assert not list(out.iterdir())
+    assert (list(work.rglob(PROCESS_DIR_MARKER)) if work.exists() else []) == []

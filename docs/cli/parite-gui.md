@@ -6,7 +6,8 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
 Opérations déjà publiées : `system.version`, `media.inspect`, `media.validate`, `media.preview`,
-`media.run` (voir `Muxiveo-cli operations`).
+`media.run`, `media.batch`, `profile.validate`, `profile.preview`, `profile.apply`, `profile.batch`
+(voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -30,7 +31,7 @@ Opérations déjà publiées : `system.version`, `media.inspect`, `media.validat
 | Fiche TMDB : recherche avec choix du résultat | `tmdb search` | `tmdb.search` | ⏳ L9 (aujourd'hui : premier résultat ou `--tmdb-id`) |
 | Fiche TMDB : détails, couverture | `--auto-tmdb`, `--tmdb-id` | `tmdb.details` | 🟡 opération ⏳ L9 |
 | Nom de sortie (gabarit, tag de groupe) | `--output-template` | `media.run` | ✅ |
-| Profil décisionnel : appliquer | `--profile`, `profile apply\|batch` | `profile.apply/batch` | 🟡 opération ⏳ L1 |
+| Profil décisionnel : appliquer | `--profile`, `profile apply\|batch` | `profile.apply/batch` | ✅ |
 | Profil décisionnel : capturer depuis l'état courant | `profile capture` | `profile.capture` | ⏳ L9 |
 | Éditeur de profil : enregistrer un profil modifié | `profile save` | `profile.save` | ⏳ L9 |
 | Profils enregistrés : lister, supprimer | `profile list\|show\|delete` | `profile.list/show/delete` | ⏳ L9 |

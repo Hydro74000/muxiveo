@@ -17,7 +17,7 @@ from core.service.ops.system import VersionResult
 from core.update_check import query_latest_release
 
 from cli.batch import run_batch
-from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
+from cli.constants import EXIT_ARGS, EXIT_PARTIAL, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.jobs import apply_metadata_overrides
 from cli.jobs import load_job
@@ -33,7 +33,7 @@ from cli.schema import (
     build_exact_job_schema_v1,
 )
 from cli.interrupts import interrupt_guard
-from cli.service_adapter import envelope, print_json, render_api_error, run_operation
+from cli.service_adapter import envelope, overrides_from_options, print_json, render_api_error, run_operation
 
 
 def cmd_tools(_args: argparse.Namespace, config: AppConfig, _logger: Logger) -> int:
@@ -160,7 +160,8 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
         if getattr(args, "config", None):
             raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
         if not getattr(args, "input", None):
-            rc = profile_validate(profile_path, json_output=bool(getattr(args, "json_output", False)), config=config)
+            rc = profile_validate(profile_path, json_output=bool(getattr(args, "json_output", False)), config=config,
+                                  logger=logger)
             if rc == EXIT_OK and not getattr(args, "json_output", False):
                 logger.emit("info", "Profil décisionnel valide.")
             return rc
@@ -303,20 +304,67 @@ def _job_payload(job: dict, options) -> dict:
 
 
 def _job_overrides(options) -> Overrides:
-    return Overrides(
-        ffmpeg=options.ffmpeg or None,
-        ffprobe=options.ffprobe or None,
-        mediainfo=options.mediainfo or None,
-        threads=options.threads,
-        work_dir=Path(options.work_dir).expanduser() if options.work_dir else None,
-    )
+    return overrides_from_options(options)
+
+
+def _batch_via_operation(args: argparse.Namespace, config: AppConfig, logger: Logger, profile_path: str) -> int:
+    """``--log-format events`` : lot exécuté par l'opération (jobs enfants, réponse publique sur stdout)."""
+    options = common_options(args)
+    payload: dict = {
+        "sources": {
+            "inputs": list(args.input or []),
+            "input_dirs": list(args.input_dir or []),
+            "recursive": bool(args.recursive),
+            "include": list(args.include or []),
+            "exclude": list(args.exclude or []),
+        },
+        "metadata": {
+            "auto_tmdb": bool(getattr(args, "auto_tmdb", False) or getattr(args, "tmdb", False)),
+            "tmdb_apikey": str(getattr(args, "tmdb_apikey", "") or ""),
+            "no_cover": bool(getattr(args, "no_cover", False)),
+            "no_attach": bool(getattr(args, "no_attach", False)),
+            "output_template": str(getattr(args, "output_template", "") or ""),
+            "output_all": bool(getattr(args, "output_all", False)),
+        },
+        "options": JobOptions.from_common(options),
+        "dry_run": bool(args.dry_run),
+        "force": bool(args.force),
+        "continue_on_error": bool(args.continue_on_error),
+    }
+    if getattr(args, "tmdb_id", None) is not None:
+        payload["metadata"]["tmdb_id"] = args.tmdb_id
+    if args.summary:
+        payload["summary"] = args.summary
+    if profile_path:
+        if not args.output_dir:
+            raise CliError("`profile batch` requiert `--output-dir`.", EXIT_ARGS)
+        name = "profile.batch"
+        payload.update(profile=profile_path, output_dir=args.output_dir)
+    else:
+        if not getattr(args, "template", None):
+            raise CliError("`batch` requiert `--template` ou `--profile`.", EXIT_ARGS)
+        name = "media.batch"
+        payload["template"] = args.template
+        if getattr(args, "batch", None):
+            payload["batch"] = args.batch
+        if args.output_dir:
+            payload["output_dir"] = args.output_dir
+        if getattr(args, "mux_backend", None):
+            payload["mux_backend"] = args.mux_backend
+    with interrupt_guard(CancelToken()) as cancel:
+        result, ctx = run_operation(name, payload, config=config, logger=logger,
+                                    overrides=overrides_from_options(options), cancel=cancel)
+    print_json(envelope(name, ctx.events.job, result=result))
+    return EXIT_OK if getattr(result, "status", "") == "succeeded" else EXIT_PARTIAL
 
 
 def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     profile_path = str(getattr(args, "profile", "") or "")
+    if profile_path and (getattr(args, "template", None) or getattr(args, "batch", None)):
+        raise CliError("`--profile` ne se combine pas avec `--template` ou `--batch`.", EXIT_ARGS)
+    if args.log_format == "events":
+        return _batch_via_operation(args, config, logger, profile_path)
     if profile_path:
-        if getattr(args, "template", None) or getattr(args, "batch", None):
-            raise CliError("`--profile` ne se combine pas avec `--template` ou `--batch`.", EXIT_ARGS)
         return profile_batch(
             profile_path,
             cli_inputs=args.input,
@@ -374,7 +422,8 @@ def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     command = str(getattr(args, "profile_command", "") or "")
     if command == "validate":
-        rc = profile_validate(args.profile, json_output=bool(getattr(args, "json_output", False)), config=config)
+        rc = profile_validate(args.profile, json_output=bool(getattr(args, "json_output", False)), config=config,
+                              logger=logger)
         if rc == EXIT_OK and not getattr(args, "json_output", False):
             logger.emit("info", "Profil décisionnel valide.")
         return rc
@@ -402,6 +451,8 @@ def cmd_profile(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             metadata_job=_metadata_job_from_args(args),
         )
     if command == "batch":
+        if args.log_format == "events":
+            return _batch_via_operation(args, config, logger, str(args.profile))
         return profile_batch(
             args.profile,
             cli_inputs=args.input,

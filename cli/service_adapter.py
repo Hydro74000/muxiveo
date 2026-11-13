@@ -117,6 +117,17 @@ def overrides_from_args(args: argparse.Namespace) -> Overrides:
     )
 
 
+def overrides_from_options(options: Any) -> Overrides:
+    """Surcharges d'outils d'un ``CommonOptions`` (options historiques du CLI)."""
+    return Overrides(
+        ffmpeg=options.ffmpeg or None,
+        ffprobe=options.ffprobe or None,
+        mediainfo=options.mediainfo or None,
+        threads=options.threads,
+        work_dir=Path(options.work_dir).expanduser() if options.work_dir else None,
+    )
+
+
 def _read_request(source: str | None) -> tuple[Any, Path]:
     """Requête JSON : fichier (chemins relatifs à son dossier) ou ``-`` (stdin, relatifs au cwd)."""
     if not source:
@@ -194,6 +205,7 @@ __all__ = [
     "envelope",
     "exit_code_for",
     "overrides_from_args",
+    "overrides_from_options",
     "print_json",
     "render_api_error",
     "run_operation",

@@ -672,7 +672,11 @@ service (daemon), utilisable dès maintenant par un autre programme.
 
 Opérations disponibles (`operations`) : `system.version`, `media.inspect`, `media.validate`,
 `media.preview`, `media.run` (requête `{"job": {…document de job…}, "options": {…}}`, plus `force` pour
-`media.run`). Les autres
+`media.run`), `media.batch`, `profile.validate`, `profile.preview`, `profile.apply`, `profile.batch`.
+
+**Lots** (`media.batch`, `profile.batch`, et `batch` en `--log-format events`) : chaque job est un job
+enfant (`parent` = lot) avec ses propres états ; le résultat donne `status` = `succeeded`, `partial`
+(au moins un succès et un échec ou une annulation), `failed` ou `cancelled`, et la liste des jobs. Les autres
 commandes rejoignent le catalogue au fil des versions (voir [parite-gui.md](parite-gui.md)).
 
 ```bash
@@ -718,10 +722,12 @@ commandes gardent leur sortie stdout et publient leur journal en événements.
 Avec `call`, une opération réussie renvoie toujours 0 (l'état d'une mise à jour, par
 exemple, est dans `result`).
 
-**Annulation** : Ctrl+C pendant `remux` / `run` annule proprement l'opération (processus arrêtés,
+**Annulation** : Ctrl+C pendant `remux` / `run` / `profile apply` annule proprement l'opération (processus arrêtés,
 fichier partiel et dossier de travail supprimés, code retour 6, « Opération annulée. »). Une
 annulation arrivée après la publication de la sortie laisse l'opération réussie, avec
-l'avertissement `cancel_too_late`.
+l'avertissement `cancel_too_late`. Pendant un `batch` (ou `profile batch`), Ctrl+C annule le job en
+cours et arrête le lot : les sorties déjà publiées restent, le résumé marque le job `cancelled` et
+`"cancelled": true` (code retour 7).
 
 ## Verbosité
 

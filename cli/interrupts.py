@@ -15,7 +15,8 @@ def interrupt_guard(cancel: CancelToken) -> Iterator[CancelToken]:
     """Pendant le bloc, SIGINT (Ctrl+C) annule ``cancel`` au lieu d'interrompre l'interpréteur.
 
     L'opération s'arrête alors comme une annulation demandée depuis l'interface : processus
-    tués, dossier de travail supprimé, état terminal ``cancelled``. Hors du thread principal
+    tués, dossier de travail supprimé, état terminal ``cancelled``. Les gardes s'imbriquent :
+    un Ctrl+C pendant un job d'un lot annule le job puis arrête le lot. Hors du thread principal
     (seul autorisé à poser un gestionnaire), le bloc s'exécute sans garde.
     """
     if threading.current_thread() is not threading.main_thread():
@@ -23,8 +24,11 @@ def interrupt_guard(cancel: CancelToken) -> Iterator[CancelToken]:
         return
     previous = signal.getsignal(signal.SIGINT)
 
-    def handler(_signum, _frame) -> None:
+    def handler(signum, frame) -> None:
         cancel.cancel()
+        # Gardes imbriquées (job dans un lot) : la garde englobante est aussi prévenue.
+        if callable(previous) and previous is not signal.default_int_handler:
+            previous(signum, frame)
 
     signal.signal(signal.SIGINT, handler)
     try:
