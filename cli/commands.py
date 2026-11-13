@@ -7,14 +7,16 @@ import json
 from pathlib import Path
 
 from core.config import AppConfig
-from core.inspector import FileInspector
-from core.update_check import UpdateCheckError, normalize_update_channel, query_latest_release
-from core.version import APP_BUILD_VERSION, APP_NAME
+from core.service.catalog import CATALOG
+from core.service.context import Overrides
+from core.service.errors import ApiError
+from core.service.ops.media import InspectResult
+from core.service.ops.system import VersionResult
+from core.update_check import query_latest_release
 
 from cli.batch import run_batch
 from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
-from cli.inspection import config_template_from_info
 from cli.jobs import apply_metadata_overrides
 from cli.jobs import load_job
 from cli.json_io import json_default, write_json
@@ -29,7 +31,8 @@ from cli.schema import (
     build_decision_profile_schema_v1,
     build_exact_job_schema_v1,
 )
-from cli.serializers import serialize_file_info, serialize_remux_config
+from cli.serializers import serialize_remux_config
+from cli.service_adapter import envelope, print_json, render_api_error, run_operation
 
 
 def cmd_tools(_args: argparse.Namespace, config: AppConfig, _logger: Logger) -> int:
@@ -40,31 +43,40 @@ def cmd_tools(_args: argparse.Namespace, config: AppConfig, _logger: Logger) -> 
 
 
 def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
-    """Affiche la version ; avec --check, compare à la dernière release du canal choisi."""
-    payload: dict = {"name": APP_NAME, "version": APP_BUILD_VERSION}
+    """Affiche la version ; avec --check, compare à la dernière release du canal choisi (opération system.version)."""
+    payload: dict = {"check": bool(args.check)}
+    if args.channel:
+        payload["channel"] = args.channel
+    # Port réseau résolu à l'appel : remplaçable dans les tests (cli.commands.query_latest_release).
+    ports = {"query_latest_release": lambda channel: query_latest_release(channel)}
+    try:
+        result, ctx = run_operation("system.version", payload, config=config, logger=logger, ports=ports)
+    except ApiError as error:
+        return render_api_error(logger, error)
+    assert isinstance(result, VersionResult)
     exit_code = EXIT_OK
     if args.check:
-        channel = normalize_update_channel(args.channel or getattr(config, "update_channel", None))
-        payload["channel"] = channel
-        try:
-            info = query_latest_release(channel)
-        except UpdateCheckError as exc:
-            logger.emit("error", f"Impossible de joindre GitHub pour vérifier les mises à jour : {exc}")
-            info = None
-        if info is None:
+        if result.check_failed:
             exit_code = EXIT_WORKFLOW
-        else:
-            payload.update(latest=info.version, update_available=info.is_newer, url=info.url)
-            exit_code = EXIT_UPDATE_AVAILABLE if info.is_newer else EXIT_OK
-    if args.log_format == "jsonl":
-        print(json.dumps(payload, ensure_ascii=False))
+        elif result.update_available:
+            exit_code = EXIT_UPDATE_AVAILABLE
+    if args.log_format == "events":
+        print_json(envelope("system.version", ctx.events.job, result=result))
         return exit_code
-    print(f"{APP_NAME} {APP_BUILD_VERSION}")
-    if "latest" in payload:
-        if payload["update_available"]:
-            print(f"Nouvelle version disponible ({payload['channel']}) : {payload['latest']} — {payload['url']}")
+    legacy: dict = {"name": result.name, "version": result.version}
+    if result.channel is not None:
+        legacy["channel"] = result.channel
+    if result.latest is not None:
+        legacy.update(latest=result.latest, update_available=result.update_available, url=result.url)
+    if args.log_format == "jsonl":
+        print(json.dumps(legacy, ensure_ascii=False))
+        return exit_code
+    print(f"{result.name} {result.version}")
+    if result.latest is not None:
+        if result.update_available:
+            print(f"Nouvelle version disponible ({result.channel}) : {result.latest} — {result.url}")
         else:
-            print(f"À jour (dernière version {payload['channel']} : {payload['latest']}).")
+            print(f"À jour (dernière version {result.channel} : {result.latest}).")
     return exit_code
 
 
@@ -103,15 +115,20 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 
         return cmd_inspect_hdr(args, config, logger)
     options = common_options(args)
-    ffprobe = options.ffprobe or config.tool_ffprobe
-    mediainfo = options.mediainfo or config.tool_mediainfo
-    inspector = FileInspector(ffprobe_bin=str(ffprobe), mediainfo_bin=str(mediainfo))
-    infos = [inspector.inspect(Path(value).expanduser()) for value in args.input]
-    if args.config_template:
-        payload = config_template_from_info(infos[0], output=args.output or "")
-    else:
-        payload = {"files": [serialize_file_info(info) for info in infos]}
-    print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
+    payload: dict = {"inputs": list(args.input), "config_template": bool(args.config_template)}
+    if args.output:
+        payload["output"] = args.output
+    overrides = Overrides(ffprobe=options.ffprobe or None, mediainfo=options.mediainfo or None)
+    try:
+        result, ctx = run_operation("media.inspect", payload, config=config, logger=logger, overrides=overrides)
+    except ApiError as error:
+        return render_api_error(logger, error)
+    assert isinstance(result, InspectResult)
+    if args.log_format == "events":
+        print_json(envelope("media.inspect", ctx.events.job, result=result))
+        return EXIT_OK
+    output = result.template if args.config_template else {"files": list(result.files)}
+    print(json.dumps(output, ensure_ascii=False, indent=2, default=json_default))
     return EXIT_OK
 
 
@@ -123,6 +140,8 @@ def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> i
         payload = build_decision_profile_schema_v1()
     elif version == "all":
         payload = build_cli_json_schema_bundle()
+    elif version == "api":
+        payload = CATALOG.describe()
     else:
         payload = build_cli_json_schema()
     if args.output:

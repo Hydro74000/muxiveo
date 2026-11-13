@@ -9,6 +9,7 @@ from PySide6.QtCore import QCoreApplication
 from core.config import AppConfig
 from core.version import APP_NAME
 from core.runner import ToolNotFoundError
+from core.service.errors import ApiError
 
 from cli.constants import EXIT_TOOL, EXIT_WORKFLOW
 from cli.errors import CliError
@@ -58,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     except CliError as exc:
         logger.emit("error", str(exc))
         return exc.exit_code
+    except ApiError as exc:
+        from cli.service_adapter import render_api_error
+
+        return render_api_error(logger, exc)
     except KeyboardInterrupt:
         logger.emit("error", "Interrompu.")
         return EXIT_WORKFLOW

@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_TOOL, EXIT_WORKFLOW
+from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_TOOL, EXIT_WORKFLOW, LOG_FORMATS
 from cli.logging import Logger
 from core import plugins
 from core.config import AppConfig
@@ -171,7 +171,7 @@ def add_plugins_parser(sub: argparse._SubParsersAction) -> None:
             action.add_argument("name", choices=names, help="Extension : " + ", ".join(names) + ".")
         else:
             action.add_argument("name", nargs="?", choices=names, help="Extension (défaut : toutes).")
-        action.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+        action.add_argument("--log-format", choices=LOG_FORMATS, default="text")
         if name == "install":
             action.add_argument("--accept-license", action="store_true",
                                 help=f"Accepter la licence NVIDIA TensorRT for RTX ({plugins.TRT_LICENSE_URL}).")

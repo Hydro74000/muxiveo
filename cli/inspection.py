@@ -7,6 +7,7 @@ from typing import Any
 
 from core.bluray import discover_titles, playlist_path_for
 from core.config import AppConfig
+from core.jobs.inspection import config_template_from_info as config_template_from_info  # réexport
 from core.inspector import AttachmentInfo, FileInfo, FileInspector
 from core.workflows.preparation_cache import PreparationCache
 from core.workflows.remux_models import SourceInput, TrackEntry, tracks_from_file_info
@@ -118,13 +119,3 @@ def selected_attachments(info: FileInfo, item: dict[str, Any]) -> list[Attachmen
         for att in info.attachments
         if att.local_index in indices or att.index in indices or att.filename in names
     ]
-
-
-def config_template_from_info(info: FileInfo, *, output: str = "") -> dict[str, Any]:
-    return {
-        "version": 1,
-        "kind": "exact-job",
-        "sources": [{"path": str(info.path), "attachments": "none", "copy_tags": False}],
-        "output": output or str(info.path.with_suffix(".remux.mkv")),
-        "chapters": {"source_index": 0},
-    }

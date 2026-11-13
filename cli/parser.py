@@ -6,7 +6,9 @@ import argparse
 
 from cli.hdr import add_hdr_options
 from cli.commands import cmd_batch, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
+from cli.constants import LOG_FORMATS
 from cli.plugins import add_plugins_parser
+from cli.service_adapter import cmd_call, cmd_operations
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
@@ -80,7 +82,7 @@ def _add_base_options(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Force les keywords pistes de --output-template en mode all (toutes les valeurs finales trouvées).",
     )
-    parser.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    parser.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     parser.add_argument(
         "--verbose",
         action="store_true",
@@ -116,21 +118,45 @@ def build_parser() -> argparse.ArgumentParser:
 
     schema = sub.add_parser("schema", help="Afficher le schéma JSON du contrat CLI.")
     schema.add_argument("--output", help="Ecrire le schéma JSON dans un fichier.")
-    schema.add_argument("--version", dest="schema_version", choices=("1", "exact-job", "decision-profile", "all"), default="1")
-    schema.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    schema.add_argument("--version", dest="schema_version", choices=("1", "exact-job", "decision-profile", "all", "api"), default="1",
+                        help="Contrat à publier ; « api » : catalogue des opérations de la couche de service.")
+    schema.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     schema.set_defaults(func=cmd_schema)
 
     tools = sub.add_parser("tools", help="Afficher les chemins d'outils résolus par Muxiveo.")
-    tools.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    tools.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     tools.set_defaults(func=cmd_tools)
 
     version = sub.add_parser("version", help="Afficher la version de Muxiveo.")
     version.add_argument("--check", action="store_true", help="Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).")
     version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
-    version.add_argument("--log-format", choices=("text", "jsonl"), default="text")
+    version.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     version.set_defaults(func=cmd_version)
 
     add_plugins_parser(sub)
+
+    call = sub.add_parser(
+        "call",
+        help="Appeler une opération de la couche de service (requête JSON, réponse JSON).",
+        description="Exécute une opération du catalogue (voir `operations`) avec une requête JSON stricte. "
+                    "Réponse sur stdout ({status, result | error}), événements versionnés sur stderr.",
+    )
+    call.add_argument("operation", metavar="OPÉRATION", help="Nom de l'opération (ex. media.inspect).")
+    call.add_argument("--request", metavar="FICHIER|-",
+                      help="Requête JSON : fichier (chemins relatifs à son dossier) ou - pour stdin. Défaut : {}.")
+    call.add_argument("--ffmpeg", help="Chemin ffmpeg pour cet appel.")
+    call.add_argument("--ffprobe", help="Chemin ffprobe pour cet appel.")
+    call.add_argument("--mediainfo", help="Chemin mediainfo pour cet appel.")
+    call.add_argument("--work-dir", help="Dossier de travail pour cet appel.")
+    call.add_argument("--threads", type=int, help="Threads ffmpeg pour cet appel.")
+    call.set_defaults(func=cmd_call, log_format="events")
+
+    operations = sub.add_parser("operations", help="Lister les opérations de la couche de service.")
+    operations.add_argument("--describe", metavar="OPÉRATION",
+                            help="Afficher le schéma de requête et de résultat, les erreurs et les métadonnées.")
+    operations.add_argument("--json", dest="json_output", action="store_true", help="Liste au format JSON.")
+    operations.add_argument("--log-format", choices=LOG_FORMATS, default="text")
+    operations.set_defaults(func=cmd_operations)
 
     for name, help_text, func in (
         ("validate", "Valider une config remux.", cmd_validate),

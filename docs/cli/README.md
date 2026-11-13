@@ -27,7 +27,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | génère un template JSON de départ |
 | `inspect --hdr static\|dynamic\|measure` | inspection HDR (HDR Studio) : contrôles, métadonnées, courbes ; comparaison et rapport HTML/JSON |
-| `schema` | affiche le schéma JSON public du contrat CLI |
+| `schema` | affiche le schéma JSON public du contrat CLI (`--version api` : catalogue des opérations de la couche de service) |
 | `tools` | affiche en JSON les chemins d'outils effectivement résolus par Muxiveo |
 | `version [--check] [--channel stable\|unstable]` | affiche la version ; `--check` la compare à la dernière release du canal (stable = `main`, unstable = pré-versions `devel-cli`) |
 | `validate` | valide un job/template sans exécuter ffmpeg |
@@ -41,6 +41,8 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
 | `sync-scan` | corrélation acoustique FFT et extraction de calibration |
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
+| `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
+| `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
 
 Exemples :
 
@@ -660,6 +662,58 @@ compatibilité des consommateurs v1. `selected_backend`, `plan_version`,
 l'exécution réelle. La preview texte commence par le backend choisi. En JSONL,
 l'événement `mux_backend` expose séparément le backend demandé/sélectionné, le
 repli, sa raison et les diagnostics.
+
+## Couche de service : `call`, `operations`, `--log-format events`
+
+Chaque fonctionnalité du CLI devient progressivement une **opération** de la couche de
+service (`core/service/`) : requête JSON typée → événements → résultat JSON. Les commandes
+historiques gardent leurs sorties ; `call` expose le même contrat que celui d'un futur
+service (daemon), utilisable dès maintenant par un autre programme.
+
+Opérations disponibles (`operations`) : `system.version`, `media.inspect`. Les autres
+commandes rejoignent le catalogue au fil des versions (voir [parite-gui.md](parite-gui.md)).
+
+```bash
+Muxiveo-cli operations
+Muxiveo-cli operations --describe media.inspect      # schémas de requête / résultat, erreurs
+Muxiveo-cli schema --version api                      # catalogue complet (base OpenAPI / JSON-RPC)
+echo '{"inputs": ["film.mkv"]}' | Muxiveo-cli call media.inspect --request -
+Muxiveo-cli call media.inspect --request requete.json  # chemins relatifs au dossier du fichier
+Muxiveo-cli version --check --log-format events
+```
+
+**Requête** : objet JSON strict — clé inconnue, type incorrect, champ requis absent ou
+`null` non autorisé sont refusés avec le chemin du champ. Chemins relatifs : résolus depuis
+le dossier du fichier de requête (ou le dossier courant pour stdin). Les documents
+historiques (`--config`, `--template`, `--batch`) restent tolérants.
+
+**Réponse** (stdout) :
+
+```json
+{"api_version": 1, "operation": "media.inspect", "job": "…", "status": "succeeded", "result": {"files": [ … ], "template": null}}
+{"api_version": 1, "operation": "media.inspect", "job": "…", "status": "failed",
+ "error": {"code": "invalid_request", "message": "Requête invalide.", "details": [{"path": "inputs", "message": "au moins 1 élément(s) attendu(s)"}]}}
+```
+
+**Événements** (stderr, toujours avec `call`, sur demande ailleurs avec `--log-format events`) :
+une ligne JSON par événement, `{"v": 1, "job", "parent", "seq", "ts", "type", …}` avec
+`type` parmi `state`, `log`, `progress`, `warning`, `artifact`, `result`, `error`. Sur une
+commande historique, `--log-format events` remplace aussi la sortie stdout par la réponse
+ci-dessus.
+
+**Codes d'erreur** et codes retour :
+
+| `error.code` | Code retour |
+|---|---:|
+| `invalid_request`, `unknown_operation` | 2 |
+| `validation` | 3 |
+| `tool_missing` | 4 |
+| `output_exists` | 5 |
+| `workflow_failed`, `busy`, `cancelled` | 6 |
+| `partial` | 7 |
+
+Avec `call`, une opération réussie renvoie toujours 0 (l'état d'une mise à jour, par
+exemple, est dans `result`).
 
 ## Verbosité
 

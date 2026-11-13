@@ -26,6 +26,7 @@
 * **x265 : réglage *frame-threads*** (nombre d'images encodées en parallèle, automatique par défaut). Le nombre de fils FFmpeg n'est plus appliqué à libx265, qui occupe toujours tous les cœurs (limite par `pools=N` dans les paramètres de la piste).
 * **x265 : nouveaux paramètres avancés** : `qg-size`, `deblock`, `qcomp`, `cbqpoffs` / `crqpoffs`, `b-intra`, `rc-lookahead` ; les options désactivées (`no-…`) et les valeurs hors des bornes des contrôles sont relues et conservées.
 * **Échec d'encodage avec fichiers temporaires.** Quand un encodage lancé depuis l'interface échoue après avoir produit des fichiers, une fenêtre propose de conserver le dossier de travail pour examen ; sinon il est supprimé en arrière-plan.
+* **CLI : couche de service et commande `call`.** Premières opérations publiées (`system.version`, `media.inspect`) avec un contrat stable, préparant un futur service : `operations` liste le catalogue, `schema --version api` le publie en JSON, `call <opération> --request fichier.json` (ou `-` pour stdin) exécute une requête JSON stricte (erreurs détaillées par champ) et répond en JSON. Nouveau format `--log-format events` : journal, progression et résultat en événements versionnés. Les sorties historiques des commandes sont inchangées. Feuille de parité avec l'interface : `docs/cli/parite-gui.md`.
 
 ## Correctifs
 
@@ -59,6 +60,7 @@
 * **x265: *frame-threads* setting** (number of frames encoded in parallel, automatic by default). The FFmpeg thread count is no longer applied to libx265, which always uses every core (limit it with `pools=N` in the track parameters).
 * **x265: new advanced parameters**: `qg-size`, `deblock`, `qcomp`, `cbqpoffs` / `crqpoffs`, `b-intra`, `rc-lookahead`; disabled options (`no-…`) and values outside the widget ranges are read back and kept.
 * **Failed encode with temporary files.** When an encode started from the interface fails after producing files, a dialog offers to keep the work folder for inspection; otherwise it is removed in the background.
+* **CLI: service layer and `call` command.** First operations published (`system.version`, `media.inspect`) with a stable contract, paving the way for a future service: `operations` lists the catalog, `schema --version api` publishes it as JSON, `call <operation> --request file.json` (or `-` for stdin) runs a strict JSON request (field-level errors) and replies in JSON. New `--log-format events`: log, progress and result as versioned events. Existing command outputs are unchanged. GUI parity sheet: `docs/cli/parite-gui.md`.
 
 ## Fixes
 

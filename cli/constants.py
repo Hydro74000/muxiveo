@@ -12,6 +12,9 @@ EXIT_WORKFLOW = 6
 EXIT_PARTIAL = 7
 EXIT_UPDATE_AVAILABLE = 8
 
+#: Formats du journal : texte, JSON Lines historique, événements versionnés de la couche de service.
+LOG_FORMATS = ("text", "jsonl", "events")
+
 TRACK_TYPES = {"video", "audio", "subtitle"}
 FLAG_NAMES = (
     "enabled",
