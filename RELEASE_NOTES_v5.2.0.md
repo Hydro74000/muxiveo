@@ -27,6 +27,7 @@
 * **x265 : nouveaux paramètres avancés** : `qg-size`, `deblock`, `qcomp`, `cbqpoffs` / `crqpoffs`, `b-intra`, `rc-lookahead` ; les options désactivées (`no-…`) et les valeurs hors des bornes des contrôles sont relues et conservées.
 * **Échec d'encodage avec fichiers temporaires.** Quand un encodage lancé depuis l'interface échoue après avoir produit des fichiers, une fenêtre propose de conserver le dossier de travail pour examen ; sinon il est supprimé en arrière-plan.
 * **CLI : couche de service et commande `call`.** Premières opérations publiées (`system.version`, `media.inspect`) avec un contrat stable, préparant un futur service : `operations` liste le catalogue, `schema --version api` le publie en JSON, `call <opération> --request fichier.json` (ou `-` pour stdin) exécute une requête JSON stricte (erreurs détaillées par champ) et répond en JSON. Nouveau format `--log-format events` : journal, progression et résultat en événements versionnés. Les sorties historiques des commandes sont inchangées. Feuille de parité avec l'interface : `docs/cli/parite-gui.md`.
+* **CLI : Ctrl+C annule proprement un remux.** `remux` / `run` s'arrêtent comme une annulation depuis l'interface : processus arrêtés, fichier partiel et dossier de travail supprimés (code retour 6). Opérations `media.validate`, `media.preview` et `media.run` ajoutées à la couche de service.
 
 ## Correctifs
 
@@ -61,6 +62,7 @@
 * **x265: new advanced parameters**: `qg-size`, `deblock`, `qcomp`, `cbqpoffs` / `crqpoffs`, `b-intra`, `rc-lookahead`; disabled options (`no-…`) and values outside the widget ranges are read back and kept.
 * **Failed encode with temporary files.** When an encode started from the interface fails after producing files, a dialog offers to keep the work folder for inspection; otherwise it is removed in the background.
 * **CLI: service layer and `call` command.** First operations published (`system.version`, `media.inspect`) with a stable contract, paving the way for a future service: `operations` lists the catalog, `schema --version api` publishes it as JSON, `call <operation> --request file.json` (or `-` for stdin) runs a strict JSON request (field-level errors) and replies in JSON. New `--log-format events`: log, progress and result as versioned events. Existing command outputs are unchanged. GUI parity sheet: `docs/cli/parite-gui.md`.
+* **CLI: Ctrl+C cleanly cancels a remux.** `remux` / `run` stop like a cancellation from the GUI: processes stopped, partial file and work folder removed (exit code 6). `media.validate`, `media.preview` and `media.run` operations added to the service layer.
 
 ## Fixes
 

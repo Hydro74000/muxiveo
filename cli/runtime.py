@@ -1,34 +1,23 @@
-"""Remux workflow runtime helpers for the CLI."""
+"""Exécution d'un remux depuis le CLI (implémentation partagée : ``core.jobs.runtime``)."""
 
 from __future__ import annotations
 
-import threading
-
-from PySide6.QtCore import QCoreApplication, QEventLoop
-
 from core.config import AppConfig
+from core.jobs.errors import exit_code_for
+from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
+from core.service.context import CancelToken
+from core.service.errors import ApiError
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig
 
-from cli.constants import EXIT_EXISTS, EXIT_OK, EXIT_VALIDATION, EXIT_WORKFLOW
-from cli.errors import CliError
+from cli.constants import EXIT_OK, EXIT_VALIDATION
+from cli.interrupts import interrupt_guard
 from cli.logging import Logger
 from cli.options import CommonOptions
 
 
 def workflow(config: AppConfig, options: CommonOptions, logger: Logger) -> RemuxWorkflow:
-    return RemuxWorkflow(
-        ffmpeg_bin=str(options.ffmpeg or config.tool_ffmpeg),
-        ffprobe_bin=str(options.ffprobe or config.tool_ffprobe),
-        ffmpeg_threads=options.threads if options.threads is not None else config.ffmpeg_threads,
-        writing_application=str(options.writing_application or ""),
-        generate_nfo=config.generate_nfo if options.nfo is None else bool(options.nfo),
-        mediainfo_bin=str(options.mediainfo or config.tool_mediainfo),
-        sync_rewrite_enabled=config.sync_rewrite_enabled,
-        sync_advanced_audio_rewrite_enabled=config.sync_advanced_audio_rewrite_enabled,
-        aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
-        eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
-    )
+    return remux_workflow(config, options)
 
 
 def preview_remux_config(config: AppConfig, options: CommonOptions, logger: Logger, remux_config: RemuxConfig) -> int:
@@ -49,68 +38,15 @@ def run_remux_config(
     *,
     force: bool = False,
 ) -> int:
+    """Remuxe ``remux_config`` ; Ctrl+C annule proprement. Renvoie le code de sortie."""
     if options.export_workflow:
-        from pathlib import Path
-        from core.profiles.selectors import remux_config_to_exact_job
-        from core.workflows.workflow_store import save_workflow
-        destination = Path(options.export_workflow)
-        if options.export_directory:
-            destination.mkdir(parents=True, exist_ok=True)
-            destination /= remux_config.output.stem + ".exact-job.json"
-        save_workflow(destination, remux_config_to_exact_job(remux_config))
+        export_exact_job(remux_config, options)
         return EXIT_OK
-    if remux_config.output.exists() and not force:
-        raise CliError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
-    wf = workflow(config, options, logger)
-    wf.log_message.connect(logger.workflow_log)
-    wf.backend_event.connect(
-        lambda report: logger.emit(
-            "info", "Sélection du backend de remuxage.",
-            event="mux_backend", **dict(report),
-        )
-    )
-    signals = wf.run(remux_config)
-    loop = QEventLoop()
-    state_exit = {"value": EXIT_OK}
-
-    def done(message: str = "") -> None:
-        if message:
-            logger.emit("info", message)
-        state_exit["value"] = EXIT_OK
-        loop.quit()
-
-    def failed(message: str, exc: object) -> None:
-        logger.emit("error", message, exception=repr(exc))
-        state_exit["value"] = EXIT_WORKFLOW
-        loop.quit()
-
-    def cancelled() -> None:
-        logger.emit("error", "Opération annulée.")
-        state_exit["value"] = EXIT_WORKFLOW
-        loop.quit()
-
-    if options.verbose:
-        signals.progress.connect(lambda line: logger.emit("info", line))
-    signals.connect_terminal(finished=done, failed=failed, cancelled=cancelled)
-
-    stop = threading.Event()
-
-    def _watch_stdin() -> None:
-        # Reserved for future cancellation while keeping the CLI non-interactive.
-        stop.wait()
-
-    watcher = threading.Thread(target=_watch_stdin, daemon=True)
-    watcher.start()
-    try:
-        loop.exec()
-    finally:
-        stop.set()
-        # Le signal terminal précède le finally du worker (nettoyage work_dir) :
-        # l'attendre rend la sortie déterministe (batch, résumé, code retour).
-        signals.wait_for_workers()
-        # Les slots de nettoyage (work_dir) sont postés après l'événement de
-        # fin qui quitte la boucle : sans ce vidage, le dispatcher Windows peut
-        # sortir avant de les traiter et laisser des dossiers résiduels.
-        QCoreApplication.sendPostedEvents()
-        QCoreApplication.processEvents()
-    return state_exit["value"]
+    with interrupt_guard(CancelToken()) as cancel:
+        try:
+            run_remux(remux_config, config=config, options=options, logger=logger, cancel=cancel, force=force)
+        except ApiError as error:
+            if not error.logged:
+                raise
+            return exit_code_for(error)
+    return EXIT_OK

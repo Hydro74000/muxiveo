@@ -181,7 +181,8 @@ def render_api_error(logger: Logger, error: ApiError) -> int:
 
     Le code public reste disponible dans l'événement ``error`` (``--log-format events``).
     """
-    logger.emit("error", error.render())
+    if not error.logged:
+        logger.emit("error", error.render())
     return exit_code_for(error)
 
 

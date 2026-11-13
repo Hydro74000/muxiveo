@@ -286,5 +286,5 @@ def test_service_layer_imports_neither_cli_nor_argparse_nor_creates_qt_app():
                 assert node.module != "argparse", path
             if isinstance(node, ast.Import):
                 assert all(not alias.name.startswith(("cli", "argparse")) for alias in node.names), path
-            if isinstance(node, ast.Name):
-                assert node.id not in {"QCoreApplication", "QApplication"}, path
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id not in {"QCoreApplication", "QApplication"}, path

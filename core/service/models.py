@@ -160,6 +160,9 @@ def _parse_model(cls: type, data: Any, path: str, state: _Parse) -> Any:
         values[name] = value
     if len(state.errors) > errors_before:
         return None
+    resolve = getattr(cls, "resolve_relative_paths", None)
+    if resolve is not None and state.base_dir is not None and not state.allow_relative:
+        values = resolve(values, state.base_dir)
     try:
         return cls(**values)
     except (TypeError, ValueError) as exc:

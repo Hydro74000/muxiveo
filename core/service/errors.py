@@ -41,11 +41,14 @@ class ErrorDetail:
 class ApiError(Exception):
     """Erreur publique d'une opération."""
 
-    def __init__(self, code: ErrorCode, message: str, *, details: Iterable[ErrorDetail] = ()) -> None:
+    def __init__(self, code: ErrorCode, message: str, *, details: Iterable[ErrorDetail] = (),
+                 logged: bool = False) -> None:
         super().__init__(message)
         self.code = ErrorCode(code)
         self.message = message
         self.details: tuple[ErrorDetail, ...] = tuple(details)
+        #: Message déjà publié au journal par l'opération : l'adaptateur ne le répète pas.
+        self.logged = logged
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"code": self.code.value, "message": self.message}

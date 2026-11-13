@@ -10,7 +10,9 @@ from core.config import AppConfig
 from core.service.catalog import CATALOG
 from core.service.context import Overrides
 from core.service.errors import ApiError
-from core.service.ops.media import InspectResult
+from core.jobs.errors import exit_code_for
+from core.service.context import CancelToken
+from core.service.ops.media import InspectResult, JobOptions, MediaPreviewResult, MediaValidateResult
 from core.service.ops.system import VersionResult
 from core.update_check import query_latest_release
 
@@ -23,15 +25,14 @@ from cli.json_io import json_default, write_json
 from cli.logging import Logger
 from cli.options import JobOverrides, common_options
 from cli.profile import profile_apply, profile_batch, profile_preview, profile_validate
-from cli.remux_config import build_remux_config, config_to_template
-from cli.runtime import preview_remux_config, run_remux_config, workflow
+from cli.remux_config import config_to_template
 from cli.schema import (
     build_cli_json_schema,
     build_cli_json_schema_bundle,
     build_decision_profile_schema_v1,
     build_exact_job_schema_v1,
 )
-from cli.serializers import serialize_remux_config
+from cli.interrupts import interrupt_guard
 from cli.service_adapter import envelope, print_json, render_api_error, run_operation
 
 
@@ -175,18 +176,19 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
             metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    remux_config = build_remux_config(job, config, options, logger)
-    errors = workflow(config, options, logger).validate(remux_config)
+    result, ctx = run_operation("media.validate", _job_payload(job, options), config=config, logger=logger,
+                                overrides=_job_overrides(options))
+    assert isinstance(result, MediaValidateResult)
+    exit_code = EXIT_OK if result.valid else EXIT_VALIDATION
+    if args.log_format == "events":
+        print_json(envelope("media.validate", ctx.events.job, result=result))
+        return exit_code
     if getattr(args, "json_output", False):
-        payload = {
-            "valid": not errors,
-            "errors": errors,
-            **serialize_remux_config(remux_config),
-        }
+        payload = {"valid": result.valid, "errors": list(result.errors), **result.config}
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-        return EXIT_OK if not errors else EXIT_VALIDATION
-    if errors:
-        for error in errors:
+        return exit_code
+    if result.errors:
+        for error in result.errors:
             logger.emit("error", error)
         return EXIT_VALIDATION
     logger.emit("info", "Configuration valide.")
@@ -210,20 +212,31 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
             metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    remux_config = build_remux_config(job, config, options, logger)
-    wf = workflow(config, options, logger)
-    errors = wf.validate(remux_config)
-    if getattr(args, "json_output", False):
-        payload = {
-            "valid": not errors,
-            "errors": errors,
-            **serialize_remux_config(remux_config),
-        }
-        if not errors:
-            command = wf.build_command(remux_config)
-            payload["command"] = command
-            payload["command_text"] = wf.preview_command(remux_config)
-            execution = wf.execution_preview(remux_config)
+    return _render_preview(_preview_job(job, options, config, logger), args, logger, json_output=bool(
+        getattr(args, "json_output", False)))
+
+
+def _preview_job(job: dict, options, config: AppConfig, logger: Logger) -> tuple[MediaPreviewResult, str]:
+    result, ctx = run_operation("media.preview", _job_payload(job, options), config=config, logger=logger,
+                                overrides=_job_overrides(options))
+    assert isinstance(result, MediaPreviewResult)
+    return result, ctx.events.job
+
+
+def _render_preview(preview: tuple[MediaPreviewResult, str], args: argparse.Namespace, logger: Logger, *,
+                    json_output: bool) -> int:
+    """Rendu historique de ``preview`` (JSON ou commande), ou réponse publique en ``--log-format events``."""
+    result, job = preview
+    exit_code = EXIT_OK if result.valid else EXIT_VALIDATION
+    if args.log_format == "events":
+        print_json(envelope("media.preview", job, result=result))
+        return exit_code
+    if json_output:
+        payload: dict = {"valid": result.valid, "errors": list(result.errors), **result.config}
+        if result.valid:
+            execution = result.execution or {}
+            payload["command"] = result.command
+            payload["command_text"] = result.command_text
             payload.update({
                 "selected_backend": execution["selected_backend"],
                 "plan_version": execution["plan_version"],
@@ -232,12 +245,12 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
                 "execution_preview": execution,
             })
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=json_default))
-        return EXIT_OK if not errors else EXIT_VALIDATION
-    if errors:
-        for error in errors:
+        return exit_code
+    if result.errors:
+        for error in result.errors:
             logger.emit("error", error)
         return EXIT_VALIDATION
-    print(wf.preview_command(remux_config))
+    print(result.command_text)
     return EXIT_OK
 
 
@@ -262,10 +275,41 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
     if args.save:
         write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
-    remux_config = build_remux_config(job, config, options, logger)
+    return _run_job(job, args, config, options, logger)
+
+
+def _run_job(job: dict, args: argparse.Namespace, config: AppConfig, options, logger: Logger) -> int:
+    """``remux`` / ``run`` d'un job : aperçu (``--dry-run``) ou exécution (opération media.run, Ctrl+C = annulation)."""
     if getattr(args, "dry_run", False):
-        return preview_remux_config(config, options, logger, remux_config)
-    return run_remux_config(config, options, logger, remux_config, force=bool(args.force))
+        return _render_preview(_preview_job(job, options, config, logger), args, logger, json_output=False)
+    payload = {**_job_payload(job, options), "force": bool(getattr(args, "force", False))}
+    if options.export_workflow:
+        payload.update(export_workflow=str(options.export_workflow), export_directory=options.export_directory)
+    with interrupt_guard(CancelToken()) as cancel:
+        try:
+            result, ctx = run_operation("media.run", payload, config=config, logger=logger,
+                                        overrides=_job_overrides(options), cancel=cancel)
+        except ApiError as error:
+            if not error.logged:
+                raise
+            return exit_code_for(error)
+    if args.log_format == "events":
+        print_json(envelope("media.run", ctx.events.job, result=result))
+    return EXIT_OK
+
+
+def _job_payload(job: dict, options) -> dict:
+    return {"job": job, "options": JobOptions.from_common(options)}
+
+
+def _job_overrides(options) -> Overrides:
+    return Overrides(
+        ffmpeg=options.ffmpeg or None,
+        ffprobe=options.ffprobe or None,
+        mediainfo=options.mediainfo or None,
+        threads=options.threads,
+        work_dir=Path(options.work_dir).expanduser() if options.work_dir else None,
+    )
 
 
 def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
@@ -403,7 +447,4 @@ def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
             metadata_job=_metadata_job_from_args(args),
         )
     job = load_job(JobOverrides.from_namespace(args))
-    remux_config = build_remux_config(job, config, options, logger)
-    if getattr(args, "dry_run", False):
-        return preview_remux_config(config, options, logger, remux_config)
-    return run_remux_config(config, options, logger, remux_config, force=bool(args.force))
+    return _run_job(job, args, config, options, logger)

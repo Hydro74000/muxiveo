@@ -57,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.emit("error", str(exc))
         return EXIT_TOOL
     except CliError as exc:
-        logger.emit("error", str(exc))
+        if not exc.logged:
+            logger.emit("error", str(exc))
         return exc.exit_code
     except ApiError as exc:
         from cli.service_adapter import render_api_error

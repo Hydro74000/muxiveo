@@ -1,0 +1,78 @@
+"""Ctrl+C sur un remux headless : annulation propre en vrai sous-processus (POSIX)."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from core.workdir import PROCESS_DIR_MARKER
+from tests.integration._synth import make_av_container
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt" or shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe et signaux POSIX requis",
+)
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _slow_ffmpeg(tmp_path: Path, mark: Path) -> Path:
+    """FFmpeg qui bloque sur tout traitement (``-i``) après avoir posé ``mark`` ; le reste passe au vrai.
+
+    ``exec sleep`` : un seul processus, comme le vrai FFmpeg (un enfant du shell garderait le pipe ouvert).
+    """
+    real = shutil.which("ffmpeg")
+    script = tmp_path / "bin" / "ffmpeg"
+    script.parent.mkdir()
+    script.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in *" -i "*) : > "' + str(mark) + '"; exec sleep 120;; esac\n'
+        f'exec "{real}" "$@"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def test_sigint_cancels_remux_and_cleans_work_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    src = tmp_path / "src.mkv"
+    make_av_container(src)
+    out = tmp_path / "out" / "sortie.mkv"
+    out.parent.mkdir()
+    work = tmp_path / "work"
+    mark = tmp_path / "ffmpeg-started"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "remux", "-i", str(src), "-o", str(out),
+         "--mux-backend", "ffmpeg", "--no-nfo", "--ffmpeg", str(_slow_ffmpeg(tmp_path, mark)),
+         "--ffprobe", "ffprobe", "--mediainfo", "/bin/false", "--work-dir", str(work)],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not mark.exists():
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "FFmpeg jamais lancé"
+            time.sleep(0.05)
+        started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        _stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert time.monotonic() - started < 30, "annulation trop lente : le processus FFmpeg n'a pas été arrêté"
+    assert proc.returncode == 6, stderr
+    assert "Opération annulée." in stderr
+    assert not out.exists()
+    assert not list(out.parent.glob("*.partial")), list(out.parent.iterdir())
+    leftovers = [path for path in work.rglob(PROCESS_DIR_MARKER)] if work.exists() else []
+    assert leftovers == []

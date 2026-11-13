@@ -1,18 +1,29 @@
-"""Opérations média : inspection des sources."""
+"""Opérations média : inspection des sources, validation, aperçu et exécution d'un job de remux."""
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from core.inspector import FileInspector
 from core.jobs.inspection import config_template_from_info
-from core.jobs.serializers import serialize_file_info
-from core.service.context import ExecutionContext
+from core.jobs.logging import EmitterLogger
+from core.jobs.options import CommonOptions
+from core.jobs.remux_config import build_remux_config
+from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
+from core.jobs.serializers import serialize_file_info, serialize_remux_config
+from core.json_documents import resolve_document_paths
+from core.service.context import ExecutionContext, Overrides
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
+from core.workflows.remux_models import RemuxConfig
+
+# ---------------------------------------------------------------------------
+# Inspection
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -50,3 +61,187 @@ def media_inspect(request: InspectRequest, ctx: ExecutionContext) -> InspectResu
     if request.config_template:
         return InspectResult(template=config_template_from_info(infos[0], output=request.output or ""))
     return InspectResult(files=tuple(serialize_file_info(info) for info in infos))
+
+
+# ---------------------------------------------------------------------------
+# Jobs de remux
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JobOptions(Model):
+    """Options d'un job (équivalent des options communes du CLI ; outils : surcharges de l'appel)."""
+
+    verbose: bool = field(default=False, description="Publier la sortie brute des outils (ffmpeg…) au journal.")
+    nfo: bool | None = field(default=None, description="Écrire le NFO ; défaut : réglage [metadata] generate_nfo.")
+    writing_application: str = field(default="", description="Balise WritingApp de la sortie.")
+    auto_forced_subs: bool = field(default=False, description="Repérer les sous-titres forcés.")
+    forced_threshold: int = field(default=50, description="Seuil (nombre de sous-titres) des pistes forcées.")
+    auto_sdh: bool = field(default=False, description="Repérer les sous-titres SDH.")
+    remove_closed_captions: bool | None = field(
+        default=None, description="Retirer les sous-titres EIA-608/708 embarqués dans la vidéo.")
+    sync_mode: Literal["physical", "container"] | None = None
+    sync_subtitles: Literal["mirror", "none"] | None = None
+    clean_nfo: bool | None = None
+    crossfade_ms: int | None = field(default=None, description="Fondu aux raccords de synchro (ms).")
+    auto_sync: bool = field(default=False, description="Analyser la synchro de la source 1 face à la source 0.")
+    calibration: Path | None = field(default=None, description="Calibration de synchro explicite (JSON).")
+    detect_cuts: bool = field(default=False, description="Détecter coupures et ruptures (multi-segments).")
+    quick_sync_check: bool | None = field(default=None, description="Synchro rapide ; défaut : [sync] quick_audio_check.")
+    reject_coherent_sync: bool = field(
+        default=False, description="Refuser une synchro cohérente en partie non vérifiée.")
+    drift_threshold_ms: int = field(default=25, description="Seuil de dérive d'une coupure (ms).")
+    cadence_auto: bool = field(default=True, description="Conversion de cadence PAL ↔ cinéma automatique.")
+    cadence_method: Literal["auto", "atempo", "asetrate"] = "auto"
+
+    @classmethod
+    def from_common(cls, options: CommonOptions) -> dict[str, Any]:
+        """Charge utile JSON des options d'un ``CommonOptions`` (adaptateur CLI)."""
+        names = {item for item in cls.__dataclass_fields__}
+        payload = {name: getattr(options, name) for name in names}
+        return {key: value for key, value in payload.items() if value is not None or key in _NULLABLE}
+
+    def to_common(self, overrides: Overrides, **extra: Any) -> CommonOptions:
+        values = self.to_dict()
+        values["calibration"] = str(self.calibration) if self.calibration is not None else None
+        return CommonOptions(
+            ffmpeg=overrides.ffmpeg,
+            ffprobe=overrides.ffprobe,
+            mediainfo=overrides.mediainfo,
+            threads=overrides.threads,
+            work_dir=str(overrides.work_dir) if overrides.work_dir is not None else None,
+            **values,
+            **extra,
+        )
+
+
+_NULLABLE = {"nfo", "remove_closed_captions", "sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms",
+             "calibration", "quick_sync_check"}
+
+
+@dataclass(frozen=True)
+class MediaJobRequest(Model):
+    """Job de remux : document (contrat v1 / exact-job) et options."""
+
+    job: dict[str, Any] = field(description="Document de job (sources, pistes, sortie…), contrat `schema --version 1`.")
+    options: JobOptions = field(default_factory=JobOptions, description="Options du job.")
+
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Chemins relatifs du document : depuis le dossier de la requête, comme un fichier ``--config``."""
+        if isinstance(values.get("job"), dict):
+            values = {**values, "job": resolve_document_paths(values["job"], base_dir)}
+        return values
+
+
+@dataclass(frozen=True)
+class MediaRunRequest(MediaJobRequest):
+    """Exécution d'un job de remux."""
+
+    force: bool = field(default=False, description="Remplacer une sortie existante.")
+    export_workflow: Path | None = field(
+        default=None, description="Enregistrer le job exact à cet emplacement au lieu d'exécuter.")
+    export_directory: bool = field(default=False, description="export_workflow désigne un dossier.")
+
+
+@dataclass(frozen=True)
+class MediaValidateResult(Model):
+    """Job résolu et écarts de validation."""
+
+    valid: bool
+    errors: tuple[str, ...] = ()
+    config: dict[str, Any] = field(default_factory=dict, description="Job résolu (sources, pistes, sortie…).")
+
+
+@dataclass(frozen=True)
+class MediaPreviewResult(Model):
+    """Job résolu, écarts de validation et commandes prévues."""
+
+    valid: bool
+    errors: tuple[str, ...] = ()
+    config: dict[str, Any] = field(default_factory=dict, description="Job résolu (sources, pistes, sortie…).")
+    command: Any = field(default=None, description="Commande FFmpeg prévue (arguments).")
+    command_text: str | None = field(default=None, description="Commande(s) prévue(s), copiables.")
+    execution: dict[str, Any] | None = field(default=None, description="Plan d'exécution (backend, préparations…).")
+
+
+@dataclass(frozen=True)
+class MediaRunResult(Model):
+    """Fin d'un job."""
+
+    status: Literal["completed", "exported"]
+    output: str = field(description="Fichier produit (ou job exact enregistré).")
+    message: str = ""
+
+
+def _build(request: MediaJobRequest, ctx: ExecutionContext) -> tuple[RemuxConfig, CommonOptions]:
+    options = request.options.to_common(ctx.overrides)
+    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
+                                      EmitterLogger(ctx.events))
+    return remux_config, options
+
+
+_JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED)
+
+
+@operation(
+    "media.validate",
+    request=MediaJobRequest,
+    result=MediaValidateResult,
+    summary="Résoudre et valider un job de remux sans l'exécuter.",
+    errors=_JOB_ERRORS,
+)
+def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaValidateResult:
+    remux_config, options = _build(request, ctx)
+    errors = remux_workflow(ctx.config, options).validate(remux_config)
+    return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config))
+
+
+@operation(
+    "media.preview",
+    request=MediaJobRequest,
+    result=MediaPreviewResult,
+    summary="Résoudre un job de remux et afficher les commandes prévues.",
+    errors=_JOB_ERRORS,
+)
+def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPreviewResult:
+    remux_config, options = _build(request, ctx)
+    wf = remux_workflow(ctx.config, options)
+    errors = wf.validate(remux_config)
+    config = serialize_remux_config(remux_config)
+    if errors:
+        return MediaPreviewResult(valid=False, errors=tuple(errors), config=config)
+    return MediaPreviewResult(
+        valid=True,
+        config=config,
+        command=wf.build_command(remux_config),
+        command_text=wf.preview_command(remux_config),
+        execution=dict(wf.execution_preview(remux_config)),
+    )
+
+
+@operation(
+    "media.run",
+    request=MediaRunRequest,
+    result=MediaRunResult,
+    summary="Exécuter un job de remux (ou enregistrer son job exact).",
+    long_running=True,
+    mutating=True,
+    errors=(*_JOB_ERRORS, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY),
+)
+def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult:
+    options = request.options.to_common(
+        ctx.overrides,
+        export_workflow=str(request.export_workflow) if request.export_workflow is not None else None,
+        export_directory=request.export_directory,
+    )
+    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
+                                      EmitterLogger(ctx.events))
+    if options.export_workflow:
+        destination = export_exact_job(remux_config, options)
+        ctx.events.artifact("exact-job", str(destination))
+        return MediaRunResult(status="exported", output=str(destination))
+    message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
+                        cancel=ctx.cancel, force=request.force)
+    ctx.events.artifact("output", str(remux_config.output))
+    return MediaRunResult(status="completed", output=str(remux_config.output), message=message)

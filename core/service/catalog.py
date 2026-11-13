@@ -8,4 +8,7 @@ from core.service.ops import media, system
 CATALOG = Catalog((
     system.system_version,
     media.media_inspect,
+    media.media_validate,
+    media.media_preview,
+    media.media_run,
 ))

@@ -52,8 +52,8 @@ def exit_code_for(error: ApiError) -> int:
 class JobError(ApiError, RuntimeError):
     """Erreur d'un job, avec son code de sortie historique (nom historique côté CLI : ``CliError``)."""
 
-    def __init__(self, message: str, exit_code: int = EXIT_WORKFLOW) -> None:
-        super().__init__(_ERROR_BY_EXIT.get(exit_code, ErrorCode.WORKFLOW_FAILED), message)
+    def __init__(self, message: str, exit_code: int = EXIT_WORKFLOW, *, logged: bool = False) -> None:
+        super().__init__(_ERROR_BY_EXIT.get(exit_code, ErrorCode.WORKFLOW_FAILED), message, logged=logged)
         self.exit_code = exit_code
 
 

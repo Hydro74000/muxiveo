@@ -5,7 +5,8 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
-Opérations déjà publiées : `system.version`, `media.inspect` (voir `Muxiveo-cli operations`).
+Opérations déjà publiées : `system.version`, `media.inspect`, `media.validate`, `media.preview`,
+`media.run` (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -20,25 +21,25 @@ Opérations déjà publiées : `system.version`, `media.inspect` (voir `Muxiveo-
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Ajouter / ordonner les sources, choisir les pistes | `remux`, `run --config` | `media.run` | 🟡 commandes ; opération ⏳ L1 |
-| Langue, titre, drapeaux, ordre des pistes | job JSON (`tracks`, `track_order`) | `media.run` | 🟡 idem |
-| Variantes audio (piste convertie ajoutée) | job JSON (`audio_variants`) | `media.run` | 🟡 idem |
-| Chapitres : source, édition, import | job JSON (`chapters`) | `media.run` | 🟡 idem |
-| Pièces jointes de la source, ajout de fichiers | job JSON (`attachments`, `extra_attachments`) | `media.run` | 🟡 idem |
-| Balises globales, titre du fichier | job JSON (`tags`, `file_title`) | `media.run` | 🟡 idem |
+| Ajouter / ordonner les sources, choisir les pistes | `remux`, `run --config` | `media.run` | ✅ |
+| Langue, titre, drapeaux, ordre des pistes | job JSON (`tracks`, `track_order`) | `media.run` | ✅ |
+| Variantes audio (piste convertie ajoutée) | job JSON (`audio_variants`) | `media.run` | ✅ |
+| Chapitres : source, édition, import | job JSON (`chapters`) | `media.run` | ✅ |
+| Pièces jointes de la source, ajout de fichiers | job JSON (`attachments`, `extra_attachments`) | `media.run` | ✅ |
+| Balises globales, titre du fichier | job JSON (`tags`, `file_title`) | `media.run` | ✅ |
 | Fiche TMDB : recherche avec choix du résultat | `tmdb search` | `tmdb.search` | ⏳ L9 (aujourd'hui : premier résultat ou `--tmdb-id`) |
 | Fiche TMDB : détails, couverture | `--auto-tmdb`, `--tmdb-id` | `tmdb.details` | 🟡 opération ⏳ L9 |
-| Nom de sortie (gabarit, tag de groupe) | `--output-template` | `media.run` | 🟡 opération ⏳ L1 |
+| Nom de sortie (gabarit, tag de groupe) | `--output-template` | `media.run` | ✅ |
 | Profil décisionnel : appliquer | `--profile`, `profile apply\|batch` | `profile.apply/batch` | 🟡 opération ⏳ L1 |
 | Profil décisionnel : capturer depuis l'état courant | `profile capture` | `profile.capture` | ⏳ L9 |
 | Éditeur de profil : enregistrer un profil modifié | `profile save` | `profile.save` | ⏳ L9 |
 | Profils enregistrés : lister, supprimer | `profile list\|show\|delete` | `profile.list/show/delete` | ⏳ L9 |
-| Exporter le job (« Exporter JSON CLI », exact-job) | `--export-workflow` | `media.run` | 🟡 opération ⏳ L1 |
+| Exporter le job (« Exporter JSON CLI », exact-job) | `--export-workflow` | `media.run` (`export_workflow`) | ✅ |
 | Playlist Blu-ray : choisir parmi les titres | à définir | `media.bluray_titles` | ⏳ L9 (aujourd'hui : chemin de playlist) |
-| Retirer les sous-titres EIA-608/708 embarqués | `--remove-closed-captions` | `media.run` | 🟡 opération ⏳ L1 |
-| Forcés / SDH automatiques | `--auto-forced-subs`, `--auto-sdh` | `media.run` | 🟡 opération ⏳ L1 |
-| Backend de muxage | `--mux-backend` | `media.run` | 🟡 opération ⏳ L1 |
-| Aperçu de la commande | `preview` | `media.preview` | 🟡 opération ⏳ L1 |
+| Retirer les sous-titres EIA-608/708 embarqués | `--remove-closed-captions` | `media.run` | ✅ |
+| Forcés / SDH automatiques | `--auto-forced-subs`, `--auto-sdh` | `media.run` | ✅ |
+| Backend de muxage | `--mux-backend` | `media.run` | ✅ |
+| Aperçu de la commande | `preview` | `media.preview` | ✅ |
 | Extraire une piste de sous-titres | `extract` | `media.extract` | ⏳ L5 |
 | Extraire audio, vidéo, couche EL (FEL/MEL), RPU, HDR10+, pièces jointes | `extract` | `media.extract` | ⏳ L5 (la GUI suit) |
 | Inspecter le HDR d'une piste | `inspect --hdr` | `hdr.inspect` | 🟡 opération ⏳ L1 |
