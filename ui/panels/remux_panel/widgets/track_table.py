@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
@@ -258,7 +260,7 @@ class _CheckAllHeader(QHeaderView):
 class _TrackTable(QTableWidget):
     order_changed = Signal()
     check_all_requested = Signal(bool)  # case « tout cocher » de l'en-tête
-    extract_requested = Signal(object)  # TrackEntry
+    extract_requested = Signal(object, str)  # TrackEntry, couche (stream | el | bl | rpu | hdr10plus)
     audio_sync_requested = Signal(object)  # TrackEntry
     audio_deep_sync_requested = Signal(object)  # TrackEntry — analyse continue forcée
     subtitle_sync_requested = Signal(object)  # TrackEntry
@@ -317,6 +319,8 @@ class _TrackTable(QTableWidget):
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
         self._audio_sync_available = False
+        # Couches extractibles d'une piste vidéo [(couche, libellé)], fournies par le panneau.
+        self._extract_layers: Callable[[TrackEntry], list[tuple[str, str]]] = lambda _entry: []
         self._auto_sync_cancelable_entry_ids: set[str] = set()
         self._sync_rewrite_enabled = False
         self._sync_rewrite_advanced_audio_enabled = False
@@ -1135,6 +1139,10 @@ class _TrackTable(QTableWidget):
             self.blockSignals(False)
 
 
+    def set_extract_layers_provider(self, provider: Callable[[TrackEntry], list[tuple[str, str]]]) -> None:
+        """Couches proposées dans « Extraire » d'une piste vidéo (RPU, HDR10+, EL / BL d'un profil 7)."""
+        self._extract_layers = provider
+
     def set_audio_sync_available(self, available: bool) -> None:
         available = bool(available)
         if self._audio_sync_available == available:
@@ -1237,8 +1245,15 @@ class _TrackTable(QTableWidget):
         if entry.track_type == "video":
             menu = QMenu(self)
             action_hdr = menu.addAction(translate_text("Inspecter le HDR…"))
-            if menu.exec(self.viewport().mapToGlobal(pos)) is action_hdr:
+            extract_menu = menu.addMenu(translate_text("Extraire"))
+            layer_actions = {extract_menu.addAction(translate_text("Flux vidéo…")): "stream"}
+            for layer, label in self._extract_layers(entry):
+                layer_actions[extract_menu.addAction(label)] = layer
+            chosen = menu.exec(self.viewport().mapToGlobal(pos))
+            if chosen is action_hdr:
                 self.hdr_inspect_requested.emit(entry)
+            elif chosen in layer_actions:
+                self.extract_requested.emit(entry, layer_actions[chosen])
         elif entry.track_type == "subtitle":
             menu = QMenu(self)
             action_extract = menu.addAction(translate_text("Extraire…"))
@@ -1255,7 +1270,7 @@ class _TrackTable(QTableWidget):
 
             chosen = menu.exec(self.viewport().mapToGlobal(pos))
             if chosen is action_extract:
-                self.extract_requested.emit(entry)
+                self.extract_requested.emit(entry, "stream")
             elif action_studio is not None and chosen is action_studio:
                 self._open_sync_studio(entry)
             elif action_cancel is not None and chosen is action_cancel:
@@ -1264,6 +1279,7 @@ class _TrackTable(QTableWidget):
                 self.subtitle_sync_requested.emit(entry)
         elif entry.track_type == "audio":
             menu = QMenu(self)
+            action_extract = menu.addAction(translate_text("Extraire…"))
             action_studio = None
             action_sync = None
             action_deep = None
@@ -1279,7 +1295,9 @@ class _TrackTable(QTableWidget):
 
             if not menu.isEmpty():
                 chosen = menu.exec(self.viewport().mapToGlobal(pos))
-                if action_studio is not None and chosen is action_studio:
+                if chosen is action_extract:
+                    self.extract_requested.emit(entry, "stream")
+                elif action_studio is not None and chosen is action_studio:
                     self._open_sync_studio(entry)
                 elif action_cancel is not None and chosen is action_cancel:
                     self.auto_sync_cancel_requested.emit(entry)

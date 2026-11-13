@@ -47,6 +47,15 @@ def snapshot_report(info: FileInfo, stream_index: int | None = None) -> Inspecti
     return InspectionReport(snapshot, findings=audit(snapshot))
 
 
+def direct_tool_input(path: Path, stream_index: int) -> bool:
+    """Vrai si dovi_tool / hdr10plus_tool peuvent lire ``path`` eux-mêmes (premier flux HEVC brut ou MKV lisible).
+
+    Un MKV lu directement peut encore échouer (limites du lecteur Matroska des outils) : repli en pipe Annex B.
+    """
+    suffix = path.suffix.lower()
+    return stream_index == 0 and suffix in _DIRECT_SUFFIXES and (suffix != ".mkv" or strict_demuxer_reads_tracks(path))
+
+
 class DynamicInspector:
     """Niveau 2 : RPU et HDR10+ extraits du fichier puis analysés, sans décoder l'image."""
 
@@ -117,13 +126,12 @@ class DynamicInspector:
 
     def _extract(self, path: Path, stream_index: int, direct: list[str], piped: list[str]) -> None:
         """Lecture directe par l'outil si possible, sinon flux Annex B de FFmpeg en pipe (aucun fichier HEVC)."""
-        suffix = path.suffix.lower()
-        if stream_index == 0 and suffix in _DIRECT_SUFFIXES and (suffix != ".mkv" or strict_demuxer_reads_tracks(path)):
+        if direct_tool_input(path, stream_index):
             try:
                 self._run(direct)
                 return
             except Exception:
-                if suffix != ".mkv":
+                if path.suffix.lower() != ".mkv":
                     raise  # autre limite du lecteur Matroska des outils : repli en pipe
         decode = [self._ffmpeg, "-nostdin", "-loglevel", "error"]
         append_ffmpeg_input_args(decode, path)

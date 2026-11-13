@@ -6,7 +6,7 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
 Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage (`media.run` avec bloc
-`encode`) et `system.capabilities` (voir `Muxiveo-cli operations`).
+`encode`), `system.capabilities` et l'extraction `media.extract` (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -40,8 +40,10 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Forcés / SDH automatiques | `--auto-forced-subs`, `--auto-sdh` | `media.run` | ✅ |
 | Backend de muxage | `--mux-backend` | `media.run` | ✅ |
 | Aperçu de la commande | `preview` | `media.preview` | ✅ |
-| Extraire une piste de sous-titres | `extract` | `media.extract` | ⏳ L5 |
-| Extraire audio, vidéo, couche EL (FEL/MEL), RPU, HDR10+, pièces jointes | `extract` | `media.extract` | ⏳ L5 (la GUI suit) |
+| Extraire une piste (sous-titre, audio, vidéo ; flux élémentaire ou Matroska) | `extract --track` | `media.extract` | ✅ |
+| Extraire une couche Dolby Vision (EL FEL/MEL, BL d'un profil 7), le RPU ou le HDR10+ | `extract --track v:0 --layer el\|bl\|rpu\|hdr10plus` | `media.extract` | ✅ |
+| Extraire une pièce jointe (clic droit dans Pièces jointes) | `extract --attachment N\|NOM` | `media.extract` | ✅ |
+| Tout extraire d'une source | `extract --all` | `media.extract` (`all`) | ✅ CLI seul |
 | Inspecter le HDR d'une piste | `inspect --hdr` | `hdr.inspect` | ✅ |
 | Synchronisation automatique / approfondie d'une source | `--auto-sync`, `--quick-sync-check` | `media.run` | 🟡 une seule source ; toutes ⏳ L7 (`--auto-sync-all`) |
 | Synchroniser une piste de sous-titres | `sync-scan --type subtitle` | `sync.scan` | ✅ |

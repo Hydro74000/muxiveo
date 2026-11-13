@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.service.operations import Catalog
-from core.service.ops import batch, encode, hdr, hybrid, media, plugins, profile, sync, system
+from core.service.ops import batch, encode, extract, hdr, hybrid, media, plugins, profile, sync, system
 
 CATALOG = Catalog((
     system.system_version,
@@ -14,6 +14,7 @@ CATALOG = Catalog((
     media.media_validate,
     media.media_preview,
     media.media_run,
+    extract.media_extract,
     batch.media_batch,
     profile.profile_validate,
     profile.profile_preview,

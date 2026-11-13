@@ -1983,14 +1983,6 @@
     "fra": "Synchronisation audio améliorée : piste #{target} vs référence #{reference}…",
     "eng": "Enhanced audio sync: track #{target} vs reference #{reference}..."
   },
-  "Extraire le sous-titre": {
-    "fra": "Extraire le sous-titre",
-    "eng": "Extract subtitle"
-  },
-  "Extraction du sous-titre #{idx} ({codec}) vers {name}…": {
-    "fra": "Extraction du sous-titre #{idx} ({codec}) vers {name}…",
-    "eng": "Extracting subtitle #{idx} ({codec}) to {name}..."
-  },
   "{count} fichier(s) ajouté(s) comme pièce(s) jointe(s).": {
     "fra": "{count} fichier(s) ajouté(s) comme pièce(s) jointe(s).",
     "eng": "{count} file(s) added as attachment(s)."
@@ -2034,10 +2026,6 @@
   "Extraction impossible": {
     "fra": "Extraction impossible",
     "eng": "Extraction unavailable"
-  },
-  "Sous-titre extrait : {path}": {
-    "fra": "Sous-titre extrait : {path}",
-    "eng": "Subtitle extracted: {path}"
   },
   "Extraction échouée : {msg}": {
     "fra": "Extraction échouée : {msg}",
@@ -9654,5 +9642,57 @@
   "dossier utilisateur, sans droits administrateur": {
     "fra": "dossier utilisateur, sans droits administrateur",
     "eng": "user folder, no administrator rights"
+  },
+  "Extraire": {
+    "fra": "Extraire",
+    "eng": "Extract"
+  },
+  "Flux vidéo…": {
+    "fra": "Flux vidéo…",
+    "eng": "Video stream…"
+  },
+  "Couche d'amélioration Dolby Vision": {
+    "fra": "Couche d'amélioration Dolby Vision",
+    "eng": "Dolby Vision enhancement layer"
+  },
+  "Couche de base Dolby Vision": {
+    "fra": "Couche de base Dolby Vision",
+    "eng": "Dolby Vision base layer"
+  },
+  "Métadonnées HDR10+": {
+    "fra": "Métadonnées HDR10+",
+    "eng": "HDR10+ metadata"
+  },
+  "Extraire la piste": {
+    "fra": "Extraire la piste",
+    "eng": "Extract track"
+  },
+  "Extraction de la piste #{idx} ({format})": {
+    "fra": "Extraction de la piste #{idx} ({format})",
+    "eng": "Extracting track #{idx} ({format})"
+  },
+  "Extraire la pièce jointe": {
+    "fra": "Extraire la pièce jointe",
+    "eng": "Extract attachment"
+  },
+  "Extraction de la pièce jointe {name}": {
+    "fra": "Extraction de la pièce jointe {name}",
+    "eng": "Extracting attachment {name}"
+  },
+  "{label} vers {name}…": {
+    "fra": "{label} vers {name}…",
+    "eng": "{label} to {name}…"
+  },
+  "Extraction terminée : {path}": {
+    "fra": "Extraction terminée : {path}",
+    "eng": "Extraction complete: {path}"
+  },
+  "Source introuvable pour cette pièce jointe.": {
+    "fra": "Source introuvable pour cette pièce jointe.",
+    "eng": "Source not found for this attachment."
+  },
+  "La sortie ne peut pas être la source.": {
+    "fra": "La sortie ne peut pas être la source.",
+    "eng": "The output cannot be the source."
   }
 }

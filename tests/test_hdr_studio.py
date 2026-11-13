@@ -223,20 +223,34 @@ def test_track_table_video_menu_emits(qt_app, monkeypatch):
     table.hdr_inspect_requested.connect(emitted.append)
     import ui.panels.remux_panel.widgets.track_table as track_table_module
 
+    labels: list[str] = []
+    chosen: list[int] = [0]
+
     class FakeMenu:
         def __init__(self, *_args) -> None:
-            self.labels: list[str] = []
+            pass
 
         def addAction(self, label):  # noqa: N802 (API Qt)
-            self.labels.append(label)
+            labels.append(label)
             return label
 
+        def addMenu(self, _label):  # noqa: N802 (API Qt)
+            return FakeMenu()
+
         def exec(self, *_args):
-            return self.labels[0]
+            return labels[chosen[0]]
 
     monkeypatch.setattr(track_table_module, "QMenu", FakeMenu)
     table._on_context_menu(table.visualRect(table.model().index(0, 0)).center())
     assert emitted == [entry]
+    # Sous-menu « Extraire » : flux puis couches fournies par le panneau.
+    extracted: list[tuple[TrackEntry, str]] = []
+    table.extract_requested.connect(lambda e, layer: extracted.append((e, layer)))
+    table.set_extract_layers_provider(lambda _entry: [("rpu", "RPU…")])
+    labels.clear()
+    chosen[0] = 2
+    table._on_context_menu(table.visualRect(table.model().index(0, 0)).center())
+    assert extracted == [(entry, "rpu")]
     table.close()
 
 

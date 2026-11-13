@@ -1,0 +1,11 @@
+{
+  "source": "/media/films/film.mkv",
+  "output_dir": "/media/extraits",
+  "items": [
+    {"track": "a:0"},
+    {"track": "s:0", "output": "/media/extraits/film.fr.srt"},
+    {"track": "v:0", "layer": "rpu"},
+    {"track": "v:0", "layer": "el"},
+    {"attachment": "cover.jpg"}
+  ]
+}

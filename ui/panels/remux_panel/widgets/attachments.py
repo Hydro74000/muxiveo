@@ -675,6 +675,7 @@ class _AttachmentItemWidget(QWidget):
 
     remove_clicked = Signal(object)   # self
     changed        = Signal()
+    extract_clicked = Signal(object)  # self (pièce jointe embarquée)
 
     def __init__(
         self,
@@ -708,6 +709,18 @@ class _AttachmentItemWidget(QWidget):
         self._embedded_attachment_bytes_loaded = False
         self.setFixedHeight(_scale(28))
         self._build_ui(source_color)
+        if self.att is not None and not self.is_manual:
+            self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        """Clic droit sur une pièce jointe embarquée : « Extraire… »."""
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        action = menu.addAction(translate_text("Extraire…"))
+        if menu.exec(self.mapToGlobal(pos)) is action:
+            self.extract_clicked.emit(self)
 
     @property
     def tag_count(self) -> int:
@@ -979,6 +992,7 @@ class _AttachmentPanel(QFrame):
 
     changed = Signal()
     tmdb_details_selected = Signal(object)  # MediaDetails
+    extract_requested = Signal(str, object)  # file_id, AttachmentInfo
 
     def __init__(self, config: "AppConfig", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1311,6 +1325,7 @@ class _AttachmentPanel(QFrame):
             self._sync_tag_overrides()
         item.changed.connect(self.changed)
         item.remove_clicked.connect(self._on_remove_item)
+        item.extract_clicked.connect(lambda widget: self.extract_requested.emit(widget.file_id, widget.att))
         self._update_state()
 
     def _set_edited_tags(

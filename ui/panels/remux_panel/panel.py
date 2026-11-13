@@ -34,15 +34,15 @@ from PySide6.QtWidgets import (
 
 from core.config import AppConfig
 from core.bluray import discover_titles, find_disc_root
-from core.extractor import TrackExtractor
 from core.file_types import is_accepted
 from core.i18n import apply_translations, translate_text
-from core.matroska.reader import MatroskaReader
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
+from core.jobs.errors import JobError
+from core.jobs.extract import LAYER_LABELS, ExtractionPlan, ExtractTools, plan_attachment, plan_track, read_attachment, start_extraction
 from core.lang_tags import language_key
 from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
-from core.runner import TaskSignals, ToolRunner
+from core.runner import TaskSignals
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
@@ -484,6 +484,7 @@ class RemuxPanel(QWidget):
         self._track_table.order_changed.connect(self._on_track_order_changed)
         self._track_table.check_all_requested.connect(self._set_all_tracks)
         self._track_table.extract_requested.connect(self._on_extract_track)
+        self._track_table.set_extract_layers_provider(self._extract_layers_for)
         self._track_table.audio_sync_requested.connect(self._on_audio_sync_requested)
         self._track_table.audio_deep_sync_requested.connect(self._on_audio_deep_sync_requested)
         self._track_table.subtitle_sync_requested.connect(self._on_subtitle_sync_requested)
@@ -516,6 +517,7 @@ class RemuxPanel(QWidget):
             self._extract_embedded_attachment_bytes
         )
         self._attachment_panel.changed.connect(self._rebuild_preview)
+        self._attachment_panel.extract_requested.connect(self._on_extract_attachment)
         self._attachment_panel.tmdb_details_selected.connect(self._on_tmdb_details_selected)
         content_layout.addWidget(self._attachment_panel)
         self._sync_tmdb_suggested_title()
@@ -776,7 +778,7 @@ class RemuxPanel(QWidget):
                 translate_text("Source introuvable pour cet attachement embarqué.")
             )
         try:
-            return MatroskaReader(source.path).attachment_data(attachment.local_index)
+            return read_attachment(source.path, attachment.local_index)
         except Exception as exc:
             raise RuntimeError(
                 translate_text("Impossible d'extraire cet attachement embarqué depuis la source.")
@@ -3387,71 +3389,108 @@ class RemuxPanel(QWidget):
         if path:
             self._output_edit.setText(path)
 
-    def _on_extract_track(self, entry: TrackEntry) -> None:
+    def _extract_layers_for(self, entry: TrackEntry) -> list[tuple[str, str]]:
+        """Couches HDR extractibles d'une piste vidéo (sous-menu « Extraire »)."""
+        source = self._find_source(entry.file_id)
+        if source is None or source.info is None:
+            return []
+        track = next((t for t in source.info.video_tracks if t.index == entry.mkv_tid), None)
+        el_type = str(getattr(track, "dovi_el_type", "") or "")
+        layers: list[tuple[str, str]] = []
+        for layer in ("el", "bl", "rpu", "hdr10plus"):
+            try:
+                plan_track(source.info, entry.mkv_tid, layer=layer)
+            except JobError:
+                continue
+            label = translate_text(LAYER_LABELS[layer])
+            layers.append((layer, f"{label} ({el_type})…" if layer == "el" and el_type else f"{label}…"))
+        return layers
+
+    def _on_extract_track(self, entry: TrackEntry, layer: str = "stream") -> None:
         if not self._can_start_auxiliary_operation():
             return
         source = self._find_source(entry.file_id)
         if source is None or source.info is None:
             self.log_message.emit("WARN", translate_text("Source introuvable pour cette piste."))
             return
-
-        codec = (entry.codec or "").lower()
         try:
-            plan = TrackExtractor.plan_subtitle(codec)
-        except ValueError as exc:
-            QMessageBox.warning(
-                self,
-                translate_text("Extraction impossible"),
-                str(exc),
-            )
+            plan = plan_track(source.info, entry.mkv_tid, layer=layer)
+            container = (plan_track(source.info, entry.mkv_tid, container=True)
+                         if layer == "stream" and plan.plan is not None
+                         and plan.plan.extension not in (".mkv", ".mka", ".mks") else None)
+        except JobError as exc:
+            QMessageBox.warning(self, translate_text("Extraction impossible"), translate_text(exc.message))
             return
-
-        default_name = TrackExtractor.default_output_name(
-            source.path.stem, entry.language, entry.mkv_tid, plan.extension,
-        )
-        default_path = source.path.parent / default_name
-        out_str, _ = QFileDialog.getSaveFileName(
+        suffix = Path(plan.default_name).suffix
+        filters = [plan.plan.file_filter if plan.plan is not None
+                   else f"{translate_text(plan.label)} (*{suffix})"]
+        if container is not None and container.plan is not None:
+            filters.append(container.plan.file_filter)
+        out_str, chosen_filter = QFileDialog.getSaveFileName(
             self,
-            translate_text("Extraire le sous-titre"),
-            str(default_path),
-            plan.file_filter,
+            translate_text("Extraire la piste"),
+            str(source.path.parent / plan.default_name),
+            ";;".join(filters),
         )
         if not out_str:
             return
-
         out_path = Path(out_str)
-        cmd = TrackExtractor.build_subtitle_command(
-            self._config.tool_ffmpeg,
-            source.path,
-            entry.mkv_tid,
-            codec,
-            out_path,
-            progress_args=ffmpeg_progress_args(),
-        )
+        if container is not None and container.plan is not None and chosen_filter == filters[-1]:
+            plan = container
+            if out_path.suffix.lower() != container.plan.extension:
+                out_path = out_path.with_suffix(container.plan.extension)
+        label = translate_text("Extraction de la piste #{idx} ({format})", idx=entry.mkv_tid,
+                               format=translate_text(plan.label))
+        self._start_extraction(source, plan, out_path, label)
 
-        self.log_message.emit(
-            "INFO",
-            translate_text(
-                "Extraction du sous-titre #{idx} ({codec}) vers {name}…",
-                idx=entry.mkv_tid, codec=plan.format_label, name=out_path.name,
-            ),
+    def _on_extract_attachment(self, file_id: str, attachment: AttachmentInfo) -> None:
+        if not self._can_start_auxiliary_operation():
+            return
+        source = self._find_source(file_id)
+        if source is None or source.info is None:
+            self.log_message.emit("WARN", translate_text("Source introuvable pour cette pièce jointe."))
+            return
+        try:
+            plan = plan_attachment(source.info, attachment.local_index)
+        except JobError as exc:
+            QMessageBox.warning(self, translate_text("Extraction impossible"), translate_text(exc.message))
+            return
+        out_str, _ = QFileDialog.getSaveFileName(
+            self,
+            translate_text("Extraire la pièce jointe"),
+            str(source.path.parent / plan.default_name),
+            translate_text("Tous les fichiers (*)"),
         )
+        if out_str:
+            label = translate_text("Extraction de la pièce jointe {name}", name=plan.default_name)
+            self._start_extraction(source, plan, Path(out_str), label)
 
-        runner = ToolRunner()
-        self._extract_runner = runner  # conserve la référence pendant l'exécution
-        label = f"extract-sub-{entry.mkv_tid}"
-        signals = runner.run(cmd, label=label)
+    def _start_extraction(self, source: SourceFile, plan: ExtractionPlan, out_path: Path, label: str) -> None:
+        """Extraction en arrière-plan (``core.jobs.extract``), suivie par la barre d'exécution."""
+        info = source.info
+        if info is None:
+            return
+        if out_path.resolve() == source.path.resolve():
+            QMessageBox.warning(self, translate_text("Extraction impossible"),
+                                translate_text("La sortie ne peut pas être la source."))
+            return
+        tools = ExtractTools(ffmpeg=str(self._config.tool_ffmpeg), dovi_tool=str(self._config.tool_dovi_tool),
+                             hdr10plus_tool=str(self._config.tool_hdr10plus))
+        self.log_message.emit("INFO", translate_text("{label} vers {name}…", label=label, name=out_path.name))
+        # Remplacement d'un fichier existant déjà confirmé par la boîte d'enregistrement.
+        signals = start_extraction(info, [(plan, out_path)], tools=tools, force=out_path.exists(),
+                                   progress_args=ffmpeg_progress_args())
         self.extract_started.emit(
             signals,
             {
-                "duration_s": source.info.duration_s,
-                "label": translate_text("Extraction du sous-titre"),
+                "duration_s": info.duration_s,
+                "label": label,
                 "output_name": out_path.name,
             },
         )
         signals.connect_terminal(
             finished=lambda _=None, p=out_path: self.log_message.emit(
-                "OK", translate_text("Sous-titre extrait : {path}", path=str(p)),
+                "OK", translate_text("Extraction terminée : {path}", path=str(p)),
             ),
             failed=lambda msg, _exc: self.log_message.emit(
                 "ERROR", translate_text("Extraction échouée : {msg}", msg=msg),

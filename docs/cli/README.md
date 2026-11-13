@@ -43,6 +43,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
 | `encode` | encode (job + bloc `encode` ou options d'encodage), ou aperçus `--preview-image/--preview-video` ; voir « Encodage » |
 | `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
+| `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
 | `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
@@ -739,6 +740,37 @@ restent ceux de la source (refusés à l'enregistrement). Gabarit de départ :
 Sans `--verbose`, la sortie brute de FFmpeg n'est pas affichée ; avec `--log-format events`, la
 progression (`pct`, `fps`, `eta_s`) est publiée en événements `progress`. Ctrl+C annule
 l'encodage proprement.
+
+## Extraction : commande `extract`
+
+Extrait des éléments d'une source vers des fichiers autonomes (opération `media.extract`, même
+moteur que « Extraire… » du panneau Conteneur) :
+
+```bash
+Muxiveo-cli extract -i film.mkv --track a:0 --output-dir pistes/          # TrueHD → .thd
+Muxiveo-cli extract -i film.mkv --track 3 --format mkv -o vf.mka          # piste en Matroska
+Muxiveo-cli extract -i film.mkv --track v:0 --layer el -o film.el.hevc    # EL (FEL/MEL) d'un profil 7
+Muxiveo-cli extract -i film.mkv --track v:0 --layer rpu --track v:0 --layer hdr10plus
+Muxiveo-cli extract -i film.mkv --attachment cover.jpg --output-dir .
+Muxiveo-cli extract -i film.mkv --all --output-dir film/ --dry-run        # sorties prévues
+```
+
+- **Pistes** : `--track` = index ffprobe (`3`) ou nature et rang (`v:0`, `a:1`, `s:0`), répétable.
+  Flux élémentaire par défaut (`.hevc`/`.h264` en Annex B, `.obu`, `.thd`, `.eac3`, `.dts`, `.m4a`,
+  `.flac`, `.wav`, `.srt`, `.ass`, `.sup`…), Matroska (`.mkv`/`.mka`/`.mks`) avec `--format mkv` ou
+  quand le codec n'a pas de format élémentaire. VobSub est toujours livré en `.mks` (FFmpeg n'écrit
+  pas `.idx`/`.sub`) ; les sous-titres à OCR (DVB, télétexte) sont refusés.
+- **Couches** (`--layer`, s'applique au `--track` qui précède) : `el` / `bl` (`dovi_tool demux`,
+  Dolby Vision profil 7 seulement), `rpu` (`dovi_tool extract-rpu`), `hdr10plus`
+  (`hdr10plus_tool extract`). Lecture directe par l'outil quand il lit le fichier (même règle que
+  l'inspection HDR), sinon flux Annex B de FFmpeg en pipe : aucun fichier HEVC intermédiaire.
+- **Pièces jointes** : `--attachment` = rang affiché par `inspect` ou nom de fichier.
+- **Sorties** : `-o` (un seul élément) ou `--output-dir` (défaut : dossier de la source). Chaque
+  fichier est écrit dans un candidat `.partial` puis publié ; échec ou Ctrl+C : rien d'autre ne
+  reste. Avec `--all`, toute collision est refusée avant la première extraction (`--force` pour
+  remplacer). `--json` : résultat JSON (`outputs[]` : nature, piste, couche, format, chemin).
+
+Requête équivalente pour `call media.extract` : `docs/cli/examples/extract.json`.
 
 ## Couche de service : `call`, `operations`, `--log-format events`
 
