@@ -268,6 +268,12 @@ def _plan_entry(source: SourceInput, track: TrackEntry, settings: VideoEncodeSet
     for key in _PLAN_FIELDS:
         value = getattr(settings, key)
         entry[key] = value.value if isinstance(value, QualityMode) else value
+    # Seuls les réglages du mode de débit actif sont publiés (les autres sont des valeurs dormantes).
+    active = {QualityMode.CRF: "crf", QualityMode.CQ: "cq", QualityMode.BITRATE: "bitrate_kbps",
+              QualityMode.SIZE: "target_size_mb"}
+    for mode, key in active.items():
+        if settings.codec == "copy" or settings.quality_mode != mode:
+            entry.pop(key, None)
     if settings.codec != "copy":
         entry["output_bit_depth"] = resolve_output_bit_depth(settings)
     for key in ("crop", "resize", "filters", "interpolation", "restoration"):
