@@ -789,9 +789,9 @@ def test_perform_dynamic_sync_cadence_detection(tmp_path):
                 cadence_audio_method=kwargs.get("cadence_audio_method", "atempo"),
             )
 
-    import cli.hybrid
-    orig_scanner = cli.hybrid.AudioSyncScanner
-    cli.hybrid.AudioSyncScanner = MockAudioScanner
+    import core.jobs.dynamic_sync
+    orig_scanner = core.jobs.dynamic_sync.AudioSyncScanner
+    core.jobs.dynamic_sync.AudioSyncScanner = MockAudioScanner
     try:
         parser = build_parser()
         args = parser.parse_args(["remux", "-i", str(ref_path), "-o", str(tmp_path / "out.mkv"), "--auto-sync", "--cadence-method", "atempo"])
@@ -805,7 +805,7 @@ def test_perform_dynamic_sync_cadence_detection(tmp_path):
         assert captured_kwargs["cadence_audio_method"] == "atempo"
         assert calib.cadence_mismatch is not None
     finally:
-        cli.hybrid.AudioSyncScanner = orig_scanner
+        core.jobs.dynamic_sync.AudioSyncScanner = orig_scanner
 
 
 def test_cmd_sync_scan_audio_with_cadence_detection(tmp_path, monkeypatch, capsys):
