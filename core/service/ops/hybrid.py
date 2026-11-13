@@ -6,6 +6,7 @@ Moteur par paires de la commande ``hybrid`` (``core.jobs.hybrid_pairs``) ; le mo
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -95,6 +96,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
         report_json=str(request.report_json) if request.report_json is not None else "",
     )
     children = _Children(ctx)
+    episode = itertools.count()
     steps = HybridSteps(
         build=build_remux_config,
         load_profile=load_decision_profile,
@@ -103,7 +105,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                                                quick_check=quick_check_enabled(job_options, ctx.config),
                                                accept_coherent=coherent_sync_accepted(job_options)),
         run=lambda config, common, logger, remux_config, *, force: children.run(
-            config, common, children.logger(0), remux_config, force=force),
+            config, common, children.logger(next(episode)), remux_config, force=force),
         preview=lambda config, common, remux_config: dict(remux_workflow(config, common).execution_preview(
             remux_config)),
     )

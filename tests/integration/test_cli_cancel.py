@@ -120,3 +120,39 @@ def test_sigint_during_batch_cancels_current_job_and_stops(tmp_path, monkeypatch
     assert [job["status"] for job in payload["jobs"]] == ["cancelled"]
     assert not list(out.iterdir())
     assert (list(work.rglob(PROCESS_DIR_MARKER)) if work.exists() else []) == []
+
+
+def test_sigint_during_call_returns_a_cancelled_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    src = tmp_path / "src.mkv"
+    make_av_container(src)
+    out = tmp_path / "sortie.mkv"
+    mark = tmp_path / "ffmpeg-started"
+    request = tmp_path / "requete.json"
+    request.write_text(json.dumps({"job": {"version": 1, "sources": ["src.mkv"], "output": "sortie.mkv",
+                                           "mux_backend": "ffmpeg"}, "options": {"nfo": False}}), encoding="utf-8")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "call", "media.run", "--request", str(request),
+         "--ffmpeg", str(_slow_ffmpeg(tmp_path, mark)), "--ffprobe", "ffprobe", "--mediainfo", "/bin/false",
+         "--work-dir", str(tmp_path / "work")],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not mark.exists():
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "FFmpeg jamais lancé"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 6, stderr
+    response = json.loads(stdout)
+    assert response["status"] == "cancelled" and response["error"]["code"] == "cancelled"
+    states = [json.loads(line).get("state") for line in stderr.splitlines() if line.startswith("{")]
+    assert states[-1] == "cancelled"
+    assert not out.exists()

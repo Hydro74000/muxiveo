@@ -148,10 +148,13 @@ def _read_request(source: str | None) -> tuple[Any, Path]:
 def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
     """``call <opération> --request FICHIER|-`` : contrat de l'API, événements sur stderr, réponse sur stdout."""
     name = str(args.operation)
+    from cli.interrupts import interrupt_guard
+
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides_from_args(args))
     try:
         payload, base_dir = _read_request(args.request)
-        result = call(CATALOG, name, payload, ctx, strict=True, base_dir=base_dir)
+        with interrupt_guard(ctx.cancel):  # Ctrl+C : annulation propre, réponse « cancelled »
+            result = call(CATALOG, name, payload, ctx, strict=True, base_dir=base_dir)
     except BaseException as exc:  # noqa: BLE001 - toute erreur devient une réponse publique
         if isinstance(exc, (SystemExit, GeneratorExit)):
             raise
