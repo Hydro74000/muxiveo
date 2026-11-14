@@ -30,7 +30,7 @@ from core.jobs.hybrid_studio import (
 )
 from core.jobs.logging import EmitterLogger
 from core.service.context import ExecutionContext
-from core.service.errors import ApiError, ErrorCode
+from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.service.ops.batch import _Children
@@ -297,6 +297,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
         entry: dict[str, Any] = {"episode": episode.display_name, "reference": str(episode.master_file),
                                  "donor": str(episode.donor_files[0][1]) if episode.donor_files else None,
                                  "donors": [str(path) for _source, path in episode.donor_files]}
+        child: EmitterLogger | None = None
         try:
             if item.error is not None:
                 raise item.error
@@ -325,11 +326,13 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                                                  child) if request.encode is not None else None)
                 accept = bool((request.encode or {}).get("accept_dovi_nvenc_crop"))
                 if request.dry_run:
-                    if encode_config is not None:
-                        code = children.preview_encode(ctx.config, spec.common, child, encode_config)
+                    if encode_config is not None:  # mêmes contrôles que le lancement, acceptation comprise
+                        code = children.preview_encode(ctx.config, spec.common, child, encode_config,
+                                                       accept_dovi_nvenc_crop=accept)
                     else:
                         code = children.preview(ctx.config, spec.common, child, remux_config)
-                    entry["status"] = "planned" if code == EXIT_OK else "failed"
+                    entry["status"] = "planned" if code == EXIT_OK else (
+                        "cancelled" if ctx.cancel.cancelled else "failed")  # annulation absorbée par l'enfant
                 else:
                     remux_config.output.parent.mkdir(parents=True, exist_ok=True)
                     remux_config.allow_missing_output_dir = False
@@ -347,11 +350,24 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
             if entry["status"] == "failed" and not request.continue_on_error:
                 break
         except Exception as exc:
-            entries.append({**entry, "status": "failed", "error": str(exc)})
+            # Annulation (jeton, sonde, Ctrl+C traduit) pendant la résolution de l'encodage ou ailleurs : épisode et
+            # enfant annulés, lot arrêté ; sinon échec. L'enfant reçoit toujours un état final.
+            status = "cancelled" if error_code(exc) is ErrorCode.CANCELLED or ctx.cancel.cancelled else "failed"
+            if child is not None:
+                children.finish(child, status)
+            entries.append({**entry, "status": status, "error": str(exc)})
             if item.error is None:
                 logger.emit("error", str(exc))
+            if status == "cancelled":
+                ctx.cancel.cancel()
+                cancelled = True
+                break
             if not request.continue_on_error:
                 break
+        except BaseException as exc:  # Ctrl+C non intercepté : état final de l'enfant (comme _Children), puis propagation
+            if child is not None:
+                children.finish(child, "cancelled" if error_code(exc) is ErrorCode.CANCELLED else "failed")
+            raise
     if request.report_json is not None:
         from core.atomic_io import atomic_write_text
 
