@@ -68,6 +68,8 @@ def merge_remux_into_encode_config(
         lang = (track.language or "").strip()
         orig_lang = (track.orig_language or "").strip()
         title = (track.title or "").strip()
+        # Titre de la source vidé dans le panneau : effacé en sortie (sinon repris de la source).
+        title_cleared = not title and bool((track.orig_title or "").strip())
         if not lang and orig_lang and lang != orig_lang:
             lang = "und"
         has_flag_state = any((
@@ -88,12 +90,12 @@ def merge_remux_into_encode_config(
             track.flag_original != track.orig_flag_original,
             track.flag_commentary != track.orig_flag_commentary,
         ))
-        if not lang and not title and not has_flag_state and not has_flag_change:
+        if not lang and not title and not title_cleared and not has_flag_state and not has_flag_change:
             return None
         return TrackMetaPatch(
             track_order=track_order,
             language=lang,
-            title=title if title else None,
+            title=title if title else ("" if title_cleared else None),
             flag_enabled=track.flag_enabled,
             flag_default=track.flag_default,
             flag_forced=track.flag_forced,

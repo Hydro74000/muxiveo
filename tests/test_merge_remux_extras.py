@@ -300,6 +300,46 @@ class TestLanguageClearPropagation:
             (1, "und", None),
         ]
 
+    def test_cleared_video_title_emits_empty_title_edit(self, tmp_path, qt_app):
+        """Titre de la source vidé (panneau, profil) : effacé en sortie, jamais repris de la source."""
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        cleared_video = TrackEntry(
+            mkv_tid=0,
+            track_type="video",
+            codec="HEVC",
+            display_info="",
+            language="",
+            title="",
+            orig_language="",
+            orig_title="BEN.THE.MEN",
+        )
+        enc = _encode_cfg(src, out)
+        rmx = _remux_cfg(src, out, tracks=[cleared_video])
+
+        result = _merge(enc, rmx)
+
+        assert [(edit.track_order, edit.title) for edit in result.track_meta_edits] == [(1, "")]
+        from core.workflows.encode.planning.track_metadata import resolve_track_metadata
+
+        planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
+        assert planned[0].name == ""
+
+    def test_untitled_source_video_emits_no_title_edit(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        untitled = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        result = _merge(_encode_cfg(src, out), _remux_cfg(src, out, tracks=[untitled]))
+
+        assert result.track_meta_edits == []
+
     def test_multiple_video_tracks_are_ordered_before_audio_tracks(self, tmp_path, qt_app):
         src = tmp_path / "src.mkv"
         src.touch()
