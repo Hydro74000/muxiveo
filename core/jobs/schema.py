@@ -178,6 +178,8 @@ def build_cli_json_schema() -> dict[str, Any]:
             "tmdb_cover": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
             "mux_backend": {"enum": list(MUX_BACKEND_CHOICES)},
             "file_title": {"type": "string"},
+            "name": {"type": "string", "description": "Nom du workflow (exact-job enregistré)."},
+            "fallback_profile": {"type": "string", "description": "Profil de repli du workflow."},
             "variables": _variables_schema(),
             "tracks": {"type": "array", "items": {"$ref": "#/$defs/track_edit"}},
             "track_order": {"type": "array", "items": {"$ref": "#/$defs/track_order_item"}},
@@ -242,6 +244,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                 "properties": {
                     "selector": {"$ref": "#/$defs/selector"},
                     "source_selector": {"$ref": "#/$defs/selector"},
+                    "entry_id": {"type": "string"},
                     "codec": {"type": "string"},
                     "target_codec": {"type": "string"},
                     "bitrate_kbps": {"type": "integer"},
@@ -249,6 +252,9 @@ def build_cli_json_schema() -> dict[str, Any]:
                     "language": {"type": "string"},
                     "title": {"type": "string"},
                     "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
+                    "time_shift_ms": {"type": "integer"},
+                    "sync_calibration": {"type": ["object", "null"]},
+                    "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
                 },
             },
             "chapters": {
@@ -450,13 +456,15 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
 def unknown_job_keys(job: Any, *, path: str = "job") -> list[str]:
     """Chemins des clés absentes du contrat (job v1 ou exact-job) ; clés internes ``_…`` et ``$…`` ignorées.
 
-    Le bloc ``encode`` (contrat strict propre) est vérifié par sa propre lecture.
+    Objets fermés compris (``sources[i].sync``, ``flags``…). Libres : ``variables`` (noms choisis par
+    l'utilisateur) et les tables (``tag_overrides``, ``sync_calibrations``). Le bloc ``encode`` (contrat
+    strict propre) est vérifié par sa propre lecture.
     """
     if not isinstance(job, dict):
         return []
     schema = build_exact_job_schema_v1() if job.get("kind") == "exact-job" else build_cli_json_schema()
     found: list[str] = []
-    _walk(job, schema, schema.get("$defs", {}), path, found, skip={"encode"})
+    _walk(job, schema, schema.get("$defs", {}), path, found, skip={"encode", "variables"})
     return found
 
 
@@ -488,7 +496,7 @@ def _walk(value: Any, node: dict[str, Any], defs: dict[str, Any], path: str, fou
                 continue
             if key in properties:
                 _walk(item, properties[key], defs, child, found)
-            elif extra is not False and not isinstance(extra, dict):
+            elif not isinstance(extra, dict):  # table (schéma de valeur) : noms de clés libres
                 found.append(child)
     elif isinstance(value, list) and isinstance(node.get("items"), dict):
         for index, item in enumerate(value):

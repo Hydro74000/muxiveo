@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from core.config import AppConfig
 from core.jobs.errors import exit_code_for
 from core.jobs.logging import JobLogger
@@ -67,9 +69,10 @@ def _run(remux_config: RemuxConfig, config: AppConfig, options: CommonOptions, l
 
 
 def resolve_job_encode_config(job: dict, remux_config: RemuxConfig, config: AppConfig, options: CommonOptions,
-                              logger: JobLogger):
+                              logger: JobLogger, *, cancel_event: threading.Event | None = None):
     """Encodage d'un job (bloc ``encode``) ; ``None`` sans bloc ou en copie pure (le job reste un remux)."""
-    resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger)
+    resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger,
+                                cancel_event=cancel_event)
     return None if resolved is None else resolved.config
 
 

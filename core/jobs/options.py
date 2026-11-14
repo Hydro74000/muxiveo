@@ -147,3 +147,26 @@ def cli_context(args: Any, config: AppConfig, logger: Logger) -> CliContext:
 
 def namespace_value(args: Any, name: str, default: Any = None) -> Any:
     return getattr(args, name, default)
+
+
+def call_cancellable(fn: Any, cancel: Any, *args: Any, context_param: str = "context", **kwargs: Any) -> Any:
+    """Appelle ``fn`` en lui passant de quoi s'annuler s'il l'accepte.
+
+    ``context_param`` : ``"context"`` (``PreparationContext`` annulable) ou ``"cancel_event"``. Les
+    fonctions de substitution (tests) qui n'ont pas ce paramètre sont appelées telles quelles.
+    """
+    import inspect
+
+    if cancel is not None:
+        try:
+            accepts = context_param in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            accepts = False
+        if accepts:
+            if context_param == "context":
+                from core.workflows.preparation_cache import PreparationContext
+
+                kwargs[context_param] = PreparationContext(cancel_event=cancel.event)
+            else:
+                kwargs[context_param] = cancel.event
+    return fn(*args, **kwargs)

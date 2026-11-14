@@ -137,8 +137,9 @@ Règles de lecture communes à la CLI et à la GUI :
 - un chemin passé en ligne de commande (`-i`, `-o`, `--output-dir`…) reste
   relatif au répertoire courant ; `output_template` n'est pas un chemin ;
 - une clé hors du contrat (`schema --version 1`, bloc `encode` compris) est
-  signalée par un avertissement et ignorée ; dans une requête `call`, elle est
-  refusée (`invalid_request`).
+  signalée par un avertissement et ignorée, sauf dans les objets fermés
+  (`sync`, `flags`) qui la refusent comme avant ; dans une requête `call`, elle
+  est refusée (`invalid_request`).
 
 Un JSON qui comptait sur le répertoire courant pour ses chemins relatifs doit
 être lancé avec des chemins absolus, ou recevoir ses chemins en ligne de commande.

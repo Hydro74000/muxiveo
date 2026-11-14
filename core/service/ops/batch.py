@@ -77,6 +77,15 @@ class BatchRequest(Model):
 
         return encode_block_issues(values.get("encode"), "encode")
 
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
+        from core.json_documents import resolve_encode_paths
+
+        if isinstance(values.get("encode"), dict):
+            values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
+        return values
+
 
 @dataclass(frozen=True)
 class ProfileBatchRequest(Model):
@@ -99,6 +108,15 @@ class ProfileBatchRequest(Model):
         from core.service.schemas.encode import encode_block_issues
 
         return encode_block_issues(values.get("encode"), "encode")
+
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
+        from core.json_documents import resolve_encode_paths
+
+        if isinstance(values.get("encode"), dict):
+            values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
+        return values
 
 
 @dataclass(frozen=True)
@@ -167,7 +185,8 @@ class _Children:
         return EXIT_OK
 
     def encode(self, job: dict[str, Any], remux_config: Any, config: Any, options: Any, logger: Any) -> Any:
-        resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger)
+        resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger,
+                                    cancel_event=self.ctx.cancel.event)
         return None if resolved is None else resolved.config
 
     def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any) -> int:

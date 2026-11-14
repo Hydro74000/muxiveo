@@ -431,7 +431,8 @@ def run_profile_batch(
     # Phase 2 — exécution dans l'ordre.
     failures = 0
     summary_jobs: list[dict[str, Any]] = []
-    cancelled = False
+    # Annulation pendant la découverte ou la préparation : aucun job lancé, lot annulé.
+    cancelled = cancel is not None and cancel.cancelled
     for entry in planned:
         if cancel is not None and cancel.cancelled:
             cancelled = True
@@ -471,7 +472,7 @@ def run_profile_batch(
             if not continue_on_error:
                 break
     total = len(summary_jobs)
-    exit_code = EXIT_OK if failures == 0 else EXIT_PARTIAL
+    exit_code = EXIT_OK if failures == 0 and not cancelled else EXIT_PARTIAL
     summary: dict[str, Any] = {
         "total": total,
         "successes": total - failures,

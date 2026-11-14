@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -219,13 +220,20 @@ def resolve_job_encode(request: MediaJobRequest, remux_config: RemuxConfig, opti
                        cache: PreparationCache, ctx: ExecutionContext) -> ResolvedEncode | None:
     """Bloc ``encode`` du job résolu (règles du panneau Encodage) ; ``None`` sans bloc."""
     return resolve_from_job(request.job.get("encode"), remux_config, config=ctx.config, options=options,
-                            logger=EmitterLogger(ctx.events), cache=cache, report_unknown=False)
+                            logger=EmitterLogger(ctx.events), cache=cache, report_unknown=False,
+                            cancel_event=ctx.cancel.event)
 
 
-def _encode_plan(resolved: ResolvedEncode | None) -> dict[str, Any] | None:
+def encode_plan_payload(resolved: ResolvedEncode | None, checked: Any = None) -> dict[str, Any] | None:
+    """Plan publié ; ``checked`` : configuration contrôlée (recadrage DV + NVENC accepté), reprise dans le plan."""
     if resolved is None:
         return None
-    return {"pure_copy": resolved.pure_copy, "video": list(resolved.video), "audio": list(resolved.audio),
+    video = list(resolved.video)
+    if checked is not None and checked is not resolved.config:
+        tracks = list(checked.video_tracks) or ([checked.video] if checked.video is not None else [])
+        if len(tracks) == len(video):  # même ordre que la résolution
+            video = [{**entry, "crop": dataclasses.asdict(track.crop)} for entry, track in zip(video, tracks)]
+    return {"pure_copy": resolved.pure_copy, "video": video, "audio": list(resolved.audio),
             "warnings": list(resolved.warnings)}
 
 
@@ -247,14 +255,15 @@ _JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_
 def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaValidateResult:
     remux_config, options, cache = _build_cached(request, ctx)
     resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    checked = None
     if resolved is not None and resolved.config is not None:
         # Encodage : mêmes refus qu'au lancement (géométrie DV NVENC, encodeur, presets…).
-        _config, errors = checked_encode(resolved.config, encode_workflow(ctx.config, options), config=ctx.config,
+        checked, errors = checked_encode(resolved.config, encode_workflow(ctx.config, options), config=ctx.config,
                                          options=options, accept_dovi_nvenc_crop=_accept_crop(request))
     else:
         errors = remux_workflow(ctx.config, options).validate(remux_config)
     return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config),
-                               encode=_encode_plan(resolved))
+                               encode=encode_plan_payload(resolved, checked))
 
 
 @operation(
@@ -267,12 +276,13 @@ def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaVali
 def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPreviewResult:
     remux_config, options, cache = _build_cached(request, ctx)
     resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
-    plan = _encode_plan(resolved)
+    plan = encode_plan_payload(resolved)
     if resolved is not None and resolved.config is not None:
         # Encodage : commandes de l'EncodeWorkflow (préparation « à blanc »), comme « Copier » du panneau.
         encode_wf = encode_workflow(ctx.config, options)
         encode_config, errors = checked_encode(resolved.config, encode_wf, config=ctx.config, options=options,
                                                accept_dovi_nvenc_crop=_accept_crop(request))
+        plan = encode_plan_payload(resolved, encode_config)
         config = serialize_remux_config(remux_config)
         if errors:
             return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)

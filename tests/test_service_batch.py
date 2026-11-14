@@ -199,3 +199,39 @@ def test_nested_interrupt_guards_cancel_job_and_batch():
             os.kill(os.getpid(), signal.SIGINT)
             time.sleep(0.05)
         assert job.cancelled and batch.cancelled
+
+
+def test_cancel_during_preparation_cancels_the_batch(tmp_path, doubles, monkeypatch):
+    from cli.service_adapter import envelope, exit_code_for_result
+
+    ctx, sink = _ctx()
+
+    def build(job, _config, _options, _logger, *, context=None):
+        assert context is not None and context.cancel_event is ctx.cancel.event  # préparation annulable
+        ctx.cancel.cancel()  # Ctrl+C pendant l'inspection du premier job
+        raise ApiError(ErrorCode.CANCELLED, "inspection annulée")
+
+    monkeypatch.setattr(batch_ops, "build_remux_config", build)
+    payload = {**_template(tmp_path, _items(tmp_path, "a", "b")), "continue_on_error": True}
+    result = call(CATALOG, "media.batch", payload, ctx)
+    assert doubles.ran == [] and result.status == "cancelled" and result.total == 0
+    assert _parent_states(sink, ctx)[-1] == JobState.CANCELLED.value
+    assert envelope("media.batch", ctx.events.job, result=result)["status"] == "cancelled"
+    assert exit_code_for_result(result) == 7
+
+
+def test_historic_batch_cancelled_before_any_job_exits_7(tmp_path, doubles, monkeypatch):
+    from cli import batch as cli_batch
+    from core.jobs.options import CommonOptions
+
+    cancel = CancelToken()
+    cancel.cancel()  # Ctrl+C reçu pendant la découverte
+    template = _template(tmp_path, _items(tmp_path, "a"))
+    logger = SimpleNamespace(emit=lambda *a, **k: None)
+    outcome = cli_batch._run_batch(template_path=template["template"], batch_path=template["batch"],
+                                   cli_inputs=[], input_dirs=[], recursive=False, include_patterns=[],
+                                   exclude_patterns=[], output_dir=None, dry_run=False, force=False,
+                                   continue_on_error=False, summary_path=None,
+                                   config=SimpleNamespace(), options=CommonOptions(), logger=logger,
+                                   steps=cli_batch.cli_batch_steps(), cancel=cancel)
+    assert outcome.cancelled and outcome.exit_code == 7 and doubles.ran == []

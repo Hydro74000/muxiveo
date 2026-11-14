@@ -96,6 +96,15 @@ class HybridRequest(Model):
 
         return encode_block_issues(values.get("encode"), "encode")
 
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
+        from core.json_documents import resolve_encode_paths
+
+        if isinstance(values.get("encode"), dict):
+            values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
+        return values
+
 
 @dataclass(frozen=True)
 class HybridPlanRequest(HybridRequest):
@@ -193,22 +202,30 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
     if request.encode is not None:
         # Bloc `encode` résolu et validé par épisode (règles du panneau Encodage), comme à l'exécution.
         from core.jobs.encode import resolve_from_job
+        from core.jobs.encode_runtime import checked_encode, encode_workflow
+        from core.service.ops.media import encode_plan_payload
 
         logger = EmitterLogger(ctx.events)
+        accept = bool(request.encode.get("accept_dovi_nvenc_crop"))
         for item, entry in zip(prepared, episodes):
             if item.remux_config is None:
                 continue
             try:
                 resolved = resolve_from_job(request.encode, item.remux_config, config=ctx.config,
-                                            options=spec.common, logger=logger, report_unknown=False)
+                                            options=spec.common, logger=logger, report_unknown=False,
+                                            cancel_event=ctx.cancel.event)
+                checked, errors = (checked_encode(resolved.config, encode_workflow(ctx.config, spec.common),
+                                                  config=ctx.config, options=spec.common, accept_dovi_nvenc_crop=accept)
+                                   if resolved is not None and resolved.config is not None else (None, []))
             except ApiError as error:
-                entry["error"] = error.render()
+                errors, checked, resolved = [error.render()], None, None
+            if errors:
+                entry["error"] = "Encodage refusé : " + " ; ".join(errors)
                 failures += 1
-                logger.emit("error", f"[HYBRID] {item.episode.display_name} : {error.render()}")
+                logger.emit("error", f"[HYBRID] {item.episode.display_name} : {entry['error']}")
                 continue
             if resolved is not None:
-                entry["encode"] = {"pure_copy": resolved.pure_copy, "video": list(resolved.video),
-                                   "audio": list(resolved.audio), "warnings": list(resolved.warnings)}
+                entry["encode"] = encode_plan_payload(resolved, checked)
     exported: list[Path] = []
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)
@@ -283,7 +300,11 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 from core.workflows.workflow_store import save_workflow
 
                 job = remux_config_to_exact_job(remux_config)
-                save_workflow(destination, {**job, "encode": request.encode} if request.encode is not None else job)
+                if request.encode is not None:
+                    from core.json_documents import portable_encode_block
+
+                    job = {**job, "encode": portable_encode_block(request.encode)}
+                save_workflow(destination, job)
                 entry["status"] = "exported"
             else:
                 child = children.logger(index)

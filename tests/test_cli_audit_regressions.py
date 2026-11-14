@@ -370,38 +370,6 @@ def test_document_paths_cover_track_calibrations_and_preset_files(tmp_path):
         tmp_path / "rapide")
 
 
-def test_hybrid_plan_resolves_and_exports_the_encode_block(monkeypatch, tmp_path):
-    from core.jobs.encode import ResolvedEncode
-    from core.jobs.errors import JobError
-    from core.service.ops import hybrid as hybrid_ops
-
-    def episode(name):
-        config = SimpleNamespace(output=tmp_path / f"{name}.mkv")
-        return SimpleNamespace(error=None, remux_config=config, episode=SimpleNamespace(display_name=name),
-                               describe=lambda: {"episode": name})
-
-    items = [episode("E01"), episode("E02")]
-    spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None, common=None)
-    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
-    monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a: None)
-
-    def resolve(block, remux_config, **_kwargs):
-        if remux_config.output.stem == "E02":
-            raise JobError("encode : preset inconnu", 3)
-        return ResolvedEncode(config=SimpleNamespace(), video=({"codec": "libx265"},))
-
-    monkeypatch.setattr("core.jobs.encode.resolve_from_job", resolve)
-    monkeypatch.setattr("core.profiles.selectors.remux_config_to_exact_job", lambda config: {"version": 1})
-    block = {"video": {"default": {"codec": "libx265"}}}
-    request = hybrid_ops.HybridPlanRequest.from_dict({"output_dir": str(tmp_path), "encode": block,
-                                                      "export_jobs": str(tmp_path / "jobs")})
-    result = hybrid_ops.hybrid_plan.handler(request, _ctx())
-    assert result.status == "partial"
-    assert result.episodes[0]["encode"]["video"] == [{"codec": "libx265"}] and "preset" in result.episodes[1]["error"]
-    assert [Path(p).name for p in result.exported] == ["E01.exact-job.json"]
-    assert json.loads(Path(result.exported[0]).read_text(encoding="utf-8"))["encode"] == block
-
-
 def test_catalog_flags_match_what_operations_do():
     import inspect
 
@@ -458,3 +426,155 @@ def test_incompatible_preset_is_refused_by_the_cli_like_the_panel():
         _resolve({"preset": "H10"}, load_preset=lambda name: preset)
     ok = EncodePreset(name="X", codec="libx265", crf=22, preset="slow")
     assert _resolve({"preset": "X"}, load_preset=lambda name: ok).video[0]["crf"] == 22
+
+
+# --- Contre-vérification : corrections complémentaires ---------------------------------------------
+
+
+def test_panel_preset_load_keeps_the_tonemap_default_of_the_new_codec(qt_app, monkeypatch, tmp_path):
+    from core.config import AppConfig
+    from core.inspector import HDRType
+    from core.workflows.encode import EncodePreset, ProfileManager
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    from tests.test_encode_panel_widgets import _COLOR, _PATH_A, _file_info, _select_codec, _video_entry, _video_track
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel._profiles = ProfileManager(tmp_path)
+    panel._profiles.save(EncodePreset(name="SDR", codec="libx264", crf=20, preset="slow"))
+    panel._profiles.save(EncodePreset(name="HDR", codec="libx265", crf=20, preset="slow"))
+    panel._refresh_profiles()
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, HDRType.HDR10)], hdr_type=HDRType.HDR10),
+                             _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "copy")
+        panel._set_combo_data(panel._profile_combo, "SDR")
+        panel._load_profile()
+        assert panel._codec_combo.currentData() == "libx264" and panel._tonemap_cb.isChecked()
+        panel._set_combo_data(panel._profile_combo, "HDR")
+        panel._load_profile()  # retour sur un codec HDR : le tone mapping coché d'office est retiré
+        assert panel._codec_combo.currentData() == "libx265" and not panel._tonemap_cb.isChecked()
+    finally:
+        panel.close()
+
+
+def test_cli_codec_change_applies_the_same_tonemap_default():
+    from core.inspector import HDRType
+
+    from tests.test_encode_request import _resolve
+
+    assert _resolve({"video": {"default": {"codec": "libx264"}}}).video[0]["tonemap_to_sdr"] is True
+    explicit = _resolve({"video": {"default": {"codec": "libx264", "tonemap": {"enabled": False}}}})
+    assert explicit.video[0]["tonemap_to_sdr"] is False
+    assert _resolve({"video": {"default": {"codec": "libx264"}}}, HDRType.NONE).video[0]["tonemap_to_sdr"] is False
+
+
+def test_historic_batch_steps_give_the_batch_token_to_builders_that_accept_it(monkeypatch):
+    from cli import batch as cli_batch
+    from core.service.context import CancelToken
+
+    cancel = CancelToken()
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli_batch, "build_remux_config",
+                        lambda job, config, options, logger, *, context=None: seen.update(context=context))
+    monkeypatch.setattr(cli_batch, "resolve_job_encode_config",
+                        lambda *args, cancel_event=None: seen.update(event=cancel_event))
+    steps = cli_batch.cli_batch_steps(cancel)
+    steps.build({}, None, None, None)
+    steps.encode({}, None, None, None, None)
+    assert seen["context"].cancel_event is cancel.event and seen["event"] is cancel.event
+    # Constructeur de substitution sans ce paramètre (tests oracle) : appelé tel quel.
+    monkeypatch.setattr(cli_batch, "build_remux_config", lambda job, config, options, logger: "ok")
+    assert steps.build({}, None, None, None) == "ok"
+
+
+def test_automatic_crop_stops_when_cancelled(tmp_path):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.runtime.crop_detector import detect_video_crop
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ProbeCancelledError):
+        detect_video_crop(tmp_path / "f.mkv", dimensions=(3840, 2160), duration_s=600.0, cancel_event=cancel)
+
+
+def test_real_exact_job_exports_pass_the_strict_contract(tmp_path):
+    import dataclasses
+
+    from core.profiles.selectors import remux_config_to_exact_job
+    from core.service.ops.media import MediaJobRequest
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, clone_track_entry
+
+    video = TrackEntry(0, "video", "HEVC", "2160p", "und", "", entry_id="v0", file_id="f0",
+                       remove_closed_captions=True)
+    audio = TrackEntry(1, "audio", "TRUEHD", "7.1", "eng", "VO", entry_id="a0", file_id="f0", time_shift_ms=40,
+                       sync_rewrite_mode="exact")
+    variant = dataclasses.replace(clone_track_entry(audio, entry_id="var1"), codec="eac3",
+                                  display_info="E-AC-3 640 kbps", time_shift_ms=40)
+    donor_sub = TrackEntry(0, "subtitle", "SRT", "", "fre", "", entry_id="s1", file_id="f1",
+                           sync_calibration={"segments": [{"start_ms": 0, "shift_ms": 120.0}], "confidence": 1.0})
+    sources = [SourceInput(path=tmp_path / "a.mkv", file_index=0, tracks=[video, audio, variant]),
+               SourceInput(path=tmp_path / "b.mkv", file_index=1, tracks=[donor_sub])]
+    config = RemuxConfig(
+        sources=sources, output=tmp_path / "out.mkv",
+        track_order=[(0, 0, "v0"), (0, 1, "a0"), (0, 1, "var1"), (1, 0, "s1")],
+        extra_attachments=[tmp_path / "cover.jpg"], file_title="Film", tag_overrides={"SEASON": "1", "EPISODE": "2"},
+        tmdb_cover=("https://image/x.jpg", "cover.jpg"), sync_mode="physical", sync_subtitles="none",
+        sync_calibrations={"1": {"segments": [{"start_ms": 0, "shift_ms": 80.0}]}},
+        chapter_overrides=[SimpleNamespace(timecode_s=0.0, name="Début")], chapter_source_index=0,
+    )
+    for identity in (False, True):
+        job = remux_config_to_exact_job(config, name="Mon workflow", fallback_profile="P",
+                                        identity_selectors=identity)
+        assert "audio_variants" in job
+        _request, warnings = MediaJobRequest.parse({"job": job})
+        assert warnings == ()
+    with pytest.raises(Exception, match="Requête invalide"):  # objet fermé : clé inconnue refusée
+        MediaJobRequest.parse({"job": {"version": 1, "sources": [{"path": str(tmp_path / "a.mkv"),
+                                                                  "sync": {"reference": 0, "typo": 1}}]}})
+
+
+def test_preset_files_stay_found_in_requests_and_exports(tmp_path, monkeypatch):
+    from core.jobs.options import CommonOptions
+    from core.jobs.runtime import export_exact_job
+    from core.service.ops.hybrid import HybridPlanRequest
+    from core.service.ops.profile import ProfileApplyRequest
+
+    project = tmp_path / "projet"
+    request = HybridPlanRequest.parse({"output_dir": "out", "encode": {"preset": "presets/P.json"}}, base_dir=project)[0]
+    assert request.encode == {"preset": str(project / "presets/P.json")}
+    profile = ProfileApplyRequest.parse({"profile": "P", "inputs": ["a.mkv"], "encode": {"preset": "Nom"}},
+                                        base_dir=project)[0]
+    assert profile.encode == {"preset": "Nom"}  # preset enregistré : nom inchangé
+    # Argument du CLI (relatif au dossier courant) : absolu dans le job exporté ailleurs.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "exports").mkdir()
+    monkeypatch.setattr("core.profiles.selectors.remux_config_to_exact_job", lambda config: {"version": 1})
+    destination = export_exact_job(SimpleNamespace(output=tmp_path / "o.mkv"),  # type: ignore[arg-type]
+                                   CommonOptions(export_workflow=str(tmp_path / "exports" / "job.json")),
+                                   encode={"preset": "presets/P.json"})
+    assert json.loads(destination.read_text(encoding="utf-8"))["encode"]["preset"] == str(tmp_path / "presets/P.json")
+
+
+def test_published_plan_follows_the_checked_dovi_nvenc_crop(monkeypatch):
+    import dataclasses
+
+    from core.service.ops import media as media_ops
+    from core.workflows.encode.models import VideoCropSettings
+
+    from tests.test_encode_request import _resolve
+
+    resolved = _resolve({"video": {"default": {"codec": "hevc_nvenc"}}})
+    crop = VideoCropSettings(enabled=True, unit="px", top=8, bottom=8)
+    video = dataclasses.replace(resolved.config.video_tracks[0], crop=crop)
+    checked = dataclasses.replace(resolved.config, video=video, video_tracks=[video])
+    monkeypatch.setattr(media_ops, "_build_cached", lambda request, ctx: (SimpleNamespace(), None, None))
+    monkeypatch.setattr(media_ops, "resolve_job_encode", lambda *a: resolved)
+    monkeypatch.setattr(media_ops, "encode_workflow", lambda *a: None)
+    monkeypatch.setattr(media_ops, "checked_encode", lambda *a, **k: (checked, []))
+    monkeypatch.setattr(media_ops, "serialize_remux_config", lambda config: {})
+    result = media_ops.media_validate.handler(media_ops.MediaJobRequest.from_dict({"job": {"version": 1}}), _ctx())
+    assert result.valid and result.encode["video"][0]["crop"]["top"] == 8

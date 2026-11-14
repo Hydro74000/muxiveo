@@ -115,3 +115,29 @@ def test_episode_encoding_with_encode_options(season, tmp_path):
     produced = list(out.glob("*.mkv"))
     assert len(produced) == 1
     assert [s["codec_name"] for s in ffprobe_json(produced[0])["streams"] if s["codec_type"] == "video"] == ["hevc"]
+
+
+def test_plan_validates_and_exports_the_encode_block(season, tmp_path):
+    master, donor = season
+    pair = f"{master / 'Serie.S01E01.2160p.mkv'}::{donor / 'Serie.S01E01.FRENCH.1080p.mkv'}"
+    refused = _cli(tmp_path, "--pair", pair, "-o", str(tmp_path / "out"), "--plan", "--sync", "none",
+                   "--video-codec", "libx265", "--encoder-preset", "BOGUS", "--export-jobs", str(tmp_path / "bad"))
+    assert refused.returncode == 7, refused.stderr  # encodage refusé comme au lancement : épisode en échec
+    plan = json.loads(refused.stdout)
+    assert plan["status"] == "failed" and "BOGUS" in plan["episodes"][0]["error"]
+    assert not list((tmp_path / "bad").glob("*.json")) if (tmp_path / "bad").exists() else True
+    ok = _cli(tmp_path, "--pair", pair, "-o", str(tmp_path / "out"), "--plan", "--sync", "none",
+              "--video-codec", "libx265", "--crf", "30", "--export-jobs", str(tmp_path / "jobs"))
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads(ok.stdout)["episodes"][0]["encode"]["video"][0]["codec"] == "libx265"
+    exported = next((tmp_path / "jobs").glob("*.exact-job.json"))
+    assert json.loads(exported.read_text(encoding="utf-8"))["encode"]["video"]["default"]["codec"] == "libx265"
+    # Job exporté relu tel quel : encodage x265 prévu.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+           "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"), "XDG_DATA_HOME": str(tmp_path / "xdg-data")}
+    validate = subprocess.run([sys.executable, str(ROOT / "main.py"), "--cli", "validate", "--config", str(exported),
+                               "--json", "--ffprobe", "ffprobe", "--mediainfo", "/bin/false"],
+                              cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              check=False, timeout=300)
+    assert validate.returncode == 0, validate.stderr
+    assert json.loads(validate.stdout)["encode"]["video"][0]["codec"] == "libx265"

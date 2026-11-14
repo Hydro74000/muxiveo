@@ -246,6 +246,9 @@ def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
     from core.profiles.selectors import remux_config_to_exact_job
     from core.workflows.workflow_store import save_workflow
 
+    from core.json_documents import portable_encode_block
+
+    encode = portable_encode_block(encode)
     ready = [item.remux_config for item in prepared if item.remux_config is not None]
     payloads = [(directory / (config.output.stem + ".exact-job.json"),
                  {**remux_config_to_exact_job(config), **({"encode": encode} if encode is not None else {})})

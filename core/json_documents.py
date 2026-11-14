@@ -113,10 +113,33 @@ def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any
     tracks = resolved.get("tracks")
     if isinstance(tracks, list):
         resolved["tracks"] = [_resolve_sync(item, base_dir) if isinstance(item, dict) else item for item in tracks]
-    encode = resolved.get("encode")
-    if isinstance(encode, dict) and isinstance(encode.get("preset"), str) and _is_file_reference(
-            encode["preset"], base_dir):
-        resolved["encode"] = dict(encode, preset=_resolve(encode["preset"], base_dir))
+    if isinstance(resolved.get("encode"), dict):
+        resolved["encode"] = resolve_encode_paths(resolved["encode"], base_dir)
+    return resolved
+
+
+def resolve_encode_paths(encode: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Bloc ``encode`` dont le preset désigné par un fichier relatif est résolu depuis ``base_dir``."""
+    preset = encode.get("preset")
+    if isinstance(preset, str) and _is_file_reference(preset, base_dir):
+        return dict(encode, preset=_resolve(preset, base_dir))
+    return encode
+
+
+def portable_encode_block(encode: Any) -> Any:
+    """Bloc ``encode`` à enregistrer dans un job exporté : preset fichier en chemin absolu.
+
+    Relu depuis le dossier de l'export, un chemin relatif (au dossier courant de la commande)
+    désignerait un autre fichier.
+    """
+    if not isinstance(encode, dict):
+        return encode
+    resolved = resolve_encode_paths(encode, Path.cwd())
+    preset = resolved.get("preset")
+    if isinstance(preset, str) and preset != encode.get("preset"):
+        return dict(resolved, preset=str(Path(preset).resolve()))
+    if isinstance(preset, str) and preset.startswith("~"):
+        return dict(resolved, preset=str(Path(preset).expanduser()))
     return resolved
 
 
@@ -126,4 +149,5 @@ def _is_file_reference(value: str, base_dir: Path) -> bool:
             or (Path(base_dir) / value).is_file())
 
 
-__all__ = ["JsonDocumentError", "parse_json_text", "read_json_document", "resolve_document_paths"]
+__all__ = ["JsonDocumentError", "parse_json_text", "portable_encode_block", "read_json_document",
+           "resolve_document_paths", "resolve_encode_paths"]

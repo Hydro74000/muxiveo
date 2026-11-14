@@ -15,6 +15,7 @@ from core.jobs.profile import (  # fonctions de construction partagées (core.jo
     run_profile_batch,
     snapshot_decision_profile as snapshot_decision_profile,
 )
+from core.jobs.options import call_cancellable
 from core.service.context import CancelToken
 from core.service.errors import ApiError
 from core.service.ops.media import JobOptions
@@ -160,19 +161,23 @@ def profile_apply(
     return EXIT_OK
 
 
-def cli_profile_batch_steps() -> ProfileBatchSteps:
-    """Étapes historiques du CLI, résolues à l'appel (fonctions remplaçables du module)."""
+def cli_profile_batch_steps(cancel: CancelToken | None = None) -> ProfileBatchSteps:
+    """Étapes historiques du CLI, résolues à l'appel (fonctions remplaçables du module).
+
+    ``cancel`` : jeton du lot, transmis à la préparation des constructeurs qui l'acceptent.
+    """
     return ProfileBatchSteps(
         load=lambda path, config: load_decision_profile(path, config),
         discover=lambda **kwargs: discover_direct_batch_jobs(**kwargs),
-        build=lambda profile, **kwargs: build_profile_remux_config(profile, **kwargs),
+        build=lambda profile, **kwargs: call_cancellable(build_profile_remux_config, cancel, profile, **kwargs),
         preview=lambda config, options, logger, remux_config: preview_remux_config(config, options, logger,
                                                                                     remux_config),
         # Ctrl+C : la garde du job annule le job puis prévient celle du lot (gardes imbriquées).
         run=lambda config, options, logger, remux_config, *, force: run_remux_config(
             config, options, logger, remux_config, force=force),
-        encode=lambda job, remux_config, config, options, logger: resolve_job_encode_config(
-            job, remux_config, config, options, logger),
+        encode=lambda job, remux_config, config, options, logger: call_cancellable(
+            resolve_job_encode_config, cancel, job, remux_config, config, options, logger,
+            context_param="cancel_event"),
         preview_encode=lambda config, options, logger, encode_config: preview_encode_config(
             config, options, logger, encode_config),
         run_encode=lambda config, options, logger, encode_config, *, force, accept_dovi_nvenc_crop: run_encode_config(
@@ -183,5 +188,5 @@ def cli_profile_batch_steps() -> ProfileBatchSteps:
 def profile_batch(profile_path: str, **kwargs: Any) -> int:
     """Applique un profil à un lot ; Ctrl+C annule le job en cours et arrête le lot."""
     with interrupt_guard(CancelToken()) as cancel:
-        return run_profile_batch(profile_path, **kwargs, steps=cli_profile_batch_steps(),
+        return run_profile_batch(profile_path, **kwargs, steps=cli_profile_batch_steps(cancel),
                                  cancel=cancel).exit_code

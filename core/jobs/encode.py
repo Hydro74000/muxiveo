@@ -9,6 +9,8 @@ job reste un remux.
 
 from __future__ import annotations
 
+import threading
+
 import dataclasses
 import re
 from collections.abc import Callable, Mapping
@@ -53,14 +55,16 @@ from core.workflows.encode.planning.track_settings import (
     EncoderEnvironment,
     SourceVideoContext,
     apply_preset_to_state,
-    preset_problem,
+    apply_tonemap_default,
     default_video_state,
     extract_hdr_meta_fields,
     is_pure_copy,
     normalize_video_state,
+    preset_problem,
     source_has_dv,
     source_has_hdr10plus,
     source_has_static_hdr10,
+    state_target_codec,
     video_settings_from_state,
     video_track_for,
 )
@@ -392,8 +396,12 @@ def resolve_encode(
                             f"{track.mkv_tid} : {problem}")
             state = apply_preset_to_state(state, preset, ctx, env)
         intents: set[str] = set()
+        codec_before = state_target_codec(state)
         for layer in layers:
             intents |= apply_video_spec(state, layer, env)
+        explicit_tonemap = any(layer.tonemap is not None and layer.tonemap.enabled is not None for layer in layers)
+        if not explicit_tonemap and state_target_codec(state) != codec_before:
+            apply_tonemap_default(state, ctx)  # changement de codec : défaut du panneau (source HDR → codec SDR)
         state = normalize_video_state(state, ctx, env)
         label = f"vidéo {source.file_index}:{track.mkv_tid}"
         _check_intents(state, ctx, intents, label, warnings)
@@ -498,11 +506,13 @@ def resolve_from_job(
     logger: JobLogger | None = None,
     cache: Any = None,
     report_unknown: bool = True,
+    cancel_event: threading.Event | None = None,
 ) -> ResolvedEncode | None:
     """Bloc ``encode`` brut d'un job résolu ; ``None`` sans bloc. Sources inspectées (cache réutilisé si fourni).
 
     Document tolérant : clé inconnue ignorée, signalée au journal sauf ``report_unknown=False`` (déjà
     contrôlée à la lecture de la requête : refusée par l'API, signalée par le CLI).
+    ``cancel_event`` : inspections et recadrage automatique annulables.
     """
     if raw_block is None:
         return None
@@ -517,7 +527,8 @@ def resolve_from_job(
             logger.emit("warning", f"encode : clé inconnue ignorée : {detail.path}")
     ffprobe = str(getattr(options, "ffprobe", None) or config.tool_ffprobe)
     inspector = FileInspector(ffprobe_bin=ffprobe, mediainfo_bin=str(getattr(options, "mediainfo", None)
-                                                                      or config.tool_mediainfo))
+                                                                      or config.tool_mediainfo),
+                              cancel_event=cancel_event)
     infos = {str(source.path): (cache.inspect(inspector, Path(source.path)) if cache is not None
                                 else inspector.inspect(Path(source.path)))
              for source in remux_config.sources}
@@ -527,6 +538,6 @@ def resolve_from_job(
         load_preset=preset_loader(Path(config.app_data_dir) / "encode_profiles"),
         detect_crop=functools.partial(detect_video_crop, ffmpeg_bin=ffmpeg,
                                       dovi_tool_bin=str(getattr(config, "tool_dovi_tool", "dovi_tool")),
-                                      ffprobe_bin=ffprobe),
+                                      ffprobe_bin=ffprobe, cancel_event=cancel_event),
         logger=logger,
     )

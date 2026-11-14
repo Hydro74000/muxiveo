@@ -56,6 +56,15 @@ class ProfileJobRequest(Model):
 
         return encode_block_issues(values.get("encode"), "encode")
 
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
+        from core.json_documents import resolve_encode_paths
+
+        if isinstance(values.get("encode"), dict):
+            values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
+        return values
+
 
 @dataclass(frozen=True)
 class ProfilePreviewRequest(ProfileJobRequest):
@@ -144,7 +153,7 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
 
 def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: ExecutionContext):
     return resolve_from_job(request.encode, remux_config, config=ctx.config, options=options,
-                            logger=EmitterLogger(ctx.events), report_unknown=False)
+                            logger=EmitterLogger(ctx.events), report_unknown=False, cancel_event=ctx.cancel.event)
 
 
 @operation("profile.apply", request=ProfileApplyRequest, result=MediaRunResult,

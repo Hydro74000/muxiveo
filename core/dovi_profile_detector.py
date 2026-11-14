@@ -42,12 +42,13 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
 
@@ -393,6 +394,7 @@ class DoviProfileDetector:
 
     def probe_l5_offsets(
         self, source: Path | str, *, duration_s: float | None = None, stream_index: int = 0,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[int, int, int, int] | None:
         """Sample L5 across the timeline; retain only borders common to all samples.
 
@@ -417,6 +419,8 @@ class DoviProfileDetector:
                 hevc = Path(tmp) / "sample.hevc"
                 rpu = Path(tmp) / "sample.bin"
                 for position in video_sample_times(duration):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise ProbeCancelledError("Sonde L5 annulée.")
                     # Input seeking uses the container index. Stream copy reads a
                     # small GOP fragment, without decoding/scanning the whole film.
                     # Configured local tools, separate argv, no shell expansion.

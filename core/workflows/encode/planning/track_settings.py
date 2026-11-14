@@ -23,7 +23,7 @@ from core.workflows.encode.backends import backend_capabilities_for_codec
 from core.workflows.encode.catalog import default_preset_for_codec, supports_10bit, supports_hdr_output
 from core.workflows.encode.domain.codecs import source_bit_depth_from_stream
 from core.workflows.encode.dovi_policy import sub_profile_from_track
-from core.workflows.encode.hdr_policy import default_static_hdr_checked
+from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
 from core.workflows.encode.models import (
     EncodePreset,
     FrameInterpolationSettings,
@@ -426,6 +426,24 @@ class EncoderEnvironment:
     default_preset: Callable[[str], str] = field(default=lambda codec: default_preset_for_codec(codec))
 
 
+def apply_tonemap_default(state: dict[str, object], ctx: SourceVideoContext) -> None:
+    """Défaut du tone mapping quand le codec change (règle du panneau Encodage).
+
+    Source HDR vers un codec sans HDR : conversion SDR cochée d'office (``tonemap_enabled_by_codec``) ;
+    retour sur un codec HDR : ce choix automatique est retiré. Un choix explicite n'est jamais modifié.
+    """
+    codec = state_target_codec(state)
+    if codec == "copy":
+        return
+    hdr_ok = backend_capabilities_for_codec(codec).supports_hdr
+    if hdr_ok and state.get("tonemap_enabled_by_codec"):
+        state["tonemap_to_sdr"] = False
+        state["tonemap_enabled_by_codec"] = False
+    elif not hdr_ok and not state.get("tonemap_to_sdr") and source_is_hdr(ctx.hdr_type, ctx.transfer):
+        state["tonemap_to_sdr"] = True
+        state["tonemap_enabled_by_codec"] = True
+
+
 def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
                           env: EncoderEnvironment | None = None) -> dict[str, object]:
     """Réaligne un état sur la source et le codec : profondeur, politique HDR, HDR effectif."""
@@ -515,7 +533,6 @@ def preset_problem(
     from core.i18n import translate_text
     from core.workflows.encode.catalog import presets_for_codec, rate_controls_for_codec
     from core.workflows.encode.domain.codecs import rate_control_values
-    from core.workflows.encode.hdr_policy import source_is_hdr
 
     env = env or EncoderEnvironment()
     codec = settings.codec
@@ -543,9 +560,13 @@ def preset_problem(
 
 def apply_preset_to_state(state: Mapping[str, object], preset: EncodePreset, ctx: SourceVideoContext,
                           env: EncoderEnvironment | None = None) -> dict[str, object]:
-    """Preset d'encodage appliqué à un état (comme « Charger » du panneau) : HDR de la source conservé."""
+    """Preset d'encodage appliqué à un état (comme « Charger » du panneau) : HDR de la source conservé.
+
+    Changement de codec : défaut du tone mapping du nouveau codec (:func:`apply_tonemap_default`).
+    """
     settings = preset.to_video_settings()
     updated = copy_state(state)
+    previous_codec = state_target_codec(state)
     for key in PRESET_FIELDS:
         if key == "preset":
             updated[key] = preset.preset
@@ -553,6 +574,8 @@ def apply_preset_to_state(state: Mapping[str, object], preset: EncodePreset, ctx
             updated[key] = settings.quality_mode
         else:
             updated[key] = getattr(settings, key)
+    if state_target_codec(updated) != previous_codec:
+        apply_tonemap_default(updated, ctx)
     return normalize_video_state(updated, ctx, env)
 
 

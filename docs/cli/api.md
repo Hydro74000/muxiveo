@@ -40,10 +40,13 @@ muxiveo --cli call media.run --request job.json --ffmpeg /opt/ffmpeg/bin/ffmpeg
 ou `null` non autorisé : refus `invalid_request` avec le chemin de chaque champ en cause (ex.
 `job.sources[0].sycn`). Clés internes préfixées `_` ou `$` ignorées. Chemins relatifs résolus depuis
 le dossier du fichier de requête (dossier courant pour stdin). Les documents des commandes
-historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clés inconnues
-signalées par un avertissement (`warning`, code `unknown_key`), jamais refusées. Un fichier désigné
-par une requête (`template`, `batch` de `media.batch`) est un document : tolérant aussi. Exemples de
-requêtes : `docs/cli/examples/`.
+historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clé inconnue
+signalée par un avertissement (`warning`, code `unknown_key`) et ignorée ; seuls les objets fermés du
+contrat (`sources[i].sync`, `tracks[i].sync`, `flags`) la refusent, comme avant (`validation`). Un
+fichier désigné par une requête (`template`, `batch` de `media.batch`) est un document : tolérant
+aussi. Chemins relatifs d'une requête, `encode.preset` désignant un fichier compris : depuis son
+dossier ; un job exporté enregistre ce preset en chemin absolu. Exemples de requêtes :
+`docs/cli/examples/`.
 
 **Réponse** (stdout, un objet JSON indenté) ; `status` = état terminal du job (pour un lot : celui de son
 résultat, voir plus bas) :
@@ -84,8 +87,10 @@ terminal du lot, l'enveloppe de `call` et le code retour :
 - `partial` : au moins un réussi et au moins un en échec ou annulé ;
 - `failed` / `cancelled` : aucun réussi.
 
-Lot non entièrement réussi (`partial`, `failed`, `cancelled`) : code retour 7, comme la commande
-`batch`. `hybrid.plan` suit la même règle d'après les épisodes dont la préparation a échoué.
+Lot non entièrement réussi (`partial`, `failed`, `cancelled`, annulation pendant la préparation
+comprise) : code retour 7, comme la commande `batch`. `hybrid.plan` suit la même règle d'après les
+épisodes dont la préparation ou l'encodage (mêmes refus qu'au lancement) a échoué ; un épisode refusé
+n'est pas exporté.
 
 Une sortie publiée reste publiée (et listée) quel que soit le sort des suivants. Toutes les sorties
 sont préparées puis toute collision est refusée **avant** le premier job.
