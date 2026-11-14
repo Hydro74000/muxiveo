@@ -91,4 +91,6 @@ def run_remux(
         logger.emit("error", "Opération annulée.")
         raise ApiError(ErrorCode.CANCELLED, "Opération annulée.", logged=True)
     logger.emit("error", outcome.message, exception=repr(outcome.exception))
-    raise ApiError(error_code(outcome.exception), outcome.message, logged=True)
+    # Échec après la levée du jeton : annulation (règle des lots, ``_Children``), message d'origine au journal.
+    code = ErrorCode.CANCELLED if cancel.cancelled else error_code(outcome.exception)
+    raise ApiError(code, outcome.message, logged=True)
