@@ -2919,3 +2919,25 @@ def test_apply_all_sdr_round_trip_with_an_sdr_track_displayed_keeps_dv(qt_app, m
             panel._crf_spin.setValue(panel._crf_spin.value() + 1)
     finally:
         panel.close()
+
+
+def test_manual_hdr10_values_on_an_sdr_source_are_kept(qt_app, monkeypatch):
+    """Valeurs HDR10 saisies sur une source SDR : gardées une fois la piste quittée (et non propagées)."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+    for apply_all in (False, True):
+        panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+        try:
+            if not apply_all:
+                panel._on_apply_all_video_toggled(False)
+            panel._video_list.setCurrentRow(1)
+            panel._inject_hdr_cb.setChecked(True)
+            panel._master_display.setText(md)
+            panel._max_cll.setText("1000,400")
+            panel._save_current_video_state()
+            panel._video_list.setCurrentRow(0)  # piste SDR quittée : normalisée comme les autres
+            settings = _settings_by_path(panel)
+            assert settings[path_sdr].inject_hdr_meta and settings[path_sdr].master_display == md, apply_all
+            assert settings[_PATH_A].master_display != md  # valeurs propres à leur source
+        finally:
+            panel.close()

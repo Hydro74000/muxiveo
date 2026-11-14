@@ -200,3 +200,13 @@ def test_cli_shortcuts_target_one_track_and_override_the_job():
 def test_cli_shortcuts_reject_malformed_values(argv):
     with pytest.raises(JobError):
         encode_block_from_args(_args(*argv))
+
+
+def test_manual_static_hdr_on_an_sdr_source_is_kept():
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+    video = _resolve({"video": {"default": {"codec": "libx265", "static_hdr": {
+        "mode": "manual", "master_display": md, "max_cll": "1000,400"}}}}, HDRType.NONE).video[0]
+    assert video["inject_hdr_meta"] and video["master_display"] == md and video["max_cll"] == "1000,400"
+    inherited = _resolve({"video": {"default": {"codec": "libx265", "static_hdr": {"mode": "source"}}}},
+                         HDRType.NONE).video[0]
+    assert not inherited["inject_hdr_meta"]  # rien à recopier d'une source SDR

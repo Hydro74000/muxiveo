@@ -404,7 +404,8 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
     - codec SDR   : aucune option HDR (H.264…) ; les options décochées pour ce codec sont mémorisées
       (``hdr_disabled_by_codec``, ``dynamic_hdr_disabled_by_codec``) puis rétablies au retour sur un
       codec qui les porte (HDR10, Dolby Vision, HDR10+ indépendamment).
-    - source sans HDR10 statique : pas d'injection HDR10 héritée d'une autre piste.
+    - source sans HDR10 statique : pas d'injection HDR10 héritée d'une autre piste ; une demande explicite
+      (valeurs MDCV / MaxCLL saisies) est gardée.
     """
     if codec == "copy":
         state["inject_hdr_meta"] = source_has_static_hdr10(source_hdr, source_transfer)
@@ -434,7 +435,8 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
         return
     if state.get("hdr_disabled_by_codec"):
         state["inject_hdr_meta"], state["hdr_disabled_by_codec"] = True, False
-    if not source_has_static_hdr10(source_hdr, source_transfer):
+    manual = any(str(state.get(key) or "").strip() for key in ("master_display", "max_cll"))
+    if not source_has_static_hdr10(source_hdr, source_transfer) and not manual:
         state["inject_hdr_meta"] = False
 
 
