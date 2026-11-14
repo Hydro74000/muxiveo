@@ -1,0 +1,20 @@
+{
+  "format": "muxiveo-hybrid-recipe",
+  "version": 1,
+  "keep_master_video": true,
+  "keep_master_chapters": true,
+  "keep_master_audio_langs": ["eng"],
+  "donor_audio_langs": ["fre"],
+  "donor_sub_langs": ["fre"],
+  "exclude_languages": [],
+  "sync_mode": "physical",
+  "sync_subtitles": "mirror",
+  "sync_strategy": "auto",
+  "manual_shift_ms": 0,
+  "crossfade_ms": 80,
+  "cadence_auto_apply": true,
+  "cadence_audio_method": "auto",
+  "output_tag": "Hybrid",
+  "track_choices": null,
+  "track_overrides": []
+}

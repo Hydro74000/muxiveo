@@ -336,5 +336,27 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid.add_argument("--dry-run", action="store_true")
     hybrid.add_argument("--force", action="store_true")
     hybrid.add_argument("--continue-on-error", action="store_true")
+    studio = hybrid.add_argument_group("Moteur du Hybrid Studio (sources, appariement, recette)")
+    studio.add_argument("--source", action="append", default=[], metavar="RÔLE=CHEMIN",
+                        help="Source et son rôle : master, donor, donor-audio, donor-sub ; fichier ou dossier ; "
+                             "répétable (--ref/--donor/--ref-dir/--donor-dir en sont des alias).")
+    studio.add_argument("--matching", choices=("episode", "fuzzy", "order"), default="episode",
+                        help="Appariement des épisodes : numéros SxxEyy (défaut), similarité des titres, ou ordre.")
+    studio.add_argument("--pair", action="append", default=[], metavar="MASTER::DONNEUR",
+                        help="Paire manuelle (MASTER::DONNEUR[::DONNEUR…]) ; répétable, exclut --source.")
+    studio.add_argument("--recipe", metavar="FICHIER", help="Recette exportée par le Hybrid Studio (JSON).")
+    studio.add_argument("--keep-master-audio", metavar="LANGUES", help="Langues audio du master gardées (fre,eng…).")
+    studio.add_argument("--donor-audio-langs", metavar="LANGUES", help="Langues audio prises aux donneurs.")
+    studio.add_argument("--donor-sub-langs", metavar="LANGUES", help="Langues de sous-titres prises aux donneurs.")
+    studio.add_argument("--exclude-langs", metavar="LANGUES", help="Langues jamais retenues.")
+    studio.add_argument("--sync", choices=("auto", "manual", "none"), default=None,
+                        help="Synchro des donneurs : analyse (défaut), décalage manuel (--shift-ms) ou aucune.")
+    studio.add_argument("--shift-ms", type=int, default=None, help="Décalage manuel des donneurs (avec --sync manual).")
+    studio.add_argument("--plan", action="store_true",
+                        help="Préparer sans exécuter : appariement, pistes, calibrations et sorties en JSON.")
+    studio.add_argument("--export-jobs", metavar="DOSSIER",
+                        help="Écrire les exact-jobs finalisés (à corriger puis lancer par run / batch).")
+    studio.add_argument("--save-recipe", metavar="FICHIER", help="Écrire la recette effective (JSON).")
+    add_encode_options(hybrid)
     hybrid.set_defaults(func=cmd_hybrid, sync_mode="physical", sync_subtitles="mirror", clean_nfo=True, crossfade_ms=80)
     return parser

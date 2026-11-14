@@ -15,7 +15,7 @@ from cli.runtime import run_remux_config
 from cli.interrupts import interrupt_guard
 from core.workflows.hybrid import HybridPair as HybridPair  # réexport (tests)
 from cli.service_adapter import envelope, overrides_from_args, print_json, run_operation
-from core.jobs.hybrid_pairs import HybridOptions, HybridSteps, pairs_for, run_hybrid
+from core.jobs.hybrid_pairs import HybridOptions, HybridSteps, pairs_for
 from core.jobs.hybrid_pairs import prepare_pair as _prepare_pair
 from core.jobs.runtime import remux_workflow
 from core.service.context import CancelToken
@@ -73,6 +73,8 @@ def cmd_shift_subs(args, config, logger):
 
 
 def pairs_from_args(args):
+    """Moteur par paires historique (``prepare_pair``) : conservé pour les scripts ; la commande ``hybrid``
+    utilise le moteur du Hybrid Studio."""
     return pairs_for(args.ref, args.donor, args.ref_dir, args.donor_dir)
 
 
@@ -111,24 +113,14 @@ def prepare_pair(pair, args, config, logger):
     return _prepare_pair(pair, hybrid_options(args), config, logger, cli_hybrid_steps(args, config))
 
 
-def cmd_hybrid(args, config, logger):
-    """``hybrid`` : paires préparées (synchro), collisions refusées, puis export / plan / exécution ; Ctrl+C arrête."""
-    if getattr(args, "log_format", "text") == "events":
-        return _hybrid_via_operation(args, config, logger)
-    pairs = pairs_from_args(args)
-    with interrupt_guard(CancelToken()) as cancel:
-        outcome = run_hybrid(pairs, hybrid_options(args), config, logger, cli_hybrid_steps(args, config),
-                             prepare=lambda pair: prepare_pair(pair, args, config, logger), cancel=cancel)
-    if args.dry_run:
-        try:
-            print(json.dumps(outcome.episodes, ensure_ascii=False, indent=2))
-        except UnicodeEncodeError:
-            print(json.dumps(outcome.episodes, ensure_ascii=True, indent=2))
-    return outcome.exit_code
+def _languages(value):
+    return [item.strip() for item in str(value).split(",") if item.strip()] if value else None
 
 
-def _hybrid_via_operation(args, config, logger):
-    """``--log-format events`` : opération ``hybrid.run`` (jobs enfants, réponse publique sur stdout)."""
+def hybrid_payload(args) -> dict:
+    """Requête ``hybrid.run`` / ``hybrid.plan`` des options de la commande ``hybrid``."""
+    from cli.encode_options import encode_block_from_args
+    from core.jobs.hybrid_studio import ROLES, parse_pairs, parse_sources
     from core.service.ops.media import JobOptions
 
     payload: dict = {
@@ -137,15 +129,56 @@ def _hybrid_via_operation(args, config, logger):
         "force": bool(args.force), "continue_on_error": bool(args.continue_on_error),
         "output_all": bool(getattr(args, "output_all", False)),
         "output_template": str(getattr(args, "output_template", "") or ""),
-        "tmdb_apikey": str(args.tmdb_apikey or ""),
+        "tmdb_apikey": str(args.tmdb_apikey or ""), "matching": getattr(args, "matching", "episode") or "episode",
     }
-    for key in ("ref", "donor", "ref_dir", "donor_dir", "profile", "export_workflow", "report_json"):
-        if getattr(args, key, None):
+    for key in ("ref", "donor", "ref_dir", "donor_dir", "profile", "export_workflow", "report_json", "recipe",
+                "sync", "shift_ms"):
+        if getattr(args, key, None) not in (None, ""):
             payload[key] = getattr(args, key)
+    for key in ("keep_master_audio", "donor_audio_langs", "donor_sub_langs", "exclude_langs"):
+        languages = _languages(getattr(args, key, None))
+        if languages is not None:
+            payload[key] = languages
     if args.auto_tmdb is not None:
         payload["auto_tmdb"] = args.auto_tmdb
+    sources = parse_sources(getattr(args, "source", None) or [])
+    if sources:
+        roles = {role: name for name, role in ROLES.items()}
+        payload["sources"] = [{"role": roles[role], "path": str(path)} for role, path in sources]
+    pairs = parse_pairs(getattr(args, "pair", None) or [])
+    if pairs:
+        payload["pairs"] = [{"master": str(master), "donors": [str(d) for d in donors]} for master, donors in pairs]
+    block = encode_block_from_args(args)
+    if block is not None:
+        payload["encode"] = block
+    if getattr(args, "export_jobs", None):
+        payload["export_jobs"] = args.export_jobs
+    if getattr(args, "save_recipe", None):
+        payload["save_recipe"] = args.save_recipe
+    return payload
+
+
+def cmd_hybrid(args, config, logger):
+    """``hybrid`` : moteur du Hybrid Studio (opérations hybrid.plan / hybrid.run) ; Ctrl+C arrête."""
+    plan = bool(getattr(args, "plan", False) or getattr(args, "export_jobs", None) or getattr(args, "save_recipe", None))
+    name = "hybrid.plan" if plan else "hybrid.run"
+    payload = hybrid_payload(args)
+    if not plan:
+        for key in ("export_jobs", "save_recipe"):
+            payload.pop(key, None)
     with interrupt_guard(CancelToken()) as cancel:
-        result, ctx = run_operation("hybrid.run", payload, config=config, logger=logger,
+        result, ctx = run_operation(name, payload, config=config, logger=logger,
                                     overrides=overrides_from_args(args), cancel=cancel)
-    print_json(envelope("hybrid.run", ctx.events.job, result=result))
+    if getattr(args, "log_format", "text") == "events":
+        print_json(envelope(name, ctx.events.job, result=result))
+    elif plan:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    elif args.dry_run:
+        try:
+            print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=False, indent=2))
+        except UnicodeEncodeError:
+            print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=True, indent=2))
+    if plan:
+        failed = any("error" in entry for entry in getattr(result, "episodes", ()))
+        return EXIT_PARTIAL if failed else EXIT_OK
     return EXIT_OK if getattr(result, "status", "") == "succeeded" else EXIT_PARTIAL

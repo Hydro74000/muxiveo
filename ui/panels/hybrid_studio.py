@@ -683,6 +683,13 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         wit_actions.addWidget(self.recipe_status_lbl)
         wit_actions.addStretch()
+        # Recette partagée avec le CLI (`hybrid --recipe`, `--save-recipe`).
+        self.export_recipe_btn = _secondary_button(translate_text("Exporter la recette…"))
+        self.export_recipe_btn.clicked.connect(self.export_recipe)
+        wit_actions.addWidget(self.export_recipe_btn)
+        self.import_recipe_btn = _secondary_button(translate_text("Importer la recette…"))
+        self.import_recipe_btn.clicked.connect(self.import_recipe)
+        wit_actions.addWidget(self.import_recipe_btn)
         cwit_layout.addLayout(wit_actions)
 
         layout.addWidget(card_witness)
@@ -1043,6 +1050,7 @@ class HybridStudio(QWidget):
 
     def _fill_witness_table(self, res, signature=None):
         """Reconstruit le témoin sous le bloqueur de signaux de l'appelant."""
+        self._witness_result = (res, signature)
         self._witness_section.set_expanded(True)
         if isinstance(res, Exception):
             self.witness_info.setText(translate_text("Erreur d'inspection : {err}", err=str(res)))
@@ -1210,6 +1218,64 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setText(summary)
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))
+        self._update_output_preview()
+
+    def _recipe_with_controls(self) -> HybridRecipe:
+        """Recette courante complétée des réglages de synchro affichés."""
+        return replace(
+            self.recipe, cadence_auto_apply=self.cadence_auto_apply.isChecked(),
+            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
+            sync_mode=self.mode.currentData() or "physical",
+            sync_subtitles="mirror" if self.mirror.isChecked() else "none",
+            sync_strategy=self.sync_strategy.currentData() or "auto", manual_shift_ms=self.manual_shift.value())
+
+    def export_recipe(self) -> None:
+        """Recette (pistes du modèle, langues, synchro) en JSON, réutilisable par `hybrid --recipe`."""
+        path, _ = QFileDialog.getSaveFileName(self, translate_text("Exporter la recette"), "recette-hybride.json",
+                                              translate_text("Recette JSON (*.json)"))
+        if not path:
+            return
+        from core.atomic_io import atomic_write_text
+        from core.jobs.hybrid_studio import recipe_json
+
+        try:
+            atomic_write_text(Path(path), recipe_json(self._recipe_with_controls()))
+        except OSError as exc:
+            self.log_message.emit("ERROR", translate_text("Recette non écrite : {error}", error=str(exc)))
+            return
+        self.log_message.emit("OK", translate_text("Recette exportée : {path}", path=path))
+
+    def import_recipe(self) -> None:
+        """Recette relue : modèle de pistes, langues et réglages de synchro."""
+        if self.busy:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, translate_text("Importer la recette"), "",
+                                              translate_text("Recette JSON (*.json)"))
+        if not path:
+            return
+        from core.jobs.errors import JobError
+        from core.jobs.hybrid_studio import load_recipe
+
+        try:
+            recipe = load_recipe(Path(path))
+        except JobError as exc:
+            self.log_message.emit("ERROR", exc.message)
+            self.status.setText(exc.message)
+            return
+        self.recipe = recipe
+        for combo, value in ((self.mode, recipe.sync_mode), (self.sync_strategy, recipe.sync_strategy),
+                             (self.cadence_method_combo, recipe.cadence_audio_method)):
+            index = combo.findData(value)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        self.mirror.setChecked(recipe.sync_subtitles == "mirror")
+        self.cadence_auto_apply.setChecked(recipe.cadence_auto_apply)
+        self.manual_shift.setValue(recipe.manual_shift_ms)
+        witness = getattr(self, "_witness_result", None)
+        if witness is not None:
+            self._populate_witness_table(*witness)
+        self.recipe_status_lbl.setText(translate_text("Recette importée : {name}", name=Path(path).name))
+        self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self._update_output_preview()
 
     @staticmethod
@@ -2409,20 +2475,9 @@ class HybridStudio(QWidget):
 
     def _store_row_calibration(self, row, source_index, config, calibration):
         """Synchro d'une source donneuse du plan (pistes, calibrations, ligne affichée)."""
-        # Coupures, conversion de cadence ou de hauteur : seule la réécriture physique les applique.
-        if calibration.changes_timeline or calibration.converts_audio:
-            config.sync_mode = "physical"
-        offset = round(calibration.segments[0].shift_ms)
-        payload = calibration.to_dict()
-        physical = config.sync_mode == "physical"
-        if physical:
-            config.sync_calibrations[str(source_index)] = payload
-        else:
-            config.sync_calibrations.pop(str(source_index), None)
-        for track in config.sources[source_index].tracks:
-            if track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror"):
-                track.time_shift_ms = 0 if physical else offset
-                track.sync_calibration = payload if physical else None
+        from core.workflows.hybrid_matrix import store_plan_calibration
+
+        store_plan_calibration(config, source_index, calibration)
         primary = calibration if source_index == 1 else self.jobs[row][1]
         self.jobs[row] = (config, primary)
         self._completed_jobs.pop(row, None)

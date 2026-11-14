@@ -9734,5 +9734,37 @@
   "Réalignement d’après la mesure": {
     "fra": "Réalignement d’après la mesure",
     "eng": "Realignment from the measurement"
+  },
+  "Exporter la recette…": {
+    "fra": "Exporter la recette…",
+    "eng": "Export recipe…"
+  },
+  "Importer la recette…": {
+    "fra": "Importer la recette…",
+    "eng": "Import recipe…"
+  },
+  "Exporter la recette": {
+    "fra": "Exporter la recette",
+    "eng": "Export recipe"
+  },
+  "Importer la recette": {
+    "fra": "Importer la recette",
+    "eng": "Import recipe"
+  },
+  "Recette JSON (*.json)": {
+    "fra": "Recette JSON (*.json)",
+    "eng": "JSON recipe (*.json)"
+  },
+  "Recette non écrite : {error}": {
+    "fra": "Recette non écrite : {error}",
+    "eng": "Recipe not written: {error}"
+  },
+  "Recette exportée : {path}": {
+    "fra": "Recette exportée : {path}",
+    "eng": "Recipe exported: {path}"
+  },
+  "Recette importée : {name}": {
+    "fra": "Recette importée : {name}",
+    "eng": "Recipe imported: {name}"
   }
 }

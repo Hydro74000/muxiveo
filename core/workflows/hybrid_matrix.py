@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import copy
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 import re
@@ -320,6 +321,73 @@ class HybridRecipe:
     cadence_auto_apply: bool = True
     cadence_audio_method: str = "auto"
     output_tag: str = "Hybrid"
+
+    #: Version du format JSON de la recette (``to_dict`` / ``from_dict``).
+    FORMAT = "muxiveo-hybrid-recipe"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Recette sérialisable (export du Hybrid Studio, ``hybrid --recipe``)."""
+        data: dict[str, Any] = {"format": self.FORMAT, "version": 1}
+        for name in ("keep_master_video", "keep_master_chapters", "keep_master_audio_langs", "donor_audio_langs",
+                     "donor_sub_langs", "exclude_languages", "sync_mode", "sync_subtitles", "sync_strategy",
+                     "manual_shift_ms", "crossfade_ms", "cadence_auto_apply", "cadence_audio_method", "output_tag"):
+            value = getattr(self, name)
+            data[name] = list(value) if isinstance(value, list) else value
+        data["track_choices"] = (None if self.track_choices is None
+                                 else [asdict(choice) for choice in self.track_choices])
+        data["track_overrides"] = [{"track": asdict(choice), "set": dict(values)}
+                                   for choice, values in self.track_overrides.items()]
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HybridRecipe:
+        """Recette relue ; champ inconnu ou type invalide → ``ValueError``."""
+        if not isinstance(data, Mapping):
+            raise ValueError("Recette : objet JSON attendu.")
+        if data.get("format", cls.FORMAT) != cls.FORMAT:
+            raise ValueError(f"Recette : format {data.get('format')!r} inconnu.")
+        recipe = cls()
+        lists = {"keep_master_audio_langs", "donor_audio_langs", "donor_sub_langs", "exclude_languages"}
+        simple = {"keep_master_video": bool, "keep_master_chapters": bool, "sync_mode": str, "sync_subtitles": str,
+                  "sync_strategy": str, "manual_shift_ms": int, "crossfade_ms": int, "cadence_auto_apply": bool,
+                  "cadence_audio_method": str, "output_tag": str}
+        unknown = sorted(set(data) - lists - set(simple) - {"format", "version", "track_choices", "track_overrides"})
+        if unknown:
+            raise ValueError("Recette : champ(s) inconnu(s) : " + ", ".join(unknown))
+        for name in lists & set(data):
+            value = data[name]
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"Recette : {name} attendu liste de langues.")
+            setattr(recipe, name, list(value))
+        for name, kind in simple.items():
+            if name in data:
+                value = data[name]
+                if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+                    raise ValueError(f"Recette : {name} de type invalide.")
+                setattr(recipe, name, value)
+        if recipe.sync_mode not in ("physical", "container") or recipe.sync_subtitles not in ("mirror", "none") \
+                or recipe.sync_strategy not in ("auto", "manual", "none") \
+                or recipe.cadence_audio_method not in ("auto", "atempo", "asetrate"):
+            raise ValueError("Recette : mode de synchro, stratégie ou méthode de cadence invalide.")
+
+        def choice(raw: Any) -> HybridTrackChoice:
+            if not isinstance(raw, Mapping):
+                raise ValueError("Recette : piste attendue sous forme d'objet.")
+            try:
+                return HybridTrackChoice(**dict(raw))
+            except TypeError as exc:
+                raise ValueError(f"Recette : piste invalide ({exc}).") from exc
+
+        choices = data.get("track_choices")
+        recipe.track_choices = None if choices is None else tuple(choice(item) for item in choices)
+        overrides: dict[HybridTrackChoice, dict[str, str]] = {}
+        for item in data.get("track_overrides") or ():
+            values = item.get("set") if isinstance(item, Mapping) else None
+            if not isinstance(values, Mapping) or not set(values) <= {"language", "title"}:
+                raise ValueError("Recette : surcharge de piste attendue {track, set: {language, title}}.")
+            overrides[choice(item.get("track"))] = {key: str(value) for key, value in values.items()}
+        recipe.track_overrides = overrides
+        return recipe
 
     @classmethod
     def from_witness_config(cls, remux_config: RemuxConfig, master_index: int = 0) -> HybridRecipe:
@@ -693,6 +761,25 @@ def resolve_plan_cadence_methods(config: RemuxConfig, ffmpeg_bin, ffprobe_bin, c
             calibration, ffmpeg_bin, ffprobe_bin, cancel_event, logger, name,
         )
     return resolved
+
+
+def store_plan_calibration(config: RemuxConfig, source_index: int, calibration: SyncCalibration) -> None:
+    """Synchro d'une source donneuse du plan : réécriture physique (calibration de la source et de ses pistes)
+    ou décalage conteneur de ses pistes audio (et sous-titres en miroir)."""
+    # Coupures, conversion de cadence ou de hauteur : seule la réécriture physique les applique.
+    if calibration.changes_timeline or calibration.converts_audio:
+        config.sync_mode = "physical"
+    offset = round(calibration.segments[0].shift_ms)
+    payload = calibration.to_dict()
+    physical = config.sync_mode == "physical"
+    if physical:
+        config.sync_calibrations[str(source_index)] = payload
+    else:
+        config.sync_calibrations.pop(str(source_index), None)
+    for track in config.sources[source_index].tracks:
+        if track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror"):
+            track.time_shift_ms = 0 if physical else offset
+            track.sync_calibration = payload if physical else None
 
 
 def _language_key(language: str | None) -> str:

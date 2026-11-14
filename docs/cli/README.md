@@ -38,7 +38,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
 | `batch --profile` | applique un profil à un dossier |
-| `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
+| `hybrid` | hybridation (moteur du Hybrid Studio) : sources à rôles, appariement, recette, plan, exact-jobs ; voir « Cas 2 » |
 | `sync-scan` | corrélation acoustique FFT et extraction de calibration |
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
 | `encode` | encode (job + bloc `encode` ou options d'encodage), ou aperçus `--preview-image/--preview-video` ; voir « Encodage » |
@@ -1083,6 +1083,41 @@ Muxiveo-cli hybrid \
 ```
 
 * Muxiveo analyse les noms de fichiers dans les deux dossiers, apparie automatiquement chaque épisode (`S01E01` avec `S01E01`, `S01E02` avec `S01E02`, etc.), applique l'analyse acoustique individuelle et assemble les fichiers finaux.
+
+#### C. Moteur du Hybrid Studio : rôles, appariement, recette, plan
+
+`hybrid` utilise le moteur du Hybrid Studio (opérations `hybrid.plan` et `hybrid.run`) : mêmes
+appariements, même sélection de pistes (recette), préparations en parallèle, méthodes de cadence
+« auto » tranchées avant l'exécution.
+
+```bash
+# Sources à rôles (fichiers ou dossiers) : --ref/--donor/--ref-dir/--donor-dir en sont des alias
+Muxiveo-cli hybrid --source master=/uhd --source donor-audio=/vf --source donor-sub=/st -o /sorties
+# Appariement par similarité des titres ou par ordre ; paires manuelles
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /bluray --matching fuzzy -o /sorties
+Muxiveo-cli hybrid --pair "/uhd/a.mkv::/vf/x.mkv" --pair "/uhd/b.mkv::/vf/y.mkv" -o /sorties
+# Recette exportée par le Studio (« Exporter la recette… »), complétée par les options
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf --recipe saison.json --donor-sub-langs fre,eng -o /sorties
+# Plan sans exécution, exact-jobs finalisés à corriger puis lancer par batch / run
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf -o /sorties --plan --export-jobs /jobs --save-recipe r.json
+Muxiveo-cli batch --batch /jobs
+# Encodage de chaque épisode (options d'encodage ou bloc `encode` via `call hybrid.run`)
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf -o /sorties --video-codec libx265 --crf 18
+```
+
+| Option | Effet |
+|---|---|
+| `--source RÔLE=CHEMIN` | `master`, `donor`, `donor-audio`, `donor-sub` ; répétable |
+| `--matching episode\|fuzzy\|order` | numéros `SxxEyy` (défaut), similarité des titres, ou ordre des fichiers |
+| `--pair MASTER::DONNEUR[::DONNEUR…]` | paires manuelles (exclut `--source`) |
+| `--recipe FICHIER` | recette du Studio (pistes du modèle, langues, synchro) |
+| `--keep-master-audio`, `--donor-audio-langs`, `--donor-sub-langs`, `--exclude-langs` | langues de la recette (listes séparées par des virgules) |
+| `--sync auto\|manual\|none`, `--shift-ms N` | synchro des donneurs : analyse, décalage manuel, aucune |
+| `--plan`, `--export-jobs DOSSIER`, `--save-recipe FICHIER` | plan JSON sans exécution, exact-jobs finalisés, recette effective |
+
+Sélection par défaut (sans recette ni profil) : audio du master en anglais, japonais ou VO, audio et
+sous-titres français des donneurs — comme le Studio (changement par rapport à la v5.1, qui retirait
+seulement les pistes du donneur dans la langue de la référence).
 
 ---
 

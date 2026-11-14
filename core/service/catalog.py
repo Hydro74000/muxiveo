@@ -46,6 +46,7 @@ CATALOG = Catalog((
     calibration.calibration_invert,
     hdr.hdr_inspect,
     hdr_patch.hdr_patch,
+    hybrid.hybrid_plan,
     hybrid.hybrid_run,
     encode.encode_preview_capture,
     encode.preset_list,

@@ -1,42 +1,78 @@
-"""Opération ``hybrid.run`` : hybridation par paires (référence + donneur), un job enfant par épisode.
+"""Opérations ``hybrid.plan`` et ``hybrid.run`` : hybridation sur le moteur du Hybrid Studio.
 
-Moteur par paires de la commande ``hybrid`` (``core.jobs.hybrid_pairs``) ; le moteur du Hybrid Studio
-(rôles, plusieurs donneurs, recette) le remplacera sans changer la forme de la requête.
+Sources à rôles (master, donneurs généraux / audio / sous-titres), appariement par épisode, similarité,
+ordre ou paires manuelles, recette (fichier exporté par le Studio et options), préparations en parallèle,
+méthodes de cadence « auto » tranchées. ``hybrid.run`` : un job enfant par épisode (remux, ou encodage
+avec le bloc ``encode``) ; collisions de sorties refusées avant le premier épisode.
 """
 
 from __future__ import annotations
 
-import itertools
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from core.jobs.hybrid_pairs import HybridOptions, HybridOutcome, HybridSteps, pairs_for, run_hybrid
+from core.jobs.constants import EXIT_ARGS, EXIT_OK
+from core.jobs.errors import JobError
+from core.jobs.hybrid_studio import (
+    MATCHING,
+    ROLES,
+    PreparedEpisode,
+    StudioSpec,
+    check_outputs,
+    export_jobs,
+    load_recipe,
+    plan_episodes,
+    prepare_episodes,
+    recipe_json,
+    recipe_with_overrides,
+)
 from core.jobs.logging import EmitterLogger
-from core.jobs.profile import build_profile_remux_config, load_decision_profile
-from core.jobs.remux_config import build_remux_config
-from core.jobs.runtime import remux_workflow
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.service.ops.batch import _Children
 from core.service.ops.media import JobOptions
-from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
+from core.workflows.hybrid_matrix import HybridRecipe
 
 #: Réglages par défaut d'une hybridation (réécriture physique, sous-titres en miroir, fondu 80 ms).
 _HYBRID_DEFAULTS = {"sync_mode": "physical", "sync_subtitles": "mirror", "clean_nfo": True, "crossfade_ms": 80}
 
 
 @dataclass(frozen=True)
+class HybridSourceRef(Model):
+    role: Literal["master", "donor", "donor-audio", "donor-sub"]
+    path: Path = field(description="Fichier ou dossier (épisodes).")
+
+
+@dataclass(frozen=True)
+class HybridPairRef(Model):
+    master: Path
+    donors: tuple[Path, ...] = field(min_items=1)
+
+
+@dataclass(frozen=True)
 class HybridRequest(Model):
-    """Paire (ref + donor) ou saison (ref_dir + donor_dir) à hybrider."""
+    """Sources à rôles (ou ref/donor et ref_dir/donor_dir), appariement, recette, nommage et options."""
 
     output_dir: Path = field(description="Dossier des sorties.")
-    ref: Path | None = field(default=None, description="Fichier de référence (vidéo, chapitres).")
-    donor: Path | None = field(default=None, description="Fichier donneur (audio, sous-titres).")
-    ref_dir: Path | None = field(default=None, description="Dossier de référence (épisodes).")
-    donor_dir: Path | None = field(default=None, description="Dossier donneur (épisodes).")
+    sources: tuple[HybridSourceRef, ...] = field(default=(), description="Sources et leur rôle.")
+    ref: Path | None = field(default=None, description="Alias : source master (fichier).")
+    donor: Path | None = field(default=None, description="Alias : source donneuse (fichier).")
+    ref_dir: Path | None = field(default=None, description="Alias : source master (dossier d'épisodes).")
+    donor_dir: Path | None = field(default=None, description="Alias : source donneuse (dossier d'épisodes).")
+    matching: Literal["episode", "fuzzy", "order"] = field(
+        default="episode", description="Appariement : numéros d'épisode, similarité des titres, ou ordre.")
+    pairs: tuple[HybridPairRef, ...] = field(default=(), description="Paires manuelles (exclut sources).")
+    recipe: Path | None = field(default=None, description="Recette exportée par le Hybrid Studio (JSON).")
+    keep_master_audio: tuple[str, ...] | None = field(default=None, description="Langues audio du master gardées.")
+    donor_audio_langs: tuple[str, ...] | None = None
+    donor_sub_langs: tuple[str, ...] | None = None
+    exclude_langs: tuple[str, ...] | None = None
+    sync: Literal["auto", "manual", "none"] | None = field(default=None, description="Synchro des donneurs.")
+    shift_ms: int | None = field(default=None, description="Décalage manuel (sync manual).")
     profile: str = field(default="", description="Profil décisionnel (chemin ou nom).")
     auto_tmdb: int | None = field(default=None, description="TMDB : absent = sans ; 0 = recherche ; ID sinon.")
     tmdb_apikey: str = ""
@@ -46,7 +82,8 @@ class HybridRequest(Model):
     output_all: bool = False
     options: JobOptions = field(default_factory=JobOptions,
                                 description="Synchro et pistes ; défauts hybrides : physical, mirror, fondu 80 ms.")
-    export_workflow: Path | None = field(default=None, description="Enregistrer les jobs exacts au lieu d'exécuter.")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque épisode.")
+    export_workflow: Path | None = field(default=None, description="Enregistrer les exact-jobs au lieu d'exécuter.")
     dry_run: bool = field(default=False, description="Plan d'exécution de chaque épisode, sans écriture.")
     force: bool = False
     continue_on_error: bool = False
@@ -54,63 +91,201 @@ class HybridRequest(Model):
 
 
 @dataclass(frozen=True)
+class HybridPlanRequest(HybridRequest):
+    """Plan d'hybridation (appariement, pistes, calibrations) sans exécution."""
+
+    export_jobs: Path | None = field(default=None, description="Dossier où écrire les exact-jobs finalisés.")
+    save_recipe: Path | None = field(default=None, description="Recette effective écrite dans ce fichier.")
+
+
+@dataclass(frozen=True)
 class HybridResult(Model):
-    """Bilan : un élément par épisode (référence, donneur, sortie, calibration, état)."""
+    """Bilan : un élément par épisode (master, donneurs, sortie, calibration, état)."""
 
     status: Literal["succeeded", "partial", "failed", "cancelled"]
     episodes: tuple[dict[str, Any], ...] = ()
 
 
-def _status(outcome: HybridOutcome) -> Literal["succeeded", "partial", "failed", "cancelled"]:
-    states = [entry.get("status") for entry in outcome.episodes]
+@dataclass(frozen=True)
+class HybridPlanResult(Model):
+    episodes: tuple[dict[str, Any], ...] = ()
+    recipe: dict[str, Any] = field(default_factory=dict)
+    exported: tuple[str, ...] = ()
+
+
+def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
+    payload = request.options.to_dict()
+    for key, value in _HYBRID_DEFAULTS.items():
+        if payload.get(key) is None:
+            payload[key] = value
+    common = JobOptions.from_dict(payload, allow_relative=True).to_common(ctx.overrides)
+    sources = [(ROLES[item.role], Path(item.path)) for item in request.sources]
+    for path, role in ((request.ref, "master"), (request.ref_dir, "master"), (request.donor, "donor"),
+                       (request.donor_dir, "donor")):
+        if path is not None:
+            sources.append((ROLES[role], Path(path)))
+    if (request.ref is not None) + (request.ref_dir is not None) > 1 or \
+            (request.donor is not None and request.donor_dir is not None):
+        raise JobError("Choisir --ref/--donor ou --ref-dir/--donor-dir.", EXIT_ARGS)
+    recipe = load_recipe(request.recipe) if request.recipe is not None else HybridRecipe()
+
+    def chosen(name: str) -> Any:
+        """Réglage de synchro des options : prioritaire sauf valeur par défaut avec une recette."""
+        value = getattr(common, name)
+        return value if request.recipe is None or value != _HYBRID_DEFAULTS[name] else None
+
+    recipe = recipe_with_overrides(
+        recipe, keep_master_audio_langs=request.keep_master_audio, donor_audio_langs=request.donor_audio_langs,
+        donor_sub_langs=request.donor_sub_langs, exclude_languages=request.exclude_langs,
+        sync_strategy=request.sync, manual_shift_ms=request.shift_ms, sync_mode=chosen("sync_mode"),
+        sync_subtitles=chosen("sync_subtitles"),
+        cadence_auto_apply=common.cadence_auto if request.recipe is None or not common.cadence_auto else None,
+        cadence_audio_method=common.cadence_method if common.cadence_method != "auto" else None)
+    if request.shift_ms is not None and recipe.sync_strategy != "manual":
+        raise JobError("--shift-ms s'utilise avec --sync manual.", EXIT_ARGS)
+    if common.forced_threshold <= 0 or common.drift_threshold_ms <= 0 or not 0 <= (common.crossfade_ms or 0) <= 1000:
+        raise JobError("Seuils hybrides invalides.", EXIT_ARGS)
+    return StudioSpec(
+        sources=tuple(sources), output_dir=Path(request.output_dir).expanduser().resolve(),
+        matching=MATCHING[request.matching],
+        pairs=tuple((Path(pair.master), tuple(Path(donor) for donor in pair.donors)) for pair in request.pairs),
+        recipe=recipe, common=common, profile=request.profile, auto_tmdb=request.auto_tmdb,
+        tmdb_apikey=request.tmdb_apikey, no_cover=request.no_cover, tag=request.tag,
+        output_template=request.output_template, output_all=request.output_all)
+
+
+def _prepare(request: HybridRequest, ctx: ExecutionContext) -> tuple[StudioSpec, list[PreparedEpisode]]:
+    spec = _spec(request, ctx)
+    logger = EmitterLogger(ctx.events)
+    episodes = plan_episodes(spec, logger)
+    logger.emit("info", f"[HYBRID] {len(episodes)} épisode(s) apparié(s) ; préparation des plans…")
+    prepared = prepare_episodes(spec, episodes, ctx.config, lambda _episode: logger, ctx.cancel)
+    for item in prepared:
+        if item.error is not None:
+            logger.emit("error", f"[HYBRID] {item.episode.display_name} : {item.error}")
+    return spec, prepared
+
+
+@operation(
+    "hybrid.plan",
+    request=HybridPlanRequest,
+    result=HybridPlanResult,
+    summary="Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; "
+            "exact-jobs finalisés et recette effective en option.",
+    long_running=True,
+    errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED,
+            ErrorCode.CANCELLED),
+)
+def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlanResult:
+    spec, prepared = _prepare(request, ctx)
+    exported: list[Path] = []
+    if request.export_jobs is not None:
+        check_outputs(prepared, spec.output_template)
+        exported = export_jobs(prepared, Path(request.export_jobs))
+        for path in exported:
+            ctx.events.artifact("exact-job", str(path))
+    if request.save_recipe is not None:
+        from core.atomic_io import atomic_write_text
+
+        atomic_write_text(Path(request.save_recipe), recipe_json(spec.recipe))
+        ctx.events.artifact("recipe", str(request.save_recipe))
+    return HybridPlanResult(episodes=tuple(item.describe() for item in prepared), recipe=spec.recipe.to_dict(),
+                            exported=tuple(str(path) for path in exported))
+
+
+def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeeded", "partial", "failed", "cancelled"]:
+    states = [entry.get("status") for entry in entries]
     succeeded = sum(1 for state in states if state in ("ok", "planned", "exported"))
-    if not any(state in ("failed", "cancelled") for state in states) and not outcome.cancelled:
+    if not any(state in ("failed", "cancelled") for state in states) and not cancelled:
         return "succeeded"
     if succeeded:
         return "partial"
-    return "cancelled" if outcome.cancelled else "failed"
+    return "cancelled" if cancelled else "failed"
 
 
 @operation(
     "hybrid.run",
     request=HybridRequest,
     result=HybridResult,
-    summary="Hybrider une paire ou une saison : vidéo de la référence, audio / sous-titres du donneur calés.",
+    summary="Hybrider une paire ou une saison (moteur du Hybrid Studio) : vidéo du master, audio / sous-titres "
+            "des donneurs calés ; encodage par épisode avec le bloc `encode`.",
     long_running=True,
     mutating=True,
+    uses_gpu=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.TOOL_MISSING,
             ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )
 def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
-    payload = request.options.to_dict()
-    for key, value in _HYBRID_DEFAULTS.items():
-        if payload.get(key) is None:
-            payload[key] = value
-    job_options = JobOptions.from_dict(payload, allow_relative=True)
-    options = HybridOptions(
-        output_dir=request.output_dir, common=job_options.to_common(ctx.overrides), profile=request.profile,
-        auto_tmdb=request.auto_tmdb, tmdb_apikey=request.tmdb_apikey, no_cover=request.no_cover, tag=request.tag,
-        output_template=request.output_template, output_all=request.output_all,
-        export_workflow=str(request.export_workflow) if request.export_workflow is not None else "",
-        dry_run=request.dry_run, force=request.force, continue_on_error=request.continue_on_error,
-        report_json=str(request.report_json) if request.report_json is not None else "",
-    )
+    spec, prepared = _prepare(request, ctx)
+    logger = EmitterLogger(ctx.events)
+    failed_early = next((index for index, item in enumerate(prepared) if item.error is not None), None)
+    if failed_early is not None and not request.continue_on_error:
+        prepared = prepared[:failed_early + 1]
+    check_outputs([item for item in prepared if item.error is None], spec.output_template)
     children = _Children(ctx)
-    episode = itertools.count()
-    steps = HybridSteps(
-        build=build_remux_config,
-        load_profile=load_decision_profile,
-        build_profile=build_profile_remux_config,
-        audio_scanner=lambda: AudioSyncScanner(ctx.tool("ffmpeg"), ctx.tool("ffprobe"), cancel_event=ctx.cancel.event,
-                                               quick_check=quick_check_enabled(job_options, ctx.config),
-                                               accept_coherent=coherent_sync_accepted(job_options)),
-        run=lambda config, common, logger, remux_config, *, force: children.run(
-            config, common, children.logger(next(episode)), remux_config, force=force),
-        preview=lambda config, common, remux_config: dict(remux_workflow(config, common).execution_preview(
-            remux_config)),
-    )
-    pairs = pairs_for(str(request.ref) if request.ref else None, str(request.donor) if request.donor else None,
-                      str(request.ref_dir) if request.ref_dir else None,
-                      str(request.donor_dir) if request.donor_dir else None)
-    outcome = run_hybrid(pairs, options, ctx.config, EmitterLogger(ctx.events), steps, cancel=ctx.cancel)
-    return HybridResult(status=_status(outcome), episodes=tuple(outcome.episodes))
+    entries: list[dict[str, Any]] = []
+    cancelled = False
+    for index, item in enumerate(prepared):
+        if ctx.cancel.cancelled:
+            cancelled = True
+            break
+        episode = item.episode
+        entry: dict[str, Any] = {"episode": episode.display_name, "reference": str(episode.master_file),
+                                 "donor": str(episode.donor_files[0][1]) if episode.donor_files else None,
+                                 "donors": [str(path) for _source, path in episode.donor_files]}
+        try:
+            if item.error is not None:
+                raise item.error
+            remux_config = item.remux_config
+            assert remux_config is not None
+            entry["output"] = str(remux_config.output)
+            entry["calibration"] = item.calibration.to_dict() if item.calibration is not None else None
+            if request.export_workflow is not None:
+                destination = Path(request.export_workflow)
+                if len(prepared) > 1:
+                    destination.mkdir(parents=True, exist_ok=True)
+                    destination /= remux_config.output.stem + ".exact-job.json"
+                from core.profiles.selectors import remux_config_to_exact_job
+                from core.workflows.workflow_store import save_workflow
+
+                save_workflow(destination, remux_config_to_exact_job(remux_config))
+                entry["status"] = "exported"
+            else:
+                child = children.logger(index)
+                encode_config = (children.encode({"encode": request.encode}, remux_config, ctx.config, spec.common,
+                                                 child) if request.encode is not None else None)
+                accept = bool((request.encode or {}).get("accept_dovi_nvenc_crop"))
+                if request.dry_run:
+                    if encode_config is not None:
+                        code = children.preview_encode(ctx.config, spec.common, child, encode_config)
+                    else:
+                        code = children.preview(ctx.config, spec.common, child, remux_config)
+                    entry["status"] = "planned" if code == EXIT_OK else "failed"
+                else:
+                    remux_config.output.parent.mkdir(parents=True, exist_ok=True)
+                    remux_config.allow_missing_output_dir = False
+                    if encode_config is not None:
+                        code = children.run_encode(ctx.config, spec.common, child, encode_config, force=request.force,
+                                                   accept_dovi_nvenc_crop=accept)
+                    else:
+                        code = children.run(ctx.config, spec.common, child, remux_config, force=request.force)
+                    entry["status"] = "ok" if code == EXIT_OK else (
+                        "cancelled" if ctx.cancel.cancelled else "failed")
+            entries.append(entry)
+            if entry["status"] == "cancelled":
+                cancelled = True
+                break
+            if entry["status"] == "failed" and not request.continue_on_error:
+                break
+        except Exception as exc:
+            entries.append({**entry, "status": "failed", "error": str(exc)})
+            if item.error is None:
+                logger.emit("error", str(exc))
+            if not request.continue_on_error:
+                break
+    if request.report_json is not None:
+        from core.atomic_io import atomic_write_text
+
+        atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": entries},
+                                                                 ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    return HybridResult(status=_status(entries, cancelled), episodes=tuple(entries))

@@ -84,15 +84,15 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Référence + donneur (paire ou saison) | `hybrid --ref/--donor`, `--ref-dir/--donor-dir` | `hybrid.run` | ✅ |
-| Plusieurs donneurs, rôles (audio seul, sous-titres seuls) | `--source RÔLE=CHEMIN` | `hybrid.plan/run` | ⏳ L8 |
-| Mode de correspondance (épisodes, titres, ordre, manuel) | `--matching`, `--pair` | `hybrid.plan` | ⏳ L8 |
-| Modèle de l'épisode témoin (pistes à conserver) | `--recipe` (recette exportée du Studio) | `hybrid.plan` | ⏳ L8 |
-| Langues conservées, synchro, décalage manuel, tag | options de recette | `hybrid.plan` | 🟡 partiel ; complet ⏳ L8 |
-| Préparer / recalibrer un élément, corrections par épisode | `hybrid --export-jobs` puis `run` / `batch` | `hybrid.plan` | 🟡 `--export-workflow` ; ⏳ L8 |
+| Référence + donneur (paire ou saison) | `hybrid --ref/--donor`, `--ref-dir/--donor-dir` (moteur du Studio) | `hybrid.run` | ✅ |
+| Plusieurs donneurs, rôles (audio seul, sous-titres seuls) | `--source RÔLE=CHEMIN` | `hybrid.plan/run` | ✅ |
+| Mode de correspondance (épisodes, titres, ordre, manuel) | `--matching`, `--pair` | `hybrid.plan` | ✅ |
+| Modèle de l'épisode témoin (pistes à conserver) ; « Exporter / Importer la recette… » | `--recipe`, `--save-recipe` | `hybrid.plan` | ✅ |
+| Langues conservées, synchro, décalage manuel, tag | `--keep-master-audio`, `--donor-*-langs`, `--exclude-langs`, `--sync`, `--shift-ms`, `--tag` | `hybrid.plan` | ✅ |
+| Préparer / recalibrer un élément, corrections par épisode | `hybrid --plan --export-jobs` puis `run` / `batch` | `hybrid.plan` | ✅ |
 | Sauvegarder les workflows | `--export-workflow` | `hybrid.plan` | ✅ commande |
 | Pré-écoute | — | — | ⛔ lecture audio locale |
-| Encoder chaque épisode | bloc `encode` | `hybrid.run` | ⏳ L8 |
+| Encoder chaque épisode | options d'encodage, bloc `encode` | `hybrid.run` | ✅ |
 
 ## HDR Studio
 

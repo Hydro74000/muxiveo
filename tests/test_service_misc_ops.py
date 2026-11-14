@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -131,20 +132,40 @@ def test_hdr_inspect_fel_survival_is_structured():
 # --- Hybrid ------------------------------------------------------------------------------
 
 def test_hybrid_run_applies_hybrid_defaults(monkeypatch, tmp_path):
+    from core.jobs.hybrid_studio import PreparedEpisode
+    from core.workflows.hybrid_matrix import MatrixEpisode, SourceRole
+
     seen: dict[str, Any] = {}
+    episode = MatrixEpisode(season=1, episode=2, master_file=Path("/r.mkv"))
 
-    def run_hybrid(pairs, options, config, logger, steps, *, cancel):
-        seen.update(pairs=pairs, common=options.common, cancel=cancel)
-        return SimpleNamespace(episodes=[{"status": "ok"}], cancelled=False)
+    def prepare(spec, episodes, config, logger_for, cancel):
+        seen.update(spec=spec, cancel=cancel)
+        return [PreparedEpisode(episode, SimpleNamespace(output=tmp_path / "o.mkv", allow_missing_output_dir=True))]
 
-    monkeypatch.setattr(hybrid_ops, "run_hybrid", run_hybrid)
-    monkeypatch.setattr(hybrid_ops, "pairs_for", lambda *a: ["paire"])
+    class Children:
+        def __init__(self, ctx):
+            pass
+
+        def logger(self, index):
+            return SimpleNamespace(emit=lambda *a, **k: None)
+
+        def run(self, config, common, logger, remux_config, *, force):
+            seen["ran"] = remux_config
+            return 0
+
+    monkeypatch.setattr(hybrid_ops, "plan_episodes", lambda spec, logger: [episode])
+    monkeypatch.setattr(hybrid_ops, "prepare_episodes", prepare)
+    monkeypatch.setattr(hybrid_ops, "check_outputs", lambda prepared, template="": None)
+    monkeypatch.setattr(hybrid_ops, "_Children", Children)
     ctx, _ = _ctx()
     result = call(CATALOG, "hybrid.run", {"output_dir": str(tmp_path), "ref": "/r.mkv", "donor": "/d.mkv"}, ctx)
-    common = seen["common"]
+    spec = seen["spec"]
+    common = spec.common
     assert (common.sync_mode, common.sync_subtitles, common.crossfade_ms, common.clean_nfo) == \
         ("physical", "mirror", 80, True)
-    assert result.status == "succeeded" and seen["cancel"] is ctx.cancel
+    assert spec.sources == ((SourceRole.MASTER, Path("/r.mkv")), (SourceRole.DONOR, Path("/d.mkv")))
+    assert (spec.recipe.sync_mode, spec.recipe.sync_subtitles) == ("physical", "mirror")
+    assert result.status == "succeeded" and seen["cancel"] is ctx.cancel and "ran" in seen
 
 
 def test_hybrid_run_refuses_ambiguous_sources(tmp_path):
