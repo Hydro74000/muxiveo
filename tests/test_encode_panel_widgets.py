@@ -3038,3 +3038,50 @@ def test_programmatic_hdr10_on_an_sdr_track_is_never_injected_once_left(qt_app, 
             assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
     finally:
         panel.close()
+
+
+def test_apply_all_with_only_sdr_sources_keeps_each_track_own_hdr10_choice(qt_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    a, b = _sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)
+    for track in (a, b):
+        track[0].video_tracks[0].raw = {}
+    panel.set_video_tracks([a, b])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        panel._inject_hdr_cb.click()
+        QTest.keyClicks(panel._max_cll, "1000,400")
+        panel._save_current_video_state()
+        panel._video_list.setCurrentRow(1)
+        for _round in range(2):
+            settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+            assert settings[path_a].inject_hdr_meta and settings[path_a].max_cll == "1000,400"
+            assert not settings[path_b].inject_hdr_meta
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()
+
+
+def test_apply_all_first_hdr_track_added_to_an_sdr_list_keeps_its_hdr(qt_app, monkeypatch):
+    """Défaut antérieur : une première piste DV+HDR10+ ajoutée à une liste SDR en mode global perdait son HDR."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        dv = _video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)
+        dv.color_transfer = "smpte2084"
+        entry = _video_entry(1)
+        entry.entry_id = "dv"
+        sdr_track = panel._video_tracks[0]
+        panel.set_video_tracks([sdr_track, (_file_info(_PATH_A, [dv], hdr_type=HDRType.DOLBY_VISION_HDR10PLUS),
+                                            entry, _COLOR)])
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].codec == "libx265"
+        assert settings[_PATH_A].inject_hdr_meta and settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+    finally:
+        panel.close()

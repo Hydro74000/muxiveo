@@ -785,13 +785,19 @@ def test_propagation_is_stable_and_follows_the_template_hdr_choices():
     ctx = SourceVideoContext(hdr_type=HDRType.DOLBY_VISION_HDR10PLUS, transfer="smpte2084")
     own = {"codec": "libx264", "inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False,
            "hdr_disabled_by_codec": True, "dynamic_hdr_disabled_by_codec": (True, True)}  # mémoire active
-    off = {"codec": "libx265", "inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False}
+    hdr = ("inject_hdr_meta", "copy_dv", "copy_hdr10plus")
+    off = {"codec": "libx265", "inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False,
+           "hdr_common": {"inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False}}
     first = propagate_state(off, own, ctx)
     second = propagate_state(off, first, ctx)
-    hdr = ("inject_hdr_meta", "copy_dv", "copy_hdr10plus")
-    assert [first[k] for k in hdr] == [second[k] for k in hdr] == [False, False, False]
-    on = {**off, "inject_hdr_meta": True, "copy_dv": True, "copy_hdr10plus": True}
+    assert [first[k] for k in hdr] == [second[k] for k in hdr] == [False, False, False]  # idempotent
+    on = {**off, "hdr_common": {k: True for k in hdr}}
     assert [propagate_state(on, own, ctx)[k] for k in hdr] == [True, True, True]
+    # Intention inconnue : choix propres de la piste (mémoire rétablie par le codec HEVC), jamais ceux du modèle.
+    unknown = propagate_state({"codec": "libx265", "inject_hdr_meta": False, "copy_dv": False,
+                               "copy_hdr10plus": False}, own, ctx)
+    assert [unknown[k] for k in hdr] == [True, True, True]
+    assert [propagate_state({"codec": "libx265"}, unknown, ctx)[k] for k in hdr] == [True, True, True]
     # Modèle sans HDR : la mémoire de la piste est gardée pour le retour sur un codec HDR.
     sdr = propagate_state({"codec": "libx264"}, own, ctx)
     assert sdr["hdr_disabled_by_codec"] and sdr["dynamic_hdr_disabled_by_codec"] == (True, True)

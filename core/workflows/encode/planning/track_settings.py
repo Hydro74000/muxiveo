@@ -592,11 +592,11 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
                     env: EncoderEnvironment | None = None) -> dict[str, object]:
     """Réglages communs de ``template`` appliqués à une piste ; HDR propre à sa source conservé.
 
-    HDR10 statique, Dolby Vision, HDR10+ : avec ``template["hdr_common"]`` (intention commune de « Appliquer à
-    toutes », tenue par le panneau, option par option), une source qui porte l'option reçoit l'intention
-    (retirée puis mémorisée par un codec qui ne la porte pas) ; une autre source garde son propre choix, jamais
-    hérité. Sans intention pour une option : HDR10, mémoire de la piste effacée par un codec du modèle qui porte
-    le HDR ; DV / HDR10+, mémoire de la piste réunie à celle du modèle.
+    HDR10 statique, Dolby Vision, HDR10+ : jamais recopiés de la piste modèle. Seule l'intention commune de
+    « Appliquer à toutes » (``template["hdr_common"]``, tenue par le panneau, option par option) se propage, vers
+    une source qui porte l'option (retirée puis mémorisée par un codec qui ne la porte pas). Sinon (source sans
+    l'option, intention inconnue) : valeur et mémoire de la piste ; la normalisation applique ensuite la
+    politique du codec.
     """
     state = copy_state(template)
     for key in PER_SOURCE_HDR_KEYS:
@@ -613,13 +613,9 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
             if isinstance(intent, bool) and hdr_option_in_source(option, ctx):
                 state[option] = intent and carried
                 memory[option] = intent and not carried
-            elif isinstance(intent, bool):
+            else:
                 state[option] = bool(own.get(option))
                 memory[option] = _option_memory(own, option)
-            elif option == "inject_hdr_meta":
-                memory[option] = not carried and _option_memory(own, option)
-            else:
-                memory[option] = not carried and (_option_memory(own, option) or _option_memory(template, option))
         state["hdr_disabled_by_codec"] = memory["inject_hdr_meta"]
         state["dynamic_hdr_disabled_by_codec"] = (memory["copy_dv"], memory["copy_hdr10plus"])
         # Tone mapping recopié du modèle : il garde son origine (coché d'office par le codec ou choisi).
