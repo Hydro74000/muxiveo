@@ -210,19 +210,24 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
         mode = hdr.mode or ("manual" if hdr.master_display is not None or hdr.max_cll is not None else None)
         if mode is not None:
             state["hdr_disabled_by_codec"] = False  # choix explicite : rien à rétablir au changement de codec
-            state.update(static_hdr_manual=mode == "manual", static_hdr_master_display_manual=False,
+            state["static_hdr_manual"] = mode == "manual"
+        if mode in ("off", "source"):
+            # Valeurs de la source et provenance remises ensemble (une couche suivante repart de la source).
+            state.update(master_display=state.get("default_master_display") or "",
+                         max_cll=state.get("default_max_cll") or "", static_hdr_master_display_manual=False,
                          static_hdr_max_cll_manual=False)
         if mode == "off":
             state["inject_hdr_meta"] = False
             intents.add("static_off")
         elif mode == "source":
-            state.update(inject_hdr_meta=True, master_display=state.get("default_master_display") or "",
-                         max_cll=state.get("default_max_cll") or "")
+            state["inject_hdr_meta"] = True
         elif mode == "manual":
             if hdr.master_display is None and hdr.max_cll is None:
                 raise _fail("static_hdr manual : master_display ou max_cll attendu")
             state["inject_hdr_meta"] = True
-            if hdr.master_display is not None:  # valeur fournie : saisie explicite, même égale à celle de la source
+            # Seuls les champs fournis par cette couche : saisie explicite, même égale à la source ; les autres
+            # gardent leur valeur et leur provenance (couche précédente).
+            if hdr.master_display is not None:
                 state.update(master_display=hdr.master_display, static_hdr_master_display_manual=True)
             if hdr.max_cll is not None:
                 state.update(max_cll=hdr.max_cll, static_hdr_max_cll_manual=True)

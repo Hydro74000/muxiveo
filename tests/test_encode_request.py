@@ -251,3 +251,49 @@ def test_explicit_manual_values_keep_their_provenance_field_by_field():
     assert same.static_hdr_light_level_source == "manual" and same.static_hdr_master_display_source == "source"
     empty = resolve({"mode": "manual", "max_cll": "", "master_display": ""})  # explicite mais vide
     assert not empty.inject_hdr_meta
+
+
+# --- Huitième audit : couches CLI, provenance par champ -----------------------------------------------------
+
+_MANUAL_MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50)"
+
+
+def _hdr10_layers(*layers: dict):
+    """Source HDR10 (Master Display et MaxCLL 1000,400) ; ``video.default`` puis couches de la piste."""
+    remux, infos = _job(HDRType.HDR10)
+    infos[str(SRC)].video_tracks[0].raw = {"side_data_list": [
+        {"side_data_type": "Content light level metadata", "max_content": 1000, "max_average": 400}]}
+    config = SimpleNamespace(work_dir=Path("/tmp/work"), aac_bitrate_per_channel_kbps=96,
+                             eac3_bitrate_per_channel_kbps=96)
+    payload: dict[str, Any] = {"video": {"default": {"codec": "libx265", "static_hdr": layers[0]}}}
+    if len(layers) > 1:
+        payload["video"]["tracks"] = [{"select": {"stream": 0}, "static_hdr": layer} for layer in layers[1:]]
+    return resolve_encode(EncodeBlock.from_dict(payload), remux, infos=infos, config=config).config.video_tracks[0]
+
+
+def test_a_cli_layer_keeps_the_provenance_of_the_field_it_does_not_provide():
+    from core.fel.preparation import dv_master_display
+
+    source = _hdr10_layers({"mode": "source"})
+    assert source.max_cll == "1000,400" and source.master_display
+    source_md = source.master_display
+    kept = _hdr10_layers({"mode": "manual", "max_cll": "1000,400"}, {"mode": "manual", "master_display": _MANUAL_MD})
+    assert (kept.max_cll, kept.static_hdr_light_level_source) == ("1000,400", "manual")
+    assert (kept.master_display, kept.static_hdr_master_display_source) == (_MANUAL_MD, "manual")
+    reverse = _hdr10_layers({"mode": "manual", "master_display": source_md}, {"mode": "manual", "max_cll": "2000,500"})
+    assert (reverse.master_display, reverse.static_hdr_master_display_source) == (source_md, "manual")
+    assert (reverse.max_cll, reverse.static_hdr_light_level_source) == ("2000,500", "manual")
+
+    def no_rpu_read(*_args):
+        raise AssertionError("Master Display saisi : jamais remplacé par le L6 du FEL")
+
+    assert dv_master_display(reverse, Path("/tmp/rpu.bin"), "dovi_tool", no_rpu_read) == ""
+
+
+@pytest.mark.parametrize("reset", ["source", "off"])
+def test_source_or_off_resets_values_and_provenance_together(reset):
+    settings = _hdr10_layers({"mode": "manual", "max_cll": "2000,500"}, {"mode": reset},
+                             {"mode": "manual", "master_display": _MANUAL_MD})
+    assert settings.inject_hdr_meta
+    assert (settings.max_cll, settings.static_hdr_light_level_source) == ("1000,400", "source")
+    assert (settings.master_display, settings.static_hdr_master_display_source) == (_MANUAL_MD, "manual")
