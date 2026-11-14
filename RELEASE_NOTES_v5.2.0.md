@@ -41,6 +41,7 @@
 ## Correctifs
 
 * **CLI : `batch` et lots de profils sans `--continue-on-error`** : le lot s'arrête désormais après le premier job en échec, quelle qu'en soit la cause (auparavant, seul un job impossible à préparer l'arrêtait ; un remux ou un encodage refusé laissait continuer les suivants), comme l'annonce l'option. Le bilan liste les jobs lancés ; `--continue-on-error` garde l'ancien enchaînement.
+* **Panneau Encodage, HDR10 et tone mapping** : une source SDR ou HLG n'est plus marquée HDR10 (PQ) par une valeur héritée de la source, ni dans l'aperçu ; une valeur saisie (ou choisie dans HDR Studio) reste une saisie, jamais remplacée par la mesure de l'intégration FEL, jusqu'à son remplacement par la valeur de la source (Copy, « Valeurs source », nouvelle source) ; avec « Appliquer à toutes », le tone mapping automatique suit chaque source quelle que soit la piste affichée, et un choix explicite (coché ou décoché) est gardé aux changements de codec et à Copy, comme `tonemap.enabled` en CLI.
 * **Extraction de sous-titres VobSub** : livrée en Matroska (`.mks`), FFmpeg ne sachant pas écrire `.idx` / `.sub` (l'extraction échouait).
 * **Paramètres avancés saisis à la main** : reportés dans le dialogue pour tous les encodeurs (option inconnue conservée ; exclusions NVEncC sans erreur à l'ouverture).
 * **Cadence** : la valeur aberrante `500/21` renvoyée par ffprobe pour certaines sources est interprétée comme 23,976 i/s.
@@ -86,6 +87,8 @@
 
 ## Fixes
 
+* **CLI: `batch` and profile batches without `--continue-on-error`**: the batch now stops after the first failed job, whatever the cause (previously only a job that could not be prepared stopped it; a refused remux or encode let the next ones run), as the option states. The summary lists the jobs that were run; `--continue-on-error` keeps the former behaviour.
+* **Encoding panel, HDR10 and tone mapping**: an SDR or HLG source is no longer tagged HDR10 (PQ) by a value inherited from the source, nor in the preview; an entered value (or one chosen in HDR Studio) stays an entry, never replaced by the FEL baking measurement, until it is replaced by the source value (Copy, "Source values", new source); with "Apply to all", automatic tone mapping follows each source whichever track is displayed, and an explicit choice (checked or unchecked) is kept across codec changes and Copy, like `tonemap.enabled` in the CLI.
 * **VobSub subtitle extraction**: delivered as Matroska (`.mks`), since FFmpeg cannot write `.idx` / `.sub` (extraction used to fail).
 * **Manually entered advanced parameters**: carried into the dialog for every encoder (unknown options kept; NVEncC exclusions without an error on opening).
 * **Frame rate**: the bogus `500/21` value reported by ffprobe for some sources is read as 23.976 fps.
