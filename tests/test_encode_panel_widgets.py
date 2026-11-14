@@ -2686,3 +2686,26 @@ def test_legacy_integer_target_fps_survives_profile_loading(qt_app, tmp_path, mo
         assert restored.factor == 2
     finally:
         panel.close()
+
+
+def test_apply_all_codec_round_trip_through_sdr_restores_dynamic_hdr(qt_app, monkeypatch):
+    """« Appliquer à toutes » : HEVC → H.264 → HEVC rétablit HDR10, Dolby Vision et HDR10+ sur chaque piste."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    first.entry_id, second.entry_id = "first", "second"
+    info = _file_info(_PATH_A, [_video_track(0, hdr), _video_track(1, hdr)], hdr_type=hdr)
+    panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        assert (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(),
+                panel._copy_hdr10plus_cb.isChecked()) == (True, True, True)
+        for entry_id in ("first", "second"):
+            state = panel._video_settings_by_entry_id[entry_id]
+            assert (state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (True, True, True), entry_id
+    finally:
+        panel.close()

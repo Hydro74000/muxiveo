@@ -3290,15 +3290,25 @@ class EncodePanel(QWidget):
         # DV / HDR10+ décochés parce que le codec ne les porte pas : rétablis au
         # retour sur un codec compatible, indépendamment de la case HDR10.
         restore_dv, restore_hdr10plus = self._dynamic_hdr_disabled_by_codec
-        if not self._loading_video_settings and not self._video_apply_all:
-            restore_dv = restore_dv or (has_dv and not dv_ok and self._copy_dv_cb.isChecked())
-            restore_hdr10plus = restore_hdr10plus or (
-                has_hdr10plus and not hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
-            )
-        if dv_ok and restore_dv and not auto_check:
+        # « Appliquer à toutes » : les cases portent le choix commun à toutes les pistes ; seul le codec
+        # (pas la source de la piste affichée) les retire, et elles reviennent avec un codec qui les porte.
+        codec_dv_ok = self._is_dovi_codec(codec) if self._video_apply_all else dv_ok
+        codec_hdr10plus_ok = self._is_hdr10plus_codec(codec) if self._video_apply_all else hdr10plus_ok
+        if not self._loading_video_settings:
+            if self._video_apply_all:
+                restore_dv = restore_dv or (not codec_dv_ok and self._copy_dv_cb.isChecked())
+                restore_hdr10plus = restore_hdr10plus or (
+                    not codec_hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
+                )
+            else:
+                restore_dv = restore_dv or (has_dv and not dv_ok and self._copy_dv_cb.isChecked())
+                restore_hdr10plus = restore_hdr10plus or (
+                    has_hdr10plus and not hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
+                )
+        if codec_dv_ok and restore_dv and not auto_check:
             self._copy_dv_cb.setChecked(True)
             restore_dv = False
-        if hdr10plus_ok and restore_hdr10plus and not auto_check:
+        if codec_hdr10plus_ok and restore_hdr10plus and not auto_check:
             self._copy_hdr10plus_cb.setChecked(True)
             restore_hdr10plus = False
         self._dynamic_hdr_disabled_by_codec = (restore_dv, restore_hdr10plus)
