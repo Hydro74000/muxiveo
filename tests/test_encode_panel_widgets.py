@@ -2873,3 +2873,49 @@ def test_apply_all_hlg_track_keeps_hlg_and_never_inherits_hdr10(qt_app, monkeypa
         assert settings[_PATH_A].inject_hdr_meta
     finally:
         panel.close()
+
+
+def test_apply_all_editing_from_a_track_without_dv_keeps_dv_on_the_others(qt_app, monkeypatch):
+    """Défaut antérieur : modifier un réglage depuis la piste HDR10 retirait DV / HDR10+ de la piste DV."""
+    path_hdr10 = Path("/tmp/film_hdr10.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_hdr10, HDRType.HDR10, "smpte2084"))
+    try:
+        for _round in range(2):
+            panel._video_list.setCurrentRow(1)
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+            settings = _settings_by_path(panel)
+            assert settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+            assert not settings[path_hdr10].copy_dv and not settings[path_hdr10].copy_hdr10plus
+            panel._video_list.setCurrentRow(0)
+            assert panel._copy_dv_cb.isChecked() and panel._copy_hdr10plus_cb.isChecked()
+        # Choix commun changé depuis la piste DV : suivi, même en revenant éditer depuis l'autre piste.
+        panel._copy_dv_cb.setChecked(False)
+        panel._video_list.setCurrentRow(1)
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        settings = _settings_by_path(panel)
+        assert not settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+    finally:
+        panel.close()
+
+
+def test_apply_all_sdr_round_trip_with_an_sdr_track_displayed_keeps_dv(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        for _round in range(2):
+            settings = _settings_by_path(panel)
+            dv, sdr = settings[_PATH_A], settings[path_sdr]
+            assert dv.inject_hdr_meta and dv.copy_dv and dv.copy_hdr10plus and not dv.tonemap_to_sdr
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+            panel._video_list.setCurrentRow(0)
+            panel._video_list.setCurrentRow(1)
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()

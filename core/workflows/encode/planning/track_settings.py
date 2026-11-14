@@ -531,38 +531,68 @@ def default_video_state(ctx: SourceVideoContext, env: EncoderEnvironment | None 
     return normalize_video_state(state, ctx, env)
 
 
+#: Options HDR dont « Appliquer à toutes » tient une intention commune (``propagate_state``, ``hdr_common``).
+HDR_COMMON_OPTIONS: tuple[str, ...] = ("inject_hdr_meta", "copy_dv", "copy_hdr10plus")
+
+
+def hdr_option_in_source(option: str, ctx: SourceVideoContext) -> bool:
+    """La source porte ce que l'option recopie (HDR10 statique, Dolby Vision, HDR10+)."""
+    if option == "copy_dv":
+        return source_has_dv(ctx.hdr_type)
+    if option == "copy_hdr10plus":
+        return source_has_hdr10plus(ctx.hdr_type)
+    return source_has_static_hdr10(ctx.hdr_type, ctx.transfer)
+
+
+def hdr_option_carried(option: str, codec: str) -> bool:
+    """Le codec porte l'option (HDR en sortie, Dolby Vision, HDR10+)."""
+    if option == "copy_dv":
+        return is_dovi_codec(codec)
+    if option == "copy_hdr10plus":
+        return is_hdr10plus_codec(codec)
+    return supports_hdr_output(codec)
+
+
+def _option_memory(state: Mapping[str, object], option: str) -> bool:
+    if option == "inject_hdr_meta":
+        return bool(state.get("hdr_disabled_by_codec"))
+    return restore_flags(state)[0 if option == "copy_dv" else 1]
+
+
 def propagate_state(template: Mapping[str, object], own: Mapping[str, object], ctx: SourceVideoContext,
                     env: EncoderEnvironment | None = None) -> dict[str, object]:
     """Réglages communs de ``template`` appliqués à une piste ; HDR propre à sa source conservé.
 
-    HDR10 statique : avec ``template["hdr10_common"]`` (intention commune de « Appliquer à toutes », tenue
-    par le panneau), une source qui porte du HDR10 reçoit cette intention (retirée puis mémorisée par un
-    codec sans HDR) ; une autre source (SDR, HLG) garde son propre choix, jamais hérité. Sans intention
-    commune : mémoire de la piste, effacée par un codec du modèle qui porte le HDR.
-    Dolby Vision / HDR10+ : la mémoire de la piste s'ajoute à celle du modèle (case = intention commune,
-    effectif selon chaque source).
+    HDR10 statique, Dolby Vision, HDR10+ : avec ``template["hdr_common"]`` (intention commune de « Appliquer à
+    toutes », tenue par le panneau, option par option), une source qui porte l'option reçoit l'intention
+    (retirée puis mémorisée par un codec qui ne la porte pas) ; une autre source garde son propre choix, jamais
+    hérité. Sans intention pour une option : HDR10, mémoire de la piste effacée par un codec du modèle qui porte
+    le HDR ; DV / HDR10+, mémoire de la piste réunie à celle du modèle.
     """
     state = copy_state(template)
     for key in PER_SOURCE_HDR_KEYS:
         state[key] = own.get(key, "")
-    state.pop("hdr10_common", None)
+    state.pop("hdr_common", None)
     codec = state_target_codec(state)
     if codec != "copy":
-        common = template.get("hdr10_common")
-        hdr_codec = supports_hdr_output(codec)
-        if isinstance(common, bool) and source_has_static_hdr10(ctx.hdr_type, ctx.transfer):
-            state["inject_hdr_meta"] = common and hdr_codec
-            state["hdr_disabled_by_codec"] = common and not hdr_codec
-        elif isinstance(common, bool):
-            state["inject_hdr_meta"] = bool(own.get("inject_hdr_meta"))
-            state["hdr_disabled_by_codec"] = bool(own.get("hdr_disabled_by_codec"))
-        else:
-            state["hdr_disabled_by_codec"] = not hdr_codec and bool(own.get("hdr_disabled_by_codec"))
-        own_dv, own_hdr10plus = restore_flags(own)
-        template_dv, template_hdr10plus = restore_flags(template)
-        state["dynamic_hdr_disabled_by_codec"] = ((own_dv or template_dv) and not is_dovi_codec(codec),
-                                                  (own_hdr10plus or template_hdr10plus)
-                                                  and not is_hdr10plus_codec(codec))
+        raw_common = template.get("hdr_common")
+        common: Mapping[str, object] = raw_common if isinstance(raw_common, Mapping) else {}
+        memory: dict[str, bool] = {}
+        for option in HDR_COMMON_OPTIONS:
+            carried = hdr_option_carried(option, codec)
+            intent = common.get(option)
+            if isinstance(intent, bool) and hdr_option_in_source(option, ctx):
+                state[option] = intent and carried
+                memory[option] = intent and not carried
+            elif isinstance(intent, bool):
+                state[option] = bool(own.get(option))
+                memory[option] = _option_memory(own, option)
+            elif option == "inject_hdr_meta":
+                memory[option] = not carried and _option_memory(own, option)
+            else:
+                memory[option] = not carried and (_option_memory(own, option) or _option_memory(template, option))
+        state["hdr_disabled_by_codec"] = memory["inject_hdr_meta"]
+        state["dynamic_hdr_disabled_by_codec"] = (memory["copy_dv"], memory["copy_hdr10plus"])
         # Tone mapping recopié du modèle : il garde son origine (coché d'office par le codec ou choisi).
         state["tonemap_enabled_by_codec"] = bool(template.get("tonemap_enabled_by_codec"))
     return normalize_video_state(state, ctx, env)
