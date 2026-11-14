@@ -3672,3 +3672,214 @@ def test_late_p5_estimate_never_replaces_an_entry_but_completes_empty_fields(qt_
         assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "900,300"
     finally:
         panel.close()
+
+
+# --- Dixième audit : anciens états face aux sondes, libellé après sonde, estimation P5 par signal -------------
+
+_MANUAL_MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50)"
+
+
+@pytest.mark.parametrize("probe", ["track", "frames"])
+@pytest.mark.parametrize("field", ["max_cll", "master_display"])
+def test_late_probe_keeps_a_manual_value_of_an_old_state_without_markers(qt_app, monkeypatch, field, probe):
+    """État d'une version antérieure : saisie reconnue par comparaison à la source, jamais par marqueur."""
+    from core.fel.preparation import measures_light_levels
+
+    raw = _CLL_RAW if field == "max_cll" else None  # l'autre champ manque : la sonde est lancée
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", raw)
+    other = _hdr_entry(1, Path("/tmp/other_hdr10.mkv"), HDRType.HDR10, "smpte2084", _CLL_RAW)
+    panel = _hdr_panel(monkeypatch, entry, other)
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        manual = "2000,500" if field == "max_cll" else _MANUAL_MD
+        state = panel._video_settings_by_entry_id["v0"]
+        state[field] = manual
+        for marker in ("static_hdr_manual", "static_hdr_master_display_manual", "static_hdr_max_cll_manual"):
+            state.pop(marker, None)
+        panel._video_list.setCurrentRow(0)
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == (
+            "manual" if field == "max_cll" else "source")
+        expected = {"master_display": state.get("master_display", ""), "max_cll": state.get("max_cll", "")}
+        if probe == "track":
+            panel._track_hdr_requests["v0"] = entry[0]
+            panel._apply_track_hdr("v0", entry[0], expected, _SOURCE_MD, "1000,400")
+        else:
+            panel._hdr_meta_probe_expected = (panel._hdr_meta_probe_generation, expected["master_display"],
+                                              expected["max_cll"])
+            panel._on_hdr_meta_frame_probe_ready(panel._hdr_meta_probe_generation, _SOURCE_MD, "1000,400")
+        settings = _launched(panel, _HDR10_PATH)
+        assert getattr(settings, field) == manual
+        source_field = "static_hdr_light_level_source" if field == "max_cll" else "static_hdr_master_display_source"
+        assert getattr(settings, source_field) == "manual"
+        # FEL : décision sur MaxCLL seul — saisi : jamais mesuré ; Master Display seul saisi : MaxCLL mesurable.
+        assert measures_light_levels(settings) is (field == "master_display")
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+    finally:
+        panel.close()
+
+
+def test_label_and_source_button_follow_values_completed_by_the_track_probe(qt_app, monkeypatch):
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")  # aucune valeur connue
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        assert not panel._hdr_meta_source_btn.isEnabled()
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": ""}, _SOURCE_MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == translate_text("Valeurs de la source.")
+        assert panel._hdr_meta_source_btn.isEnabled()
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "source"
+    finally:
+        panel.close()
+
+
+def test_p5_estimate_delivered_by_the_workflow_signal_respects_entries(qt_app, monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    panel = _p5_panel(monkeypatch)
+    try:
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="estimated_p5_to_p8",
+                     max_cll="800,200", default_max_cll="900,300", static_hdr_max_cll_manual=True)
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()  # connexion en file : livrée par la boucle Qt
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "800,200"
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="",
+                     master_display="", max_cll="")
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "900,300"
+        assert panel._max_cll.text() == "900,300"
+    finally:
+        panel.close()
+
+
+def _hide_first_and_set_old_state(panel, **values) -> None:
+    """État d'une version antérieure posé sur la piste 0 pendant que la piste 1 est affichée (sans marqueurs)."""
+    panel._video_list.setCurrentRow(1)
+    state = panel._video_settings_by_entry_id["v0"]
+    state.update(values)
+    for marker in ("static_hdr_manual", "static_hdr_master_display_manual", "static_hdr_max_cll_manual"):
+        state.pop(marker, None)
+
+
+def _hdr_sources(settings) -> tuple[str, str]:
+    return settings.static_hdr_master_display_source, settings.static_hdr_light_level_source
+
+
+def test_old_value_identical_to_the_probe_result_keeps_its_provenance_through_redisplay(qt_app, monkeypatch):
+    """Cas décisif : référence absente, ancienne valeur égale au résultat — la provenance survit au complément."""
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")  # aucune valeur de la source connue
+    panel = _hdr_panel(monkeypatch, entry, _hdr_entry(1, Path("/tmp/other_hdr10.mkv"), HDRType.HDR10, "smpte2084"))
+    try:
+        _select_codec(panel, "libx265")
+        _hide_first_and_set_old_state(panel, max_cll="1000,400", default_max_cll="")
+        panel._video_list.setCurrentRow(0)
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "manual"
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "1000,400"}, _SOURCE_MD, "1000,400")
+        assert panel._video_settings_by_entry_id["v0"]["default_max_cll"] == "1000,400"
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)  # sauvegarde puis réaffichage
+        preview = panel._current_preview_config().video_tracks[0]
+        launch = _launched(panel, _HDR10_PATH)
+        assert _hdr_sources(preview) == _hdr_sources(launch) == ("source", "manual")
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+    finally:
+        panel.close()
+
+
+def test_apply_all_old_state_of_a_hidden_track_never_contaminates_the_other_track(qt_app, monkeypatch):
+    from core.fel.preparation import measures_light_levels
+
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)
+    other_path = Path("/tmp/other_hdr10.mkv")
+    panel = _hdr_panel(monkeypatch, entry, _hdr_entry(1, other_path, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        panel._apply_all_video_cb.setChecked(True)
+        _hide_first_and_set_old_state(panel, max_cll="2000,500")
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "2000,500"}, _SOURCE_MD, "1000,400")
+        hidden, shown = _launched(panel, _HDR10_PATH), _launched(panel, other_path)
+        assert (hidden.max_cll, hidden.static_hdr_light_level_source) == ("2000,500", "manual")
+        assert not measures_light_levels(hidden)
+        assert (shown.max_cll, shown.static_hdr_light_level_source) == ("1000,400", "source")
+        assert measures_light_levels(shown)
+    finally:
+        panel.close()
+
+
+def test_partial_probe_keeps_the_manual_label_and_copy_keeps_the_read_only_one(qt_app, monkeypatch):
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)  # Master Display manquant
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, "2000,500")
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "2000,500"}, _SOURCE_MD, "")
+        assert panel._master_display.text() == _SOURCE_MD
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+        assert _hdr_sources(_launched(panel, _HDR10_PATH)) == ("source", "manual")
+    finally:
+        panel.close()
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")
+    panel = _hdr_panel(monkeypatch, entry)  # Copy ordinaire : valeurs de la source, non modifiables
+    try:
+        assert panel._codec_combo.currentData() == "copy"
+        assert panel._max_cll.isReadOnly()  # défaut antérieur : piste sans état affichée en Copy modifiable
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": ""}, _SOURCE_MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == translate_text(
+            "Valeurs de la source, non modifiables avec ce codec.")
+        assert not panel._hdr_meta_source_btn.isEnabled() and panel._max_cll.isReadOnly()
+    finally:
+        panel.close()
+
+
+def test_hdr10_fields_editability_follows_the_shared_rule_in_the_panel(qt_app, monkeypatch):
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile, video.dovi_compat_id, video.color_transfer = 7, 6, "smpte2084"
+    video.raw = dict(_CLL_RAW)
+    entry = _video_entry(0)
+    entry.entry_id = "dv"
+    panel = _hdr_panel(monkeypatch, (_file_info(_PATH_A, [video], hdr_type=HDRType.DOLBY_VISION), entry, _COLOR))
+    try:
+        _select_codec(panel, "libx265")
+        assert not panel._max_cll.isReadOnly()  # codec éditable
+        _select_codec(panel, "copy")
+        assert panel._max_cll.isReadOnly()  # Copy ordinaire
+        assert panel._copy_dv_cb.isChecked() and panel._inject_hdr_cb.isChecked()
+        panel._dovi_p81_cb.click()  # Copy + DV normalisé P8.1 + HDR10 injecté : exception
+        assert panel._dovi_profile_choice == "2" and not panel._max_cll.isReadOnly()
+        _type_cll(panel, "1000,400")
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+
+
+def test_p5_estimate_delivered_after_a_user_entry_never_replaces_it(qt_app, monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    panel = _p5_panel(monkeypatch)
+    try:
+        panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))  # en file
+        _type_cll(panel, "800,200")  # saisie avant la livraison du résultat
+        QCoreApplication.processEvents()
+        assert panel._max_cll.text() == "800,200"
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+    panel = _p5_panel(monkeypatch)
+    try:  # succès : valeurs estimées, provenance automatique
+        panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()
+        settings = _launched(panel, _PATH_A)
+        assert settings.max_cll == "900,300" and _hdr_sources(settings) == ("source", "source")
+        assert settings.static_hdr_metadata_source == "estimated_p5_to_p8"
+    finally:
+        panel.close()
