@@ -1055,7 +1055,8 @@ class EncodePanel(QWidget):
             # Piste sans état (nouvelle source) : rien des saisies de la piste affichée avant elle.
             self._static_hdr_manual = False
             self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
-            self._tonemap_choice = None
+            # Mode global : choix commun du tone mapping, comme les pistes qui le reçoivent par propagation.
+            self._tonemap_choice = self._tonemap_common_choice if self._video_apply_all else None
             if track is not None and self._current_video_entry_id is not None:
                 # Valeurs HDR10 de la source connues dès le premier état : le préremplissage ci-dessous
                 # reste classé « source » (provenance par champ, mesure FEL), pas « saisie ».
@@ -3548,6 +3549,24 @@ class EncodePanel(QWidget):
             self._tonemap_common_choice = bool(checked)
         self._save_current_video_state()
 
+    def _apply_common_tonemap_choice(self) -> None:
+        """Mode global : la piste affichée suit le choix commun du tone mapping (les autres le reçoivent par
+        ``propagate_state``) ; case recalculée pour son codec (hors Copy, qui l'impose)."""
+        common = self._tonemap_common_choice
+        if not self._video_apply_all or common is None or self._loading_video_settings:
+            return
+        changed = self._tonemap_choice != common
+        self._tonemap_choice = common
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if codec != "copy":
+            tonemap, self._tonemap_enabled_by_codec = resolved_tonemap(
+                codec, source_hdr=self._selected_source_is_hdr(), choice=common)
+            if self._tonemap_cb.isChecked() != tonemap:
+                self._tonemap_cb.setChecked(tonemap)  # contrôles HDR grisés / rétablis par _on_tonemap_toggle
+                changed = True
+        if changed:
+            self._save_current_video_state()
+
     def _tonemap_tooltip(self) -> str:
         source_hdr = self._selected_video_hdr_type()
         if self._file_info is not None and (
@@ -4514,6 +4533,7 @@ class EncodePanel(QWidget):
         codec = str(self._codec_combo.currentData() or "libx265")
         if not self._video_apply_all or self._loading_video_settings or codec == "copy":
             return
+        self._apply_common_tonemap_choice()
         current = next(((info, track) for info, track, _color in self._video_tracks
                         if self._video_entry_id(track) == self._current_video_entry_id), None)
         if current is None:
@@ -5340,6 +5360,7 @@ class EncodePanel(QWidget):
         self._sync_hdr_controls_for_codec()
         self._sync_transform_controls_enabled()
         self._sync_hdr_metadata_provenance()
+        self._apply_common_tonemap_choice()
 
     def _apply_resize_settings(self, resize: VideoResizeSettings) -> None:
         if not hasattr(self, "_resize_enabled_cb"):
