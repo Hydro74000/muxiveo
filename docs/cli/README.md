@@ -2,6 +2,23 @@
 
 `Muxiveo-cli` est le point d'entrée headless de Muxiveo. Il ne lance pas l'interface graphique et reste strictement non interactif.
 
+## Guide par tâche
+
+| Je veux… | Commande | Section |
+|---|---|---|
+| Inspecter une source, partir d'un job | `inspect`, `inspect --config-template` | [Contrat JSON](#contrat-json) |
+| Remuxer (pistes, métadonnées, TMDB, profils) | `remux`, `run`, `batch`, `profile …` | [Contrat JSON](#contrat-json), [batch](#batch) |
+| Encoder (vidéo, audio, HDR, débruitage, interpolation) | `encode`, `encode-preset` | [Encodage](#encodage--commande-encode-et-bloc-encode) |
+| Extraire pistes, couches DV, HDR10+, pièces jointes | `extract`, `bluray-titles` | [Extraction](#extraction--commande-extract) |
+| Inspecter ou corriger le HDR | `inspect --hdr`, `hdr-patch` | [Inspection HDR](#inspection-hdr-inspect---hdr) |
+| Synchroniser (chaînes, calibrations, forme d'onde) | `--auto-sync-all`, `sources[i].sync`, `calibration`, `sync-scan` | [Synchro en chaîne](#synchro-en-chaîne--sourcesisync) |
+| Hybrider une saison | `hybrid` | [Cas 2](#cas-2--hybrid-le-studio-dhybridation-headless-v4) |
+| Profils, TMDB, Blu-ray | `profile`, `tmdb`, `bluray-titles` | [TMDB, profils, Blu-ray](#tmdb-profils-enregistrés-blu-ray) |
+| Configurer, nettoyer, NVEncC, mettre à jour | `config`, `workdir`, `nvencc`, `version --install` | [Administration](#administration--configuration-dossier-de-travail-nvencc) |
+| Piloter Muxiveo depuis un programme | `call`, `operations`, `--log-format events` | [api.md](api.md) |
+
+Aide intégrée : `muxiveo --cli help COMMANDE`, `help --all` ; référence complète : [reference.md](reference.md).
+
 ## Lancement
 
 ```bash
@@ -45,6 +62,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
 | `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
 | `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
+| `help [COMMANDE]`, `help --all`, `help --format md` | aide complète (traduite selon `[ui] language`), référence Markdown |
 | `tmdb search\|details`, `profile list\|show\|save\|delete\|capture`, `bluray-titles` | TMDB, profils enregistrés, titres d'un Blu-ray ; voir « TMDB, profils enregistrés, Blu-ray » |
 | `config path\|show\|get\|set\|unset\|reset`, `workdir list\|clean`, `nvencc status\|install\|update\|remove` | administration ; voir « Administration » |
 | `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
@@ -883,11 +901,8 @@ service (`core/service/`) : requête JSON typée → événements → résultat 
 historiques gardent leurs sorties ; `call` expose le même contrat que celui d'un futur
 service (daemon), utilisable dès maintenant par un autre programme.
 
-Opérations disponibles (`operations`) : toutes les commandes du CLI — `system.version`,
-`system.tools`, `schema.get`, `media.inspect`, `media.validate`, `media.preview`, `media.run`
-(requête `{"job": {…document de job…}, "options": {…}}`, plus `force`), `media.batch`, `profile.validate`,
-`profile.preview`, `profile.apply`, `profile.batch`, `sync.scan`, `sync.shift_subtitles`, `hdr.inspect`,
-`hybrid.run`, `plugins.list` / `install` / `update` / `remove`.
+Catalogue complet, événements, lots et erreurs : [api.md](api.md). Référence de toutes les commandes et
+options : [reference.md](reference.md) (générée par `help --format md`).
 
 **Lots** (`media.batch`, `profile.batch`, et `batch` en `--log-format events`) : chaque job est un job
 enfant (`parent` = lot) avec ses propres états ; le résultat donne `status` = `succeeded`, `partial`

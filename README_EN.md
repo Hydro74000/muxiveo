@@ -223,9 +223,22 @@ muxiveo --cli batch --profile "Series" --input-dir "Season 01" --output-dir "Out
 
 # Detailed HDR inspection and Dolby Vision FEL analysis
 muxiveo --cli inspect master.mkv --hdr measure --hdr-fel
+
+# Encoding, extraction, HDR fixes, sync, administration
+muxiveo --cli encode -i film.mkv -o film.x265.mkv --video-codec libx265 --crf 18
+muxiveo --cli extract -i film.mkv --track v:0 --layer rpu -o film.rpu.bin
+muxiveo --cli hdr-patch -i film.mkv -o film.hdrfix.mkv --light-levels suggested --mdcv suggested
+muxiveo --cli config set ui.theme light
+
+# Full (translated) help and JSON API
+muxiveo --cli help encode
+muxiveo --cli call media.inspect --request request.json
 ```
 
-> 📖 For the full argument reference and JSON schemas, see the [Headless CLI Documentation](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
+Every GUI feature (except Merge DoVi) is available from the CLI, each one being a service-layer operation
+callable in JSON (`call`, `operations`).
+
+> 📖 Full reference: `muxiveo --cli help --all`, [docs/cli/reference.md](docs/cli/reference.md); task guide: [docs/cli/README.md](docs/cli/README.md); API: [docs/cli/api.md](docs/cli/api.md); wiki: [Headless CLI](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
 
 ---
 

@@ -11,6 +11,8 @@ from cli.encode_options import add_encode_options
 from cli.admin import add_admin_parsers
 from cli.calibration import add_calibration_parsers
 from cli.extract import add_extract_parser
+from cli.help import add_help_parser
+from cli.help import complete as complete_help
 from cli.library import add_library_parsers, add_profile_management_parsers
 from cli.hdr_patch import add_hdr_patch_parser
 from cli.plugins import add_plugins_parser
@@ -114,7 +116,7 @@ def _add_tmdb_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=f"{APP_EXECUTABLE_NAME} --cli", description=f"{APP_NAME} headless CLI")
+    parser = argparse.ArgumentParser(prog=f"{APP_EXECUTABLE_NAME} --cli", description=f"{APP_NAME} en ligne de commande (sans interface).")
     sub = parser.add_subparsers(dest="command", required=True)
 
     inspect = sub.add_parser("inspect", help="Inspecter une ou plusieurs sources.")
@@ -210,10 +212,10 @@ def build_parser() -> argparse.ArgumentParser:
     operations.set_defaults(func=cmd_operations)
 
     for name, help_text, func in (
-        ("validate", "Valider une config remux.", cmd_validate),
-        ("preview", "Afficher la commande ffmpeg prévue.", cmd_preview),
-        ("remux", "Exécuter un remux.", cmd_remux),
-        ("run", "Exécuter un job remux.", cmd_run),
+        ("validate", "Valider un job (ou un profil) sans exécuter.", cmd_validate),
+        ("preview", "Afficher les commandes prévues (FFmpeg, encodeur).", cmd_preview),
+        ("remux", "Remuxer des sources (pistes, synchro, métadonnées).", cmd_remux),
+        ("run", "Exécuter un job JSON (remux ou encodage).", cmd_run),
         ("encode", "Encoder (job remux + bloc `encode` ou options d'encodage).", cmd_run),
     ):
         p = sub.add_parser(name, help=help_text)
@@ -243,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="Dossier des aperçus (défaut : celui de la sortie).")
         p.set_defaults(func=func)
 
-    batch = sub.add_parser("batch", help="Appliquer un template à plusieurs jobs.")
+    batch = sub.add_parser("batch", help="Appliquer un gabarit ou un profil à un lot.")
     _add_common_options(batch)
     batch.add_argument("--template")
     batch.add_argument("--profile", help="Profil décisionnel à appliquer au lot.")
@@ -331,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibration.add_argument("--calibration")
     subs.add_argument("--force", action="store_true")
     subs.set_defaults(func=cmd_shift_subs)
-    hybrid = sub.add_parser("hybrid", help="Assembler une paire ou une saison hybride.")
+    hybrid = sub.add_parser("hybrid", help="Hybrider une paire ou une saison (moteur du Hybrid Studio).")
     _add_common_options(hybrid)
     for option in ("ref", "donor", "ref-dir", "donor-dir", "profile", "report-json"):
         hybrid.add_argument("--" + option)
@@ -367,4 +369,5 @@ def build_parser() -> argparse.ArgumentParser:
     studio.add_argument("--save-recipe", metavar="FICHIER", help="Écrire la recette effective (JSON).")
     add_encode_options(hybrid)
     hybrid.set_defaults(func=cmd_hybrid, sync_mode="physical", sync_subtitles="mirror", clean_nfo=True, crossfade_ms=80)
-    return parser
+    add_help_parser(sub)
+    return complete_help(parser)

@@ -45,6 +45,9 @@ class OperationSpec:
             "mutating": self.mutating,
             "uses_gpu": self.uses_gpu,
             "errors": sorted({ErrorCode.INVALID_REQUEST.value, *(code.value for code in self.errors)}),
+            # Événements possibles (progression : opérations longues ; artefacts : opérations qui écrivent).
+            "events": ["state", "log", "warning", *(["progress"] if self.long_running else []),
+                       *(["artifact"] if self.mutating else []), "result", "error"],
             "request": self.request.json_schema(),
             "result": self.result.json_schema(),
         }

@@ -9766,5 +9766,1589 @@
   "Recette importée : {name}": {
     "fra": "Recette importée : {name}",
     "eng": "Recipe imported: {name}"
+  },
+  "API :": {
+    "fra": "API :",
+    "eng": "API:"
+  },
+  "Accepter la licence NVIDIA TensorRT for RTX (https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html).": {
+    "fra": "Accepter la licence NVIDIA TensorRT for RTX (https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html).",
+    "eng": "Accept the NVIDIA TensorRT for RTX license (https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/reference/sla.html)."
+  },
+  "Accepter le recadrage aligné sur 32 imposé par Dolby Vision + NVENC.": {
+    "fra": "Accepter le recadrage aligné sur 32 imposé par Dolby Vision + NVENC.",
+    "eng": "Accept the 32-aligned crop required by Dolby Vision + NVENC."
+  },
+  "Affiche la sortie ffmpeg en direct (progression, codecs, timing). Par défaut, seule la progression des étapes de workflow est affichée.": {
+    "fra": "Affiche la sortie ffmpeg en direct (progression, codecs, timing). Par défaut, seule la progression des étapes de workflow est affichée.",
+    "eng": "Show the live ffmpeg output (progress, codecs, timing). By default, only the workflow step progress is shown."
+  },
+  "Afficher la version de Muxiveo.": {
+    "fra": "Afficher la version de Muxiveo.",
+    "eng": "Show the Muxiveo version."
+  },
+  "Afficher le plan résolu sans écrire.": {
+    "fra": "Afficher le plan résolu sans écrire.",
+    "eng": "Show the resolved plan without writing."
+  },
+  "Afficher le schéma JSON du contrat CLI.": {
+    "fra": "Afficher le schéma JSON du contrat CLI.",
+    "eng": "Show the CLI contract JSON schema."
+  },
+  "Afficher le schéma de requête et de résultat, les erreurs et les métadonnées.": {
+    "fra": "Afficher le schéma de requête et de résultat, les erreurs et les métadonnées.",
+    "eng": "Show the request and result schemas, errors and metadata."
+  },
+  "Afficher les chemins d'outils résolus par Muxiveo.": {
+    "fra": "Afficher les chemins d'outils résolus par Muxiveo.",
+    "eng": "Show the tool paths resolved by Muxiveo."
+  },
+  "Afficher les commandes prévues (FFmpeg, encodeur) sans les exécuter.": {
+    "fra": "Afficher les commandes prévues (FFmpeg, encodeur) sans les exécuter.",
+    "eng": "Show the planned commands (FFmpeg, encoder) without running them."
+  },
+  "Afficher les commandes prévues (FFmpeg, encodeur).": {
+    "fra": "Afficher les commandes prévues (FFmpeg, encodeur).",
+    "eng": "Show the planned commands (FFmpeg, encoder)."
+  },
+  "Afficher un preset (JSON).": {
+    "fra": "Afficher un preset (JSON).",
+    "eng": "Show a preset (JSON)."
+  },
+  "Afficher un preset d'encodage (JSON).": {
+    "fra": "Afficher un preset d'encodage (JSON).",
+    "eng": "Show an encoding preset (JSON)."
+  },
+  "Afficher un profil enregistré (JSON).": {
+    "fra": "Afficher un profil enregistré (JSON).",
+    "eng": "Show a saved profile (JSON)."
+  },
+  "Aide d'une commande, de toutes (--all) ou référence Markdown (--format md).": {
+    "fra": "Aide d'une commande, de toutes (--all) ou référence Markdown (--format md).",
+    "eng": "Help for one command, for all (--all) or Markdown reference (--format md)."
+  },
+  "Aide d'une commande, de toutes, ou référence Markdown.": {
+    "fra": "Aide d'une commande, de toutes, ou référence Markdown.",
+    "eng": "Help for one command, for all, or Markdown reference."
+  },
+  "Aide de toutes les commandes.": {
+    "fra": "Aide de toutes les commandes.",
+    "eng": "Help for every command."
+  },
+  "Alias historique de --auto-tmdb.": {
+    "fra": "Alias historique de --auto-tmdb.",
+    "eng": "Legacy alias of --auto-tmdb."
+  },
+  "Analyser et recalibrer automatiquement les sources dynamiquement.": {
+    "fra": "Analyser et recalibrer automatiquement les sources dynamiquement.",
+    "eng": "Automatically analyze and recalibrate the sources."
+  },
+  "Analyser le calage acoustique ou par sous-titres.": {
+    "fra": "Analyser le calage acoustique ou par sous-titres.",
+    "eng": "Analyze the acoustic or subtitle-based alignment."
+  },
+  "Année (repli sans année si aucun résultat).": {
+    "fra": "Année (repli sans année si aucun résultat).",
+    "eng": "Year (falls back to no year when nothing is found)."
+  },
+  "Aperçu (au lieu d'encoder)": {
+    "fra": "Aperçu (au lieu d'encoder)",
+    "eng": "Preview (instead of encoding)"
+  },
+  "Appariement des épisodes : numéros SxxEyy (défaut), similarité des titres, ou ordre.": {
+    "fra": "Appariement des épisodes : numéros SxxEyy (défaut), similarité des titres, ou ordre.",
+    "eng": "Episode matching: SxxEyy numbers (default), title similarity, or order."
+  },
+  "Appeler une opération de la couche de service (requête JSON, réponse JSON).": {
+    "fra": "Appeler une opération de la couche de service (requête JSON, réponse JSON).",
+    "eng": "Call a service-layer operation (JSON request, JSON response)."
+  },
+  "Appliquer un gabarit (ou un profil) à un lot de jobs ou de fichiers ; collisions refusées avant le premier job.": {
+    "fra": "Appliquer un gabarit (ou un profil) à un lot de jobs ou de fichiers ; collisions refusées avant le premier job.",
+    "eng": "Apply a template (or a profile) to a batch of jobs or files; collisions refused before the first job."
+  },
+  "Appliquer un gabarit ou un profil à un lot.": {
+    "fra": "Appliquer un gabarit ou un profil à un lot.",
+    "eng": "Apply a template or a profile to a batch."
+  },
+  "Appliquer un profil et remuxer (ou encoder avec les options d'encodage).": {
+    "fra": "Appliquer un profil et remuxer (ou encoder avec les options d'encodage).",
+    "eng": "Apply a profile and remux (or encode with the encoding options)."
+  },
+  "Appliquer un profil et remuxer.": {
+    "fra": "Appliquer un profil et remuxer.",
+    "eng": "Apply a profile and remux."
+  },
+  "Appliquer un profil à un lot de fichiers.": {
+    "fra": "Appliquer un profil à un lot de fichiers.",
+    "eng": "Apply a profile to a batch of files."
+  },
+  "Autoriser l'écrasement de la sortie.": {
+    "fra": "Autoriser l'écrasement de la sortie.",
+    "eng": "Allow overwriting the output."
+  },
+  "Avec --config-template : bloc `encode` de départ (copie, HDR de la source).": {
+    "fra": "Avec --config-template : bloc `encode` de départ (copie, HDR de la source).",
+    "eng": "With --config-template: starting `encode` block (copy, source HDR)."
+  },
+  "Avec --detect-cuts : pas d'analyse continue si les mesures ponctuelles concordent (confiance ≥ 0,90). Défaut : [sync] quick_audio_check.": {
+    "fra": "Avec --detect-cuts : pas d'analyse continue si les mesures ponctuelles concordent (confiance ≥ 0,90). Défaut : [sync] quick_audio_check.",
+    "eng": "With --detect-cuts: no continuous analysis when the spot measurements agree (confidence ≥ 0.90). Default: [sync] quick_audio_check."
+  },
+  "Avec --detect-cuts : refuser une synchro cohérente en partie non vérifiée (zones sans correspondance entourées du même décalage). Défaut : acceptée avec un avertissement.": {
+    "fra": "Avec --detect-cuts : refuser une synchro cohérente en partie non vérifiée (zones sans correspondance entourées du même décalage). Défaut : acceptée avec un avertissement.",
+    "eng": "With --detect-cuts: refuse a coherent sync that is partly unverified (unmatched areas surrounded by the same offset). Default: accepted with a warning."
+  },
+  "Avec --hdr measure : mesure rapide (images clés, extension mvo-fel ≥ 0.5.0) ; estimation.": {
+    "fra": "Avec --hdr measure : mesure rapide (images clés, extension mvo-fel ≥ 0.5.0) ; estimation.",
+    "eng": "With --hdr measure: fast measurement (keyframes, mvo-fel extension ≥ 0.5.0); estimate."
+  },
+  "Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence).": {
+    "fra": "Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence).",
+    "eng": "With --hdr-advice: TV following MaxCLL (default), the MDCV only, or dynamic (reference)."
+  },
+  "Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).": {
+    "fra": "Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).",
+    "eng": "With --hdr-advice: peak of the simulated display (default: [hdr] display_peak_nits setting)."
+  },
+  "Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).": {
+    "fra": "Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).",
+    "eng": "With --hdr-fel: exit code 3 if the verdict is lower (moderate, useful)."
+  },
+  "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart).": {
+    "fra": "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart).",
+    "eng": "With --hdr-fel: most marked moments as full-resolution PNG (without FEL, with FEL, difference map)."
+  },
+  "Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).": {
+    "fra": "Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).",
+    "eng": "With --hdr-fel: survival test through encoding (e.g. libx265:35000)."
+  },
+  "Avec --hdr-fel : une image mesurée toutes les SECONDES (défaut 30 ; 60 rapide, 10 fin).": {
+    "fra": "Avec --hdr-fel : une image mesurée toutes les SECONDES (défaut 30 ; 60 rapide, 10 fin).",
+    "eng": "With --hdr-fel: one frame measured every SECONDS (default 30; 60 fast, 10 fine)."
+  },
+  "Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0).": {
+    "fra": "Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0).",
+    "eng": "With --hdr-fel-moments: PNG exposure (EV, -6 to 6; default 0)."
+  },
+  "Avec --install : confirmer l'installation.": {
+    "fra": "Avec --install : confirmer l'installation.",
+    "eng": "With --install: confirm the installation."
+  },
+  "Backend MKV : auto (défaut), native ou ffmpeg. Prioritaire sur le job.": {
+    "fra": "Backend MKV : auto (défaut), native ou ffmpeg. Prioritaire sur le job.",
+    "eng": "MKV backend: auto (default), native or ffmpeg. Overrides the job."
+  },
+  "Balise WritingApp de la sortie.": {
+    "fra": "Balise WritingApp de la sortie.",
+    "eng": "WritingApp tag of the output."
+  },
+  "Calibration écrite (sinon JSON sur stdout).": {
+    "fra": "Calibration écrite (sinon JSON sur stdout).",
+    "eng": "Calibration written (otherwise JSON on stdout)."
+  },
+  "Calibration écrite dans ce fichier JSON.": {
+    "fra": "Calibration écrite dans ce fichier JSON.",
+    "eng": "Calibration written to this JSON file."
+  },
+  "Calibrations de synchro (fichiers JSON de sync-scan, du Synchro Studio ou des exact-jobs) : mêmes éditions que le Synchro Studio.": {
+    "fra": "Calibrations de synchro (fichiers JSON de sync-scan, du Synchro Studio ou des exact-jobs) : mêmes éditions que le Synchro Studio.",
+    "eng": "Sync calibrations (JSON files from sync-scan, the Sync Studio or exact-jobs): same edits as the Sync Studio."
+  },
+  "Canal de mise à jour (défaut : réglage [ui] update_channel).": {
+    "fra": "Canal de mise à jour (défaut : réglage [ui] update_channel).",
+    "eng": "Update channel (default: [ui] update_channel setting)."
+  },
+  "Capacités de la machine (encodeurs, Vulkan, NVOF, TensorRT…).": {
+    "fra": "Capacités de la machine (encodeurs, Vulkan, NVOF, TensorRT…).",
+    "eng": "Machine capabilities (encoders, Vulkan, NVOF, TensorRT…)."
+  },
+  "Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur vidéo MVO.": {
+    "fra": "Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur vidéo MVO.",
+    "eng": "Machine capabilities: encoders, presets, Vulkan, NVOF, TensorRT, MVO video engine."
+  },
+  "Capturer un profil d'après un job (comme « Capturer » du panneau Conteneur).": {
+    "fra": "Capturer un profil d'après un job (comme « Capturer » du panneau Conteneur).",
+    "eng": "Capture a profile from a job (like the Container panel's \"Capture\")."
+  },
+  "Champ vidéo du bloc encode (ex. restoration.mode=fast) ; valeur JSON ou texte.": {
+    "fra": "Champ vidéo du bloc encode (ex. restoration.mode=fast) ; valeur JSON ou texte.",
+    "eng": "Video field of the encode block (e.g. restoration.mode=fast); JSON or text value."
+  },
+  "Chemin ffmpeg override.": {
+    "fra": "Chemin ffmpeg override.",
+    "eng": "ffmpeg path override."
+  },
+  "Chemin ffmpeg pour cet appel.": {
+    "fra": "Chemin ffmpeg pour cet appel.",
+    "eng": "ffmpeg path for this call."
+  },
+  "Chemin ffmpeg pour cette sonde.": {
+    "fra": "Chemin ffmpeg pour cette sonde.",
+    "eng": "ffmpeg path for this probe."
+  },
+  "Chemin ffprobe override.": {
+    "fra": "Chemin ffprobe override.",
+    "eng": "ffprobe path override."
+  },
+  "Chemin ffprobe pour cet appel.": {
+    "fra": "Chemin ffprobe pour cet appel.",
+    "eng": "ffprobe path for this call."
+  },
+  "Chemin mediainfo override.": {
+    "fra": "Chemin mediainfo override.",
+    "eng": "mediainfo path override."
+  },
+  "Chemin mediainfo pour cet appel.": {
+    "fra": "Chemin mediainfo pour cet appel.",
+    "eng": "mediainfo path for this call."
+  },
+  "Chemins des outils résolus par Muxiveo (JSON).": {
+    "fra": "Chemins des outils résolus par Muxiveo (JSON).",
+    "eng": "Tool paths resolved by Muxiveo (JSON)."
+  },
+  "Chercher TMDB automatiquement et prendre le premier résultat.": {
+    "fra": "Chercher TMDB automatiquement et prendre le premier résultat.",
+    "eng": "Search TMDB automatically and take the first result."
+  },
+  "Cible face à l'audio d'origine de la référence.": {
+    "fra": "Cible face à l'audio d'origine de la référence.",
+    "eng": "Target against the reference's original audio."
+  },
+  "Clé API (défaut : réglage [metadata]).": {
+    "fra": "Clé API (défaut : réglage [metadata]).",
+    "eng": "API key (default: [metadata] setting)."
+  },
+  "Clé API TMDB (défaut : réglage [metadata]).": {
+    "fra": "Clé API TMDB (défaut : réglage [metadata]).",
+    "eng": "TMDB API key (default: [metadata] setting)."
+  },
+  "Clé API TMDB v3 (surcharge la config Muxiveo et le JSON job).": {
+    "fra": "Clé API TMDB v3 (surcharge la config Muxiveo et le JSON job).",
+    "eng": "TMDB v3 API key (overrides the Muxiveo settings and the job JSON)."
+  },
+  "Code de sortie 3 si un contrôle atteint ce niveau.": {
+    "fra": "Code de sortie 3 si un contrôle atteint ce niveau.",
+    "eng": "Exit code 3 if a check reaches this level."
+  },
+  "Codec vidéo (copy, libx265, hevc_nvenc…).": {
+    "fra": "Codec vidéo (copy, libx265, hevc_nvenc…).",
+    "eng": "Video codec (copy, libx265, hevc_nvenc…)."
+  },
+  "Commande (et sous-commande), ex. profile apply.": {
+    "fra": "Commande (et sous-commande), ex. profile apply.",
+    "eng": "Command (and subcommand), e.g. profile apply."
+  },
+  "Commande (liste ci-dessous).": {
+    "fra": "Commande (liste ci-dessous).",
+    "eng": "Command (list below)."
+  },
+  "Commandes (muxiveo --cli help COMMANDE pour le détail) :": {
+    "fra": "Commandes (muxiveo --cli help COMMANDE pour le détail) :",
+    "eng": "Commands (muxiveo --cli help COMMAND for details):"
+  },
+  "Compare la seconde source à la première (deux entrées).": {
+    "fra": "Compare la seconde source à la première (deux entrées).",
+    "eng": "Compare the second source with the first (two inputs)."
+  },
+  "Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).": {
+    "fra": "Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).",
+    "eng": "Compare with the latest GitHub release (exit code 8 if an update is available)."
+  },
+  "Comparer à la dernière release (GitHub).": {
+    "fra": "Comparer à la dernière release (GitHub).",
+    "eng": "Compare with the latest release (GitHub)."
+  },
+  "Compatibilité : nettoyage toujours activé.": {
+    "fra": "Compatibilité : nettoyage toujours activé.",
+    "eng": "Compatibility: cleanup always enabled."
+  },
+  "Composer deux calibrations (référence elle-même synchronisée).": {
+    "fra": "Composer deux calibrations (référence elle-même synchronisée).",
+    "eng": "Compose two calibrations (reference itself synchronized)."
+  },
+  "Composer deux calibrations : mesure face à une référence elle-même synchronisée.": {
+    "fra": "Composer deux calibrations : mesure face à une référence elle-même synchronisée.",
+    "eng": "Compose two calibrations: measurement against a reference that is itself synchronized."
+  },
+  "Construit le job (sources -i, ou --config) puis en capture la sélection, les métadonnées, les flags, l'ordre et les variantes audio ; --save l'enregistre parmi les profils de l'interface.": {
+    "fra": "Construit le job (sources -i, ou --config) puis en capture la sélection, les métadonnées, les flags, l'ordre et les variantes audio ; --save l'enregistre parmi les profils de l'interface.",
+    "eng": "Builds the job (sources -i, or --config) then captures its selection, metadata, flags, order and audio variants; --save stores it among the GUI's profiles."
+  },
+  "Continuer le lot après un échec.": {
+    "fra": "Continuer le lot après un échec.",
+    "eng": "Continue the batch after a failure."
+  },
+  "Contrat à publier ; « api » : catalogue des opérations de la couche de service.": {
+    "fra": "Contrat à publier ; « api » : catalogue des opérations de la couche de service.",
+    "eng": "Contract to publish; \"api\": catalog of the service-layer operations."
+  },
+  "Corriger les métadonnées HDR sans réencodage (onglet Édition du HDR Studio).": {
+    "fra": "Corriger les métadonnées HDR sans réencodage (onglet Édition du HDR Studio).",
+    "eng": "Fix HDR metadata without re-encoding (HDR Studio's Edit tab)."
+  },
+  "Couche de la piste --track qui précède (défaut : stream) : flux, EL / BL (Dolby Vision profil 7), RPU, HDR10+.": {
+    "fra": "Couche de la piste --track qui précède (défaut : stream) : flux, EL / BL (Dolby Vision profil 7), RPU, HDR10+.",
+    "eng": "Layer of the preceding --track (default: stream): stream, EL / BL (Dolby Vision profile 7), RPU, HDR10+."
+  },
+  "Description enregistrée.": {
+    "fra": "Description enregistrée.",
+    "eng": "Saved description."
+  },
+  "Dolby Vision de la source : copié ou retiré.": {
+    "fra": "Dolby Vision de la source : copié ou retiré.",
+    "eng": "Source Dolby Vision: copied or removed."
+  },
+  "Dossier de référence (épisodes).": {
+    "fra": "Dossier de référence (épisodes).",
+    "eng": "Reference folder (episodes)."
+  },
+  "Dossier de sources (répétable).": {
+    "fra": "Dossier de sources (répétable).",
+    "eng": "Source folder (repeatable)."
+  },
+  "Dossier de travail (défaut : réglage [paths] work_dir).": {
+    "fra": "Dossier de travail (défaut : réglage [paths] work_dir).",
+    "eng": "Work folder (default: [paths] work_dir setting)."
+  },
+  "Dossier de travail : éléments abandonnés, nettoyage.": {
+    "fra": "Dossier de travail : éléments abandonnés, nettoyage.",
+    "eng": "Work folder: abandoned items, cleanup."
+  },
+  "Dossier de travail pour cet appel.": {
+    "fra": "Dossier de travail pour cet appel.",
+    "eng": "Work folder for this call."
+  },
+  "Dossier des aperçus (défaut : celui de la sortie).": {
+    "fra": "Dossier des aperçus (défaut : celui de la sortie).",
+    "eng": "Preview folder (default: the output's folder)."
+  },
+  "Dossier des sorties (défaut : celui de la source).": {
+    "fra": "Dossier des sorties (défaut : celui de la source).",
+    "eng": "Output folder (default: the source's folder)."
+  },
+  "Dossier des sorties.": {
+    "fra": "Dossier des sorties.",
+    "eng": "Output folder."
+  },
+  "Dossier donneur (épisodes).": {
+    "fra": "Dossier donneur (épisodes).",
+    "eng": "Donor folder (episodes)."
+  },
+  "Dossier à scanner pour créer un job par vidéo; répétable.": {
+    "fra": "Dossier à scanner pour créer un job par vidéo; répétable.",
+    "eng": "Folder to scan to create one job per video; repeatable."
+  },
+  "Durée en secondes (défaut 60).": {
+    "fra": "Durée en secondes (défaut 60).",
+    "eng": "Duration in seconds (default 60)."
+  },
+  "Durée minimale (s).": {
+    "fra": "Durée minimale (s).",
+    "eng": "Minimum duration (s)."
+  },
+  "Débit vidéo (kbit/s).": {
+    "fra": "Débit vidéo (kbit/s).",
+    "eng": "Video bitrate (kbit/s)."
+  },
+  "Débruitage : MVO-R2 (auto, leger, moyen, fort) ou NLMeans ; off le désactive.": {
+    "fra": "Débruitage : MVO-R2 (auto, leger, moyen, fort) ou NLMeans ; off le désactive.",
+    "eng": "Denoising: MVO-R2 (auto, light, medium, strong) or NLMeans; off disables it."
+  },
+  "Début (s ou HH:MM:SS.mmm).": {
+    "fra": "Début (s ou HH:MM:SS.mmm).",
+    "eng": "Start (s or HH:MM:SS.mmm)."
+  },
+  "Décalage du segment N fixé à MS ; l'écart est reporté sur les segments suivants.": {
+    "fra": "Décalage du segment N fixé à MS ; l'écart est reporté sur les segments suivants.",
+    "eng": "Offset of segment N set to MS; the difference carries over to the following segments."
+  },
+  "Décalage imposé de B en images (défaut : alignement automatique).": {
+    "fra": "Décalage imposé de B en images (défaut : alignement automatique).",
+    "eng": "Forced offset of B in frames (default: automatic alignment)."
+  },
+  "Décalage manuel des donneurs (avec --sync manual).": {
+    "fra": "Décalage manuel des donneurs (avec --sync manual).",
+    "eng": "Manual donor offset (with --sync manual)."
+  },
+  "Décalage à appliquer (ms).": {
+    "fra": "Décalage à appliquer (ms).",
+    "eng": "Offset to apply (ms)."
+  },
+  "Décrire une calibration (segments, plages de sortie, cadence).": {
+    "fra": "Décrire une calibration (segments, plages de sortie, cadence).",
+    "eng": "Describe a calibration (segments, output ranges, cadence)."
+  },
+  "Décrire une calibration : segments, coupes, plages de sortie, cadence.": {
+    "fra": "Décrire une calibration : segments, coupes, plages de sortie, cadence.",
+    "eng": "Describe a calibration: segments, cuts, output ranges, cadence."
+  },
+  "Départ fixé à ce décalage (la suite suit).": {
+    "fra": "Départ fixé à ce décalage (la suite suit).",
+    "eng": "Start set to this offset (the rest follows)."
+  },
+  "Désentrelacement YADIF.": {
+    "fra": "Désentrelacement YADIF.",
+    "eng": "YADIF deinterlacing."
+  },
+  "Détecter les coupures et ruptures temporelles (multi-segments).": {
+    "fra": "Détecter les coupures et ruptures temporelles (multi-segments).",
+    "eng": "Detect cuts and timeline breaks (multi-segment)."
+  },
+  "Détection et conversion automatique de cadence PAL <-> Cinéma.": {
+    "fra": "Détection et conversion automatique de cadence PAL <-> Cinéma.",
+    "eng": "Automatic PAL <-> Cinema cadence detection and conversion."
+  },
+  "Ecrire le schéma JSON dans un fichier.": {
+    "fra": "Ecrire le schéma JSON dans un fichier.",
+    "eng": "Write the JSON schema to a file."
+  },
+  "Ecrire un rapport JSON final.": {
+    "fra": "Ecrire un rapport JSON final.",
+    "eng": "Write a final JSON report."
+  },
+  "Emplacements de config.ini et des réglages de l'interface.": {
+    "fra": "Emplacements de config.ini et des réglages de l'interface.",
+    "eng": "Locations of config.ini and of the GUI settings."
+  },
+  "Encodage (bloc `encode` du job)": {
+    "fra": "Encodage (bloc `encode` du job)",
+    "eng": "Encoding (job `encode` block)"
+  },
+  "Encodage :": {
+    "fra": "Encodage :",
+    "eng": "Encoding:"
+  },
+  "Encodage en échec : conserver le dossier de travail (fichiers produits).": {
+    "fra": "Encodage en échec : conserver le dossier de travail (fichiers produits).",
+    "eng": "Failed encode: keep the work folder (produced files)."
+  },
+  "Encoder (job remux + bloc `encode` ou options d'encodage).": {
+    "fra": "Encoder (job remux + bloc `encode` ou options d'encodage).",
+    "eng": "Encode (remux job + `encode` block or encoding options)."
+  },
+  "Encoder : job + bloc `encode` ou options d'encodage ; aperçus réels avec --preview-image / --preview-video.": {
+    "fra": "Encoder : job + bloc `encode` ou options d'encodage ; aperçus réels avec --preview-image / --preview-video.",
+    "eng": "Encode: job + `encode` block or encoding options; real previews with --preview-image / --preview-video."
+  },
+  "Enregistrer le profil capturé.": {
+    "fra": "Enregistrer le profil capturé.",
+    "eng": "Save the captured profile."
+  },
+  "Enregistrer un preset d'après les options d'encodage (réglages d'encodeur seulement).": {
+    "fra": "Enregistrer un preset d'après les options d'encodage (réglages d'encodeur seulement).",
+    "eng": "Save a preset from the encoding options (encoder settings only)."
+  },
+  "Enregistrer un preset d'après les options d'encodage.": {
+    "fra": "Enregistrer un preset d'après les options d'encodage.",
+    "eng": "Save a preset from the encoding options."
+  },
+  "Enregistrer un profil depuis un fichier JSON (validé).": {
+    "fra": "Enregistrer un profil depuis un fichier JSON (validé).",
+    "eng": "Save a profile from a JSON file (validated)."
+  },
+  "Entrée batch simple; répétable.": {
+    "fra": "Entrée batch simple; répétable.",
+    "eng": "Simple batch input; repeatable."
+  },
+  "Exemples :": {
+    "fra": "Exemples :",
+    "eng": "Examples:"
+  },
+  "Exporter un preset dans un fichier JSON.": {
+    "fra": "Exporter un preset dans un fichier JSON.",
+    "eng": "Export a preset to a JSON file."
+  },
+  "Extension (défaut : toutes).": {
+    "fra": "Extension (défaut : toutes).",
+    "eng": "Extension (default: all)."
+  },
+  "Extension : mvo-rife, mvo-rife-trt, mvo-fel.": {
+    "fra": "Extension : mvo-rife, mvo-rife-trt, mvo-fel.",
+    "eng": "Extension: mvo-rife, mvo-rife-trt, mvo-fel."
+  },
+  "Extensions : moteur vidéo MVO (mvo-rife), accélération TensorRT (mvo-rife-trt).": {
+    "fra": "Extensions : moteur vidéo MVO (mvo-rife), accélération TensorRT (mvo-rife-trt).",
+    "eng": "Extensions: MVO video engine (mvo-rife), TensorRT acceleration (mvo-rife-trt)."
+  },
+  "Extensions facultatives (interpolation, accélération NVIDIA TensorRT).": {
+    "fra": "Extensions facultatives (interpolation, accélération NVIDIA TensorRT).",
+    "eng": "Optional extensions (interpolation, NVIDIA TensorRT acceleration)."
+  },
+  "Extraire des pistes, couches Dolby Vision / HDR10+ ou pièces jointes.": {
+    "fra": "Extraire des pistes, couches Dolby Vision / HDR10+ ou pièces jointes.",
+    "eng": "Extract tracks, Dolby Vision / HDR10+ layers or attachments."
+  },
+  "Extrait des éléments d'une source vers des fichiers autonomes : piste en flux élémentaire (ou Matroska avec --format mkv), couche EL / BL d'un Dolby Vision profil 7, RPU, HDR10+, pièce jointe. Chaque sortie est écrite dans un fichier .partial puis publiée.": {
+    "fra": "Extrait des éléments d'une source vers des fichiers autonomes : piste en flux élémentaire (ou Matroska avec --format mkv), couche EL / BL d'un Dolby Vision profil 7, RPU, HDR10+, pièce jointe. Chaque sortie est écrite dans un fichier .partial puis publiée.",
+    "eng": "Extracts items of a source to standalone files: track as elementary stream (or Matroska with --format mkv), EL / BL layer of a Dolby Vision profile 7, RPU, HDR10+, attachment. Each output is written to a .partial file then published."
+  },
+  "Extrait vidéo encodé (ex. 600:10 ; durée 5–30 s).": {
+    "fra": "Extrait vidéo encodé (ex. 600:10 ; durée 5–30 s).",
+    "eng": "Encoded video excerpt (e.g. 600:10; duration 5–30 s)."
+  },
+  "Exécute une opération du catalogue (voir `operations`) avec une requête JSON stricte. Réponse sur stdout ({status, result | error}), événements versionnés sur stderr.": {
+    "fra": "Exécute une opération du catalogue (voir `operations`) avec une requête JSON stricte. Réponse sur stdout ({status, result | error}), événements versionnés sur stderr.",
+    "eng": "Runs a catalog operation (see `operations`) with a strict JSON request. Response on stdout ({status, result | error}), versioned events on stderr."
+  },
+  "Exécuter un job JSON (exact-job ou contrat v1), remux ou encodage selon son bloc `encode`.": {
+    "fra": "Exécuter un job JSON (exact-job ou contrat v1), remux ou encodage selon son bloc `encode`.",
+    "eng": "Run a JSON job (exact-job or v1 contract), remux or encode according to its `encode` block."
+  },
+  "Exécuter un job JSON (remux ou encodage).": {
+    "fra": "Exécuter un job JSON (remux ou encodage).",
+    "eng": "Run a JSON job (remux or encode)."
+  },
+  "FEL Analyzer : apport de la couche FEL d'une source Dolby Vision profil 7 (lit les métadonnées dynamiques ; extension mvo-fel ≥ 0.4.0).": {
+    "fra": "FEL Analyzer : apport de la couche FEL d'une source Dolby Vision profil 7 (lit les métadonnées dynamiques ; extension mvo-fel ≥ 0.4.0).",
+    "eng": "FEL Analyzer: contribution of the FEL layer of a Dolby Vision profile 7 source (reads the dynamic metadata; mvo-fel extension ≥ 0.4.0)."
+  },
+  "Fiche TMDB : sans valeur, recherche d'après le nom ; avec un ID, cette fiche.": {
+    "fra": "Fiche TMDB : sans valeur, recherche d'après le nom ; avec un ID, cette fiche.",
+    "eng": "TMDB record: without a value, search from the name; with an ID, that record."
+  },
+  "Fiche TMDB complète, titre de conteneur et balises MKV.": {
+    "fra": "Fiche TMDB complète, titre de conteneur et balises MKV.",
+    "eng": "Full TMDB record, container title and MKV tags."
+  },
+  "Fiche complète et balises MKV.": {
+    "fra": "Fiche complète et balises MKV.",
+    "eng": "Full record and MKV tags."
+  },
+  "Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).": {
+    "fra": "Fichier JSON de calibration explicite (outrepasse l'analyse dynamique).",
+    "eng": "Explicit calibration JSON file (overrides the dynamic analysis)."
+  },
+  "Fichier JSON de calibration explicite (remplace l'analyse).": {
+    "fra": "Fichier JSON de calibration explicite (remplace l'analyse).",
+    "eng": "Explicit calibration JSON file (replaces the analysis)."
+  },
+  "Fichier JSON de calibration.": {
+    "fra": "Fichier JSON de calibration.",
+    "eng": "Calibration JSON file."
+  },
+  "Fichier JSON du preset.": {
+    "fra": "Fichier JSON du preset.",
+    "eng": "Preset JSON file."
+  },
+  "Fichier JSON du profil (decision-profile v1).": {
+    "fra": "Fichier JSON du profil (decision-profile v1).",
+    "eng": "Profile JSON file (decision-profile v1)."
+  },
+  "Fichier JSON job/template.": {
+    "fra": "Fichier JSON job/template.",
+    "eng": "Job/template JSON file."
+  },
+  "Fichier JSON écrit.": {
+    "fra": "Fichier JSON écrit.",
+    "eng": "JSON file written."
+  },
+  "Fichier corrigé (autre que la source).": {
+    "fra": "Fichier corrigé (autre que la source).",
+    "eng": "Corrected file (other than the source)."
+  },
+  "Fichier de référence (master : vidéo, chapitres).": {
+    "fra": "Fichier de référence (master : vidéo, chapitres).",
+    "eng": "Reference file (master: video, chapters)."
+  },
+  "Fichier de sortie (un seul élément).": {
+    "fra": "Fichier de sortie (un seul élément).",
+    "eng": "Output file (single item)."
+  },
+  "Fichier de sortie.": {
+    "fra": "Fichier de sortie.",
+    "eng": "Output file."
+  },
+  "Fichier donneur (audio, sous-titres).": {
+    "fra": "Fichier donneur (audio, sous-titres).",
+    "eng": "Donor file (audio, subtitles)."
+  },
+  "Fichier source.": {
+    "fra": "Fichier source.",
+    "eng": "Source file."
+  },
+  "Fichier à caler.": {
+    "fra": "Fichier à caler.",
+    "eng": "File to align."
+  },
+  "Fils de la mesure de l'image.": {
+    "fra": "Fils de la mesure de l'image.",
+    "eng": "Image measurement threads."
+  },
+  "Flux : index ffprobe ou spécificateur (défaut 0:a:0).": {
+    "fra": "Flux : index ffprobe ou spécificateur (défaut 0:a:0).",
+    "eng": "Stream: ffprobe index or specifier (default 0:a:0)."
+  },
+  "Flux de référence (spécificateur FFmpeg, ex. 0:a:0).": {
+    "fra": "Flux de référence (spécificateur FFmpeg, ex. 0:a:0).",
+    "eng": "Reference stream (FFmpeg specifier, e.g. 0:a:0)."
+  },
+  "Flux à caler (spécificateur FFmpeg).": {
+    "fra": "Flux à caler (spécificateur FFmpeg).",
+    "eng": "Stream to align (FFmpeg specifier)."
+  },
+  "Fondu aux raccords de synchro (ms, 0–1000).": {
+    "fra": "Fondu aux raccords de synchro (ms, 0–1000).",
+    "eng": "Crossfade at sync junctions (ms, 0–1000)."
+  },
+  "Force les keywords pistes de --output-template en mode all (toutes les valeurs finales trouvées).": {
+    "fra": "Force les keywords pistes de --output-template en mode all (toutes les valeurs finales trouvées).",
+    "eng": "Forces the --output-template track keywords to all mode (every final value found)."
+  },
+  "Format du journal : text (lisible), jsonl (une ligne JSON par message) ou events (événements versionnés sur stderr, réponse JSON sur stdout).": {
+    "fra": "Format du journal : text (lisible), jsonl (une ligne JSON par message) ou events (événements versionnés sur stderr, réponse JSON sur stdout).",
+    "eng": "Log format: text (readable), jsonl (one JSON line per message) or events (versioned events on stderr, JSON response on stdout)."
+  },
+  "Forme d'onde d'une piste audio sur une plage (JSON).": {
+    "fra": "Forme d'onde d'une piste audio sur une plage (JSON).",
+    "eng": "Waveform of an audio track over a range (JSON)."
+  },
+  "Forme d'onde d'une piste audio sur une plage (pics par tranche, JSON).": {
+    "fra": "Forme d'onde d'une piste audio sur une plage (pics par tranche, JSON).",
+    "eng": "Waveform of an audio track over a range (peaks per slice, JSON)."
+  },
+  "Gabarit JSON appliqué à chaque job du lot.": {
+    "fra": "Gabarit JSON appliqué à chaque job du lot.",
+    "eng": "JSON template applied to every job of the batch."
+  },
+  "Glob de fichiers à exclure lors du scan de dossiers; répétable.": {
+    "fra": "Glob de fichiers à exclure lors du scan de dossiers; répétable.",
+    "eng": "Glob of files to exclude when scanning folders; repeatable."
+  },
+  "Glob de fichiers à inclure lors du scan de dossiers; répétable.": {
+    "fra": "Glob de fichiers à inclure lors du scan de dossiers; répétable.",
+    "eng": "Glob of files to include when scanning folders; repeatable."
+  },
+  "Groupe de release ({group} du gabarit de nom).": {
+    "fra": "Groupe de release ({group} du gabarit de nom).",
+    "eng": "Release group ({group} of the name template)."
+  },
+  "HDR (HDR Studio)": {
+    "fra": "HDR (HDR Studio)",
+    "eng": "HDR (HDR Studio)"
+  },
+  "HDR :": {
+    "fra": "HDR :",
+    "eng": "HDR:"
+  },
+  "HDR10+ de la source : copié ou retiré.": {
+    "fra": "HDR10+ de la source : copié ou retiré.",
+    "eng": "Source HDR10+: copied or removed."
+  },
+  "Hybrid :": {
+    "fra": "Hybrid :",
+    "eng": "Hybrid:"
+  },
+  "Hybrider une paire ou une saison (moteur du Hybrid Studio).": {
+    "fra": "Hybrider une paire ou une saison (moteur du Hybrid Studio).",
+    "eng": "Hybridize a pair or a season (Hybrid Studio engine)."
+  },
+  "Hybrider une paire ou une saison sur le moteur du Hybrid Studio : vidéo du master, audio et sous-titres des donneurs calés ; plan, exact-jobs, recette, encodage par épisode.": {
+    "fra": "Hybrider une paire ou une saison sur le moteur du Hybrid Studio : vidéo du master, audio et sous-titres des donneurs calés ; plan, exact-jobs, recette, encodage par épisode.",
+    "eng": "Hybridize a pair or a season on the Hybrid Studio engine: master video, synced donor audio and subtitles; plan, exact-jobs, recipe, per-episode encoding."
+  },
+  "ID TMDB explicite.": {
+    "fra": "ID TMDB explicite.",
+    "eng": "Explicit TMDB ID."
+  },
+  "Identifiant TMDB.": {
+    "fra": "Identifiant TMDB.",
+    "eng": "TMDB identifier."
+  },
+  "Image(s) encodée(s) à cet instant ; répétable.": {
+    "fra": "Image(s) encodée(s) à cet instant ; répétable.",
+    "eng": "Frame(s) encoded at this time; repeatable."
+  },
+  "Importer un preset depuis un fichier JSON.": {
+    "fra": "Importer un preset depuis un fichier JSON.",
+    "eng": "Import a preset from a JSON file."
+  },
+  "Index ffprobe de la piste vidéo (défaut : première piste vidéo).": {
+    "fra": "Index ffprobe de la piste vidéo (défaut : première piste vidéo).",
+    "eng": "ffprobe index of the video track (default: first video track)."
+  },
+  "Index ffprobe de la piste vidéo (défaut : première).": {
+    "fra": "Index ffprobe de la piste vidéo (défaut : première).",
+    "eng": "ffprobe index of the video track (default: first)."
+  },
+  "Inspecter une ou plusieurs sources : pistes, HDR, chapitres, pièces jointes (JSON). --config-template écrit un exact-job de départ ; --hdr ouvre l'inspection du HDR Studio.": {
+    "fra": "Inspecter une ou plusieurs sources : pistes, HDR, chapitres, pièces jointes (JSON). --config-template écrit un exact-job de départ ; --hdr ouvre l'inspection du HDR Studio.",
+    "eng": "Inspect one or more sources: tracks, HDR, chapters, attachments (JSON). --config-template writes a starting exact-job; --hdr opens the HDR Studio inspection."
+  },
+  "Inspecter une ou plusieurs sources.": {
+    "fra": "Inspecter une ou plusieurs sources.",
+    "eng": "Inspect one or more sources."
+  },
+  "Inspection HDR : en-têtes (static), + RPU / HDR10+ (dynamic), + mesure de chaque image (measure, extension mvo-fel ≥ 0.4.0). Sortie JSON.": {
+    "fra": "Inspection HDR : en-têtes (static), + RPU / HDR10+ (dynamic), + mesure de chaque image (measure, extension mvo-fel ≥ 0.4.0). Sortie JSON.",
+    "eng": "HDR inspection: headers (static), + RPU / HDR10+ (dynamic), + measurement of every frame (measure, mvo-fel extension ≥ 0.4.0). JSON output."
+  },
+  "Installer NVEncC (apt / dnf, sinon dossier utilisateur).": {
+    "fra": "Installer NVEncC (apt / dnf, sinon dossier utilisateur).",
+    "eng": "Install NVEncC (apt / dnf, otherwise user folder)."
+  },
+  "Installer la dernière version du canal (installation intégrée ; sans relancer l'interface).": {
+    "fra": "Installer la dernière version du canal (installation intégrée ; sans relancer l'interface).",
+    "eng": "Install the channel's latest version (built-in installation; without relaunching the GUI)."
+  },
+  "Installer même si la machine semble incompatible.": {
+    "fra": "Installer même si la machine semble incompatible.",
+    "eng": "Install even if the machine looks incompatible."
+  },
+  "Installer une extension (TensorRT : --accept-license).": {
+    "fra": "Installer une extension (TensorRT : --accept-license).",
+    "eng": "Install an extension (TensorRT: --accept-license)."
+  },
+  "Instant d'aperçu tiré au hasard.": {
+    "fra": "Instant d'aperçu tiré au hasard.",
+    "eng": "Random preview time."
+  },
+  "Insérer un silence de la longueur de cette section.": {
+    "fra": "Insérer un silence de la longueur de cette section.",
+    "eng": "Insert a silence as long as this section."
+  },
+  "Interpolation MVO-RIFE : facteur (x2, x2.5…) ou cadence cible (60, 60000/1001).": {
+    "fra": "Interpolation MVO-RIFE : facteur (x2, x2.5…) ou cadence cible (60, 60000/1001).",
+    "eng": "MVO-RIFE interpolation: factor (x2, x2.5…) or target frame rate (60, 60000/1001)."
+  },
+  "Intégrer la couche Dolby Vision FEL (mvo-fel).": {
+    "fra": "Intégrer la couche Dolby Vision FEL (mvo-fel).",
+    "eng": "Bake the Dolby Vision FEL layer (mvo-fel)."
+  },
+  "Inverser une calibration (référence face à la cible).": {
+    "fra": "Inverser une calibration (référence face à la cible).",
+    "eng": "Invert a calibration (reference against target)."
+  },
+  "JSON contenant `jobs` ou `inputs`.": {
+    "fra": "JSON contenant `jobs` ou `inputs`.",
+    "eng": "JSON containing `jobs` or `inputs`."
+  },
+  "Journal détaillé (sortie brute des outils).": {
+    "fra": "Journal détaillé (sortie brute des outils).",
+    "eng": "Detailed log (raw tool output)."
+  },
+  "Journal détaillé.": {
+    "fra": "Journal détaillé.",
+    "eng": "Detailed log."
+  },
+  "Journal et exécution": {
+    "fra": "Journal et exécution",
+    "eng": "Log and execution"
+  },
+  "L11 : type de contenu 0–4 (défaut, cinéma, jeu, sport, utilisateur), point blanc 0–15, « ref » : mode de référence.": {
+    "fra": "L11 : type de contenu 0–4 (défaut, cinéma, jeu, sport, utilisateur), point blanc 0–15, « ref » : mode de référence.",
+    "eng": "L11: content type 0–4 (default, cinema, game, sport, user), white point 0–15, \"ref\": reference mode."
+  },
+  "L6 : mastering max. et min. (nits), MaxCLL, MaxFALL.": {
+    "fra": "L6 : mastering max. et min. (nits), MaxCLL, MaxFALL.",
+    "eng": "L6: max and min mastering (nits), MaxCLL, MaxFALL."
+  },
+  "Langue de l'aide (fra, eng ; défaut : [ui] language).": {
+    "fra": "Langue de l'aide (fra, eng ; défaut : [ui] language).",
+    "eng": "Help language (fra, eng; default: [ui] language)."
+  },
+  "Langue des titres (défaut fr-FR).": {
+    "fra": "Langue des titres (défaut fr-FR).",
+    "eng": "Language of the titles (default fr-FR)."
+  },
+  "Langues audio du master gardées (fre,eng…).": {
+    "fra": "Langues audio du master gardées (fre,eng…).",
+    "eng": "Master audio languages kept (fre,eng…)."
+  },
+  "Langues audio prises aux donneurs.": {
+    "fra": "Langues audio prises aux donneurs.",
+    "eng": "Audio languages taken from donors."
+  },
+  "Langues de sous-titres prises aux donneurs.": {
+    "fra": "Langues de sous-titres prises aux donneurs.",
+    "eng": "Subtitle languages taken from donors."
+  },
+  "Langues jamais retenues.": {
+    "fra": "Langues jamais retenues.",
+    "eng": "Languages never kept."
+  },
+  "Largeur d'une tranche (ms).": {
+    "fra": "Largeur d'une tranche (ms).",
+    "eng": "Width of a slice (ms)."
+  },
+  "Lire et modifier la configuration (comme le panneau Paramètres).": {
+    "fra": "Lire et modifier la configuration (comme le panneau Paramètres).",
+    "eng": "Read and change the configuration (like the Settings panel)."
+  },
+  "Lire, éditer, composer ou inverser une calibration de synchro.": {
+    "fra": "Lire, éditer, composer ou inverser une calibration de synchro.",
+    "eng": "Read, edit, compose or invert a sync calibration."
+  },
+  "Liste au format JSON.": {
+    "fra": "Liste au format JSON.",
+    "eng": "List as JSON."
+  },
+  "Lister les opérations de la couche de service.": {
+    "fra": "Lister les opérations de la couche de service.",
+    "eng": "List the service-layer operations."
+  },
+  "Lister les presets d'encodage.": {
+    "fra": "Lister les presets d'encodage.",
+    "eng": "List the encoding presets."
+  },
+  "Lister les presets.": {
+    "fra": "Lister les presets.",
+    "eng": "List the presets."
+  },
+  "Lister les profils enregistrés (ceux de l'interface).": {
+    "fra": "Lister les profils enregistrés (ceux de l'interface).",
+    "eng": "List the saved profiles (the GUI's ones)."
+  },
+  "Lister les sorties prévues sans rien extraire.": {
+    "fra": "Lister les sorties prévues sans rien extraire.",
+    "eng": "List the planned outputs without extracting anything."
+  },
+  "Lister les titres (playlists) d'un Blu-ray, du plus long au plus court.": {
+    "fra": "Lister les titres (playlists) d'un Blu-ray, du plus long au plus court.",
+    "eng": "List the titles (playlists) of a Blu-ray, longest first."
+  },
+  "Lister les titres (playlists) d'un Blu-ray.": {
+    "fra": "Lister les titres (playlists) d'un Blu-ray.",
+    "eng": "List the titles (playlists) of a Blu-ray."
+  },
+  "Lister sans supprimer.": {
+    "fra": "Lister sans supprimer.",
+    "eng": "List without deleting."
+  },
+  "MaxCLL écrite (avec --max-fall).": {
+    "fra": "MaxCLL écrite (avec --max-fall).",
+    "eng": "MaxCLL written (with --max-fall)."
+  },
+  "MaxCLL/MaxFALL proposés : mesure de l'image > HDR10+ > L1 (--max-cll/--max-fall les remplacent un à un).": {
+    "fra": "MaxCLL/MaxFALL proposés : mesure de l'image > HDR10+ > L1 (--max-cll/--max-fall les remplacent un à un).",
+    "eng": "Suggested MaxCLL/MaxFALL: image measurement > HDR10+ > L1 (--max-cll/--max-fall replace them one by one)."
+  },
+  "MaxFALL écrite (avec --max-cll).": {
+    "fra": "MaxFALL écrite (avec --max-cll).",
+    "eng": "MaxFALL written (with --max-cll)."
+  },
+  "Mesure de l'image : en cache seulement (défaut), rapide (images clés) ou complète.": {
+    "fra": "Mesure de l'image : en cache seulement (défaut), rapide (images clés) ou complète.",
+    "eng": "Image measurement: cached only (default), fast (keyframes) or full."
+  },
+  "Mesure et réalignement": {
+    "fra": "Mesure et réalignement",
+    "eng": "Measurement and realignment"
+  },
+  "Mesurer le calage d'une piste (audio ou sous-titres) face à une référence ; calibration JSON.": {
+    "fra": "Mesurer le calage d'une piste (audio ou sous-titres) face à une référence ; calibration JSON.",
+    "eng": "Measure a track's alignment (audio or subtitles) against a reference; calibration JSON."
+  },
+  "Mettre à jour NVEncC si une version plus récente existe.": {
+    "fra": "Mettre à jour NVEncC si une version plus récente existe.",
+    "eng": "Update NVEncC if a newer version exists."
+  },
+  "Mettre à jour une extension, ou toutes celles installées.": {
+    "fra": "Mettre à jour une extension, ou toutes celles installées.",
+    "eng": "Update an extension, or every installed one."
+  },
+  "Mode de débit du codec (crf, vbr_cq, cbr…).": {
+    "fra": "Mode de débit du codec (crf, vbr_cq, cbr…).",
+    "eng": "Codec rate control mode (crf, vbr_cq, cbr…)."
+  },
+  "Moteur du Hybrid Studio (sources, appariement, recette)": {
+    "fra": "Moteur du Hybrid Studio (sources, appariement, recette)",
+    "eng": "Hybrid Studio engine (sources, matching, recipe)"
+  },
+  "Motif de fichiers retenus (glob, répétable).": {
+    "fra": "Motif de fichiers retenus (glob, répétable).",
+    "eng": "Pattern of kept files (glob, repeatable)."
+  },
+  "Motif de fichiers écartés (glob, répétable).": {
+    "fra": "Motif de fichiers écartés (glob, répétable).",
+    "eng": "Pattern of excluded files (glob, repeatable)."
+  },
+  "Muxiveo en ligne de commande (sans interface).": {
+    "fra": "Muxiveo en ligne de commande (sans interface).",
+    "eng": "Muxiveo on the command line (no GUI)."
+  },
+  "Média :": {
+    "fra": "Média :",
+    "eng": "Media:"
+  },
+  "Méthode de conversion audio pour cadence : auto (analyse acoustique du pitch, défaut), atempo (tonalité préservée) ou asetrate (hauteur naturelle / pitch shift).": {
+    "fra": "Méthode de conversion audio pour cadence : auto (analyse acoustique du pitch, défaut), atempo (tonalité préservée) ou asetrate (hauteur naturelle / pitch shift).",
+    "eng": "Audio conversion method for cadence: auto (acoustic pitch analysis, default), atempo (pitch preserved) or asetrate (natural pitch / pitch shift)."
+  },
+  "Méthode de conversion de cadence (calibration avec cadence).": {
+    "fra": "Méthode de conversion de cadence (calibration avec cadence).",
+    "eng": "Cadence conversion method (calibration with cadence)."
+  },
+  "Méthode imposée (défaut : selon la machine).": {
+    "fra": "Méthode imposée (défaut : selon la machine).",
+    "eng": "Forced method (default: depends on the machine)."
+  },
+  "NVEncC : état, installation, mise à jour, suppression de la copie utilisateur.": {
+    "fra": "NVEncC : état, installation, mise à jour, suppression de la copie utilisateur.",
+    "eng": "NVEncC: status, installation, update, removal of the user copy."
+  },
+  "NVEncC : état, installation, mise à jour, suppression.": {
+    "fra": "NVEncC : état, installation, mise à jour, suppression.",
+    "eng": "NVEncC: status, installation, update, removal."
+  },
+  "Nature : film (movie), série (tv) ou les deux (all).": {
+    "fra": "Nature : film (movie), série (tv) ou les deux (all).",
+    "eng": "Kind: movie, TV series (tv) or both (all)."
+  },
+  "Ne pas ajouter la cover TMDB.": {
+    "fra": "Ne pas ajouter la cover TMDB.",
+    "eng": "Do not add the TMDB cover."
+  },
+  "Ne pas capturer : audio-variants.": {
+    "fra": "Ne pas capturer : audio-variants.",
+    "eng": "Do not capture: audio-variants."
+  },
+  "Ne pas capturer : flags.": {
+    "fra": "Ne pas capturer : flags.",
+    "eng": "Do not capture: flags."
+  },
+  "Ne pas capturer : metadata.": {
+    "fra": "Ne pas capturer : metadata.",
+    "eng": "Do not capture: metadata."
+  },
+  "Ne pas capturer : order.": {
+    "fra": "Ne pas capturer : order.",
+    "eng": "Do not capture: order."
+  },
+  "Ne pas capturer : selection.": {
+    "fra": "Ne pas capturer : selection.",
+    "eng": "Do not capture: selection."
+  },
+  "Ne pas garder identiques MDCV, mastering du L6 et écran du RPU (recopie par défaut).": {
+    "fra": "Ne pas garder identiques MDCV, mastering du L6 et écran du RPU (recopie par défaut).",
+    "eng": "Do not keep MDCV, L6 mastering and RPU display identical (copied by default)."
+  },
+  "Ne pas inclure d'attachments ni de cover TMDB.": {
+    "fra": "Ne pas inclure d'attachments ni de cover TMDB.",
+    "eng": "Do not include attachments nor the TMDB cover."
+  },
+  "Ne pas écrire de NFO.": {
+    "fra": "Ne pas écrire de NFO.",
+    "eng": "Do not write a NFO."
+  },
+  "Nettoyer (comme « Nettoyer » au démarrage).": {
+    "fra": "Nettoyer (comme « Nettoyer » au démarrage).",
+    "eng": "Clean (like \"Clean\" at startup)."
+  },
+  "Nettoyer le NFO (balises techniques retirées).": {
+    "fra": "Nettoyer le NFO (balises techniques retirées).",
+    "eng": "Clean the NFO (technical tags removed)."
+  },
+  "Nettoyer le dossier de travail (comme « Nettoyer » au démarrage).": {
+    "fra": "Nettoyer le dossier de travail (comme « Nettoyer » au démarrage).",
+    "eng": "Clean the work folder (like \"Clean\" at startup)."
+  },
+  "Nom de l'opération (ex. media.inspect).": {
+    "fra": "Nom de l'opération (ex. media.inspect).",
+    "eng": "Operation name (e.g. media.inspect)."
+  },
+  "Nom du preset.": {
+    "fra": "Nom du preset.",
+    "eng": "Preset name."
+  },
+  "Nom du profil.": {
+    "fra": "Nom du profil.",
+    "eng": "Profile name."
+  },
+  "Nom enregistré (défaut : celui du fichier).": {
+    "fra": "Nom enregistré (défaut : celui du fichier).",
+    "eng": "Saved name (default: the file's)."
+  },
+  "Nombre d'événements sous lequel une piste de sous-titres est jugée forcée.": {
+    "fra": "Nombre d'événements sous lequel une piste de sous-titres est jugée forcée.",
+    "eng": "Number of events below which a subtitle track is considered forced."
+  },
+  "Nombre de threads ffmpeg.": {
+    "fra": "Nombre de threads ffmpeg.",
+    "eng": "Number of ffmpeg threads."
+  },
+  "Nouvelle valeur (booléens : true / false).": {
+    "fra": "Nouvelle valeur (booléens : true / false).",
+    "eng": "New value (booleans: true / false)."
+  },
+  "Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes).": {
+    "fra": "Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes).",
+    "eng": "Video options above applied to this track only (default: all)."
+  },
+  "Opérations de la couche de service ; --describe publie leur schéma.": {
+    "fra": "Opérations de la couche de service ; --describe publie leur schéma.",
+    "eng": "Service-layer operations; --describe publishes their schema."
+  },
+  "Paire manuelle (MASTER::DONNEUR[::DONNEUR…]) ; répétable, exclut --source.": {
+    "fra": "Paire manuelle (MASTER::DONNEUR[::DONNEUR…]) ; répétable, exclut --source.",
+    "eng": "Manual pair (MASTER::DONOR[::DONOR…]); repeatable, excludes --source."
+  },
+  "Parcourir aussi les sous-dossiers.": {
+    "fra": "Parcourir aussi les sous-dossiers.",
+    "eng": "Also walk the subfolders."
+  },
+  "Piste : index ffprobe ou nature et rang (v:0, a:1, s:0) ; répétable.": {
+    "fra": "Piste : index ffprobe ou nature et rang (v:0, a:1, s:0) ; répétable.",
+    "eng": "Track: ffprobe index or kind and rank (v:0, a:1, s:0); repeatable."
+  },
+  "Pistes": {
+    "fra": "Pistes",
+    "eng": "Tracks"
+  },
+  "Pièce jointe : rang affiché par inspect ou nom de fichier ; répétable.": {
+    "fra": "Pièce jointe : rang affiché par inspect ou nom de fichier ; répétable.",
+    "eng": "Attachment: rank shown by inspect or file name; repeatable."
+  },
+  "Plafond des MaxScl, AverageRGB et percentiles.": {
+    "fra": "Plafond des MaxScl, AverageRGB et percentiles.",
+    "eng": "Cap of MaxScl, AverageRGB and percentiles."
+  },
+  "Position de la référence dans la sortie.": {
+    "fra": "Position de la référence dans la sortie.",
+    "eng": "Position of the reference in the output."
+  },
+  "Preset d'encodage enregistré ou fichier JSON.": {
+    "fra": "Preset d'encodage enregistré ou fichier JSON.",
+    "eng": "Saved encoding preset or JSON file."
+  },
+  "Presets d'encodage enregistrés (communs avec l'interface).": {
+    "fra": "Presets d'encodage enregistrés (communs avec l'interface).",
+    "eng": "Saved encoding presets (shared with the GUI)."
+  },
+  "Profil décisionnel : chemin JSON ou nom d'un profil enregistré.": {
+    "fra": "Profil décisionnel : chemin JSON ou nom d'un profil enregistré.",
+    "eng": "Decision profile: JSON path or name of a saved profile."
+  },
+  "Profil décisionnel à appliquer au lot.": {
+    "fra": "Profil décisionnel à appliquer au lot.",
+    "eng": "Decision profile applied to the batch."
+  },
+  "Profil décisionnel à appliquer aux entrées.": {
+    "fra": "Profil décisionnel à appliquer aux entrées.",
+    "eng": "Decision profile applied to the inputs."
+  },
+  "Profils décisionnels : valider, prévisualiser, appliquer, lots ; profils enregistrés.": {
+    "fra": "Profils décisionnels : valider, prévisualiser, appliquer, lots ; profils enregistrés.",
+    "eng": "Decision profiles: validate, preview, apply, batches; saved profiles."
+  },
+  "Profils enregistrés (communs avec l'interface).": {
+    "fra": "Profils enregistrés (communs avec l'interface).",
+    "eng": "Saved profiles (shared with the GUI)."
+  },
+  "Profils et métadonnées :": {
+    "fra": "Profils et métadonnées :",
+    "eng": "Profiles and metadata:"
+  },
+  "Profondeur de sortie.": {
+    "fra": "Profondeur de sortie.",
+    "eng": "Output bit depth."
+  },
+  "Préparer sans exécuter : appariement, pistes, calibrations et sorties en JSON.": {
+    "fra": "Préparer sans exécuter : appariement, pistes, calibrations et sorties en JSON.",
+    "eng": "Prepare without running: matching, tracks, calibrations and outputs as JSON."
+  },
+  "Préréglage d'interpolation : fast, balanced, quality, ultra ou light.": {
+    "fra": "Préréglage d'interpolation : fast, balanced, quality, ultra ou light.",
+    "eng": "Interpolation preset: fast, balanced, quality, ultra or light."
+  },
+  "Préréglage de l'encodeur (slow, p5…).": {
+    "fra": "Préréglage de l'encodeur (slow, p5…).",
+    "eng": "Encoder preset (slow, p5…)."
+  },
+  "Présence, version et provenance de NVEncC.": {
+    "fra": "Présence, version et provenance de NVEncC.",
+    "eng": "NVEncC presence, version and origin."
+  },
+  "Présence, version, provenance.": {
+    "fra": "Présence, version, provenance.",
+    "eng": "Presence, version, origin."
+  },
+  "Prévisualiser un profil sur des sources (pistes retenues, nom, commandes).": {
+    "fra": "Prévisualiser un profil sur des sources (pistes retenues, nom, commandes).",
+    "eng": "Preview a profile on sources (kept tracks, name, commands)."
+  },
+  "Prévisualiser un profil sur une ou plusieurs sources.": {
+    "fra": "Prévisualiser un profil sur une ou plusieurs sources.",
+    "eng": "Preview a profile on one or more sources."
+  },
+  "Qualité constante des codecs logiciels.": {
+    "fra": "Qualité constante des codecs logiciels.",
+    "eng": "Constant quality of software codecs."
+  },
+  "Qualité constante des codecs matériels.": {
+    "fra": "Qualité constante des codecs matériels.",
+    "eng": "Constant quality of hardware codecs."
+  },
+  "Racine du disque, dossier BDMV ou fichier .mpls / .m2ts.": {
+    "fra": "Racine du disque, dossier BDMV ou fichier .mpls / .m2ts.",
+    "eng": "Disc root, BDMV folder or .mpls / .m2ts file."
+  },
+  "Rapport JSON des épisodes écrit dans ce fichier.": {
+    "fra": "Rapport JSON des épisodes écrit dans ce fichier.",
+    "eng": "Episode JSON report written to this file."
+  },
+  "Rapport écrit dans ce fichier : HTML (.html) ou JSON (autre extension).": {
+    "fra": "Rapport écrit dans ce fichier : HTML (.html) ou JSON (autre extension).",
+    "eng": "Report written to this file: HTML (.html) or JSON (other extension)."
+  },
+  "Recadrage : auto (bandes noires mesurées) ou valeurs en pixels.": {
+    "fra": "Recadrage : auto (bandes noires mesurées) ou valeurs en pixels.",
+    "eng": "Crop: auto (measured black bars) or values in pixels."
+  },
+  "Recalculer le HDR10+ depuis la mesure complète de l'image (profil A).": {
+    "fra": "Recalculer le HDR10+ depuis la mesure complète de l'image (profil A).",
+    "eng": "Recompute HDR10+ from the full image measurement (profile A)."
+  },
+  "Recaler des sous-titres texte.": {
+    "fra": "Recaler des sous-titres texte.",
+    "eng": "Re-time text subtitles."
+  },
+  "Recaler un fichier de sous-titres texte (SRT, ASS) : décalage fixe ou calibration.": {
+    "fra": "Recaler un fichier de sous-titres texte (SRT, ASS) : décalage fixe ou calibration.",
+    "eng": "Re-time a text subtitle file (SRT, ASS): fixed offset or calibration."
+  },
+  "Recette exportée par le Hybrid Studio (JSON).": {
+    "fra": "Recette exportée par le Hybrid Studio (JSON).",
+    "eng": "Recipe exported by the Hybrid Studio (JSON)."
+  },
+  "Rechercher sur TMDB (25 résultats au plus).": {
+    "fra": "Rechercher sur TMDB (25 résultats au plus).",
+    "eng": "Search TMDB (25 results at most)."
+  },
+  "Rechercher sur TMDB et lire une fiche.": {
+    "fra": "Rechercher sur TMDB et lire une fiche.",
+    "eng": "Search TMDB and read a record."
+  },
+  "Rechercher un film ou une série.": {
+    "fra": "Rechercher un film ou une série.",
+    "eng": "Search for a movie or a series."
+  },
+  "Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone mapping d'une TV, réalignement d'après la mesure de l'image.": {
+    "fra": "Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone mapping d'une TV, réalignement d'après la mesure de l'image.",
+    "eng": "Recommendations (`advice` key): suggested MaxCLL/MaxFALL and MDCV, TV tone-mapping simulation, realignment from the image measurement."
+  },
+  "Redimensionnement (1080p, 1920x1080, 50%).": {
+    "fra": "Redimensionnement (1080p, 1920x1080, 50%).",
+    "eng": "Resize (1080p, 1920x1080, 50%)."
+  },
+  "Relit le fichier au lieu du résultat en cache (RPU, HDR10+, mesure).": {
+    "fra": "Relit le fichier au lieu du résultat en cache (RPU, HDR10+, mesure).",
+    "eng": "Re-read the file instead of the cached result (RPU, HDR10+, measurement)."
+  },
+  "Remplacer l'existant.": {
+    "fra": "Remplacer l'existant.",
+    "eng": "Replace the existing one."
+  },
+  "Remplacer la sortie si elle existe.": {
+    "fra": "Remplacer la sortie si elle existe.",
+    "eng": "Replace the output if it exists."
+  },
+  "Remplacer le fichier de sortie.": {
+    "fra": "Remplacer le fichier de sortie.",
+    "eng": "Replace the output file."
+  },
+  "Remplacer les sorties existantes.": {
+    "fra": "Remplacer les sorties existantes.",
+    "eng": "Replace existing outputs."
+  },
+  "Remplacer un profil du même nom.": {
+    "fra": "Remplacer un profil du même nom.",
+    "eng": "Replace a profile with the same name."
+  },
+  "Remplacer une sortie existante.": {
+    "fra": "Remplacer une sortie existante.",
+    "eng": "Replace an existing output."
+  },
+  "Remuxer des sources (pistes, synchro, métadonnées).": {
+    "fra": "Remuxer des sources (pistes, synchro, métadonnées).",
+    "eng": "Remux sources (tracks, sync, metadata)."
+  },
+  "Remuxer des sources selon le job ou les options (sélection des pistes, synchro, métadonnées).": {
+    "fra": "Remuxer des sources selon le job ou les options (sélection des pistes, synchro, métadonnées).",
+    "eng": "Remux sources according to the job or the options (track selection, sync, metadata)."
+  },
+  "Repérer les sous-titres SDH (malentendants) et les marquer.": {
+    "fra": "Repérer les sous-titres SDH (malentendants) et les marquer.",
+    "eng": "Detect SDH (hearing-impaired) subtitles and flag them."
+  },
+  "Repérer les sous-titres forcés (peu d'événements) et les marquer.": {
+    "fra": "Repérer les sous-titres forcés (peu d'événements) et les marquer.",
+    "eng": "Detect forced subtitles (few events) and flag them."
+  },
+  "Requête JSON : fichier (chemins relatifs à son dossier) ou - pour stdin. Défaut : {}.": {
+    "fra": "Requête JSON : fichier (chemins relatifs à son dossier) ou - pour stdin. Défaut : {}.",
+    "eng": "JSON request: file (paths relative to its folder) or - for stdin. Default: {}."
+  },
+  "Retenir les propositions de réalignement d'après la mesure (valeurs explicites prioritaires).": {
+    "fra": "Retenir les propositions de réalignement d'après la mesure (valeurs explicites prioritaires).",
+    "eng": "Keep the realignment proposals from the measurement (explicit values take precedence)."
+  },
+  "Retirer la courbe de Bézier (profil A).": {
+    "fra": "Retirer la courbe de Bézier (profil A).",
+    "eng": "Remove the Bézier curve (profile A)."
+  },
+  "Retirer la jonction du segment N.": {
+    "fra": "Retirer la jonction du segment N.",
+    "eng": "Remove the junction of segment N."
+  },
+  "Retirer la surcharge config.ini d'un réglage.": {
+    "fra": "Retirer la surcharge config.ini d'un réglage.",
+    "eng": "Remove a setting's config.ini override."
+  },
+  "Retirer la surcharge config.ini.": {
+    "fra": "Retirer la surcharge config.ini.",
+    "eng": "Remove the config.ini override."
+  },
+  "Retirer le HDR10+.": {
+    "fra": "Retirer le HDR10+.",
+    "eng": "Remove HDR10+."
+  },
+  "Retirer les métadonnées CM v4.0.": {
+    "fra": "Retirer les métadonnées CM v4.0.",
+    "eng": "Remove the CM v4.0 metadata."
+  },
+  "Retirer les sous-titres embarqués EIA-608/708 détectés, sans réencodage": {
+    "fra": "Retirer les sous-titres embarqués EIA-608/708 détectés, sans réencodage",
+    "eng": "Remove the detected embedded EIA-608/708 subtitles, without re-encoding"
+  },
+  "Revenir à la valeur par défaut.": {
+    "fra": "Revenir à la valeur par défaut.",
+    "eng": "Return to the default value."
+  },
+  "Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable.": {
+    "fra": "Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable.",
+    "eng": "Re-encode an audio track (e.g. 0:1=eac3:640); repeatable."
+  },
+  "Réglage section.clé (voir config show).": {
+    "fra": "Réglage section.clé (voir config show).",
+    "eng": "Setting section.key (see config show)."
+  },
+  "Réglage section.clé.": {
+    "fra": "Réglage section.clé.",
+    "eng": "Setting section.key."
+  },
+  "Réglages `section.clé` (config show les liste) : valeur effective et provenance (config.ini, réglage de l'interface, défaut). set écrit config.ini ; unset retire la surcharge (le réglage de l'interface peut réapparaître) ; reset revient au défaut.": {
+    "fra": "Réglages `section.clé` (config show les liste) : valeur effective et provenance (config.ini, réglage de l'interface, défaut). set écrit config.ini ; unset retire la surcharge (le réglage de l'interface peut réapparaître) ; reset revient au défaut.",
+    "eng": "`section.key` settings (listed by config show): effective value and origin (config.ini, GUI setting, default). set writes config.ini; unset removes the override (the GUI setting may come back); reset returns to the default."
+  },
+  "Réglages, valeur effective et provenance (ini, settings, default).": {
+    "fra": "Réglages, valeur effective et provenance (ini, settings, default).",
+    "eng": "Settings, effective value and origin (ini, settings, default)."
+  },
+  "Répertoire de travail override.": {
+    "fra": "Répertoire de travail override.",
+    "eng": "Work directory override."
+  },
+  "Résultat JSON sur stdout.": {
+    "fra": "Résultat JSON sur stdout.",
+    "eng": "JSON result on stdout."
+  },
+  "Résumé JSON du lot écrit dans ce fichier.": {
+    "fra": "Résumé JSON du lot écrit dans ce fichier.",
+    "eng": "JSON summary of the batch written to this file."
+  },
+  "Saison.": {
+    "fra": "Saison.",
+    "eng": "Season."
+  },
+  "Sans couverture TMDB.": {
+    "fra": "Sans couverture TMDB.",
+    "eng": "Without TMDB cover."
+  },
+  "Sans élévation : dossier utilisateur.": {
+    "fra": "Sans élévation : dossier utilisateur.",
+    "eng": "Without elevation: user folder."
+  },
+  "Sauvegarder le workflow exact sans exécuter.": {
+    "fra": "Sauvegarder le workflow exact sans exécuter.",
+    "eng": "Save the exact workflow without running."
+  },
+  "Sauvegarder les options/règles en template réutilisable.": {
+    "fra": "Sauvegarder les options/règles en template réutilisable.",
+    "eng": "Save the options/rules as a reusable template."
+  },
+  "Scanner récursivement les dossiers fournis avec --input-dir.": {
+    "fra": "Scanner récursivement les dossiers fournis avec --input-dir.",
+    "eng": "Recursively scan the folders given with --input-dir."
+  },
+  "Schéma JSON du contrat (jobs, exact-job, profils) ou du catalogue de l'API.": {
+    "fra": "Schéma JSON du contrat (jobs, exact-job, profils) ou du catalogue de l'API.",
+    "eng": "JSON schema of the contract (jobs, exact-job, profiles) or of the API catalog."
+  },
+  "Section (paths, tools, ffmpeg, hdr, ui…).": {
+    "fra": "Section (paths, tools, ffmpeg, hdr, ui…).",
+    "eng": "Section (paths, tools, ffmpeg, hdr, ui…)."
+  },
+  "Section à sonder ; répétable (défaut : toutes).": {
+    "fra": "Section à sonder ; répétable (défaut : toutes).",
+    "eng": "Section to probe; repeatable (default: all)."
+  },
+  "Seuil de dérive en ms pour détecter une coupure.": {
+    "fra": "Seuil de dérive en ms pour détecter une coupure.",
+    "eng": "Drift threshold in ms to detect a cut."
+  },
+  "Sortie : fichier, ou dossier (avec / final).": {
+    "fra": "Sortie : fichier, ou dossier (avec / final).",
+    "eng": "Output: file, or folder (with a trailing /)."
+  },
+  "Sortie JSON structurée.": {
+    "fra": "Sortie JSON structurée.",
+    "eng": "Structured JSON output."
+  },
+  "Source (MKV ou HEVC brut).": {
+    "fra": "Source (MKV ou HEVC brut).",
+    "eng": "Source (MKV or raw HEVC)."
+  },
+  "Source (répétable).": {
+    "fra": "Source (répétable).",
+    "eng": "Source (repeatable)."
+  },
+  "Source et son rôle : master, donor, donor-audio, donor-sub ; fichier ou dossier ; répétable (--ref/--donor/--ref-dir/--donor-dir en sont des alias).": {
+    "fra": "Source et son rôle : master, donor, donor-audio, donor-sub ; fichier ou dossier ; répétable (--ref/--donor/--ref-dir/--donor-dir en sont des alias).",
+    "eng": "Source and its role: master, donor, donor-audio, donor-sub; file or folder; repeatable (--ref/--donor/--ref-dir/--donor-dir are aliases)."
+  },
+  "Sources à inspecter.": {
+    "fra": "Sources à inspecter.",
+    "eng": "Sources to inspect."
+  },
+  "Sous-titres : mirror (suivent la synchro de leur source) ou none.": {
+    "fra": "Sous-titres : mirror (suivent la synchro de leur source) ou none.",
+    "eng": "Subtitles: mirror (follow their source's sync) or none."
+  },
+  "Supprimer cette section de la sortie.": {
+    "fra": "Supprimer cette section de la sortie.",
+    "eng": "Remove this section from the output."
+  },
+  "Supprimer la copie utilisateur de NVEncC.": {
+    "fra": "Supprimer la copie utilisateur de NVEncC.",
+    "eng": "Remove the user copy of NVEncC."
+  },
+  "Supprimer un preset d'encodage.": {
+    "fra": "Supprimer un preset d'encodage.",
+    "eng": "Delete an encoding preset."
+  },
+  "Supprimer un preset.": {
+    "fra": "Supprimer un preset.",
+    "eng": "Delete a preset."
+  },
+  "Supprimer un profil enregistré.": {
+    "fra": "Supprimer un profil enregistré.",
+    "eng": "Delete a saved profile."
+  },
+  "Supprimer une extension (et le cache de ses moteurs).": {
+    "fra": "Supprimer une extension (et le cache de ses moteurs).",
+    "eng": "Remove an extension (and its engine cache)."
+  },
+  "Supprimer une extension.": {
+    "fra": "Supprimer une extension.",
+    "eng": "Remove an extension."
+  },
+  "Synchro": {
+    "fra": "Synchro",
+    "eng": "Sync"
+  },
+  "Synchro :": {
+    "fra": "Synchro :",
+    "eng": "Sync:"
+  },
+  "Synchro des donneurs : analyse (défaut), décalage manuel (--shift-ms) ou aucune.": {
+    "fra": "Synchro des donneurs : analyse (défaut), décalage manuel (--shift-ms) ou aucune.",
+    "eng": "Donor sync: analysis (default), manual offset (--shift-ms) or none."
+  },
+  "Synchro des sources : physical (pistes réécrites, coupures et cadence) ou container (décalage du conteneur).": {
+    "fra": "Synchro des sources : physical (pistes réécrites, coupures et cadence) ou container (décalage du conteneur).",
+    "eng": "Source sync: physical (tracks rewritten, cuts and cadence) or container (container offset)."
+  },
+  "Synchroniser chaque source ≥ 1 face à la source 0 (sources sans bloc `sync` du job).": {
+    "fra": "Synchroniser chaque source ≥ 1 face à la source 0 (sources sans bloc `sync` du job).",
+    "eng": "Sync every source ≥ 1 against source 0 (sources without a job `sync` block)."
+  },
+  "Système :": {
+    "fra": "Système :",
+    "eng": "System:"
+  },
+  "TMDB": {
+    "fra": "TMDB",
+    "eng": "TMDB"
+  },
+  "TMDB : rechercher un film ou une série, lire une fiche.": {
+    "fra": "TMDB : rechercher un film ou une série, lire une fiche.",
+    "eng": "TMDB: search for a movie or a series, read a record."
+  },
+  "Taille du fichier visée (mode taille).": {
+    "fra": "Taille du fichier visée (mode taille).",
+    "eng": "Target file size (size mode)."
+  },
+  "TargetedSystemDisplayMaximumLuminance de toutes les images.": {
+    "fra": "TargetedSystemDisplayMaximumLuminance de toutes les images.",
+    "eng": "TargetedSystemDisplayMaximumLuminance of every frame."
+  },
+  "Template du nom de sortie. Placeholders disponibles : {source_name},{title},{year},{season},{episode},{episode_title},{season_episode},{group}, keywords pistes comme {audio-lang:best} (+ {season_num},{episode_num} pour formats numériques). Extension .mkv ajoutée si absente.": {
+    "fra": "Template du nom de sortie. Placeholders disponibles : {source_name},{title},{year},{season},{episode},{episode_title},{season_episode},{group}, keywords pistes comme {audio-lang:best} (+ {season_num},{episode_num} pour formats numériques). Extension .mkv ajoutée si absente.",
+    "eng": "Output name template. Available placeholders: {source_name},{title},{year},{season},{episode},{episode_title},{season_episode},{group}, track keywords such as {audio-lang:best} (+ {season_num},{episode_num} for numeric formats). .mkv extension added when missing."
+  },
+  "Threads ffmpeg pour cet appel.": {
+    "fra": "Threads ffmpeg pour cet appel.",
+    "eng": "ffmpeg threads for this call."
+  },
+  "Titre recherché.": {
+    "fra": "Titre recherché.",
+    "eng": "Title searched for."
+  },
+  "Tone mapping vers SDR.": {
+    "fra": "Tone mapping vers SDR.",
+    "eng": "Tone mapping to SDR."
+  },
+  "Tous les réglages (ou une section).": {
+    "fra": "Tous les réglages (ou une section).",
+    "eng": "All settings (or one section)."
+  },
+  "Toutes les pistes extractibles et toutes les pièces jointes.": {
+    "fra": "Toutes les pistes extractibles et toutes les pièces jointes.",
+    "eng": "Every extractable track and every attachment."
+  },
+  "Trancher la méthode « auto » par l'analyse de hauteur (fichiers et index ffprobe).": {
+    "fra": "Trancher la méthode « auto » par l'analyse de hauteur (fichiers et index ffprobe).",
+    "eng": "Decide the \"auto\" method by pitch analysis (files and ffprobe indexes)."
+  },
+  "Type d'analyse : auto (détection par extension/flux), audio ou subtitle.": {
+    "fra": "Type d'analyse : auto (détection par extension/flux), audio ou subtitle.",
+    "eng": "Analysis type: auto (detection by extension/stream), audio or subtitle."
+  },
+  "Télécharger et installer une extension (TensorRT : licence NVIDIA à accepter).": {
+    "fra": "Télécharger et installer une extension (TensorRT : licence NVIDIA à accepter).",
+    "eng": "Download and install an extension (TensorRT: NVIDIA license to accept)."
+  },
+  "Un réglage.": {
+    "fra": "Un réglage.",
+    "eng": "One setting."
+  },
+  "Valider et afficher la commande sans exécuter.": {
+    "fra": "Valider et afficher la commande sans exécuter.",
+    "eng": "Validate and show the command without running."
+  },
+  "Valider et afficher les commandes sans exécuter.": {
+    "fra": "Valider et afficher les commandes sans exécuter.",
+    "eng": "Validate and show the commands without running."
+  },
+  "Valider un decision-profile v1.": {
+    "fra": "Valider un decision-profile v1.",
+    "eng": "Validate a decision-profile v1."
+  },
+  "Valider un job (ou un profil) sans exécuter.": {
+    "fra": "Valider un job (ou un profil) sans exécuter.",
+    "eng": "Validate a job (or a profile) without running."
+  },
+  "Valider un job (ou un profil) sans rien exécuter ; --json publie le plan résolu (pistes, synchro, encodage).": {
+    "fra": "Valider un job (ou un profil) sans rien exécuter ; --json publie le plan résolu (pistes, synchro, encodage).",
+    "eng": "Validate a job (or a profile) without running anything; --json publishes the resolved plan (tracks, sync, encoding)."
+  },
+  "Valider un profil décisionnel v1.": {
+    "fra": "Valider un profil décisionnel v1.",
+    "eng": "Validate a v1 decision profile."
+  },
+  "Valider, prévisualiser ou appliquer un profil décisionnel.": {
+    "fra": "Valider, prévisualiser ou appliquer un profil décisionnel.",
+    "eng": "Validate, preview or apply a decision profile."
+  },
+  "Version de Muxiveo ; --check compare à la dernière release du canal (code 8 si mise à jour) ; --install --yes l'installe.": {
+    "fra": "Version de Muxiveo ; --check compare à la dernière release du canal (code 8 si mise à jour) ; --install --yes l'installe.",
+    "eng": "Muxiveo version; --check compares with the channel's latest release (code 8 if an update exists); --install --yes installs it."
+  },
+  "Vérifier et afficher le plan sans exécuter.": {
+    "fra": "Vérifier et afficher le plan sans exécuter.",
+    "eng": "Check and show the plan without running."
+  },
+  "Zone active L5 de toutes les images (pixels).": {
+    "fra": "Zone active L5 de toutes les images (pixels).",
+    "eng": "L5 active area of every frame (pixels)."
+  },
+  "défaut": {
+    "fra": "défaut",
+    "eng": "default"
+  },
+  "options": {
+    "fra": "options",
+    "eng": "options"
+  },
+  "positional arguments": {
+    "fra": "arguments positionnels",
+    "eng": "positional arguments"
+  },
+  "raw : flux élémentaire (défaut) ; mkv : piste dans un conteneur Matroska.": {
+    "fra": "raw : flux élémentaire (défaut) ; mkv : piste dans un conteneur Matroska.",
+    "eng": "raw: elementary stream (default); mkv: track in a Matroska container."
+  },
+  "text (terminal) ou md (référence Markdown, docs/cli/reference.md).": {
+    "fra": "text (terminal) ou md (référence Markdown, docs/cli/reference.md).",
+    "eng": "text (terminal) or md (Markdown reference, docs/cli/reference.md)."
+  },
+  "Écran de mastering : « suggested » (L6 > écran du RPU > écran usuel) ou « Display P3|BT.2020|BT.709:MIN:MAX » en nits.": {
+    "fra": "Écran de mastering : « suggested » (L6 > écran du RPU > écran usuel) ou « Display P3|BT.2020|BT.709:MIN:MAX » en nits.",
+    "eng": "Mastering display: \"suggested\" (L6 > RPU display > usual display) or \"Display P3|BT.2020|BT.709:MIN:MAX\" in nits."
+  },
+  "Écran de mastering du RPU (nits).": {
+    "fra": "Écran de mastering du RPU (nits).",
+    "eng": "RPU mastering display (nits)."
+  },
+  "Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits).": {
+    "fra": "Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits).",
+    "eng": "Simulated display of the realignment (default: [hdr] display_peak_nits setting)."
+  },
+  "Écrire la recette effective (JSON).": {
+    "fra": "Écrire la recette effective (JSON).",
+    "eng": "Write the effective recipe (JSON)."
+  },
+  "Écrire le NFO à côté de la sortie.": {
+    "fra": "Écrire le NFO à côté de la sortie.",
+    "eng": "Write the NFO next to the output."
+  },
+  "Écrire les exact-jobs finalisés (à corriger puis lancer par run / batch).": {
+    "fra": "Écrire les exact-jobs finalisés (à corriger puis lancer par run / batch).",
+    "eng": "Write the finalized exact-jobs (to correct then run with run / batch)."
+  },
+  "Écrire un exact-job minimal de la source au lieu de la fiche.": {
+    "fra": "Écrire un exact-job minimal de la source au lieu de la fiche.",
+    "eng": "Write a minimal exact-job of the source instead of the record."
+  },
+  "Écrire un réglage dans config.ini (valeur validée).": {
+    "fra": "Écrire un réglage dans config.ini (valeur validée).",
+    "eng": "Write a setting to config.ini (validated value)."
+  },
+  "Écrire un réglage dans config.ini.": {
+    "fra": "Écrire un réglage dans config.ini.",
+    "eng": "Write a setting to config.ini."
+  },
+  "Écrit une copie corrigée d'un MKV ou d'un HEVC brut : HDR10 statique (MaxCLL/MaxFALL, MDCV), RPU Dolby Vision (L6, L5, L11, écran du RPU, retrait CM v4.0), HDR10+ (retrait, TSDML, profil A, plafond, recalcul depuis la mesure), ou propositions de réalignement d'après la mesure de l'image. Les autres pistes, chapitres, pièces jointes et balises sont conservés.": {
+    "fra": "Écrit une copie corrigée d'un MKV ou d'un HEVC brut : HDR10 statique (MaxCLL/MaxFALL, MDCV), RPU Dolby Vision (L6, L5, L11, écran du RPU, retrait CM v4.0), HDR10+ (retrait, TSDML, profil A, plafond, recalcul depuis la mesure), ou propositions de réalignement d'après la mesure de l'image. Les autres pistes, chapitres, pièces jointes et balises sont conservés.",
+    "eng": "Writes a corrected copy of an MKV or raw HEVC: static HDR10 (MaxCLL/MaxFALL, MDCV), Dolby Vision RPU (L6, L5, L11, RPU display, CM v4.0 removal), HDR10+ (removal, TSDML, profile A, cap, recomputation from the measurement), or realignment proposals from the image measurement. Other tracks, chapters, attachments and tags are kept."
+  },
+  "Éditer une calibration comme le Synchro Studio.": {
+    "fra": "Éditer une calibration comme le Synchro Studio.",
+    "eng": "Edit a calibration like the Sync Studio."
+  },
+  "Éditions appliquées dans l'ordre de la ligne de commande. Instants de SORTIE en ms ou HH:MM:SS.mmm.": {
+    "fra": "Éditions appliquées dans l'ordre de la ligne de commande. Instants de SORTIE en ms ou HH:MM:SS.mmm.",
+    "eng": "Edits applied in command-line order. OUTPUT times in ms or HH:MM:SS.mmm."
+  },
+  "Éléments nettoyables (jobs actifs exclus).": {
+    "fra": "Éléments nettoyables (jobs actifs exclus).",
+    "eng": "Cleanable items (active jobs excluded)."
+  },
+  "Épisode.": {
+    "fra": "Épisode.",
+    "eng": "Episode."
+  },
+  "État des extensions (installées, compatibles, mises à jour).": {
+    "fra": "État des extensions (installées, compatibles, mises à jour).",
+    "eng": "Extensions status (installed, compatible, updates)."
+  },
+  "État des extensions.": {
+    "fra": "État des extensions.",
+    "eng": "Extensions status."
+  },
+  "(défaut : %(default)s)": {
+    "fra": "(défaut : %(default)s)",
+    "eng": "(default: %(default)s)"
   }
 }
