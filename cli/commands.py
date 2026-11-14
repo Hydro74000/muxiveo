@@ -50,9 +50,12 @@ def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 
 def cmd_capabilities(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     """Capacités de la machine (opération system.capabilities), en JSON."""
+    from core.service.context import CancelToken
+
     payload = {"sections": list(args.section or [])}
-    result, ctx = run_operation("system.capabilities", payload, config=config, logger=logger,
-                                overrides=overrides_from_args(args))
+    with interrupt_guard(CancelToken()) as cancel:  # Ctrl+C : sondes tuées, état « cancelled » (code 6)
+        result, ctx = run_operation("system.capabilities", payload, config=config, logger=logger,
+                                    overrides=overrides_from_args(args), cancel=cancel)
     if args.log_format == "events":
         print_json(envelope("system.capabilities", ctx.events.job, result=result))
     else:

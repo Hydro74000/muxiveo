@@ -15,7 +15,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import (
+    ProbeCancelledError,
+    run_detection,
+    subprocess_text_kwargs,
+    subprocess_windows_no_window_kwargs,
+)
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS as _AMF_CODECS,
     HARDWARE_VIDEO_CODECS,
@@ -61,7 +66,10 @@ class HardwareEncoderDetector:
     Synchrone et thread-safe - a executer dans un ThreadPoolExecutor.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cancel_event: threading.Event | None = None) -> None:
+        #: Jeton d'une opération headless (``system.capabilities``) : sondes tuées à l'annulation ;
+        #: ``None`` (interface) : ``subprocess.run`` inchangé.
+        self._cancel_event = cancel_event
         # Cache par instance pour éviter les subprocess redondants quand
         # detect() et detect_software() sont appelés à la suite.
         self._cache_lock = threading.RLock()
@@ -122,13 +130,15 @@ class HardwareEncoderDetector:
             if resolved in self._encoders_output_cache:
                 return self._encoders_output_cache[resolved]
         try:
-            result = subprocess.run(
+            result = run_detection(
                 [resolved, "-hide_banner", "-encoders"],
+                cancel_event=self._cancel_event,
+                timeout=30,  # liste des encodeurs : jamais une attente sans borne
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             output = ""
         else:
             output = "\n".join(part for part in (result.stdout, result.stderr) if part)
@@ -232,7 +242,7 @@ class HardwareEncoderDetector:
             ff = ffmpeg_bin
 
         if nvencc_bin:
-            _, nvencc_codecs = detect_nvencc_available(nvencc_bin)
+            _, nvencc_codecs = detect_nvencc_available(nvencc_bin, cancel_event=self._cancel_event)
             available |= nvencc_codecs & _NVENCC_CODECS
 
         return available, ff
@@ -269,12 +279,12 @@ class HardwareEncoderDetector:
             if re.search(rf"\b{re.escape(codec_id)}\b", encoders_output)
         }
 
-    @staticmethod
-    def _probe_encoder(cmd: list[str]) -> bool:
+    def _probe_encoder(self, cmd: list[str]) -> bool:
         """Retourne True si la commande de probe FFmpeg aboutit."""
         try:
-            probe = subprocess.run(
+            probe = run_detection(
                 cmd,
+                cancel_event=self._cancel_event,
                 capture_output=True,
                 check=False,
                 timeout=5,
@@ -357,7 +367,7 @@ class HardwareEncoderDetector:
         if device is None:
             return None
         try:
-            result = subprocess.run(
+            result = run_detection(
                 [
                     ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
                     "-vaapi_device", device,
@@ -366,6 +376,7 @@ class HardwareEncoderDetector:
                     "-c:v", codec_id, "-compression_level", "1000",
                     "-f", "null", "-",
                 ],
+                cancel_event=self._cancel_event,
                 capture_output=True,
                 check=False,
                 timeout=15,
@@ -393,8 +404,9 @@ class HardwareEncoderDetector:
 
     def _probe_preset_values(self, ffmpeg_bin: str, codec_id: str) -> frozenset[str]:
         try:
-            result = subprocess.run(
+            result = run_detection(
                 [ffmpeg_bin, "-hide_banner", "-h", f"encoder={codec_id}"],
+                cancel_event=self._cancel_event,
                 capture_output=True,
                 check=False,
                 timeout=10,
@@ -427,7 +439,7 @@ class HardwareEncoderDetector:
         accepted: set[str] = set()
         for mode, values in probes:
             try:
-                result = subprocess.run(
+                result = run_detection(
                     [
                         ffmpeg_bin, "-hide_banner", "-loglevel", "verbose",
                         "-vaapi_device", device,
@@ -436,6 +448,7 @@ class HardwareEncoderDetector:
                         "-c:v", codec_id, "-rc_mode", mode, *values,
                         "-f", "null", "-",
                     ],
+                    cancel_event=self._cancel_event,
                     capture_output=True,
                     check=False,
                     timeout=15,
@@ -472,12 +485,12 @@ class HardwareEncoderDetector:
             "-f", "null", "-",
         ])
 
-    @staticmethod
-    def _nvidia_compute_capabilities() -> list[float]:
+    def _nvidia_compute_capabilities(self) -> list[float]:
         """Compute capabilities des GPU NVIDIA (``nvidia-smi``), liste vide si indisponible."""
         try:
-            result = subprocess.run(
+            result = run_detection(
                 ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                cancel_event=self._cancel_event,
                 capture_output=True,
                 check=False,
                 timeout=5,
@@ -527,6 +540,10 @@ class HardwareEncoderDetector:
                 codec_id = futures[future]
                 try:
                     ok = future.result()
+                except ProbeCancelledError:
+                    for pending in futures:  # annulation : sondes restantes abandonnées, tuées par le jeton
+                        pending.cancel()
+                    raise
                 except Exception:
                     ok = False
                 if ok:
@@ -534,12 +551,12 @@ class HardwareEncoderDetector:
 
         return available
 
-    @staticmethod
-    def _nvidia_ok() -> bool:
+    def _nvidia_ok(self) -> bool:
         """Retourne True si un GPU NVIDIA est accessible via nvidia-smi ou /dev/nvidia0."""
         try:
-            result = subprocess.run(
+            result = run_detection(
                 ["nvidia-smi", "-L"],
+                cancel_event=self._cancel_event,
                 capture_output=True,
                 check=False,
                 timeout=5,

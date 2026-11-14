@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Literal
 
 from core.service.context import ExecutionContext
+from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.update_check import UpdateCheckError, normalize_update_channel, query_latest_release
@@ -130,8 +132,10 @@ class CapabilitiesResult(Model):
 
 @operation("system.capabilities", request=CapabilitiesRequest, result=CapabilitiesResult,
            summary="Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO.",
-           uses_gpu=True)
+           long_running=True, uses_gpu=True, errors=(ErrorCode.CANCELLED,))
 def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> CapabilitiesResult:
+    """Sondes tuées à l'annulation (jeton transmis aux détecteurs) ; chaque section est en outre attendue sur le
+    jeton (sondes en cache du moteur, bornées à 15 s) : jamais un résultat publié après l'annulation."""
     import dataclasses
 
     from core import plugins
@@ -139,34 +143,74 @@ def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> 
     from core.workflows.encode.interpolation import detect_gpu_acceleration, rife_capabilities
     from core.workflows.encode.vulkan import detect_vulkan
 
+    cancel = ctx.cancel.event
     wanted = set(request.sections) or {"encoders", "presets", "vulkan", "gpu", "rife"}
     ffmpeg = ctx.tool("ffmpeg")
     rife = str(getattr(ctx.config, "tool_muxiveo_rife", "") or "")
     values: dict[str, Any] = {}
-    detector = HardwareEncoderDetector()
+    detector = HardwareEncoderDetector(cancel_event=cancel)
     software: set[str] = set()
     hardware: set[str] = set()
     if wanted & {"encoders", "presets"}:
-        software = set(detector.detect_software(ffmpeg))
-        detected = detector.detect(ffmpeg, nvencc_bin=getattr(ctx.config, "tool_nvencc", None) or None)
+        software = set(_section(ctx, lambda: detector.detect_software(ffmpeg)))
+        detected = _section(ctx, lambda: detector.detect(
+            ffmpeg, nvencc_bin=getattr(ctx.config, "tool_nvencc", None) or None))
         hardware = set(detected[0] if isinstance(detected, tuple) else detected)
     if "encoders" in wanted:
         values["encoders"] = {"software": sorted(software), "hardware": sorted(hardware)}
     if "presets" in wanted:
-        presets = detector.detect_presets(ffmpeg, software | hardware)
+        presets = _section(ctx, lambda: detector.detect_presets(ffmpeg, software | hardware))
         values["presets"] = {codec: sorted(items) for codec, items in sorted(presets.items())}
     if "vulkan" in wanted:
-        values["vulkan"] = dataclasses.asdict(detect_vulkan(ffmpeg))
+        values["vulkan"] = dataclasses.asdict(_section(ctx, lambda: detect_vulkan(ffmpeg, cancel)))
     if "gpu" in wanted:
         installed = plugins.installed_plugin(plugins.TRT)
-        acceleration = detect_gpu_acceleration(rife, trt_plugin=str(installed.path) if installed else "")
+        acceleration = _section(ctx, lambda: detect_gpu_acceleration(
+            rife, trt_plugin=str(installed.path) if installed else "", cancel_event=cancel))
         values["gpu"] = {"nvof": dataclasses.asdict(acceleration.nvof),
                          "tensorrt": dataclasses.asdict(acceleration.trt)}
     if "rife" in wanted:
-        caps = rife_capabilities(rife) if rife else None
+        caps = _section(ctx, lambda: rife_capabilities(rife)) if rife else None
         values["rife"] = None if caps is None else {
             "executable": rife, "version": caps.label, "contract": caps.contract, "options": sorted(caps.options),
             "models": sorted(caps.models) if caps.models is not None else None,
             "restore_models": sorted(caps.restore_models), "selector_status": caps.selector_status,
         }
+    ctx.cancel.raise_if_cancelled()  # annulation entre deux sections : jamais « succeeded »
     return CapabilitiesResult(**values)
+
+
+#: Attente maximale d'une sonde annulée (tuée par le jeton) avant de rendre ``cancelled``.
+_CANCEL_GRACE_S = 2.0
+
+
+def _section(ctx: ExecutionContext, probe: Callable[[], Any]) -> Any:
+    """Section de ``system.capabilities`` dans un fil auxiliaire attendu sur le jeton.
+
+    Annulation : ses sondes, qui reçoivent le jeton, sont tuées ; le fil est attendu au plus
+    :data:`_CANCEL_GRACE_S` (le temps de tuer la sonde en cours, jamais une attente sans borne), puis ``cancelled`` ;
+    un résultat tardif est ignoré (rien n'est publié). Exception de la sonde : relancée.
+    """
+    import threading
+
+    ctx.cancel.raise_if_cancelled()
+    done = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            outcome["value"] = probe()
+        except BaseException as exc:  # relancée dans le fil de l'opération
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=work, name="capabilities-probe", daemon=True).start()
+    while not done.wait(0.05):
+        if ctx.cancel.cancelled:
+            done.wait(_CANCEL_GRACE_S)  # sonde tuée avant la fin de l'opération (et du processus CLI)
+            break
+    ctx.cancel.raise_if_cancelled()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]

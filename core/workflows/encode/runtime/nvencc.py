@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import threading
 import sys
 import shutil
 from functools import lru_cache
@@ -33,7 +34,7 @@ from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
 from core.workflows.encode.catalog import hdr_capabilities
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_detection, subprocess_text_kwargs
 from core.workflows.encode.models import (
     VideoCropSettings,
     VideoEncodeSettings,
@@ -191,11 +192,12 @@ _CHECK_HW_HEADER_RE = re.compile(r"^\s*(?:avaliable|available)\s+codec\(s\)\s*:?
 _FEATURES_CODEC_RE = re.compile(r"^\s*Codec\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-def _run_nvencc_probe(nvencc_bin: str, option: str) -> str | None:
-    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable."""
+def _run_nvencc_probe(nvencc_bin: str, option: str, cancel_event: threading.Event | None = None) -> str | None:
+    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable (annulation : remonte)."""
     try:
-        proc = subprocess.run(
+        proc = run_detection(
             [nvencc_bin, option],
+            cancel_event=cancel_event,
             capture_output=True,
             check=False,
             timeout=15,
@@ -239,7 +241,8 @@ def _parse_supported_codecs(output: str) -> set[str]:
     return supported
 
 
-def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
+def detect_nvencc_available(nvencc_bin: str | None,
+                            cancel_event: threading.Event | None = None) -> tuple[bool, set[str]]:
     """
     Détecte si NVEncC est utilisable et liste les codecs supportés par le GPU.
 
@@ -258,7 +261,7 @@ def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
         return False, set()
     supported: set[str] = set()
     for option in ("--check-hw", "--check-features"):
-        output = _run_nvencc_probe(nvencc_bin, option)
+        output = _run_nvencc_probe(nvencc_bin, option, cancel_event)
         if output is None:
             # Échec d'exécution (binaire absent, pas de GPU) : inutile d'insister.
             return False, set()

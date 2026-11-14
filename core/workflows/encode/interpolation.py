@@ -23,6 +23,7 @@ import math
 import re
 import shutil
 import subprocess
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -32,7 +33,7 @@ from typing import TYPE_CHECKING
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_detection, subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 from core.version import MVO_RIFE_CONTRACT
 
@@ -858,15 +859,18 @@ def _resolve_rife(rife_bin: str | None) -> str | None:
 
 def detect_gpu_acceleration(
     rife_bin: str | None, *, trt_plugin: str = "", gpu: int = -1, timeout: float = 90.0,
+    cancel_event: threading.Event | None = None,
 ) -> GpuAcceleration:
     """Flux optique NVIDIA et TensorRT (selon les capacités du binaire) sur le GPU d'encodage de muxiveo-rife.
 
     ``gpu`` : index Vulkan (-1 = GPU par défaut). ``trt_plugin`` : dossier de l'extension installée.
+    ``cancel_event`` : opération headless, liste des GPU tuée à l'annulation (``ProbeCancelledError``).
     """
-    return _probe_acceleration(rife_bin, trt_plugin, gpu, timeout)
+    return _probe_acceleration(rife_bin, trt_plugin, gpu, timeout, cancel_event)
 
 
-def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout: float) -> GpuAcceleration:
+def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout: float,
+                        cancel_event: threading.Event | None = None) -> GpuAcceleration:
     resolved = _resolve_rife(rife_bin)
     if not resolved:
         reason = "muxiveo-rife introuvable"
@@ -883,9 +887,8 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
     try:
         # Binaire RIFE configuré ; arguments constants (et dossier de l'extension), sans shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
-        )
+        result = run_detection(cmd, cancel_event=cancel_event, capture_output=True, check=False, timeout=timeout,
+                               **subprocess_text_kwargs())
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd)
         payload = json.loads(result.stdout or "{}")

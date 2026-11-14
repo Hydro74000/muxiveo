@@ -137,6 +137,16 @@ def run_probe(
     )
 
 
+def run_detection(command: list[str], *, cancel_event: threading.Event | None = None, timeout: float,
+                  **kwargs: Any) -> subprocess.CompletedProcess:
+    """Sonde de détection : ``subprocess.run`` sans jeton (interface, comportement inchangé) ; avec un jeton
+    (opération headless), sonde tuée à l'annulation (:func:`run_probe`, :class:`ProbeCancelledError`)."""
+    if cancel_event is None:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(list(command), timeout=timeout, **kwargs)  # nosec B603
+    return run_probe(list(command), timeout=timeout, cancel_event=cancel_event, **kwargs)
+
+
 def run_cancellable_capture(
     command: list[str],
     *,

@@ -2717,7 +2717,7 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `sync.scan` | Analyser le calage d'une piste (audio ou sous-titres) face à une référence. | longue, écrit |
 | `sync.shift_subtitles` | Recaler un fichier de sous-titres texte (décalage ou calibration). | écrit |
 | `sync.waveform` | Forme d'onde d'une piste audio sur une plage (pics par tranche), données du Synchro Studio. | longue |
-| `system.capabilities` | Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO. | GPU |
+| `system.capabilities` | Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO. | longue, GPU |
 | `system.tools` | Commandes d'outils externes résolues par Muxiveo. | — |
 | `system.version` | Version de Muxiveo ; avec check, comparaison à la dernière release du canal. | — |
 | `tmdb.details` | Fiche TMDB complète (titre, année, épisode, résumé, genres, couverture) et balises MKV. | — |
