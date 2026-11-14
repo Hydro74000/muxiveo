@@ -489,3 +489,36 @@ def test_cli_batch_output_dir_overrides_template_output(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     outputs = [job["output"] for job in json.loads(summary.read_text(encoding="utf-8"))["jobs"]]
     assert outputs == [str(out_dir / "a.mkv"), str(out_dir / "b.mkv")]
+
+
+@pytest.mark.parametrize("with_template", [True, False])
+def test_call_profile_preview_reads_profile_and_output_from_the_request_folder(tmp_path: Path, with_template) -> None:
+    """Audit 14 : requête ``call`` lue depuis un autre dossier : profil fichier relatif et sortie ``sorties/``
+    (dossier encore absent) résolus depuis le dossier de la requête ; gabarit du profil appliqué dans ce dossier."""
+    root = Path(__file__).resolve().parents[2]
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    elsewhere = tmp_path / "ailleurs"
+    elsewhere.mkdir()
+    make_av_container(jobs / "source.mkv", duration=0.3)
+    profile = {"version": 1, "kind": "decision-profile", "name": "rendu", "rules": []}
+    if with_template:
+        profile["output_template"] = "{source_name}-rendu"
+    (jobs / "profil.json").write_text(json.dumps(profile), encoding="utf-8")
+    (elsewhere / "profil.json").write_text("{}", encoding="utf-8")  # homonyme dans le cwd : ignoré
+    request = jobs / "requete.json"
+    request.write_text(json.dumps({"profile": "profil.json", "inputs": ["source.mkv"], "output": "sorties/"}),
+                       encoding="utf-8")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    result = subprocess.run(
+        [sys.executable, str(root / "main.py"), "--cli", "call", "profile.preview", "--request", str(request),
+         "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe", "--mediainfo", "/bin/false"],
+        cwd=elsewhere, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    output = Path(json.loads(result.stdout)["result"]["config"]["output"])
+    if with_template:  # gabarit rendu dans le dossier de la requête
+        assert output == jobs / "sorties" / "source-rendu.mkv"
+    else:  # sans gabarit : « sorties/ » garde son sens historique (chemin donné), résolu depuis la requête
+        assert output == jobs / "sorties"
+    assert not (elsewhere / "sorties").exists()

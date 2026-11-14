@@ -1475,8 +1475,9 @@ def test_hybrid_report_is_written_when_an_interrupt_propagates(monkeypatch, tmp_
 
 
 def _slow_ffprobe(tmp_path: Path) -> Path:
+    """FFprobe de test : pose le témoin ``ffprobe-entree`` à son démarrage, puis attend."""
     tool = tmp_path / "ffprobe"
-    tool.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    tool.write_text(f'#!/bin/sh\ntouch "{tmp_path / "ffprobe-entree"}"\nexec sleep 30\n', encoding="utf-8")
     tool.chmod(0o755)
     return tool
 
@@ -1507,11 +1508,19 @@ def test_public_inspections_stop_when_the_operation_is_cancelled(tmp_path, opera
 
         ctx = ExecutionContext.create(ctx.config, ListSink(), ports={
             "detect_stream_kind": lambda *a, **k: detect_stream_kind(*a, **k)})
-    threading.Timer(0.3, ctx.cancel.cancel).start()
+    entered = tmp_path / "ffprobe-entree"
+
+    def cancel_on_entry() -> None:  # annulation à l'entrée effective de la sonde visée
+        deadline = time.monotonic() + 30
+        while not entered.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ctx.cancel.cancel()
+
+    threading.Thread(target=cancel_on_entry, daemon=True).start()
     start = time.monotonic()
     with pytest.raises(Exception) as caught:
         call(CATALOG, operation.split("-")[0], requests[operation], ctx)
-    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert entered.exists() and ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
     assert time.monotonic() - start < 5  # sonde tuée par le jeton, pas attendue
 
 
@@ -1644,3 +1653,309 @@ def test_inspection_is_cancelled_in_each_of_its_probes(tmp_path, slow):
         call(CATALOG, "media.inspect", {"inputs": [str(source)]}, ctx)
     assert mark.exists() and ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
     assert time.monotonic() - start < 10  # sonde terminée par le jeton (30 s sinon)
+
+
+# --- Quatorzième audit : job unique annulé, chemins relatifs des requêtes de profil, MediaInfo des cadences ------
+
+
+@pytest.mark.parametrize("token_raised", [True, False])
+def test_single_remux_failing_after_the_token_is_cancelled(tmp_path, token_raised):
+    from core.jobs.options import CommonOptions
+    from core.jobs.runtime import run_remux
+    from core.runner import TaskSignals
+    from core.service.context import CancelToken
+    from core.service.errors import ApiError, ErrorCode
+
+    token = CancelToken()
+
+    class _Wf:
+        log_message = backend_event = SimpleNamespace(connect=lambda *_a: None)
+
+        def run(self, _config):
+            if token_raised:
+                token.cancel()
+            signals = TaskSignals()
+            signals.failed.emit("ffmpeg interrompu", RuntimeError("ffmpeg interrompu"))  # cause non typée
+            return signals
+
+    with pytest.raises(ApiError) as caught:
+        run_remux(SimpleNamespace(output=tmp_path / "out.mkv"), config=None, options=CommonOptions(),  # type: ignore[arg-type]
+                  logger=SimpleNamespace(emit=lambda *a, **k: None), cancel=token, workflow_factory=_Wf)
+    assert caught.value.code is (ErrorCode.CANCELLED if token_raised else ErrorCode.WORKFLOW_FAILED)
+
+
+@pytest.mark.parametrize("token_raised", [True, False])
+def test_single_encode_failing_after_the_token_is_cancelled(qapp, tmp_path, token_raised):
+    from core.service.context import CancelToken
+    from core.service.errors import ApiError, ErrorCode
+
+    from tests.test_cli_encode import _FakeWorkflow, _run
+
+    token = CancelToken()
+
+    def work(signals):
+        if token_raised:
+            token.cancel()
+        signals.failed.emit("x265 interrompu", RuntimeError("x265 interrompu"))
+
+    result, _logger, _events = _run(tmp_path, _FakeWorkflow(work), cancel=token)
+    assert isinstance(result, ApiError)
+    assert result.code is (ErrorCode.CANCELLED if token_raised else ErrorCode.WORKFLOW_FAILED)
+
+
+@pytest.mark.parametrize("ending", ["failed", "finished"])
+@pytest.mark.parametrize("kind", ["remux", "encode"])
+@pytest.mark.parametrize("operation", ["media.run", "profile.apply"])
+def test_single_job_after_the_token_is_cancelled_or_kept_succeeded(qapp, monkeypatch, tmp_path, operation, kind,
+                                                                   ending):
+    """Audit 14 : job unique (media.run, profile.apply ; remux et encodage). Échec après la levée du jeton →
+    ``cancelled`` (un seul état terminal, une seule erreur au journal) ; réussite après le jeton → ``succeeded`` +
+    ``cancel_too_late``."""
+    from core.jobs.options import CommonOptions
+    from core.runner import TaskSignals
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.events import EventType
+    from core.service.ops import media as media_ops
+
+    from tests.test_cli_encode import _config, _FakeWorkflow
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(tool_ffprobe="ffprobe", tool_ffmpeg="ffmpeg",
+                                                  tool_mediainfo="mediainfo"), sink)
+    output = tmp_path / "out.mkv"
+
+    def finish(signals) -> None:
+        ctx.cancel.cancel()
+        if ending == "failed":
+            signals.failed.emit("outil interrompu", RuntimeError("outil interrompu"))
+        else:
+            output.write_bytes(b"mkv")
+            signals.finished.emit("publié")
+
+    class _RemuxWf:
+        log_message = backend_event = SimpleNamespace(connect=lambda *_a: None)
+
+        def run(self, _config):
+            signals = TaskSignals()
+            finish(signals)
+            return signals
+
+    remux = SimpleNamespace(output=output, allow_missing_output_dir=True)
+    encode_config = _config(tmp_path) if kind == "encode" else None
+    if encode_config is not None:
+        output = encode_config.output
+    monkeypatch.setattr("core.jobs.runtime.remux_workflow", lambda *a: _RemuxWf())
+    monkeypatch.setattr("core.jobs.encode_runtime.encode_workflow", lambda *a: _FakeWorkflow(finish))
+    monkeypatch.setattr("core.jobs.encode_runtime.checked_encode", lambda cfg, *a, **k: (cfg, []))
+    if operation == "media.run":
+        monkeypatch.setattr(media_ops, "build_remux_config", lambda *a, **k: remux)
+        monkeypatch.setattr(media_ops, "resolve_job_encode", lambda *a: SimpleNamespace(config=encode_config))
+        request: dict[str, Any] = {"job": {"version": 1}}
+    else:
+        monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (remux, {}, CommonOptions()))
+        monkeypatch.setattr(profile_ops, "_resolve", lambda *a: SimpleNamespace(config=encode_config))
+        request = {"profile": "P", "inputs": [str(tmp_path / "src.mkv")]}
+    if ending == "failed":
+        with pytest.raises(Exception) as caught:
+            call(CATALOG, operation, request, ctx)
+        assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    else:
+        call(CATALOG, operation, request, ctx)
+    finals = [e.data["state"] for e in sink.events if e.job == ctx.events.job and e.type is EventType.STATE
+              and e.data["state"] != "running"]
+    assert finals == ["cancelled" if ending == "failed" else "succeeded"]  # un seul état terminal
+    logs = [e.data.get("message", "") for e in sink.events if e.type is EventType.LOG and e.data.get("level") == "error"]
+    assert logs.count("outil interrompu") == (1 if ending == "failed" else 0)  # pas de doublon au journal
+    codes = [e.data.get("code") for e in sink.events if e.type is EventType.LOG and e.data.get("level") == "warning"]
+    assert ("cancel_too_late" in codes) is (ending == "finished")
+
+
+def test_profile_request_paths_are_read_from_the_request_folder(tmp_path):
+    from core.service.ops.batch import ProfileBatchRequest
+    from core.service.ops.hybrid import HybridRequest
+    from core.service.ops.profile import ProfileApplyRequest, ProfileRequest
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "film.json").write_text("{}", encoding="utf-8")
+    (jobs / "serie.json").write_text("{}", encoding="utf-8")
+    base = {"inputs": [str(tmp_path / "src.mkv")]}
+
+    def apply(**values):
+        return ProfileApplyRequest.from_dict({**base, **values}, base_dir=jobs)
+
+    assert apply(profile="film.json", output="sortie.mkv").profile == str(jobs / "film.json")
+    assert apply(profile="film.json", output="sortie.mkv").output == str(jobs / "sortie.mkv")
+    assert apply(profile="serie", output="sorties/").profile == str(jobs / "serie")  # fichier présent avec .json
+    assert apply(profile="serie", output="sorties/").output == str(jobs / "sorties") + "/"  # « dossier/ » gardé
+    assert apply(profile="Anime 4K").profile == "Anime 4K"  # nom d'un profil enregistré : inchangé
+    assert apply(profile="manquant.json").profile == str(jobs / "manquant.json")  # suffixe : chemin
+    absolute = str(tmp_path / "abs.json")
+    assert apply(profile=absolute, output=str(tmp_path / "o.mkv")).output == str(tmp_path / "o.mkv")
+    assert ProfileRequest.from_dict({"profile": "film.json"}, base_dir=jobs).profile == str(jobs / "film.json")
+    batch = ProfileBatchRequest.from_dict({"profile": "film.json", "output_dir": "sorties"}, base_dir=jobs)
+    assert batch.profile == str(jobs / "film.json") and batch.output_dir == jobs / "sorties"
+    hybrid = HybridRequest.from_dict({"output_dir": "out", "profile": "film.json"}, base_dir=jobs)
+    assert hybrid.profile == str(jobs / "film.json")
+    historic = ProfileApplyRequest.from_dict({**base, "profile": "film.json", "output": "sortie.mkv"},
+                                             base_dir=jobs, allow_relative=True)  # argv : depuis le cwd
+    assert (historic.profile, historic.output) == ("film.json", "sortie.mkv")
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+def test_cadence_inspection_uses_the_mediainfo_override(tmp_path):
+    from core.service.context import Overrides
+
+    calls = tmp_path / "mediainfo-appels"
+    mediainfo = tmp_path / "mediainfo-surcharge"
+    mediainfo.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\necho "{{}}"\n', encoding="utf-8")
+    mediainfo.chmod(0o755)
+    ffprobe = tmp_path / "ffprobe"
+    ffprobe.write_text('#!/bin/sh\necho \'{"streams": [], "format": {"duration": "1.0"}}\'\n', encoding="utf-8")
+    ffprobe.chmod(0o755)
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"x")
+    scanner = SimpleNamespace(scan=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fin du test")))
+    ctx = ExecutionContext.create(SimpleNamespace(tool_ffprobe=str(ffprobe), tool_mediainfo="/bin/false"), ListSink(),
+                                  overrides=Overrides(mediainfo=str(mediainfo)), ports={"audio_scanner": lambda: scanner})
+    with pytest.raises(Exception):
+        call(CATALOG, "sync.scan", {"ref": str(source), "target": str(source), "type": "audio",
+                                    "cadence_auto": True}, ctx)
+    assert calls.exists()  # binaire de la surcharge appelé, pas celui du PATH
+
+
+def _slow_ffmpeg_for(tmp_path: Path, slow_case: str) -> tuple[Path, Path]:
+    """FFmpeg de test : l'appel dont les arguments correspondent à ``slow_case`` écrit son PID puis attend ; les
+    autres répondent aussitôt (``-encoders`` liste libx264)."""
+    pid_file = tmp_path / "sonde.pid"
+    ffmpeg = tmp_path / "ffmpeg"
+    ffmpeg.write_text(
+        "#!/bin/sh\n"
+        f'case "$*" in {slow_case}) echo $$ > "{pid_file}"; exec sleep 30;; esac\n'
+        'case "$*" in *-encoders*) echo " V....D libx264              libx264 H.264";; esac\n',
+        encoding="utf-8")
+    ffmpeg.chmod(0o755)
+    return ffmpeg, pid_file
+
+
+def _process_gone(pid: int, within: float = 3.0) -> bool:
+    import os
+    import time
+
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:  # zombie déjà tué : plus en cours d'exécution
+            if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
+                return True
+        except OSError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists() or not Path("/proc").exists(), reason="Linux")
+@pytest.mark.parametrize("section, slow_case", [("vulkan", "*-filters*"), ("encoders", "*-encoders*"),
+                                                ("presets", "*-h*encoder=*")])
+def test_capabilities_probes_are_killed_when_the_operation_is_cancelled(tmp_path, section, slow_case):
+    import threading
+    import time
+
+    from core.service.errors import ApiError, ErrorCode
+
+    ffmpeg, pid_file = _slow_ffmpeg_for(tmp_path, slow_case)
+    ctx = _ctx(tool_ffmpeg=str(ffmpeg), tool_nvencc="")
+
+    def cancel_on_entry() -> None:
+        deadline = time.monotonic() + 30
+        while not (pid_file.exists() and pid_file.read_text().strip()) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ctx.cancel.cancel()
+
+    threading.Thread(target=cancel_on_entry, daemon=True).start()
+    start = time.monotonic()
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "system.capabilities", {"sections": [section]}, ctx)
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert time.monotonic() - start < 10
+    assert _process_gone(int(pid_file.read_text()))  # sonde tuée, pas abandonnée
+
+
+def test_capabilities_never_publishes_a_late_result_and_relays_probe_errors(monkeypatch):
+    import threading
+    import time
+
+    from core.service.errors import ApiError, ErrorCode
+    from core.workflows.encode import interpolation
+
+    seen: list[Any] = []
+    ctx = _ctx()
+
+    def slow_gpu(_rife, **kwargs):  # sonde qui ignore le jeton : l'opération n'attend pas
+        seen.append(kwargs.get("cancel_event"))
+        time.sleep(5)
+        return interpolation.GpuAcceleration(interpolation.NvofCapability(reason="tard"),
+                                             interpolation.TrtCapability(reason="tard"))
+
+    monkeypatch.setattr(interpolation, "detect_gpu_acceleration", slow_gpu)
+    threading.Timer(0.2, ctx.cancel.cancel).start()
+    start = time.monotonic()
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "system.capabilities", {"sections": ["gpu"]}, ctx)
+    # Délai de grâce (2 s, temps de tuer une sonde qui reçoit le jeton), jamais toute la sonde (5 s).
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED and time.monotonic() - start < 3
+    assert seen == [ctx.cancel.event]  # jeton transmis à la sonde
+    monkeypatch.setattr(interpolation, "detect_gpu_acceleration",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("liste des GPU illisible")))
+    with pytest.raises(Exception, match="liste des GPU illisible"):
+        call(CATALOG, "system.capabilities", {"sections": ["gpu"]}, _ctx())
+
+
+def test_profile_reference_edge_cases_and_operations(tmp_path, monkeypatch):
+    from core.json_documents import resolve_output_reference, resolve_profile_reference
+    from core.service.ops.hybrid import HybridPlanRequest
+    from core.service.ops.profile import ProfilePreviewRequest
+
+    jobs, cwd = tmp_path / "jobs", tmp_path / "cwd"
+    jobs.mkdir()
+    cwd.mkdir()
+    (cwd / "film.json").write_text("{}", encoding="utf-8")  # homonyme dans le cwd
+    (jobs / "film.json").write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    assert resolve_profile_reference("film.json", jobs) == str(jobs / "film.json")  # dossier de la requête
+    assert resolve_profile_reference("Film/4K", jobs) == "Film/4K"  # nom enregistré avec « / »
+    assert resolve_profile_reference("~/profils/film.json", jobs) == "~/profils/film.json"  # chemin personnel
+    assert resolve_profile_reference(str(tmp_path / "abs.json"), jobs) == str(tmp_path / "abs.json")
+    assert resolve_output_reference("~/sorties/", jobs) == "~/sorties/"
+    assert resolve_output_reference(None, jobs) is None and resolve_output_reference("", jobs) == ""
+    base = {"inputs": [str(tmp_path / "src.mkv")]}
+    assert ProfilePreviewRequest.from_dict({**base, "profile": "film.json"}, base_dir=jobs).profile == \
+        str(jobs / "film.json")
+    assert HybridPlanRequest.from_dict({"output_dir": "o", "profile": "film.json"}, base_dir=jobs).profile == \
+        str(jobs / "film.json")
+    # Requête sur stdin : dossier de base = cwd (``call --request -``).
+    assert ProfilePreviewRequest.from_dict({**base, "profile": "film.json"}, base_dir=Path.cwd()).profile == \
+        str(cwd / "film.json")
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+def test_cadence_inspection_uses_the_configured_mediainfo_without_override(tmp_path):
+    calls = tmp_path / "mediainfo-appels"
+    mediainfo = tmp_path / "mediainfo-config"
+    mediainfo.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\necho "{{}}"\n', encoding="utf-8")
+    mediainfo.chmod(0o755)
+    ffprobe = tmp_path / "ffprobe"
+    ffprobe.write_text('#!/bin/sh\necho \'{"streams": [], "format": {"duration": "1.0"}}\'\n', encoding="utf-8")
+    ffprobe.chmod(0o755)
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"x")
+    scanner = SimpleNamespace(scan=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("fin du test")))
+    ctx = ExecutionContext.create(SimpleNamespace(tool_ffprobe=str(ffprobe), tool_mediainfo=str(mediainfo)),
+                                  ListSink(), ports={"audio_scanner": lambda: scanner})
+    with pytest.raises(Exception):
+        call(CATALOG, "sync.scan", {"ref": str(source), "target": str(source), "type": "audio",
+                                    "cadence_auto": True}, ctx)
+    assert calls.exists()  # binaire de la configuration, pas celui du PATH

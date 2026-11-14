@@ -190,3 +190,46 @@ def test_sigint_during_the_stream_kind_probe_of_sync_scan_stops_it(tmp_path, mon
             proc.kill()
     assert time.monotonic() - started < 8, "annulation attendue avant le délai de la sonde (10 s)"
     assert proc.returncode == 6, stderr
+
+
+@pytest.mark.skipif(not Path("/proc").exists(), reason="Linux")
+def test_sigint_during_a_capabilities_probe_ends_the_cli_process(tmp_path, monkeypatch):
+    """Audit 14 : Ctrl+C pendant une sonde de capacités → sonde tuée, processus CLI terminé aussitôt (code 6)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    mark = tmp_path / "ffmpeg-started"
+    ffmpeg = tmp_path / "bin" / "ffmpeg"
+    ffmpeg.parent.mkdir()
+    ffmpeg.write_text(f'#!/bin/sh\ncase "$*" in *-filters*) echo $$ > "{mark}"; exec sleep 120;; esac\n',
+                      encoding="utf-8")
+    ffmpeg.chmod(0o755)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "capabilities", "--section", "vulkan", "--ffmpeg", str(ffmpeg)],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not (mark.exists() and mark.read_text().strip()):
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "sonde jamais lancée"
+            time.sleep(0.05)
+        started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        _stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert time.monotonic() - started < 5, "processus CLI retenu par une sonde"
+    assert proc.returncode == 6, stderr
+    probe_pid = int(mark.read_text())
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:  # sonde tuée par le jeton, jamais laissée orpheline
+        try:
+            os.kill(probe_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(probe_pid, signal.SIGKILL)
+        pytest.fail("sonde de capacités restée en vie après la fin du CLI")

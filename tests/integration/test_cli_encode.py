@@ -103,3 +103,27 @@ def test_encode_preview_image_writes_captures_next_to_the_output(tmp_path):
     captures = json.loads(result.stdout)[0]["captures"]
     assert captures and all(Path(c["path"]).parent == out.parent and Path(c["path"]).exists() for c in captures)
     assert not out.exists()
+
+
+@pytest.mark.parametrize("option, analysis, max_cll", [("static_hdr.max_cll=2000,500", "", "2000,500"),
+                                                       ("static_hdr.mode=null", "precise", "")])
+def test_encode_export_then_validate_keeps_the_static_hdr_choice(tmp_path, option, analysis, max_cll):
+    """Audit 14 : commande réelle ``encode --config … --video-set … --export-workflow`` (export avant tout encodage),
+    puis ``validate --json`` de l'export : choix ``static_hdr`` des couches et de l'option conservés."""
+    src = tmp_path / "src.mkv"
+    make_av_container(src, duration=1.0)
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"version": 1, "sources": [str(src)], "output": str(tmp_path / "out.mkv"), "encode": {
+        "video": {"default": {"codec": "libx265", "crf": 32, "encoder_preset": "ultrafast",
+                              "static_hdr": {"estimate": "fast"}},
+                  "tracks": [{"select": {"stream": 0}, "static_hdr": {"estimate": "precise"}}]}}}), encoding="utf-8")
+    exported = tmp_path / "export.json"
+    result = _cli(tmp_path, "encode", "--config", str(job), "--video-set", option, "--export-workflow", str(exported),
+                  "--no-nfo")
+    assert result.returncode == 0, result.stderr
+    assert exported.is_file() and not (tmp_path / "out.mkv").exists()  # exporté, rien d'encodé
+    assert "encode" in json.loads(exported.read_text(encoding="utf-8"))
+    validated = _cli(tmp_path, "validate", "--config", str(exported), "--json")
+    assert validated.returncode == 0, validated.stderr
+    video = json.loads(validated.stdout)["encode"]["video"][0]
+    assert (video["static_hdr_metadata_analysis_request"], video["max_cll"]) == (analysis, max_cll)
