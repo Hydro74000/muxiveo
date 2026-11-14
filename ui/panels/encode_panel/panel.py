@@ -2532,10 +2532,16 @@ class EncodePanel(QWidget):
         for name, value in (("master_display", md), ("max_cll", cll)):
             if not value:
                 continue
+            # Provenance lue avant toute mise à jour (marqueur, ou valeur différente de la source : ancien état) et
+            # figée en marqueur : elle survit au complément de la référence. Saisie : jamais remplacée ; champ vide :
+            # jamais manuel (un ancien marqueur ne l'empêche pas d'être complété).
+            manual = static_hdr_field_manual(state, name)
+            state[f"static_hdr_{name}_manual"] = manual
+            if self._current_video_entry_id == key:
+                self._static_hdr_field_manual[name] = manual
             if not state.get("default_" + name):
                 state["default_" + name] = value
-            # Jamais à la place d'une saisie, même identique à la valeur attendue (marqueur explicite).
-            if state.get(name, "") == expected[name] and not state.get(f"static_hdr_{name}_manual"):
+            if state.get(name, "") == expected[name] and not manual:
                 state[name] = value
         if self._current_video_entry_id == key:
             # Les deux champs font partie d'une seule mise à jour : leurs
@@ -2575,11 +2581,15 @@ class EncodePanel(QWidget):
                 ("max_cll", max_cll, self._max_cll, expected_max_cll)):
             if not value:
                 continue
+            shown = {name: widget.text(), f"default_{name}": (state or {}).get(f"default_{name}", ""),
+                     f"static_hdr_{name}_manual": self._static_hdr_field_manual[name]}
+            manual = static_hdr_field_manual(shown, name)  # provenance avant mise à jour, figée (ancien état)
+            self._static_hdr_field_manual[name] = manual
             if state is not None and not state.get("default_" + name):
                 state["default_" + name] = value  # valeur de référence de la source (provenance « source »)
             # Ne pas écraser une valeur modifiée pendant la sonde, ni une saisie même identique ; les deux champs
             # ensemble (aucun état intermédiaire).
-            if widget.text() == expected_text and not self._static_hdr_field_manual[name]:
+            if widget.text() == expected_text and not manual:
                 blocked = widget.blockSignals(True)
                 widget.setText(value)
                 widget.blockSignals(blocked)
