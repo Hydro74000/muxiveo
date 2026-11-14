@@ -1038,6 +1038,11 @@ class EncodePanel(QWidget):
             # suivent peuvent le sauvegarder. Auto suit la profondeur de la
             # source sans figer une valeur qui fuirait vers d'autres pistes
             # (« Appliquer à toutes ») ou dans un profil.
+            if track is not None and self._current_video_entry_id is not None:
+                # Valeurs HDR10 de la source connues dès le premier état : le préremplissage ci-dessous
+                # reste classé « source » (provenance par champ, mesure FEL), pas « saisie ».
+                self._video_settings_by_entry_id[self._current_video_entry_id] = (
+                    self._default_video_state_for_track(info=info, track=track))
             blocked = self._bit_depth_combo.blockSignals(True)
             self._set_combo_data(self._bit_depth_combo, "auto")
             self._bit_depth_combo.blockSignals(blocked)

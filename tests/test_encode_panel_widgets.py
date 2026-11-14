@@ -2986,3 +2986,28 @@ def test_hdr10_provenance_on_an_sdr_source_follows_user_actions(qt_app, monkeypa
             assert not settings[path_b].inject_hdr_meta  # marqueurs propres à la piste
         finally:
             panel.close()
+
+
+def test_first_displayed_track_keeps_source_hdr10_values_classified_as_source(qt_app, monkeypatch):
+    """Défaut antérieur : la première piste affichée tenait ses valeurs HDR10 de la source pour des saisies."""
+    from core.fel.preparation import measures_light_levels
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    sdr_path = Path("/tmp/sdr_a.mkv")
+    hdr = _video_track(0, HDRType.HDR10)
+    hdr.color_transfer = "smpte2084"
+    hdr.raw = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                   "max_average": 400}]}
+    entry = _video_entry(0)
+    entry.entry_id = "hdr"
+    panel.set_video_tracks([(_file_info(_PATH_A, [hdr], hdr_type=HDRType.HDR10), entry, _COLOR),
+                            _sdr_track_with_source_cll(1, sdr_path)])
+    try:
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].max_cll == "1000,400" and settings[_PATH_A].static_hdr_light_level_source == "source"
+        assert measures_light_levels(settings[_PATH_A])  # FEL : MaxCLL de la source remplacé par la mesure
+    finally:
+        panel.close()
