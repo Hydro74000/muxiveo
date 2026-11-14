@@ -21,11 +21,25 @@ from core.service.operations import operation
 from core.service.ops.media import JobOptions, MediaRunResult, encode_plan_payload
 
 
+def _resolve_profile(values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Profil désigné par un fichier relatif : depuis le dossier de la requête (nom enregistré inchangé)."""
+    from core.json_documents import resolve_profile_reference
+
+    if isinstance(values.get("profile"), str):
+        return {**values, "profile": resolve_profile_reference(values["profile"], base_dir)}
+    return values
+
+
 @dataclass(frozen=True)
 class ProfileRequest(Model):
     """Profil décisionnel à valider."""
 
     profile: str = field(description="Profil : chemin JSON ou nom d'un profil enregistré.")
+
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Profil désigné par un fichier relatif : depuis le dossier de la requête."""
+        return _resolve_profile(values, base_dir)
 
 
 @dataclass(frozen=True)
@@ -65,9 +79,13 @@ class ProfileJobRequest(Model):
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
-        from core.json_documents import resolve_encode_paths
+        """Depuis le dossier de la requête : profil fichier, sortie (``/`` final gardé), preset fichier du bloc
+        ``encode``."""
+        from core.json_documents import resolve_encode_paths, resolve_output_reference
 
+        values = _resolve_profile(values, base_dir)
+        if isinstance(values.get("output"), str):
+            values = {**values, "output": resolve_output_reference(values["output"], base_dir)}
         if isinstance(values.get("encode"), dict):
             values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
         return values

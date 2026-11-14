@@ -87,9 +87,11 @@ class BatchRequest(Model):
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
-        from core.json_documents import resolve_encode_paths
+        """Depuis le dossier de la requête : profil fichier, preset fichier du bloc ``encode``."""
+        from core.json_documents import resolve_encode_paths, resolve_profile_reference
 
+        if isinstance(values.get("profile"), str):
+            values = {**values, "profile": resolve_profile_reference(values["profile"], base_dir)}
         if isinstance(values.get("encode"), dict):
             values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
         return values
@@ -126,9 +128,11 @@ class ProfileBatchRequest(Model):
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-        """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
-        from core.json_documents import resolve_encode_paths
+        """Depuis le dossier de la requête : profil fichier, preset fichier du bloc ``encode``."""
+        from core.json_documents import resolve_encode_paths, resolve_profile_reference
 
+        if isinstance(values.get("profile"), str):
+            values = {**values, "profile": resolve_profile_reference(values["profile"], base_dir)}
         if isinstance(values.get("encode"), dict):
             values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
         return values

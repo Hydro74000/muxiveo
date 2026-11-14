@@ -143,6 +143,29 @@ def portable_encode_block(encode: Any) -> Any:
     return resolved
 
 
+def resolve_profile_reference(value: str, base_dir: Path) -> str:
+    """Profil décisionnel d'une requête : fichier relatif (suffixe ``.json``, fichier présent, ou présent avec
+    ``.json``) lu depuis ``base_dir`` (dossier de la requête) ; sinon nom d'un profil enregistré, inchangé."""
+    text = str(value or "").strip()
+    path = Path(text).expanduser()
+    if not text or path.is_absolute():
+        return value
+    candidate = Path(base_dir) / path
+    if (text.lower().endswith(".json") or candidate.is_file()
+            or (not path.suffix and candidate.with_suffix(".json").is_file())):
+        return str(candidate)
+    return value
+
+
+def resolve_output_reference(value: str | None, base_dir: Path) -> str | None:
+    """Sortie d'une requête (fichier, ou dossier avec ``/`` final) : relative → depuis ``base_dir``, ``/`` gardé."""
+    text = str(value or "").strip()
+    if not text or Path(text).expanduser().is_absolute():
+        return value
+    resolved = str(Path(base_dir) / Path(text).expanduser())
+    return resolved + "/" if text.endswith(("/", "\\")) else resolved
+
+
 def preset_is_file(value: str, base_dir: Path | None = None) -> bool:
     """Preset désigné par un fichier (suffixe ``.json`` ou fichier présent) plutôt que par son nom.
 
