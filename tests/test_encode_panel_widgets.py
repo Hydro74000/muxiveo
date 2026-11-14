@@ -2729,3 +2729,39 @@ def test_restored_state_with_list_flags_restores_dynamic_hdr(qt_app, monkeypatch
                 panel._copy_hdr10plus_cb.isChecked()) == (True, True, True)
     finally:
         panel.close()
+
+
+def test_p5_scheduled_analysis_survives_a_round_trip_through_an_sdr_codec(qt_app, monkeypatch):
+    """P5 → P8.1 : l'analyse HDR10 programmée, déprogrammée par H.264, est reprise au retour sur HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    asked: list[str] = []
+    monkeypatch.setattr(panel, "_ask_static_hdr_estimate_mode", lambda: asked.append("ask") or "")
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile = 5
+    entry = _video_entry(0)
+    entry.entry_id = "video-p5"
+    panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._dovi_profile_choice = "2"
+        panel._save_current_video_state()
+        panel._schedule_static_hdr_estimate("video-p5", panel._video_settings_by_entry_id["video-p5"],
+                                            mode="precise")
+        _select_codec(panel, "libx264")
+        assert panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] == ""
+        asked.clear()
+        _select_codec(panel, "libx265")
+        state = panel._video_settings_by_entry_id["video-p5"]
+        assert state["static_hdr_metadata_analysis_request"] == "precise" and state["inject_hdr_meta"]
+        assert asked == []  # choix repris, pas redemandé
+        # Valeur saisie entre-temps : l'analyse n'est plus reprise.
+        _select_codec(panel, "libx264")
+        panel._master_display.setText("G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)")
+        panel._save_current_video_state()
+        _select_codec(panel, "libx265")
+        state = panel._video_settings_by_entry_id["video-p5"]
+        assert state["static_hdr_metadata_analysis_request"] == "" and not state["static_hdr_analysis_disabled_by_codec"]
+    finally:
+        panel.close()

@@ -4635,6 +4635,10 @@
     "fra": "Recadrage {side} de la piste vidéo active.",
     "eng": "{side} crop of the active video track."
   },
+  "Analyse HDR10 estimée P5→P8.1 {mode} reprogrammée.": {
+    "fra": "Analyse HDR10 estimée P5→P8.1 {mode} reprogrammée.",
+    "eng": "Estimated HDR10 analysis P5→P8.1 {mode} rescheduled."
+  },
   "Analyse HDR10 estimée P5→P8.1 {mode} programmée. Elle sera exécutée et suivie dans le workflow d’encodage.": {
     "fra": "Analyse HDR10 estimée P5→P8.1 {mode} programmée. Elle sera exécutée et suivie dans le workflow d’encodage.",
     "eng": "Estimated HDR10 analysis P5→P8.1 {mode} scheduled. It will run and be tracked in the encoding workflow."

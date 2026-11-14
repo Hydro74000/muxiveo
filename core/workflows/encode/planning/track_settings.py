@@ -45,6 +45,7 @@ PER_SOURCE_HDR_KEYS: tuple[str, ...] = (
     "static_hdr_metadata_confidence",
     "static_hdr_metadata_analysis_mode",
     "static_hdr_metadata_analysis_request",
+    "static_hdr_analysis_disabled_by_codec",
     "hdr_disabled_by_codec",
     "dynamic_hdr_disabled_by_codec",
     "tonemap_enabled_by_codec",

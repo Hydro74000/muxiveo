@@ -2978,6 +2978,8 @@ class EncodePanel(QWidget):
         prompt_key = f"{entry_id}:p5_to_p8"
         if prompt_key in self._static_hdr_estimate_prompted:
             return
+        if str(state.get("static_hdr_analysis_disabled_by_codec") or "").strip():
+            return  # analyse mémorisée (codec sans HDR) : reprise dès que l'état le permet, sans redemander
         self._static_hdr_estimate_prompted.add(prompt_key)
         mode = self._ask_static_hdr_estimate_mode()
         if mode:
@@ -3059,9 +3061,48 @@ class EncodePanel(QWidget):
         state: dict[str, object],
     ) -> tuple[dict[str, object], bool]:
         request_mode = str(state.get("static_hdr_metadata_analysis_request") or "").strip()
+        remembered = str(state.get("static_hdr_analysis_disabled_by_codec") or "").strip()
         if not request_mode:
+            if remembered and self._static_hdr_request_valid(entry_id, state):
+                # Retour sur un codec HDR : l'analyse déprogrammée par le codec sans HDR est reprise.
+                restored = self._copy_video_state(state)
+                restored.update(static_hdr_metadata_analysis_request=remembered,
+                                static_hdr_analysis_disabled_by_codec="")
+                self.log_message.emit("INFO", translate_text(
+                    "Analyse HDR10 estimée P5→P8.1 {mode} reprogrammée.",
+                    mode=self._static_hdr_estimate_mode_label(remembered)))
+                return restored, False
+            if remembered and not self._static_hdr_request_possible(entry_id, state):
+                # Choix de l'utilisateur entre-temps (valeurs saisies, profil, piste) : plus rien à reprendre.
+                forgotten = self._copy_video_state(state)
+                forgotten["static_hdr_analysis_disabled_by_codec"] = ""
+                return forgotten, False
+            return state, False
+        if self._static_hdr_request_valid(entry_id, state):
             return state, False
 
+        normalized = self._copy_video_state(state)
+        normalized.update(
+            {
+                "static_hdr_metadata_analysis_request": "",
+                "static_hdr_metadata_analysis_mode": "",
+                "static_hdr_metadata_source": "",
+                "static_hdr_metadata_confidence": "",
+                # Codec sans HDR : demande mémorisée, reprise au retour sur un codec HDR (comme les cases).
+                "static_hdr_analysis_disabled_by_codec": (
+                    request_mode if not supports_hdr_output(str(state.get("codec") or "")) else ""),
+            }
+        )
+        self._static_hdr_estimate_prompted.discard(f"{entry_id}:p5_to_p8")
+        return normalized, True
+
+    def _static_hdr_request_valid(self, entry_id: str, state: dict[str, object]) -> bool:
+        """Analyse HDR10 estimée P5→P8.1 encore applicable à cet état (piste unique P5, DV P8.1, sans saisie)."""
+        return (self._static_hdr_request_possible(entry_id, state) and bool(state.get("inject_hdr_meta"))
+                and bool(state.get("copy_dv")))
+
+    def _static_hdr_request_possible(self, entry_id: str, state: dict[str, object]) -> bool:
+        """Conditions de l'analyse qui ne dépendent pas des cases HDR rétablies au retour sur un codec HDR."""
         matching_track = next(
             (
                 (info, track)
@@ -3075,31 +3116,15 @@ class EncodePanel(QWidget):
             if matching_track is not None
             else None
         )
-        request_is_valid = bool(
+        return bool(
             len(self._video_tracks) == 1
             and source_video is not None
             and int(source_video.dovi_profile or 0) == 5
-            and bool(state.get("inject_hdr_meta"))
-            and bool(state.get("copy_dv"))
             and str(state.get("dovi_profile") or "0").strip() == "2"
             and not str(state.get("codec") or "").strip().lower().startswith("nvencc_")
             and not str(state.get("master_display") or "").strip()
             and not str(state.get("max_cll") or "").strip()
         )
-        if request_is_valid:
-            return state, False
-
-        normalized = self._copy_video_state(state)
-        normalized.update(
-            {
-                "static_hdr_metadata_analysis_request": "",
-                "static_hdr_metadata_analysis_mode": "",
-                "static_hdr_metadata_source": "",
-                "static_hdr_metadata_confidence": "",
-            }
-        )
-        self._static_hdr_estimate_prompted.discard(f"{entry_id}:p5_to_p8")
-        return normalized, True
 
     @staticmethod
     def _state_allows_static_hdr_estimate(state: dict[str, object]) -> bool:
@@ -4787,6 +4812,7 @@ class EncodePanel(QWidget):
             "static_hdr_metadata_confidence": str(prev.get("static_hdr_metadata_confidence") or ""),
             "static_hdr_metadata_analysis_mode": str(prev.get("static_hdr_metadata_analysis_mode") or ""),
             "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
+            "static_hdr_analysis_disabled_by_codec": str(prev.get("static_hdr_analysis_disabled_by_codec") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
             "bake_dovi_fel": self._bake_fel_choice,
             "fel_device": self._fel_device_choice,
