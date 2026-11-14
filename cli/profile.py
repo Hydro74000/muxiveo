@@ -145,6 +145,8 @@ def profile_apply(
     payload = {**_job_payload(profile_path, inputs, output, options, metadata_job), "force": bool(force)}
     if encode_block:
         payload["encode"] = encode_block
+    if options.export_workflow:  # --export-workflow : job exact enregistré, rien n'est exécuté
+        payload["export_workflow"] = str(options.export_workflow)
     with interrupt_guard(CancelToken()) as cancel:
         try:
             result, ctx = run_operation("profile.apply", payload, config=config, logger=logger,

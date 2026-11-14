@@ -3394,6 +3394,12 @@ class RemuxPanel(QWidget):
             plan = container
             if out_path.suffix.lower() != container.plan.extension:
                 out_path = out_path.with_suffix(container.plan.extension)
+                # Chemin final différent de celui confirmé par la boîte : remplacement à confirmer à nouveau.
+                if out_path.exists() and QMessageBox.question(
+                        self, translate_text("Remplacer le fichier ?"),
+                        translate_text("{name} existe déjà. Le remplacer ?", name=out_path.name),
+                ) != QMessageBox.StandardButton.Yes:
+                    return
         label = translate_text("Extraction de la piste #{idx} ({format})", idx=entry.mkv_tid,
                                format=translate_text(plan.label))
         self._start_extraction(source, plan, out_path, label)
@@ -3432,7 +3438,7 @@ class RemuxPanel(QWidget):
         tools = ExtractTools(ffmpeg=str(self._config.tool_ffmpeg), dovi_tool=str(self._config.tool_dovi_tool),
                              hdr10plus_tool=str(self._config.tool_hdr10plus))
         self.log_message.emit("INFO", translate_text("{label} vers {name}…", label=label, name=out_path.name))
-        # Remplacement d'un fichier existant déjà confirmé par la boîte d'enregistrement.
+        # Remplacement d'un fichier existant confirmé par la boîte d'enregistrement (ou la question ci-dessus).
         signals = start_extraction(info, [(plan, out_path)], tools=tools, force=out_path.exists(),
                                    progress_args=ffmpeg_progress_args())
         self.extract_started.emit(

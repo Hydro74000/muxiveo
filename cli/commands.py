@@ -302,6 +302,11 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
     if profile_path:
         if getattr(args, "config", None):
             raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        if getattr(args, "preview_image", None) or getattr(args, "preview_video", None):
+            # Sinon le profil serait appliqué et le film entier encodé.
+            raise CliError("Les aperçus (--preview-image / --preview-video) ne se combinent pas avec `--profile` : "
+                           "exporter le job (--export-workflow) puis `encode --config job.json --preview-…`.",
+                           EXIT_ARGS)
         return profile_apply(
             profile_path,
             inputs=args.input or [],
@@ -538,6 +543,11 @@ def cmd_run(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     if profile_path:
         if getattr(args, "config", None):
             raise CliError("`--profile` ne se combine pas avec `--config`.", EXIT_VALIDATION)
+        if getattr(args, "preview_image", None) or getattr(args, "preview_video", None):
+            # Sinon le profil serait appliqué et le film entier encodé.
+            raise CliError("Les aperçus (--preview-image / --preview-video) ne se combinent pas avec `--profile` : "
+                           "exporter le job (--export-workflow) puis `encode --config job.json --preview-…`.",
+                           EXIT_ARGS)
         return profile_apply(
             profile_path,
             inputs=args.input or [],

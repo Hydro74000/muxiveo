@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from core.jobs.encode import resolve_from_job
 from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import build_profile_remux_config, load_decision_profile, profile_summary
-from core.jobs.runtime import remux_workflow, run_remux
+from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
 from core.jobs.serializers import serialize_remux_config, serialize_track_preview
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
@@ -56,6 +57,8 @@ class ProfilePreviewRequest(ProfileJobRequest):
 @dataclass(frozen=True)
 class ProfileApplyRequest(ProfileJobRequest):
     force: bool = field(default=False, description="Remplacer une sortie existante.")
+    export_workflow: Path | None = field(
+        default=None, description="Enregistrer le job exact à cet emplacement au lieu d'exécuter.")
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,11 @@ def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: E
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaRunResult:
     remux_config, _report, options = _build(request, ctx, preview=False)
+    if request.export_workflow is not None:
+        destination = export_exact_job(remux_config, dataclasses.replace(options, export_workflow=str(
+            request.export_workflow)), encode=request.encode)
+        ctx.events.artifact("exact-job", str(destination))
+        return MediaRunResult(status="exported", output=str(destination))
     resolved = _resolve(request, remux_config, options, ctx)
     if resolved is not None and resolved.config is not None:
         message = run_encode(resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),

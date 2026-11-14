@@ -11350,5 +11350,13 @@
   "(défaut : %(default)s)": {
     "fra": "(défaut : %(default)s)",
     "eng": "(default: %(default)s)"
+  },
+  "Remplacer le fichier ?": {
+    "fra": "Remplacer le fichier ?",
+    "eng": "Replace the file?"
+  },
+  "{name} existe déjà. Le remplacer ?": {
+    "fra": "{name} existe déjà. Le remplacer ?",
+    "eng": "{name} already exists. Replace it?"
   }
 }
