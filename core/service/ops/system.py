@@ -151,15 +151,20 @@ def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> 
     detector = HardwareEncoderDetector(cancel_event=cancel)
     software: set[str] = set()
     hardware: set[str] = set()
+    hw_ffmpeg = ffmpeg
     if wanted & {"encoders", "presets"}:
         software = set(_section(ctx, lambda: detector.detect_software(ffmpeg)))
         detected = _section(ctx, lambda: detector.detect(
             ffmpeg, nvencc_bin=getattr(ctx.config, "tool_nvencc", None) or None))
         hardware = set(detected[0] if isinstance(detected, tuple) else detected)
+        # FFmpeg des encodeurs matériels : celui que retient ``detect()`` (FFmpeg système si le FFmpeg embarqué
+        # n'a pas ces encodeurs, comme le panneau Encodage).
+        hw_ffmpeg = str(detected[1]) if isinstance(detected, tuple) and detected[1] else ffmpeg
     if "encoders" in wanted:
         values["encoders"] = {"software": sorted(software), "hardware": sorted(hardware)}
     if "presets" in wanted:
-        presets = _section(ctx, lambda: detector.detect_presets(ffmpeg, software | hardware))
+        presets = dict(_section(ctx, lambda: detector.detect_presets(ffmpeg, software)))
+        presets.update(_section(ctx, lambda: detector.detect_presets(hw_ffmpeg, hardware)))
         values["presets"] = {codec: sorted(items) for codec, items in sorted(presets.items())}
     if "vulkan" in wanted:
         values["vulkan"] = dataclasses.asdict(_section(ctx, lambda: detect_vulkan(ffmpeg, cancel)))
@@ -170,7 +175,7 @@ def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> 
         values["gpu"] = {"nvof": dataclasses.asdict(acceleration.nvof),
                          "tensorrt": dataclasses.asdict(acceleration.trt)}
     if "rife" in wanted:
-        caps = _section(ctx, lambda: rife_capabilities(rife)) if rife else None
+        caps = _section(ctx, lambda: rife_capabilities(rife, cancel)) if rife else None
         values["rife"] = None if caps is None else {
             "executable": rife, "version": caps.label, "contract": caps.contract, "options": sorted(caps.options),
             "models": sorted(caps.models) if caps.models is not None else None,
