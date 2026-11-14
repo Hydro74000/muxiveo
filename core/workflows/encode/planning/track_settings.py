@@ -424,6 +424,14 @@ def static_hdr_values_manual(state: Mapping[str, object]) -> bool:
         str(state.get(name) or "").strip() for name, _default, _marker in STATIC_HDR_FIELDS)
 
 
+def effective_static_hdr_injection(state: Mapping[str, object], ctx: SourceVideoContext, *, codec: str,
+                                   tonemap: bool) -> bool:
+    """HDR10 statique injecté : demandé, codec HDR, sans tone mapping. Source à HDR10 statique (HDR10, P5 aux
+    champs vides complétés au lancement) ; source sans (SDR, HLG) : seulement une valeur manuelle, jamais un héritage."""
+    return (bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec) and not tonemap
+            and (source_has_static_hdr10(ctx.hdr_type, ctx.transfer) or static_hdr_values_manual(state)))
+
+
 def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, codec: str,
                            source_transfer: str = "") -> None:
     """Politique HDR d'un codec sur un état de piste (règle du panneau Encodage au changement de codec).
@@ -721,9 +729,7 @@ def video_settings_from_state(
     tonemap = bool(state.get("tonemap_to_sdr"))
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(state, source_hdr=ctx.hdr_type, target_codec=codec)
     copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
-    # Source sans HDR10 statique (SDR, HLG) : seulement une demande explicite avec valeur (jamais un héritage).
-    inject_hdr_meta = (bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec) and not tonemap
-                       and (source_has_static_hdr10(ctx.hdr_type, ctx.transfer) or static_hdr_values_manual(state)))
+    inject_hdr_meta = effective_static_hdr_injection(state, ctx, codec=codec, tonemap=tonemap)
     master_display, max_cll = effective_static_hdr_fields(state, codec=codec) if inject_hdr_meta else ("", "")
     return VideoEncodeSettings(
         stream_index=int(stream_index),

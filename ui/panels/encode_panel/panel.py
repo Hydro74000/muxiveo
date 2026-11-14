@@ -86,6 +86,7 @@ from core.workflows.encode.planning.track_settings import (
     default_video_state,
     effective_dynamic_hdr_flags,
     effective_static_hdr_fields,
+    effective_static_hdr_injection,
     extract_hdr_meta_fields,
     hdr_option_carried,
     hdr_option_in_source,
@@ -5630,13 +5631,16 @@ class EncodePanel(QWidget):
         )
         # Tone-mapping : sortie SDR, les cases HDR restent mémorisées mais inactives.
         copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
-        inject_hdr_meta = (
-            self._inject_hdr_cb.isChecked() and supports_hdr_output(str(codec)) and not tonemap
-        )
         source_transfer = (
             self._transfer_for_entry(selected_file_info, selected_track)
             if selected_file_info is not None and selected_track is not None
             else ""
+        )
+        # Même règle que le lancement (``video_settings_from_state``) : aperçu et commandes identiques.
+        inject_hdr_meta = effective_static_hdr_injection(
+            {**current_state, "inject_hdr_meta": self._inject_hdr_cb.isChecked()},
+            SourceVideoContext(hdr_type=source_hdr, transfer=source_transfer),
+            codec=str(codec), tonemap=tonemap,
         )
         master_display, max_cll = (
             self._effective_static_hdr_fields(current_state, codec=str(codec))

@@ -3211,3 +3211,66 @@ def test_restored_track_states_with_and_without_explicit_markers(qt_app, monkeyp
             assert a.inject_hdr_meta is expected, markers
     finally:
         panel.close()
+
+
+# --- Huitième audit : aperçu = lancement, provenance liée à la valeur, tone mapping par source ---------------
+
+_CLL_RAW = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                "max_average": 400}]}
+
+
+def _hdr_entry(index: int, path: Path, hdr: HDRType, transfer: str, raw: dict | None = None):
+    video = _video_track(0, hdr)
+    video.color_transfer = transfer
+    video.raw = dict(raw or {})
+    entry = _video_entry(index)
+    entry.entry_id = f"v{index}"
+    return _file_info(path, [video], hdr_type=hdr), entry, _COLOR
+
+
+_HDR_COMPARED = ("inject_hdr_meta", "master_display", "max_cll", "static_hdr_light_level_source",
+                 "static_hdr_master_display_source", "tonemap_to_sdr", "copy_dv", "copy_hdr10plus")
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+@pytest.mark.parametrize("hdr, transfer, raw, codec, action, injected", [
+    (HDRType.NONE, "bt709", None, "libx265", "click", False),        # case cochée, champs vides : rien
+    (HDRType.NONE, "bt709", _CLL_RAW, "libx265", "click", True),     # case cochée, valeur de la source
+    (HDRType.NONE, "bt709", None, "libx265", "type", True),          # valeur saisie
+    (HDRType.HLG, "arib-std-b67", None, "libx265", "click", False),  # HLG : transfert HLG gardé
+    (HDRType.HDR10, "smpte2084", None, "libx265", "", True),         # HDR10 aux champs vides : complété au lancement
+    (HDRType.HDR10, "smpte2084", _CLL_RAW, "libx264", "", False),    # tone mapping automatique
+    (HDRType.HDR10, "smpte2084", _CLL_RAW, "copy", "", True),
+])
+def test_preview_and_launch_give_the_displayed_track_the_same_hdr_settings(
+        qt_app, monkeypatch, apply_all, hdr, transfer, raw, codec, action, injected):
+    """Défaut de l'audit 8 : l'aperçu marquait PQ une source SDR à champs vides que le lancement n'injectait pas."""
+    from PySide6.QtTest import QTest
+
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    path = Path("/tmp/displayed.mkv")
+    panel.set_video_tracks([_hdr_entry(0, path, hdr, transfer, raw),
+                            _hdr_entry(1, Path("/tmp/other.mkv"), HDRType.NONE, "bt709")])
+    try:
+        panel._apply_all_video_cb.setChecked(apply_all)
+        _select_codec(panel, codec)
+        if action in ("click", "type"):
+            panel._inject_hdr_cb.click()
+        if action == "type":
+            panel._max_cll.clear()
+            QTest.keyClicks(panel._max_cll, "2000,500")
+        preview_config = panel._current_preview_config()
+        assert preview_config is not None
+        preview = preview_config.video_tracks[0]
+        launch = {v.source_path: v for v in panel.collect_config().video_tracks}[path]
+        assert {k: getattr(preview, k) for k in _HDR_COMPARED} == {k: getattr(launch, k) for k in _HDR_COMPARED}
+        assert output_hdr_transfer(preview) == output_hdr_transfer(launch)
+        assert launch.inject_hdr_meta is injected
+        if hdr == HDRType.HLG:
+            assert output_hdr_transfer(launch) == "hlg"
+    finally:
+        panel.close()
