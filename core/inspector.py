@@ -568,6 +568,8 @@ class FileInspector:
         if bluray_title is None and info.frame_count is None:
             try:
                 info.frame_count = self.get_frame_count(path)
+            except InspectionCancelled:
+                raise  # annulation : jamais une inspection terminée normalement
             except Exception:
                 pass
         # Statistiques Matroska périmées (fichier coupé/remuxé en recopiant les

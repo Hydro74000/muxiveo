@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from core.jobs.constants import EXIT_EXISTS
 from core.jobs.errors import JobError
+from core.jobs.options import call_supported
 from core.service.context import ExecutionContext
-from core.subprocess_utils import subprocess_text_kwargs
-from core.service.errors import ErrorCode
+from core.subprocess_utils import ProbeCancelledError, run_probe
+from core.service.errors import ErrorCode, error_code
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.workflows.audio_sync import AudioSyncTrack
@@ -22,8 +23,10 @@ from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.workflow_store import atomic_write_text
 
 
-def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio") -> str:
-    """Nature d'un flux (``audio`` / ``subtitle`` / ``video``) : extension, spécificateur, sinon ffprobe."""
+def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio", *,
+                       cancel_event: threading.Event | None = None) -> str:
+    """Nature d'un flux (``audio`` / ``subtitle`` / ``video``) : extension, spécificateur, sinon ffprobe (sonde
+    annulable par ``cancel_event`` : l'annulation remonte)."""
     path = Path(path)
     if path.suffix.lower() in {".srt", ".vtt", ".ass", ".ssa"}:
         return "subtitle"
@@ -37,12 +40,13 @@ def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, d
     try:
         cmd = [str(ffprobe), "-v", "error", "-select_streams", str(stream_spec),
                "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)]
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        res = subprocess.run(cmd, capture_output=True, timeout=10, **subprocess_text_kwargs())  # nosec B603
+        res = run_probe(cmd, timeout=10, cancel_event=cancel_event)
         # CSV : champs vides ajoutés par les side data de flux (Dolby Vision) → « video, ».
         output = res.stdout.strip().split(",", 1)[0].strip().lower()
         if output in {"audio", "subtitle", "video"}:
             return output
+    except ProbeCancelledError:
+        raise
     except Exception:  # nosec B110
         pass
     return default
@@ -100,7 +104,11 @@ def _audio_scanner(request: SyncScanRequest, ctx: ExecutionContext) -> Any:
            errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult:
     ffprobe, ffmpeg = ctx.tool("ffprobe"), ctx.tool("ffmpeg")
-    detect = ctx.port("detect_stream_kind", detect_stream_kind)
+    port = ctx.port("detect_stream_kind", detect_stream_kind)
+
+    def detect(*args: Any, default: str) -> str:  # jeton transmis à toute fonction qui l'accepte (port CLI compris)
+        return str(call_supported(port, *args, default=default, cancel_event=ctx.cancel.event))
+
     log = ctx.events.log
     if request.type == "auto":
         tgt_kind = detect(ffprobe, request.target, request.stream_target, default="audio")
@@ -130,7 +138,7 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
                 from core.inspector import FileInspector
                 from core.workflows.cadence import detect_cadence_from_metadata
 
-                inspector = FileInspector(ffprobe_bin=ffprobe)
+                inspector = FileInspector(ffprobe_bin=ffprobe, cancel_event=ctx.cancel.event)
                 ref_info = inspector.inspect(request.ref)
                 tgt_info = inspector.inspect(request.target)
                 ref_fps = next((v.frame_rate for v in ref_info.video_tracks if v.frame_rate), None)
@@ -141,6 +149,8 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
                         log("info", f"Différence de cadence détectée ({ref_fps} vs {tgt_fps}) : "
                                     f"{cadence_mismatch.description} — méthode audio : {cadence_method}")
             except Exception as exc:
+                if error_code(exc) is ErrorCode.CANCELLED:
+                    raise  # annulation : jamais avalée par l'avertissement « cadences »
                 log("warning", f"Impossible d'analyser les cadences vidéo : {exc}")
         make_scanner = ctx.port("audio_scanner", lambda: _audio_scanner(request, ctx))
         result = make_scanner().scan(

@@ -90,7 +90,8 @@ def _plans(request: ExtractRequest, info: Any) -> list[tuple[ExtractionPlan, Pat
             ErrorCode.BUSY),
 )
 def media_extract(request: ExtractRequest, ctx: ExecutionContext) -> ExtractResult:
-    info = FileInspector(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo")).inspect(request.source)
+    info = FileInspector(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"),
+                         cancel_event=ctx.cancel.event).inspect(request.source)
     planned = _plans(request, info)
     if request.all:
         for track in skipped_tracks(info, [plan for plan, _out in planned]):

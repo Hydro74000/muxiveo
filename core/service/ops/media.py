@@ -59,7 +59,8 @@ class InspectResult(Model):
     errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )
 def media_inspect(request: InspectRequest, ctx: ExecutionContext) -> InspectResult:
-    inspector = FileInspector(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"))
+    inspector = FileInspector(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"),
+                              cancel_event=ctx.cancel.event)  # sondes en cours tuées par le jeton
     infos = []
     for path in request.inputs:
         ctx.cancel.raise_if_cancelled()
