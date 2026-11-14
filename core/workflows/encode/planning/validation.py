@@ -16,11 +16,12 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error, preset_problem
+from core.hdr_formats import MASTER_DISPLAY_BODY, MAX_CLL_BODY
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
-_MASTER_DISPLAY_RE = re.compile(r"^G\(\d+,\d+\)B\(\d+,\d+\)R\(\d+,\d+\)WP\(\d+,\d+\)L\(\d+,\d+\)$")
-_MAX_CLL_RE = re.compile(r"^\d+,\d+$")
+_MASTER_DISPLAY_RE = re.compile(rf"^{MASTER_DISPLAY_BODY}$")
+_MAX_CLL_RE = re.compile(rf"^{MAX_CLL_BODY}$")
 
 
 def is_dir_writable(path: Path) -> bool:

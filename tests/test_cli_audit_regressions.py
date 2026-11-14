@@ -1121,3 +1121,41 @@ def test_run_encode_keeps_the_token_during_the_asynchronous_work(qapp, tmp_path)
     token = CancelToken()
     result, _logger, _events = _run(tmp_path, wf, cancel=token)
     assert result == "encoded" and seen == [token.event] and wf._probe_cancel_event is previous
+
+
+def test_hdr10_text_formats_are_checked_when_the_request_is_read(tmp_path):
+    import re
+
+    from core.service.errors import ApiError
+    from core.service.ops.media import MediaJobRequest
+    from core.service.schemas.encode import EncodeBlock, StaticHdrSpec
+    from core.workflows.encode.planning import validation
+
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+    base = {"version": 1, "sources": [str(tmp_path / "a.mkv")]}
+
+    def job(static_hdr, where="default"):
+        video = {"default": {"static_hdr": static_hdr}} if where == "default" else {
+            "tracks": [{"select": {"stream": 0}, "static_hdr": static_hdr}]}
+        return {**base, "encode": {"video": video}}
+
+    for valid in ({"master_display": md, "max_cll": "1000,400"}, {"master_display": "", "max_cll": " "},
+                  {"master_display": f"  {md} ", "max_cll": " 1000,400"}, {"master_display": None}, {}):
+        assert MediaJobRequest.parse({"job": job(valid)})[1] == ()
+    for where, prefix in (("default", "job.encode.video.default"), ("track", "job.encode.video.tracks[0]")):
+        with pytest.raises(ApiError) as caught:
+            MediaJobRequest.parse({"job": job({"master_display": "oops", "max_cll": "1000"}, where)})
+        assert {f"{prefix}.static_hdr.master_display", f"{prefix}.static_hdr.max_cll"} <= {
+            d.path for d in caught.value.details}
+    # Motif publié = motif vérifié, et même règle que la validation de l'encodage pour un texte non vide.
+    schema = StaticHdrSpec.json_schema()["properties"]["master_display"]
+    published = schema["pattern"]  # JSON Schema : ne s'applique qu'aux textes (null reste valide)
+    for text in (md, f" {md}", "", "oops", "G(1,2)"):
+        accepted = re.fullmatch(published, text) is not None
+        assert accepted == (not text.strip() or validation._MASTER_DISPLAY_RE.match(text.strip()) is not None)
+        try:
+            EncodeBlock.parse({"video": {"default": {"static_hdr": {"master_display": text}}}})
+            parsed = True
+        except ApiError:
+            parsed = False
+        assert parsed == accepted

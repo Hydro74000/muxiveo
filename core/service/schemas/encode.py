@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from core.service.models import Model, field
+from core.hdr_formats import MASTER_DISPLAY_BODY, MAX_CLL_BODY, optional_text_pattern
 
 
 @dataclass(frozen=True)
@@ -97,8 +98,10 @@ class StaticHdrSpec(Model):
     """HDR10 statique : ``source`` (valeurs de la source), ``manual`` (saisies), ``off`` (non écrit)."""
 
     mode: Literal["source", "manual", "off"] | None = None
-    master_display: str | None = field(default=None, description="G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min) (x265).")
-    max_cll: str | None = field(default=None, description="MaxCLL,MaxFALL (nits).")
+    master_display: str | None = field(default=None, description="G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min) (x265).",
+                                       pattern=optional_text_pattern(MASTER_DISPLAY_BODY))
+    max_cll: str | None = field(default=None, description="MaxCLL,MaxFALL (nits).",
+                                pattern=optional_text_pattern(MAX_CLL_BODY))
     estimate: Literal["fast", "precise"] | None = field(
         default=None, description="Estimation (source sans HDR10 statique, ex. Dolby Vision P5).")
 

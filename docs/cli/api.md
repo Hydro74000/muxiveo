@@ -36,12 +36,14 @@ muxiveo --cli call media.run --request job.json --ffmpeg /opt/ffmpeg/bin/ffmpeg
 ```
 
 **Requête** : objet JSON **strict**, documents portés compris (`job` d'après le contrat
-`schema --version 1` / exact-job, blocs `encode`). Clé inconnue, type ou valeur incorrects (contrat du
-job, bloc `encode`), champ requis absent ou `null` non autorisé : refus `invalid_request` dès la
-lecture, avec le chemin de chaque champ en cause (ex. `job.sources[0].sycn`,
-`job.encode.video.default.crf`). Clés internes préfixées `_` ou `$` ignorées ; `variables` est un
-objet aux noms libres. Les vérifications qui demandent les sources (pistes, encodeurs, géométrie)
-restent celles de l'exécution (`validation`). Chemins relatifs résolus depuis
+`schema --version 1` / exact-job, blocs `encode`). Refusés dès la lecture (`invalid_request`, avec le
+chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
+inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
+(`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
+absent ou `null` non autorisé. Clés internes préfixées `_` ou `$` ignorées ; `variables` est un objet
+aux noms libres. Ce qui dépend des sources et de la machine (pistes sélectionnées, encodeurs et
+presets disponibles, géométrie Dolby Vision + NVENC, paramètres d'encodeur libres) est refusé à la
+validation (`validation`), comme au lancement. Chemins relatifs résolus depuis
 le dossier du fichier de requête (dossier courant pour stdin). Les documents des commandes
 historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clé inconnue
 signalée par un avertissement (`warning`, code `unknown_key`) et ignorée ; seuls les objets fermés du

@@ -14,6 +14,7 @@ sous-classes de :class:`Model` (imbriquées).
 from __future__ import annotations
 
 import dataclasses
+import re
 import functools
 import types
 import typing
@@ -37,12 +38,17 @@ def field(
     minimum: float | None = None,
     maximum: float | None = None,
     min_items: int | None = None,
+    pattern: str | None = None,
 ) -> Any:
-    """Champ documenté et contraint (bornes numériques, nombre minimal d'éléments)."""
+    """Champ documenté et contraint (bornes numériques, nombre minimal d'éléments, motif d'un texte).
+
+    ``pattern`` : expression complète (ancres comprises), vérifiée par ``re.fullmatch`` sur le texte tel quel
+    et publiée à l'identique dans le schéma JSON.
+    """
     metadata = {
         key: value
         for key, value in (("description", description), ("minimum", minimum),
-                           ("maximum", maximum), ("min_items", min_items))
+                           ("maximum", maximum), ("min_items", min_items), ("pattern", pattern))
         if value not in (None, "")
     }
     if default_factory is not dataclasses.MISSING:
@@ -194,6 +200,8 @@ def _check_constraints(item: dataclasses.Field, value: Any, path: str, state: _P
         return
     if "min_items" in meta and isinstance(value, tuple) and len(value) < meta["min_items"]:
         state.fail(path, f"au moins {meta['min_items']} élément(s) attendu(s)")
+    if "pattern" in meta and isinstance(value, str) and re.fullmatch(meta["pattern"], value) is None:
+        state.fail(path, f"format attendu : {meta.get('description') or meta['pattern']}")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "minimum" in meta and value < meta["minimum"]:
             state.fail(path, f"valeur minimale : {meta['minimum']}")
@@ -311,6 +319,8 @@ def _model_schema(cls: type) -> dict[str, Any]:
         meta = item.metadata
         if meta.get("description"):
             schema["description"] = meta["description"]
+        if "pattern" in meta:
+            schema["pattern"] = meta["pattern"]
         if "minimum" in meta:
             schema["minimum"] = meta["minimum"]
         if "maximum" in meta:
