@@ -535,18 +535,29 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
                     env: EncoderEnvironment | None = None) -> dict[str, object]:
     """Réglages communs de ``template`` appliqués à une piste ; HDR propre à sa source conservé.
 
-    Mémoire des options HDR retirées par un codec (``apply_codec_hdr_policy``) : un codec du modèle qui
-    porte ces options impose les choix du modèle (rien à rétablir) ; sinon la mémoire de la piste s'ajoute
-    à celle du modèle (intention commune de « Appliquer à toutes », même pour une piste dont la source
-    n'a pas ces métadonnées : elles reviennent sur les autres pistes quel que soit la piste affichée).
+    HDR10 statique : avec ``template["hdr10_common"]`` (intention commune de « Appliquer à toutes », tenue
+    par le panneau), une source qui porte du HDR10 reçoit cette intention (retirée puis mémorisée par un
+    codec sans HDR) ; une autre source (SDR, HLG) garde son propre choix, jamais hérité. Sans intention
+    commune : mémoire de la piste, effacée par un codec du modèle qui porte le HDR.
+    Dolby Vision / HDR10+ : la mémoire de la piste s'ajoute à celle du modèle (case = intention commune,
+    effectif selon chaque source).
     """
     state = copy_state(template)
     for key in PER_SOURCE_HDR_KEYS:
         state[key] = own.get(key, "")
+    state.pop("hdr10_common", None)
     codec = state_target_codec(state)
     if codec != "copy":
-        state["hdr_disabled_by_codec"] = not supports_hdr_output(codec) and bool(
-            own.get("hdr_disabled_by_codec") or template.get("hdr_disabled_by_codec"))
+        common = template.get("hdr10_common")
+        hdr_codec = supports_hdr_output(codec)
+        if isinstance(common, bool) and source_has_static_hdr10(ctx.hdr_type, ctx.transfer):
+            state["inject_hdr_meta"] = common and hdr_codec
+            state["hdr_disabled_by_codec"] = common and not hdr_codec
+        elif isinstance(common, bool):
+            state["inject_hdr_meta"] = bool(own.get("inject_hdr_meta"))
+            state["hdr_disabled_by_codec"] = bool(own.get("hdr_disabled_by_codec"))
+        else:
+            state["hdr_disabled_by_codec"] = not hdr_codec and bool(own.get("hdr_disabled_by_codec"))
         own_dv, own_hdr10plus = restore_flags(own)
         template_dv, template_hdr10plus = restore_flags(template)
         state["dynamic_hdr_disabled_by_codec"] = ((own_dv or template_dv) and not is_dovi_codec(codec),

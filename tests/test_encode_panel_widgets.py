@@ -2794,3 +2794,82 @@ def test_apply_all_with_different_sources_keeps_the_common_hdr_intent(qt_app, mo
         assert dv_track.copy_dv and dv_track.copy_hdr10plus  # copie effective sur la piste DV+HDR10+
     finally:
         panel.close()
+
+
+def _apply_all_panel(monkeypatch, *sources):
+    """Panneau « Appliquer à toutes » : une piste par (chemin, type HDR, transfert)."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    tracks = []
+    for index, (path, hdr, transfer) in enumerate(sources):
+        video = _video_track(0, hdr)
+        video.color_transfer = transfer
+        entry = _video_entry(index)
+        entry.entry_id = f"t{index}"
+        tracks.append((_file_info(path, [video], hdr_type=hdr), entry, _COLOR))
+    panel.set_video_tracks(tracks)
+    _select_codec(panel, "libx265")
+    panel._on_apply_all_video_toggled(True)
+    return panel
+
+
+def _settings_by_path(panel) -> dict:
+    config = panel.collect_config()
+    assert config is not None
+    return {video.source_path: video for video in config.video_tracks}
+
+
+def test_apply_all_sdr_track_displayed_never_gets_hdr10(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)  # piste SDR affichée pendant l'intervalle SDR
+        _select_codec(panel, "libx265")
+        for _round in range(2):  # navigation répétée, collectes répétées, autre réglage modifié sur la piste SDR
+            settings = _settings_by_path(panel)
+            sdr, hdr10 = settings[path_sdr], settings[_PATH_A]
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+            assert hdr10.inject_hdr_meta and not hdr10.tonemap_to_sdr
+            panel._video_list.setCurrentRow(0)
+            assert panel._inject_hdr_cb.isChecked()
+            panel._video_list.setCurrentRow(1)
+            assert not panel._inject_hdr_cb.isChecked()
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()
+
+
+def test_apply_all_explicitly_unchecked_hdr10_is_never_restored(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        panel._inject_hdr_cb.setChecked(False)  # choix commun depuis la piste HDR10
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        assert not _settings_by_path(panel)[_PATH_A].inject_hdr_meta
+        panel._video_list.setCurrentRow(0)
+        assert not panel._inject_hdr_cb.isChecked()
+    finally:
+        panel.close()
+
+
+def test_apply_all_hlg_track_keeps_hlg_and_never_inherits_hdr10(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_hlg = Path("/tmp/film_hlg.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_hlg, HDRType.HLG, "arib-std-b67"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        settings = _settings_by_path(panel)
+        assert not settings[path_hlg].inject_hdr_meta and output_hdr_transfer(settings[path_hlg]) == "hlg"
+        assert settings[_PATH_A].inject_hdr_meta
+    finally:
+        panel.close()

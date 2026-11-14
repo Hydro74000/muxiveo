@@ -13,7 +13,7 @@ import json
 import re
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
@@ -290,6 +290,9 @@ class EncodePanel(QWidget):
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
+        #: « Appliquer à toutes » : HDR10 statique voulu pour les pistes dont la source en porte (None : aucune).
+        #: Tenu hors de l'état des pistes : une piste SDR affichée ne le modifie pas.
+        self._hdr10_common_intent: bool | None = None
         # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
@@ -916,6 +919,7 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         selected_entry_id = self._current_video_entry_id
         self._video_tracks = tracks
+        self._hdr10_common_intent = None
         self._sync_codec_item_availability()
         self._video_list.blockSignals(True)
         self._video_list.clear()
@@ -2943,6 +2947,7 @@ class EncodePanel(QWidget):
 
     def _on_apply_all_video_toggled(self, checked: bool) -> None:
         self._video_apply_all = bool(checked)
+        self._hdr10_common_intent = None  # recalculée depuis les pistes à la propagation suivante
         if checked:
             self._propagate_current_video_state_to_all()
         else:
@@ -4369,7 +4374,42 @@ class EncodePanel(QWidget):
         own = self._video_settings_by_entry_id.get(entry_id)
         if own is None:
             own = self._default_video_state_for_track(info=info, track=track)
+        intent = self._hdr10_intent()
+        if intent is not None:  # jamais stockée dans l'état d'une piste
+            template = {**template, "hdr10_common": intent}
         return propagate_state(template, own, self._source_context(info, track), self._encoder_environment())
+
+    def _update_hdr10_intent(self, displayed: Mapping[str, object]) -> None:
+        """Intention HDR10 commune mise à jour depuis l'état de la piste **affichée** (avant sa propagation).
+
+        Seule une piste dont la source porte du HDR10 statique, avec un codec qui porte le HDR, la change
+        (une case décochée de force par le codec ne compte pas).
+        """
+        if not self._video_apply_all or self._loading_video_settings:
+            return
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        if (current is not None and supports_hdr_output(state_target_codec(displayed))
+                and self._hdr10_capable(*current)):
+            self._hdr10_common_intent = bool(displayed.get("inject_hdr_meta"))
+
+    def _hdr10_intent(self) -> bool | None:
+        """Intention HDR10 commune de « Appliquer à toutes » (``propagate_state``) : connue, sinon celle de la
+        première piste qui porte du HDR10 ; ``None`` hors mode global ou sans telle piste."""
+        if not self._video_apply_all:
+            return None
+        if self._hdr10_common_intent is None:
+            for info, track, _color in self._video_tracks:
+                stored = self._video_settings_by_entry_id.get(self._video_entry_id(track))
+                if stored is not None and self._hdr10_capable(info, track):
+                    self._hdr10_common_intent = bool(stored.get("inject_hdr_meta")
+                                                     or stored.get("hdr_disabled_by_codec"))
+                    break
+        return self._hdr10_common_intent
+
+    def _hdr10_capable(self, info: FileInfo, track: TrackEntry) -> bool:
+        ctx = self._source_context(info, track)
+        return source_has_static_hdr10(ctx.hdr_type, ctx.transfer)
 
     def _propagate_state_to_active_tracks(self, template: dict[str, object]) -> None:
         for info, track, _color in self._video_tracks:
@@ -4853,6 +4893,8 @@ class EncodePanel(QWidget):
         if state is None:
             state = self._current_video_state()
         if self._should_propagate_global_state(state):
+            if source_id == self._current_video_entry_id:
+                self._update_hdr10_intent(state)
             self._propagate_state_to_active_tracks(state)
         self._emit_video_encoding_plans()
 
@@ -5075,6 +5117,7 @@ class EncodePanel(QWidget):
             self._sync_hdr_metadata_provenance()  # analyse déprogrammée ou reprise : libellé à jour
         # V43 : une seule règle de propagation (Copy reste propre à chaque source).
         if self._should_propagate_global_state(state):
+            self._update_hdr10_intent(state)
             self._propagate_state_to_active_tracks(state)
         if analysis_cancelled:
             self.log_message.emit(
