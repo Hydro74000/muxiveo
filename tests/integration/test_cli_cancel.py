@@ -233,3 +233,43 @@ def test_sigint_during_a_capabilities_probe_ends_the_cli_process(tmp_path, monke
     else:
         os.kill(probe_pid, signal.SIGKILL)
         pytest.fail("sonde de capacités restée en vie après la fin du CLI")
+
+
+def test_sigint_during_a_cadence_resolution_of_calibration_edit_returns_6(tmp_path, monkeypatch):
+    """Audit 15 : ``calibration edit --resolve-cadence`` : Ctrl+C pendant l'analyse → annulation (code 6), sonde tuée."""
+    from core.workflows.cadence import CadenceMismatch, CadenceType
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    pal = CadenceMismatch(cadence_type=CadenceType.PAL_TO_FILM_23976, source_fps=25.0, target_fps=23.976,
+                          speed_factor=24000.0 / 25025.0, speed_ratio="24000/25025")
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps(SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
+                                                      cadence_audio_method="auto").to_dict()), encoding="utf-8")
+    mark = tmp_path / "ffprobe-started"
+    ffprobe = tmp_path / "bin" / "ffprobe"
+    ffprobe.parent.mkdir()
+    ffprobe.write_text(f'#!/bin/sh\necho $$ > "{mark}"\nexec sleep 120\n', encoding="utf-8")
+    ffprobe.chmod(0o755)
+    (tmp_path / "ref.mkv").write_bytes(b"x")
+    (tmp_path / "tgt.mkv").write_bytes(b"x")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+           "PATH": f"{ffprobe.parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "calibration", "edit", str(calibration),
+         "--resolve-cadence", f"{tmp_path / 'ref.mkv'}:1", f"{tmp_path / 'tgt.mkv'}:1"],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not (mark.exists() and mark.read_text().strip()):
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "analyse jamais lancée"
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGINT)
+        _stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 6, stderr

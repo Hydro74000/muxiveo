@@ -1557,8 +1557,11 @@ def test_null_keys_never_remove_a_static_hdr_choice_in_merges(base, override, ex
         assert (settings.static_hdr_metadata_analysis_request, settings.inject_hdr_meta, settings.max_cll) == expected
 
 
-def test_real_cli_path_reads_options_exports_and_rereads_the_same_static_choice(tmp_path):
-    """Lecture (load_job_document) → options analysées par le parseur → résolution → export → relecture."""
+def test_cli_options_merged_into_a_read_job_then_its_portable_block_keep_the_static_choice(tmp_path):
+    """Lecture (load_job_document) → options analysées par le parseur → résolution → bloc portable relu.
+
+    Le bloc est écrit ici ; l'export réel de la commande est prouvé par l'intégration
+    ``test_encode_export_then_validate_keeps_the_static_hdr_choice``."""
     from cli.encode_options import apply_encode_options
     from core.json_documents import portable_encode_block
     from core.jobs.json_io import load_job_document
@@ -1892,11 +1895,14 @@ def test_capabilities_never_publishes_a_late_result_and_relays_probe_errors(monk
     from core.workflows.encode import interpolation
 
     seen: list[Any] = []
-    ctx = _ctx()
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    returned = threading.Event()
 
     def slow_gpu(_rife, **kwargs):  # sonde qui ignore le jeton : l'opération n'attend pas
         seen.append(kwargs.get("cancel_event"))
         time.sleep(5)
+        returned.set()
         return interpolation.GpuAcceleration(interpolation.NvofCapability(reason="tard"),
                                              interpolation.TrtCapability(reason="tard"))
 
@@ -1908,6 +1914,11 @@ def test_capabilities_never_publishes_a_late_result_and_relays_probe_errors(monk
     # Délai de grâce (2 s, temps de tuer une sonde qui reçoit le jeton), jamais toute la sonde (5 s).
     assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED and time.monotonic() - start < 3
     assert seen == [ctx.cancel.event]  # jeton transmis à la sonde
+    assert returned.wait(10)  # retour tardif effectivement survenu…
+    from core.service.events import EventType
+
+    assert not any(e.type is EventType.RESULT for e in sink.events)  # …sans rien publier
+    assert [e.data["state"] for e in sink.events if e.type is EventType.STATE][-1] == "cancelled"
     monkeypatch.setattr(interpolation, "detect_gpu_acceleration",
                         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("liste des GPU illisible")))
     with pytest.raises(Exception, match="liste des GPU illisible"):
@@ -1959,3 +1970,275 @@ def test_cadence_inspection_uses_the_configured_mediainfo_without_override(tmp_p
         call(CATALOG, "sync.scan", {"ref": str(source), "target": str(source), "type": "audio",
                                     "cadence_auto": True}, ctx)
     assert calls.exists()  # binaire de la configuration, pas celui du PATH
+
+
+# --- Quinzième audit : sondes RIFE, adaptateurs Windows, sondes parallèles, NVEncC, --list-gpus ------------------
+
+
+def _pid_script(path: Path, slow: str, quick: str = "") -> Path:
+    """Script de test : arguments ``slow`` → PID écrit dans ``<path>.pid`` puis attente ; sinon ``quick``."""
+    pid = path.with_suffix(".pid")
+    path.write_text(f'#!/bin/sh\ncase "$*" in {slow}) echo $$ > "{pid}"; exec sleep 30;; esac\n{quick}\n',
+                    encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _cancel_when(paths: list[Path], event) -> None:
+    import threading
+    import time
+
+    def wait() -> None:
+        deadline = time.monotonic() + 30
+        while not all(p.exists() and p.read_text().strip() for p in paths) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        event.set()
+
+    threading.Thread(target=wait, daemon=True).start()
+
+
+_LINUX = pytest.mark.skipif(not Path("/bin/sh").exists() or not Path("/proc").exists(), reason="Linux")
+
+
+@_LINUX
+@pytest.mark.parametrize("slow", ["--version", "--capabilities"])
+def test_rife_version_and_capabilities_probes_are_killed_with_a_token(tmp_path, slow):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.interpolation import rife_capabilities
+
+    from core.workflows.encode.interpolation import clear_rife_version_cache
+
+    clear_rife_version_cache()  # caches froids
+    rife = _pid_script(tmp_path / f"rife{slow}", f"*{slow}*", 'echo "muxiveo-rife 9.9.9"')
+    event = threading.Event()
+    _cancel_when([rife.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        rife_capabilities(str(rife), event)
+    assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+    # Nouvel appel (interface, sans jeton) après l'annulation : rien de mémorisé, sonde relancée puis cache.
+    rife.write_text('#!/bin/sh\ncase "$*" in *--version*) echo "muxiveo-rife 1.6.0";; esac\n', encoding="utf-8")
+    first = rife_capabilities(str(rife))
+    assert first is not None and first.label == "1.6.0"
+    assert rife_capabilities(str(rife)) is first  # réussite mémorisée sans jeton
+    rife.write_text('#!/bin/sh\ncase "$*" in *--version*) echo "muxiveo-rife 1.6.1";; esac\n# remplacé\n',
+                    encoding="utf-8")
+    replaced = rife_capabilities(str(rife))  # binaire remplacé : identité du fichier changée, relu
+    assert replaced is not None and replaced.label == "1.6.1"
+    clear_rife_version_cache()
+
+
+@_LINUX
+@pytest.mark.parametrize("codec", ["hevc_qsv", "h264_amf", "hevc_nvenc"])
+def test_windows_adapter_selection_is_killed_with_a_token(tmp_path, monkeypatch, codec):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode import hw_devices
+
+    probe = _pid_script(tmp_path / "ffmpeg.exe", "*")  # véritable processus (simulation .exe sous Linux)
+    started: list[int] = []
+    monkeypatch.setattr(hw_devices, "_windows_probe_command",
+                        lambda ffmpeg, codec_id, index: started.append(index) or [str(probe), str(index)])
+    event = threading.Event()
+    _cancel_when([probe.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        hw_devices.probe_windows_hwaccel_device(codec, ffmpeg_bin=str(probe), cancel_event=event)
+    assert _process_gone(int(probe.with_suffix(".pid").read_text()))
+    assert started == [0]  # arrêt avant l'adaptateur suivant
+
+
+@_LINUX
+def test_parallel_hardware_probes_are_all_killed_with_a_token(tmp_path, monkeypatch):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    scripts = {codec: _pid_script(tmp_path / f"{codec}.sh", "*") for codec in ("hevc_vaapi", "h264_vaapi")}
+    event = threading.Event()
+    detector = HardwareEncoderDetector(cancel_event=event)
+    monkeypatch.setattr(detector, "_probe_command", lambda ffmpeg, codec: [str(scripts[codec])])
+    _cancel_when([script.with_suffix(".pid") for script in scripts.values()], event)
+    with pytest.raises(ProbeCancelledError):
+        detector._probe_codecs("ffmpeg", set(scripts))
+    assert all(_process_gone(int(script.with_suffix(".pid").read_text())) for script in scripts.values())
+
+
+@_LINUX
+def test_nvencc_and_gpu_list_probes_are_killed_with_a_token(tmp_path, monkeypatch):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode import interpolation
+    from core.workflows.encode.runtime.nvencc import detect_nvencc_available
+
+    nvencc = _pid_script(tmp_path / "nvencc", "*--check-hw*")
+    event = threading.Event()
+    _cancel_when([nvencc.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        detect_nvencc_available(str(nvencc), cancel_event=event)
+    assert _process_gone(int(nvencc.with_suffix(".pid").read_text()))
+    rife = _pid_script(tmp_path / "rife", "*--list-gpus*")
+    monkeypatch.setattr(interpolation, "_resolve_rife", lambda _bin: str(rife))
+    monkeypatch.setattr(interpolation, "rife_capabilities",
+                        lambda *_a, **_k: SimpleNamespace(label="9.9.9", supports=lambda option: option == "nvof"))
+    event = threading.Event()
+    _cancel_when([rife.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        interpolation._probe_acceleration(str(rife), "", -1, 60.0, event)
+    assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+
+
+@_LINUX
+@pytest.mark.parametrize("section", ["rife", "encoders"])
+def test_no_capabilities_probe_survives_the_host_process(tmp_path, section):
+    """Hôte Python terminé juste après l'annulation : sonde RIFE, ou sondes matérielles parallèles, jamais laissées
+    orphelines (processus et descendants)."""
+    import subprocess
+    import sys
+
+    scripts = ([_pid_script(tmp_path / "rife", "*--version*")] if section == "rife" else
+               [_pid_script(tmp_path / f"{codec}.sh", "*", "") for codec in ("hevc_vaapi", "h264_vaapi")])
+    pids = [script.with_suffix(".pid") for script in scripts]
+    patch = "" if section == "rife" else f"""
+from core.workflows.encode.hardware import HardwareEncoderDetector
+scripts = {{"hevc_vaapi": {str(scripts[0])!r}, "h264_vaapi": {str(scripts[1])!r}}}
+HardwareEncoderDetector._compiled_hw = lambda self, ffmpeg: (ffmpeg, set(scripts))
+HardwareEncoderDetector._probe_command = lambda self, ffmpeg, codec: [scripts[codec]]
+HardwareEncoderDetector._probe_vaapi_rate_controls = lambda self, ffmpeg, codec: frozenset()
+HardwareEncoderDetector._get_encoders_output = lambda self, ffmpeg: ""
+"""
+    host = tmp_path / "hote.py"
+    host.write_text(f"""
+import threading, time
+from pathlib import Path
+from types import SimpleNamespace
+from core.service import ExecutionContext, ListSink, call
+from core.service.catalog import CATALOG
+{patch}
+ctx = ExecutionContext.create(SimpleNamespace(tool_muxiveo_rife={str(scripts[0])!r}, tool_ffmpeg="ffmpeg",
+                                              tool_nvencc=""), ListSink())
+def cancel():
+    while not all(Path(p).exists() and Path(p).read_text().strip() for p in {[str(p) for p in pids]!r}):
+        time.sleep(0.01)
+    ctx.cancel.cancel()
+threading.Thread(target=cancel, daemon=True).start()
+try:
+    call(CATALOG, "system.capabilities", {{"sections": [{section!r}]}}, ctx)
+except Exception:
+    pass
+""", encoding="utf-8")
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run([sys.executable, str(host)], cwd=root, check=True, timeout=60,
+                   env={**__import__("os").environ, "PYTHONPATH": str(root)})
+    assert all(_process_gone(int(pid.read_text())) for pid in pids)
+
+
+def test_windows_path_conventions_stay_untouched_in_requests(tmp_path):
+    from core.json_documents import resolve_output_reference, resolve_profile_reference
+
+    for value in ("C:\\\\jobs\\\\film.json", "\\\\jobs\\\\film.json", "\\\\\\\\srv\\\\partage\\\\film.json", "/jobs/film.json"):
+        assert resolve_profile_reference(value, tmp_path) == value
+    for value in ("C:\\\\sorties\\\\", "\\\\sorties\\\\", "\\\\\\\\srv\\\\partage\\\\o.mkv"):
+        assert resolve_output_reference(value, tmp_path) == value
+
+
+@pytest.mark.parametrize("analyser", ["late", "raises"])
+def test_calibration_cadence_resolution_is_cancellable_and_writes_nothing(monkeypatch, tmp_path, analyser):
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.events import EventType
+    from core.workflows import audio_sync_scan
+    from core.workflows.sync_calibration import SyncCalibration
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    seen: list[Any] = []
+
+    class _Scanner:
+        def __init__(self, *_a, cancel_event=None, **_k):
+            seen.append(cancel_event)
+
+        def resolve_cadence_method(self, _ref, _tgt, calibration, log=None):
+            ctx.cancel.cancel()  # annulation pendant l'analyse
+            if analyser == "raises":  # extraction interrompue par le jeton (erreur non typée d'annulation)
+                raise audio_sync_scan.AudioSyncError("Analyse annulée.")
+            return calibration  # analyseur qui rend quand même un résultat
+
+    monkeypatch.setattr(audio_sync_scan, "AudioSyncScanner", _Scanner)
+    output = tmp_path / "calibration.json"
+    output.write_text('{"existant": true}', encoding="utf-8")
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "calibration.edit", {
+            "calibration": {"value": SyncCalibration.linear(0).to_dict()}, "output": str(output), "force": True,
+            "resolve_cadence": [{"path": str(tmp_path / "ref.mkv"), "stream": 1},
+                                {"path": str(tmp_path / "tgt.mkv"), "stream": 1}]}, ctx)
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert seen == [ctx.cancel.event]
+    assert output.read_text(encoding="utf-8") == '{"existant": true}'  # jamais écrasé
+    assert not any(e.type in (EventType.ARTIFACT, EventType.RESULT) for e in sink.events)
+    assert "succeeded" not in [e.data.get("state") for e in sink.events if e.type is EventType.STATE]
+
+
+@pytest.mark.parametrize("fallback", ["/usr/bin/ffmpeg-systeme", None])
+def test_capabilities_presets_use_the_ffmpeg_that_detected_the_hardware_encoders(monkeypatch, fallback):
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    configured = "/opt/app/ffmpeg"
+    calls: list[tuple[str, frozenset[str]]] = []
+    presets_by_binary = {configured: {"libx264": frozenset({"slow"}), "hevc_nvenc": frozenset({"faux"})},
+                         "/usr/bin/ffmpeg-systeme": {"hevc_nvenc": frozenset({"p4"})}}
+
+    def detect_presets(self, ffmpeg, codecs):  # accumule comme le vrai détecteur (``self.presets``)
+        calls.append((ffmpeg, frozenset(codecs)))
+        self.presets.update({codec: presets_by_binary[ffmpeg][codec] for codec in codecs})
+        return dict(self.presets)
+
+    monkeypatch.setattr(HardwareEncoderDetector, "detect_software", lambda self, ffmpeg: {"libx264"})
+    monkeypatch.setattr(HardwareEncoderDetector, "detect",
+                        lambda self, ffmpeg, nvencc_bin=None: ({"hevc_nvenc"}, fallback or ffmpeg))
+    monkeypatch.setattr(HardwareEncoderDetector, "detect_presets", detect_presets)
+    result = call(CATALOG, "system.capabilities", {"sections": ["presets"]}, _ctx(tool_ffmpeg=configured))
+    hw_binary = fallback or configured
+    assert calls == [(configured, frozenset({"libx264"})), (hw_binary, frozenset({"hevc_nvenc"}))]
+    expected_nvenc = ["p4"] if fallback else ["faux"]
+    assert result.presets == {"hevc_nvenc": expected_nvenc, "libx264": ["slow"]}  # logiciels conservés
+
+
+def test_gui_encoder_listing_keeps_no_timeout(monkeypatch):
+    import subprocess
+
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    seen: list[Any] = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: seen.append(kwargs.get("timeout", "absent")) or
+                        subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    HardwareEncoderDetector()._get_encoders_output("ffmpeg")  # interface : sans jeton
+    assert seen == ["absent"]  # appel historique exact : aucune clé ``timeout``
+
+
+def test_headless_encoder_listing_is_bounded_and_a_cancelled_listing_is_never_cached(monkeypatch):
+    import threading
+
+    from core import subprocess_utils
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.hardware import HardwareEncoderDetector
+
+    seen: list[float] = []
+    event = threading.Event()
+
+    def probe(cmd, *, timeout, cancel_event, **_k):
+        seen.append(timeout)
+        if cancel_event.is_set():
+            raise ProbeCancelledError("Sonde annulée.")
+        return subprocess_utils.subprocess.CompletedProcess(cmd, 0, stdout=" V..... libx264", stderr="")
+
+    monkeypatch.setattr(subprocess_utils, "run_probe", probe)
+    detector = HardwareEncoderDetector(cancel_event=event)
+    event.set()
+    with pytest.raises(ProbeCancelledError):
+        detector._get_encoders_output("ffmpeg")
+    event.clear()
+    assert "libx264" in detector._get_encoders_output("ffmpeg")  # rien de mémorisé après l'annulation
+    assert seen == [120.0, 120.0]  # opération headless : bornée
