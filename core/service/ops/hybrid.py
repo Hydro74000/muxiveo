@@ -364,13 +364,25 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 break
             if not request.continue_on_error:
                 break
-        except BaseException as exc:  # Ctrl+C non intercepté : état final de l'enfant (comme _Children), puis propagation
+        except BaseException as exc:  # Ctrl+C non intercepté : état final de l'enfant (comme _Children), rapport, propagation
+            status = "cancelled" if error_code(exc) is ErrorCode.CANCELLED or ctx.cancel.cancelled else "failed"
             if child is not None:
-                children.finish(child, "cancelled" if error_code(exc) is ErrorCode.CANCELLED else "failed")
+                children.finish(child, status)
+            entries.append({**entry, "status": status, "error": str(exc) or type(exc).__name__})
+            try:
+                _write_report(request, entries)
+            except Exception as report_error:  # jamais à la place de l'interruption d'origine
+                logger.emit("error", f"Rapport des épisodes non écrit : {report_error}")
             raise
-    if request.report_json is not None:
-        from core.atomic_io import atomic_write_text
-
-        atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": entries},
-                                                                 ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    _write_report(request, entries)
     return HybridResult(status=_status(entries, cancelled), episodes=tuple(entries))
+
+
+def _write_report(request: HybridRequest, entries: list[dict[str, Any]]) -> None:
+    """Rapport JSON des épisodes (``report_json``) : aussi après une interruption propagée."""
+    if request.report_json is None:
+        return
+    from core.atomic_io import atomic_write_text
+
+    atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": entries},
+                                                             ensure_ascii=False, indent=2, allow_nan=False) + "\n")
