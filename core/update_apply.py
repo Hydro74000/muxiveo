@@ -488,7 +488,9 @@ def spawn_detached(command: list[str], cwd: Path) -> subprocess.Popen:
 
 
 def launch(template: list[str], root: Path) -> None:
-    """Lance une version installée, détachée de ce processus."""
+    """Lance une version installée, détachée de ce processus (commande vide : aucune relance, CLI)."""
+    if not template:
+        return
     spawn_detached(expand(template, root), root)
 
 

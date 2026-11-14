@@ -328,10 +328,13 @@ def download_update(
     kind: InstallKind,
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    *,
+    relaunch: bool = True,
 ) -> Path:
     """Télécharge et vérifie l'asset de mise à jour ; renvoie le fichier prêt à installer.
 
-    Archive source, application macOS : renvoie le dossier de travail préparé (`update_apply.prepare`).
+    Archive source, application macOS : renvoie le dossier de travail préparé (`update_apply.prepare`) ;
+    ``relaunch=False`` (CLI) : la nouvelle version n'est pas relancée après l'échange.
     """
     asset = select_asset(info, kind)
     if asset is None:
@@ -347,10 +350,10 @@ def download_update(
         archive = download_asset(asset, work / asset.name, expected, progress, cancelled)
         if cancelled is not None and cancelled():
             raise UpdateInstallError("Téléchargement annulé.")
-        probe, relaunch = _swap_commands(kind)
+        probe, relaunch_command = _swap_commands(kind)
         update_apply.prepare(
-            _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch, APP_MACOS_BUNDLE_ID,
-            cancelled=cancelled,
+            _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch_command if relaunch else [],
+            APP_MACOS_BUNDLE_ID, cancelled=cancelled,
         )
         if cancelled is not None and cancelled():
             raise UpdateInstallError("Mise à jour annulée.")
@@ -440,16 +443,27 @@ def collect_update_results(kind: InstallKind | None = None, *, discard: list[Pat
         return []
 
 
-def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None) -> None:
-    """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application."""
+#: `apply_update` : AppImage remplacée tout de suite ; installeur ou échange de dossiers après la sortie.
+APPLY_INSTALLED = "installed"
+APPLY_SCHEDULED = "scheduled"
+
+
+def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None, relaunch: bool = True) -> str:
+    """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application.
+
+    Retourne ``APPLY_INSTALLED`` (AppImage remplacée) ou ``APPLY_SCHEDULED`` (installeur Windows, échange de
+    dossiers par l'auxiliaire qui attend la sortie). ``relaunch=False`` (CLI) : aucune relance de l'interface.
+    """
     if kind in _SWAP_KINDS:
         _start_swap_helper(kind, downloaded)
-        return
+        return APPLY_SCHEDULED
     if kind is InstallKind.APPIMAGE:
         target = _appimage_path()
         try:
             downloaded.chmod(0o755)
             os.replace(downloaded, target)
+            if not relaunch:
+                return APPLY_INSTALLED
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen(  # nosec B603  # nosemgrep
                 [str(target)],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
@@ -461,12 +475,12 @@ def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None 
             )
         except OSError as exc:
             raise UpdateInstallError(f"Remplacement de l'AppImage impossible : {exc}") from exc
-        return
+        return APPLY_INSTALLED
     if kind is InstallKind.WINDOWS_INSTALLER:
         from core.windows_shell import launch_installer
         try:
             launch_installer(downloaded, owner_hwnd)
         except OSError as exc:
             raise UpdateInstallError(f"Lancement de l'installeur impossible : {exc}") from exc
-        return
+        return APPLY_SCHEDULED
     raise UpdateInstallError("Mise à jour automatique non supportée pour ce mode d'installation.")

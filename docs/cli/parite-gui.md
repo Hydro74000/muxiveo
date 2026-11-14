@@ -119,7 +119,7 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Extensions MVO-RIFE, TensorRT, FEL : installer, mettre à jour, supprimer | `plugins install\|update\|remove` | `plugins.*` | ✅ |
 | Réglages des extensions (TensorRT, mise à jour automatique) | `config set plugins.*` | `config.set` | ✅ |
 | NVEncC : installer, mettre à jour, supprimer | `nvencc status\|install\|update\|remove` | `nvencc.*` | ✅ |
-| Installer une mise à jour de Muxiveo | `version --install --yes` | `app.update_install` | ⏳ L11 |
+| Installer une mise à jour de Muxiveo | `version --install --yes [--channel]` | `app.update_install` | ✅ (sans relance de l'interface) |
 
 ## Hors périmètre
 

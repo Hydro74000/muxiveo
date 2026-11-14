@@ -863,6 +863,19 @@ et `plugins.auto_update`). Provenance affichée : `ini` (config.ini, prioritaire
 langue de l'interface) avant d'écrire. `nvencc remove` ne retire que la copie installée par Muxiveo
 dans le dossier utilisateur ; un paquet système se retire par apt / dnf.
 
+Mise à jour de Muxiveo (installation intégrée : AppImage, installeur Windows, archive source,
+application macOS) :
+
+```bash
+Muxiveo-cli version --check                     # code 8 si une mise à jour est disponible
+Muxiveo-cli version --install --yes             # télécharge, vérifie (SHA-256) et installe
+```
+
+L'interface n'est jamais relancée. AppImage : remplacée aussitôt (`installed`). Installeur Windows,
+archive source, application macOS : installation confiée à un processus qui attend la fin du CLI
+(`scheduled`) ; son compte rendu est affiché au prochain `version --install` (et par l'interface).
+Flatpak, Homebrew, dépôt git : gestionnaire externe (`brew upgrade`, `git pull`).
+
 ## Couche de service : `call`, `operations`, `--log-format events`
 
 Chaque fonctionnalité du CLI devient progressivement une **opération** de la couche de

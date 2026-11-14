@@ -53,7 +53,10 @@ def cmd_capabilities(args: argparse.Namespace, config: AppConfig, logger: Logger
 
 
 def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
-    """Affiche la version ; avec --check, compare à la dernière release du canal choisi (opération system.version)."""
+    """Affiche la version ; avec --check, compare à la dernière release du canal choisi (opération system.version) ;
+    avec --install, installe la dernière version (opération app.update_install)."""
+    if getattr(args, "install", False):
+        return _install_update(args, config, logger)
     payload: dict = {"check": bool(args.check)}
     if args.channel:
         payload["channel"] = args.channel
@@ -88,6 +91,28 @@ def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
         else:
             print(f"À jour (dernière version {result.channel} : {result.latest}).")
     return exit_code
+
+
+def _install_update(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
+    from cli.interrupts import interrupt_guard
+    from core.service.context import CancelToken
+
+    payload: dict = {"confirm": bool(getattr(args, "yes", False))}
+    if args.channel:
+        payload["channel"] = args.channel
+    ports = {"query_latest_release": lambda channel: query_latest_release(channel)}
+    with interrupt_guard(CancelToken()) as cancel:
+        result, ctx = run_operation("app.update_install", payload, config=config, logger=logger, ports=ports,
+                                    cancel=cancel)
+    if args.log_format == "events":
+        print_json(envelope("app.update_install", ctx.events.job, result=result))
+        return EXIT_OK
+    for entry in getattr(result, "previous", ()):
+        level = "info" if entry.get("ok") else "warning"
+        logger.emit(level, f"Mise à jour précédente ({entry.get('version', '?')}) : "
+                           + ("réussie." if entry.get("ok") else str(entry.get("error") or "échec.")))
+    logger.emit("info", str(getattr(result, "message", "")))
+    return EXIT_OK
 
 
 def _metadata_job_from_args(args: argparse.Namespace) -> dict:

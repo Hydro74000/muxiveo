@@ -148,6 +148,9 @@ def build_parser() -> argparse.ArgumentParser:
     version = sub.add_parser("version", help="Afficher la version de Muxiveo.")
     version.add_argument("--check", action="store_true", help="Comparer avec la dernière release GitHub (code retour 8 si mise à jour disponible).")
     version.add_argument("--channel", choices=("stable", "unstable"), help="Canal de mise à jour (défaut : réglage [ui] update_channel).")
+    version.add_argument("--install", action="store_true",
+                         help="Installer la dernière version du canal (installation intégrée ; sans relancer l'interface).")
+    version.add_argument("--yes", action="store_true", help="Avec --install : confirmer l'installation.")
     version.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     version.set_defaults(func=cmd_version)
 

@@ -18,10 +18,12 @@ from core.service.ops import (
     profile,
     sync,
     system,
+    update,
 )
 
 CATALOG = Catalog((
     system.system_version,
+    update.app_update_install,
     system.system_tools,
     system.system_capabilities,
     system.schema_get,
