@@ -210,6 +210,8 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
         mode = hdr.mode or ("manual" if hdr.master_display is not None or hdr.max_cll is not None else None)
         if mode is not None:
             state["hdr_disabled_by_codec"] = False  # choix explicite : rien à rétablir au changement de codec
+            state.update(static_hdr_manual=mode == "manual", static_hdr_master_display_manual=False,
+                         static_hdr_max_cll_manual=False)
         if mode == "off":
             state["inject_hdr_meta"] = False
             intents.add("static_off")
@@ -220,10 +222,10 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
             if hdr.master_display is None and hdr.max_cll is None:
                 raise _fail("static_hdr manual : master_display ou max_cll attendu")
             state["inject_hdr_meta"] = True
-            if hdr.master_display is not None:
-                state["master_display"] = hdr.master_display
+            if hdr.master_display is not None:  # valeur fournie : saisie explicite, même égale à celle de la source
+                state.update(master_display=hdr.master_display, static_hdr_master_display_manual=True)
             if hdr.max_cll is not None:
-                state["max_cll"] = hdr.max_cll
+                state.update(max_cll=hdr.max_cll, static_hdr_max_cll_manual=True)
         if hdr.estimate is not None:
             state.update(inject_hdr_meta=True, static_hdr_metadata_analysis_request=hdr.estimate,
                          static_hdr_metadata_analysis_mode="", static_hdr_metadata_source="",

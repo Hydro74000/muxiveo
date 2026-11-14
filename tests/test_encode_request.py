@@ -210,3 +210,44 @@ def test_manual_static_hdr_on_an_sdr_source_is_kept():
     inherited = _resolve({"video": {"default": {"codec": "libx265", "static_hdr": {"mode": "source"}}}},
                          HDRType.NONE).video[0]
     assert not inherited["inject_hdr_meta"]  # rien à recopier d'une source SDR
+
+
+def _job_with_source_cll(hdr: HDRType, transfer: str):
+    """Source non PQ portant seulement un MaxCLL hérité (1000,400)."""
+    remux, infos = _job(hdr)
+    video = infos[str(SRC)].video_tracks[0]
+    video.color_transfer = transfer
+    video.raw = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                     "max_average": 400}]}
+    infos[str(SRC)].mediainfo_json = None
+    return remux, infos
+
+
+@pytest.mark.parametrize("hdr, transfer", [(HDRType.NONE, "bt709"), (HDRType.HLG, "arib-std-b67")])
+def test_inherited_light_levels_on_a_non_pq_source_are_never_injected(hdr, transfer):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    remux, infos = _job_with_source_cll(hdr, transfer)
+    config = SimpleNamespace(work_dir=Path("/tmp/work"), aac_bitrate_per_channel_kbps=96,
+                             eac3_bitrate_per_channel_kbps=96)
+    block = EncodeBlock.from_dict({"video": {"default": {"codec": "libx265", "static_hdr": {"mode": "source"}}}})
+    resolved = resolve_encode(block, remux, infos=infos, config=config)
+    settings = resolved.config.video_tracks[0]
+    assert not settings.inject_hdr_meta
+    assert output_hdr_transfer(settings) == ("hlg" if hdr is HDRType.HLG else "")
+
+
+def test_explicit_manual_values_keep_their_provenance_field_by_field():
+    remux, infos = _job_with_source_cll(HDRType.NONE, "bt709")
+    config = SimpleNamespace(work_dir=Path("/tmp/work"), aac_bitrate_per_channel_kbps=96,
+                             eac3_bitrate_per_channel_kbps=96)
+
+    def resolve(static_hdr):
+        block = EncodeBlock.from_dict({"video": {"default": {"codec": "libx265", "static_hdr": static_hdr}}})
+        return resolve_encode(block, remux, infos=infos, config=config).config.video_tracks[0]
+
+    same = resolve({"mode": "manual", "max_cll": "1000,400"})  # explicite, même égal à la valeur de la source
+    assert same.inject_hdr_meta and same.max_cll == "1000,400"
+    assert same.static_hdr_light_level_source == "manual" and same.static_hdr_master_display_source == "source"
+    empty = resolve({"mode": "manual", "max_cll": "", "master_display": ""})  # explicite mais vide
+    assert not empty.inject_hdr_meta

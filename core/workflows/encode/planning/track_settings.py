@@ -46,6 +46,9 @@ PER_SOURCE_HDR_KEYS: tuple[str, ...] = (
     "static_hdr_metadata_analysis_mode",
     "static_hdr_metadata_analysis_request",
     "static_hdr_analysis_disabled_by_codec",
+    "static_hdr_manual",
+    "static_hdr_master_display_manual",
+    "static_hdr_max_cll_manual",
     "hdr_disabled_by_codec",
     "dynamic_hdr_disabled_by_codec",
     "tonemap_enabled_by_codec",
@@ -396,6 +399,31 @@ def restore_flags(state: Mapping[str, object]) -> tuple[bool, bool]:
     return (bool(flags[0]), bool(flags[1])) if isinstance(flags, (tuple, list)) and len(flags) == 2 else (False, False)
 
 
+#: Champs HDR10 statiques, leur valeur de la source et leur marqueur de saisie explicite.
+STATIC_HDR_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("master_display", "default_master_display", "static_hdr_master_display_manual"),
+    ("max_cll", "default_max_cll", "static_hdr_max_cll_manual"),
+)
+
+
+def static_hdr_field_manual(state: Mapping[str, object], field_name: str) -> bool:
+    """Valeur HDR10 saisie (marqueur explicite, ou différente de celle de la source) ; vide : jamais manuelle."""
+    for name, default_key, marker in STATIC_HDR_FIELDS:
+        if name == field_name:
+            value = str(state.get(name) or "").strip()
+            return bool(value) and (bool(state.get(marker)) or value != str(state.get(default_key) or "").strip())
+    raise KeyError(field_name)
+
+
+def static_hdr_values_manual(state: Mapping[str, object]) -> bool:
+    """HDR10 statique demandé explicitement avec au moins une valeur : valeur saisie, ou case cochée par
+    l'utilisateur (``static_hdr_manual``) avec une valeur non vide. Champs vides : jamais (aucun marquage HDR)."""
+    if any(static_hdr_field_manual(state, name) for name, _default, _marker in STATIC_HDR_FIELDS):
+        return True
+    return bool(state.get("static_hdr_manual")) and any(
+        str(state.get(name) or "").strip() for name, _default, _marker in STATIC_HDR_FIELDS)
+
+
 def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, codec: str,
                            source_transfer: str = "") -> None:
     """Politique HDR d'un codec sur un état de piste (règle du panneau Encodage au changement de codec).
@@ -435,8 +463,7 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
         return
     if state.get("hdr_disabled_by_codec"):
         state["inject_hdr_meta"], state["hdr_disabled_by_codec"] = True, False
-    manual = any(str(state.get(key) or "").strip() for key in ("master_display", "max_cll"))
-    if not source_has_static_hdr10(source_hdr, source_transfer) and not manual:
+    if not source_has_static_hdr10(source_hdr, source_transfer) and not static_hdr_values_manual(state):
         state["inject_hdr_meta"] = False
 
 
@@ -731,11 +758,8 @@ def video_settings_from_state(
         fel_device=str(state.get("fel_device") or "auto"),
         fel_precision=str(state.get("fel_precision") or "exact"),
         fel_hdr10plus=str(state.get("fel_hdr10plus") or "recompute"),
-        static_hdr_light_level_source=(
-            "source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
-        static_hdr_master_display_source=(
-            "source" if str(state.get("master_display") or "") == str(state.get("default_master_display") or "")
-            else "manual"),
+        static_hdr_light_level_source="manual" if static_hdr_field_manual(state, "max_cll") else "source",
+        static_hdr_master_display_source="manual" if static_hdr_field_manual(state, "master_display") else "source",
         static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
         static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),
         static_hdr_metadata_analysis_mode=str(state.get("static_hdr_metadata_analysis_mode") or ""),

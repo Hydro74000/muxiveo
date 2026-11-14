@@ -106,6 +106,7 @@ from core.workflows.encode.planning.track_settings import (
     source_has_static_hdr10,
     state_allows_copy_static_hdr_edit,
     state_target_codec,
+    static_hdr_field_manual,
     video_settings_from_state,
     video_source_bit_depth,
     video_source_pix_fmt,
@@ -293,6 +294,10 @@ class EncodePanel(QWidget):
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
+        #: Saisies HDR10 explicites de la piste affichée (``static_hdr_values_manual``) : case cochée par
+        #: l'utilisateur, champ Master Display / MaxCLL modifié à la main.
+        self._static_hdr_manual = False
+        self._static_hdr_field_manual: dict[str, bool] = {"master_display": False, "max_cll": False}
         #: « Appliquer à toutes » : HDR10 / Dolby Vision / HDR10+ voulus pour les pistes dont la source en porte
         #: (option absente : aucune intention connue). Tenu hors de l'état des pistes : une piste affichée dont la
         #: source n'a pas l'option ne la modifie pas.
@@ -1311,6 +1316,7 @@ class EncodePanel(QWidget):
         self._inject_hdr_cb = QCheckBox("Injecter les métadonnées HDR10 statiques (ST 2086 / MaxCLL)")
         self._inject_hdr_cb.setStyleSheet(_checkbox_style())
         self._inject_hdr_cb.stateChanged.connect(self._on_hdr_toggle)
+        self._inject_hdr_cb.clicked.connect(self._on_hdr_clicked)
         cl.addWidget(self._inject_hdr_cb)
 
         self._hdr_meta_widget = QWidget()
@@ -1361,6 +1367,9 @@ class EncodePanel(QWidget):
         hm_l.addWidget(self._hdr_meta_provenance)
         self._master_display.textChanged.connect(lambda _: self._sync_hdr_metadata_provenance())
         self._max_cll.textChanged.connect(lambda _: self._sync_hdr_metadata_provenance())
+        # Saisie de l'utilisateur (textEdited : jamais un remplissage programmatique) : valeur explicite.
+        self._master_display.textEdited.connect(lambda _: self._mark_static_hdr_field("master_display"))
+        self._max_cll.textEdited.connect(lambda _: self._mark_static_hdr_field("max_cll"))
 
         self._hdr_meta_widget.setVisible(False)
         cl.addWidget(self._hdr_meta_widget)
@@ -3507,8 +3516,18 @@ class EncodePanel(QWidget):
             if self._current_video_entry_id is not None
             else None
         ) or {}
+        self._static_hdr_field_manual = {"master_display": False, "max_cll": False}  # valeurs de la source
         self._master_display.setText(str(state.get("default_master_display") or ""))
         self._max_cll.setText(str(state.get("default_max_cll") or ""))
+        self._save_current_video_state()
+
+    def _on_hdr_clicked(self, checked: bool) -> None:
+        """Case HDR10 cochée ou décochée par l'utilisateur : injection explicite (``static_hdr_manual``)."""
+        self._static_hdr_manual = bool(checked)
+        self._save_current_video_state()
+
+    def _mark_static_hdr_field(self, name: str) -> None:
+        self._static_hdr_field_manual[name] = True
 
     def _sync_hdr_metadata_provenance(self) -> None:
         """Libellé de provenance des valeurs HDR10 statiques affichées (V25)."""
@@ -4853,6 +4872,9 @@ class EncodePanel(QWidget):
             "tonemap_enabled_by_codec": self._tonemap_enabled_by_codec,
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
+            "static_hdr_manual": self._static_hdr_manual,
+            "static_hdr_master_display_manual": self._static_hdr_field_manual["master_display"],
+            "static_hdr_max_cll_manual": self._static_hdr_field_manual["max_cll"],
             "default_master_display": str(prev.get("default_master_display") or ""),
             "default_max_cll": str(prev.get("default_max_cll") or ""),
             "static_hdr_metadata_source": str(prev.get("static_hdr_metadata_source") or ""),
@@ -5177,6 +5199,9 @@ class EncodePanel(QWidget):
             self._apply_denoise_settings(VideoFilterSettings.from_value(state.get("filters")),
                                          RestoreSettings.from_value(state.get("restoration")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
+            self._static_hdr_manual = bool(state.get("static_hdr_manual"))
+            self._static_hdr_field_manual = {"master_display": bool(state.get("static_hdr_master_display_manual")),
+                                             "max_cll": bool(state.get("static_hdr_max_cll_manual"))}
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
                 state,
@@ -5600,8 +5625,9 @@ class EncodePanel(QWidget):
             fel_device=self._fel_device_choice,
             fel_precision=self._fel_precision_choice,
             fel_hdr10plus=self._fel_hdr10plus_choice,
-            static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
-            static_hdr_master_display_source=("source" if str(current_state.get("master_display") or "") == str(current_state.get("default_master_display") or "") else "manual"),
+            static_hdr_light_level_source="manual" if static_hdr_field_manual(current_state, "max_cll") else "source",
+            static_hdr_master_display_source=(
+                "manual" if static_hdr_field_manual(current_state, "master_display") else "source"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(current_state.get("static_hdr_metadata_analysis_mode") or ""),
