@@ -2847,7 +2847,7 @@ def test_apply_all_explicitly_unchecked_hdr10_is_never_restored(qt_app, monkeypa
     path_sdr = Path("/tmp/film_sdr.mkv")
     panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
     try:
-        panel._inject_hdr_cb.setChecked(False)  # choix commun depuis la piste HDR10
+        panel._inject_hdr_cb.click()  # choix commun (décoché) depuis la piste HDR10
         panel._video_list.setCurrentRow(1)
         _select_codec(panel, "libx264")
         _select_codec(panel, "libx265")
@@ -2890,7 +2890,7 @@ def test_apply_all_editing_from_a_track_without_dv_keeps_dv_on_the_others(qt_app
             panel._video_list.setCurrentRow(0)
             assert panel._copy_dv_cb.isChecked() and panel._copy_hdr10plus_cb.isChecked()
         # Choix commun changé depuis la piste DV : suivi, même en revenant éditer depuis l'autre piste.
-        panel._copy_dv_cb.setChecked(False)
+        panel._copy_dv_cb.click()
         panel._video_list.setCurrentRow(1)
         panel._crf_spin.setValue(panel._crf_spin.value() + 1)
         settings = _settings_by_path(panel)
@@ -3083,5 +3083,89 @@ def test_apply_all_first_hdr_track_added_to_an_sdr_list_keeps_its_hdr(qt_app, mo
         settings = {v.source_path: v for v in panel.collect_config().video_tracks}
         assert settings[_PATH_A].codec == "libx265"
         assert settings[_PATH_A].inject_hdr_meta and settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+    finally:
+        panel.close()
+
+
+def test_apply_all_copy_imposed_boxes_never_become_the_common_intent(qt_app, monkeypatch):
+    """A DV+HDR10+ (options décochées), B SDR ; A en Copy, liste rafraîchie, B affichée : A garde ses options retirées."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        for box in (panel._inject_hdr_cb, panel._copy_dv_cb, panel._copy_hdr10plus_cb):
+            box.click()  # retirées par l'utilisateur
+        _select_codec(panel, "copy")
+        panel.set_video_tracks(list(panel._video_tracks))  # rafraîchissement de la liste
+        panel._video_list.setCurrentRow(1)
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        dv = {v.source_path: v for v in panel.collect_config().video_tracks}[_PATH_A]
+        assert dv.codec == "libx265" and not (dv.inject_hdr_meta or dv.copy_dv or dv.copy_hdr10plus)
+        # Copy → HEVC sur la piste affichée : ses cases suivent l'intention, pas les cases imposées par Copy.
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "copy")
+        _select_codec(panel, "libx265")
+        assert not (panel._inject_hdr_cb.isChecked() or panel._copy_dv_cb.isChecked()
+                    or panel._copy_hdr10plus_cb.isChecked())
+    finally:
+        panel.close()
+
+
+def test_apply_all_activation_takes_the_displayed_track_memory(qt_app, monkeypatch):
+    """A HDR10 décochée ; B HDR10 cochée puis H.264 ; mode global activé depuis B : HDR10 voulu sur les deux pistes."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_b = Path("/tmp/film_b_hdr10.mkv")
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    tracks = []
+    for index, path in enumerate((_PATH_A, path_b)):
+        video = _video_track(0, HDRType.HDR10)
+        video.color_transfer = "smpte2084"
+        entry = _video_entry(index)
+        entry.entry_id = f"t{index}"
+        tracks.append((_file_info(path, [video], hdr_type=HDRType.HDR10), entry, _COLOR))
+    panel.set_video_tracks(tracks)
+    try:
+        _select_codec(panel, "libx265")
+        panel._inject_hdr_cb.click()  # A : HDR10 retiré (mode piste par piste)
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        assert panel._inject_hdr_cb.isChecked()
+        _select_codec(panel, "libx264")  # B : HDR10 mémorisé par le codec sans HDR
+        panel._on_apply_all_video_toggled(True)
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].inject_hdr_meta and settings[path_b].inject_hdr_meta
+        # Désactivation puis réactivation depuis une piste en H.264 : sa mémoire fait encore foi.
+        panel._on_apply_all_video_toggled(False)
+        panel._inject_hdr_cb.click()  # A : retiré, mode piste par piste
+        _select_codec(panel, "libx264")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert not settings[_PATH_A].inject_hdr_meta and not settings[path_b].inject_hdr_meta
+    finally:
+        panel.close()
+
+
+def test_apply_all_intent_survives_list_changes_and_is_cleared_by_reset(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        hdr_track, sdr_track = panel._video_tracks
+        panel._inject_hdr_cb.click()  # intention commune : HDR10 retiré
+        panel.set_video_tracks([sdr_track])  # retrait de la dernière piste HDR10
+        panel.set_video_tracks([sdr_track, hdr_track])  # ajout ultérieur
+        assert not {v.source_path: v for v in panel.collect_config().video_tracks}[_PATH_A].inject_hdr_meta
+        other = _video_track(0, HDRType.HDR10)
+        other.color_transfer = "smpte2084"
+        entry = _video_entry(5)
+        entry.entry_id = "nouveau"
+        new_path = Path("/tmp/autre_film.mkv")
+        panel.set_video_tracks([(_file_info(new_path, [other], hdr_type=HDRType.HDR10), entry, _COLOR)])  # remplacées
+        assert not {v.source_path: v for v in panel.collect_config().video_tracks}[new_path].inject_hdr_meta
+        panel.reset()
+        assert panel._hdr_common_intent == {}
     finally:
         panel.close()

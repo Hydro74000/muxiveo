@@ -13,7 +13,7 @@ import json
 import re
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
@@ -893,6 +893,7 @@ class EncodePanel(QWidget):
         self._video_settings_by_entry_id.clear()
         self._static_hdr_estimate_prompted.clear()
         self._apply_all_video_cb.setChecked(False)
+        self._hdr_common_intent = {}
         self._apply_video_state(self._initial_video_state)
         self._update_passthrough_controls()
         self._profile_combo.setCurrentIndex(-1)
@@ -927,8 +928,7 @@ class EncodePanel(QWidget):
             )
         self._save_current_video_state()
         selected_entry_id = self._current_video_entry_id
-        self._video_tracks = tracks
-        self._hdr_common_intent = {}
+        self._video_tracks = tracks  # intention HDR commune conservée : paramètre du mode global
         self._sync_codec_item_availability()
         self._video_list.blockSignals(True)
         self._video_list.clear()
@@ -1386,6 +1386,7 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setStyleSheet(_checkbox_style())
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
+        self._copy_dv_cb.clicked.connect(lambda checked: self._on_hdr_option_clicked("copy_dv", checked))
         cl.addWidget(self._copy_dv_cb)
         # Conversion P8.1 : choix de l'utilisateur, affichage figé quand le traitement l'impose.
         self._dovi_profile_choice = "0"
@@ -1494,6 +1495,7 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
         self._copy_hdr10plus_cb.setEnabled(False)
         self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._on_hdr10plus_toggled())
+        self._copy_hdr10plus_cb.clicked.connect(lambda checked: self._on_hdr_option_clicked("copy_hdr10plus", checked))
         cl.addWidget(self._copy_hdr10plus_cb)
         # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
         self._fel_hdr10plus_choice = "recompute"
@@ -2707,6 +2709,7 @@ class EncodePanel(QWidget):
         self._update_bit_depth_control(codec)
         self._sync_hdr_metadata_field_editability(str(codec))
         self._update_passthrough_controls()
+        self._apply_hdr_intent_to_displayed()
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
 
@@ -2965,7 +2968,10 @@ class EncodePanel(QWidget):
 
     def _on_apply_all_video_toggled(self, checked: bool) -> None:
         self._video_apply_all = bool(checked)
-        self._hdr_common_intent = {}  # recalculée depuis les pistes à la propagation suivante
+        if checked:
+            self._initialize_hdr_intent()
+        else:
+            self._hdr_common_intent = {}
         if checked:
             self._propagate_current_video_state_to_all()
         else:
@@ -3530,6 +3536,7 @@ class EncodePanel(QWidget):
         """Case HDR10 cochée ou décochée par l'utilisateur : injection explicite (``static_hdr_manual``)."""
         self._static_hdr_manual = bool(checked)
         self._save_current_video_state()
+        self._on_hdr_option_clicked("inject_hdr_meta", checked)
 
     def _mark_static_hdr_field(self, name: str) -> None:
         self._static_hdr_field_manual[name] = True
@@ -4407,40 +4414,80 @@ class EncodePanel(QWidget):
             template = {**template, "hdr_common": intent}
         return propagate_state(template, own, self._source_context(info, track), self._encoder_environment())
 
-    def _update_hdr_intent(self, displayed: Mapping[str, object]) -> None:
-        """Intention HDR commune mise à jour depuis l'état de la piste **affichée** (avant sa propagation).
+    def _hdr_intent(self) -> dict[str, bool]:
+        """Intention HDR commune de « Appliquer à toutes » (``propagate_state``) ; vide hors mode global."""
+        return dict(self._hdr_common_intent) if self._video_apply_all else {}
 
-        Option par option, seulement si la source affichée la porte et que le codec la porte aussi (une case
-        décochée de force par le codec, ou sans objet pour cette source, ne compte pas).
+    def _initialize_hdr_intent(self) -> None:
+        """À l'activation du mode global : piste affichée d'abord, puis les autres, option par option.
+
+        Case de la piste si son codec porte l'option, sinon sa mémoire (piste affichée en H.264 : la mémoire
+        fait foi) ; seulement une piste dont la source porte l'option, jamais une piste en Copy (cases imposées).
         """
+        self._hdr_common_intent = {}
+        ordered = sorted(self._video_tracks, key=lambda item: self._video_entry_id(item[1]) != self._current_video_entry_id)
+        for info, track, _color in ordered:
+            entry_id = self._video_entry_id(track)
+            state = (self._current_video_state() if entry_id == self._current_video_entry_id
+                     else self._video_settings_by_entry_id.get(entry_id))
+            if not state or state_target_codec(state) == "copy":
+                continue
+            ctx = self._source_context(info, track)
+            codec = state_target_codec(state)
+            for option in HDR_COMMON_OPTIONS:
+                if option in self._hdr_common_intent or not hdr_option_in_source(option, ctx):
+                    continue
+                if hdr_option_carried(option, codec):
+                    self._hdr_common_intent[option] = bool(state.get(option))
+                else:
+                    memory = (state.get("hdr_disabled_by_codec") if option == "inject_hdr_meta"
+                              else restore_flags(state)[0 if option == "copy_dv" else 1])
+                    self._hdr_common_intent[option] = bool(memory)
+
+    def _on_hdr_option_clicked(self, option: str, checked: bool) -> None:
+        """Case HDR cliquée par l'utilisateur : seule action qui modifie l'intention commune (mode global)."""
         if not self._video_apply_all or self._loading_video_settings:
+            return
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if (current is not None and codec != "copy" and hdr_option_carried(option, codec)
+                and hdr_option_in_source(option, self._source_context(*current))):
+            self._hdr_common_intent[option] = bool(checked)
+            self._save_current_video_state()
+
+    def _apply_hdr_intent_to_displayed(self) -> None:
+        """Codec de la piste affichée changé (Copy → HEVC compris) : ses cases HDR suivent l'intention commune.
+
+        Les cases imposées par Copy ou rétablies d'une mémoire ne deviennent jamais l'intention.
+        """
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if not self._video_apply_all or self._loading_video_settings or codec == "copy":
             return
         current = next(((info, track) for info, track, _color in self._video_tracks
                         if self._video_entry_id(track) == self._current_video_entry_id), None)
         if current is None:
             return
         ctx = self._source_context(*current)
-        codec = state_target_codec(displayed)
-        for option in HDR_COMMON_OPTIONS:
-            if hdr_option_carried(option, codec) and hdr_option_in_source(option, ctx):
-                self._hdr_common_intent[option] = bool(displayed.get(option))
-
-    def _hdr_intent(self) -> dict[str, bool]:
-        """Intention HDR commune de « Appliquer à toutes » (``propagate_state``) : connue, sinon celle de la
-        première piste dont la source porte l'option ; vide hors mode global."""
-        if not self._video_apply_all:
-            return {}
-        for option in HDR_COMMON_OPTIONS:
-            if option in self._hdr_common_intent:
+        boxes = {"inject_hdr_meta": self._inject_hdr_cb, "copy_dv": self._copy_dv_cb,
+                 "copy_hdr10plus": self._copy_hdr10plus_cb}
+        restore_dv, restore_hdr10plus = self._dynamic_hdr_disabled_by_codec
+        changed = False
+        for option, intent in self._hdr_common_intent.items():
+            if not hdr_option_in_source(option, ctx) or not hdr_option_carried(option, codec):
                 continue
-            for info, track, _color in self._video_tracks:
-                stored = self._video_settings_by_entry_id.get(self._video_entry_id(track))
-                if stored is not None and hdr_option_in_source(option, self._source_context(info, track)):
-                    memory = (stored.get("hdr_disabled_by_codec") if option == "inject_hdr_meta"
-                              else restore_flags(stored)[0 if option == "copy_dv" else 1])
-                    self._hdr_common_intent[option] = bool(stored.get(option) or memory)
-                    break
-        return dict(self._hdr_common_intent)
+            if boxes[option].isChecked() != intent:
+                boxes[option].setChecked(intent)
+                changed = True
+            if option == "inject_hdr_meta":
+                self._hdr_disabled_by_codec = False
+            elif option == "copy_dv":
+                restore_dv = False
+            else:
+                restore_hdr10plus = False
+        self._dynamic_hdr_disabled_by_codec = (restore_dv, restore_hdr10plus)
+        if changed:
+            self._save_current_video_state()
 
     def _propagate_state_to_active_tracks(self, template: dict[str, object]) -> None:
         for info, track, _color in self._video_tracks:
@@ -4927,8 +4974,6 @@ class EncodePanel(QWidget):
         if state is None:
             state = self._current_video_state()
         if self._should_propagate_global_state(state):
-            if source_id == self._current_video_entry_id:
-                self._update_hdr_intent(state)
             self._propagate_state_to_active_tracks(state)
         self._emit_video_encoding_plans()
 
@@ -5151,7 +5196,6 @@ class EncodePanel(QWidget):
             self._sync_hdr_metadata_provenance()  # analyse déprogrammée ou reprise : libellé à jour
         # V43 : une seule règle de propagation (Copy reste propre à chaque source).
         if self._should_propagate_global_state(state):
-            self._update_hdr_intent(state)
             self._propagate_state_to_active_tracks(state)
         if analysis_cancelled:
             self.log_message.emit(
