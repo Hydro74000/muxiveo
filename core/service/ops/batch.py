@@ -185,18 +185,25 @@ class _Children:
         except ApiError as error:
             if not error.logged:
                 logger.emit("error", error.render())
-            self._stop(logger, cancelled=error.code is ErrorCode.CANCELLED)
+            self._stop(logger, cancelled=error.code is ErrorCode.CANCELLED or self.ctx.cancel.cancelled)
             return exit_code_for(error)
         except Exception as exc:
-            if error_code(exc) is not ErrorCode.CANCELLED:
+            if error_code(exc) is not ErrorCode.CANCELLED and not self.ctx.cancel.cancelled:
                 self._final(logger, JobState.FAILED)
+                raise
+            if error_code(exc) is not ErrorCode.CANCELLED:  # erreur après la levée du jeton : job annulé
+                self._final(logger, JobState.CANCELLED)
                 raise
             logger.emit("error", "Opération annulée.")
             self._stop(logger, cancelled=True)
             return EXIT_WORKFLOW
         except BaseException as exc:  # Ctrl+C non intercepté, arrêt d'une tâche
-            self._stop(logger, cancelled=error_code(exc) is ErrorCode.CANCELLED)
+            self._stop(logger, cancelled=error_code(exc) is ErrorCode.CANCELLED or self.ctx.cancel.cancelled)
             raise
+
+    def _failure_state(self) -> JobState:
+        """Issue non réussie d'un job : annulé si le jeton du lot est levé (règle du lot et de Hybrid), sinon échec."""
+        return JobState.CANCELLED if self.ctx.cancel.cancelled else JobState.FAILED
 
     def _stop(self, logger: Any, *, cancelled: bool) -> None:
         self._final(logger, JobState.CANCELLED if cancelled else JobState.FAILED)
@@ -215,7 +222,7 @@ class _Children:
                 logger.emit("error", error)
             if not errors:
                 logger.emit("info", wf.preview_command(remux_config), event="batch_preview")
-            self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
+            self._final(logger, JobState.SUCCEEDED if not errors else self._failure_state())
             return EXIT_OK if not errors else EXIT_VALIDATION
 
         return self._guarded(logger, step)
@@ -247,7 +254,7 @@ class _Children:
                 logger.emit("error", error)
             if not errors:
                 logger.emit("info", preview_encode(checked, wf, self.ctx.cancel.event), event="batch_preview")
-            self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
+            self._final(logger, JobState.SUCCEEDED if not errors else self._failure_state())
             return EXIT_OK if not errors else EXIT_VALIDATION
 
         return self._guarded(logger, step)
