@@ -725,7 +725,9 @@ def video_settings_from_state(
     tonemap = bool(state.get("tonemap_to_sdr"))
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(state, source_hdr=ctx.hdr_type, target_codec=codec)
     copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
-    inject_hdr_meta = bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec) and not tonemap
+    # Source sans HDR10 statique (SDR, HLG) : seulement une demande explicite avec valeur (jamais un héritage).
+    inject_hdr_meta = (bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec) and not tonemap
+                       and (source_has_static_hdr10(ctx.hdr_type, ctx.transfer) or static_hdr_values_manual(state)))
     master_display, max_cll = effective_static_hdr_fields(state, codec=codec) if inject_hdr_meta else ("", "")
     return VideoEncodeSettings(
         stream_index=int(stream_index),

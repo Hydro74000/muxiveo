@@ -3011,3 +3011,30 @@ def test_first_displayed_track_keeps_source_hdr10_values_classified_as_source(qt
         assert measures_light_levels(settings[_PATH_A])  # FEL : MaxCLL de la source remplacé par la mesure
     finally:
         panel.close()
+
+
+def test_programmatic_hdr10_on_an_sdr_track_is_never_injected_once_left(qt_app, monkeypatch):
+    """Case HDR10 cochée par le programme sur une piste SDR à MaxCLL hérité, piste quittée : pas d'injection."""
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    sdr_path = Path("/tmp/sdr_a.mkv")
+    hdr = _video_track(0, HDRType.HDR10)
+    hdr.color_transfer = "smpte2084"
+    entry = _video_entry(0)
+    entry.entry_id = "hdr"
+    panel.set_video_tracks([(_file_info(_PATH_A, [hdr], hdr_type=HDRType.HDR10), entry, _COLOR),
+                            _sdr_track_with_source_cll(1, sdr_path)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)
+        panel._inject_hdr_cb.setChecked(True)
+        panel._save_current_video_state()
+        for row in (1, 0):  # piste affichée, puis quittée
+            panel._video_list.setCurrentRow(row)
+            sdr = {v.source_path: v for v in panel.collect_config().video_tracks}[sdr_path]
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+    finally:
+        panel.close()
