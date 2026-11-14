@@ -2887,6 +2887,10 @@ class EncodePanel(QWidget):
     def _sync_hdr_metadata_field_editability(self, codec: str) -> None:
         if not hasattr(self, "_master_display") or not hasattr(self, "_max_cll"):
             return
+        if self._loading_video_settings:
+            # État en cours de restauration (cases DV / P8.1 pas encore toutes relues) : décidé une fois à la fin de
+            # ``_apply_video_state``, jamais sur un mélange avec la piste précédente (saisies remplacées sinon).
+            return
         codec_id = str(codec or "").strip().lower()
         editable = static_hdr_editable(self._displayed_hdr_edit_state(), codec_id)  # règle du cœur
         if not editable:
@@ -5339,6 +5343,8 @@ class EncodePanel(QWidget):
             self._apply_interpolation_settings(FrameInterpolationSettings.from_value(state.get("interpolation")))
             self._apply_denoise_settings(VideoFilterSettings.from_value(state.get("filters")),
                                          RestoreSettings.from_value(state.get("restoration")))
+            # Profil Dolby Vision avant les cases : leurs signaux lisent l'état complet de la piste.
+            self._dovi_profile_choice = NORMALIZE_P81 if str(state.get("dovi_profile") or "0").strip() == NORMALIZE_P81 else "0"
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             self._static_hdr_manual = bool(state.get("static_hdr_manual"))
             target_codec = str(state.get("codec") or "copy").strip().lower()
@@ -5356,7 +5362,6 @@ class EncodePanel(QWidget):
             self._max_cll.setText(cll_state)
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
-            self._dovi_profile_choice = NORMALIZE_P81 if str(state.get("dovi_profile") or "0").strip() == NORMALIZE_P81 else "0"
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:
