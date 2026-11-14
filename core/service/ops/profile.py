@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.jobs.encode import resolve_from_job
-from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import build_profile_remux_config, load_decision_profile, profile_summary
 from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
@@ -18,7 +18,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
-from core.service.ops.media import JobOptions, MediaRunResult
+from core.service.ops.media import JobOptions, MediaRunResult, encode_plan_payload
 
 
 @dataclass(frozen=True)
@@ -120,12 +120,11 @@ def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
 
 @operation("profile.preview", request=ProfilePreviewRequest, result=ProfilePreviewResult,
            summary="Appliquer un profil à des sources sans exécuter : pistes retenues, décisions, commandes.",
-           errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED))
+           uses_gpu=True, errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED))
 def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> ProfilePreviewResult:
     remux_config, report, options = _build(request, ctx, preview=True)
     resolved = _resolve(request, remux_config, options, ctx)
-    plan = None if resolved is None else {"pure_copy": resolved.pure_copy, "video": list(resolved.video),
-                                          "audio": list(resolved.audio), "warnings": list(resolved.warnings)}
+    plan = encode_plan_payload(resolved)
     base: dict[str, Any] = dict(
         profile_report=report,
         tracks=tuple(serialize_track_preview(track) for source in remux_config.sources for track in source.tracks),
@@ -133,12 +132,14 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
         encode=plan,
     )
     if resolved is not None and resolved.config is not None:
+        # Mêmes refus qu'au lancement (géométrie DV + NVENC comprise), plan d'après la configuration contrôlée.
         encode_wf = encode_workflow(ctx.config, options)
-        prepare_vulkan(encode_wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg))
-        errors = encode_wf.validate(resolved.config)
-        base.update(valid=not errors, errors=tuple(errors))
+        checked, errors = checked_encode(resolved.config, encode_wf, config=ctx.config, options=options,
+                                         accept_dovi_nvenc_crop=bool((request.encode or {}).get("accept_dovi_nvenc_crop")),
+                                         cancel_event=ctx.cancel.event)
+        base.update(valid=not errors, errors=tuple(errors), encode=encode_plan_payload(resolved, checked))
         if not errors and request.include_command:
-            base.update(command_text=preview_encode(resolved.config, encode_wf),
+            base.update(command_text=preview_encode(checked, encode_wf),
                         execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
                                    "preparation_commands": [], "native_diagnostics": []})
         return ProfilePreviewResult(**base)

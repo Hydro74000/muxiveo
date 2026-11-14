@@ -170,3 +170,16 @@ def call_cancellable(fn: Any, cancel: Any, *args: Any, context_param: str = "con
             else:
                 kwargs[context_param] = cancel.event
     return fn(*args, **kwargs)
+
+
+def call_supported(fn: Any, *args: Any, **optional: Any) -> Any:
+    """Appelle ``fn`` avec les seuls arguments nommés de ``optional`` qu'il accepte (étapes remplaçables)."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(*args)
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return fn(*args, **optional)
+    return fn(*args, **{key: value for key, value in optional.items() if key in parameters})

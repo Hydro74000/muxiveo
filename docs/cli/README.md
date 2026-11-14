@@ -786,7 +786,12 @@ sont copiées ; les variantes (`audio_variants`) gardent leur codec.
 la source sont conservés — `dolby_vision.mode: off` (ou `--dv off`), `static_hdr.mode: off` ou le
 tone mapping sur une piste copiée sont refusés (code 3) : il faut réencoder. Une copie Dolby
 Vision ou HDR10+ demandée mais impossible (source sans métadonnées, codec incompatible) donne un
-avertissement.
+avertissement. Source HDR vers un codec sans HDR (H.264…, par le codec ou par un preset) : sortie
+SDR par défaut, tone mapping coché d'office comme dans le panneau (`tonemap.enabled: false`, ou
+`--video-set tonemap.enabled=false`, l'empêche). Retour sur un codec HDR (preset suivant, piste,
+`video.default`) : ce tone mapping est retiré et les options HDR10, Dolby Vision et HDR10+
+décochées pour le codec sans HDR sont rétablies, sauf choix explicite du job (`static_hdr`,
+`dolby_vision`, `hdr10plus`).
 
 **Dolby Vision + NVENC** : quand l'alignement sur 32 lignes impose un recadrage, l'encodage est
 refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués) sauf

@@ -121,7 +121,7 @@ def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any
 def resolve_encode_paths(encode: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     """Bloc ``encode`` dont le preset désigné par un fichier relatif est résolu depuis ``base_dir``."""
     preset = encode.get("preset")
-    if isinstance(preset, str) and _is_file_reference(preset, base_dir):
+    if isinstance(preset, str) and preset_is_file(preset, base_dir):
         return dict(encode, preset=_resolve(preset, base_dir))
     return encode
 
@@ -143,11 +143,17 @@ def portable_encode_block(encode: Any) -> Any:
     return resolved
 
 
-def _is_file_reference(value: str, base_dir: Path) -> bool:
-    """Preset désigné par un fichier plutôt que par son nom."""
-    return (value.lower().endswith(".json") or "/" in value or "\\" in value
-            or (Path(base_dir) / value).is_file())
+def preset_is_file(value: str, base_dir: Path | None = None) -> bool:
+    """Preset désigné par un fichier (suffixe ``.json`` ou fichier présent) plutôt que par son nom.
+
+    Règle unique du chargeur (``core.jobs.encode.preset_loader``) et des documents : un nom
+    enregistré peut contenir ``/`` (``Film/4K``) sans devenir un chemin.
+    """
+    if value.lower().endswith(".json"):
+        return True
+    path = Path(value).expanduser()
+    return (path if path.is_absolute() or base_dir is None else Path(base_dir) / path).is_file()
 
 
-__all__ = ["JsonDocumentError", "parse_json_text", "portable_encode_block", "read_json_document",
-           "resolve_document_paths", "resolve_encode_paths"]
+__all__ = ["JsonDocumentError", "parse_json_text", "portable_encode_block", "preset_is_file",
+           "read_json_document", "resolve_document_paths", "resolve_encode_paths"]

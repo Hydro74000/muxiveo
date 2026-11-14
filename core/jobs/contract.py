@@ -109,9 +109,10 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
         return
     if "selector" in value:
         _validate_selector(errors, f"{path}.selector", value["selector"])
-    for key in ("source", "source_index", "id", "mkv_tid", "stream", "time_shift_ms"):
+    for key in ("source", "source_index", "id", "mkv_tid", "stream"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "integer", _is_int)
+    _validate_track_sync_fields(errors, path, value)
     if "remove_closed_captions" in value:
         _expect(errors, f"{path}.remove_closed_captions", value["remove_closed_captions"], "bool", _is_bool)
     if "enabled" in value:
@@ -119,20 +120,26 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
     for key in ("language", "title"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)
-    if value.get("sync_calibration") is not None:
-        from core.workflows.sync_calibration import SyncCalibration
-        try:
-            SyncCalibration.from_dict(value["sync_calibration"])
-        except (ValueError, TypeError) as exc:
-            errors.append(f"{path}.sync_calibration: {exc}")
-    if "sync_rewrite_mode" in value and value["sync_rewrite_mode"] not in SYNC_REWRITE_MODES:
-        errors.append(f"{path}.sync_rewrite_mode: attendu {SYNC_REWRITE_MODES}")
     if "flags" in value:
         _validate_flags(errors, f"{path}.flags", value["flags"])
     if "sync" in value:
         from core.jobs.source_sync import validate_sync_spec
 
         validate_sync_spec(errors, f"{path}.sync", value["sync"], track_level=True)
+
+
+def _validate_track_sync_fields(errors: list[str], path: str, value: dict[str, Any]) -> None:
+    """Décalage, calibration propre et mode de réécriture d'une piste ou d'une variante audio."""
+    if "time_shift_ms" in value:
+        _expect(errors, f"{path}.time_shift_ms", value["time_shift_ms"], "integer", _is_int)
+    if value.get("sync_calibration") is not None:
+        from core.workflows.sync_calibration import SyncCalibration
+        try:
+            SyncCalibration.from_dict(value["sync_calibration"])
+        except (ValueError, TypeError, KeyError) as exc:
+            errors.append(f"{path}.sync_calibration: {exc}")
+    if "sync_rewrite_mode" in value and value["sync_rewrite_mode"] not in SYNC_REWRITE_MODES:
+        errors.append(f"{path}.sync_rewrite_mode: attendu {SYNC_REWRITE_MODES}")
 
 
 def _validate_selector(errors: list[str], path: str, value: Any) -> None:
@@ -171,6 +178,7 @@ def _validate_audio_variant(errors: list[str], path: str, value: Any) -> None:
         _expect(errors, f"{path}.bitrate_kbps", value["bitrate_kbps"], "integer", _is_int)
     if "enabled" in value:
         _expect(errors, f"{path}.enabled", value["enabled"], "bool", _is_bool)
+    _validate_track_sync_fields(errors, path, value)
     if "flags" in value:
         _validate_flags(errors, f"{path}.flags", value["flags"])
 

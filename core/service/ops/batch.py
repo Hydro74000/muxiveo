@@ -15,7 +15,7 @@ from core.jobs.batch import BatchOutcome, BatchSteps, discover_direct_batch_jobs
 from core.jobs.constants import EXIT_OK, EXIT_VALIDATION
 from core.jobs.errors import exit_code_for
 from core.jobs.encode import resolve_from_job
-from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import ProfileBatchSteps, build_profile_remux_config, load_decision_profile, run_profile_batch
 from core.jobs.remux_config import build_remux_config
@@ -189,10 +189,13 @@ class _Children:
                                     cancel_event=self.ctx.cancel.event)
         return None if resolved is None else resolved.config
 
-    def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any) -> int:
+    def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *,
+                       accept_dovi_nvenc_crop: bool = False) -> int:
+        """Aperçu avec les refus du lancement (géométrie DV + NVENC comprise)."""
         wf = encode_workflow(config, options)
-        prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
-        errors = wf.validate(encode_config)
+        encode_config, errors = checked_encode(encode_config, wf, config=config, options=options,
+                                               accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
+                                               cancel_event=self.ctx.cancel.event)
         for error in errors:
             logger.emit("error", error)
         if not errors:

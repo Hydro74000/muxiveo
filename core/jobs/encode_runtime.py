@@ -6,6 +6,8 @@ interactive : le recadrage imposé par Dolby Vision + NVENC n'est appliqué que 
 
 from __future__ import annotations
 
+import threading
+
 import dataclasses
 from collections.abc import Callable
 from typing import Any
@@ -60,7 +62,7 @@ def prepare_vulkan(wf: EncodeWorkflow, encode_config: EncodeConfig, ffmpeg: str)
 
 
 def align_dovi_nvenc(encode_config: EncodeConfig, wf: EncodeWorkflow, *, accept: bool,
-                     logger: JobLogger | None = None) -> EncodeConfig:
+                     logger: JobLogger | None = None, cancel_event: threading.Event | None = None) -> EncodeConfig:
     """Géométrie Dolby Vision + NVENC (blocs de 32 lignes) : recadrage aligné appliqué si accepté, sinon refus."""
     from core.workflows.encode.runtime.dovi_geometry import align_nvenc_dovi_geometry
     from core.workflows.encode.catalog import is_nvenc_hevc
@@ -71,14 +73,12 @@ def align_dovi_nvenc(encode_config: EncodeConfig, wf: EncodeWorkflow, *, accept:
         if not is_nvenc_hevc(video.codec) or not video.copy_dv:
             tracks.append(video)
             continue
-        dimensions = _dimensions(wf, video, encode_config)
+        dimensions = _dimensions(wf, video, encode_config, cancel_event)
         if dimensions is None:
             tracks.append(video)
             continue
-        try:
-            l5 = wf._probe_dovi_l5_offsets(video.source_path or encode_config.source, stream_index=video.stream_index)
-        except Exception:  # noqa: BLE001 - sonde facultative (comme le panneau)
-            l5 = None
+        l5 = wf._probe_dovi_l5_offsets(video.source_path or encode_config.source, stream_index=video.stream_index,
+                                       cancel_event=cancel_event)  # facultative : None si indisponible
         result = align_nvenc_dovi_geometry(video, dimensions, l5_offsets=l5)
         required = result.video.crop
         current = video.crop
@@ -107,12 +107,15 @@ def align_dovi_nvenc(encode_config: EncodeConfig, wf: EncodeWorkflow, *, accept:
     return dataclasses.replace(encode_config, video=tracks[0], video_tracks=tracks)
 
 
-def _dimensions(wf: EncodeWorkflow, video: VideoEncodeSettings, config: EncodeConfig) -> tuple[int, int] | None:
-    from core.inspector import FileInspector
+def _dimensions(wf: EncodeWorkflow, video: VideoEncodeSettings, config: EncodeConfig,
+                cancel_event: threading.Event | None = None) -> tuple[int, int] | None:
+    from core.inspector import FileInspector, InspectionCancelled
 
     try:
-        info = FileInspector(ffprobe_bin=wf._ffprobe_bin_from_ffmpeg(wf._ffmpeg)).inspect(
+        info = FileInspector(ffprobe_bin=wf._ffprobe_bin_from_ffmpeg(wf._ffmpeg), cancel_event=cancel_event).inspect(
             video.source_path or config.source)
+    except InspectionCancelled:
+        raise
     except Exception:  # noqa: BLE001
         return None
     track = next((v for v in info.video_tracks if v.index == video.stream_index), info.primary_video)
@@ -122,12 +125,16 @@ def _dimensions(wf: EncodeWorkflow, video: VideoEncodeSettings, config: EncodeCo
 
 
 def checked_encode(encode_config: EncodeConfig, wf: EncodeWorkflow, *, config: Any, options: CommonOptions,
-                   accept_dovi_nvenc_crop: bool = False,
-                   logger: JobLogger | None = None) -> tuple[EncodeConfig, list[str]]:
-    """Configuration effective (géométrie DV NVENC) et refus du workflow, comme au lancement de :func:`run_encode`."""
+                   accept_dovi_nvenc_crop: bool = False, logger: JobLogger | None = None,
+                   cancel_event: threading.Event | None = None) -> tuple[EncodeConfig, list[str]]:
+    """Configuration effective (géométrie DV NVENC) et refus du workflow, comme au lancement de :func:`run_encode`.
+
+    ``cancel_event`` : inspection et sonde L5 annulables (l'annulation remonte, jamais un refus).
+    """
     prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
     try:
-        encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger)
+        encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
+                                         cancel_event=cancel_event)
     except JobError as exc:
         return encode_config, [exc.message]
     return encode_config, list(wf.validate(encode_config))
@@ -154,7 +161,8 @@ def run_encode(
     wf = workflow_factory() if workflow_factory is not None else encode_workflow(config, options)
     wf.log_message.connect(lambda level, message: logger.emit(level, message))
     prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
-    encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger)
+    encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
+                                     cancel_event=cancel.event)
     errors = wf.validate(encode_config)
     if errors:
         raise JobError("Encodage refusé :\n" + "\n".join(f"- {error}" for error in errors), EXIT_VALIDATION)

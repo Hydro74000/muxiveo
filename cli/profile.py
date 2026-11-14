@@ -15,7 +15,7 @@ from core.jobs.profile import (  # fonctions de construction partagées (core.jo
     run_profile_batch,
     snapshot_decision_profile as snapshot_decision_profile,
 )
-from core.jobs.options import call_cancellable
+from core.jobs.options import call_cancellable, call_supported
 from core.service.context import CancelToken
 from core.service.errors import ApiError
 from core.service.ops.media import JobOptions
@@ -178,8 +178,10 @@ def cli_profile_batch_steps(cancel: CancelToken | None = None) -> ProfileBatchSt
         encode=lambda job, remux_config, config, options, logger: call_cancellable(
             resolve_job_encode_config, cancel, job, remux_config, config, options, logger,
             context_param="cancel_event"),
-        preview_encode=lambda config, options, logger, encode_config: preview_encode_config(
-            config, options, logger, encode_config),
+        preview_encode=lambda config, options, logger, encode_config, *, accept_dovi_nvenc_crop=False: (
+            call_supported(preview_encode_config, config, options, logger, encode_config,
+                           accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
+                           cancel_event=cancel.event if cancel is not None else None)),
         run_encode=lambda config, options, logger, encode_config, *, force, accept_dovi_nvenc_crop: run_encode_config(
             config, options, logger, encode_config, force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop),
     )

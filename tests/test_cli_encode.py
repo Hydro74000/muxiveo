@@ -116,7 +116,7 @@ def test_run_encode_failure_and_cancel_are_logged_once(qapp, tmp_path):
 
 def test_dovi_nvenc_crop_requires_acceptance(tmp_path, monkeypatch):
     required = VideoCropSettings(enabled=True, unit="px", top=8, bottom=8)
-    monkeypatch.setattr(encode_runtime, "_dimensions", lambda wf, video, config: (3840, 2160))
+    monkeypatch.setattr(encode_runtime, "_dimensions", lambda wf, video, config, cancel_event=None: (3840, 2160))
     monkeypatch.setattr("core.workflows.encode.runtime.dovi_geometry.align_nvenc_dovi_geometry",
                         lambda video, dims, l5_offsets=None: SimpleNamespace(
                             video=dataclasses.replace(video, crop=required), full_frame_crop=True,

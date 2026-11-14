@@ -17,7 +17,7 @@ from core.jobs.batch import (  # noqa: F401 - réexports historiques (découvert
     write_batch_summary,
 )
 from core.jobs.batch import run_batch as _run_batch
-from core.jobs.options import call_cancellable
+from core.jobs.options import call_cancellable, call_supported
 from core.service.context import CancelToken
 
 from cli.interrupts import interrupt_guard
@@ -47,8 +47,10 @@ def cli_batch_steps(cancel: CancelToken | None = None) -> BatchSteps:
         encode=lambda job, remux_config, config, options, logger: call_cancellable(
             resolve_job_encode_config, cancel, job, remux_config, config, options, logger,
             context_param="cancel_event"),
-        preview_encode=lambda config, options, logger, encode_config: preview_encode_config(
-            config, options, logger, encode_config),
+        preview_encode=lambda config, options, logger, encode_config, *, accept_dovi_nvenc_crop=False: (
+            call_supported(preview_encode_config, config, options, logger, encode_config,
+                           accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
+                           cancel_event=cancel.event if cancel is not None else None)),
         run_encode=lambda config, options, logger, encode_config, *, force, accept_dovi_nvenc_crop: run_encode_config(
             config, options, logger, encode_config, force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop),
     )

@@ -171,8 +171,13 @@ def _parse_model(cls: type, data: Any, path: str, state: _Parse) -> Any:
         for child, message in issues(values):
             (state.errors if state.strict_documents else state.warnings).append(
                 ErrorDetail(_join(path, child), message))
-        if len(state.errors) > errors_before:
-            return None
+    contract = getattr(cls, "document_errors", None)
+    if contract is not None and state.strict_documents:
+        # Requête API : valeurs des documents refusées dès la lecture (documents CLI : refus du contrat, inchangé).
+        for child, message in contract(values):
+            state.fail(_join(path, child), message)
+    if len(state.errors) > errors_before:
+        return None
     resolve = getattr(cls, "resolve_relative_paths", None)
     if resolve is not None and state.base_dir is not None and not state.allow_relative:
         values = resolve(values, state.base_dir)

@@ -69,10 +69,10 @@ def test_plan_export_and_recipe(season, tmp_path):
     assert {(t["source"], t["type"]) for t in tracks} == {(0, "video"), (0, "audio"), (1, "audio"), (1, "subtitle")}
     assert all(t["time_shift_ms"] == -300 for t in tracks if t["source"] == 1)
     assert len(list((tmp_path / "jobs").glob("*.exact-job.json"))) == 2
-    from core.jobs.schema import unknown_job_keys
+    from core.service.ops.media import MediaJobRequest
 
-    for exported in (tmp_path / "jobs").glob("*.exact-job.json"):  # exact-jobs exportés : conformes au contrat
-        assert unknown_job_keys(json.loads(exported.read_text(encoding="utf-8"))) == []
+    for exported in (tmp_path / "jobs").glob("*.exact-job.json"):  # exact-jobs exportés : requête stricte acceptée
+        assert MediaJobRequest.parse({"job": json.loads(exported.read_text(encoding="utf-8"))})[1] == ()
     recipe = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     assert recipe["format"] == "muxiveo-hybrid-recipe" and recipe["sync_strategy"] == "manual"
     # Recette relue : mêmes choix ; --matching order et paires manuelles donnent le même appariement.

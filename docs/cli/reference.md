@@ -2688,15 +2688,15 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `encode_preset.show` | Contenu d'un preset d'encodage. | — |
 | `hdr.inspect` | Inspection HDR : en-têtes, RPU / HDR10+, mesure de l'image, comparaison, FEL Analyzer, rapport. | longue, écrit, GPU |
 | `hdr.patch` | Corriger les métadonnées HDR sans réencodage : MaxCLL/MaxFALL, MDCV, RPU (L6, L5, L11, écran, CM v4.0), HDR10+ (retrait, TSDML, profil A, plafond, recalcul), réalignement d'après la mesure. | longue, écrit, GPU |
-| `hybrid.plan` | Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; exact-jobs finalisés et recette effective en option. | longue, écrit |
+| `hybrid.plan` | Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; exact-jobs finalisés et recette effective en option. | longue, écrit, GPU |
 | `hybrid.run` | Hybrider une paire ou une saison (moteur du Hybrid Studio) : vidéo du master, audio / sous-titres des donneurs calés ; encodage par épisode avec le bloc `encode`. | longue, écrit, GPU |
 | `media.batch` | Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance. | longue, écrit, GPU |
 | `media.bluray_titles` | Lister les titres (playlists) d'un Blu-ray avant sélection, du plus long au plus court : durée, segments, flux, taille. | — |
 | `media.extract` | Extraire des pistes (flux élémentaire ou Matroska), couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes. | longue, écrit |
 | `media.inspect` | Inspecter des sources : pistes, HDR, chapitres, pièces jointes ; ou générer un exact-job minimal. | — |
-| `media.preview` | Résoudre un job de remux et afficher les commandes prévues. | — |
+| `media.preview` | Résoudre un job de remux ou d'encodage et afficher les commandes prévues. | GPU |
 | `media.run` | Exécuter un job de remux ou d'encodage (ou enregistrer son job exact). | longue, écrit, GPU |
-| `media.validate` | Résoudre et valider un job de remux sans l'exécuter. | — |
+| `media.validate` | Résoudre et valider un job de remux ou d'encodage sans l'exécuter. | GPU |
 | `nvencc.install` | Installer ou mettre à jour NVEncC (paquet apt/dnf, sinon dossier utilisateur). | longue, écrit |
 | `nvencc.remove` | Supprimer la copie utilisateur de NVEncC (un paquet système se retire par apt / dnf). | écrit |
 | `nvencc.status` | NVEncC : présence, version, provenance, méthode d'installation, mise à jour disponible. | — |
@@ -2709,7 +2709,7 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `profile.capture` | Capturer un profil décisionnel d'après un job (sélection, métadonnées, flags, ordre, variantes). | longue, écrit |
 | `profile.delete` | Supprimer un profil décisionnel enregistré. | écrit |
 | `profile.list` | Profils décisionnels enregistrés (communs avec l'interface). | — |
-| `profile.preview` | Appliquer un profil à des sources sans exécuter : pistes retenues, décisions, commandes. | — |
+| `profile.preview` | Appliquer un profil à des sources sans exécuter : pistes retenues, décisions, commandes. | GPU |
 | `profile.save` | Enregistrer un profil décisionnel (validé) parmi les profils de l'interface. | écrit |
 | `profile.show` | Contenu d'un profil décisionnel enregistré. | — |
 | `profile.validate` | Valider un profil décisionnel v1. | — |

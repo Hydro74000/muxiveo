@@ -29,7 +29,7 @@ from core.jobs.inspection import source_path_items
 from core.jobs.loader import apply_metadata_overrides
 from core.jobs.json_io import deep_merge, load_job_document, load_json, write_json
 from core.jobs.logging import JobLogger as Logger
-from core.jobs.options import CommonOptions
+from core.jobs.options import call_supported, CommonOptions
 from core.service.context import CancelToken
 from core.workflows.remux_models import RemuxConfig
 
@@ -69,8 +69,9 @@ def execute_job(steps: BatchSteps, entry: PlannedBatchJob, config: AppConfig, op
                 logger: Logger, *, dry_run: bool, force: bool) -> int:
     """Aperçu ou exécution d'un job planifié (encodage ou remux)."""
     if entry.encode_config is not None and steps.run_encode is not None and steps.preview_encode is not None:
-        if dry_run:
-            return steps.preview_encode(config, options, logger, entry.encode_config)
+        if dry_run:  # même contrôle qu'au lancement (géométrie DV + NVENC acceptée ou non)
+            return call_supported(steps.preview_encode, config, options, logger, entry.encode_config,
+                                  accept_dovi_nvenc_crop=entry.accept_dovi_nvenc_crop)
         return steps.run_encode(config, options, logger, entry.encode_config, force=force,
                                 accept_dovi_nvenc_crop=entry.accept_dovi_nvenc_crop)
     if dry_run:

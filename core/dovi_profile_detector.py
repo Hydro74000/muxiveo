@@ -48,7 +48,7 @@ from enum import Enum
 from pathlib import Path
 
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import ProbeCancelledError, subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe, subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
 
@@ -122,6 +122,19 @@ class DoviDetectionResult:
     l5_offsets: tuple[int, int, int, int] | None = None  # (top, bottom, left, right)
     #: Type de couche annoncé par ``dovi_tool info`` (« Profile: 7 (FEL) ») ; None s'il est seulement déduit.
     el_type: str | None = None
+
+
+def _probe_run(command: list[str], *, timeout: float,
+               cancel_event: threading.Event | None) -> subprocess.CompletedProcess:
+    """Sonde bornée, code de retour vérifié ; avec ``cancel_event`` : processus tués dès l'annulation."""
+    if cancel_event is None:
+        # Outils locaux configurés, argv séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(command, capture_output=True, check=True, timeout=timeout,  # nosec B603
+                              **subprocess_text_kwargs())
+    result = run_probe(command, timeout=timeout, cancel_event=cancel_event)
+    result.check_returncode()
+    return result
 
 
 class DoviProfileDetector:
@@ -424,23 +437,16 @@ class DoviProfileDetector:
                     # Input seeking uses the container index. Stream copy reads a
                     # small GOP fragment, without decoding/scanning the whole film.
                     # Configured local tools, separate argv, no shell expansion.
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    subprocess.run(  # nosec B603
+                    _probe_run(
                         [self._ffmpeg, "-nostdin", "-v", "error", "-y", "-ss", f"{position:.3f}",
                          "-i", str(source_path), "-map", f"0:{stream_index}", "-c:v", "copy",
                          "-frames:v", "12", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(hevc)],
-                        capture_output=True, check=True, timeout=20, **subprocess_text_kwargs(),
+                        timeout=20, cancel_event=cancel_event,
                     )
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    subprocess.run(  # nosec B603  # même contrat argv sans shell
-                        [self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
-                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
-                    )
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    result = subprocess.run(  # nosec B603  # même contrat argv sans shell
-                        [self._dovi_tool, "info", "-i", str(rpu), "--summary"],
-                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
-                    )
+                    _probe_run([self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
+                               timeout=10, cancel_event=cancel_event)
+                    result = _probe_run([self._dovi_tool, "info", "-i", str(rpu), "--summary"],
+                                        timeout=10, cancel_event=cancel_event)
                     offsets = self.parse_dovi_tool_output(result.stdout).l5_offsets
                     if offsets is None:
                         return None

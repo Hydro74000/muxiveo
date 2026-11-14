@@ -78,6 +78,8 @@ def await_task(
     waker.setInterval(_WAKE_MS)
     waker.timeout.connect(lambda: None)
 
+    cleanup: list[threading.Thread] = []
+
     def finish(value: TaskOutcome) -> None:
         outcome["value"] = value
 
@@ -87,7 +89,9 @@ def await_task(
             finally:
                 cleaned.done.emit()
 
-        threading.Thread(target=wait_workers, name="muxiveo-task-cleanup", daemon=True).start()
+        thread = threading.Thread(target=wait_workers, name="muxiveo-task-cleanup", daemon=True)
+        cleanup.append(thread)
+        thread.start()
 
     _connect(signals, finish, direct=False)
     waker.start()
@@ -95,6 +99,10 @@ def await_task(
         loop.exec()
     finally:
         waker.stop()
+        # Émission de `done` terminée avant la destruction de `cleaned` (sinon accès concurrent à un
+        # QObject détruit : plantage à la sortie de l'attente).
+        for thread in cleanup:
+            thread.join()
         # Slots postés après la fin (nettoyage du dossier de travail…) : traités avant le retour.
         QCoreApplication.sendPostedEvents()
         QCoreApplication.processEvents()

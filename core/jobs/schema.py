@@ -38,6 +38,7 @@ def _selector_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "codec": {"type": "string"},
             "codecs": {"type": "array", "items": {"type": "string"}},
             "language": {"type": "string"},
+            "lang": {"type": "string", "description": "Alias de language."},
             "languages": {"type": "array", "items": {"type": "string"}},
             "channels": {"type": "string"},
             "atmos": {"type": "boolean"},

@@ -391,10 +391,12 @@ def effective_dynamic_hdr_flags(state: Mapping[str, object], *, source_hdr: HDRT
 
 def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, codec: str,
                            source_transfer: str = "") -> None:
-    """Politique HDR d'un codec sur un état de piste.
+    """Politique HDR d'un codec sur un état de piste (règle du panneau Encodage au changement de codec).
 
     - copy        : HDR source recopié tel quel (cases calquées sur la source).
-    - codec SDR   : aucune option HDR (H.264…).
+    - codec SDR   : aucune option HDR (H.264…) ; les options décochées pour ce codec sont mémorisées
+      (``hdr_disabled_by_codec``, ``dynamic_hdr_disabled_by_codec``) puis rétablies au retour sur un
+      codec qui les porte (HDR10, Dolby Vision, HDR10+ indépendamment).
     - source sans HDR10 statique : pas d'injection HDR10 héritée d'une autre piste.
     """
     if codec == "copy":
@@ -402,13 +404,31 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
         state["copy_dv"] = source_has_dv(source_hdr)
         state["copy_hdr10plus"] = source_has_hdr10plus(source_hdr)
         state["tonemap_to_sdr"] = False
+        state["hdr_disabled_by_codec"] = False
+        state["dynamic_hdr_disabled_by_codec"] = (False, False)
         return
+    has_dv, has_hdr10plus = source_has_dv(source_hdr), source_has_hdr10plus(source_hdr)
+    dv_ok, hdr10plus_ok = has_dv and is_dovi_codec(codec), has_hdr10plus and is_hdr10plus_codec(codec)
+    flags = state.get("dynamic_hdr_disabled_by_codec")
+    restore_dv, restore_hdr10plus = ((bool(flags[0]), bool(flags[1])) if isinstance(flags, (tuple, list))
+                                     and len(flags) == 2 else (False, False))
+    restore_dv = restore_dv or (has_dv and not dv_ok and bool(state.get("copy_dv")))
+    restore_hdr10plus = restore_hdr10plus or (has_hdr10plus and not hdr10plus_ok and bool(state.get("copy_hdr10plus")))
+    if dv_ok and restore_dv:
+        state["copy_dv"], restore_dv = True, False
+    if hdr10plus_ok and restore_hdr10plus:
+        state["copy_hdr10plus"], restore_hdr10plus = True, False
+    state["dynamic_hdr_disabled_by_codec"] = (restore_dv, restore_hdr10plus)
     if not supports_hdr_output(codec):
+        if state.get("inject_hdr_meta"):
+            state["hdr_disabled_by_codec"] = True
         state["inject_hdr_meta"] = False
         state["copy_dv"] = False
         state["copy_hdr10plus"] = False
         state["static_hdr_metadata_analysis_request"] = ""
         return
+    if state.get("hdr_disabled_by_codec"):
+        state["inject_hdr_meta"], state["hdr_disabled_by_codec"] = True, False
     if not source_has_static_hdr10(source_hdr, source_transfer):
         state["inject_hdr_meta"] = False
 

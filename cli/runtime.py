@@ -8,7 +8,7 @@ from core.config import AppConfig
 from core.jobs.errors import exit_code_for
 from core.jobs.logging import JobLogger
 from core.jobs.encode import resolve_from_job
-from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
 from core.service.context import CancelToken
 from core.service.errors import ApiError
@@ -76,10 +76,12 @@ def resolve_job_encode_config(job: dict, remux_config: RemuxConfig, config: AppC
     return None if resolved is None else resolved.config
 
 
-def preview_encode_config(config: AppConfig, options: CommonOptions, logger: JobLogger, encode_config) -> int:
+def preview_encode_config(config: AppConfig, options: CommonOptions, logger: JobLogger, encode_config, *,
+                          accept_dovi_nvenc_crop: bool = False, cancel_event: threading.Event | None = None) -> int:
+    """Aperçu d'un encodage avec les refus du lancement (géométrie DV + NVENC comprise)."""
     wf = encode_workflow(config, options)
-    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
-    errors = wf.validate(encode_config)
+    encode_config, errors = checked_encode(encode_config, wf, config=config, options=options,
+                                           accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, cancel_event=cancel_event)
     if errors:
         for error in errors:
             logger.emit("error", error)

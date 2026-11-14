@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fractions import Fraction
@@ -4942,8 +4943,11 @@ class EncodeWorkflow(QObject):
             libplacebo_ready=self._nvencc_libplacebo_ready,
         )
 
-    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:
+    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0,
+                               cancel_event: threading.Event | None = None) -> tuple[int, int, int, int] | None:
+        """Bandes L5 du RPU (sonde facultative : ``None`` si indisponible ; l'annulation remonte)."""
         from core.dovi_profile_detector import DoviProfileDetector
+        from core.subprocess_utils import ProbeCancelledError
 
         dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
         try:
@@ -4954,7 +4958,10 @@ class EncodeWorkflow(QObject):
                     ffprobe_bin=self._ffprobe_path(),
                 )
                 self._dovi_geometry_detector_key = key
-            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)
+            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index,
+                                                                 cancel_event=cancel_event)
+        except ProbeCancelledError:
+            raise
         except Exception:
             return None
 

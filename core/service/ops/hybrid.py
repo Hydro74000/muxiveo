@@ -191,6 +191,7 @@ def _prepare(request: HybridRequest, ctx: ExecutionContext) -> tuple[StudioSpec,
             "exact-jobs finalisés et recette effective en option.",
     long_running=True,
     mutating=True,
+    uses_gpu=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED,
             ErrorCode.CANCELLED),
 )
@@ -208,6 +209,7 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
         logger = EmitterLogger(ctx.events)
         accept = bool(request.encode.get("accept_dovi_nvenc_crop"))
         for item, entry in zip(prepared, episodes):
+            ctx.cancel.raise_if_cancelled()
             if item.remux_config is None:
                 continue
             try:
@@ -215,9 +217,12 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
                                             options=spec.common, logger=logger, report_unknown=False,
                                             cancel_event=ctx.cancel.event)
                 checked, errors = (checked_encode(resolved.config, encode_workflow(ctx.config, spec.common),
-                                                  config=ctx.config, options=spec.common, accept_dovi_nvenc_crop=accept)
+                                                  config=ctx.config, options=spec.common, accept_dovi_nvenc_crop=accept,
+                                                  cancel_event=ctx.cancel.event)
                                    if resolved is not None and resolved.config is not None else (None, []))
             except ApiError as error:
+                if error.code is ErrorCode.CANCELLED:
+                    raise
                 errors, checked, resolved = [error.render()], None, None
             if errors:
                 entry["error"] = "Encodage refusé : " + " ; ".join(errors)
@@ -226,6 +231,7 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
                 continue
             if resolved is not None:
                 entry["encode"] = encode_plan_payload(resolved, checked)
+    ctx.cancel.raise_if_cancelled()  # annulation pendant la validation de l'encodage : aucun export
     exported: list[Path] = []
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)

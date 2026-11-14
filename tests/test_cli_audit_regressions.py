@@ -381,6 +381,10 @@ def test_catalog_flags_match_what_operations_do():
         assert flags[name].mutating, name
     for name in ("media.run", "media.batch", "profile.apply", "profile.batch", "hybrid.run"):
         assert flags[name].uses_gpu, name
+    for spec in CATALOG:  # sonde GPU (filtres Vulkan) par la validation de l'encodage
+        source = inspect.getsource(spec.handler)
+        if "checked_encode(" in source or "prepare_vulkan(" in source:
+            assert spec.uses_gpu, f"{spec.name} sonde le GPU : uses_gpu attendu"
     assert "artifact" in flags["hybrid.plan"].describe()["events"]
 
 
@@ -511,7 +515,7 @@ def test_real_exact_job_exports_pass_the_strict_contract(tmp_path):
     video = TrackEntry(0, "video", "HEVC", "2160p", "und", "", entry_id="v0", file_id="f0",
                        remove_closed_captions=True)
     audio = TrackEntry(1, "audio", "TRUEHD", "7.1", "eng", "VO", entry_id="a0", file_id="f0", time_shift_ms=40,
-                       sync_rewrite_mode="exact")
+                       sync_rewrite_mode="offset")
     variant = dataclasses.replace(clone_track_entry(audio, entry_id="var1"), codec="eac3",
                                   display_info="E-AC-3 640 kbps", time_shift_ms=40)
     donor_sub = TrackEntry(0, "subtitle", "SRT", "", "fre", "", entry_id="s1", file_id="f1",
@@ -578,3 +582,194 @@ def test_published_plan_follows_the_checked_dovi_nvenc_crop(monkeypatch):
     monkeypatch.setattr(media_ops, "serialize_remux_config", lambda config: {})
     result = media_ops.media_validate.handler(media_ops.MediaJobRequest.from_dict({"job": {"version": 1}}), _ctx())
     assert result.valid and result.encode["video"][0]["crop"]["top"] == 8
+
+
+# --- Troisième audit ---------------------------------------------------------------------------------
+
+
+def test_panel_preset_round_trip_through_sdr_restores_every_hdr_choice(qt_app, monkeypatch, tmp_path):
+    from core.config import AppConfig
+    from core.inspector import HDRType
+    from core.workflows.encode import EncodePreset, ProfileManager
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    from tests.test_encode_panel_widgets import _COLOR, _PATH_A, _file_info, _select_codec, _video_entry, _video_track
+
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel._profiles = ProfileManager(tmp_path)
+    panel._profiles.save(EncodePreset(name="SDR", codec="libx264", crf=20, preset="slow"))
+    panel._profiles.save(EncodePreset(name="HDR", codec="libx265", crf=20, preset="slow"))
+    panel._refresh_profiles()
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, hdr)], hdr_type=hdr), _video_entry(0), _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        before = (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(), panel._copy_hdr10plus_cb.isChecked())
+        assert before == (True, True, True)
+        for name in ("SDR", "HDR"):
+            panel._set_combo_data(panel._profile_combo, name)
+            panel._load_profile()
+        after = (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(), panel._copy_hdr10plus_cb.isChecked())
+        assert after == before and not panel._tonemap_cb.isChecked()
+        # Même résultat que le changement direct de codec.
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        assert (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(),
+                panel._copy_hdr10plus_cb.isChecked()) == before
+    finally:
+        panel.close()
+
+
+def test_cli_preset_round_trip_through_sdr_restores_hdr_unless_the_job_says_otherwise():
+    from core.inspector import HDRType
+    from core.workflows.encode.models import EncodePreset
+
+    from tests.test_encode_request import _resolve
+
+    sdr = EncodePreset(name="SDR", codec="libx264", crf=20, preset="slow")
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    video = _resolve({"preset": "SDR", "video": {"default": {"codec": "libx265"}}}, hdr,
+                     load_preset=lambda name: sdr).video[0]
+    assert (video["inject_hdr_meta"], video["copy_dv"], video["copy_hdr10plus"], video["tonemap_to_sdr"]) == (
+        True, True, True, False)
+    explicit = _resolve({"preset": "SDR", "video": {"default": {"codec": "libx265", "static_hdr": {"mode": "off"},
+                                                                 "dolby_vision": {"mode": "off"}}}}, hdr,
+                        load_preset=lambda name: sdr).video[0]
+    assert (explicit["inject_hdr_meta"], explicit["copy_dv"], explicit["copy_hdr10plus"]) == (False, False, True)
+
+
+def _sleeping_tool(tmp_path: Path) -> Path:
+    tool = tmp_path / "outil-lent"
+    tool.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return tool
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+def test_running_crop_and_l5_probes_are_killed_on_cancel(tmp_path):
+    import threading
+    import time
+
+    from core.dovi_profile_detector import DoviProfileDetector
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.runtime.crop_detector import detect_black_bars_ffmpeg
+
+    source = tmp_path / "f.mkv"
+    source.write_bytes(b"x")
+    tool = str(_sleeping_tool(tmp_path))
+    for probe in (
+        lambda cancel: detect_black_bars_ffmpeg(source, ffmpeg_bin=tool, duration_s=600.0, dimensions=(3840, 2160),
+                                                cancel_event=cancel),
+        lambda cancel: DoviProfileDetector(dovi_tool_bin=tool, ffmpeg_bin=tool).probe_l5_offsets(
+            source, duration_s=600.0, cancel_event=cancel),
+    ):
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        start = time.monotonic()
+        with pytest.raises(ProbeCancelledError):
+            probe(cancel)
+        assert time.monotonic() - start < 5  # processus en cours tué, pas d'attente de son délai
+
+
+def test_hybrid_plan_cancelled_during_encode_validation_exports_nothing(monkeypatch, tmp_path):
+    from core.jobs.encode import ResolvedEncode
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.ops import hybrid as hybrid_ops
+
+    ctx = _ctx()
+    item = SimpleNamespace(error=None, remux_config=SimpleNamespace(output=tmp_path / "E01.mkv"),
+                           episode=SimpleNamespace(display_name="E01"), describe=lambda: {"episode": "E01"})
+    spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None, common=None)
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, [item]))
+    encode_config = SimpleNamespace()
+    monkeypatch.setattr("core.jobs.encode.resolve_from_job",
+                        lambda *a, **k: ResolvedEncode(config=encode_config, video=()))  # type: ignore[arg-type]
+    monkeypatch.setattr("core.jobs.encode_runtime.encode_workflow", lambda *a: None)
+
+    def checked(*_a, cancel_event=None, **_k):
+        assert cancel_event is ctx.cancel.event
+        ctx.cancel.cancel()  # Ctrl+C pendant la sonde de géométrie
+        return encode_config, []
+
+    monkeypatch.setattr("core.jobs.encode_runtime.checked_encode", checked)
+    monkeypatch.setattr(hybrid_ops, "export_jobs", lambda *a, **k: pytest.fail("aucun export après l'annulation"))
+    request = hybrid_ops.HybridPlanRequest.from_dict({"output_dir": str(tmp_path), "encode": {"video": {}},
+                                                      "export_jobs": str(tmp_path / "jobs")})
+    with pytest.raises(ApiError) as caught:
+        hybrid_ops.hybrid_plan.handler(request, ctx)
+    assert caught.value.code is ErrorCode.CANCELLED
+
+
+def test_registered_preset_names_with_a_slash_stay_names(monkeypatch, tmp_path):
+    from core.jobs.encode import preset_loader
+    from core.json_documents import portable_encode_block, resolve_document_paths
+    from core.service.ops.hybrid import HybridPlanRequest
+    from core.workflows.encode import EncodePreset, ProfileManager
+
+    ProfileManager(tmp_path / "presets").save(EncodePreset(name="Film/4K", codec="libx265", crf=18, preset="slow"))
+    monkeypatch.chdir(tmp_path)
+    assert preset_loader(tmp_path / "presets")("Film/4K").crf == 18
+    assert portable_encode_block({"preset": "Film/4K"}) == {"preset": "Film/4K"}
+    assert resolve_document_paths({"encode": {"preset": "Film/4K"}}, tmp_path)["encode"]["preset"] == "Film/4K"
+    request = HybridPlanRequest.parse({"output_dir": "o", "encode": {"preset": "Film/4K"}}, base_dir=tmp_path)[0]
+    assert request.encode == {"preset": "Film/4K"}
+
+
+def test_contract_accepts_selector_aliases_and_rejects_bad_variant_values(tmp_path):
+    from core.jobs.contract import validate_job_contract
+    from core.jobs.errors import ContractError
+    from core.service.errors import ApiError
+    from core.service.ops.media import MediaJobRequest
+
+    alias = {"version": 1, "sources": [str(tmp_path / "a.mkv")],
+             "tracks": [{"selector": {"type": "audio", "lang": "fra"}, "enabled": False}]}
+    assert MediaJobRequest.parse({"job": alias})[1] == ()
+    bad = {"version": 1, "sources": [str(tmp_path / "a.mkv")],
+           "audio_variants": [{"selector": {"type": "audio"}, "codec": "eac3", "time_shift_ms": "oops",
+                               "sync_calibration": {"typo": 1}, "sync_rewrite_mode": "BOGUS"}]}
+    with pytest.raises(ContractError) as contract:  # documents CLI : refus du contrat (validation)
+        validate_job_contract(bad)
+    assert len(contract.value.errors) == 3
+    with pytest.raises(ApiError) as caught:  # requête API : refus dès la lecture, chemin de chaque champ
+        MediaJobRequest.parse({"job": bad})
+    assert {d.path for d in caught.value.details} == {
+        "job.audio_variants[0].time_shift_ms", "job.audio_variants[0].sync_calibration",
+        "job.audio_variants[0].sync_rewrite_mode"}
+    _request, warnings = MediaJobRequest.parse({"job": bad}, strict_documents=False)  # CLI : refus plus tard
+    assert warnings == ()
+
+
+def test_previews_apply_the_launch_checks_and_the_crop_acceptance(monkeypatch):
+    from core.jobs.batch import PlannedBatchJob, execute_job
+    from core.service.ops import profile as profile_ops
+
+    seen: list[Any] = []
+    steps = SimpleNamespace(run_encode=lambda *a, **k: 0, preview=None, run=None,
+                            preview_encode=lambda config, options, logger, encode_config, *, accept_dovi_nvenc_crop=False: seen.append(
+                                accept_dovi_nvenc_crop) or 0)
+    entry = PlannedBatchJob(0, "a.mkv", "b.mkv")
+    entry.encode_config, entry.accept_dovi_nvenc_crop = SimpleNamespace(), True
+    assert execute_job(steps, entry, None, None, None, dry_run=True, force=False) == 0  # type: ignore[arg-type]
+    assert seen == [True]
+    steps.preview_encode = lambda *a: 0  # étape remplacée sans ce paramètre : appelée telle quelle
+    assert execute_job(steps, entry, None, None, None, dry_run=True, force=False) == 0  # type: ignore[arg-type]
+
+    from core.jobs.encode import ResolvedEncode
+    from core.jobs.options import CommonOptions
+
+    resolved = ResolvedEncode(config=SimpleNamespace(), video=())  # type: ignore[arg-type]
+    monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (SimpleNamespace(sources=[]), {},
+                                                                               CommonOptions()))
+    monkeypatch.setattr(profile_ops, "_resolve", lambda *a: resolved)
+    monkeypatch.setattr(profile_ops, "encode_workflow", lambda *a: None)
+    monkeypatch.setattr(profile_ops, "serialize_remux_config", lambda config: {})
+    monkeypatch.setattr(profile_ops, "checked_encode", lambda encode_config, wf, *, accept_dovi_nvenc_crop, **k: (
+        encode_config, [] if accept_dovi_nvenc_crop else ["Dolby Vision + NVENC : recadrage aligné sur 32 requis"]))
+    monkeypatch.setattr(profile_ops, "preview_encode", lambda config, wf: "nvencc …")
+    request = profile_ops.ProfilePreviewRequest.from_dict({"profile": "P", "inputs": ["/a.mkv"],
+                                                           "encode": {"video": {}}})
+    assert not profile_ops.profile_preview.handler(request, _ctx()).valid
+    accepted = profile_ops.ProfilePreviewRequest.from_dict({"profile": "P", "inputs": ["/a.mkv"],
+                                                            "encode": {"video": {}, "accept_dovi_nvenc_crop": True}})
+    assert profile_ops.profile_preview.handler(accepted, _ctx()).command_text == "nvencc …"
