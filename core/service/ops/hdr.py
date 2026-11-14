@@ -28,7 +28,7 @@ from core.jobs.constants import EXIT_ARGS, EXIT_TOOL
 from core.jobs.errors import JobError
 from core.jobs.logging import EmitterLogger
 from core.jobs.logging import JobLogger as Logger
-from core.runner import ToolRunner
+from core.runner import TaskSignals, ToolRunner
 from core.service.context import CancelToken, ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
@@ -98,18 +98,23 @@ class HdrInspectResult(Model):
 
 
 def dynamic_report(config: AppConfig, info, stream: int | None, cache: InspectionCache | None, refresh: bool,
-             ffmpeg: str, work_root: Path, logger: Logger) -> InspectionReport:
+             ffmpeg: str, work_root: Path, logger: Logger, token: CancelToken | None = None) -> InspectionReport:
+    """Niveau 2 (RPU, HDR10+) ; ``token`` arrête les outils en cours (``InspectionCancelled``)."""
     runner = ToolRunner(max_workers=1)
+    signals = TaskSignals()
+    if token is not None:
+        token.on_cancel(signals.cancel)
 
     def run(cmd: object) -> object:
-        return runner._run_cmd(cmd, label="hdr-inspection")  # type: ignore[arg-type]
+        return runner._run_cmd(cmd, label="hdr-inspection", signals=signals)  # type: ignore[arg-type]
 
     owned = create_process_work_dir(work_root, process_name="hdr-inspection")
     try:
         inspector = DynamicInspector(
             ffmpeg_bin=ffmpeg, dovi_tool_bin=str(config.tool_dovi_tool), hdr10plus_bin=str(config.tool_hdr10plus),
             run_cmd=run, work_dir=owned.path, cache=cache,
-            on_step=lambda label, _start, _span: logger.emit("info", label))
+            on_step=lambda label, _start, _span: logger.emit("info", label),
+            cancelled=token.event.is_set if token is not None else None)
         return inspector.analyze(info, stream, refresh=refresh)
     finally:
         owned.remove()
@@ -360,7 +365,8 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
         measurement = None if request.no_cache else cache.load_measurement(Path(snapshot.path), snapshot.stream_index)
         if level in ("dynamic", "measure") and (snapshot.dovi is not None or snapshot.hdr10plus):
             logger.emit("info", f"Métadonnées dynamiques : {path.name}")
-            report = dynamic(config, info, snapshot.stream_index, cache, request.no_cache, ffmpeg, work_root, logger)
+            report = dynamic(config, info, snapshot.stream_index, cache, request.no_cache, ffmpeg, work_root, logger,
+                             token=ctx.cancel)
             for message in report.errors:
                 logger.emit("warning", message)
         if level == "measure" and (measurement is None or (measurement.is_estimate and not request.fast)):

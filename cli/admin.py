@@ -64,7 +64,7 @@ def add_admin_parsers(sub: Any) -> None:
     for parser in (install, update):
         parser.add_argument("--method", choices=("apt", "dnf", "user", "windows"),
                             help="Méthode imposée (défaut : selon la machine).")
-        parser.add_argument("--no-sudo", action="store_true", help="Sans élévation : dossier utilisateur.")
+        parser.add_argument("--no-sudo", action="store_true", help="Sans aucune élévation (ni sudo ni pkexec) : dossier utilisateur.")
     remove = nv_actions.add_parser("remove", help="Supprimer la copie utilisateur de NVEncC.")
     for parser in (status, install, update, remove):
         _base(parser)
@@ -139,7 +139,7 @@ def cmd_nvencc(args: argparse.Namespace, config: AppConfig, logger: Logger) -> i
         if args.method:
             payload["method"] = args.method
         if args.no_sudo:
-            payload["interactive"] = False
+            payload["elevate"] = False
     with interrupt_guard(CancelToken()) as cancel:
         result, ctx = run_operation(name, payload, config=config, logger=logger, cancel=cancel)
     if _render(name, result, ctx, args):

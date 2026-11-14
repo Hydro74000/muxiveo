@@ -388,7 +388,7 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
     if snapshot.dovi is not None or snapshot.hdr10plus:
         logger.emit("info", f"Métadonnées dynamiques : {Path(request.source).name}")
         report = ctx.port("dynamic_report", dynamic_report)(config, info, snapshot.stream_index, cache, False,
-                                                           ctx.tool("ffmpeg"), work_root, logger)
+                                                           ctx.tool("ffmpeg"), work_root, logger, token=ctx.cancel)
         for message in report.errors:
             logger.emit("warning", message)
     measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index)

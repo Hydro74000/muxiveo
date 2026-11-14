@@ -323,6 +323,8 @@ class NvenccInstallRequest(Model):
     method: str | None = field(default=None, description="apt, dnf, user ou windows (défaut : selon la machine).")
     only_if_newer: bool = field(default=False, description="Mise à jour : rien si la version installée est la dernière.")
     interactive: bool | None = field(default=None, description="Élévation sudo autorisée (défaut : terminal).")
+    elevate: bool = field(default=True, description="Élévation (sudo, pkexec) autorisée ; false : dossier utilisateur "
+                                                    "sans aucune élévation.")
 
 
 @dataclass(frozen=True)
@@ -358,7 +360,7 @@ def nvencc_install(request: NvenccInstallRequest, ctx: ExecutionContext) -> Nven
         path = nv.install(request.method, progress=progress, cancel=ctx.cancel.event,
                           log=lambda level, message: (ctx.events.warning(message) if level.upper().startswith("WARN")
                                                       else ctx.events.log(level.lower(), message)),
-                          interactive=request.interactive)
+                          interactive=request.interactive, elevate=request.elevate)
     except nv.NvenccCancelled as exc:
         raise ApiError(ErrorCode.CANCELLED, "Installation de NVEncC annulée.") from exc
     except nv.NvenccInstallError as exc:

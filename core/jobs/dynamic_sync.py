@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from core.jobs.source_sync import measure_pair
@@ -15,6 +16,7 @@ def perform_dynamic_sync(
     config: Any,
     options: Any,
     logger: Any,
+    cancel_event: threading.Event | None = None,
 ) -> SyncCalibration | None:
     """Analyse dynamiquement les sources pour déterminer le décalage (audio ou sous-titres)."""
     if len(sources) < 2:
@@ -40,14 +42,15 @@ def perform_dynamic_sync(
     if sync_audio and ref_audio:
         # Analyseur lu dans ce module à chaque appel (remplaçable par les tests).
         return measure_pair(ref_source, ref_audio, donor_source, sync_audio, kind="audio", mode="auto",
-                            config=config, options=options, logger=logger, audio_scanner=AudioSyncScanner)
+                            config=config, options=options, logger=logger, audio_scanner=AudioSyncScanner,
+                            cancel_event=cancel_event)
 
     # 2. Sous-titre donneur si pas d'audio
     if target_sub:
         reference_track = ref_sub if ref_sub is not None else ref_audio
         if reference_track is not None:
             return measure_pair(ref_source, reference_track, donor_source, target_sub, kind="subtitle", mode="auto",
-                                config=config, options=options, logger=logger)
+                                config=config, options=options, logger=logger, cancel_event=cancel_event)
 
     logger.emit("warning", f"Aucune paire de pistes compatible trouvée pour la synchronisation automatique de {donor_source.path.name}.")
     return None

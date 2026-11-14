@@ -11,6 +11,7 @@ comme « Synchroniser cette piste »), jamais écrasée par la synchro de sa sou
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 
 from core.jobs.constants import EXIT_ARGS, EXIT_VALIDATION
 from core.jobs.errors import JobError
+from core.service.errors import ApiError, ErrorCode
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
 from core.workflows.remux_models import SourceInput, TrackEntry
@@ -95,8 +97,24 @@ def _source_fps(source: SourceInput) -> Any:
 
 def measure_pair(reference: SourceInput, reference_track: TrackEntry, target: SourceInput, target_track: TrackEntry,
                  *, kind: str, mode: str, config: Any, options: Any, logger: Any,
-                 audio_scanner: Any = AudioSyncScanner) -> SyncCalibration | None:
-    """Mesure du calage de ``target_track`` face à ``reference_track`` (corrélation acoustique ou sous-titres)."""
+                 audio_scanner: Any = AudioSyncScanner,
+                 cancel_event: threading.Event | None = None) -> SyncCalibration | None:
+    """Mesure du calage de ``target_track`` face à ``reference_track`` (corrélation acoustique ou sous-titres).
+
+    ``cancel_event`` arrête l'analyse en cours (processus FFmpeg tués) : erreur publique ``cancelled``.
+    """
+    try:
+        return _measure_pair(reference, reference_track, target, target_track, kind=kind, mode=mode, config=config,
+                             options=options, logger=logger, audio_scanner=audio_scanner, cancel_event=cancel_event)
+    except Exception as exc:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ApiError(ErrorCode.CANCELLED, "Analyse de synchro annulée.") from exc
+        raise
+
+
+def _measure_pair(reference: SourceInput, reference_track: TrackEntry, target: SourceInput, target_track: TrackEntry,
+                  *, kind: str, mode: str, config: Any, options: Any, logger: Any, audio_scanner: Any,
+                  cancel_event: threading.Event | None) -> SyncCalibration | None:
     ffmpeg = getattr(options, "ffmpeg", None) or config.tool_ffmpeg
     ffprobe = getattr(options, "ffprobe", None) or config.tool_ffprobe
     detect_cuts = bool(getattr(options, "detect_cuts", False))
@@ -121,7 +139,8 @@ def measure_pair(reference: SourceInput, reference_track: TrackEntry, target: So
         logger.emit("info", f"Synchronisation audio dynamique : {reference.path.name} #{reference_track.mkv_tid} vs "
                             f"{target.path.name} #{target_track.mkv_tid}…")
         quick = {"quick": True, "deep": False}.get(mode, quick_check_enabled(options, config))
-        scanner = audio_scanner(ffmpeg, ffprobe, quick_check=quick, accept_coherent=coherent_sync_accepted(options))
+        scanner = audio_scanner(ffmpeg, ffprobe, quick_check=quick, accept_coherent=coherent_sync_accepted(options),
+                                cancel_event=cancel_event)
         return scanner.scan(
             AudioSyncTrack(reference.path, reference_track.mkv_tid),
             AudioSyncTrack(target.path, target_track.mkv_tid),
@@ -138,7 +157,7 @@ def measure_pair(reference: SourceInput, reference_track: TrackEntry, target: So
     logger.emit("info", ("Synchronisation sous-titres dynamique : " if is_ref_sub else
                          "Synchronisation audio vs sous-titre dynamique : ")
                 + f"{reference.path.name} #{reference_track.mkv_tid} vs {target.path.name} #{target_track.mkv_tid}…")
-    return SubtitleSyncScanner(ffmpeg, ffprobe).scan(
+    return SubtitleSyncScanner(ffmpeg, ffprobe, cancel_event=cancel_event).scan(
         reference.path, reference_track.mkv_tid, target.path, target_track.mkv_tid, is_ref_sub=is_ref_sub,
         detect_cuts=detect_cuts if is_ref_sub else False, log=lambda msg: logger.emit("info", msg))
 
@@ -158,12 +177,14 @@ def _given_calibration(spec: Mapping[str, Any]) -> SyncCalibration | None:
 
 
 def _relative(spec: Mapping[str, Any], reference: SourceInput, reference_track: TrackEntry, target: SourceInput,
-              target_track: TrackEntry, *, config: Any, options: Any, logger: Any) -> SyncCalibration | None:
+              target_track: TrackEntry, *, config: Any, options: Any, logger: Any,
+              cancel_event: threading.Event | None = None) -> SyncCalibration | None:
     given = _given_calibration(spec)
     if given is not None:
         return given
     return measure_pair(reference, reference_track, target, target_track, kind=str(spec.get("type") or "auto"),
-                        mode=str(spec.get("mode") or "auto"), config=config, options=options, logger=logger)
+                        mode=str(spec.get("mode") or "auto"), config=config, options=options, logger=logger,
+                        cancel_event=cancel_event)
 
 
 def sync_specs(job: Mapping[str, Any], *, auto_sync_all: bool = False) -> dict[int, dict[str, Any]]:
@@ -262,7 +283,7 @@ def sync_order(nodes: Mapping[str, _SyncNode]) -> list[str]:
 
 def resolve_syncs(job: dict[str, Any], sources: list[SourceInput], source_specs: Mapping[int, Mapping[str, Any]],
                   track_pairs: list[tuple[dict, TrackEntry]], *, config: Any, options: Any, logger: Any,
-                  apply: Any) -> None:
+                  apply: Any, cancel_event: threading.Event | None = None) -> None:
     """Résout les synchros des sources et des pistes dans l'ordre de leurs dépendances.
 
     Source : ``apply(calibration, source_index)`` (``apply_donor_calibration`` : toute la source, met à jour
@@ -283,7 +304,7 @@ def resolve_syncs(job: dict[str, Any], sources: list[SourceInput], source_specs:
         else:
             target_track = node.track
         relative = _relative(node.spec, reference, node.reference_track, target, target_track, config=config,
-                             options=options, logger=logger)
+                             options=options, logger=logger, cancel_event=cancel_event)
         if relative is None:
             what = f"piste #{target_track.mkv_tid}" if node.track is not None else "source"
             logger.emit("warning", f"{node.context} : aucune mesure exploitable, {what} de {target.path.name} "

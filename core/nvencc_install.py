@@ -399,23 +399,26 @@ def install(
     cancel: threading.Event | None = None,
     log: LogFn | None = None,
     interactive: bool | None = None,
+    elevate: bool = True,
 ) -> Path:
     """Installe NVEncC (méthode de :func:`plan_method` par défaut) ; chemin du binaire installé.
 
     apt/dnf refusé (pas d'élévation possible, mot de passe refusé, dépendances) → installation utilisateur.
+    ``elevate=False`` : jamais de sudo ni de pkexec, installation utilisateur directe.
     """
     emit: LogFn = log or (lambda _level, _message: None)
     if not supported_platform():
         raise NvenccInstallError("NVEncC n'existe que pour Linux et Windows x86-64")
     method = method or plan_method()
     try:
-        return _install(method, progress, cancel, emit, interactive)
+        return _install(method, progress, cancel, emit, interactive, elevate)
     except OSError as exc:
         raise NvenccInstallError(f"installation impossible ({exc})") from exc
 
 
 def _install(
     method: str, progress: ProgressFn | None, cancel: threading.Event | None, emit: LogFn, interactive: bool | None,
+    elevate: bool = True,
 ) -> Path:
     # Téléchargement sur disque, à côté de l'installation (/tmp souvent en RAM ; paquet ≈ 100 Mo).
     base = user_root().parent
@@ -423,8 +426,10 @@ def _install(
     with tempfile.TemporaryDirectory(prefix=".nvencc-download-", dir=base) as tmp:
         workdir = Path(tmp)
         if method in (METHOD_APT, METHOD_DNF):
-            privilege = privilege_prefix(interactive)
-            if privilege is None:
+            privilege = privilege_prefix(interactive) if elevate else None
+            if not elevate:
+                emit("INFO", "NVEncC : élévation désactivée : installation dans le dossier utilisateur.")
+            elif privilege is None:
                 emit("WARN", "NVEncC : ni sudo (terminal) ni pkexec disponibles : installation dans le dossier utilisateur.")
             else:
                 deb = method == METHOD_APT

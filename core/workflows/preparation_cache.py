@@ -114,6 +114,10 @@ class PreparationContext:
     timings: StepTimings = field(default_factory=StepTimings)
     cancel_event: threading.Event | None = None
 
+    def cancel_kwargs(self) -> dict[str, threading.Event]:
+        """``cancel_event`` à transmettre s'il existe (analyseurs remplaçables sans ce paramètre)."""
+        return {"cancel_event": self.cancel_event} if self.cancel_event is not None else {}
+
     @contextmanager
     def measure(self, step: str) -> Generator[None, None, None]:
         with self.timings.measure(step):

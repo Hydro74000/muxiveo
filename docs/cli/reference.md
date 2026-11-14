@@ -2511,7 +2511,7 @@ muxiveo --cli nvencc install [-h] [--method {apt,dnf,user,windows}] [--no-sudo] 
 | Option | Effet |
 |---|---|
 | `--method` | Méthode imposée (défaut : selon la machine). — `apt`, `dnf`, `user`, `windows` |
-| `--no-sudo` | Sans élévation : dossier utilisateur. |
+| `--no-sudo` | Sans aucune élévation (ni sudo ni pkexec) : dossier utilisateur. |
 | `--json` | Résultat JSON sur stdout. |
 | `--log-format` | Format du journal : text (lisible), jsonl (une ligne JSON par message) ou events (événements versionnés sur stderr, réponse JSON sur stdout). (défaut : `text`) — `text`, `jsonl`, `events` |
 | `--verbose` | Journal détaillé (sortie brute des outils). |
@@ -2534,7 +2534,7 @@ muxiveo --cli nvencc update [-h] [--method {apt,dnf,user,windows}] [--no-sudo] [
 | Option | Effet |
 |---|---|
 | `--method` | Méthode imposée (défaut : selon la machine). — `apt`, `dnf`, `user`, `windows` |
-| `--no-sudo` | Sans élévation : dossier utilisateur. |
+| `--no-sudo` | Sans aucune élévation (ni sudo ni pkexec) : dossier utilisateur. |
 | `--json` | Résultat JSON sur stdout. |
 | `--log-format` | Format du journal : text (lisible), jsonl (une ligne JSON par message) ou events (événements versionnés sur stderr, réponse JSON sur stdout). (défaut : `text`) — `text`, `jsonl`, `events` |
 | `--verbose` | Journal détaillé (sortie brute des outils). |

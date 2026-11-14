@@ -20,6 +20,7 @@ from core.jobs.logging import EmitterLogger
 from core.jobs.profile import ProfileBatchSteps, build_profile_remux_config, load_decision_profile, run_profile_batch
 from core.jobs.remux_config import build_remux_config
 from core.jobs.runtime import remux_workflow, run_remux
+from core.workflows.preparation_cache import PreparationContext
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.events import JobState
@@ -241,7 +242,8 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
         no_attach=meta.no_attach,
         mux_backend=request.mux_backend,
         encode_overrides=request.encode,
-        steps=children.steps(build_remux_config),
+        steps=children.steps(lambda job, config, options, logger: build_remux_config(
+            job, config, options, logger, context=PreparationContext(cancel_event=ctx.cancel.event))),
         cancel=ctx.cancel,
         job_logger=children.logger,
     )
@@ -284,7 +286,9 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         no_attach=meta.no_attach,
         encode_block=request.encode,
         steps=ProfileBatchSteps(load=load_decision_profile, discover=discover_direct_batch_jobs,
-                                build=build_profile_remux_config, preview=children.preview, run=children.run,
+                                build=lambda profile, **kwargs: build_profile_remux_config(
+                                    profile, context=PreparationContext(cancel_event=ctx.cancel.event), **kwargs),
+                                preview=children.preview, run=children.run,
                                 encode=children.encode, preview_encode=children.preview_encode,
                                 run_encode=children.run_encode),
         cancel=ctx.cancel,

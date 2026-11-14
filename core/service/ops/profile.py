@@ -13,6 +13,7 @@ from core.jobs.logging import EmitterLogger
 from core.jobs.profile import build_profile_remux_config, load_decision_profile, profile_summary
 from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
 from core.jobs.serializers import serialize_remux_config, serialize_track_preview
+from core.workflows.preparation_cache import PreparationContext
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
@@ -95,7 +96,9 @@ def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
         logger=EmitterLogger(ctx.events),
         preview=preview,
         metadata_job=dict(request.metadata),
+        context=PreparationContext(cancel_event=ctx.cancel.event),
     )
+    ctx.cancel.raise_if_cancelled()  # préparation annulée : rien n'est exporté ni lancé
     return remux_config, report, options
 
 

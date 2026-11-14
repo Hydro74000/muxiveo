@@ -169,7 +169,8 @@ def build_profile_remux_config(
     context = context or PreparationContext()
     job = {"sources": [{"path": value} for value in cli_inputs]}
     with context.measure("inspection"):
-        sources, _infos, tracks = inspect_sources(job, config, options, logger, cache=context.cache)
+        sources, _infos, tracks = inspect_sources(job, config, options, logger, cache=context.cache,
+                                                  cancel_event=context.cancel_event)
     if select_tracks is not None:
         # Le témoin borne les candidats du profil, sans perdre les pistes
         # d'origine nécessaires aux sélecteurs exact-job et à la synchro.
@@ -260,7 +261,7 @@ def build_profile_remux_config(
     elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
         from core.jobs.dynamic_sync import perform_dynamic_sync
         sync_calibrations = {}
-        calib = perform_dynamic_sync(sources, result.tracks, config, options, logger)
+        calib = perform_dynamic_sync(sources, result.tracks, config, options, logger, **context.cancel_kwargs())
     elif sync_mode == "container" and sync_calibrations.get("1"):
         calib = SyncCalibration.from_dict(sync_calibrations["1"])
     if calib is not None:
@@ -399,6 +400,8 @@ def run_profile_batch(
     # sorties refusées avant le premier traitement, même avec --force.
     planned: list[PlannedBatchJob] = []
     for job_index, job in enumerate(discovery.jobs):
+        if cancel is not None and cancel.cancelled:
+            break  # Ctrl+C pendant la préparation : aucun job lancé (phase 2)
         entry = PlannedBatchJob(job_index, job_primary_input(job), str(job.get("output") or ""))
         entry.template = output_template
         entry.generated_output = True

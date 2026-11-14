@@ -200,7 +200,8 @@ def _build_cached(request: MediaJobRequest, ctx: ExecutionContext,
     options = request.options.to_common(ctx.overrides, **extra)
     cache = PreparationCache()
     remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
-                                      EmitterLogger(ctx.events), context=PreparationContext(cache=cache))
+                                      EmitterLogger(ctx.events),
+                                      context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event))
     return remux_config, options, cache
 
 
@@ -292,7 +293,9 @@ def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult
     )
     cache = PreparationCache()
     remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
-                                      EmitterLogger(ctx.events), context=PreparationContext(cache=cache))
+                                      EmitterLogger(ctx.events),
+                                      context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event))
+    ctx.cancel.raise_if_cancelled()  # préparation annulée : rien n'est exporté ni lancé
     if options.export_workflow:
         destination = export_exact_job(remux_config, options, encode=request.job.get("encode"))
         ctx.events.artifact("exact-job", str(destination))

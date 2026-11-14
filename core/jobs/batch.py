@@ -458,6 +458,8 @@ def run_batch(
     # ensuite, avant le premier traitement, même avec --force.
     planned: list[PlannedBatchJob] = []
     for job_index, item in enumerate(batch_jobs(batch)):
+        if cancel is not None and cancel.cancelled:
+            break  # Ctrl+C pendant la préparation : aucun job lancé (phase 2)
         if batch_base is not None:
             item = resolve_document_paths(item, batch_base)
         job = deep_merge(template, item)

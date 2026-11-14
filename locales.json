@@ -11055,9 +11055,9 @@
     "fra": "Sans couverture TMDB.",
     "eng": "Without TMDB cover."
   },
-  "Sans élévation : dossier utilisateur.": {
-    "fra": "Sans élévation : dossier utilisateur.",
-    "eng": "Without elevation: user folder."
+  "Sans aucune élévation (ni sudo ni pkexec) : dossier utilisateur.": {
+    "fra": "Sans aucune élévation (ni sudo ni pkexec) : dossier utilisateur.",
+    "eng": "Without any elevation (neither sudo nor pkexec): user folder."
   },
   "Sauvegarder le workflow exact sans exécuter.": {
     "fra": "Sauvegarder le workflow exact sans exécuter.",

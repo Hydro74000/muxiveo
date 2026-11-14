@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ def inspect_sources(
     *,
     cli_inputs: list[str] | None = None,
     cache: PreparationCache | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[SourceInput], list[FileInfo], list[TrackEntry]]:
     ffprobe = options.ffprobe or job.get("ffprobe") or config.tool_ffprobe
     mediainfo = options.mediainfo or job.get("mediainfo") or config.tool_mediainfo
@@ -53,6 +55,7 @@ def inspect_sources(
         ffprobe_bin=str(ffprobe),
         mediainfo_bin=str(mediainfo),
         verbose_output=(lambda line: logger.emit("debug", line)) if options.verbose else None,
+        cancel_event=cancel_event,
     )
     source_items = source_path_items(job, cli_inputs)
     sources: list[SourceInput] = []

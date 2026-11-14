@@ -20,7 +20,13 @@ from core.extractor import ExtractPlan, TrackExtractor
 from core.inspector import FileInfo, HDRType
 from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_TOOL, EXIT_VALIDATION, EXIT_WORKFLOW
 from core.jobs.errors import JobError
-from core.output_commit import OutputBusyError, OutputChangedError, OutputReservation, reserve_candidate
+from core.output_commit import (
+    OutputBusyError,
+    OutputChangedError,
+    OutputCommitError,
+    OutputReservation,
+    reserve_candidate,
+)
 from core.pipeline_command import PipelineCommand
 from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode
@@ -338,10 +344,12 @@ def extract(
         reservation = OutputReservation.acquire(output)
     except OutputBusyError as exc:
         raise ApiError(ErrorCode.BUSY, str(exc)) from exc
-    candidate = reserve_candidate(output)
-    # BL : dovi_tool demux écrit aussi l'EL (``-e`` obligatoire), dans un candidat jeté à la fin.
-    scratch = reserve_candidate(output.with_name(output.name + ".el")) if plan.layer == "bl" else None
+    candidate: Path | None = None
+    scratch: Path | None = None
     try:
+        candidate = reserve_candidate(output)
+        # BL : dovi_tool demux écrit aussi l'EL (``-e`` obligatoire), dans un candidat jeté à la fin.
+        scratch = reserve_candidate(output.with_name(output.name + ".el")) if plan.layer == "bl" else None
         if plan.kind == "attachment" and not plan.attached_pic:
             assert plan.attachment is not None
             candidate.write_bytes(attachment_reader(Path(info.path), plan.attachment))
@@ -364,8 +372,11 @@ def extract(
         reservation.publish(candidate)
     except OutputChangedError as exc:  # destination modifiée pendant l'extraction : les deux sont conservés
         raise JobError(str(exc), EXIT_EXISTS) from exc
+    except OutputCommitError:  # publication refusée : le candidat est conservé, comme l'annonce l'erreur
+        raise
     except BaseException:
-        candidate.unlink(missing_ok=True)
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
         raise
     finally:
         if scratch is not None:

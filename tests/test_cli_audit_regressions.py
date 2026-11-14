@@ -198,3 +198,139 @@ def test_hybrid_plan_reports_partial_when_an_episode_fails(monkeypatch):
     assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "partial"
     monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items[1:]))
     assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "failed"
+
+
+# --- Groupe 4 : annulation, transactions d'extraction, --no-sudo ----------------------------------
+
+
+def test_cancelled_sync_measure_is_reported_as_cancelled():
+    import threading
+
+    from core.jobs.source_sync import measure_pair
+    from core.service.errors import ApiError, ErrorCode
+    from core.workflows.audio_sync import AudioSyncError
+
+    seen: dict[str, Any] = {}
+    cancel = threading.Event()
+
+    class _Scanner:
+        def __init__(self, *_a, **kwargs):
+            seen.update(kwargs)
+
+        def scan(self, *_a, **_k):
+            cancel.set()
+            raise AudioSyncError("Analyse annulée.")
+
+    sources = [_source(0, "audio"), _source(1, "audio")]
+    config = SimpleNamespace(tool_ffmpeg="ffmpeg", tool_ffprobe="ffprobe")
+    with pytest.raises(ApiError) as caught:
+        measure_pair(sources[0], sources[0].tracks[0], sources[1], sources[1].tracks[0], kind="audio", mode="deep",
+                     config=config, options=SimpleNamespace(cadence_auto=False),
+                     logger=SimpleNamespace(emit=lambda *a, **k: None), audio_scanner=_Scanner, cancel_event=cancel)
+    assert caught.value.code is ErrorCode.CANCELLED and seen["cancel_event"] is cancel
+
+
+def test_media_run_preparation_gets_the_token_and_exports_nothing_once_cancelled(monkeypatch, tmp_path):
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.ops import media as media_ops
+
+    ctx = _ctx()
+
+    def build(job, config, options, logger, *, context):
+        assert context.cancel_event is ctx.cancel.event
+        ctx.cancel.cancel()
+        return SimpleNamespace(output=tmp_path / "out.mkv")
+
+    monkeypatch.setattr(media_ops, "build_remux_config", build)
+    monkeypatch.setattr(media_ops, "export_exact_job", lambda *a, **k: pytest.fail("aucun export attendu"))
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "media.run", {"job": {"version": 1}, "export_workflow": str(tmp_path / "job.json")}, ctx)
+    assert caught.value.code is ErrorCode.CANCELLED
+
+
+def test_dynamic_hdr_inspection_is_cancellable(monkeypatch, tmp_path):
+    from core.service.context import CancelToken
+    from core.service.ops import hdr as hdr_ops
+
+    seen: dict[str, Any] = {}
+
+    class _Inspector:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def analyze(self, *_a, **_k):
+            return "report"
+
+    monkeypatch.setattr(hdr_ops, "DynamicInspector", _Inspector)
+    token = CancelToken()
+    config = SimpleNamespace(tool_dovi_tool="dovi_tool", tool_hdr10plus="hdr10plus_tool")
+    assert hdr_ops.dynamic_report(config, None, 0, None, False, "ffmpeg", tmp_path,  # type: ignore[arg-type]
+                                  SimpleNamespace(emit=lambda *a, **k: None), token=token) == "report"
+    assert not seen["cancelled"]()
+    token.cancel()
+    assert seen["cancelled"]()
+
+
+def test_extract_releases_the_destination_when_a_candidate_cannot_be_created(monkeypatch, tmp_path):
+    from core.jobs import extract as ex
+    from core.output_commit import OutputReservation, reserve_candidate
+
+    from tests.test_cli_extract import _info
+
+    info = _info(tmp_path / "f.mkv")
+    plan = ex.plan_track(info, 0, layer="bl")
+    calls = {"n": 0}
+
+    def flaky(output):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disque plein")
+        return reserve_candidate(output)
+
+    monkeypatch.setattr(ex, "reserve_candidate", flaky)
+    with pytest.raises(OSError, match="plein"):
+        ex.extract(info, plan, tmp_path / "bl.hevc", tools=ex.ExtractTools("ffmpeg"), run=lambda *a: None)
+    assert not list(tmp_path.glob("*.partial"))
+    OutputReservation.acquire(tmp_path / "bl.hevc").release()  # destination libérée
+
+
+def test_extract_keeps_the_candidate_when_publication_is_refused(monkeypatch, tmp_path):
+    from core.jobs import extract as ex
+    from core.output_commit import OutputPublicationError, OutputReservation
+
+    from tests.test_cli_extract import _info
+
+    info = _info(tmp_path / "f.mkv")
+    plan = ex.plan_track(info, "a:0")
+
+    def refuse(self, candidate):
+        raise OutputPublicationError(self.output, candidate)
+
+    monkeypatch.setattr(OutputReservation, "publish", refuse)
+
+    def run(cmd, _label):
+        Path(cmd[-1]).write_bytes(b"data")
+
+    with pytest.raises(OutputPublicationError):
+        ex.extract(info, plan, tmp_path / "a.thd", tools=ex.ExtractTools("ffmpeg"), run=run)
+    assert [p.read_bytes() for p in tmp_path.glob("*.partial")] == [b"data"]
+
+
+def test_no_sudo_never_elevates(monkeypatch, tmp_path):
+    from core import nvencc_install as nv
+
+    monkeypatch.setattr(nv, "user_root", lambda: tmp_path / "nvencc" / "current")
+    monkeypatch.setattr(nv, "privilege_prefix", lambda *a, **k: pytest.fail("aucune élévation attendue"))
+    monkeypatch.setattr(nv, "_native_install", lambda *a, **k: pytest.fail("aucun gestionnaire de paquets"))
+    monkeypatch.setattr(nv, "_user_install", lambda archive, *a: tmp_path / "NVEncC")
+    assert nv._install(nv.METHOD_APT, None, None, lambda *_a: None, None, elevate=False) == tmp_path / "NVEncC"
+    from cli.admin import cmd_nvencc
+    from cli import admin as cli_admin
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(cli_admin, "run_operation", lambda name, payload, **k: (
+        seen.update(payload=payload) or (SimpleNamespace(message=""), SimpleNamespace())))
+    monkeypatch.setattr(cli_admin, "_render", lambda *a: True)
+    args = build_parser().parse_args(["nvencc", "install", "--no-sudo"])
+    cmd_nvencc(args, SimpleNamespace(), SimpleNamespace(emit=lambda *a, **k: None))  # type: ignore[arg-type]
+    assert seen["payload"]["elevate"] is False

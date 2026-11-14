@@ -179,6 +179,7 @@ def _prepare(request: HybridRequest, ctx: ExecutionContext) -> tuple[StudioSpec,
 )
 def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlanResult:
     spec, prepared = _prepare(request, ctx)
+    ctx.cancel.raise_if_cancelled()  # préparation annulée : aucun export
     exported: list[Path] = []
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)

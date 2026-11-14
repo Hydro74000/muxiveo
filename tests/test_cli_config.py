@@ -58,7 +58,7 @@ def _fake_nvencc(monkeypatch, tmp_path: Path, *, version: str, latest: str, user
     monkeypatch.setattr(nv, "user_binary", lambda *a: binary if user else None)
     monkeypatch.setattr(nv, "read_version", lambda path, timeout=15.0: latest)
 
-    def install(method=None, *, progress=None, cancel=None, log=None, interactive=None):
+    def install(method=None, *, progress=None, cancel=None, log=None, interactive=None, elevate=True):
         calls.append((method, interactive))
         progress(50, 100)
         log("WARN", "repli dossier utilisateur")

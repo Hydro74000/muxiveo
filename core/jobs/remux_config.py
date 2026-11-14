@@ -471,7 +471,7 @@ def build_remux_config(
     validate_job_contract(job, require_version=False)
     with context.measure("inspection"):
         sources, infos, tracks = inspect_sources(job, config, options, logger, cli_inputs=cli_inputs,
-                                                 cache=context.cache)
+                                                 cache=context.cache, cancel_event=context.cancel_event)
     strict_selectors = str(job.get("kind") or "") == "exact-job"
     relaxed_selectors = bool(job.get("_relaxed_selectors"))
     apply_audio_variants(
@@ -509,7 +509,7 @@ def build_remux_config(
         calib = SyncCalibration.from_dict(json.loads(Path(calib_file).read_text(encoding="utf-8-sig")))
     elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
         from core.jobs.dynamic_sync import perform_dynamic_sync
-        calib = perform_dynamic_sync(sources, tracks, config, options, logger)
+        calib = perform_dynamic_sync(sources, tracks, config, options, logger, **context.cancel_kwargs())
     elif job.get("sync_calibrations") and job.get("sync_mode", "container") == "container":
         calib_payload = job["sync_calibrations"].get("1")
         calib = SyncCalibration.from_dict(calib_payload) if calib_payload else None
@@ -528,7 +528,7 @@ def build_remux_config(
 
     if source_syncs or any(isinstance(spec.get("sync"), dict) for spec, _track in edited_tracks):
         resolve_syncs(job, sources, source_syncs, edited_tracks, config=config, options=options, logger=logger,
-                      apply=apply_source_sync)
+                      apply=apply_source_sync, cancel_event=context.cancel_event)
 
     from core.workflows.subtitle_heuristics import classify_subtitles
     with context.measure("sous-titres"):
