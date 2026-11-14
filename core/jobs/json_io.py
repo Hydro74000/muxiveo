@@ -64,13 +64,17 @@ EXCLUSIVE_KEYS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
 
 
 def without_excluded(key: str, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """``base`` (objet de clé ``key``) sans les choix que ``override`` rend caducs (:data:`EXCLUSIVE_KEYS`)."""
+    """``base`` (objet de clé ``key``) sans les choix que ``override`` rend caducs (:data:`EXCLUSIVE_KEYS`).
+
+    Seules les clés **non nulles** de ``override`` comptent : ``null`` veut dire « non fourni » (couches, ``to_dict``).
+    """
     groups = EXCLUSIVE_KEYS.get(key)
     if groups is None:
         return base
+    provided = {name for name, value in override.items() if value is not None}
     dropped: set[str] = set()
     for group, other in (groups, groups[::-1]):
-        if group & override.keys():
+        if group & provided:
             dropped |= other
     return {name: value for name, value in base.items() if name not in dropped}
 
