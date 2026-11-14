@@ -2756,12 +2756,14 @@ def test_p5_scheduled_analysis_survives_a_round_trip_through_an_sdr_codec(qt_app
         state = panel._video_settings_by_entry_id["video-p5"]
         assert state["static_hdr_metadata_analysis_request"] == "precise" and state["inject_hdr_meta"]
         assert asked == []  # choix repris, pas redemandé
-        # Valeur saisie entre-temps : l'analyse n'est plus reprise.
+        assert "programmée" in panel._hdr_meta_provenance.text() or "scheduled" in panel._hdr_meta_provenance.text()
+        # Valeurs connues entre-temps (état restauré d'une session) : l'analyse mémorisée est oubliée.
         _select_codec(panel, "libx264")
-        panel._master_display.setText("G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)")
-        panel._save_current_video_state()
-        _select_codec(panel, "libx265")
-        state = panel._video_settings_by_entry_id["video-p5"]
-        assert state["static_hdr_metadata_analysis_request"] == "" and not state["static_hdr_analysis_disabled_by_codec"]
+        state = dict(panel._video_settings_by_entry_id["video-p5"])
+        assert state["static_hdr_analysis_disabled_by_codec"] == "precise"
+        state["master_display"] = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+        normalized, _cancelled = panel._normalize_pending_static_hdr_analysis("video-p5", state)
+        assert not normalized["static_hdr_analysis_disabled_by_codec"]
+        assert not normalized["static_hdr_metadata_analysis_request"]
     finally:
         panel.close()

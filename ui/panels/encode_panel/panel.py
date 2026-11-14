@@ -5065,11 +5065,14 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_codec_combo") or not hasattr(self, "_copy_dv_cb"):
             return
         state = self._current_video_state()
+        request_before = str(state.get("static_hdr_metadata_analysis_request") or "")
         state, analysis_cancelled = self._normalize_pending_static_hdr_analysis(
             self._current_video_entry_id,
             state,
         )
         self._video_settings_by_entry_id[self._current_video_entry_id] = state
+        if str(state.get("static_hdr_metadata_analysis_request") or "") != request_before:
+            self._sync_hdr_metadata_provenance()  # analyse déprogrammée ou reprise : libellé à jour
         # V43 : une seule règle de propagation (Copy reste propre à chaque source).
         if self._should_propagate_global_state(state):
             self._propagate_state_to_active_tracks(state)
