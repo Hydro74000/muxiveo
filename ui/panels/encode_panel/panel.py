@@ -1080,6 +1080,9 @@ class EncodePanel(QWidget):
             self._update_passthrough_controls(auto_check=False)
         else:
             self._update_passthrough_controls(auto_check=True)
+            # Piste sans état affichée dans le codec courant (Copy au départ) : édition HDR10 selon la règle du cœur,
+            # comme après un changement de codec ou un état relu.
+            self._sync_hdr_metadata_field_editability(str(self._codec_combo.currentData() or "copy"))
             self._save_current_video_state()
             if self._video_apply_all:
                 self._propagate_current_video_state_to_all(force_current=False)
