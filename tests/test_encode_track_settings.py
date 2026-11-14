@@ -137,3 +137,36 @@ def test_pure_copy_rules():
                                                audio_tracks=[SimpleNamespace(codec="eac3")]))
     normalized = SimpleNamespace(**{**vars(video), "copy_dv": True, "dovi_profile": "2"})
     assert not ts.is_pure_copy(SimpleNamespace(video_tracks=[normalized], audio_tracks=[]))
+
+
+# --- Neuvième audit : codec sans édition HDR10 ----------------------------------------------------------------
+
+
+def _typed_state(ctx: ts.SourceVideoContext, codec: str, **extra) -> dict:
+    """Master Display et MaxCLL ressaisis à l'identique (marqueurs explicites)."""
+    return {**ts.default_video_state(ctx), "codec": codec, "master_display": MD, "max_cll": "1000,400",
+            "static_hdr_master_display_manual": True, "static_hdr_max_cll_manual": True, **extra}
+
+
+def test_codec_without_hdr10_editing_imposes_the_source_values_and_normalization_is_idempotent():
+    ctx = _ctx(HDRType.HDR10)
+    kept = ts.normalize_video_state(_typed_state(ctx, "libx265"), ctx)
+    assert kept["static_hdr_master_display_manual"] and kept["static_hdr_max_cll_manual"]  # codec éditable
+    for codec in ("libx264", "copy"):
+        once = ts.normalize_video_state(_typed_state(ctx, codec, static_hdr_manual=True), ctx)
+        assert not once["static_hdr_master_display_manual"] and not once["static_hdr_max_cll_manual"], codec
+        assert (once["master_display"], once["max_cll"]) == (MD, "1000,400")
+        assert once["static_hdr_manual"] is (codec != "copy")  # case cochée : gardée hors Copy
+        assert ts.normalize_video_state(once, ctx) == once  # idempotente
+        back = ts.normalize_video_state({**once, "codec": "libx265"}, ctx)
+        settings = ts.video_settings_from_state(back, ctx, stream_index=0, source_path=None, track_entry_id=None)
+        assert settings.static_hdr_master_display_source == settings.static_hdr_light_level_source == "source"
+
+
+def test_copy_with_dovi_normalized_to_p81_keeps_hdr10_entries_editable():
+    ctx = _ctx(HDRType.DOLBY_VISION, dovi=7, compat=6)
+    state = _typed_state(ctx, "copy", inject_hdr_meta=True, copy_dv=True, dovi_profile="2")
+    assert ts.static_hdr_editable(state, "copy")
+    normalized = ts.normalize_video_state(state, ctx)
+    assert ts.state_allows_copy_static_hdr_edit(normalized, "copy")  # exception Copy + P8.1 + HDR10 injecté
+    assert normalized["static_hdr_master_display_manual"] and normalized["static_hdr_max_cll_manual"]
