@@ -146,7 +146,7 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
                                          cancel_event=ctx.cancel.event)
         base.update(valid=not errors, errors=tuple(errors), encode=encode_plan_payload(resolved, checked))
         if not errors and request.include_command:
-            base.update(command_text=preview_encode(checked, encode_wf),
+            base.update(command_text=preview_encode(checked, encode_wf, ctx.cancel.event),
                         execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
                                    "preparation_commands": [], "native_diagnostics": []})
         return ProfilePreviewResult(**base)

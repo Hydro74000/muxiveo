@@ -246,7 +246,7 @@ class _Children:
             for error in errors:
                 logger.emit("error", error)
             if not errors:
-                logger.emit("info", preview_encode(checked, wf), event="batch_preview")
+                logger.emit("info", preview_encode(checked, wf, self.ctx.cancel.event), event="batch_preview")
             self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
             return EXIT_OK if not errors else EXIT_VALIDATION
 

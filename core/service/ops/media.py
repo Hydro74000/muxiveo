@@ -310,7 +310,8 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
         if errors:
             return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
         return MediaPreviewResult(
-            valid=True, config=config, command_text=preview_encode(encode_config, encode_wf), encode=plan,
+            valid=True, config=config, command_text=preview_encode(encode_config, encode_wf, ctx.cancel.event),
+            encode=plan,
             execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
                        "preparation_commands": [], "native_diagnostics": []},
         )

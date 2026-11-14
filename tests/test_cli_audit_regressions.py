@@ -766,7 +766,7 @@ def test_previews_apply_the_launch_checks_and_the_crop_acceptance(monkeypatch):
     monkeypatch.setattr(profile_ops, "serialize_remux_config", lambda config: {})
     monkeypatch.setattr(profile_ops, "checked_encode", lambda encode_config, wf, *, accept_dovi_nvenc_crop, **k: (
         encode_config, [] if accept_dovi_nvenc_crop else ["Dolby Vision + NVENC : recadrage aligné sur 32 requis"]))
-    monkeypatch.setattr(profile_ops, "preview_encode", lambda config, wf: "nvencc …")
+    monkeypatch.setattr(profile_ops, "preview_encode", lambda config, wf, *_a: "nvencc …")
     request = profile_ops.ProfilePreviewRequest.from_dict({"profile": "P", "inputs": ["/a.mkv"],
                                                            "encode": {"video": {}}})
     assert not profile_ops.profile_preview.handler(request, _ctx()).valid
@@ -1007,3 +1007,117 @@ def test_extraction_tool_failure_after_cancel_is_a_cancellation(qapp, tmp_path):
     with pytest.raises(ApiError) as failed:  # échec ordinaire
         tool_runner(CancelToken())([sys.executable, "-c", "raise SystemExit(3)"], "extract-test")
     assert failed.value.code is ErrorCode.WORKFLOW_FAILED
+
+
+def _probing_workflow(tmp_path: Path):
+    """Vrai workflow dont la construction des commandes relance la sonde L5 interne (outil lent, sans jeton explicite)."""
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    tool = str(_sleeping_tool(tmp_path))
+    source = tmp_path / "f.mkv"
+    source.write_bytes(b"x")
+    wf = EncodeWorkflow(ffmpeg_bin=tool, ffprobe_bin=tool)
+    wf._bins["dovi_tool"] = tool
+    wf.preview_command = lambda config: str(wf._probe_dovi_l5_offsets(source))  # type: ignore[method-assign]
+    return wf
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+@pytest.mark.parametrize("path", ["media.preview", "profile.preview", "batch", "cli"])
+def test_token_reaches_the_probes_run_while_building_preview_commands(qapp, tmp_path, monkeypatch, path):
+    import threading
+    import time
+
+    from core.jobs.encode import ResolvedEncode
+    from core.jobs.options import CommonOptions
+    from core.service.errors import ApiError, ErrorCode
+    from core.subprocess_utils import ProbeCancelledError
+
+    ctx = _ctx(tool_ffmpeg="ffmpeg")
+    wf = _probing_workflow(tmp_path)
+    config = SimpleNamespace(video_tracks=[], video=None)
+    resolved = ResolvedEncode(config=config, video=())  # type: ignore[arg-type]
+    checked = lambda encode_config, *a, **k: (encode_config, [])  # noqa: E731 - validation réussie
+    threading.Timer(0.3, ctx.cancel.cancel).start()
+    start = time.monotonic()
+    if path == "media.preview":
+        from core.service.ops import media as ops
+
+        monkeypatch.setattr(ops, "_build_cached", lambda request, ctx: (SimpleNamespace(), CommonOptions(), None))
+        monkeypatch.setattr(ops, "resolve_job_encode", lambda *a: resolved)
+        monkeypatch.setattr(ops, "encode_workflow", lambda *a: wf)
+        monkeypatch.setattr(ops, "checked_encode", checked)
+        monkeypatch.setattr(ops, "serialize_remux_config", lambda c: {})
+        with pytest.raises(Exception) as caught:
+            call(CATALOG, "media.preview", {"job": {"version": 1}}, ctx)
+        assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED  # code de l'enveloppe de call
+    elif path == "profile.preview":
+        from core.service.ops import profile as ops
+
+        monkeypatch.setattr(ops, "_build", lambda request, ctx, preview: (SimpleNamespace(sources=[]), {}, CommonOptions()))
+        monkeypatch.setattr(ops, "_resolve", lambda *a: resolved)
+        monkeypatch.setattr(ops, "encode_workflow", lambda *a: wf)
+        monkeypatch.setattr(ops, "checked_encode", checked)
+        monkeypatch.setattr(ops, "serialize_remux_config", lambda c: {})
+        with pytest.raises(Exception) as caught:
+            call(CATALOG, "profile.preview", {"profile": "P", "inputs": ["/a.mkv"], "encode": {}}, ctx)
+        assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    elif path == "batch":
+        from core.service.ops import batch as ops
+
+        monkeypatch.setattr(ops, "encode_workflow", lambda *a: wf)
+        monkeypatch.setattr(ops, "checked_encode", checked)
+        children = ops._Children(ctx)
+        logger = children.logger(0)
+        assert children.preview_encode(SimpleNamespace(), CommonOptions(), logger, config) == 6
+    else:
+        from cli import runtime as ops
+
+        monkeypatch.setattr(ops, "encode_workflow", lambda *a: wf)
+        monkeypatch.setattr(ops, "checked_encode", checked)
+        with pytest.raises(ProbeCancelledError):
+            ops.preview_encode_config(SimpleNamespace(), CommonOptions(), SimpleNamespace(emit=lambda *a, **k: None),
+                                      config, cancel_event=ctx.cancel.event)
+    assert time.monotonic() - start < 5  # sonde en cours tuée par le jeton
+    assert wf._probe_cancel_event is None  # jeton retiré à la fin de l'opération
+
+
+def test_nested_probe_scopes_restore_the_previous_token_after_an_exception():
+    import threading
+
+    from core.jobs.encode_runtime import probe_cancel_scope
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    wf = EncodeWorkflow()
+    outer, inner = threading.Event(), threading.Event()
+    with probe_cancel_scope(wf, outer):
+        with pytest.raises(RuntimeError):
+            with probe_cancel_scope(wf, inner):
+                assert wf._probe_cancel_event is inner
+                raise RuntimeError("échec pendant l'opération")
+        assert wf._probe_cancel_event is outer
+    assert wf._probe_cancel_event is None
+
+
+def test_run_encode_keeps_the_token_during_the_asynchronous_work(qapp, tmp_path):
+    from core.service.context import CancelToken
+
+    from tests.test_cli_encode import _FakeWorkflow, _run
+
+    seen: list[Any] = []
+    previous = object()
+
+    class _ProbingWorkflow(_FakeWorkflow):
+        _probe_cancel_event: Any = previous
+
+        def set_probe_cancel_event(self, event):
+            self._probe_cancel_event = event
+
+    def work(signals):  # fil du worker : jeton de l'opération posé
+        seen.append(wf._probe_cancel_event)
+        signals.finished.emit("encoded")
+
+    wf = _ProbingWorkflow(work)
+    token = CancelToken()
+    result, _logger, _events = _run(tmp_path, wf, cancel=token)
+    assert result == "encoded" and seen == [token.event] and wf._probe_cancel_event is previous

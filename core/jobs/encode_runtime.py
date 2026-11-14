@@ -228,6 +228,12 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
     raise ApiError(error_code(outcome.exception), outcome.message, logged=True)
 
 
-def preview_encode(encode_config: EncodeConfig, wf: EncodeWorkflow) -> str:
-    """Commande(s) prévue(s) de l'encodage (préparation « à blanc », comme « Copier » du panneau)."""
-    return wf.preview_command(encode_config)
+def preview_encode(encode_config: EncodeConfig, wf: EncodeWorkflow,
+                   cancel_event: threading.Event | None = None) -> str:
+    """Commande(s) prévue(s) de l'encodage (préparation « à blanc », comme « Copier » du panneau).
+
+    ``cancel_event`` : posé sur le workflow pendant la construction (la préparation à blanc peut relancer
+    les sondes internes, bandes L5 du RPU).
+    """
+    with probe_cancel_scope(wf, cancel_event):
+        return wf.preview_command(encode_config)

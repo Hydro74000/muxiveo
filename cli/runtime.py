@@ -86,7 +86,7 @@ def preview_encode_config(config: AppConfig, options: CommonOptions, logger: Job
         for error in errors:
             logger.emit("error", error)
         return EXIT_VALIDATION
-    print(preview_encode(encode_config, wf))
+    print(preview_encode(encode_config, wf, cancel_event))
     return EXIT_OK
 
 
