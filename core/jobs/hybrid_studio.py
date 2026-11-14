@@ -237,13 +237,18 @@ def check_outputs(prepared: Sequence[PreparedEpisode], template: str = "") -> No
     ])
 
 
-def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path) -> list[Path]:
-    """Exact-jobs finalisés des épisodes préparés (« Sauvegarder les workflows » du Studio)."""
+def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
+                encode: dict[str, Any] | None = None) -> list[Path]:
+    """Exact-jobs finalisés des épisodes préparés (« Sauvegarder les workflows » du Studio).
+
+    ``encode`` : bloc d'encodage de la commande, conservé dans chaque job exact.
+    """
     from core.profiles.selectors import remux_config_to_exact_job
     from core.workflows.workflow_store import save_workflow
 
     ready = [item.remux_config for item in prepared if item.remux_config is not None]
-    payloads = [(directory / (config.output.stem + ".exact-job.json"), remux_config_to_exact_job(config))
+    payloads = [(directory / (config.output.stem + ".exact-job.json"),
+                 {**remux_config_to_exact_job(config), **({"encode": encode} if encode is not None else {})})
                 for config in ready]
     if len({path for path, _payload in payloads}) != len(payloads):
         raise JobError("Plusieurs workflows portent le même nom.", EXIT_VALIDATION)

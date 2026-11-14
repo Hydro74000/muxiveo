@@ -327,6 +327,7 @@ def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path,
     result=HdrInspectResult,
     summary="Inspection HDR : en-têtes, RPU / HDR10+, mesure de l'image, comparaison, FEL Analyzer, rapport.",
     long_running=True,
+    mutating=True,
     uses_gpu=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )

@@ -96,7 +96,8 @@ def _audio_scanner(request: SyncScanRequest, ctx: ExecutionContext) -> Any:
 
 @operation("sync.scan", request=SyncScanRequest, result=SyncScanResult,
            summary="Analyser le calage d'une piste (audio ou sous-titres) face à une référence.",
-           long_running=True, errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
+           long_running=True, mutating=True,
+           errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult:
     ffprobe, ffmpeg = ctx.tool("ffprobe"), ctx.tool("ffmpeg")
     detect = ctx.port("detect_stream_kind", detect_stream_kind)

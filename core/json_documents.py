@@ -64,20 +64,25 @@ def _resolve(value: Any, base_dir: Path) -> Any:
     return str(base_dir / value)
 
 
-def _resolve_source_item(item: dict[str, Any], base_dir: Path) -> dict[str, Any]:
-    resolved = dict(item, path=_resolve(item.get("path"), base_dir))
-    sync = resolved.get("sync")
+def _resolve_sync(item: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    """Calibration d'un bloc ``sync`` (source ou piste) donnée par un fichier."""
+    sync = item.get("sync")
     if isinstance(sync, dict) and isinstance(sync.get("calibration"), str):
-        resolved["sync"] = dict(sync, calibration=_resolve(sync["calibration"], base_dir))
-    return resolved
+        return dict(item, sync=dict(sync, calibration=_resolve(sync["calibration"], base_dir)))
+    return item
+
+
+def _resolve_source_item(item: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    return _resolve_sync(dict(item, path=_resolve(item.get("path"), base_dir)), base_dir)
 
 
 def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     """Copie de ``job`` dont les chemins relatifs sont résolus depuis ``base_dir``.
 
     Champs concernés : ``sources`` (chaînes ou objets ``path``, ``sync.calibration``), ``input``,
-    ``extra_attachments``, ``chapters.import`` et ``output``.
-    ``output_template`` n'est pas un chemin et reste inchangé.
+    ``extra_attachments``, ``chapters.import``, ``output``, ``calibration``, ``tracks[].sync.calibration``
+    et ``encode.preset`` quand il désigne un fichier (``.json``, séparateur, fichier présent ; sinon nom
+    d'un preset enregistré). ``output_template`` n'est pas un chemin et reste inchangé.
     """
     resolved = dict(job)
     base_dir = Path(base_dir)
@@ -103,7 +108,22 @@ def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any
         resolved["chapters"] = dict(chapters, **{"import": _resolve(chapters["import"], base_dir)})
     if "output" in resolved:
         resolved["output"] = _resolve(resolved["output"], base_dir)
+    if isinstance(resolved.get("calibration"), str):
+        resolved["calibration"] = _resolve(resolved["calibration"], base_dir)
+    tracks = resolved.get("tracks")
+    if isinstance(tracks, list):
+        resolved["tracks"] = [_resolve_sync(item, base_dir) if isinstance(item, dict) else item for item in tracks]
+    encode = resolved.get("encode")
+    if isinstance(encode, dict) and isinstance(encode.get("preset"), str) and _is_file_reference(
+            encode["preset"], base_dir):
+        resolved["encode"] = dict(encode, preset=_resolve(encode["preset"], base_dir))
     return resolved
+
+
+def _is_file_reference(value: str, base_dir: Path) -> bool:
+    """Preset désigné par un fichier plutôt que par son nom."""
+    return (value.lower().endswith(".json") or "/" in value or "\\" in value
+            or (Path(base_dir) / value).is_file())
 
 
 __all__ = ["JsonDocumentError", "parse_json_text", "read_json_document", "resolve_document_paths"]

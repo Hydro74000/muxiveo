@@ -133,7 +133,7 @@ COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
                 "encode -i film.mkv -o sortie.mkv --encode-preset \"Films 4K\" --preview-image 600")),
     "batch": ("Appliquer un gabarit (ou un profil) à un lot de jobs ou de fichiers ; collisions refusées avant "
               "le premier job.", ("batch --template gabarit.json --input-dir /films --output-dir /sorties",
-                                  "batch --batch jobs.json --continue-on-error --summary bilan.json")),
+                                  "batch --template gabarit.json --batch jobs.json --continue-on-error --summary bilan.json")),
     "extract": ("Extraire des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes.",
                 ("extract -i film.mkv --track a:0 --output-dir pistes/",
                  "extract -i film.mkv --track v:0 --layer el -o film.el.hevc")),

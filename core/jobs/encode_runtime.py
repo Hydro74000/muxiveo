@@ -121,6 +121,18 @@ def _dimensions(wf: EncodeWorkflow, video: VideoEncodeSettings, config: EncodeCo
     return int(track.width), int(track.height)
 
 
+def checked_encode(encode_config: EncodeConfig, wf: EncodeWorkflow, *, config: Any, options: CommonOptions,
+                   accept_dovi_nvenc_crop: bool = False,
+                   logger: JobLogger | None = None) -> tuple[EncodeConfig, list[str]]:
+    """Configuration effective (géométrie DV NVENC) et refus du workflow, comme au lancement de :func:`run_encode`."""
+    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
+    try:
+        encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger)
+    except JobError as exc:
+        return encode_config, [exc.message]
+    return encode_config, list(wf.validate(encode_config))
+
+
 def run_encode(
     encode_config: EncodeConfig,
     *,

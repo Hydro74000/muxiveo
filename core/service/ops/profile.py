@@ -49,6 +49,13 @@ class ProfileJobRequest(Model):
                                      description="Métadonnées du job (tmdb, output_template, mux_backend…).")
     encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` (voir le schéma des jobs).")
 
+    @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés inconnues du bloc ``encode`` (refusées en requête, signalées en CLI)."""
+        from core.service.schemas.encode import encode_block_issues
+
+        return encode_block_issues(values.get("encode"), "encode")
+
 
 @dataclass(frozen=True)
 class ProfilePreviewRequest(ProfileJobRequest):
@@ -137,11 +144,12 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
 
 def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: ExecutionContext):
     return resolve_from_job(request.encode, remux_config, config=ctx.config, options=options,
-                            logger=EmitterLogger(ctx.events))
+                            logger=EmitterLogger(ctx.events), report_unknown=False)
 
 
 @operation("profile.apply", request=ProfileApplyRequest, result=MediaRunResult,
-           summary="Appliquer un profil à des sources et remuxer.", long_running=True, mutating=True,
+           summary="Appliquer un profil à des sources et remuxer (ou encoder).", long_running=True, mutating=True,
+           uses_gpu=True,
            errors=(ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY, ErrorCode.TOOL_MISSING,
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaRunResult:

@@ -650,7 +650,7 @@ muxiveo --cli batch [-h] [--sync-mode {physical,container}] [--sync-subtitles {m
 
 ```bash
 muxiveo --cli batch --template gabarit.json --input-dir /films --output-dir /sorties
-muxiveo --cli batch --batch jobs.json --continue-on-error --summary bilan.json
+muxiveo --cli batch --template gabarit.json --batch jobs.json --continue-on-error --summary bilan.json
 ```
 
 ### `extract`
@@ -2679,23 +2679,23 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `config.set` | Écrire un réglage dans config.ini (comme Enregistrer du panneau Paramètres). | écrit |
 | `config.show` | Réglages : valeur effective et provenance (config.ini, réglage de l'interface, défaut). | — |
 | `config.unset` | Retirer la surcharge config.ini d'un réglage (le réglage de l'interface peut réapparaître). | écrit |
-| `encode.preview_capture` | Aperçu réel d'un job encodé : images ou extrait vidéo encodés avec les réglages du job. | longue, GPU |
+| `encode.preview_capture` | Aperçu réel d'un job encodé : images ou extrait vidéo encodés avec les réglages du job. | longue, écrit, GPU |
 | `encode_preset.delete` | Supprimer un preset d'encodage enregistré. | écrit |
 | `encode_preset.export` | Exporter un preset d'encodage dans un fichier JSON. | écrit |
 | `encode_preset.import` | Importer un preset d'encodage depuis un fichier JSON. | écrit |
 | `encode_preset.list` | Presets d'encodage enregistrés (communs avec l'interface). | — |
 | `encode_preset.save` | Enregistrer un preset d'encodage d'après ses champs. | écrit |
 | `encode_preset.show` | Contenu d'un preset d'encodage. | — |
-| `hdr.inspect` | Inspection HDR : en-têtes, RPU / HDR10+, mesure de l'image, comparaison, FEL Analyzer, rapport. | longue, GPU |
+| `hdr.inspect` | Inspection HDR : en-têtes, RPU / HDR10+, mesure de l'image, comparaison, FEL Analyzer, rapport. | longue, écrit, GPU |
 | `hdr.patch` | Corriger les métadonnées HDR sans réencodage : MaxCLL/MaxFALL, MDCV, RPU (L6, L5, L11, écran, CM v4.0), HDR10+ (retrait, TSDML, profil A, plafond, recalcul), réalignement d'après la mesure. | longue, écrit, GPU |
-| `hybrid.plan` | Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; exact-jobs finalisés et recette effective en option. | longue |
+| `hybrid.plan` | Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; exact-jobs finalisés et recette effective en option. | longue, écrit |
 | `hybrid.run` | Hybrider une paire ou une saison (moteur du Hybrid Studio) : vidéo du master, audio / sous-titres des donneurs calés ; encodage par épisode avec le bloc `encode`. | longue, écrit, GPU |
-| `media.batch` | Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance. | longue, écrit |
+| `media.batch` | Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance. | longue, écrit, GPU |
 | `media.bluray_titles` | Lister les titres (playlists) d'un Blu-ray avant sélection, du plus long au plus court : durée, segments, flux, taille. | — |
 | `media.extract` | Extraire des pistes (flux élémentaire ou Matroska), couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes. | longue, écrit |
 | `media.inspect` | Inspecter des sources : pistes, HDR, chapitres, pièces jointes ; ou générer un exact-job minimal. | — |
 | `media.preview` | Résoudre un job de remux et afficher les commandes prévues. | — |
-| `media.run` | Exécuter un job de remux (ou enregistrer son job exact). | longue, écrit |
+| `media.run` | Exécuter un job de remux ou d'encodage (ou enregistrer son job exact). | longue, écrit, GPU |
 | `media.validate` | Résoudre et valider un job de remux sans l'exécuter. | — |
 | `nvencc.install` | Installer ou mettre à jour NVEncC (paquet apt/dnf, sinon dossier utilisateur). | longue, écrit |
 | `nvencc.remove` | Supprimer la copie utilisateur de NVEncC (un paquet système se retire par apt / dnf). | écrit |
@@ -2704,9 +2704,9 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `plugins.list` | État des extensions (installées, compatibles, mises à jour). | — |
 | `plugins.remove` | Supprimer une extension (et le cache de ses moteurs). | écrit |
 | `plugins.update` | Mettre à jour une extension, ou toutes celles installées. | longue, écrit, GPU |
-| `profile.apply` | Appliquer un profil à des sources et remuxer. | longue, écrit |
-| `profile.batch` | Appliquer un profil décisionnel à un lot de fichiers ; collisions refusées d'avance. | longue, écrit |
-| `profile.capture` | Capturer un profil décisionnel d'après un job (sélection, métadonnées, flags, ordre, variantes). | longue |
+| `profile.apply` | Appliquer un profil à des sources et remuxer (ou encoder). | longue, écrit, GPU |
+| `profile.batch` | Appliquer un profil décisionnel à un lot de fichiers ; collisions refusées d'avance. | longue, écrit, GPU |
+| `profile.capture` | Capturer un profil décisionnel d'après un job (sélection, métadonnées, flags, ordre, variantes). | longue, écrit |
 | `profile.delete` | Supprimer un profil décisionnel enregistré. | écrit |
 | `profile.list` | Profils décisionnels enregistrés (communs avec l'interface). | — |
 | `profile.preview` | Appliquer un profil à des sources sans exécuter : pistes retenues, décisions, commandes. | — |
@@ -2714,7 +2714,7 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `profile.show` | Contenu d'un profil décisionnel enregistré. | — |
 | `profile.validate` | Valider un profil décisionnel v1. | — |
 | `schema.get` | Schémas JSON publiés : contrat des jobs, profils, catalogue de l'API. | — |
-| `sync.scan` | Analyser le calage d'une piste (audio ou sous-titres) face à une référence. | longue |
+| `sync.scan` | Analyser le calage d'une piste (audio ou sous-titres) face à une référence. | longue, écrit |
 | `sync.shift_subtitles` | Recaler un fichier de sous-titres texte (décalage ou calibration). | écrit |
 | `sync.waveform` | Forme d'onde d'une piste audio sur une plage (pics par tranche), données du Synchro Studio. | longue |
 | `system.capabilities` | Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO. | GPU |

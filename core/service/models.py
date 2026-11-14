@@ -57,6 +57,8 @@ class _Parse:
     allow_relative: bool
     errors: list[ErrorDetail]
     warnings: list[ErrorDetail]
+    #: Documents portés par la requête (job, template…) : refus (requête API) ou avertissement (CLI).
+    strict_documents: bool = True
 
     def fail(self, path: str, message: str) -> None:
         self.errors.append(ErrorDetail(path, message))
@@ -73,14 +75,18 @@ class Model:
         strict: bool = True,
         base_dir: Path | None = None,
         allow_relative: bool = False,
+        strict_documents: bool | None = None,
     ) -> tuple[M, tuple[ErrorDetail, ...]]:
         """Construit le modèle depuis un objet JSON ; renvoie aussi les avertissements (mode tolérant).
 
         Chemins relatifs : résolus depuis ``base_dir`` ; conservés tels quels avec
         ``allow_relative`` (arguments historiques du CLI) ; refusés sinon.
+        ``strict_documents`` (défaut : ``strict``) : écarts des documents portés (``document_issues``)
+        refusés ou rendus en avertissements (documents historiques du CLI, toujours tolérants).
         Toute erreur lève :class:`ApiError` ``invalid_request`` avec un détail par champ.
         """
-        state = _Parse(strict, base_dir, allow_relative, [], [])
+        state = _Parse(strict, base_dir, allow_relative, [], [],
+                       strict if strict_documents is None else strict_documents)
         value = _parse_model(cls, data, "", state)
         if state.errors or value is None:
             raise ApiError(ErrorCode.INVALID_REQUEST, "Requête invalide.", details=state.errors)
@@ -160,6 +166,13 @@ def _parse_model(cls: type, data: Any, path: str, state: _Parse) -> Any:
         values[name] = value
     if len(state.errors) > errors_before:
         return None
+    issues = getattr(cls, "document_issues", None)
+    if issues is not None:
+        for child, message in issues(values):
+            (state.errors if state.strict_documents else state.warnings).append(
+                ErrorDetail(_join(path, child), message))
+        if len(state.errors) > errors_before:
+            return None
     resolve = getattr(cls, "resolve_relative_paths", None)
     if resolve is not None and state.base_dir is not None and not state.allow_relative:
         values = resolve(values, state.base_dir)

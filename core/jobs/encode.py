@@ -53,6 +53,7 @@ from core.workflows.encode.planning.track_settings import (
     EncoderEnvironment,
     SourceVideoContext,
     apply_preset_to_state,
+    preset_problem,
     default_video_state,
     extract_hdr_meta_fields,
     is_pure_copy,
@@ -379,11 +380,18 @@ def resolve_encode(
         master_display, max_cll = extract_hdr_meta_fields(raw, mediainfo_json=info.mediainfo_json or {})
         ctx = SourceVideoContext.from_file_info(info, track.mkv_tid, master_display=master_display, max_cll=max_cll)
         state = default_video_state(ctx, env)
-        if preset is not None:
-            state = apply_preset_to_state(state, preset, ctx, env)
-        intents: set[str] = set()
         layers: list[VideoEncodeSpec] = [video_block.default] if video_block is not None and video_block.default else []
         layers += per_track.get(track.entry_id, [])
+        if preset is not None:
+            # Mêmes refus que « Charger » du panneau Encodage, jamais de normalisation silencieuse.
+            tonemap = bool(state.get("tonemap_to_sdr")) or any(
+                layer.tonemap is not None and bool(layer.tonemap.enabled) for layer in layers)
+            problem = preset_problem(preset.to_video_settings(), ctx, env, tonemap=tonemap)
+            if problem:
+                raise _fail(f"preset « {block.preset} » non applicable à la vidéo {source.file_index}:"
+                            f"{track.mkv_tid} : {problem}")
+            state = apply_preset_to_state(state, preset, ctx, env)
+        intents: set[str] = set()
         for layer in layers:
             intents |= apply_video_spec(state, layer, env)
         state = normalize_video_state(state, ctx, env)
@@ -489,8 +497,13 @@ def resolve_from_job(
     options: Any,
     logger: JobLogger | None = None,
     cache: Any = None,
+    report_unknown: bool = True,
 ) -> ResolvedEncode | None:
-    """Bloc ``encode`` brut d'un job résolu ; ``None`` sans bloc. Sources inspectées (cache réutilisé si fourni)."""
+    """Bloc ``encode`` brut d'un job résolu ; ``None`` sans bloc. Sources inspectées (cache réutilisé si fourni).
+
+    Document tolérant : clé inconnue ignorée, signalée au journal sauf ``report_unknown=False`` (déjà
+    contrôlée à la lecture de la requête : refusée par l'API, signalée par le CLI).
+    """
     if raw_block is None:
         return None
     import functools
@@ -498,7 +511,10 @@ def resolve_from_job(
     from core.inspector import FileInspector
     from core.workflows.encode.runtime.crop_detector import detect_video_crop
 
-    block = EncodeBlock.from_dict(raw_block)
+    block, unknown = EncodeBlock.parse(raw_block, strict=False)
+    if report_unknown and logger is not None:
+        for detail in unknown:
+            logger.emit("warning", f"encode : clé inconnue ignorée : {detail.path}")
     ffprobe = str(getattr(options, "ffprobe", None) or config.tool_ffprobe)
     inspector = FileInspector(ffprobe_bin=ffprobe, mediainfo_bin=str(getattr(options, "mediainfo", None)
                                                                       or config.tool_mediainfo))

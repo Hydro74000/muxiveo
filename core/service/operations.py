@@ -152,19 +152,21 @@ def call(
     strict: bool = True,
     base_dir: Path | None = None,
     allow_relative: bool = False,
+    strict_documents: bool | None = None,
 ) -> Model:
     """Valide ``payload`` pour l'opération ``name`` puis l'exécute (mode strict par défaut).
 
-    En mode tolérant, chaque clé inconnue devient un événement ``warning``.
+    En mode tolérant (requête, ou seulement ses documents : ``strict_documents=False``), chaque
+    clé inconnue devient un événement ``warning``.
     """
     try:
         spec = catalog.get(name)
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=base_dir,
-                                               allow_relative=allow_relative)
+                                               allow_relative=allow_relative, strict_documents=strict_documents)
     except ApiError as error:
         ctx.events.error(error.to_dict())
         ctx.events.state(JobState.FAILED, operation=name)
         raise
     for warning in warnings:
-        ctx.events.warning(warning.message, code="unknown_key", path=warning.path)
+        ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
     return execute(spec, request, ctx)

@@ -43,9 +43,12 @@ def test_examples_parse():
             if not command:
                 continue
             try:
-                parser.parse_args(shlex.split(command))
+                args = parser.parse_args(shlex.split(command))
             except SystemExit as exc:  # pragma: no cover - message utile en cas d'échec
                 pytest.fail(f"Exemple invalide ({' '.join(path)}) : {command} [{exc}]")
+            # Règles vérifiées par les commandes elles-mêmes (après argparse).
+            if args.command == "batch":
+                assert args.template or args.profile, f"batch sans --template ni --profile : {command}"
 
 
 def test_help_strings_are_translated():
@@ -95,6 +98,13 @@ def test_documented_examples_are_valid():
             validator(document)
         elif "version" in document or "sources" in document:
             validate_job_contract(document)
+        if "sources" in document:  # job : contrat strict de l'API (clés, bloc encode)
+            from core.jobs.schema import unknown_job_keys
+            from core.service.schemas.encode import EncodeBlock
+
+            assert unknown_job_keys(document) == [], path.name
+            if "encode" in document:
+                EncodeBlock.from_dict(document["encode"])
 
 
 def test_help_command_and_english_rendering(capsys):

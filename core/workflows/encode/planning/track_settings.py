@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -495,6 +495,50 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
     for key in PER_SOURCE_HDR_KEYS:
         state[key] = own.get(key, "")
     return normalize_video_state(state, ctx, env)
+
+
+def preset_problem(
+    settings: VideoEncodeSettings,
+    ctx: SourceVideoContext,
+    env: EncoderEnvironment | None = None,
+    *,
+    tonemap: bool = False,
+    codecs: Collection[str] | None = None,
+    rate_controls: Collection[str] | None = None,
+    presets: Sequence[str] | None = None,
+) -> str:
+    """Raison pour laquelle un preset ne s'applique pas à cette piste (« Charger » du panneau) ; ``""`` sinon.
+
+    Refus explicite, jamais de normalisation silencieuse. ``codecs`` / ``rate_controls`` / ``presets`` :
+    ce que la machine propose pour ``settings.codec`` (détection) ; ``None`` : catalogue (codecs non vérifiés).
+    """
+    from core.i18n import translate_text
+    from core.workflows.encode.catalog import presets_for_codec, rate_controls_for_codec
+    from core.workflows.encode.domain.codecs import rate_control_values
+    from core.workflows.encode.hdr_policy import source_is_hdr
+
+    env = env or EncoderEnvironment()
+    codec = settings.codec
+    if settings.bit_depth not in {"auto", "8", "10"}:
+        return translate_text("profondeur invalide")
+    if settings.bit_depth == "10" and not env.supports_10bit(codec):
+        return translate_text("sortie 10 bits indisponible pour {codec}", codec=codec)
+    if (settings.bit_depth == "8" and supports_hdr_output(codec) and source_is_hdr(ctx.hdr_type, ctx.transfer)
+            and not tonemap):
+        return translate_text("une sortie HDR exige une profondeur de 10 bits")
+    if codecs is not None and codec not in codecs:
+        return translate_text("codec {codec} indisponible", codec=codec)
+    rc_spec = rate_control_values(settings)[0]
+    modes = ({spec.rc_id for spec in rate_controls_for_codec(codec)} if rate_controls is None
+             else set(rate_controls))
+    if rc_spec is None or rc_spec.rc_id not in modes:
+        return translate_text("mode {mode} non supporté par {codec}",
+                              mode=rc_spec.label if rc_spec is not None else settings.quality_mode.label(),
+                              codec=codec)
+    codec_presets = presets_for_codec(codec) if presets is None else list(presets)
+    if codec_presets and settings.preset not in codec_presets:
+        return translate_text("preset {preset} inconnu pour {codec}", preset=settings.preset, codec=codec)
+    return ""
 
 
 def apply_preset_to_state(state: Mapping[str, object], preset: EncodePreset, ctx: SourceVideoContext,

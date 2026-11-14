@@ -218,6 +218,7 @@ class ProfileCaptureRequest(MediaJobRequest):
 
 
 @operation("profile.capture", request=ProfileCaptureRequest, result=ProfileDocumentResult, long_running=True,
+           mutating=True,
            summary="Capturer un profil décisionnel d'après un job (sélection, métadonnées, flags, ordre, variantes).")
 def profile_capture(request: ProfileCaptureRequest, ctx: ExecutionContext) -> ProfileDocumentResult:
     from core.profiles.decision import remux_config_to_decision_profile

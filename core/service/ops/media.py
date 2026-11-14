@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from core.inspector import FileInspector
 from core.jobs.encode import ResolvedEncode, resolve_from_job
-from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, preview_encode, run_encode
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.inspection import config_template_from_info, encode_template_from_info
 from core.jobs.logging import EmitterLogger
 from core.jobs.options import CommonOptions
@@ -139,6 +139,16 @@ class MediaJobRequest(Model):
     options: JobOptions = field(default_factory=JobOptions, description="Options du job.")
 
     @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés du job absentes du contrat v1 / exact-job (bloc ``encode`` : lecture stricte propre)."""
+        from core.jobs.schema import unknown_job_keys
+        from core.service.schemas.encode import encode_block_issues
+
+        job = values.get("job")
+        issues = [(path, "clé inconnue du contrat de job") for path in unknown_job_keys(job)]
+        return issues + encode_block_issues(job.get("encode") if isinstance(job, dict) else None, "job.encode")
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Chemins relatifs du document : depuis le dossier de la requête, comme un fichier ``--config``."""
         if isinstance(values.get("job"), dict):
@@ -209,7 +219,7 @@ def resolve_job_encode(request: MediaJobRequest, remux_config: RemuxConfig, opti
                        cache: PreparationCache, ctx: ExecutionContext) -> ResolvedEncode | None:
     """Bloc ``encode`` du job résolu (règles du panneau Encodage) ; ``None`` sans bloc."""
     return resolve_from_job(request.job.get("encode"), remux_config, config=ctx.config, options=options,
-                            logger=EmitterLogger(ctx.events), cache=cache)
+                            logger=EmitterLogger(ctx.events), cache=cache, report_unknown=False)
 
 
 def _encode_plan(resolved: ResolvedEncode | None) -> dict[str, Any] | None:
@@ -217,6 +227,11 @@ def _encode_plan(resolved: ResolvedEncode | None) -> dict[str, Any] | None:
         return None
     return {"pure_copy": resolved.pure_copy, "video": list(resolved.video), "audio": list(resolved.audio),
             "warnings": list(resolved.warnings)}
+
+
+def _accept_crop(request: MediaJobRequest) -> bool:
+    encode = request.job.get("encode")
+    return bool(isinstance(encode, dict) and encode.get("accept_dovi_nvenc_crop"))
 
 
 _JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED)
@@ -232,7 +247,12 @@ _JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_
 def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaValidateResult:
     remux_config, options, cache = _build_cached(request, ctx)
     resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
-    errors = remux_workflow(ctx.config, options).validate(remux_config)
+    if resolved is not None and resolved.config is not None:
+        # Encodage : mêmes refus qu'au lancement (géométrie DV NVENC, encodeur, presets…).
+        _config, errors = checked_encode(resolved.config, encode_workflow(ctx.config, options), config=ctx.config,
+                                         options=options, accept_dovi_nvenc_crop=_accept_crop(request))
+    else:
+        errors = remux_workflow(ctx.config, options).validate(remux_config)
     return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config),
                                encode=_encode_plan(resolved))
 
@@ -251,13 +271,13 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
     if resolved is not None and resolved.config is not None:
         # Encodage : commandes de l'EncodeWorkflow (préparation « à blanc »), comme « Copier » du panneau.
         encode_wf = encode_workflow(ctx.config, options)
-        prepare_vulkan(encode_wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg))
-        errors = encode_wf.validate(resolved.config)
+        encode_config, errors = checked_encode(resolved.config, encode_wf, config=ctx.config, options=options,
+                                               accept_dovi_nvenc_crop=_accept_crop(request))
         config = serialize_remux_config(remux_config)
         if errors:
             return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
         return MediaPreviewResult(
-            valid=True, config=config, command_text=preview_encode(resolved.config, encode_wf), encode=plan,
+            valid=True, config=config, command_text=preview_encode(encode_config, encode_wf), encode=plan,
             execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
                        "preparation_commands": [], "native_diagnostics": []},
         )
@@ -280,9 +300,10 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
     "media.run",
     request=MediaRunRequest,
     result=MediaRunResult,
-    summary="Exécuter un job de remux (ou enregistrer son job exact).",
+    summary="Exécuter un job de remux ou d'encodage (ou enregistrer son job exact).",
     long_running=True,
     mutating=True,
+    uses_gpu=True,
     errors=(*_JOB_ERRORS, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY),
 )
 def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult:

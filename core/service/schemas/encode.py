@@ -186,3 +186,19 @@ class EncodeBlock(Model):
     target_size_mb: int | None = field(default=None, minimum=1, description="Taille du fichier (mode taille).")
     accept_dovi_nvenc_crop: bool = field(
         default=False, description="Accepter le recadrage aligné imposé par Dolby Vision + NVENC.")
+
+
+def encode_block_issues(block: object, path: str) -> list[tuple[str, str]]:
+    """Clés inconnues d'un bloc ``encode`` porté par une requête (``document_issues``).
+
+    Une erreur de type n'est pas reprise ici : la résolution du bloc la refuse avec son message.
+    """
+    from core.service.errors import ApiError
+
+    if not isinstance(block, dict):
+        return []
+    try:
+        _block, warnings = EncodeBlock.parse(block, strict=False)
+    except ApiError:
+        return []
+    return [(f"{path}.{warning.path}", "clé inconnue du bloc encode") for warning in warnings]

@@ -69,6 +69,7 @@ def _deliver(source: Path, target_dir: Path, name: str) -> Path:
     result=PreviewCaptureResult,
     summary="Aperçu réel d'un job encodé : images ou extrait vidéo encodés avec les réglages du job.",
     long_running=True,
+    mutating=True,
     uses_gpu=True,
     errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )

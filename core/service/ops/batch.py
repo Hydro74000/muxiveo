@@ -70,6 +70,13 @@ class BatchRequest(Model):
     continue_on_error: bool = field(default=False, description="Poursuivre après un job en échec.")
     summary: Path | None = field(default=None, description="Rapport JSON final.")
 
+    @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés inconnues du bloc ``encode`` (refusées en requête, signalées en CLI)."""
+        from core.service.schemas.encode import encode_block_issues
+
+        return encode_block_issues(values.get("encode"), "encode")
+
 
 @dataclass(frozen=True)
 class ProfileBatchRequest(Model):
@@ -85,6 +92,13 @@ class ProfileBatchRequest(Model):
     force: bool = False
     continue_on_error: bool = False
     summary: Path | None = None
+
+    @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés inconnues du bloc ``encode`` (refusées en requête, signalées en CLI)."""
+        from core.service.schemas.encode import encode_block_issues
+
+        return encode_block_issues(values.get("encode"), "encode")
 
 
 @dataclass(frozen=True)
@@ -212,6 +226,7 @@ _BATCH_ERRORS = (ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.TOOL_M
     summary="Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance.",
     long_running=True,
     mutating=True,
+    uses_gpu=True,
     errors=_BATCH_ERRORS,
 )
 def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
@@ -257,6 +272,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
     summary="Appliquer un profil décisionnel à un lot de fichiers ; collisions refusées d'avance.",
     long_running=True,
     mutating=True,
+    uses_gpu=True,
     errors=_BATCH_ERRORS,
 )
 def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchResult:

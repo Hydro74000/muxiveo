@@ -90,9 +90,10 @@ def run_operation(
     """Exécute une opération pour une commande historique (arguments déjà validés par argparse).
 
     Chemins de l'argv conservés tels quels (relatifs au cwd) : sorties historiques inchangées.
+    Documents (``--config``, templates) tolérants : une clé hors contrat est signalée, jamais refusée.
     """
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides, ports=ports, cancel=cancel)
-    result = call(CATALOG, name, dict(payload), ctx, allow_relative=True)
+    result = call(CATALOG, name, dict(payload), ctx, allow_relative=True, strict_documents=False)
     return result, ctx
 
 

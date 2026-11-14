@@ -104,12 +104,13 @@ class Emitter:
         self.job = job or new_job_id()
         self.parent = parent
         self._seq = itertools.count(1)
-        self._lock = threading.Lock()
+        # Numérotation et livraison sous le même verrou : un job publié par plusieurs fils livre ses
+        # événements dans l'ordre de ``seq``. Réentrant : une destination peut republier sur ce job.
+        self._lock = threading.RLock()
 
     def emit(self, event_type: EventType, /, **data: Any) -> None:
         with self._lock:
-            seq = next(self._seq)
-        self.sink.emit(Event(event_type, self.job, seq, _now(), data, self.parent))
+            self.sink.emit(Event(event_type, self.job, next(self._seq), _now(), data, self.parent))
 
     def child(self, job: str | None = None) -> Emitter:
         """Émetteur d'un job enfant (même destination, ``parent`` = ce job)."""

@@ -30,7 +30,7 @@ from core.jobs.hybrid_studio import (
 )
 from core.jobs.logging import EmitterLogger
 from core.service.context import ExecutionContext
-from core.service.errors import ErrorCode
+from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.service.ops.batch import _Children
@@ -88,6 +88,13 @@ class HybridRequest(Model):
     force: bool = False
     continue_on_error: bool = False
     report_json: Path | None = field(default=None, description="Rapport JSON des épisodes.")
+
+    @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés inconnues du bloc ``encode`` (refusées en requête, signalées en CLI)."""
+        from core.service.schemas.encode import encode_block_issues
+
+        return encode_block_issues(values.get("encode"), "encode")
 
 
 @dataclass(frozen=True)
@@ -174,16 +181,39 @@ def _prepare(request: HybridRequest, ctx: ExecutionContext) -> tuple[StudioSpec,
     summary="Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; "
             "exact-jobs finalisés et recette effective en option.",
     long_running=True,
+    mutating=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED,
             ErrorCode.CANCELLED),
 )
 def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlanResult:
     spec, prepared = _prepare(request, ctx)
     ctx.cancel.raise_if_cancelled()  # préparation annulée : aucun export
+    episodes = [item.describe() for item in prepared]
+    failures = sum(1 for item in prepared if item.error is not None)
+    if request.encode is not None:
+        # Bloc `encode` résolu et validé par épisode (règles du panneau Encodage), comme à l'exécution.
+        from core.jobs.encode import resolve_from_job
+
+        logger = EmitterLogger(ctx.events)
+        for item, entry in zip(prepared, episodes):
+            if item.remux_config is None:
+                continue
+            try:
+                resolved = resolve_from_job(request.encode, item.remux_config, config=ctx.config,
+                                            options=spec.common, logger=logger, report_unknown=False)
+            except ApiError as error:
+                entry["error"] = error.render()
+                failures += 1
+                logger.emit("error", f"[HYBRID] {item.episode.display_name} : {error.render()}")
+                continue
+            if resolved is not None:
+                entry["encode"] = {"pure_copy": resolved.pure_copy, "video": list(resolved.video),
+                                   "audio": list(resolved.audio), "warnings": list(resolved.warnings)}
     exported: list[Path] = []
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)
-        exported = export_jobs(prepared, Path(request.export_jobs))
+        valid = [item for item, entry in zip(prepared, episodes) if "error" not in entry]  # encodage refusé : non exporté
+        exported = export_jobs(valid, Path(request.export_jobs), encode=request.encode)
         for path in exported:
             ctx.events.artifact("exact-job", str(path))
     if request.save_recipe is not None:
@@ -191,10 +221,9 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
 
         atomic_write_text(Path(request.save_recipe), recipe_json(spec.recipe))
         ctx.events.artifact("recipe", str(request.save_recipe))
-    failures = sum(1 for item in prepared if item.error is not None)
     status: Literal["succeeded", "partial", "failed"] = (
         "succeeded" if not failures else "failed" if failures == len(prepared) else "partial")
-    return HybridPlanResult(status=status, episodes=tuple(item.describe() for item in prepared),
+    return HybridPlanResult(status=status, episodes=tuple(episodes),
                             recipe=spec.recipe.to_dict(), exported=tuple(str(path) for path in exported))
 
 
@@ -253,7 +282,8 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 from core.profiles.selectors import remux_config_to_exact_job
                 from core.workflows.workflow_store import save_workflow
 
-                save_workflow(destination, remux_config_to_exact_job(remux_config))
+                job = remux_config_to_exact_job(remux_config)
+                save_workflow(destination, {**job, "encode": request.encode} if request.encode is not None else job)
                 entry["status"] = "exported"
             else:
                 child = children.logger(index)

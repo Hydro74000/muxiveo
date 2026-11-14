@@ -80,6 +80,7 @@ from core.workflows.encode.planning.track_settings import (
     EncoderEnvironment,
     SourceVideoContext,
     apply_codec_hdr_policy,
+    apply_preset_to_state,
     copy_state,
     default_video_state,
     effective_dynamic_hdr_flags,
@@ -91,6 +92,7 @@ from core.workflows.encode.planning.track_settings import (
     hdr_meta_from_mediainfo_json,
     is_pure_copy,
     normalize_video_state,
+    preset_problem,
     propagate_state,
     requires_dovi_profile_normalization,
     routing_video_tracks,
@@ -3988,93 +3990,43 @@ class EncodePanel(QWidget):
             self._refresh_profiles()
             return
         preset = presets[name]
-        vs = preset.to_video_settings()
         # Profil validé avant toute modification : un codec, mode ou preset
         # indisponible ne doit pas appliquer le reste au codec courant.
-        problem = self._profile_incompatibility(vs)
+        problem = self._profile_incompatibility(preset.to_video_settings())
         if problem:
             self.log_message.emit(
                 "WARN",
                 translate_text("Profil « {name} » non chargé : {reason}", name=name, reason=problem),
             )
             return
-        self._bake_fel_choice = vs.bake_dovi_fel
-        self._fel_device_choice = vs.fel_device
-        self._fel_device_combo.set_choice(vs.fel_device)
-        self._fel_precision_choice = vs.fel_precision
-        self._fel_precision_combo.set_choice(vs.fel_precision)
-        self._fel_hdr10plus_choice = vs.fel_hdr10plus
-        # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
-        for i in range(self._codec_combo.count()):
-            if self._codec_combo.itemData(i) == vs.codec:
-                self._codec_combo.setCurrentIndex(i)
-                break
-        # Mode de débit (après refresh par _on_codec_changed) ; ancien format migré.
-        rc_spec, rc_quality = rate_control_values(vs)
-        if rc_spec is not None:
-            self._set_combo_data(self._mode_combo, rc_spec.rc_id)
-        # Preset codec
-        for i in range(self._preset_combo.count()):
-            if self._preset_combo.itemData(i) == preset.preset:
-                self._preset_combo.setCurrentIndex(i)
-                break
-        self._crf_slider.setValue(vs.crf)
-        self._cq_slider.setValue(vs.cq)
-        if rc_spec is not None and rc_spec.uses_quality:
-            target = self._crf_spin if rc_spec.family == QualityMode.CRF.value else self._cq_spin
-            target.setValue(rc_quality)
-        self._bitrate_edit.setText(str(vs.bitrate_kbps))
-        self._size_edit.setText(str(vs.target_size_mb))
-        self._extra_params.setText(vs.extra_params)
-        self._set_combo_data(self._bit_depth_combo, vs.bit_depth)
-        self._apply_resize_settings(vs.resize)
-        self._apply_crop_settings(vs.crop)
-        self._apply_filter_settings(vs.filters)
-        self._apply_interpolation_settings(vs.interpolation)
-        self._apply_denoise_settings(vs.filters, vs.restoration)
-        # Les options HDR (inject_hdr_meta / master_display / max_cll /
-        # tonemap_to_sdr) dépendent de la source, pas du profil — un même
-        # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
-        # sans imposer/écraser ce qui a été détecté côté source.
-        idx_algo = next((i for i in range(self._tonemap_algo.count())
-                         if self._tonemap_algo.itemData(i) == vs.tonemap_algorithm), 0)
-        self._tonemap_algo.setCurrentIndex(idx_algo)
+        # Application partagée avec le CLI (`apply_preset_to_state`) : les options HDR (inject_hdr_meta,
+        # master_display, max_cll, tonemap_to_sdr, copies DV / HDR10+) dépendent de la source, pas du profil.
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        ctx = self._source_context(*current) if current is not None else SourceVideoContext()
+        self._apply_video_state(apply_preset_to_state(self._current_video_state(), preset, ctx,
+                                                      self._encoder_environment()))
         self._save_current_video_state()
         self._rebuild_preview()
         self.log_message.emit("OK", translate_text("Profil chargé : {name}", name=name))
 
     def _profile_incompatibility(self, vs: VideoEncodeSettings) -> str:
-        """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible)."""
-        if vs.bit_depth not in {"auto", "8", "10"}:
-            return translate_text("profondeur invalide")
-        if vs.bit_depth == "10" and not self._codec_supports_10bit(vs.codec):
-            return translate_text("sortie 10 bits indisponible pour {codec}", codec=vs.codec)
-        if vs.bit_depth == "8" and supports_hdr_output(vs.codec) and self._selected_source_is_hdr() and not self._tonemap_cb.isChecked():
-            return translate_text("une sortie HDR exige une profondeur de 10 bits")
+        """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible) : règle du cœur, détection du panneau."""
         model = self._codec_combo.model()
         available = {
             self._codec_combo.itemData(i)
             for i in range(self._codec_combo.count())
             if model.flags(model.index(i, 0)) & Qt.ItemFlag.ItemIsEnabled
         }
-        if vs.codec not in available:
-            return translate_text("codec {codec} indisponible", codec=vs.codec)
-        rc_spec = rate_control_values(vs)[0]
-        available_modes = {spec.rc_id for spec in self._available_rate_controls(vs.codec)}
-        if rc_spec is None or rc_spec.rc_id not in available_modes:
-            return translate_text(
-                "mode {mode} non supporté par {codec}",
-                mode=rc_spec.label if rc_spec is not None else vs.quality_mode.label(),
-                codec=vs.codec,
-            )
-        codec_presets = self._available_presets(vs.codec)
-        if codec_presets and vs.preset not in codec_presets:
-            return translate_text(
-                "preset {preset} inconnu pour {codec}",
-                preset=vs.preset,
-                codec=vs.codec,
-            )
-        return ""
+        return preset_problem(
+            vs,
+            SourceVideoContext(hdr_type=self._selected_video_hdr_type(), transfer=self._selected_video_transfer()),
+            self._encoder_environment(),
+            tonemap=self._tonemap_cb.isChecked(),
+            codecs=available,
+            rate_controls={spec.rc_id for spec in self._available_rate_controls(vs.codec)},
+            presets=self._available_presets(vs.codec),
+        )
 
     def _save_profile(self) -> None:
         name = self._profile_name.text().strip()

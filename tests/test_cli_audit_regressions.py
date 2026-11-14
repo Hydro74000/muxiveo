@@ -334,3 +334,127 @@ def test_no_sudo_never_elevates(monkeypatch, tmp_path):
     args = build_parser().parse_args(["nvencc", "install", "--no-sudo"])
     cmd_nvencc(args, SimpleNamespace(), SimpleNamespace(emit=lambda *a, **k: None))  # type: ignore[arg-type]
     assert seen["payload"]["elevate"] is False
+
+
+# --- Groupe 5 : validation encode, contrat strict, chemins, Hybrid, catalogue, événements -----------
+
+
+def test_job_keys_outside_the_contract_are_refused_by_the_api_and_reported_by_the_cli(tmp_path):
+    from core.service.errors import ApiError
+    from core.service.ops.media import MediaJobRequest
+
+    job = {"version": 1, "sources": [{"path": str(tmp_path / "a.mkv"), "sycn": {}}], "typo": 1,
+           "encode": {"video": {"default": {"crff": 20}}}, "_interne": True}
+    with pytest.raises(ApiError) as caught:
+        MediaJobRequest.parse({"job": job})
+    assert {d.path for d in caught.value.details} == {"job.typo", "job.sources[0].sycn", "job.encode.video.default.crff"}
+    _request, warnings = MediaJobRequest.parse({"job": job}, strict_documents=False)
+    assert {w.path for w in warnings} == {"job.typo", "job.sources[0].sycn", "job.encode.video.default.crff"}
+    clean = {"version": 1, "sources": [{"path": str(tmp_path / "a.mkv")}], "tracks": [{"selector": {"type": "audio"},
+                                                                                      "language": "fre"}]}
+    assert MediaJobRequest.parse({"job": clean})[1] == ()
+
+
+def test_document_paths_cover_track_calibrations_and_preset_files(tmp_path):
+    from core.json_documents import resolve_document_paths
+
+    (tmp_path / "rapide").write_text("{}", encoding="utf-8")
+    job = {"calibration": "c.json", "tracks": [{"sync": {"calibration": "t.json"}}, {"language": "fre"}],
+           "encode": {"preset": "presets/x.json"}}
+    resolved = resolve_document_paths(job, tmp_path)
+    assert resolved["calibration"] == str(tmp_path / "c.json")
+    assert resolved["tracks"] == [{"sync": {"calibration": str(tmp_path / "t.json")}}, {"language": "fre"}]
+    assert resolved["encode"]["preset"] == str(tmp_path / "presets/x.json")
+    assert resolve_document_paths({"encode": {"preset": "Mon preset"}}, tmp_path)["encode"]["preset"] == "Mon preset"
+    assert resolve_document_paths({"encode": {"preset": "rapide"}}, tmp_path)["encode"]["preset"] == str(
+        tmp_path / "rapide")
+
+
+def test_hybrid_plan_resolves_and_exports_the_encode_block(monkeypatch, tmp_path):
+    from core.jobs.encode import ResolvedEncode
+    from core.jobs.errors import JobError
+    from core.service.ops import hybrid as hybrid_ops
+
+    def episode(name):
+        config = SimpleNamespace(output=tmp_path / f"{name}.mkv")
+        return SimpleNamespace(error=None, remux_config=config, episode=SimpleNamespace(display_name=name),
+                               describe=lambda: {"episode": name})
+
+    items = [episode("E01"), episode("E02")]
+    spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None, common=None)
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
+    monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a: None)
+
+    def resolve(block, remux_config, **_kwargs):
+        if remux_config.output.stem == "E02":
+            raise JobError("encode : preset inconnu", 3)
+        return ResolvedEncode(config=SimpleNamespace(), video=({"codec": "libx265"},))
+
+    monkeypatch.setattr("core.jobs.encode.resolve_from_job", resolve)
+    monkeypatch.setattr("core.profiles.selectors.remux_config_to_exact_job", lambda config: {"version": 1})
+    block = {"video": {"default": {"codec": "libx265"}}}
+    request = hybrid_ops.HybridPlanRequest.from_dict({"output_dir": str(tmp_path), "encode": block,
+                                                      "export_jobs": str(tmp_path / "jobs")})
+    result = hybrid_ops.hybrid_plan.handler(request, _ctx())
+    assert result.status == "partial"
+    assert result.episodes[0]["encode"]["video"] == [{"codec": "libx265"}] and "preset" in result.episodes[1]["error"]
+    assert [Path(p).name for p in result.exported] == ["E01.exact-job.json"]
+    assert json.loads(Path(result.exported[0]).read_text(encoding="utf-8"))["encode"] == block
+
+
+def test_catalog_flags_match_what_operations_do():
+    import inspect
+
+    flags = {spec.name: spec for spec in CATALOG}
+    for spec in CATALOG:
+        if "events.artifact(" in inspect.getsource(spec.handler):
+            assert spec.mutating, f"{spec.name} publie des fichiers : mutating attendu"
+    for name in ("encode.preview_capture", "hybrid.plan", "hdr.inspect", "sync.scan", "profile.capture"):
+        assert flags[name].mutating, name
+    for name in ("media.run", "media.batch", "profile.apply", "profile.batch", "hybrid.run"):
+        assert flags[name].uses_gpu, name
+    assert "artifact" in flags["hybrid.plan"].describe()["events"]
+
+
+def test_events_of_a_job_are_delivered_in_sequence_order_across_threads():
+    import threading
+
+    from core.service.events import Emitter, EventType
+
+    received: list[int] = []
+    first_inside = threading.Event()
+    release = threading.Event()
+
+    class _Sink:
+        def emit(self, event):
+            if event.seq == 1:
+                first_inside.set()
+                release.wait(2)  # livraison lente du premier événement
+            received.append(event.seq)
+
+    emitter = Emitter(_Sink())
+    slow = threading.Thread(target=emitter.emit, args=(EventType.LOG,), kwargs={"message": "a"})
+    slow.start()
+    first_inside.wait(2)
+    fast = threading.Thread(target=emitter.emit, args=(EventType.LOG,), kwargs={"message": "b"})
+    fast.start()
+    fast.join(0.2)  # sans verrou de livraison, le second serait livré pendant l'attente du premier
+    release.set()
+    slow.join(2)
+    fast.join(2)
+    assert received == [1, 2]
+
+
+def test_incompatible_preset_is_refused_by_the_cli_like_the_panel():
+    from core.jobs.errors import JobError
+    from core.workflows.encode.models import EncodePreset
+    from core.workflows.encode.planning.track_settings import SourceVideoContext, preset_problem
+
+    from tests.test_encode_request import _resolve
+
+    preset = EncodePreset(name="H10", codec="h264_nvenc", bit_depth="10", preset="p5")
+    assert "h264_nvenc" in preset_problem(preset.to_video_settings(), SourceVideoContext())  # sortie 10 bits
+    with pytest.raises(JobError, match="H10.*h264_nvenc"):
+        _resolve({"preset": "H10"}, load_preset=lambda name: preset)
+    ok = EncodePreset(name="X", codec="libx265", crf=22, preset="slow")
+    assert _resolve({"preset": "X"}, load_preset=lambda name: ok).video[0]["crf"] == 22

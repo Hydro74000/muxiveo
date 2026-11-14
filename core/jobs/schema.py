@@ -445,3 +445,51 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "rule": rule_schema,
         },
     }
+
+
+def unknown_job_keys(job: Any, *, path: str = "job") -> list[str]:
+    """Chemins des clés absentes du contrat (job v1 ou exact-job) ; clés internes ``_…`` et ``$…`` ignorées.
+
+    Le bloc ``encode`` (contrat strict propre) est vérifié par sa propre lecture.
+    """
+    if not isinstance(job, dict):
+        return []
+    schema = build_exact_job_schema_v1() if job.get("kind") == "exact-job" else build_cli_json_schema()
+    found: list[str] = []
+    _walk(job, schema, schema.get("$defs", {}), path, found, skip={"encode"})
+    return found
+
+
+def _resolve(node: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        return defs.get(ref.removeprefix("#/$defs/"), {})
+    return node
+
+
+def _walk(value: Any, node: dict[str, Any], defs: dict[str, Any], path: str, found: list[str],
+          skip: set[str] = frozenset()) -> None:  # type: ignore[assignment]
+    node = _resolve(node, defs)
+    variants = node.get("oneOf") or node.get("anyOf")
+    if variants:
+        for variant in variants:
+            variant = _resolve(variant, defs)
+            if (isinstance(value, dict) and variant.get("type") == "object") or (
+                    isinstance(value, list) and variant.get("type") == "array"):
+                _walk(value, variant, defs, path, found)
+                return
+        return
+    if isinstance(value, dict) and "properties" in node:
+        properties = node["properties"]
+        extra = node.get("additionalProperties", True)
+        for key, item in value.items():
+            child = f"{path}.{key}"
+            if key in skip or str(key).startswith(("_", "$")):
+                continue
+            if key in properties:
+                _walk(item, properties[key], defs, child, found)
+            elif extra is not False and not isinstance(extra, dict):
+                found.append(child)
+    elif isinstance(value, list) and isinstance(node.get("items"), dict):
+        for index, item in enumerate(value):
+            _walk(item, node["items"], defs, f"{path}[{index}]", found)

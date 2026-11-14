@@ -170,7 +170,7 @@ def test_call_invalid_request_and_tolerant_warnings():
     ctx, sink = _ctx()
     call(Catalog((_echo,)), "test.echo", {"name": "x", "old": 1}, ctx, strict=False)
     warning = next(e for e in sink.events if e.type is EventType.WARNING)
-    assert warning.data == {"message": "clé inconnue", "code": "unknown_key", "path": "old"}
+    assert warning.data == {"message": "clé inconnue : old", "code": "unknown_key", "path": "old"}
 
 
 def test_cancelled_before_start_reports_cancelled_state():

@@ -65,10 +65,15 @@ def _items(tmp_path: Path, *names: str) -> list[dict]:
     return [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / "out" / f"{n}.mkv")} for n in names]
 
 
+def _parent_states(sink, ctx) -> list[str]:
+    return [e.data["state"] for e in sink.events if e.job == ctx.events.job and e.type is EventType.STATE]
+
+
 def test_batch_children_have_their_own_jobs_and_states(tmp_path, doubles):
     ctx, sink = _ctx()
     result = call(CATALOG, "media.batch", _template(tmp_path, _items(tmp_path, "a", "b")), ctx)
     assert result.status == "succeeded" and (result.total, result.successes, result.failures) == (2, 2, 0)
+    assert _parent_states(sink, ctx) == [JobState.RUNNING.value, JobState.SUCCEEDED.value]
     children = {e.job for e in sink.events if e.parent == ctx.events.job}
     assert len(children) == 2
     for child in children:
@@ -79,17 +84,19 @@ def test_batch_children_have_their_own_jobs_and_states(tmp_path, doubles):
 
 def test_batch_partial_when_some_jobs_fail(tmp_path, doubles):
     doubles.plan["b.mkv"] = "fail"
-    ctx, _ = _ctx()
+    ctx, sink = _ctx()
     payload = {**_template(tmp_path, _items(tmp_path, "a", "b", "c")), "continue_on_error": True}
     result = call(CATALOG, "media.batch", payload, ctx)
     assert result.status == "partial" and (result.successes, result.failures) == (2, 1)
+    assert _parent_states(sink, ctx)[-1] == JobState.PARTIAL.value
     assert [job["status"] for job in result.jobs] == ["success", "failed", "success"]
 
 
 def test_batch_failed_when_every_job_fails(tmp_path, doubles):
     doubles.plan.update({"a.mkv": "fail"})
-    ctx, _ = _ctx()
+    ctx, sink = _ctx()
     assert call(CATALOG, "media.batch", _template(tmp_path, _items(tmp_path, "a")), ctx).status == "failed"
+    assert _parent_states(sink, ctx)[-1] == JobState.FAILED.value
 
 
 def test_cancel_during_a_job_stops_the_batch(tmp_path, doubles):
@@ -101,6 +108,7 @@ def test_cancel_during_a_job_stops_the_batch(tmp_path, doubles):
     assert result.status == "partial" and [job["status"] for job in result.jobs] == ["success", "cancelled"]
     cancelled = [e for e in sink.events if e.type is EventType.STATE and e.data["state"] == JobState.CANCELLED.value]
     assert len(cancelled) == 1 and cancelled[0].parent == ctx.events.job
+    assert _parent_states(sink, ctx)[-1] == JobState.PARTIAL.value  # un job publié avant l'annulation
 
 
 def test_cancel_after_a_published_job_keeps_it_and_skips_the_rest(tmp_path, doubles):

@@ -127,13 +127,18 @@ Règles de lecture communes à la CLI et à la GUI :
 
 - les fichiers JSON sont lus en UTF-8, avec ou sans BOM ; les constantes non
   standard `NaN`, `Infinity` et `-Infinity` sont refusées ;
-- un chemin relatif écrit dans un document JSON (`sources`, `input`,
-  `extra_attachments`, `chapters.import`, `output`) est résolu depuis le
-  **dossier de ce document**, pas depuis le répertoire courant. Le template,
+- un chemin relatif écrit dans un document JSON (`sources` et leur
+  `sync.calibration`, `input`, `extra_attachments`, `chapters.import`, `output`,
+  `calibration`, `tracks[].sync.calibration`, `encode.preset` quand il désigne un
+  fichier) est résolu depuis le **dossier de ce document**, pas depuis le
+  répertoire courant. Le template,
   le job (`--config`) et le fichier `--batch` sont résolus chacun depuis leur
   propre dossier, avant fusion ;
 - un chemin passé en ligne de commande (`-i`, `-o`, `--output-dir`…) reste
-  relatif au répertoire courant ; `output_template` n'est pas un chemin.
+  relatif au répertoire courant ; `output_template` n'est pas un chemin ;
+- une clé hors du contrat (`schema --version 1`, bloc `encode` compris) est
+  signalée par un avertissement et ignorée ; dans une requête `call`, elle est
+  refusée (`invalid_request`).
 
 Un JSON qui comptait sur le répertoire courant pour ses chemins relatifs doit
 être lancé avec des chemins absolus, ou recevoir ses chemins en ligne de commande.
