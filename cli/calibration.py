@@ -152,7 +152,8 @@ def build_calibration_request(args: argparse.Namespace) -> tuple[str, dict[str, 
 
 def cmd_calibration(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     name, request = build_calibration_request(args)
-    result, ctx = run_operation(name, request, config=config, logger=logger)
+    with interrupt_guard(CancelToken()) as cancel:  # Ctrl+C (analyse de cadence) : « cancelled », code 6
+        result, ctx = run_operation(name, request, config=config, logger=logger, cancel=cancel)
     if args.log_format == "events":
         print_json(envelope(name, ctx.events.job, result=result))
     elif getattr(result, "file", None):

@@ -177,10 +177,15 @@ def calibration_edit(request: CalibrationEditRequest, ctx: ExecutionContext) -> 
         from core.workflows.audio_sync_scan import AudioSyncScanner
 
         reference, target = request.resolve_cadence
-        scanner = AudioSyncScanner(ctx.tool("ffmpeg"), ctx.tool("ffprobe"))
-        calibration = scanner.resolve_cadence_method(
-            AudioSyncTrack(reference.path, reference.stream), AudioSyncTrack(target.path, target.stream), calibration,
-            log=lambda message: ctx.events.log("info", message))
+        scanner = AudioSyncScanner(ctx.tool("ffmpeg"), ctx.tool("ffprobe"), cancel_event=ctx.cancel.event)
+        try:
+            calibration = scanner.resolve_cadence_method(
+                AudioSyncTrack(reference.path, reference.stream), AudioSyncTrack(target.path, target.stream),
+                calibration, log=lambda message: ctx.events.log("info", message))
+        except Exception:
+            ctx.cancel.raise_if_cancelled()  # analyse interrompue par le jeton (AudioSyncError) : annulation
+            raise
+        ctx.cancel.raise_if_cancelled()  # analyse annulée : rien n'est écrit, jamais « succeeded »
     return _result(calibration, _write(calibration, request.output, request.force, ctx))
 
 
