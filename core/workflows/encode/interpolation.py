@@ -28,12 +28,13 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import run_detection, subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_detection, subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 from core.version import MVO_RIFE_CONTRACT
 
@@ -508,7 +509,8 @@ def restore_fast(video: VideoEncodeSettings, source: InterpolationSource, capabi
 
 
 def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *, model_dir: str = "",
-                     animation: bool = False, rife_bin: str = "") -> list[str]:
+                     animation: bool = False, rife_bin: str = "",
+                     cancel_event: threading.Event | None = None) -> list[str]:
     """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
     (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits,
     compensation de netteté si le moteur ``rife_bin`` la propose, statistiques des trames si MaxCLL/MaxFALL sont
@@ -520,8 +522,10 @@ def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *,
     animated = settings.animation == "on" or (settings.animation == "auto" and animation)
     args = restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
                                dither="8" if resolve_output_bit_depth(video) == 8 else "auto",
-                               sharpen=bool(rife_bin) and settings.sharpen and rife_supports(rife_bin, "restore-sharpen"),
-                               fast=restore_fast(video, source, rife_capabilities(rife_bin) if rife_bin else None))
+                               sharpen=bool(rife_bin) and settings.sharpen
+                               and rife_supports(rife_bin, "restore-sharpen", cancel_event),
+                               fast=restore_fast(video, source,
+                                                 rife_capabilities(rife_bin, cancel_event) if rife_bin else None))
     if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image débruitée (sources PQ)
         args.extend(["--frame-statistics", str(video.restore_statistics)])
         if video.restore_source_statistics is not None:
@@ -544,6 +548,7 @@ def build_rife_stage(
     trt_cache: str = "",
     interpolate: bool = True,
     restore_args: Sequence[str] = (),
+    cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
 
@@ -600,7 +605,7 @@ def build_rife_stage(
         cmd.extend(["--tta", str(int(tta))])
     # Cache des têtes RIFE : sorties identiques, réserve VRAM vérifiée par le moteur à chaque inférence,
     # sans effet en TensorRT ni sur v4.6 ; omis si le binaire ne le prend pas en charge.
-    if rife_supports(rife_bin, "feature-cache"):
+    if rife_supports(rife_bin, "feature-cache", cancel_event):  # jeton : sonde (cache froid) tuable
         cmd.append("--feature-cache")
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -730,32 +735,77 @@ def restore_support_errors(capabilities: RifeCapabilities | None, restore: Resto
     return []
 
 
-def rife_supports(rife_bin: str, option: str) -> bool:
+def rife_supports(rife_bin: str, option: str, cancel_event: threading.Event | None = None) -> bool:
     """Vrai si le binaire déclare l'option (capacités illisibles : faux)."""
-    capabilities = rife_capabilities(rife_bin)
+    capabilities = rife_capabilities(rife_bin, cancel_event)
     return capabilities is not None and capabilities.supports(option)
 
 
-def rife_capabilities(rife_bin: str, cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
-    """Capacités du binaire (None s'il est illisible) ; cache indexé sur l'identité du fichier.
+_T = TypeVar("_T")
 
-    ``cancel_event`` (opération headless) : sondes ``--version`` / ``--capabilities`` sans cache, tuées à l'annulation
-    (``ProbeCancelledError``) ; l'interface (sans jeton) garde le cache.
+
+class _EngineProbeCache:
+    """Cache de session des sondes du moteur vidéo (``--version``, ``--capabilities``).
+
+    Clé : binaire + identité du fichier, jamais un jeton ; verrou encapsulé, sonde hors verrou. Une sonde menée avec
+    un jeton (opération headless) est tuable **et** mise en cache comme les autres : les appels suivants (commandes,
+    interface) ne sondent plus. Une sonde qui lève (annulation) n'est jamais mise en cache. Au-delà de ``maxsize``
+    entrées, la plus ancienne est oubliée (comme l'ancien ``lru_cache``).
+    """
+
+    def __init__(self, maxsize: int = 8) -> None:
+        self._lock = threading.Lock()
+        self._values: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: tuple[Any, ...], probe: Callable[[], _T],
+            cancel_event: threading.Event | None = None) -> _T:
+        _raise_if_cancelled(cancel_event)  # jeton levé : jamais une valeur, même en cache
+        with self._lock:
+            if key in self._values:
+                self._values.move_to_end(key)
+                return cast(_T, self._values[key])
+        value = probe()
+        _raise_if_cancelled(cancel_event)  # sonde revenue malgré le jeton : jamais mémorisée ni rendue
+        with self._lock:
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self._maxsize:
+                self._values.popitem(last=False)
+        return value
+
+    def clear(self) -> None:
+        with self._lock:
+            self._values.clear()
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProbeCancelledError("Sonde annulée.")
+
+
+_RIFE_VERSIONS = _EngineProbeCache()
+_RIFE_CAPABILITIES = _EngineProbeCache()
+
+
+def _file_identity(path: str) -> tuple[int, int, int]:
+    try:
+        info = Path(path).stat()
+    except OSError:
+        return (0, 0, 0)
+    return (info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def rife_capabilities(rife_bin: str, cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
+    """Capacités du binaire (None s'il est illisible) ; cache de session indexé sur l'identité du fichier.
+
+    ``cancel_event`` (opération headless) : sondes ``--version`` / ``--capabilities`` tuées à l'annulation
+    (``ProbeCancelledError``, jamais mise en cache) ; résultat obtenu mis en cache comme sans jeton.
     """
     resolved = str(shutil.which(str(rife_bin)) or rife_bin)
-    try:
-        info = Path(resolved).stat()
-        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
-    except OSError:
-        identity = (0, 0, 0)
-    if cancel_event is not None:
-        return _rife_capabilities_probe(resolved, _rife_version_probe(resolved, cancel_event), cancel_event)
-    return _rife_capabilities_cached(resolved, identity)
-
-
-@functools.lru_cache(maxsize=8)
-def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> RifeCapabilities | None:
-    return _rife_capabilities_probe(rife_bin, _rife_version_cached(rife_bin, identity))
+    identity = _file_identity(resolved)
+    return _RIFE_CAPABILITIES.get((resolved, identity), lambda: _rife_capabilities_probe(
+        resolved, _cached_rife_version(resolved, identity, cancel_event), cancel_event), cancel_event)
 
 
 def _rife_capabilities_probe(rife_bin: str, version: tuple[int, int, int] | None,
@@ -788,24 +838,20 @@ def _rife_capabilities_probe(rife_bin: str, version: tuple[int, int, int] | None
     )
 
 
-def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
+def rife_version(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
     """Version annoncée par ``muxiveo-rife --version`` (None si illisible).
 
     Cache indexé sur l'identité du fichier : un binaire remplacé sur place par
-    le setup est relu sans redémarrer l'application.
+    le setup est relu sans redémarrer l'application. ``cancel_event`` : sonde tuée à l'annulation.
     """
-    try:
-        info = Path(shutil.which(str(rife_bin)) or rife_bin).stat()
-        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
-    except OSError:
-        identity = (0, 0, 0)
-    return _rife_version_cached(str(rife_bin), identity)
+    return _cached_rife_version(str(rife_bin), _file_identity(str(shutil.which(str(rife_bin)) or rife_bin)),
+                                cancel_event)
 
 
-@functools.lru_cache(maxsize=8)
-def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple[int, int, int] | None:
-    _ = identity
-    return _rife_version_probe(rife_bin)
+def _cached_rife_version(rife_bin: str, identity: tuple[int, int, int],
+                         cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
+    return _RIFE_VERSIONS.get((rife_bin, identity), lambda: _rife_version_probe(rife_bin, cancel_event),
+                              cancel_event)
 
 
 def _rife_version_probe(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
@@ -821,8 +867,8 @@ def _rife_version_probe(rife_bin: str, cancel_event: threading.Event | None = No
 
 def clear_rife_version_cache() -> None:
     """Vide les caches ``muxiveo-rife`` : versions, capacités, préréglages (tests)."""
-    _rife_version_cached.cache_clear()
-    _rife_capabilities_cached.cache_clear()
+    _RIFE_VERSIONS.clear()
+    _RIFE_CAPABILITIES.clear()
     _rife_presets_cached.cache_clear()
 
 

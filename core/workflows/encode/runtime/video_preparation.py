@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +56,8 @@ class VideoOnlyCommandBuilderCallbacks:
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
     # Accélération NVIDIA (TensorRT) : dossier de l'extension et cache des moteurs ("" = Vulkan seul).
     rife_trt_args: Callable[[], tuple[str, str]] | None = None
+    # Jeton des sondes d'une opération headless (capacités du moteur, cache froid) ; None : interface.
+    probe_cancel_event: Callable[[], threading.Event | None] | None = None
 
 
 _RAW_VIDEO_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc"})
@@ -164,6 +167,7 @@ class VideoOnlyCommandBuilder:
             pre_input_args=decode_pre,
         )
         trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
+        probe_cancel = cb.probe_cancel_event() if cb.probe_cancel_event else None
         rife = build_rife_stage(
             cb.rife_bin,
             factor=settings.factor,
@@ -177,7 +181,8 @@ class VideoOnlyCommandBuilder:
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
             interpolate=video.interpolates(),
-            restore_args=restore_args_for(video, info, rife_bin=cb.rife_bin),
+            restore_args=restore_args_for(video, info, rife_bin=cb.rife_bin, cancel_event=probe_cancel),
+            cancel_event=probe_cancel,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)

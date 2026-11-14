@@ -623,7 +623,7 @@ class EncodeWorkflow(QObject):
         plugin = self._rife_trt_plugin
         if not plugin or not self._rife_bin:
             return "", ""
-        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin))
+        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin), self._probe_cancel_event)
         if capabilities is None or not capabilities.supports("trt-plugin"):
             return "", ""
         return plugin, self._rife_trt_cache
@@ -1128,7 +1128,9 @@ class EncodeWorkflow(QObject):
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
             interpolate=video.interpolates(),
-            restore_args=_restore_args_for(video, info, rife_bin=self._rife_bin or ""),
+            restore_args=_restore_args_for(video, info, rife_bin=self._rife_bin or "",
+                                           cancel_event=self._probe_cancel_event),
+            cancel_event=self._probe_cancel_event,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 
@@ -1985,6 +1987,7 @@ class EncodeWorkflow(QObject):
                 rife_bin=self._rife_bin,
                 interpolation_source=self._interpolation_source,
                 rife_trt_args=self._rife_trt_args,
+                probe_cancel_event=lambda: self._probe_cancel_event,
             )
         )
 
@@ -3779,7 +3782,7 @@ class EncodeWorkflow(QObject):
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
                 errors.extend(_rife_support_errors(
-                    _rife_capabilities(resolved), _interpolation_preset(settings.quality, resolved),
+                    _rife_capabilities(resolved, self._probe_cancel_event), _interpolation_preset(settings.quality, resolved),
                     tta=settings.tta_passes(), rife_bin=resolved,
                 ))
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
@@ -3802,7 +3805,8 @@ class EncodeWorkflow(QObject):
             return video
         prefix = f"Piste vidéo #{index} — "
         resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
-        if not resolved or not all(_rife_supports(resolved, option) for option in ("frame-statistics", "source-statistics")):
+        if not resolved or not all(_rife_supports(resolved, option, self._probe_cancel_event)
+                                   for option in ("frame-statistics", "source-statistics")):
             self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : "
                                   + ("MaxCLL/MaxFALL de la source conservés, " if measure else "")
                                   + ("métadonnées dynamiques copiées sans contrôle, " if check else "")
@@ -3833,7 +3837,8 @@ class EncodeWorkflow(QObject):
             available = bool(rife_bin) and (Path(str(rife_bin)).is_file() or bool(shutil.which(str(rife_bin))))
             if available:
                 resolved = str(shutil.which(str(rife_bin)) or rife_bin)
-                errors.extend(_restore_support_errors(_rife_capabilities(resolved), video.restoration))
+                errors.extend(_restore_support_errors(_rife_capabilities(resolved, self._probe_cancel_event),
+                                                      video.restoration))
             if video.interpolates():
                 continue
             if not available:
