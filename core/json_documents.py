@@ -148,7 +148,7 @@ def resolve_profile_reference(value: str, base_dir: Path) -> str:
     ``.json``) lu depuis ``base_dir`` (dossier de la requête) ; sinon nom d'un profil enregistré, inchangé."""
     text = str(value or "").strip()
     path = Path(text).expanduser()
-    if not text or path.is_absolute():
+    if not text or path.is_absolute() or _is_absolute_anywhere(text):  # C:\…, \…, UNC, ~ : inchangés
         return value
     candidate = Path(base_dir) / path
     if (text.lower().endswith(".json") or candidate.is_file()
@@ -160,7 +160,7 @@ def resolve_profile_reference(value: str, base_dir: Path) -> str:
 def resolve_output_reference(value: str | None, base_dir: Path) -> str | None:
     """Sortie d'une requête (fichier, ou dossier avec ``/`` final) : relative → depuis ``base_dir``, ``/`` gardé."""
     text = str(value or "").strip()
-    if not text or Path(text).expanduser().is_absolute():
+    if not text or Path(text).expanduser().is_absolute() or _is_absolute_anywhere(text):  # conventions Windows
         return value
     resolved = str(Path(base_dir) / Path(text).expanduser())
     return resolved + "/" if text.endswith(("/", "\\")) else resolved
