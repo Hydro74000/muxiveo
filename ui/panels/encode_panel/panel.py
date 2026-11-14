@@ -2534,11 +2534,9 @@ class EncodePanel(QWidget):
                 continue
             if not state.get("default_" + name):
                 state["default_" + name] = value
-            if state.get(name, "") == expected[name]:
+            # Jamais à la place d'une saisie, même identique à la valeur attendue (marqueur explicite).
+            if state.get(name, "") == expected[name] and not state.get(f"static_hdr_{name}_manual"):
                 state[name] = value
-                state[f"static_hdr_{name}_manual"] = False  # valeur de la source
-                if self._current_video_entry_id == key:
-                    self._static_hdr_field_manual[name] = False
         if self._current_video_entry_id == key:
             # Les deux champs font partie d'une seule mise à jour : leurs
             # textChanged ne doivent pas sauvegarder un état intermédiaire.
@@ -2570,13 +2568,24 @@ class EncodePanel(QWidget):
             return
         self._hdr_meta_probe_expected = None
         expected_master_display, expected_max_cll = expected[1:]
-        # Ne pas écraser une valeur saisie par l'utilisateur pendant le probe.
-        if master_display and self._master_display.text() == expected_master_display:
-            self._static_hdr_field_manual["master_display"] = False  # valeur de la source
-            self._master_display.setText(master_display)
-        if max_cll and self._max_cll.text() == expected_max_cll:
-            self._static_hdr_field_manual["max_cll"] = False
-            self._max_cll.setText(max_cll)
+        state = (self._video_settings_by_entry_id.get(self._current_video_entry_id)
+                 if self._current_video_entry_id is not None else None)
+        for name, value, widget, expected_text in (
+                ("master_display", master_display, self._master_display, expected_master_display),
+                ("max_cll", max_cll, self._max_cll, expected_max_cll)):
+            if not value:
+                continue
+            if state is not None and not state.get("default_" + name):
+                state["default_" + name] = value  # valeur de référence de la source (provenance « source »)
+            # Ne pas écraser une valeur modifiée pendant la sonde, ni une saisie même identique ; les deux champs
+            # ensemble (aucun état intermédiaire).
+            if widget.text() == expected_text and not self._static_hdr_field_manual[name]:
+                blocked = widget.blockSignals(True)
+                widget.setText(value)
+                widget.blockSignals(blocked)
+        self._save_current_video_state()
+        self._sync_hdr_metadata_provenance()
+        self._rebuild_preview()
 
     def _extract_hdr_meta_fields(
         self,
@@ -3249,10 +3258,11 @@ class EncodePanel(QWidget):
         if not str(state.get("static_hdr_metadata_analysis_request") or "").strip():
             return
         source = str(state.get("static_hdr_metadata_source") or "")
-        if source != StaticHdrEstimateService.SOURCE_LABEL and any(
-            str(state.get(key) or "").strip()
-            for key in ("master_display", "max_cll")
-        ):
+        if any(static_hdr_field_manual(state, name) for name in ("master_display", "max_cll")) or (
+            source != StaticHdrEstimateService.SOURCE_LABEL and any(
+                str(state.get(key) or "").strip()
+                for key in ("master_display", "max_cll")
+            )):
             self.log_message.emit(
                 "WARN",
                 "Résultat de l’analyse HDR10 ignoré : des valeurs manuelles sont désormais présentes.",
