@@ -45,6 +45,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
 | `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
 | `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
+| `tmdb search\|details`, `profile list\|show\|save\|delete\|capture`, `bluray-titles` | TMDB, profils enregistrés, titres d'un Blu-ray ; voir « TMDB, profils enregistrés, Blu-ray » |
 | `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
@@ -822,6 +823,24 @@ Muxiveo-cli extract -i film.mkv --all --output-dir film/ --dry-run        # sort
   remplacer). `--json` : résultat JSON (`outputs[]` : nature, piste, couche, format, chemin).
 
 Requête équivalente pour `call media.extract` : `docs/cli/examples/extract.json`.
+
+## TMDB, profils enregistrés, Blu-ray
+
+```bash
+Muxiveo-cli tmdb search "The Office" --kind tv              # identifiants, puis --tmdb-id
+Muxiveo-cli tmdb details 2316 --kind tv --season 2 --episode 1 --json
+Muxiveo-cli profile list                                      # profils de l'interface
+Muxiveo-cli profile show "Films VF"
+Muxiveo-cli profile capture -i film.mkv --name "Films VF" --save   # comme « Capturer » du Conteneur
+Muxiveo-cli profile save profil.json --force                  # profil édité à la main, validé
+Muxiveo-cli profile delete "Ancien"
+Muxiveo-cli bluray-titles /disques/FILM --min-duration 600    # playlists, du plus long au plus court
+```
+
+`profile capture` construit le job (`-i` ou `--config`) puis capture sa table des pistes ;
+`--no-selection`, `--no-metadata`, `--no-flags`, `--no-order`, `--no-audio-variants` retirent une
+partie de la capture. Les profils sont ceux de l'interface (`<config>/profiles/decision/`). Une
+playlist Blu-ray s'utilise ensuite comme source (`…/BDMV/PLAYLIST/00800.mpls`).
 
 ## Couche de service : `call`, `operations`, `--log-format events`
 

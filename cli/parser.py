@@ -10,6 +10,7 @@ from cli.constants import LOG_FORMATS
 from cli.encode_options import add_encode_options
 from cli.calibration import add_calibration_parsers
 from cli.extract import add_extract_parser
+from cli.library import add_library_parsers, add_profile_management_parsers
 from cli.hdr_patch import add_hdr_patch_parser
 from cli.plugins import add_plugins_parser
 from cli.encode_commands import cmd_encode_preset
@@ -153,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_extract_parser(sub)
     add_hdr_patch_parser(sub)
     add_calibration_parsers(sub)
+    add_library_parsers(sub)
 
     presets = sub.add_parser("encode-preset", help="Presets d'encodage enregistrés (communs avec l'interface).")
     preset_sub = presets.add_subparsers(dest="preset_command", required=True)
@@ -304,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile_batch.add_argument("--summary")
     add_encode_options(profile_batch)
     profile_batch.set_defaults(func=cmd_profile)
+    add_profile_management_parsers(profile_sub, _add_common_options)
     from cli.hybrid import cmd_hybrid, cmd_sync_scan, cmd_shift_subs
     scan = sub.add_parser("sync-scan", help="Analyser le calage acoustique ou par sous-titres.")
     _add_common_options(scan)

@@ -27,15 +27,15 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Chapitres : source, édition, import | job JSON (`chapters`) | `media.run` | ✅ |
 | Pièces jointes de la source, ajout de fichiers | job JSON (`attachments`, `extra_attachments`) | `media.run` | ✅ |
 | Balises globales, titre du fichier | job JSON (`tags`, `file_title`) | `media.run` | ✅ |
-| Fiche TMDB : recherche avec choix du résultat | `tmdb search` | `tmdb.search` | ⏳ L9 (aujourd'hui : premier résultat ou `--tmdb-id`) |
-| Fiche TMDB : détails, couverture | `--auto-tmdb`, `--tmdb-id` | `tmdb.details` | 🟡 opération ⏳ L9 |
+| Fiche TMDB : recherche avec choix du résultat | `tmdb search` puis `--tmdb-id` | `tmdb.search` | ✅ |
+| Fiche TMDB : détails, couverture | `tmdb details`, `--auto-tmdb`, `--tmdb-id` | `tmdb.details` | ✅ |
 | Nom de sortie (gabarit, tag de groupe) | `--output-template` | `media.run` | ✅ |
 | Profil décisionnel : appliquer | `--profile`, `profile apply\|batch` | `profile.apply/batch` | ✅ |
-| Profil décisionnel : capturer depuis l'état courant | `profile capture` | `profile.capture` | ⏳ L9 |
-| Éditeur de profil : enregistrer un profil modifié | `profile save` | `profile.save` | ⏳ L9 |
-| Profils enregistrés : lister, supprimer | `profile list\|show\|delete` | `profile.list/show/delete` | ⏳ L9 |
+| Profil décisionnel : capturer depuis l'état courant | `profile capture [--save]` | `profile.capture` | ✅ |
+| Éditeur de profil : enregistrer un profil modifié | `profile save FICHIER` (validé) | `profile.save` | ✅ (édition du JSON hors de l'interface) |
+| Profils enregistrés : lister, supprimer | `profile list\|show\|delete` | `profile.list/show/delete` | ✅ |
 | Exporter le job (« Exporter JSON CLI », exact-job) | `--export-workflow` | `media.run` (`export_workflow`) | ✅ |
-| Playlist Blu-ray : choisir parmi les titres | à définir | `media.bluray_titles` | ⏳ L9 (aujourd'hui : chemin de playlist) |
+| Playlist Blu-ray : choisir parmi les titres | `bluray-titles DISQUE`, puis source `…/BDMV/PLAYLIST/0NNNN.mpls` | `media.bluray_titles` | ✅ |
 | Retirer les sous-titres EIA-608/708 embarqués | `--remove-closed-captions` | `media.run` | ✅ |
 | Forcés / SDH automatiques | `--auto-forced-subs`, `--auto-sdh` | `media.run` | ✅ |
 | Backend de muxage | `--mux-backend` | `media.run` | ✅ |
