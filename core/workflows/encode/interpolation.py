@@ -736,30 +736,38 @@ def rife_supports(rife_bin: str, option: str) -> bool:
     return capabilities is not None and capabilities.supports(option)
 
 
-def rife_capabilities(rife_bin: str) -> RifeCapabilities | None:
-    """Capacités du binaire (None s'il est illisible) ; cache indexé sur l'identité du fichier."""
+def rife_capabilities(rife_bin: str, cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
+    """Capacités du binaire (None s'il est illisible) ; cache indexé sur l'identité du fichier.
+
+    ``cancel_event`` (opération headless) : sondes ``--version`` / ``--capabilities`` sans cache, tuées à l'annulation
+    (``ProbeCancelledError``) ; l'interface (sans jeton) garde le cache.
+    """
     resolved = str(shutil.which(str(rife_bin)) or rife_bin)
     try:
         info = Path(resolved).stat()
         identity = (info.st_ino, info.st_size, info.st_mtime_ns)
     except OSError:
         identity = (0, 0, 0)
+    if cancel_event is not None:
+        return _rife_capabilities_probe(resolved, _rife_version_probe(resolved, cancel_event), cancel_event)
     return _rife_capabilities_cached(resolved, identity)
 
 
 @functools.lru_cache(maxsize=8)
 def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> RifeCapabilities | None:
-    version = _rife_version_cached(rife_bin, identity)
+    return _rife_capabilities_probe(rife_bin, _rife_version_cached(rife_bin, identity))
+
+
+def _rife_capabilities_probe(rife_bin: str, version: tuple[int, int, int] | None,
+                             cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
     if version is None:
         return None
     if version < RIFE_CAPABILITIES_MIN_VERSION:
         return _legacy_capabilities(version)
     try:
         # Binaire RIFE configuré ; seul argument constant --capabilities, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [rife_bin, "--capabilities"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
-        )
+        result = run_detection([rife_bin, "--capabilities"], cancel_event=cancel_event, capture_output=True,
+                               check=False, timeout=15, **subprocess_text_kwargs())
         data = json.loads(result.stdout or "")
     except (OSError, ValueError, subprocess.SubprocessError):
         return _legacy_capabilities(version)
@@ -797,12 +805,14 @@ def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
 @functools.lru_cache(maxsize=8)
 def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple[int, int, int] | None:
     _ = identity
+    return _rife_version_probe(rife_bin)
+
+
+def _rife_version_probe(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
     try:
         # Binaire RIFE configuré ; seul argument constant --version, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [str(rife_bin), "--version"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
-        )
+        result = run_detection([str(rife_bin), "--version"], cancel_event=cancel_event, capture_output=True,
+                               check=False, timeout=15, **subprocess_text_kwargs())
     except (OSError, subprocess.SubprocessError):
         return None
     match = _RIFE_VERSION_RE.search(result.stdout or "")
@@ -875,7 +885,7 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
     if not resolved:
         reason = "muxiveo-rife introuvable"
         return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
-    capabilities = rife_capabilities(resolved)
+    capabilities = rife_capabilities(resolved, cancel_event)
     installed = capabilities.label if capabilities else "?"
     if capabilities is None or not capabilities.supports("nvof"):
         reason = f"muxiveo-rife {_option_min_version('nvof')} ou plus récent requis (installé : {installed})"
