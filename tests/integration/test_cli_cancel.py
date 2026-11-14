@@ -166,7 +166,7 @@ def test_sigint_during_the_stream_kind_probe_of_sync_scan_stops_it(tmp_path, mon
     mark = tmp_path / "ffprobe-started"
     ffprobe = tmp_path / "bin" / "ffprobe"
     ffprobe.parent.mkdir()
-    ffprobe.write_text(f'#!/bin/sh\n: > "{mark}"\nexec sleep 120\n', encoding="utf-8")
+    ffprobe.write_text(f'#!/bin/sh\necho $$ > "{mark}"\nexec sleep 120\n', encoding="utf-8")
     ffprobe.chmod(0o755)
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
@@ -178,7 +178,7 @@ def test_sigint_during_the_stream_kind_probe_of_sync_scan_stops_it(tmp_path, mon
     )
     try:
         deadline = time.monotonic() + 60
-        while not mark.exists():
+        while not (mark.exists() and mark.read_text().strip()):
             assert proc.poll() is None, proc.communicate()[1]
             assert time.monotonic() < deadline, "sonde jamais lancée"
             time.sleep(0.05)
@@ -190,6 +190,20 @@ def test_sigint_during_the_stream_kind_probe_of_sync_scan_stops_it(tmp_path, mon
             proc.kill()
     assert time.monotonic() - started < 8, "annulation attendue avant le délai de la sonde (10 s)"
     assert proc.returncode == 6, stderr
+    _assert_probe_killed(int(mark.read_text()))
+
+
+def _assert_probe_killed(pid: int) -> None:
+    """La sonde lancée par le CLI est morte (jamais laissée orpheline) ; tuée ici sinon, puis échec."""
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(pid, signal.SIGKILL)
+    pytest.fail("sonde restée en vie après la fin du CLI")
 
 
 @pytest.mark.skipif(not Path("/proc").exists(), reason="Linux")
@@ -273,3 +287,4 @@ def test_sigint_during_a_cadence_resolution_of_calibration_edit_returns_6(tmp_pa
         if proc.poll() is None:
             proc.kill()
     assert proc.returncode == 6, stderr
+    _assert_probe_killed(int(mark.read_text()))  # sonde de l'analyse tuée

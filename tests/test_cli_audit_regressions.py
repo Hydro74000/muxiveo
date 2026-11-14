@@ -2099,9 +2099,10 @@ def test_no_capabilities_probe_survives_the_host_process(tmp_path, section):
     import subprocess
     import sys
 
-    scripts = ([_pid_script(tmp_path / "rife", "*--version*")] if section == "rife" else
-               [_pid_script(tmp_path / f"{codec}.sh", "*", "") for codec in ("hevc_vaapi", "h264_vaapi")])
+    scripts = ([_family_script(tmp_path / "rife", "*--version*")] if section == "rife" else
+               [_family_script(tmp_path / f"{codec}.sh", "*") for codec in ("hevc_vaapi", "h264_vaapi")])
     pids = [script.with_suffix(".pid") for script in scripts]
+    children = [script.with_suffix(".child") for script in scripts]
     patch = "" if section == "rife" else f"""
 from core.workflows.encode.hardware import HardwareEncoderDetector
 scripts = {{"hevc_vaapi": {str(scripts[0])!r}, "h264_vaapi": {str(scripts[1])!r}}}
@@ -2121,7 +2122,7 @@ from core.service.catalog import CATALOG
 ctx = ExecutionContext.create(SimpleNamespace(tool_muxiveo_rife={str(scripts[0])!r}, tool_ffmpeg="ffmpeg",
                                               tool_nvencc=""), ListSink())
 def cancel():
-    while not all(Path(p).exists() and Path(p).read_text().strip() for p in {[str(p) for p in pids]!r}):
+    while not all(Path(p).exists() and Path(p).read_text().strip() for p in {[str(p) for p in pids + children]!r}):
         time.sleep(0.01)
     ctx.cancel.cancel()
 threading.Thread(target=cancel, daemon=True).start()
@@ -2133,16 +2134,32 @@ except Exception:
     root = Path(__file__).resolve().parents[1]
     subprocess.run([sys.executable, str(host)], cwd=root, check=True, timeout=60,
                    env={**__import__("os").environ, "PYTHONPATH": str(root)})
-    assert all(_process_gone(int(pid.read_text())) for pid in pids)
+    assert all(_process_gone(int(pid.read_text())) for pid in pids)  # sondes
+    assert all(_process_gone(int(child.read_text())) for child in children)  # et leurs descendants
+
+
+def _family_script(path: Path, slow: str) -> Path:
+    """Sonde de test qui lance un véritable enfant (``sleep``) : PID de la sonde et de l'enfant écrits."""
+    pid, child = path.with_suffix(".pid"), path.with_suffix(".child")
+    path.write_text(f'#!/bin/sh\ncase "$*" in {slow}) sleep 30 & echo $! > "{child}"; echo $$ > "{pid}"; wait;; '
+                    'esac\n', encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def test_windows_path_conventions_stay_untouched_in_requests(tmp_path):
-    from core.json_documents import resolve_output_reference, resolve_profile_reference
+    """Requêtes publiques (``from_dict`` avec dossier de base) : lecteur, racine simple, UNC jamais préfixés."""
+    from core.service.ops.batch import ProfileBatchRequest
+    from core.service.ops.profile import ProfileApplyRequest
 
-    for value in ("C:\\\\jobs\\\\film.json", "\\\\jobs\\\\film.json", "\\\\\\\\srv\\\\partage\\\\film.json", "/jobs/film.json"):
-        assert resolve_profile_reference(value, tmp_path) == value
-    for value in ("C:\\\\sorties\\\\", "\\\\sorties\\\\", "\\\\\\\\srv\\\\partage\\\\o.mkv"):
-        assert resolve_output_reference(value, tmp_path) == value
+    base = {"inputs": [str(tmp_path / "src.mkv")]}
+    for profile in (r"C:\jobs\film.json", r"\jobs\film.json", r"\\srv\partage\film.json", "/jobs/film.json"):
+        assert ProfileApplyRequest.from_dict({**base, "profile": profile}, base_dir=tmp_path).profile == profile
+        assert ProfileBatchRequest.from_dict({"profile": profile, "output_dir": str(tmp_path)},
+                                             base_dir=tmp_path).profile == profile
+    for output in (r"C:\sorties" + "\\", r"\sorties" + "\\", r"\\srv\partage\o.mkv", r"C:\o.mkv"):
+        request = ProfileApplyRequest.from_dict({**base, "profile": "P", "output": output}, base_dir=tmp_path)
+        assert request.output == output
 
 
 @pytest.mark.parametrize("analyser", ["late", "raises"])
@@ -2242,3 +2259,200 @@ def test_headless_encoder_listing_is_bounded_and_a_cancelled_listing_is_never_ca
     event.clear()
     assert "libx264" in detector._get_encoders_output("ffmpeg")  # rien de mémorisé après l'annulation
     assert seen == [120.0, 120.0]  # opération headless : bornée
+
+
+
+# --- Seizième audit : sync.scan sous le jeton, sondes du moteur vidéo (cache de session, validation, commandes) ----
+
+
+def _sync_ctx(tmp_path, scanner=None):
+    sink = ListSink()
+    ports = {"audio_scanner": lambda: scanner} if scanner is not None else {}
+    ctx = ExecutionContext.create(SimpleNamespace(tool_ffprobe="ffprobe", tool_ffmpeg="ffmpeg",
+                                                  tool_mediainfo="mediainfo"), sink, ports=ports)
+    return ctx, sink
+
+
+@pytest.mark.parametrize("kind", ["audio", "subtitle"])
+@pytest.mark.parametrize("ending", ["raises", "late", "error"])
+def test_sync_scan_analysis_under_the_token(monkeypatch, tmp_path, kind, ending):
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.events import EventType
+    from core.workflows import subtitle_sync_scan
+    from core.workflows.audio_sync import AudioSyncError
+    from core.workflows.sync_calibration import SyncCalibration
+
+    holder: dict[str, Any] = {}
+    error_type = AudioSyncError if kind == "audio" else subtitle_sync_scan.SubtitleSyncError
+
+    def analyse(*_a, **_k):
+        if ending != "error":
+            holder["ctx"].cancel.cancel()
+        if ending in ("raises", "error"):
+            raise error_type("Analyse annulée." if ending == "raises" else "corrélation impossible")
+        return SyncCalibration.linear(120.0)  # revenue malgré le jeton
+
+    scanner = SimpleNamespace(scan=analyse)
+    monkeypatch.setattr(subtitle_sync_scan, "SubtitleSyncScanner", lambda *a, **k: scanner)
+    ctx, sink = _sync_ctx(tmp_path, scanner if kind == "audio" else None)
+    holder["ctx"] = ctx
+    output = tmp_path / "calibration.json"
+    output.write_text('{"existant": true}', encoding="utf-8")
+    ref = tmp_path / ("ref.srt" if kind == "subtitle" else "ref.mkv")
+    request = {"ref": str(ref), "target": str(tmp_path / "tgt.mkv"), "type": kind, "cadence_auto": False,
+               "output_json": str(output)}
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "sync.scan", request, ctx)
+    code = ApiError.from_exception(caught.value).code
+    if ending == "error":  # erreur sans annulation : erreur d'origine conservée
+        assert code is not ErrorCode.CANCELLED and "corrélation impossible" in str(caught.value)
+    else:
+        assert code is ErrorCode.CANCELLED
+    assert output.read_text(encoding="utf-8") == '{"existant": true}'
+    assert not any(e.type in (EventType.ARTIFACT, EventType.RESULT) for e in sink.events)
+    assert "succeeded" not in [e.data.get("state") for e in sink.events if e.type is EventType.STATE]
+
+
+def _counting_rife(path: Path, *, slow: str = "", version: str = "1.9.0") -> tuple[Path, Path]:
+    """Moteur de test : ``--version`` / ``--capabilities`` comptés ; ``slow`` : appel lent (PID écrit) tant que le
+    témoin ``<chemin>.lent`` existe (lenteur retirée sans toucher au binaire ni à son identité)."""
+    calls, pid, flag = path.with_suffix(".calls"), path.with_suffix(".pid"), path.with_suffix(".lent")
+    capabilities = '{"contract": 1, "options": ["feature-cache", "restore-sharpen"], "models": [], "restore": {}}'
+    slow_case = f'*{slow}*) if [ -e "{flag}" ]; then echo $$ > "{pid}"; exec sleep 30; fi;;' if slow else ""
+    if slow:
+        flag.touch()
+    path.write_text(
+        "#!/bin/sh\n"
+        f'echo "$1" >> "{calls}"\n'
+        f'case "$*" in {slow_case} esac\n'
+        f'case "$*" in *--version*) echo "muxiveo-rife {version}";; *--capabilities*) echo \'{capabilities}\';; esac\n',
+        encoding="utf-8")
+    path.chmod(0o755)
+    return path, calls
+
+
+@_LINUX
+def test_engine_probe_cache_follows_the_token_and_never_keeps_a_cancelled_result(tmp_path):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.interpolation import clear_rife_version_cache, rife_capabilities, rife_presets
+
+    clear_rife_version_cache()
+    rife, calls = _counting_rife(tmp_path / "rife", slow="--capabilities")
+    event = threading.Event()
+    _cancel_when([rife.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):  # annulation pendant --capabilities
+        rife_capabilities(str(rife), event)
+    assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+    assert calls.read_text().split() == ["--version", "--capabilities"]
+    # Même binaire, inchangé (seul le témoin de lenteur est retiré) : aucun résultat annulé mémorisé ; la version,
+    # obtenue avant l'annulation, l'est légitimement (pas de nouveau --version).
+    rife.with_suffix(".lent").unlink()
+    caps = rife_capabilities(str(rife), threading.Event())  # succès avec un jeton
+    assert caps is not None and caps.supports("feature-cache")
+    assert calls.read_text().split() == ["--version", "--capabilities", "--capabilities"]
+    assert rife_capabilities(str(rife)) is caps  # réutilisé sans jeton…
+    assert rife_capabilities(str(rife), threading.Event()) is caps  # …et avec un autre jeton
+    assert calls.read_text().split() == ["--version", "--capabilities", "--capabilities"]  # aucun nouveau processus
+    raised = threading.Event()
+    raised.set()
+    with pytest.raises(ProbeCancelledError):  # cache chaud, jeton déjà levé : jamais une valeur
+        rife_capabilities(str(rife), raised)
+    clear_rife_version_cache()
+    assert rife_presets(str(rife)) == rife_presets(str(rife))  # préréglages : cache vidé puis relu
+
+
+def test_engine_probe_returning_despite_the_token_is_never_cached(monkeypatch):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode import interpolation
+
+    interpolation.clear_rife_version_cache()
+    event = threading.Event()
+
+    def late_version(rife_bin, cancel_event=None):
+        event.set()  # annulation pendant la sonde, qui revient quand même
+        return (1, 9, 0)
+
+    monkeypatch.setattr(interpolation, "_rife_version_probe", late_version)
+    with pytest.raises(ProbeCancelledError):
+        interpolation.rife_version("/opt/rife-inexistant", event)
+    monkeypatch.setattr(interpolation, "_rife_version_probe", lambda rife_bin, cancel_event=None: (1, 2, 3))
+    assert interpolation.rife_version("/opt/rife-inexistant") == (1, 2, 3)  # rien de mémorisé avant
+    interpolation.clear_rife_version_cache()
+
+
+def test_engine_probe_cache_is_bounded_and_keyed_by_file_identity(tmp_path, monkeypatch):
+    from core.workflows.encode import interpolation
+
+    interpolation.clear_rife_version_cache()
+    probed: list[str] = []
+    monkeypatch.setattr(interpolation, "_rife_version_probe",
+                        lambda rife_bin, cancel_event=None: probed.append(rife_bin) or (1, 0, 0))
+    binaries = [tmp_path / f"rife{i}" for i in range(9)]
+    for binary in binaries:
+        binary.write_text("x", encoding="utf-8")
+        interpolation.rife_version(str(binary))
+    interpolation.rife_version(str(binaries[0]))  # évincé (8 entrées) : sondé de nouveau
+    assert probed.count(str(binaries[0])) == 2
+    interpolation.rife_version(str(binaries[8]))  # encore en cache
+    assert probed.count(str(binaries[8])) == 1
+    binaries[8].write_text("remplacé", encoding="utf-8")  # identité changée : relu
+    interpolation.rife_version(str(binaries[8]))
+    assert probed.count(str(binaries[8])) == 2
+    legacy = interpolation._rife_capabilities_probe(str(binaries[0]), (1, 5, 0))  # repli historique (< 1.7.0)
+    assert legacy is not None and legacy.label == "1.5.0"
+    interpolation.clear_rife_version_cache()
+
+
+@_LINUX
+@pytest.mark.parametrize("slow", ["--version", "--capabilities"])
+@pytest.mark.parametrize("feature", ["interpolation", "restoration"])
+def test_real_encode_validation_kills_the_engine_probes_with_the_operation_token(qapp, tmp_path, slow, feature):
+    import dataclasses
+    import threading
+
+    from core.jobs.encode_runtime import probe_cancel_scope
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.interpolation import clear_rife_version_cache
+    from core.workflows.encode.models import FrameInterpolationSettings, RestoreSettings
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    from tests.test_cli_encode import _config
+
+    clear_rife_version_cache()
+    rife, _calls = _counting_rife(tmp_path / "rife", slow=slow)
+    config = _config(tmp_path)
+    video = (dataclasses.replace(config.video, interpolation=FrameInterpolationSettings(enabled=True, factor=2))
+             if feature == "interpolation" else
+             dataclasses.replace(config.video, restoration=RestoreSettings(enabled=True)))
+    config = dataclasses.replace(config, video=video, video_tracks=[video])
+    (tmp_path / "src.mkv").write_bytes(b"x")
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+    wf._rife_bin = str(rife)
+    event = threading.Event()
+    _cancel_when([rife.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        with probe_cancel_scope(wf, event):  # comme checked_encode / preview_encode
+            wf.validate(config)
+    assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+    clear_rife_version_cache()
+
+
+@_LINUX
+def test_rife_command_built_with_a_cold_cache_is_killed_with_the_token(tmp_path):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.interpolation import InterpolationSource, build_rife_stage, clear_rife_version_cache
+
+    clear_rife_version_cache()  # cache froid (vidé, évincé ou binaire remplacé)
+    rife, _calls = _counting_rife(tmp_path / "rife", slow="--version")
+    event = threading.Event()
+    _cancel_when([rife.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        build_rife_stage(str(rife), quality="fast", source=InterpolationSource(), cancel_event=event)
+    assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+    clear_rife_version_cache()
