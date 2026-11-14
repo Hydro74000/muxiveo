@@ -2767,3 +2767,30 @@ def test_p5_scheduled_analysis_survives_a_round_trip_through_an_sdr_codec(qt_app
         assert not normalized["static_hdr_metadata_analysis_request"]
     finally:
         panel.close()
+
+
+def test_apply_all_with_different_sources_keeps_the_common_hdr_intent(qt_app, monkeypatch):
+    """« Appliquer à toutes », piste DV+HDR10+ et piste HDR10 : HEVC → H.264, piste HDR10 affichée, retour HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    first.entry_id, second.entry_id = "dv", "hdr10"
+    dv = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)], hdr_type=HDRType.DOLBY_VISION_HDR10PLUS)
+    hdr10 = _file_info(_PATH_B, [_video_track(0, HDRType.HDR10)], hdr_type=HDRType.HDR10)
+    panel.set_video_tracks([(dv, first, _COLOR), (hdr10, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)  # piste HDR10 affichée pendant l'intervalle SDR
+        _select_codec(panel, "libx265")
+        state = panel._video_settings_by_entry_id["dv"]
+        assert (state["codec"], state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (
+            "libx265", True, True, True)
+        config = panel.collect_config()
+        assert config is not None
+        dv_track = next(video for video in config.video_tracks if video.source_path == _PATH_A)
+        assert dv_track.copy_dv and dv_track.copy_hdr10plus  # copie effective sur la piste DV+HDR10+
+    finally:
+        panel.close()
