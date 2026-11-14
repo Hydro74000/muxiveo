@@ -312,3 +312,71 @@ def test_keyboard_interrupt_in_a_step_cancels_the_child():
         children._guarded(logger, interrupted)
     states = [e.data["state"] for e in sink.events if e.job == logger.events.job and e.type is EventType.STATE]
     assert states == [JobState.RUNNING.value, JobState.CANCELLED.value] and ctx.cancel.cancelled
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("continue_on_error", [False, True])
+def test_a_failed_job_stops_the_batch_unless_continue_on_error(tmp_path, doubles, monkeypatch, dry_run,
+                                                                continue_on_error):
+    ctx, sink = _ctx()
+    if dry_run:  # aperçu invalide (code 3) pour b
+        monkeypatch.setattr(batch_ops, "remux_workflow", lambda config, options: SimpleNamespace(
+            validate=lambda remux: ["refus"] if remux.output.name == "b.mkv" else [],
+            preview_command=lambda remux: "ffmpeg", execution_preview=lambda remux: {}))
+    else:
+        doubles.plan["b.mkv"] = "fail"
+    payload = {**_template(tmp_path, _items(tmp_path, "a", "b", "c")), "dry_run": dry_run,
+               "continue_on_error": continue_on_error}
+    result = call(CATALOG, "media.batch", payload, ctx)
+    statuses = [job["status"] for job in result.jobs]
+    if continue_on_error:
+        assert statuses == ["success", "failed", "success"] and result.status == "partial"
+    else:
+        assert statuses == ["success", "failed"] and result.status == "partial"  # c jamais lancé
+        if not dry_run:
+            assert doubles.ran == ["a.mkv", "b.mkv"]
+    assert (result.successes, result.failures) == (statuses.count("success"), 1)
+    children = {e.job for e in sink.events if e.parent == ctx.events.job}
+    assert len(children) == len(statuses)  # aucun job enfant ouvert pour c sans continue_on_error
+
+
+@pytest.mark.parametrize("continue_on_error", [False, True])
+def test_profile_batch_and_historic_batch_stop_after_a_failed_job(tmp_path, monkeypatch, continue_on_error):
+    from cli import batch as cli_batch
+    from core.jobs.batch import BatchDiscovery
+    from core.jobs.options import CommonOptions
+    from core.jobs.profile import ProfileBatchSteps, run_profile_batch
+
+    ran: list[str] = []
+
+    def run(_config, _options, _logger, remux_config, *, force=False):
+        ran.append(remux_config.output.name)
+        return 6 if remux_config.output.name == "b.mkv" else 0  # échec par code retour, sans exception
+
+    jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv")} for n in "abc"]
+    steps = ProfileBatchSteps(
+        load=lambda path, config: {}, discover=lambda **k: BatchDiscovery(jobs=jobs, scanned=3, selected=3, explicit_inputs=0, roots=[]),
+        build=lambda profile, **k: (SimpleNamespace(output=Path(k["cli_output"])), {}),
+        preview=lambda *a: 0, run=run)
+    outcome = run_profile_batch("P", cli_inputs=[], input_dirs=None, recursive=False, include_patterns=None,
+                                exclude_patterns=None, output_dir=str(tmp_path), dry_run=False, force=False,
+                                continue_on_error=continue_on_error, summary_path=None, config=SimpleNamespace(),
+                                options=CommonOptions(), logger=SimpleNamespace(emit=lambda *a, **k: None),
+                                steps=steps)
+    assert ran == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv", "b.mkv"])
+    assert outcome.exit_code == 7 and outcome.summary["failures"] == 1
+    # Commande `batch` historique : même règle.
+    ran.clear()
+    monkeypatch.setattr(cli_batch, "build_remux_config",
+                        lambda job, config, options, logger: SimpleNamespace(output=Path(job["output"]),
+                                                                            allow_missing_output_dir=False))
+    monkeypatch.setattr(cli_batch, "run_remux_config", run)
+    template = tmp_path / "t.json"
+    template.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    batch = tmp_path / "b.json"
+    batch.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    rc = cli_batch.run_batch(template_path=str(template), batch_path=str(batch), cli_inputs=None, input_dirs=None,
+                             recursive=False, include_patterns=None, exclude_patterns=None, output_dir=None,
+                             dry_run=False, force=False, continue_on_error=continue_on_error, summary_path=None,
+                             config=None, options=None, logger=SimpleNamespace(emit=lambda *a, **k: None))
+    assert rc == 7 and ran == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv", "b.mkv"])

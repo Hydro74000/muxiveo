@@ -40,6 +40,7 @@
 
 ## Correctifs
 
+* **CLI : `batch` et lots de profils sans `--continue-on-error`** : le lot s'arrête désormais après le premier job en échec, quelle qu'en soit la cause (auparavant, seul un job impossible à préparer l'arrêtait ; un remux ou un encodage refusé laissait continuer les suivants), comme l'annonce l'option. Le bilan liste les jobs lancés ; `--continue-on-error` garde l'ancien enchaînement.
 * **Extraction de sous-titres VobSub** : livrée en Matroska (`.mks`), FFmpeg ne sachant pas écrire `.idx` / `.sub` (l'extraction échouait).
 * **Paramètres avancés saisis à la main** : reportés dans le dialogue pour tous les encodeurs (option inconnue conservée ; exclusions NVEncC sans erreur à l'ouverture).
 * **Cadence** : la valeur aberrante `500/21` renvoyée par ffprobe pour certaines sources est interprétée comme 23,976 i/s.

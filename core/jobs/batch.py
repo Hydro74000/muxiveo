@@ -573,6 +573,8 @@ def run_batch(
                 if status == "cancelled":
                     cancelled = True
                     break
+                if not continue_on_error:  # job en échec : lot arrêté (bilan déjà enregistré)
+                    break
             else:
                 summary_jobs.append(
                     {"job_index": job_index, "input": input_label, "output": output_label, "status": "success", "exit_code": EXIT_OK}

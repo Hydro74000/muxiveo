@@ -458,6 +458,8 @@ def run_profile_batch(
             if status == "cancelled":
                 cancelled = True
                 break
+            if status == "failed" and not continue_on_error:  # job en échec : lot arrêté (bilan déjà enregistré)
+                break
         except Exception as exc:
             failures += 1
             # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
