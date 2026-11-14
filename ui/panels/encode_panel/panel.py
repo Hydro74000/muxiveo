@@ -108,6 +108,7 @@ from core.workflows.encode.planning.track_settings import (
     source_has_static_hdr10,
     state_allows_copy_static_hdr_edit,
     state_target_codec,
+    static_hdr_editable,
     static_hdr_field_manual,
     tonemap_choice_of,
     video_settings_from_state,
@@ -2887,10 +2888,7 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_master_display") or not hasattr(self, "_max_cll"):
             return
         codec_id = str(codec or "").strip().lower()
-        editable = (
-            self._backend_capabilities(codec_id).supports_manual_static_hdr
-            or self._current_state_allows_copy_static_hdr_edit(codec_id)
-        )
+        editable = static_hdr_editable(self._displayed_hdr_edit_state(), codec_id)  # règle du cœur
         if not editable:
             prev = (
                 self._video_settings_by_entry_id.get(self._current_video_entry_id)
@@ -2923,12 +2921,15 @@ class EncodePanel(QWidget):
         self._master_display.setToolTip(tooltip)
         self._max_cll.setToolTip(tooltip)
 
-    def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
+    def _displayed_hdr_edit_state(self) -> dict[str, object]:
+        """Cases de la piste affichée dont dépend l'édition du HDR10 statique en Copy (DV normalisé P8.1)."""
         if not hasattr(self, "_copy_dv_cb") or not hasattr(self, "_dovi_p81_cb"):
-            return False
-        return state_allows_copy_static_hdr_edit({"inject_hdr_meta": self._inject_hdr_cb.isChecked(),
-                                                  "copy_dv": self._copy_dv_cb.isChecked(),
-                                                  "dovi_profile": self._dovi_profile_choice}, codec_id)
+            return {}
+        return {"inject_hdr_meta": self._inject_hdr_cb.isChecked(), "copy_dv": self._copy_dv_cb.isChecked(),
+                "dovi_profile": self._dovi_profile_choice}
+
+    def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
+        return state_allows_copy_static_hdr_edit(self._displayed_hdr_edit_state(), codec_id)
 
     def _static_hdr_metadata_tooltip(self) -> str:
         state = (
