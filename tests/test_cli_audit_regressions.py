@@ -1158,10 +1158,131 @@ def test_hdr10_text_formats_are_checked_when_the_request_is_read(tmp_path):
     published = schema["pattern"]  # JSON Schema : ne s'applique qu'aux textes (null reste valide)
     for text in (md, f" {md}", "", "oops", "G(1,2)"):
         accepted = re.fullmatch(published, text) is not None
-        assert accepted == (not text.strip() or validation._MASTER_DISPLAY_RE.match(text.strip()) is not None)
+        assert accepted == (validation._MASTER_DISPLAY_RE.fullmatch(text) is not None)  # même motif complet
         try:
             EncodeBlock.parse({"video": {"default": {"static_hdr": {"master_display": text}}}})
             parsed = True
         except ApiError:
             parsed = False
         assert parsed == accepted
+
+
+
+# --- Septième audit : schéma publié, jeton sur le parcours réel, lots --------------------------------------
+
+
+def _schema_errors(value: Any, schema: dict, path: str = "") -> list[str]:
+    """Validateur JSON Schema indépendant (sous-ensemble publié : type, properties, additionalProperties,
+    required, anyOf, enum, items, minimum, maximum, pattern) — sans le lecteur des modèles."""
+    import re
+
+    if "anyOf" in schema:
+        outer = {key: item for key, item in schema.items() if key != "anyOf"}  # mots-clés communs aux branches
+        branches = [_schema_errors(value, {**outer, **branch}, path) for branch in schema["anyOf"]]
+        return [] if any(not errors for errors in branches) else [f"{path}: aucune branche"]
+    errors: list[str] = []
+    kinds = {"string": str, "boolean": bool, "object": dict, "array": list, "null": type(None)}
+    expected = schema.get("type")
+    if expected == "integer":
+        if not (isinstance(value, int) and not isinstance(value, bool)):
+            return [f"{path}: entier attendu"]
+    elif expected == "number":
+        if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+            return [f"{path}: nombre attendu"]
+    elif expected in kinds and not isinstance(value, kinds[expected]):
+        return [f"{path}: {expected} attendu"]
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path}: hors énumération")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path}: sous le minimum")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{path}: au-dessus du maximum")
+    if isinstance(value, str) and "pattern" in schema and re.search(schema["pattern"], value) is None:
+        errors.append(f"{path}: motif")
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for key in schema.get("required", ()):
+            if key not in value:
+                errors.append(f"{path}.{key}: requis")
+        for key, item in value.items():
+            if key in properties:
+                errors += _schema_errors(item, properties[key], f"{path}.{key}")
+            elif schema.get("additionalProperties") is False:
+                errors.append(f"{path}.{key}: clé inconnue")
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            errors += _schema_errors(item, schema["items"], f"{path}[{index}]")
+    return errors
+
+
+def test_published_encode_schema_accepts_exactly_what_the_request_reader_accepts():
+    from core.service.errors import ApiError
+    from core.service.schemas.encode import EncodeBlock
+
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+    documents = [
+        {"video": {"default": {"codec": "libx265", "crf": 20}}},
+        {"video": {"default": {"crf": 99}}},
+        {"video": {"default": {"crf": True}}},
+        {"video": {"default": {"crff": 20}}},
+        {"video": {"default": {"static_hdr": {"mode": "manual", "master_display": md, "max_cll": "1000,400"}}}},
+        {"video": {"default": {"static_hdr": {"master_display": f" {md}\t", "max_cll": ""}}}},
+        {"video": {"default": {"static_hdr": {"master_display": None}}}},
+        {"video": {"default": {"static_hdr": {"master_display": "oops"}}}},
+        {"video": {"default": {"static_hdr": {"max_cll": "\u0661\u0660\u0660\u0660,\u0664\u0660\u0660"}}}},
+        {"video": {"default": {"static_hdr": {"mode": "bogus"}}}},
+        {"video": {"tracks": [{"select": {"stream": 0}, "static_hdr": {"max_cll": "1000"}}]}},
+        {"audio": [{"select": {"stream": 1}, "codec": "eac3", "bitrate_kbps": 640}]},
+        {"target_size_mb": -1},
+    ]
+    schema = EncodeBlock.json_schema()
+    for document in documents:
+        try:
+            EncodeBlock.parse(document)
+            parsed = True
+        except ApiError:
+            parsed = False
+        assert parsed == (not _schema_errors(document, schema)), document
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+def test_token_on_the_real_validation_path_then_while_building_commands(qapp, tmp_path, monkeypatch):
+    """checked_encode réel (géométrie DV + NVENC) : 1re sonde L5 sans résultat, 2e interrompue pendant la construction."""
+    import dataclasses
+    import threading
+    import time
+
+    from core.jobs import encode_runtime
+    from core.jobs.encode_runtime import checked_encode, preview_encode
+    from core.jobs.options import CommonOptions
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    from tests.test_cli_encode import _config
+
+    counter = tmp_path / "appels"
+    tool = tmp_path / "outil"
+    # 1er appel (durée de la 1re sonde) : échec immédiat → aucun résultat ; suivants : lents.
+    tool.write_text(f'#!/bin/sh\necho x >> "{counter}"\n[ "$(wc -l < "{counter}")" -le 1 ] && exit 1\nsleep 30\n',
+                    encoding="utf-8")
+    tool.chmod(0o755)
+    (tmp_path / "src.mkv").write_bytes(b"x")
+    wf = EncodeWorkflow(ffmpeg_bin=str(tool), ffprobe_bin=str(tool))
+    wf._bins["dovi_tool"] = str(tool)
+    monkeypatch.setattr(encode_runtime, "_dimensions", lambda *a: (3840, 2160))
+    monkeypatch.setattr(wf, "validate", lambda config: [])
+    wf.preview_command = lambda config: str(wf._probe_dovi_l5_offsets(tmp_path / "src.mkv"))  # type: ignore
+    config = _config(tmp_path, copy_dv=True)
+    config = dataclasses.replace(config, video_tracks=[dataclasses.replace(config.video, codec="hevc_nvenc")])
+    cancel = threading.Event()
+    previous = threading.Event()
+    wf.set_probe_cancel_event(previous)  # jeton antérieur : rétabli après l'opération
+    checked, errors = checked_encode(config, wf, config=SimpleNamespace(tool_ffmpeg=str(tool)), options=CommonOptions(),
+                                     accept_dovi_nvenc_crop=True, cancel_event=cancel)
+    assert errors == [] and counter.read_text().count("x") == 1  # 1re sonde : aucun résultat
+    threading.Timer(0.3, cancel.set).start()
+    start = time.monotonic()
+    with pytest.raises(ProbeCancelledError):
+        preview_encode(checked, wf, cancel)
+    assert time.monotonic() - start < 5 and wf._probe_cancel_event is previous

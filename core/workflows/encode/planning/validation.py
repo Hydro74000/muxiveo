@@ -16,12 +16,13 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error, preset_problem
-from core.hdr_formats import MASTER_DISPLAY_BODY, MAX_CLL_BODY
+from core.hdr_formats import MASTER_DISPLAY_BODY, MAX_CLL_BODY, optional_text_pattern
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
-_MASTER_DISPLAY_RE = re.compile(rf"^{MASTER_DISPLAY_BODY}$")
-_MAX_CLL_RE = re.compile(rf"^{MAX_CLL_BODY}$")
+# Motif complet partagé avec la lecture des requêtes (vide accepté, espaces ASCII autour) : même règle partout.
+_MASTER_DISPLAY_RE = re.compile(optional_text_pattern(MASTER_DISPLAY_BODY))
+_MAX_CLL_RE = re.compile(optional_text_pattern(MAX_CLL_BODY))
 
 
 def is_dir_writable(path: Path) -> bool:
@@ -154,12 +155,12 @@ def validate_encode_config(
 
     for index, video in enumerate(planned_video_tracks, start=1):
         if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            if video.master_display and not _MASTER_DISPLAY_RE.match(video.master_display.strip()):
+            if video.master_display and not _MASTER_DISPLAY_RE.fullmatch(video.master_display):
                 errors.append(
                     f"Piste vidéo #{index} — format master_display invalide. "
                     "Attendu : G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"
                 )
-            if video.max_cll and not _MAX_CLL_RE.match(video.max_cll.strip()):
+            if video.max_cll and not _MAX_CLL_RE.fullmatch(video.max_cll):
                 errors.append(
                     f"Piste vidéo #{index} — format MaxCLL invalide. Attendu : MaxCLL,MaxFALL  ex. 1000,400"
                 )
