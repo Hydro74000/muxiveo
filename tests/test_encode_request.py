@@ -297,3 +297,35 @@ def test_source_or_off_resets_values_and_provenance_together(reset):
     assert settings.inject_hdr_meta
     assert (settings.max_cll, settings.static_hdr_light_level_source) == ("1000,400", "source")
     assert (settings.master_display, settings.static_hdr_master_display_source) == (_MANUAL_MD, "manual")
+
+
+@pytest.mark.parametrize("default, track, expected", [
+    ({"codec": "libx264"}, None, True),                                          # défaut du codec
+    ({"codec": "libx264", "tonemap": {"enabled": False}}, None, False),          # refus explicite
+    ({"codec": "libx264", "tonemap": {"algorithm": "mobius"}}, None, True),      # algorithme seul : aucun choix
+    ({"codec": "libx265", "tonemap": {"enabled": False}}, {"codec": "libx264"}, False),  # refus gardé
+    ({"codec": "libx265", "tonemap": {"enabled": True}}, {"codec": "libx264"}, True),
+    ({"codec": "libx264"}, {"codec": "libx265"}, False),                         # automatique retiré
+])
+def test_cli_tonemap_follows_the_explicit_choice_else_the_codec_default(default, track, expected):
+    payload: dict[str, Any] = {"video": {"default": default}}
+    if track is not None:
+        payload["video"]["tracks"] = [{"select": {"stream": 0}, **track}]
+    settings = _resolve(payload).config.video_tracks[0]
+    assert settings.tonemap_to_sdr is expected
+    if "algorithm" in str(default):
+        assert settings.tonemap_algorithm == "mobius"
+
+
+def test_preset_keeps_an_explicit_tonemap_choice_and_reads_old_states_with_their_codec():
+    from core.workflows.encode.models import EncodePreset
+    from core.workflows.encode.planning.track_settings import SourceVideoContext, apply_preset_to_state, \
+        default_video_state
+
+    ctx = SourceVideoContext(hdr_type=HDRType.HDR10, transfer="smpte2084")
+    preset = EncodePreset(name="H264", codec="libx264", preset="slow")
+    base = {**default_video_state(ctx), "codec": "libx265"}
+    assert apply_preset_to_state(base, preset, ctx)["tonemap_to_sdr"]  # défaut du nouveau codec
+    assert not apply_preset_to_state({**base, "tonemap_choice": False}, preset, ctx)["tonemap_to_sdr"]
+    old = {key: value for key, value in base.items() if key != "tonemap_choice"}  # ancien état, x265 décoché
+    assert apply_preset_to_state(old, preset, ctx)["tonemap_to_sdr"]  # pas un refus : défaut avec son codec

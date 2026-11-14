@@ -99,6 +99,7 @@ from core.workflows.encode.planning.track_settings import (
     preset_problem,
     propagate_state,
     requires_dovi_profile_normalization,
+    resolved_tonemap,
     restore_flags,
     routing_video_tracks,
     source_dovi_profile,
@@ -108,6 +109,7 @@ from core.workflows.encode.planning.track_settings import (
     state_allows_copy_static_hdr_edit,
     state_target_codec,
     static_hdr_field_manual,
+    tonemap_choice_of,
     video_settings_from_state,
     video_source_bit_depth,
     video_source_pix_fmt,
@@ -288,6 +290,10 @@ class EncodePanel(QWidget):
         self._dynamic_hdr_disabled_by_codec: tuple[bool, bool] = (False, False)
         # Tone-mapping coché d'office pour un codec sans HDR (source HDR) ; décoché au retour.
         self._tonemap_enabled_by_codec = False
+        #: Choix explicite (clic) du tone mapping de la piste affichée ; ``None`` : défaut du codec.
+        self._tonemap_choice: bool | None = None
+        #: « Appliquer à toutes » : choix commun du tone mapping (initialisé à l'activation, modifié au clic).
+        self._tonemap_common_choice: bool | None = None
         # (codec, piste) pour lesquels ce défaut a été appliqué : les synchronisations
         # suivantes respectent le choix manuel.
         self._tonemap_policy_key: tuple[str, str | None] | None = None
@@ -901,6 +907,7 @@ class EncodePanel(QWidget):
         self._static_hdr_estimate_prompted.clear()
         self._apply_all_video_cb.setChecked(False)
         self._hdr_common_intent = {}
+        self._tonemap_common_choice = None
         self._apply_video_state(self._initial_video_state)
         self._update_passthrough_controls()
         self._profile_combo.setCurrentIndex(-1)
@@ -1048,6 +1055,7 @@ class EncodePanel(QWidget):
             # Piste sans état (nouvelle source) : rien des saisies de la piste affichée avant elle.
             self._static_hdr_manual = False
             self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
+            self._tonemap_choice = None
             if track is not None and self._current_video_entry_id is not None:
                 # Valeurs HDR10 de la source connues dès le premier état : le préremplissage ci-dessous
                 # reste classé « source » (provenance par champ, mesure FEL), pas « saisie ».
@@ -1529,6 +1537,7 @@ class EncodePanel(QWidget):
         self._tonemap_cb = QCheckBox("Tone-mapping HDR → SDR  (zscale + tonemap)")
         self._tonemap_cb.setStyleSheet(_checkbox_style())
         self._tonemap_cb.stateChanged.connect(self._on_tonemap_toggle)
+        self._tonemap_cb.clicked.connect(self._on_tonemap_clicked)
         cl.addWidget(self._tonemap_cb)
 
         self._tonemap_algo_widget = QWidget()
@@ -2991,6 +3000,7 @@ class EncodePanel(QWidget):
             self._initialize_hdr_intent()
         else:
             self._hdr_common_intent = {}
+            self._tonemap_common_choice = None
         if checked:
             self._propagate_current_video_state_to_all()
         else:
@@ -3424,6 +3434,7 @@ class EncodePanel(QWidget):
             self._tonemap_cb.setChecked(False)
             self._tonemap_cb.setEnabled(False)
             self._tonemap_cb.setToolTip(locked_tip)
+            self._tonemap_policy_key = (codec, self._current_video_entry_id)  # sortie de Copy : choix ou défaut
             for checkbox, checked in (
                 (self._inject_hdr_cb, self._source_has_static_hdr10(hdr, self._selected_video_transfer())),
                 (self._copy_dv_cb, self._source_has_dv(hdr)),
@@ -3441,16 +3452,13 @@ class EncodePanel(QWidget):
         hdr_ok = self._backend_capabilities(codec).supports_hdr
         policy_key = (str(codec), self._current_video_entry_id)
         if not self._loading_video_settings and policy_key != self._tonemap_policy_key:
-            # Défaut appliqué au changement de codec ou de piste seulement.
+            # Au changement de codec ou de piste : choix explicite, sinon défaut du codec (source HDR vers un
+            # codec sans HDR : coché d'office, retiré au retour sur un codec HDR) — règle du cœur.
             self._tonemap_policy_key = policy_key
-            if hdr_ok and self._tonemap_enabled_by_codec:
-                # Retour sur un codec HDR : le tone-mapping coché d'office est retiré.
-                self._tonemap_enabled_by_codec = False
-                self._tonemap_cb.setChecked(False)
-            elif not hdr_ok and not self._tonemap_cb.isChecked() and self._selected_source_is_hdr():
-                # Source HDR vers un codec sans HDR : sortie SDR cohérente pré-remplie.
-                self._tonemap_cb.setChecked(True)
-                self._tonemap_enabled_by_codec = True
+            tonemap, self._tonemap_enabled_by_codec = resolved_tonemap(
+                codec, source_hdr=self._selected_source_is_hdr(), choice=self._tonemap_choice)
+            if self._tonemap_cb.isChecked() != tonemap:
+                self._tonemap_cb.setChecked(tonemap)
         tonemap = self._tonemap_cb.isChecked()
         self._inject_hdr_cb.setEnabled(hdr_ok and not tonemap)
         if hdr_ok:
@@ -3525,12 +3533,20 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         if self._loading_video_settings:
             return
-        if not self._tonemap_cb.isChecked() and not self._syncing_hdr_controls:
-            # Décoché à la main : choix de l'utilisateur, plus de retrait automatique.
-            self._tonemap_enabled_by_codec = False
         # Sortie SDR : HDR10 / DV / HDR10+ grisés, leur état est conservé.
         self._update_passthrough_controls()
         self._rebuild_preview()
+
+    def _on_tonemap_clicked(self, checked: bool) -> None:
+        """Case cochée ou décochée par l'utilisateur : choix explicite, gardé aux changements de codec (Copy
+        compris) ; en mode global, choix commun de toutes les pistes."""
+        if self._loading_video_settings:
+            return
+        self._tonemap_choice = bool(checked)
+        self._tonemap_enabled_by_codec = False
+        if self._video_apply_all:
+            self._tonemap_common_choice = bool(checked)
+        self._save_current_video_state()
 
     def _tonemap_tooltip(self) -> str:
         source_hdr = self._selected_video_hdr_type()
@@ -4444,7 +4460,12 @@ class EncodePanel(QWidget):
 
     def _hdr_intent(self) -> dict[str, bool]:
         """Intention HDR commune de « Appliquer à toutes » (``propagate_state``) ; vide hors mode global."""
-        return dict(self._hdr_common_intent) if self._video_apply_all else {}
+        if not self._video_apply_all:
+            return {}
+        intent = dict(self._hdr_common_intent)
+        if self._tonemap_common_choice is not None:
+            intent["tonemap_choice"] = self._tonemap_common_choice
+        return intent
 
     def _initialize_hdr_intent(self) -> None:
         """À l'activation du mode global : piste affichée d'abord, puis les autres, option par option.
@@ -4453,6 +4474,7 @@ class EncodePanel(QWidget):
         fait foi) ; seulement une piste dont la source porte l'option, jamais une piste en Copy (cases imposées).
         """
         self._hdr_common_intent = {}
+        self._tonemap_common_choice = self._tonemap_choice  # piste affichée seule : jamais celui d'une autre
         ordered = sorted(self._video_tracks, key=lambda item: self._video_entry_id(item[1]) != self._current_video_entry_id)
         for info, track, _color in ordered:
             entry_id = self._video_entry_id(track)
@@ -4970,6 +4992,7 @@ class EncodePanel(QWidget):
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
+            "tonemap_choice": self._tonemap_choice,
             "tonemap_algorithm": self._combo_data(self._tonemap_algo),
         }
 
@@ -5304,6 +5327,8 @@ class EncodePanel(QWidget):
         # Tuple ou liste (état relu d'un JSON : session, preset) : même lecture que le cœur.
         self._dynamic_hdr_disabled_by_codec = restore_flags(state)
         self._tonemap_enabled_by_codec = bool(state.get("tonemap_enabled_by_codec"))
+        # Ancien état sans choix : déduit avec le codec de cet état (``tonemap_choice_of``).
+        self._tonemap_choice = tonemap_choice_of(state, source_hdr=self._selected_source_is_hdr())
         # État restauré tel quel : pas de nouveau défaut pour ce couple codec / piste.
         self._tonemap_policy_key = (str(self._codec_combo.currentData() or "libx265"), self._current_video_entry_id)
         self._video_encode_controls.setVisible((self._codec_combo.currentData() or "libx265") != "copy")

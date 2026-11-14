@@ -491,22 +491,45 @@ class EncoderEnvironment:
     default_preset: Callable[[str], str] = field(default=lambda codec: default_preset_for_codec(codec))
 
 
-def apply_tonemap_default(state: dict[str, object], ctx: SourceVideoContext) -> None:
-    """Défaut du tone mapping quand le codec change (règle du panneau Encodage).
+def resolved_tonemap(codec: str, *, source_hdr: bool, choice: bool | None) -> tuple[bool, bool]:
+    """Tone mapping effectif et origine automatique (``tonemap_enabled_by_codec``), règle du panneau Encodage.
 
-    Source HDR vers un codec sans HDR : conversion SDR cochée d'office (``tonemap_enabled_by_codec``) ;
-    retour sur un codec HDR : ce choix automatique est retiré. Un choix explicite n'est jamais modifié.
+    Copy : aucun (imposé ; le choix reste mémorisé). Choix explicite (clic, ``tonemap.enabled``) : ce choix,
+    vrai comme faux. Sinon défaut du codec : source HDR vers un codec sans HDR → coché d'office.
     """
+    codec = str(codec or "").strip().lower()
+    if codec == "copy":
+        return False, False
+    if choice is not None:
+        return bool(choice), False
+    auto = source_hdr and not backend_capabilities_for_codec(codec).supports_hdr
+    return auto, auto
+
+
+def tonemap_choice_of(state: Mapping[str, object], *, source_hdr: bool) -> bool | None:
+    """Choix explicite du tone mapping (``tonemap_choice``) ; ``None`` : défaut du codec.
+
+    Ancien état (clé absente) : déduit avec le codec **de cet état** (à figer avant tout changement de codec) —
+    coché sans origine automatique → vrai ; décoché là où le défaut cocherait → faux ; sinon aucun choix.
+    """
+    if "tonemap_choice" in state:
+        value = state.get("tonemap_choice")
+        return value if isinstance(value, bool) else None
     codec = state_target_codec(state)
     if codec == "copy":
-        return
-    hdr_ok = backend_capabilities_for_codec(codec).supports_hdr
-    if hdr_ok and state.get("tonemap_enabled_by_codec"):
-        state["tonemap_to_sdr"] = False
-        state["tonemap_enabled_by_codec"] = False
-    elif not hdr_ok and not state.get("tonemap_to_sdr") and source_is_hdr(ctx.hdr_type, ctx.transfer):
-        state["tonemap_to_sdr"] = True
-        state["tonemap_enabled_by_codec"] = True
+        return None
+    if state.get("tonemap_to_sdr"):
+        return None if state.get("tonemap_enabled_by_codec") else True
+    return False if resolved_tonemap(codec, source_hdr=source_hdr, choice=None)[0] else None
+
+
+def apply_tonemap_policy(state: dict[str, object], ctx: SourceVideoContext) -> None:
+    """Tone mapping de l'état d'après son choix explicite, le codec et la source (:func:`resolved_tonemap`)."""
+    source_hdr = source_is_hdr(ctx.hdr_type, ctx.transfer)
+    choice = tonemap_choice_of(state, source_hdr=source_hdr)
+    state["tonemap_choice"] = choice
+    state["tonemap_to_sdr"], state["tonemap_enabled_by_codec"] = resolved_tonemap(
+        state_target_codec(state), source_hdr=source_hdr, choice=choice)
 
 
 def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
@@ -519,6 +542,7 @@ def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
     normalized["bit_depth"] = ("auto" if depth == "10" and target_codec != "copy"
                                and not env.supports_10bit(target_codec) else depth)
     apply_codec_hdr_policy(normalized, source_hdr=ctx.hdr_type, codec=target_codec, source_transfer=ctx.transfer)
+    apply_tonemap_policy(normalized, ctx)
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(normalized, source_hdr=ctx.hdr_type,
                                                           target_codec=target_codec)
     normalized["copy_dv"] = copy_dv
@@ -568,6 +592,7 @@ def default_video_state(ctx: SourceVideoContext, env: EncoderEnvironment | None 
         "copy_hdr10plus": source_has_hdr10plus(ctx.hdr_type),
         "dovi_profile": "0",
         "tonemap_to_sdr": False,
+        "tonemap_choice": None,
         "tonemap_algorithm": "hable",
     }
     return normalize_video_state(state, ctx, env)
@@ -609,16 +634,21 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
     « Appliquer à toutes » (``template["hdr_common"]``, tenue par le panneau, option par option) se propage, vers
     une source qui porte l'option (retirée puis mémorisée par un codec qui ne la porte pas). Sinon (source sans
     l'option, intention inconnue) : valeur et mémoire de la piste ; la normalisation applique ensuite la
-    politique du codec.
+    politique du codec. Tone mapping : choix commun (``hdr_common["tonemap_choice"]``) sinon choix de la piste,
+    défaut automatique calculé pour sa propre source.
     """
     state = copy_state(template)
     for key in PER_SOURCE_HDR_KEYS:
         state[key] = own.get(key, "")
     state.pop("hdr_common", None)
+    raw_common = template.get("hdr_common")
+    common: Mapping[str, object] = raw_common if isinstance(raw_common, Mapping) else {}
+    # Tone mapping : choix commun s'il existe, sinon choix (et défaut) propres à la piste.
+    common_tonemap = common.get("tonemap_choice")
+    state["tonemap_choice"] = (common_tonemap if isinstance(common_tonemap, bool)
+                               else tonemap_choice_of(own, source_hdr=source_is_hdr(ctx.hdr_type, ctx.transfer)))
     codec = state_target_codec(state)
     if codec != "copy":
-        raw_common = template.get("hdr_common")
-        common: Mapping[str, object] = raw_common if isinstance(raw_common, Mapping) else {}
         memory: dict[str, bool] = {}
         for option in HDR_COMMON_OPTIONS:
             carried = hdr_option_carried(option, codec)
@@ -631,8 +661,6 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
                 memory[option] = _option_memory(own, option)
         state["hdr_disabled_by_codec"] = memory["inject_hdr_meta"]
         state["dynamic_hdr_disabled_by_codec"] = (memory["copy_dv"], memory["copy_hdr10plus"])
-        # Tone mapping recopié du modèle : il garde son origine (coché d'office par le codec ou choisi).
-        state["tonemap_enabled_by_codec"] = bool(template.get("tonemap_enabled_by_codec"))
     return normalize_video_state(state, ctx, env)
 
 
@@ -683,11 +711,12 @@ def apply_preset_to_state(state: Mapping[str, object], preset: EncodePreset, ctx
                           env: EncoderEnvironment | None = None) -> dict[str, object]:
     """Preset d'encodage appliqué à un état (comme « Charger » du panneau) : HDR de la source conservé.
 
-    Changement de codec : défaut du tone mapping du nouveau codec (:func:`apply_tonemap_default`).
+    Tone mapping : choix explicite gardé, sinon défaut du nouveau codec (:func:`resolved_tonemap`).
     """
     settings = preset.to_video_settings()
     updated = copy_state(state)
-    previous_codec = state_target_codec(state)
+    # Choix figé avec le codec de l'état avant que le preset ne le change (ancien état sans clé).
+    updated["tonemap_choice"] = tonemap_choice_of(state, source_hdr=source_is_hdr(ctx.hdr_type, ctx.transfer))
     for key in PRESET_FIELDS:
         if key == "preset":
             updated[key] = preset.preset
@@ -695,8 +724,6 @@ def apply_preset_to_state(state: Mapping[str, object], preset: EncodePreset, ctx
             updated[key] = settings.quality_mode
         else:
             updated[key] = getattr(settings, key)
-    if state_target_codec(updated) != previous_codec:
-        apply_tonemap_default(updated, ctx)
     return normalize_video_state(updated, ctx, env)
 
 

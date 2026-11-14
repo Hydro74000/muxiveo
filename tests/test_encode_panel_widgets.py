@@ -3197,6 +3197,7 @@ def test_restored_track_states_with_and_without_explicit_markers(qt_app, monkeyp
     panel.set_video_tracks([_sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)])
     try:
         _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
         base = dict(panel._video_settings_by_entry_id["sdr0"])
         for markers, expected in (({}, False), ({"static_hdr_manual": True}, True),
                                   ({"static_hdr_max_cll_manual": True}, True)):
@@ -3398,5 +3399,86 @@ def test_typed_values_take_precedence_over_a_p5_estimate_in_the_label(qt_app, mo
         _type_cll(panel, "900,300")  # même valeur, saisie par l'utilisateur
         assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
         assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+
+
+def _tonemaps(panel) -> dict:
+    return {v.source_path: v.tonemap_to_sdr for v in panel.collect_config().video_tracks}
+
+
+def test_apply_all_automatic_tonemap_follows_each_source_whatever_track_is_displayed(qt_app, monkeypatch):
+    """Défaut antérieur (audit 8) : la piste HDR recevait le tone mapping de la piste SDR affichée."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        panel._video_list.setCurrentRow(1)  # piste SDR affichée
+        _select_codec(panel, "libx264")
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: False}
+        panel._video_list.setCurrentRow(0)
+        panel._video_list.setCurrentRow(1)
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: False}
+        _select_codec(panel, "libx265")
+        assert _tonemaps(panel) == {_PATH_A: False, path_sdr: False}
+        _select_codec(panel, "libx264")
+        panel._tonemap_cb.click()  # choix explicite sur la piste affichée : commun à toutes
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: True}
+        panel._tonemap_cb.click()
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        _select_codec(panel, "libx264")
+        assert _tonemaps(panel) == {_PATH_A: False, path_sdr: False}  # refus commun gardé
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+def test_explicit_tonemap_choices_survive_codec_and_copy_cycles(qt_app, monkeypatch, apply_all):
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        panel._apply_all_video_cb.setChecked(apply_all)
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()  # automatique
+        for codec in ("copy", "libx264"):  # Copy impose « sans » : jamais un refus de l'utilisateur
+            _select_codec(panel, codec)
+        assert panel._tonemap_cb.isChecked()
+        panel._tonemap_cb.click()  # refus explicite
+        for codec in ("libx265", "copy", "libx264"):
+            _select_codec(panel, codec)
+        assert not panel._tonemap_cb.isChecked() and not _tonemaps(panel)[_HDR10_PATH]
+        _select_codec(panel, "libx265")
+        panel._tonemap_cb.click()  # choix explicite sur un codec HDR
+        for codec in ("copy", "libx265"):
+            _select_codec(panel, codec)
+        assert panel._tonemap_cb.isChecked() and _tonemaps(panel)[_HDR10_PATH]
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("legacy, codec_after, expected", [
+    ({"codec": "libx264", "tonemap_to_sdr": False, "tonemap_enabled_by_codec": False}, "libx264", False),  # refus
+    ({"codec": "libx264", "tonemap_to_sdr": True, "tonemap_enabled_by_codec": True}, "libx265", False),   # auto
+    ({"codec": "libx265", "tonemap_to_sdr": True, "tonemap_enabled_by_codec": False}, "libx264", True),   # choix
+    ({"codec": "libx265", "tonemap_to_sdr": False, "tonemap_enabled_by_codec": False}, "libx264", True),  # défaut
+])
+def test_restored_states_without_a_tonemap_choice_keep_their_meaning(qt_app, monkeypatch, legacy, codec_after,
+                                                                     expected):
+    other = Path("/tmp/other.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        state = dict(panel._video_settings_by_entry_id["v0"])
+        state.pop("tonemap_choice", None)
+        panel._video_settings_by_entry_id["v0"] = {**state, **legacy}  # session antérieure
+        panel._video_list.setCurrentRow(0)
+        assert panel._codec_combo.currentData() == legacy["codec"]  # état relu tel quel
+        if codec_after != legacy["codec"]:
+            _select_codec(panel, codec_after)
+        else:
+            _select_codec(panel, "libx265")
+            _select_codec(panel, codec_after)
+        assert _tonemaps(panel)[_HDR10_PATH] is expected
     finally:
         panel.close()

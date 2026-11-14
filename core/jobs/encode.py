@@ -55,7 +55,6 @@ from core.workflows.encode.planning.track_settings import (
     EncoderEnvironment,
     SourceVideoContext,
     apply_preset_to_state,
-    apply_tonemap_default,
     default_video_state,
     extract_hdr_meta_fields,
     is_pure_copy,
@@ -65,7 +64,6 @@ from core.workflows.encode.planning.track_settings import (
     source_has_dv,
     source_has_hdr10plus,
     source_has_static_hdr10,
-    state_target_codec,
     video_settings_from_state,
     video_track_for,
 )
@@ -253,8 +251,8 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
             if value is not None:
                 state[target] = value
     if spec.tonemap is not None:
-        if spec.tonemap.enabled is not None:
-            state["tonemap_to_sdr"] = spec.tonemap.enabled
+        if spec.tonemap.enabled is not None:  # choix explicite, gardé aux changements de codec
+            state.update(tonemap_to_sdr=spec.tonemap.enabled, tonemap_choice=spec.tonemap.enabled)
             if spec.tonemap.enabled:
                 intents.add("tonemap")
         if spec.tonemap.algorithm is not None:
@@ -408,12 +406,9 @@ def resolve_encode(
                             f"{track.mkv_tid} : {problem}")
             state = apply_preset_to_state(state, preset, ctx, env)
         intents: set[str] = set()
-        codec_before = state_target_codec(state)
         for layer in layers:
             intents |= apply_video_spec(state, layer, env)
-        explicit_tonemap = any(layer.tonemap is not None and layer.tonemap.enabled is not None for layer in layers)
-        if not explicit_tonemap and state_target_codec(state) != codec_before:
-            apply_tonemap_default(state, ctx)  # changement de codec : défaut du panneau (source HDR → codec SDR)
+        # Tone mapping : choix explicite des couches, sinon défaut du codec final (règle du panneau).
         state = normalize_video_state(state, ctx, env)
         label = f"vidéo {source.file_index}:{track.mkv_tid}"
         _check_intents(state, ctx, intents, label, warnings)
