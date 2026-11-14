@@ -495,7 +495,7 @@ def build_remux_config(
                 track.remove_closed_captions = options.remove_closed_captions
 
     # Synchronisation explicite via calibration ou dynamique via auto_sync
-    from core.jobs.source_sync import resolve_source_syncs, resolve_track_syncs, sync_specs
+    from core.jobs.source_sync import resolve_syncs, sync_specs
 
     source_syncs = sync_specs(job, auto_sync_all=bool(job.get("auto_sync_all") or getattr(options, "auto_sync_all", False)))
     calib_file = job.get("calibration") or getattr(options, "calibration", None)
@@ -526,12 +526,9 @@ def build_remux_config(
             source_index=source_index,
         )
 
-    if source_syncs:
-        resolve_source_syncs(job, sources, source_syncs, config=config, options=options, logger=logger,
-                             apply=apply_source_sync)
-    if any(isinstance(spec.get("sync"), dict) for spec, _track in edited_tracks):
-        resolve_track_syncs(job, sources, edited_tracks, linked=set(source_syncs), config=config, options=options,
-                            logger=logger)
+    if source_syncs or any(isinstance(spec.get("sync"), dict) for spec, _track in edited_tracks):
+        resolve_syncs(job, sources, source_syncs, edited_tracks, config=config, options=options, logger=logger,
+                      apply=apply_source_sync)
 
     from core.workflows.subtitle_heuristics import classify_subtitles
     with context.measure("sous-titres"):

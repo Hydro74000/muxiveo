@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -191,89 +192,123 @@ def _track_position(track: TrackEntry, source_index: int, job: Mapping[str, Any]
     return inherited or SyncCalibration.linear(int(track.time_shift_ms or 0))
 
 
-def resolve_source_syncs(job: dict[str, Any], sources: list[SourceInput], specs: Mapping[int, Mapping[str, Any]], *,
-                         config: Any, options: Any, logger: Any, apply: Any) -> None:
-    """Résout les liens de synchro des sources (ordre des dépendances) et les applique par ``apply``.
+@dataclass
+class _SyncNode:
+    """Synchro à résoudre : une source entière (``sources[i].sync``) ou une piste seule (``tracks[i].sync``)."""
 
-    ``apply(calibration, source_index)`` : application d'une synchro à toute la source
-    (``apply_donor_calibration``) ; met à jour ``job["sync_mode"]`` / ``job["sync_calibrations"]``.
-    """
-    links: dict[str, SyncLink] = {}
-    for index, spec in specs.items():
+    key: str
+    context: str
+    spec: Mapping[str, Any]
+    target_index: int
+    reference_index: int
+    reference_track: TrackEntry
+    track: TrackEntry | None = None  # piste seule (synchro propre)
+
+
+def _source_index_of(sources: list[SourceInput], track: TrackEntry) -> int | None:
+    return next((index for index, source in enumerate(sources) if any(t is track for t in source.tracks)), None)
+
+
+def _sync_nodes(sources: list[SourceInput], source_specs: Mapping[int, Mapping[str, Any]],
+                track_pairs: list[tuple[dict, TrackEntry]]) -> dict[str, _SyncNode]:
+    nodes: dict[str, _SyncNode] = {}
+    for index, spec in source_specs.items():
         reference_index = int(spec.get("reference", 0))
-        if index >= len(sources) or reference_index >= len(sources):
-            raise JobError(f"sources[{index}].sync.reference : source {reference_index} absente.", EXIT_ARGS)
-        if reference_index == index:
-            raise JobError(f"sources[{index}].sync.reference : une source ne se synchronise pas sur elle-même.",
-                           EXIT_ARGS)
-        links[str(index)] = SyncLink(str(reference_index), "", SyncCalibration.linear(0))
-    try:
-        order = [int(file_id) for file_id in dependency_order(links)]
-    except SyncLoopError as exc:
-        raise JobError(f"{exc} (indices de sources).", EXIT_ARGS) from exc
-    for index in order:
-        spec = specs[index]
-        reference = sources[int(spec.get("reference", 0))]
-        target = sources[index]
         context = f"sources[{index}].sync"
-        kind = str(spec.get("type") or "auto")
-        reference_track = pick_track(reference, spec.get("reference_track"),
-                                     kind="subtitle" if kind == "subtitle" else None, context=context)
-        target_track = pick_track(target, spec.get("track"), kind="subtitle" if kind == "subtitle" else None,
-                                  context=context)
-        if spec.get("track") is None and target_track.is_audio and reference_track.is_audio:
-            target_track = measure_track(target_track, reference_track, target.tracks)
-        relative = _relative(spec, reference, reference_track, target, target_track, config=config, options=options,
-                             logger=logger)
-        if relative is None:
-            logger.emit("warning", f"Synchro de {target.path.name} : aucune mesure exploitable, source non déplacée.")
-            continue
-        position = _track_position(reference_track, int(spec.get("reference", 0)), job)
-        calibration = compose_calibrations(relative, position)
-        if position.segments[0].shift_ms or len(position.segments) > 1 or position.converts_audio:
-            logger.emit("info", f"La référence {reference.path.name} est elle-même synchronisée : "
-                                f"{target.path.name} suit sa position dans la sortie.")
-        if is_negligible(calibration):
-            logger.emit("info", f"Synchro de {target.path.name} : décalage {round(calibration.segments[0].shift_ms):+d} ms "
-                                "négligeable, non appliqué.")
-            apply(SyncCalibration.linear(0), index)  # le bloc `sync` définit la synchro de la source
-            continue
-        logger.emit("info", f"Synchro de {target.path.name} : {round(calibration.segments[0].shift_ms):+d} ms "
-                            f"(face à {reference.path.name} #{reference_track.mkv_tid}).")
-        apply(calibration, index)
-
-
-def resolve_track_syncs(job: dict[str, Any], sources: list[SourceInput], pairs: list[tuple[dict, TrackEntry]], *,
-                        linked: set[int], config: Any, options: Any, logger: Any) -> None:
-    """Synchro propre à une piste (``tracks[].sync``) : seule la piste bouge ; sa source ne la déplace plus."""
-    by_track = {id(track): index for index, source in enumerate(sources) for track in source.tracks}
-    for spec_index, (spec, track) in enumerate(pairs):
+        if index >= len(sources) or reference_index >= len(sources):
+            raise JobError(f"{context}.reference : source {reference_index} absente.", EXIT_ARGS)
+        if reference_index == index:
+            raise JobError(f"{context}.reference : une source ne se synchronise pas sur elle-même.", EXIT_ARGS)
+        kind = "subtitle" if spec.get("type") == "subtitle" else None
+        reference_track = pick_track(sources[reference_index], spec.get("reference_track"), kind=kind, context=context)
+        nodes[f"s{index}"] = _SyncNode(f"s{index}", context, spec, index, reference_index, reference_track)
+    for position, (spec, track) in enumerate(track_pairs):
         sync = spec.get("sync")
         if not isinstance(sync, dict):
             continue
-        context = f"tracks[{spec_index}].sync"
+        context = f"tracks[{position}].sync"
         if track.track_type not in ("audio", "subtitle"):
             raise JobError(f"{context} : synchro réservée aux pistes audio et sous-titres.", EXIT_VALIDATION)
-        source_index = by_track.get(id(track))
+        source_index = _source_index_of(sources, track)
         reference_index = int(sync.get("reference", 0))
         if source_index is None or reference_index >= len(sources):
             raise JobError(f"{context}.reference : source {reference_index} absente.", EXIT_ARGS)
-        reference = sources[reference_index]
-        kind = str(sync.get("type") or "auto")
-        reference_track = pick_track(reference, sync.get("reference_track"),
-                                     kind="subtitle" if kind == "subtitle" else None, context=context)
+        kind = "subtitle" if sync.get("type") == "subtitle" else None
+        reference_track = pick_track(sources[reference_index], sync.get("reference_track"), kind=kind, context=context)
         if reference_track is track:
             raise JobError(f"{context} : la piste ne se synchronise pas sur elle-même.", EXIT_ARGS)
-        relative = _relative(sync, reference, reference_track, sources[source_index], track, config=config,
+        nodes[f"t{position}"] = _SyncNode(f"t{position}", context, sync, source_index, reference_index,
+                                          reference_track, track)
+    return nodes
+
+
+def sync_order(nodes: Mapping[str, _SyncNode]) -> list[str]:
+    """Ordre de résolution : chaque synchro après celle de sa piste de référence (synchro propre), sinon de la
+    source de référence ; boucle refusée."""
+    track_nodes = {id(node.track): key for key, node in nodes.items() if node.track is not None}
+    links: dict[str, SyncLink] = {}
+    for key, node in nodes.items():
+        dependency = track_nodes.get(id(node.reference_track))
+        if dependency is None and f"s{node.reference_index}" in nodes:
+            dependency = f"s{node.reference_index}"
+        if dependency is not None and dependency != key:
+            links[key] = SyncLink(dependency, "", SyncCalibration.linear(0))
+    try:
+        linked = dependency_order(links)
+    except SyncLoopError as exc:
+        raise JobError(f"{exc} (s = source, t = entrée tracks[]).", EXIT_ARGS) from exc
+    return [key for key in nodes if key not in links] + linked
+
+
+def resolve_syncs(job: dict[str, Any], sources: list[SourceInput], source_specs: Mapping[int, Mapping[str, Any]],
+                  track_pairs: list[tuple[dict, TrackEntry]], *, config: Any, options: Any, logger: Any,
+                  apply: Any) -> None:
+    """Résout les synchros des sources et des pistes dans l'ordre de leurs dépendances.
+
+    Source : ``apply(calibration, source_index)`` (``apply_donor_calibration`` : toute la source, met à jour
+    ``job["sync_mode"]`` / ``job["sync_calibrations"]``). Piste : calibration propre, prioritaire à l'exécution.
+    Chaque synchro suit la position de sa piste de référence dans la sortie, déjà résolue.
+    """
+    nodes = _sync_nodes(sources, source_specs, track_pairs)
+    linked_sources = {node.target_index for node in nodes.values() if node.track is None}
+    for key in sync_order(nodes):
+        node = nodes[key]
+        reference = sources[node.reference_index]
+        target = sources[node.target_index]
+        if node.track is None:
+            kind = "subtitle" if node.spec.get("type") == "subtitle" else None
+            target_track = pick_track(target, node.spec.get("track"), kind=kind, context=node.context)
+            if node.spec.get("track") is None and target_track.is_audio and node.reference_track.is_audio:
+                target_track = measure_track(target_track, node.reference_track, target.tracks)
+        else:
+            target_track = node.track
+        relative = _relative(node.spec, reference, node.reference_track, target, target_track, config=config,
                              options=options, logger=logger)
         if relative is None:
-            logger.emit("warning", f"{context} : aucune mesure exploitable, piste #{track.mkv_tid} non déplacée.")
+            what = f"piste #{target_track.mkv_tid}" if node.track is not None else "source"
+            logger.emit("warning", f"{node.context} : aucune mesure exploitable, {what} de {target.path.name} "
+                                   "non déplacée.")
             continue
-        position = _track_position(reference_track, reference_index, job)
-        calibration = compose_calibrations(relative, position).for_track(track.track_type)
-        # Synchro propre : calibration de la piste (prioritaire à l'exécution), même constante.
-        track.sync_calibration = calibration.to_dict()
-        track.time_shift_ms = round(calibration.segments[0].shift_ms)
-        note = " (sa source est aussi synchronisée : la piste garde sa synchro propre)" if source_index in linked else ""
-        logger.emit("info", f"Synchro propre de la piste #{track.mkv_tid} de {sources[source_index].path.name} : "
-                            f"{track.time_shift_ms:+d} ms{note}.")
+        position = _track_position(node.reference_track, node.reference_index, job)
+        if position.segments[0].shift_ms or len(position.segments) > 1 or position.converts_audio:
+            logger.emit("info", f"La référence {reference.path.name} #{node.reference_track.mkv_tid} est elle-même "
+                                f"synchronisée : {target.path.name} suit sa position dans la sortie.")
+        calibration = compose_calibrations(relative, position)
+        if node.track is not None:
+            calibration = calibration.for_track(node.track.track_type)
+            # Synchro propre : calibration de la piste (prioritaire à l'exécution), même constante.
+            node.track.sync_calibration = calibration.to_dict()
+            node.track.time_shift_ms = round(calibration.segments[0].shift_ms)
+            note = (" (sa source est aussi synchronisée : la piste garde sa synchro propre)"
+                    if node.target_index in linked_sources else "")
+            logger.emit("info", f"Synchro propre de la piste #{node.track.mkv_tid} de {target.path.name} : "
+                                f"{node.track.time_shift_ms:+d} ms{note}.")
+            continue
+        if is_negligible(calibration):
+            logger.emit("info", f"Synchro de {target.path.name} : décalage {round(calibration.segments[0].shift_ms):+d} "
+                                "ms négligeable, non appliqué.")
+            apply(SyncCalibration.linear(0), node.target_index)  # le bloc `sync` définit la synchro de la source
+            continue
+        logger.emit("info", f"Synchro de {target.path.name} : {round(calibration.segments[0].shift_ms):+d} ms "
+                            f"(face à {reference.path.name} #{node.reference_track.mkv_tid}).")
+        apply(calibration, node.target_index)

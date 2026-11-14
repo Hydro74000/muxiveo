@@ -87,12 +87,32 @@ class BatchOutcome:
     cancelled: bool = False
 
 
+def _without(spec: dict[str, Any], overridden: dict[str, Any]) -> dict[str, Any]:
+    """``spec`` sans les champs (feuilles, imbriquées comprises) que ``overridden`` fixe."""
+    kept: dict[str, Any] = {}
+    for key, value in spec.items():
+        if key not in overridden or key == "select":
+            kept[key] = value
+        elif isinstance(value, dict) and isinstance(overridden[key], dict):
+            rest = _without(value, overridden[key])
+            if rest:
+                kept[key] = rest
+    return kept
+
+
 def merge_encode_block(job: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
-    """Job avec ``block`` fusionné dans son bloc ``encode`` (``block`` prime ; pistes et audio ajoutés)."""
+    """Job avec ``block`` fusionné dans son bloc ``encode`` (``block`` prime ; pistes et audio ajoutés).
+
+    Les champs du ``video.default`` de ``block`` priment aussi sur les surcharges par piste du job : sinon une
+    piste JSON à CRF 18 resterait à 18 malgré ``--crf 28`` (couche piste appliquée après la couche défaut).
+    """
     merged = dict(job)
     existing = merged.get("encode")
     base = existing if isinstance(existing, dict) else {}
-    tracks = [*(base.get("video", {}) or {}).get("tracks", []), *(block.get("video", {}) or {}).get("tracks", [])]
+    overriding = (block.get("video", {}) or {}).get("default") or {}
+    base_tracks = [_without(track, overriding) if isinstance(track, dict) else track
+                   for track in (base.get("video", {}) or {}).get("tracks", [])]
+    tracks = [*base_tracks, *(block.get("video", {}) or {}).get("tracks", [])]
     combined = deep_merge(base, block)
     if tracks:
         combined.setdefault("video", {})["tracks"] = tracks
