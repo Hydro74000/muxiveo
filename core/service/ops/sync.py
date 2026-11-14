@@ -123,10 +123,10 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
         from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
 
         is_ref_sub = ref_kind == "subtitle"
-        result = SubtitleSyncScanner(ffmpeg, ffprobe, cancel_event=ctx.cancel.event).scan(
+        result = _cancellable_analysis(ctx, lambda: SubtitleSyncScanner(ffmpeg, ffprobe, cancel_event=ctx.cancel.event).scan(
             request.ref, request.stream_ref, request.target, request.stream_target, is_ref_sub=is_ref_sub,
             detect_cuts=request.detect_cuts if is_ref_sub else False, log=lambda message: log("info", message),
-        )
+        ))
     else:
         cadence_mismatch = None
         cadence_auto = request.cadence_auto
@@ -154,7 +154,7 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
                     raise  # annulation : jamais avalée par l'avertissement « cadences »
                 log("warning", f"Impossible d'analyser les cadences vidéo : {exc}")
         make_scanner = ctx.port("audio_scanner", lambda: _audio_scanner(request, ctx))
-        result = make_scanner().scan(
+        result = _cancellable_analysis(ctx, lambda: make_scanner().scan(
             AudioSyncTrack(request.ref, request.stream_ref),
             AudioSyncTrack(request.target, request.stream_target),
             detect_cuts=request.detect_cuts,
@@ -163,13 +163,25 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
             cadence_audio_method=cadence_method,
             log=lambda message: log("info", message),
             warn=lambda message: log("warning", message),
-        )
+        ))
     calibration = result.to_dict()
     if request.output_json is not None:
         atomic_write_text(Path(request.output_json),
                           json.dumps(calibration, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
         ctx.events.artifact("calibration", str(request.output_json))
     return SyncScanResult(calibration=calibration)
+
+
+def _cancellable_analysis(ctx: ExecutionContext, analyse: Any) -> Any:
+    """Analyse de synchro sous le jeton : interrompue par lui (``AudioSyncError`` / ``SubtitleSyncError``) →
+    annulation ; revenue malgré lui → annulation aussi (rien n'est écrit, jamais « succeeded »)."""
+    try:
+        result = analyse()
+    except Exception:
+        ctx.cancel.raise_if_cancelled()
+        raise
+    ctx.cancel.raise_if_cancelled()
+    return result
 
 
 @operation("sync.shift_subtitles", request=ShiftSubtitlesRequest, result=ShiftSubtitlesResult,
