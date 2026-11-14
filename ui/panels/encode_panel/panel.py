@@ -2552,6 +2552,7 @@ class EncodePanel(QWidget):
             self._max_cll.setText(str(state.get("max_cll") or ""))
             self._master_display.blockSignals(md_blocked)
             self._max_cll.blockSignals(cll_blocked)
+            self._sync_hdr_metadata_provenance()  # libellé et « Valeurs source » d'après les valeurs complétées
         self._rebuild_preview()
 
     def _probe_hdr_meta_from_frames(self, generation: int, source_path: Path) -> None:
