@@ -54,6 +54,7 @@ class BatchSteps:
     encode: Callable[..., Any] | None = None  # (job, remux_config, config, options, logger) -> EncodeConfig | None
     preview_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config) -> code
     run_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config, *, force, accept) -> code
+    finish: Callable[[Any, str], None] | None = None  # (logger du job, "failed" | "cancelled") : job non exécuté
 
 
 def plan_job_encode(steps: BatchSteps, entry: PlannedBatchJob, job: dict[str, Any], remux_config: RemuxConfig,
@@ -589,6 +590,8 @@ def run_batch(
             failures += 1
             # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
             job_cancelled = (cancel is not None and cancel.cancelled) or error_code(exc) is ErrorCode.CANCELLED
+            if steps.finish is not None:  # préparation en échec, annulation : le job enfant se termine
+                steps.finish(job_log, "cancelled" if job_cancelled else "failed")
             summary_jobs.append(
                 {
                     "job_index": job_index,

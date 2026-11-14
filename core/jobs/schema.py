@@ -180,7 +180,11 @@ def build_cli_json_schema() -> dict[str, Any]:
             "mux_backend": {"enum": list(MUX_BACKEND_CHOICES)},
             "file_title": {"type": "string"},
             "name": {"type": "string", "description": "Nom du workflow (exact-job enregistré)."},
-            "fallback_profile": {"type": "string", "description": "Profil de repli du workflow."},
+            "fallback_profile": {
+                "oneOf": [{"type": "string"},
+                          {"type": "object", "additionalProperties": False, "properties": {"name": {"type": "string"}}}],
+                "description": "Profil de repli du workflow (nom, ou objet {\"name\": …}).",
+            },
             "variables": _variables_schema(),
             "tracks": {"type": "array", "items": {"$ref": "#/$defs/track_edit"}},
             "track_order": {"type": "array", "items": {"$ref": "#/$defs/track_order_item"}},

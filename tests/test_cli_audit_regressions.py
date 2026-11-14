@@ -888,3 +888,57 @@ def test_duration_vulkan_and_workflow_probes_are_cancellable(tmp_path):
         with pytest.raises(ProbeCancelledError):
             probe(cancel)
         assert time.monotonic() - start < 5
+
+
+# --- Cinquième audit -----------------------------------------------------------------------------------
+
+
+def test_legitimate_fallback_profile_object_and_strict_variables(tmp_path):
+    from core.service.errors import ApiError
+    from core.service.ops.media import MediaJobRequest
+
+    base = {"version": 1, "sources": [str(tmp_path / "a.mkv")]}
+    for fallback in ("series-fr", {"name": "series-fr"}):
+        assert MediaJobRequest.parse({"job": {**base, "fallback_profile": fallback}})[1] == ()
+    for bad, path in (({"fallback_profile": 3}, "job.fallback_profile"), ({"variables": []}, "job.variables"),
+                      ({"fallback_profile": {"name": 3}}, "job.fallback_profile.name")):
+        with pytest.raises(ApiError) as caught:
+            MediaJobRequest.parse({"job": {**base, **bad}})
+        assert path in {d.path for d in caught.value.details}
+
+
+def test_operation_token_never_outlives_the_operation_on_a_reused_workflow(qapp, tmp_path):
+    import threading
+
+    from core.jobs.encode_runtime import checked_encode, probe_cancel_scope
+    from core.jobs.options import CommonOptions
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    from tests.test_cli_encode import _config
+
+    wf = EncodeWorkflow()
+    cancelled = threading.Event()
+    cancelled.set()
+    with probe_cancel_scope(wf, cancelled):
+        assert wf._probe_cancel_event is cancelled
+    assert wf._probe_cancel_event is None
+    # Validation d'une opération annulée, puis réutilisation du même workflow : sonde L5 non contaminée.
+    checked_encode(_config(tmp_path), wf, config=SimpleNamespace(tool_ffmpeg="ffmpeg"), options=CommonOptions(),
+                   cancel_event=cancelled)
+    assert wf._probe_cancel_event is None
+
+
+def test_encode_block_values_are_refused_when_the_request_is_read(tmp_path):
+    from core.service.errors import ApiError
+    from core.service.ops.hybrid import HybridPlanRequest
+    from core.service.ops.media import MediaJobRequest
+
+    job = {"version": 1, "sources": [str(tmp_path / "a.mkv")], "encode": {"video": {"default": {"crf": 99}}}}
+    with pytest.raises(ApiError) as caught:
+        MediaJobRequest.parse({"job": job})
+    assert "job.encode.video.default.crf" in {d.path for d in caught.value.details}
+    with pytest.raises(ApiError) as caught:
+        HybridPlanRequest.parse({"output_dir": str(tmp_path), "encode": {"video": {"default": {"crf": "x"}}}})
+    assert "encode.video.default.crf" in {d.path for d in caught.value.details}
+    # Commande historique (documents tolérants) : refus à la résolution, comme avant.
+    assert MediaJobRequest.parse({"job": job}, strict_documents=False)[1] == ()

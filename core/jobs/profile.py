@@ -315,13 +315,14 @@ class ProfileBatchSteps:
     encode: Callable[..., Any] | None = None
     preview_encode: Callable[..., int] | None = None
     run_encode: Callable[..., int] | None = None
+    finish: Callable[[Any, str], None] | None = None
 
     def as_batch_steps(self) -> BatchSteps:
         def unused_build(*_args: Any, **_kwargs: Any) -> RemuxConfig:
             raise RuntimeError("construction propre au profil (ProfileBatchSteps.build)")
 
         return BatchSteps(build=unused_build, preview=self.preview, run=self.run, encode=self.encode,
-                          preview_encode=self.preview_encode, run_encode=self.run_encode)
+                          preview_encode=self.preview_encode, run_encode=self.run_encode, finish=self.finish)
 
 
 def run_profile_batch(
@@ -461,6 +462,8 @@ def run_profile_batch(
             failures += 1
             # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
             job_cancelled = (cancel is not None and cancel.cancelled) or error_code(exc) is ErrorCode.CANCELLED
+            if batch_steps.finish is not None:  # préparation en échec, annulation : le job enfant se termine
+                batch_steps.finish(job_log, "cancelled" if job_cancelled else "failed")
             summary_jobs.append(
                 {
                     "job_index": job_index,

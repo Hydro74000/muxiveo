@@ -257,3 +257,58 @@ def test_cancel_during_an_encode_preview_cancels_child_and_batch(tmp_path, doubl
     child = next(e.job for e in sink.events if e.parent == ctx.events.job)
     states = [e.data["state"] for e in sink.events if e.job == child and e.type is EventType.STATE]
     assert states == [JobState.RUNNING.value, JobState.CANCELLED.value]
+
+
+def test_cancellation_raised_by_a_step_stops_the_batch_even_without_the_token(tmp_path, doubles, monkeypatch):
+    from core.subprocess_utils import ProbeCancelledError
+
+    ctx, sink = _ctx()
+    monkeypatch.setattr(batch_ops, "resolve_from_job", lambda *a, **k: SimpleNamespace(config=SimpleNamespace()))
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: None)
+    calls: list[int] = []
+
+    def checked(*_a, **_k):  # annulation levée par une sonde, jeton du lot non levé
+        calls.append(1)
+        raise ProbeCancelledError("Sonde annulée.")
+
+    monkeypatch.setattr(batch_ops, "checked_encode", checked)
+    items = [{**item, "encode": {"video": {"default": {"codec": "libx265"}}}} for item in _items(tmp_path, "a", "b")]
+    result = call(CATALOG, "media.batch", {**_template(tmp_path, items), "dry_run": True, "continue_on_error": True},
+                  ctx)
+    assert calls == [1] and result.status == "cancelled" and [job["status"] for job in result.jobs] == ["cancelled"]
+    assert _parent_states(sink, ctx)[-1] == JobState.CANCELLED.value
+
+
+def test_every_child_gets_a_final_state_after_a_preparation_error(tmp_path, doubles, monkeypatch):
+    ctx, sink = _ctx()
+
+    def build(job, _config, _options, _logger, **_kwargs):
+        if str(job["output"]).endswith("a.mkv"):
+            raise ApiError(ErrorCode.VALIDATION, "source illisible")
+        return SimpleNamespace(output=Path(str(job["output"])).absolute(), allow_missing_output_dir=False)
+
+    monkeypatch.setattr(batch_ops, "build_remux_config", build)
+    result = call(CATALOG, "media.batch", {**_template(tmp_path, _items(tmp_path, "a", "b")), "continue_on_error": True},
+                  ctx)
+    assert result.status == "partial"
+    children = [e.job for e in sink.events if e.parent == ctx.events.job and e.type is EventType.STATE
+                and e.data["state"] == JobState.RUNNING.value]
+    finals = {e.job: e.data["state"] for e in sink.events if e.job in children and e.type is EventType.STATE
+              and e.data["state"] != JobState.RUNNING.value}
+    assert sorted(finals.values()) == [JobState.FAILED.value, JobState.SUCCEEDED.value]
+
+
+def test_keyboard_interrupt_in_a_step_cancels_the_child():
+    from core.service.ops.batch import _Children
+
+    ctx, sink = _ctx()
+    children = _Children(ctx)
+    logger = children.logger(0)
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        children._guarded(logger, interrupted)
+    states = [e.data["state"] for e in sink.events if e.job == logger.events.job and e.type is EventType.STATE]
+    assert states == [JobState.RUNNING.value, JobState.CANCELLED.value] and ctx.cancel.cancelled

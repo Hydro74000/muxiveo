@@ -9,7 +9,8 @@ from __future__ import annotations
 import threading
 
 import dataclasses
-from collections.abc import Callable
+from contextlib import contextmanager
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from core.jobs.constants import EXIT_EXISTS, EXIT_VALIDATION
@@ -52,15 +53,27 @@ def encode_workflow(config: Any, options: CommonOptions) -> EncodeWorkflow:
     return wf
 
 
-def prepare_vulkan(wf: EncodeWorkflow, encode_config: EncodeConfig, ffmpeg: str,
-                   cancel_event: threading.Event | None = None) -> None:
-    """NLMeans demandé : sonde Vulkan (GPU dédié) transmise au workflow, comme le tableau de bord.
+@contextmanager
+def probe_cancel_scope(wf: Any, cancel_event: threading.Event | None) -> Iterator[None]:
+    """Jeton des sondes internes du workflow (bandes L5) pour la durée d'une opération, puis l'ancien.
 
-    ``cancel_event`` : posé aussi sur le workflow (sondes internes : bandes L5 du RPU).
+    Un workflow réutilisé ne garde jamais le jeton (peut-être annulé) d'une opération terminée.
     """
     setter = getattr(wf, "set_probe_cancel_event", None)  # doubles de test : sans sondes internes
-    if cancel_event is not None and setter is not None:
-        setter(cancel_event)
+    if setter is None or cancel_event is None:
+        yield
+        return
+    previous = getattr(wf, "_probe_cancel_event", None)
+    setter(cancel_event)
+    try:
+        yield
+    finally:
+        setter(previous)
+
+
+def prepare_vulkan(wf: EncodeWorkflow, encode_config: EncodeConfig, ffmpeg: str,
+                   cancel_event: threading.Event | None = None) -> None:
+    """NLMeans demandé : sonde Vulkan (GPU dédié) transmise au workflow, comme le tableau de bord ; annulable."""
     if not any(video.filters.nlmeans_enabled for video in encode_config.video_tracks):
         return
     from core.workflows.encode.vulkan import detect_vulkan
@@ -138,13 +151,14 @@ def checked_encode(encode_config: EncodeConfig, wf: EncodeWorkflow, *, config: A
 
     ``cancel_event`` : inspection et sonde L5 annulables (l'annulation remonte, jamais un refus).
     """
-    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel_event)
-    try:
-        encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
-                                         cancel_event=cancel_event)
-    except JobError as exc:
-        return encode_config, [exc.message]
-    return encode_config, list(wf.validate(encode_config))
+    with probe_cancel_scope(wf, cancel_event):
+        prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel_event)
+        try:
+            encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
+                                             cancel_event=cancel_event)
+        except JobError as exc:
+            return encode_config, [exc.message]
+        return encode_config, list(wf.validate(encode_config))
 
 
 def run_encode(
@@ -167,6 +181,14 @@ def run_encode(
         raise JobError(f"Sortie déjà existante : {encode_config.output} (utiliser --force)", EXIT_EXISTS)
     wf = workflow_factory() if workflow_factory is not None else encode_workflow(config, options)
     wf.log_message.connect(lambda level, message: logger.emit(level, message))
+    with probe_cancel_scope(wf, cancel.event):  # sondes internes annulables jusqu'au nettoyage
+        return _run_checked_encode(wf, encode_config, options=options, config=config, logger=logger, cancel=cancel,
+                                   accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, on_progress=on_progress)
+
+
+def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, options: CommonOptions, config: Any,
+                        logger: JobLogger, cancel: CancelToken, accept_dovi_nvenc_crop: bool,
+                        on_progress: Callable[[Any], None] | None) -> str:
     prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel.event)
     encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
                                      cancel_event=cancel.event)

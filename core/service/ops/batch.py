@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from core.jobs.batch import BatchOutcome, BatchSteps, discover_direct_batch_jobs, run_batch
@@ -78,6 +79,13 @@ class BatchRequest(Model):
         return encode_block_issues(values.get("encode"), "encode")
 
     @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Valeurs du bloc ``encode`` refusées dès la lecture d'une requête API."""
+        from core.service.schemas.encode import encode_block_errors
+
+        return encode_block_errors(values.get("encode"), "encode")
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
         from core.json_documents import resolve_encode_paths
@@ -108,6 +116,13 @@ class ProfileBatchRequest(Model):
         from core.service.schemas.encode import encode_block_issues
 
         return encode_block_issues(values.get("encode"), "encode")
+
+    @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Valeurs du bloc ``encode`` refusées dès la lecture d'une requête API."""
+        from core.service.schemas.encode import encode_block_errors
+
+        return encode_block_errors(values.get("encode"), "encode")
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
@@ -148,32 +163,49 @@ def _result(outcome: BatchOutcome) -> BatchResult:
 
 
 class _Children:
-    """Journal de chaque job du lot : émetteur enfant, états ``running`` puis final."""
+    """Journal de chaque job du lot : émetteur enfant, états ``running`` puis final (toujours un seul)."""
 
     def __init__(self, ctx: ExecutionContext) -> None:
         self.ctx = ctx
+        self._finished: set[str] = set()
 
     def logger(self, index: int) -> EmitterLogger:
         child = self.ctx.events.child()
         child.state(JobState.RUNNING, index=index)
         return EmitterLogger(child)
 
-    def _guarded(self, logger: Any, step: Any) -> int:
-        """Étape d'un job enfant ; toute issue lui donne un état final (annulation : ``cancelled``, code 6)."""
+    def _guarded(self, logger: Any, step: Callable[[], int]) -> int:
+        """Étape d'un job enfant ; toute issue lui donne un état final.
+
+        Annulation (jeton, sonde, Ctrl+C) : job ``cancelled`` et jeton du lot levé, pour que le lot
+        s'arrête et soit classé annulé quelle que soit l'origine de l'annulation.
+        """
         try:
             return int(step())
         except ApiError as error:
             if not error.logged:
                 logger.emit("error", error.render())
-            self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
+            self._stop(logger, cancelled=error.code is ErrorCode.CANCELLED)
             return exit_code_for(error)
-        except BaseException as exc:
-            if error_code(exc) is ErrorCode.CANCELLED and isinstance(exc, Exception):
-                logger.emit("error", "Opération annulée.")
-                self._final(logger, JobState.CANCELLED)
-                return EXIT_WORKFLOW
-            self._final(logger, JobState.FAILED)
+        except Exception as exc:
+            if error_code(exc) is not ErrorCode.CANCELLED:
+                self._final(logger, JobState.FAILED)
+                raise
+            logger.emit("error", "Opération annulée.")
+            self._stop(logger, cancelled=True)
+            return EXIT_WORKFLOW
+        except BaseException as exc:  # Ctrl+C non intercepté, arrêt d'une tâche
+            self._stop(logger, cancelled=error_code(exc) is ErrorCode.CANCELLED)
             raise
+
+    def _stop(self, logger: Any, *, cancelled: bool) -> None:
+        self._final(logger, JobState.CANCELLED if cancelled else JobState.FAILED)
+        if cancelled:
+            self.ctx.cancel.cancel()
+
+    def finish(self, logger: Any, status: str) -> None:
+        """Fin d'un job que le lot n'a pas pu exécuter (préparation en échec, annulation)."""
+        self._final(logger, JobState.CANCELLED if status == "cancelled" else JobState.FAILED)
 
     def preview(self, config: Any, options: Any, logger: Any, remux_config: Any) -> int:
         def step() -> int:
@@ -189,20 +221,14 @@ class _Children:
         return self._guarded(logger, step)
 
     def run(self, config: Any, options: Any, logger: Any, remux_config: Any, *, force: bool) -> int:
-        try:
+        def step() -> int:
             run_remux(remux_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
                       force=force)
-        except ApiError as error:
-            if not error.logged:
-                logger.emit("error", error.render())
-            self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
-            return exit_code_for(error)
-        except BaseException as exc:
-            self._final(logger, JobState.CANCELLED if error_code(exc) is ErrorCode.CANCELLED else JobState.FAILED)
-            raise
-        logger.events.artifact("output", str(remux_config.output))
-        self._final(logger, JobState.SUCCEEDED)
-        return EXIT_OK
+            logger.events.artifact("output", str(remux_config.output))
+            self._final(logger, JobState.SUCCEEDED)
+            return EXIT_OK
+
+        return self._guarded(logger, step)
 
     def encode(self, job: dict[str, Any], remux_config: Any, config: Any, options: Any, logger: Any) -> Any:
         resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger,
@@ -228,32 +254,27 @@ class _Children:
 
     def run_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *, force: bool,
                    accept_dovi_nvenc_crop: bool = False) -> int:
-        try:
+        def step() -> int:
             run_encode(encode_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
                        force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
                        on_progress=lambda event: logger.events.progress(pct=event.percent, stage=event.stage_label,
                                                                         fps=event.fps, eta_s=event.eta_seconds))
-        except ApiError as error:
-            if not error.logged:
-                logger.emit("error", error.render())
-            self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
-            return exit_code_for(error)
-        except BaseException as exc:
-            self._final(logger, JobState.CANCELLED if error_code(exc) is ErrorCode.CANCELLED else JobState.FAILED)
-            raise
-        logger.events.artifact("output", str(encode_config.output))
-        self._final(logger, JobState.SUCCEEDED)
-        return EXIT_OK
+            logger.events.artifact("output", str(encode_config.output))
+            self._final(logger, JobState.SUCCEEDED)
+            return EXIT_OK
+
+        return self._guarded(logger, step)
 
     def steps(self, build: Any) -> BatchSteps:
         return BatchSteps(build=build, preview=self.preview, run=self.run, encode=self.encode,
-                          preview_encode=self.preview_encode, run_encode=self.run_encode)
+                          preview_encode=self.preview_encode, run_encode=self.run_encode, finish=self.finish)
 
-    @staticmethod
-    def _final(logger: Any, state: JobState) -> None:
+    def _final(self, logger: Any, state: JobState) -> None:
         events = getattr(logger, "events", None)
-        if events is not None:
-            events.state(state)
+        if events is None or events.job in self._finished:
+            return
+        self._finished.add(events.job)
+        events.state(state)
 
 
 def _strs(paths: tuple[Path, ...]) -> list[str] | None:
@@ -351,7 +372,7 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
                                     profile, context=PreparationContext(cancel_event=ctx.cancel.event), **kwargs),
                                 preview=children.preview, run=children.run,
                                 encode=children.encode, preview_encode=children.preview_encode,
-                                run_encode=children.run_encode),
+                                run_encode=children.run_encode, finish=children.finish),
         cancel=ctx.cancel,
         job_logger=children.logger,
     )

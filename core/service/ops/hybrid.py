@@ -97,6 +97,13 @@ class HybridRequest(Model):
         return encode_block_issues(values.get("encode"), "encode")
 
     @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Valeurs du bloc ``encode`` refusées dès la lecture d'une requête API."""
+        from core.service.schemas.encode import encode_block_errors
+
+        return encode_block_errors(values.get("encode"), "encode")
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Preset du bloc ``encode`` désigné par un fichier : depuis le dossier de la requête."""
         from core.json_documents import resolve_encode_paths

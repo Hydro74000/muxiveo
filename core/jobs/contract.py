@@ -382,9 +382,18 @@ def strict_job_errors(job: dict[str, Any], *, path: str = "$") -> list[str]:
     raw_input = job.get("input")
     if isinstance(raw_input, list):
         _validate_string_list(errors, f"{path}.input", raw_input)
-    for key in ("calibration", "name", "fallback_profile"):
+    for key in ("calibration", "name"):
         if key in job:
             _expect(errors, f"{path}.{key}", job[key], "string", _is_string)
+    if "fallback_profile" in job:  # nom, ou objet {"name": …} (lu par la construction du remux)
+        fallback = job["fallback_profile"]
+        if isinstance(fallback, dict):
+            if "name" in fallback:
+                _expect(errors, f"{path}.fallback_profile.name", fallback["name"], "string", _is_string)
+        elif not _is_string(fallback):
+            errors.append(f"{path}.fallback_profile: attendu string ou object, reçu {_type_name(fallback)}")
+    if "variables" in job and not isinstance(job["variables"], dict):
+        errors.append(f"{path}.variables: attendu object, reçu {_type_name(job['variables'])}")
     sources = job.get("sources")
     if isinstance(sources, list):
         for index, source in enumerate(sources):

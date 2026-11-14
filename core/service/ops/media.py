@@ -158,13 +158,15 @@ class MediaJobRequest(Model):
         job = values.get("job")
         if not isinstance(job, dict):
             return []
+        from core.service.schemas.encode import encode_block_errors
+
         errors = strict_job_errors(job, path="job")
         try:
             validate_job_contract(job, path="job")
         except ContractError as exc:
             errors += exc.errors
-        return [tuple(error.split(": ", 1)) if ": " in error else ("job", error)  # type: ignore[misc]
-                for error in errors]
+        found = [tuple(error.split(": ", 1)) if ": " in error else ("job", error) for error in errors]
+        return found + encode_block_errors(job.get("encode"), "job.encode")  # type: ignore[return-value]
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:

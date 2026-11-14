@@ -36,9 +36,12 @@ muxiveo --cli call media.run --request job.json --ffmpeg /opt/ffmpeg/bin/ffmpeg
 ```
 
 **Requête** : objet JSON **strict**, documents portés compris (`job` d'après le contrat
-`schema --version 1` / exact-job, blocs `encode`). Clé inconnue, type incorrect, champ requis absent
-ou `null` non autorisé : refus `invalid_request` avec le chemin de chaque champ en cause (ex.
-`job.sources[0].sycn`). Clés internes préfixées `_` ou `$` ignorées. Chemins relatifs résolus depuis
+`schema --version 1` / exact-job, blocs `encode`). Clé inconnue, type ou valeur incorrects (contrat du
+job, bloc `encode`), champ requis absent ou `null` non autorisé : refus `invalid_request` dès la
+lecture, avec le chemin de chaque champ en cause (ex. `job.sources[0].sycn`,
+`job.encode.video.default.crf`). Clés internes préfixées `_` ou `$` ignorées ; `variables` est un
+objet aux noms libres. Les vérifications qui demandent les sources (pistes, encodeurs, géométrie)
+restent celles de l'exécution (`validation`). Chemins relatifs résolus depuis
 le dossier du fichier de requête (dossier courant pour stdin). Les documents des commandes
 historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clé inconnue
 signalée par un avertissement (`warning`, code `unknown_key`) et ignorée ; seuls les objets fermés du

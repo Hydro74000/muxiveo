@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_VALIDATION, EXIT_WORKFLOW
-from core.jobs.encode_runtime import encode_workflow, prepare_vulkan
+from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, probe_cancel_scope
 from core.jobs.errors import JobError
 from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
@@ -79,11 +79,12 @@ def encode_preview_capture(request: PreviewCaptureRequest, ctx: ExecutionContext
     if resolved is None or resolved.config is None:
         raise JobError("Aperçu : le job n'encode rien (bloc `encode` absent ou copie pure).", EXIT_VALIDATION)
     wf = encode_workflow(ctx.config, options)
-    prepare_vulkan(wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg))
     preview = EncodePreviewRequest(mode=request.mode, timecode_s=request.timecode_s,
                                    duration_s=request.duration_s or (5.0 if request.mode == "video" else 2.0),
                                    random_scene=request.random_scene)
-    outcome = await_task(wf.run_preview(resolved.config, preview), ctx.cancel)
+    with probe_cancel_scope(wf, ctx.cancel.event):  # sondes Vulkan et internes annulables
+        prepare_vulkan(wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg), ctx.cancel.event)
+        outcome = await_task(wf.run_preview(resolved.config, preview), ctx.cancel)
     if outcome.status == "cancelled":
         raise ApiError(ErrorCode.CANCELLED, "Aperçu annulé.")
     if outcome.status == "failed":

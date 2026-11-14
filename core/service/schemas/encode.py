@@ -202,3 +202,17 @@ def encode_block_issues(block: object, path: str) -> list[tuple[str, str]]:
     except ApiError:
         return []
     return [(f"{path}.{warning.path}", "clé inconnue du bloc encode") for warning in warnings]
+
+
+def encode_block_errors(block: object, path: str) -> list[tuple[str, str]]:
+    """Erreurs de valeur d'un bloc ``encode`` (types, bornes, énumérations) ; clés inconnues exclues."""
+    from core.service.errors import ApiError
+
+    if block is None:
+        return []
+    try:
+        EncodeBlock.parse(block, strict=False)
+    except ApiError as error:
+        return [(f"{path}.{detail.path}" if detail.path else path, detail.message) for detail in error.details] or [
+            (path, error.message)]
+    return []
