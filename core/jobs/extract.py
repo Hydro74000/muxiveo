@@ -257,16 +257,14 @@ RunCommand = Callable[[Any, str], None]
 def tool_runner(cancel: CancelToken, on_progress_pct: Callable[[int], None] | None = None) -> RunCommand:
     """Exécute une commande par ``ToolRunner`` et attend sa fin (annulation par ``cancel``)."""
     from core.runner import ToolRunner
-    from core.service.jobs import await_task
+    from core.service.jobs import await_task, raise_for_outcome
 
     runner = ToolRunner(max_workers=1)
 
     def run(cmd: Any, label: str) -> None:
         outcome = await_task(runner.run(cmd, label=label), cancel, on_progress_pct=on_progress_pct)
-        if outcome.status == "cancelled":
-            raise ApiError(ErrorCode.CANCELLED, "Extraction annulée.")
-        if outcome.status == "failed":
-            raise JobError(f"Extraction échouée : {outcome.message}", EXIT_WORKFLOW)
+        raise_for_outcome(outcome, cancel, cancelled="Extraction annulée.",
+                          failed=lambda message: JobError(f"Extraction échouée : {message}", EXIT_WORKFLOW))
 
     return run
 

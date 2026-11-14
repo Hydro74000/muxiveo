@@ -13,8 +13,8 @@ from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, probe_canc
 from core.jobs.errors import JobError
 from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
-from core.service.errors import ApiError, ErrorCode
-from core.service.jobs import await_task
+from core.service.errors import ErrorCode
+from core.service.jobs import await_task, raise_for_outcome
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.service.ops.media import MediaJobRequest, _build_cached, resolve_job_encode
@@ -85,10 +85,8 @@ def encode_preview_capture(request: PreviewCaptureRequest, ctx: ExecutionContext
     with probe_cancel_scope(wf, ctx.cancel.event):  # sondes Vulkan et internes annulables
         prepare_vulkan(wf, resolved.config, str(options.ffmpeg or ctx.config.tool_ffmpeg), ctx.cancel.event)
         outcome = await_task(wf.run_preview(resolved.config, preview), ctx.cancel)
-    if outcome.status == "cancelled":
-        raise ApiError(ErrorCode.CANCELLED, "Aperçu annulé.")
-    if outcome.status == "failed":
-        raise JobError(f"Aperçu impossible : {outcome.message}", EXIT_WORKFLOW)
+    raise_for_outcome(outcome, ctx.cancel, cancelled="Aperçu annulé.",
+                      failed=lambda message: JobError(f"Aperçu impossible : {message}", EXIT_WORKFLOW))
     payload = json.loads(outcome.result or "{}")
     target_dir = Path(request.output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)

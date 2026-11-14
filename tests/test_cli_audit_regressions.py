@@ -942,3 +942,68 @@ def test_encode_block_values_are_refused_when_the_request_is_read(tmp_path):
     assert "encode.video.default.crf" in {d.path for d in caught.value.details}
     # Commande historique (documents tolérants) : refus à la résolution, comme avant.
     assert MediaJobRequest.parse({"job": job}, strict_documents=False)[1] == ()
+
+
+# --- Sixième audit : annulation des aperçus, portée du jeton, lots, formats HDR10 -----------------------
+
+
+@pytest.mark.parametrize("scenario", ["probe", "wrapped", "token", "failure", "late"])
+def test_real_preview_worker_outcomes_keep_their_public_meaning(qapp, tmp_path, monkeypatch, scenario):
+    from core.jobs.errors import JobError
+    from core.service.errors import ApiError, ErrorCode
+    from core.service.ops import encode as encode_ops
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    ctx = _ctx(app_data_dir=tmp_path / "data", tool_ffmpeg="ffmpeg")
+    wf = EncodeWorkflow()
+
+    def preview_sync(config, request, signals, *, active_inner):
+        if scenario == "probe":
+            raise ProbeCancelledError("Sonde L5 annulée.")
+        if scenario == "wrapped":
+            try:
+                raise ProbeCancelledError("Sonde annulée.")
+            except ProbeCancelledError as exc:
+                raise RuntimeError("préparation de l'aperçu interrompue") from exc
+        if scenario == "token":
+            ctx.cancel.cancel()
+            raise RuntimeError("ffmpeg tué")
+        if scenario == "late":
+            ctx.cancel.cancel()  # annulation après la fin du travail : réussite conservée
+            return SimpleNamespace(to_json=lambda: json.dumps({"mode": "image", "captures": []}))
+        raise RuntimeError("ffmpeg : codec inconnu")
+
+    monkeypatch.setattr(wf, "_run_preview_sync", preview_sync)  # vrai worker (run_preview), étape interne seule
+    resolved = SimpleNamespace(config=SimpleNamespace(output=tmp_path / "film.mkv", video_tracks=[]))
+    monkeypatch.setattr(encode_ops, "_build_cached", lambda request, ctx: ("remux", SimpleNamespace(ffmpeg=None), None))
+    monkeypatch.setattr(encode_ops, "resolve_job_encode", lambda *a: resolved)
+    monkeypatch.setattr(encode_ops, "encode_workflow", lambda config, options: wf)
+    monkeypatch.setattr(encode_ops, "prepare_vulkan", lambda *a: None)
+    request = {"job": {}, "output_dir": str(tmp_path / "out"), "timecode_s": 1}
+    if scenario == "late":
+        assert call(CATALOG, "encode.preview_capture", request, ctx).captures == ()
+        return
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "encode.preview_capture", request, ctx)
+    expected = ErrorCode.WORKFLOW_FAILED if scenario == "failure" else ErrorCode.CANCELLED
+    assert caught.value.code is expected and (scenario != "failure" or isinstance(caught.value, JobError))
+
+
+def test_extraction_tool_failure_after_cancel_is_a_cancellation(qapp, tmp_path):
+    import sys
+    import threading
+
+    from core.jobs.extract import tool_runner
+    from core.service.context import CancelToken
+    from core.service.errors import ApiError, ErrorCode
+
+    cancel = CancelToken()
+    run = tool_runner(cancel)
+    threading.Timer(0.3, cancel.cancel).start()
+    with pytest.raises(ApiError) as caught:  # commande réelle tuée par l'annulation
+        run([sys.executable, "-c", "import time; time.sleep(30)"], "extract-test")
+    assert caught.value.code is ErrorCode.CANCELLED
+    with pytest.raises(ApiError) as failed:  # échec ordinaire
+        tool_runner(CancelToken())([sys.executable, "-c", "raise SystemExit(3)"], "extract-test")
+    assert failed.value.code is ErrorCode.WORKFLOW_FAILED

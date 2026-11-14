@@ -116,3 +116,20 @@ def _connect(signals: Any, record: Callable[[TaskOutcome], None], *, direct: boo
         cancelled=lambda: record(TaskOutcome("cancelled")),
         direct=direct,
     )
+
+
+def raise_for_outcome(outcome: TaskOutcome, cancel: CancelToken, *, cancelled: str,
+                      failed: Callable[[str], BaseException]) -> None:
+    """Issue d'une tâche attendue par :func:`await_task` : rien si elle a réussi, sinon l'erreur publique.
+
+    Annulation : issue ``cancelled``, ou issue ``failed`` causée par une annulation (sonde, inspection…, causes
+    enveloppées comprises) ou survenue après la levée du jeton. Une réussite reste une réussite, même si le
+    jeton a été levé entre-temps (annulation trop tardive).
+    """
+    from core.service.errors import ApiError, ErrorCode, error_code
+
+    if outcome.status == "finished":
+        return
+    if outcome.status == "cancelled" or cancel.cancelled or error_code(outcome.exception) is ErrorCode.CANCELLED:
+        raise ApiError(ErrorCode.CANCELLED, cancelled)
+    raise failed(outcome.message)
