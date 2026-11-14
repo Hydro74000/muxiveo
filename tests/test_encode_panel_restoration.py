@@ -22,6 +22,8 @@ def _caps(models=("r2", "r2q"), options=("restore",)) -> RifeCapabilities:
 @pytest.fixture
 def panel(qt_app, monkeypatch):
     _ = qt_app
+    # Détection matérielle réelle (sondes NVENC) : au-delà de 10 s sur un GPU occupé, la fermeture échouait.
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
     widget = EncodePanel(AppConfig())
     monkeypatch.setattr(widget, "_interpolation_tool_available", lambda: True)
     _select_codec(widget, "libx265")  # codec copy : carte des filtres désactivée
