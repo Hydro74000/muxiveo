@@ -2709,3 +2709,23 @@ def test_apply_all_codec_round_trip_through_sdr_restores_dynamic_hdr(qt_app, mon
             assert (state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (True, True, True), entry_id
     finally:
         panel.close()
+
+
+def test_restored_state_with_list_flags_restores_dynamic_hdr(qt_app, monkeypatch):
+    """État relu d'un JSON (marqueurs en liste) : Dolby Vision et HDR10+ rétablis au retour sur HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    panel = EncodePanel(AppConfig())
+    entry = _video_entry(0)
+    entry.entry_id = "only"
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, hdr)], hdr_type=hdr), entry, _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        state = dict(panel._video_settings_by_entry_id["only"])
+        state.update(hdr_disabled_by_codec=True, dynamic_hdr_disabled_by_codec=[True, True])
+        panel._apply_video_state(state)
+        _select_codec(panel, "libx265")
+        assert (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(),
+                panel._copy_hdr10plus_cb.isChecked()) == (True, True, True)
+    finally:
+        panel.close()

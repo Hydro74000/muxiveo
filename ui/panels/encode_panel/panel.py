@@ -95,6 +95,7 @@ from core.workflows.encode.planning.track_settings import (
     preset_problem,
     propagate_state,
     requires_dovi_profile_normalization,
+    restore_flags,
     routing_video_tracks,
     source_dovi_profile,
     source_has_dv,
@@ -5115,10 +5116,8 @@ class EncodePanel(QWidget):
         # Les choix désactivés temporairement par un codec suivent leur piste,
         # même si une autre piste est affichée avant le retour au codec HDR.
         self._hdr_disabled_by_codec = bool(state.get("hdr_disabled_by_codec"))
-        restore_flags = state.get("dynamic_hdr_disabled_by_codec")
-        if not isinstance(restore_flags, tuple) or len(restore_flags) != 2:
-            restore_flags = (False, False)
-        self._dynamic_hdr_disabled_by_codec = (bool(restore_flags[0]), bool(restore_flags[1]))
+        # Tuple ou liste (état relu d'un JSON : session, preset) : même lecture que le cœur.
+        self._dynamic_hdr_disabled_by_codec = restore_flags(state)
         self._tonemap_enabled_by_codec = bool(state.get("tonemap_enabled_by_codec"))
         # État restauré tel quel : pas de nouveau défaut pour ce couple codec / piste.
         self._tonemap_policy_key = (str(self._codec_combo.currentData() or "libx265"), self._current_video_entry_id)
