@@ -371,14 +371,20 @@ def state_allows_copy_static_hdr_edit(state: Mapping[str, object], codec: str) -
     )
 
 
+def static_hdr_editable(state: Mapping[str, object], codec: str) -> bool:
+    """Le codec permet de saisir le HDR10 statique (Copy : seulement DV normalisé P8.1 avec HDR10 injecté) ;
+    sinon les valeurs de la source sont imposées (et ne sont plus des saisies)."""
+    return (backend_capabilities_for_codec(codec).supports_manual_static_hdr
+            or state_allows_copy_static_hdr_edit(state, codec))
+
+
 def effective_static_hdr_fields(state: Mapping[str, object], *, codec: str) -> tuple[str, str]:
     """Master Display / MaxCLL effectifs : saisie si le codec l'autorise, sinon valeurs de la source."""
     current_md = str(state.get("master_display") or "").strip()
     current_cll = str(state.get("max_cll") or "").strip()
     default_md = str(state.get("default_master_display") or "").strip()
     default_cll = str(state.get("default_max_cll") or "").strip()
-    if (backend_capabilities_for_codec(codec).supports_manual_static_hdr
-            or state_allows_copy_static_hdr_edit(state, codec)):
+    if static_hdr_editable(state, codec):
         return current_md or default_md, current_cll or default_cll
     return default_md, default_cll
 
@@ -548,9 +554,12 @@ def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
     normalized["copy_dv"] = copy_dv
     normalized["copy_hdr10plus"] = copy_hdr10plus
     md, cll = effective_static_hdr_fields(normalized, codec=target_codec)
+    editable = static_hdr_editable(normalized, target_codec)
     for (name, _default, marker), value in zip(STATIC_HDR_FIELDS, (md, cll)):
-        if str(normalized.get(name) or "").strip() != value:
-            normalized[marker] = False  # valeur remplacée (source, champ vidé complété) : plus une saisie
+        # Valeur remplacée (champ vidé complété) ou imposée par un codec sans édition (même à texte égal, règle
+        # du panneau) : plus une saisie. ``static_hdr_manual`` (case cochée) reste, sauf en Copy.
+        if not editable or str(normalized.get(name) or "").strip() != value:
+            normalized[marker] = False
         normalized[name] = value
     return normalized
 

@@ -2910,15 +2910,11 @@ class EncodePanel(QWidget):
         self._max_cll.setToolTip(tooltip)
 
     def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
-        if codec_id != "copy":
-            return False
         if not hasattr(self, "_copy_dv_cb") or not hasattr(self, "_dovi_p81_cb"):
             return False
-        return bool(
-            self._copy_dv_cb.isChecked()
-            and self._dovi_profile_choice == NORMALIZE_P81
-            and self._inject_hdr_cb.isChecked()
-        )
+        return state_allows_copy_static_hdr_edit({"inject_hdr_meta": self._inject_hdr_cb.isChecked(),
+                                                  "copy_dv": self._copy_dv_cb.isChecked(),
+                                                  "dovi_profile": self._dovi_profile_choice}, codec_id)
 
     def _static_hdr_metadata_tooltip(self) -> str:
         state = (
