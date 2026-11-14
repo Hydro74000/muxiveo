@@ -3937,3 +3937,30 @@ def test_copy_p81_entries_survive_displaying_a_track_without_dovi(qt_app, monkey
             assert _hdr_sources(settings) == ("manual", "manual")
     finally:
         panel.close()
+
+
+def test_apply_all_reencoding_propagates_without_losing_copy_p81_entries(qt_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    dv_path = Path("/tmp/dv_p7.mkv")
+    panel = _hdr_panel(monkeypatch, _dv_p7_entry(0, dv_path),
+                       _hdr_entry(1, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        panel._dovi_p81_cb.click()  # Copy + P8.1 : HDR10 modifiable
+        panel._master_display.clear()
+        QTest.keyClicks(panel._master_display, _MANUAL_MD)
+        _type_cll(panel, "2000,500")
+        panel._apply_all_video_cb.setChecked(True)
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")  # réencodage : propagé à la piste P7
+        launch = _launched(panel, dv_path)
+        assert launch.codec == "libx265"  # propagation effective
+        assert (launch.master_display, launch.max_cll) == (_MANUAL_MD, "2000,500")
+        assert _hdr_sources(launch) == ("manual", "manual")
+        panel._video_list.setCurrentRow(0)
+        preview = panel._current_preview_config().video_tracks[0]
+        assert (preview.master_display, preview.max_cll) == (_MANUAL_MD, "2000,500")
+        assert _hdr_sources(preview) == ("manual", "manual")
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+    finally:
+        panel.close()

@@ -1260,3 +1260,180 @@ def test_published_encode_schema_accepts_exactly_what_the_request_reader_accepts
         assert parsed == (not _schema_errors(document, schema)), document
         accepted.append(parsed)
     assert accepted.count(True) >= 5 and accepted.count(False) >= 10  # cas valides et refus réellement couverts
+
+
+# --- Douzième audit : Hybrid (annulation, aperçu), intentions des couches CLI ----------------------------------
+
+
+def _hybrid_run(monkeypatch, tmp_path, ctx, count: int = 1, **request: Any):
+    from core.service.ops import hybrid as hybrid_ops
+
+    items = [SimpleNamespace(error=None, calibration=None, remux_config=SimpleNamespace(output=tmp_path / f"E{i}.mkv"),
+                             episode=SimpleNamespace(display_name=f"E{i}", master_file=tmp_path / f"m{i}.mkv",
+                                                     donor_files=[]))
+             for i in range(count)]
+    spec = SimpleNamespace(common=None, output_template=None)
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
+    monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a, **k: None)
+    payload = {"output_dir": str(tmp_path), "encode": {"video": {}}, **request}
+    return hybrid_ops.hybrid_run.handler(hybrid_ops.HybridRequest.from_dict(payload), ctx)
+
+
+@pytest.mark.parametrize("token_raised", [False, True])
+def test_hybrid_episode_cancelled_while_resolving_the_encode_is_cancelled(monkeypatch, tmp_path, token_raised):
+    from core.service.ops import batch as batch_ops
+    from core.subprocess_utils import ProbeCancelledError
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+
+    def encode(self, *_a, **_k):
+        if token_raised:
+            ctx.cancel.cancel()
+        raise ProbeCancelledError("Sonde annulée.")
+
+    monkeypatch.setattr(batch_ops._Children, "encode", encode)
+    result = _hybrid_run(monkeypatch, tmp_path, ctx, count=2, continue_on_error=True)
+    assert result.status == "cancelled" and [e["status"] for e in result.episodes] == ["cancelled"]
+    assert ctx.cancel.cancelled  # lot arrêté
+    finals = _finals(sink, ctx)
+    assert list(finals.values()) == [["cancelled"]]  # un seul enfant, un seul état final
+
+
+def _finals(sink, ctx) -> dict[str, list[str]]:
+    from core.service.events import EventType
+
+    finals: dict[str, list[str]] = {}
+    for event in sink.events:
+        if event.parent == ctx.events.job and event.type is EventType.STATE and event.data["state"] != "running":
+            finals.setdefault(event.job, []).append(event.data["state"])
+    return finals
+
+
+@pytest.mark.parametrize("continue_on_error", [False, True])
+def test_hybrid_encode_resolution_error_gives_the_child_a_final_state(monkeypatch, tmp_path, continue_on_error):
+    from core.service.ops import batch as batch_ops
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    monkeypatch.setattr(batch_ops._Children, "encode", lambda self, *a, **k: (_ for _ in ()).throw(
+        RuntimeError("bloc encode invalide")))
+    result = _hybrid_run(monkeypatch, tmp_path, ctx, count=2, continue_on_error=continue_on_error)
+    assert [e["status"] for e in result.episodes] == ["failed"] * (2 if continue_on_error else 1)
+    assert result.status == "failed" and not ctx.cancel.cancelled
+    assert sorted(map(tuple, _finals(sink, ctx).values())) == [("failed",)] * (2 if continue_on_error else 1)
+
+
+def test_hybrid_interrupt_while_resolving_the_encode_closes_the_child(monkeypatch, tmp_path):
+    from core.service.ops import batch as batch_ops
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    monkeypatch.setattr(batch_ops._Children, "encode", lambda self, *a, **k: (_ for _ in ()).throw(
+        KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _hybrid_run(monkeypatch, tmp_path, ctx)
+    assert list(_finals(sink, ctx).values()) == [["cancelled"]]
+
+
+@pytest.mark.parametrize("accept", [True, False, None])
+def test_hybrid_dry_run_passes_the_dovi_nvenc_crop_acceptance_to_the_preview_checks(monkeypatch, tmp_path, accept):
+    from core.service.ops import batch as batch_ops
+
+    seen: list[bool] = []
+    monkeypatch.setattr(batch_ops._Children, "encode", lambda self, *a, **k: SimpleNamespace())
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: SimpleNamespace())
+
+    def checked(encode_config, wf, *, config, options, accept_dovi_nvenc_crop, cancel_event):  # contrôle réel appelé
+        seen.append(accept_dovi_nvenc_crop)
+        return encode_config, ([] if accept_dovi_nvenc_crop else ["recadrage aligné sur 32 requis"])
+
+    monkeypatch.setattr(batch_ops, "checked_encode", checked)
+    monkeypatch.setattr(batch_ops, "preview_encode", lambda *a: "ffmpeg …")
+    encode: dict[str, Any] = {"video": {}}
+    if accept is not None:
+        encode["accept_dovi_nvenc_crop"] = accept
+    result = _hybrid_run(monkeypatch, tmp_path, _ctx(), dry_run=True, encode=encode)
+    assert seen == [bool(accept)]
+    assert [e["status"] for e in result.episodes] == ["planned" if accept else "failed"]  # refus sans acceptation
+
+
+def _hybrid_children_steps(monkeypatch, outcomes: list[Any], ctx):
+    """Aperçu et lancement réels de ``_Children`` ; ``outcomes`` : ``None`` (réussite) ou exception, par épisode."""
+    from core.service.ops import batch as batch_ops
+
+    queue = list(outcomes)
+
+    def step(*_a, **_k):
+        outcome = queue.pop(0)
+        if outcome == "token":
+            ctx.cancel.cancel()
+            outcome = ProbeCancelledError("Sonde annulée.")
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    from core.subprocess_utils import ProbeCancelledError
+
+    monkeypatch.setattr(batch_ops._Children, "encode", lambda self, *a, **k: SimpleNamespace(output=Path("/tmp/o.mkv")))
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: SimpleNamespace())
+    monkeypatch.setattr(batch_ops, "checked_encode", lambda cfg, *a, **k: (step(), (cfg, []))[1])
+    monkeypatch.setattr(batch_ops, "preview_encode", lambda *a: "ffmpeg …")
+    monkeypatch.setattr(batch_ops, "run_encode", lambda *a, **k: step())
+
+
+@pytest.mark.parametrize("continue_on_error", [False, True])
+@pytest.mark.parametrize("dry_run", [True, False])
+@pytest.mark.parametrize("second", ["token", "probe"])
+def test_hybrid_cancellation_during_the_preview_or_the_run_is_a_cancellation(monkeypatch, tmp_path, dry_run, second,
+                                                                             continue_on_error):
+    from core.subprocess_utils import ProbeCancelledError
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    outcome = "token" if second == "token" else ProbeCancelledError("Sonde annulée.")
+    _hybrid_children_steps(monkeypatch, [None, outcome], ctx)
+    result = _hybrid_run(monkeypatch, tmp_path, ctx, count=3, dry_run=dry_run, continue_on_error=continue_on_error)
+    done = "planned" if dry_run else "ok"
+    assert [e["status"] for e in result.episodes] == [done, "cancelled"]  # épisodes suivants jamais lancés
+    assert result.status == "partial" and ctx.cancel.cancelled  # une réussite conservée
+    assert sorted(states[0] for states in _finals(sink, ctx).values()) == ["cancelled", "succeeded"]
+    assert all(len(states) == 1 for states in _finals(sink, ctx).values())
+
+
+def test_hybrid_cancellation_of_the_first_episode_cancels_the_parent(monkeypatch, tmp_path):
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    _hybrid_children_steps(monkeypatch, ["token"], ctx)
+    result = _hybrid_run(monkeypatch, tmp_path, ctx, count=2)
+    assert result.status == "cancelled" and [e["status"] for e in result.episodes] == ["cancelled"]
+
+
+def test_hybrid_interrupt_during_the_run_propagates_with_a_final_child(monkeypatch, tmp_path):
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    _hybrid_children_steps(monkeypatch, [KeyboardInterrupt()], ctx)
+    with pytest.raises(KeyboardInterrupt):
+        _hybrid_run(monkeypatch, tmp_path, ctx)
+    assert list(_finals(sink, ctx).values()) == [["cancelled"]]
+
+
+@pytest.mark.parametrize("default, track", [
+    ({"codec": "libx265", "tonemap": {"enabled": True}}, {"codec": "copy", "tonemap": {"enabled": False}}),
+    ({"codec": "libx265", "dolby_vision": {"mode": "off"}}, {"codec": "copy", "dolby_vision": {"mode": "copy"}}),
+    ({"codec": "libx265", "hdr10plus": {"mode": "off"}}, {"codec": "copy", "hdr10plus": {"mode": "copy"}}),
+    ({"codec": "libx265", "static_hdr": {"mode": "off"}}, {"codec": "copy", "static_hdr": {"mode": "source"}}),
+])
+def test_a_later_cli_layer_replaces_the_intents_of_an_earlier_one(default, track):
+    from tests.test_encode_request import _resolve
+
+    payload = {"video": {"default": default, "tracks": [{"select": {"stream": 0}, **track}]}}
+    from core.inspector import HDRType
+
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    layered = _resolve(payload, hdr).config.video_tracks[0]  # accepté : intention de la piste seule retenue
+    merged = {**default, **track}
+    direct = _resolve({"video": {"default": merged}}, hdr).config.video_tracks[0]
+    assert layered == direct
+    with pytest.raises(JobError):  # intention finale contradictoire : refus inchangé
+        _resolve({"video": {"default": default, "tracks": [{"select": {"stream": 0}, "codec": "copy"}]}}, hdr)

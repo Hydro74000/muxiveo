@@ -329,3 +329,106 @@ def test_preset_keeps_an_explicit_tonemap_choice_and_reads_old_states_with_their
     assert not apply_preset_to_state({**base, "tonemap_choice": False}, preset, ctx)["tonemap_to_sdr"]
     old = {key: value for key, value in base.items() if key != "tonemap_choice"}  # ancien état, x265 décoché
     assert apply_preset_to_state(old, preset, ctx)["tonemap_to_sdr"]  # pas un refus : défaut avec son codec
+
+
+# --- Douzième audit : analyse HDR10 (estimate) face aux couches et aux fusions --------------------------------
+
+
+def _static_settings(*layers: dict | None):
+    """``video.default`` puis couches de la piste (``static_hdr`` seul) ; source HDR10 (MaxCLL 1000,400)."""
+    return _hdr10_layers(*(layer for layer in layers if layer is not None))
+
+
+def _analysis(settings) -> str:
+    return settings.static_hdr_metadata_analysis_request
+
+
+@pytest.mark.parametrize("override, inject, max_cll, provenance", [
+    ({"mode": "manual", "max_cll": "2000,500"}, True, "2000,500", "manual"),
+    ({"mode": "source"}, True, "1000,400", "source"),
+    ({"mode": "off"}, False, "", "source"),
+])
+def test_an_explicit_static_mode_removes_an_inherited_analysis(override, inject, max_cll, provenance):
+    settings = _static_settings({"estimate": "fast"}, override)
+    assert _analysis(settings) == ""  # l'estimateur du runtime ne tourne que sur cette demande
+    assert settings.inject_hdr_meta is inject and settings.max_cll == max_cll
+    assert settings.static_hdr_light_level_source == provenance
+    if override.get("mode") == "manual":  # saisie partielle : l'autre champ reste celui de la source
+        assert settings.static_hdr_master_display_source == "source"
+
+
+def test_a_later_analysis_replaces_inherited_entries_with_the_source_values():
+    settings = _static_settings({"mode": "manual", "max_cll": "2000,500", "master_display": _MANUAL_MD},
+                                {"estimate": "precise"})
+    assert _analysis(settings) == "precise" and settings.inject_hdr_meta
+    assert settings.max_cll == "1000,400"
+    assert settings.static_hdr_light_level_source == settings.static_hdr_master_display_source == "source"
+    off_then_estimate = _static_settings({"mode": "off"}, {"estimate": "fast"})
+    assert off_then_estimate.inject_hdr_meta and _analysis(off_then_estimate) == "fast"
+
+
+@pytest.mark.parametrize("layer, refused", [
+    ({"estimate": "fast", "mode": "off"}, True),
+    ({"estimate": "fast", "max_cll": "2000,500"}, True),
+    ({"estimate": "fast", "mode": "manual", "master_display": _MANUAL_MD}, True),
+    ({"estimate": "fast", "mode": "source"}, False),
+    ({"estimate": "fast", "max_cll": ""}, False),
+    ({"estimate": "fast", "max_cll": "  ", "master_display": None}, False),
+])
+def test_analysis_and_entries_given_together_in_one_layer(layer, refused):
+    if refused:
+        with pytest.raises(JobError, match="estimate"):
+            _static_settings(layer)
+    else:
+        assert _analysis(_static_settings(layer)) == "fast"
+
+
+@pytest.mark.parametrize("base, override, analysis, max_cll", [
+    ({"estimate": "fast"}, {"max_cll": "2000,500"}, "", "2000,500"),
+    ({"estimate": "fast"}, {"mode": "off"}, "", ""),
+    ({"mode": "manual", "max_cll": "2000,500"}, {"estimate": "fast"}, "fast", "1000,400"),
+])
+def test_document_and_cli_merges_keep_the_last_static_choice(base, override, analysis, max_cll):
+    from core.jobs.batch import merge_encode_block
+    from core.jobs.json_io import deep_merge
+
+    remux, infos = _job(HDRType.HDR10)
+    infos[str(SRC)].video_tracks[0].raw = {"side_data_list": [
+        {"side_data_type": "Content light level metadata", "max_content": 1000, "max_average": 400}]}
+    config = SimpleNamespace(work_dir=Path("/tmp/work"), aac_bitrate_per_channel_kbps=96,
+                             eac3_bitrate_per_channel_kbps=96)
+
+    def block(static_hdr: dict) -> dict:
+        return {"video": {"default": {"codec": "libx265", "static_hdr": static_hdr}}}
+
+    merged = [
+        merge_encode_block({"encode": block(base)}, block(override))["encode"],  # document + options CLI
+        deep_merge({"encode": block(base)}, {"encode": block(override)})["encode"],  # gabarit + élément de lot
+    ]
+    track_merge = merge_encode_block(  # surcharge de piste du job, puis option CLI du défaut
+        {"encode": {"video": {"default": {"codec": "libx265"},
+                              "tracks": [{"select": {"stream": 0}, "static_hdr": base}]}}}, block(override))["encode"]
+    for encode in (*merged, track_merge):
+        settings = resolve_encode(EncodeBlock.from_dict(encode), remux, infos=infos,
+                                  config=config).config.video_tracks[0]
+        assert (_analysis(settings), settings.max_cll) == (analysis, max_cll), encode
+
+
+@pytest.mark.parametrize("default, track", [
+    ({"codec": "copy", "tonemap": {"enabled": True}}, {"tonemap": {"algorithm": "mobius"}}),
+    ({"codec": "copy", "dolby_vision": {"mode": "off"}}, {"dolby_vision": {"profile": "0"}}),
+    ({"codec": "copy", "dolby_vision": {"mode": "off"}}, {"dolby_vision": {}}),
+])
+def test_a_layer_that_does_not_touch_a_family_keeps_its_refusal(default, track):
+    with pytest.raises(JobError):
+        _resolve({"video": {"default": default, "tracks": [{"select": {"stream": 0}, **track}]}},
+                 HDRType.DOLBY_VISION_HDR10PLUS)
+
+
+def test_a_replaced_intent_no_longer_warns():
+    warned = _resolve({"video": {"default": {"codec": "libx265", "dolby_vision": {"mode": "copy"}}}}, HDRType.HDR10)
+    assert any("Dolby Vision non copié" in warning for warning in warned.warnings)
+    replaced = _resolve({"video": {"default": {"codec": "libx265", "dolby_vision": {"mode": "copy"}},
+                                   "tracks": [{"select": {"stream": 0}, "dolby_vision": {"mode": "off"}}]}},
+                        HDRType.HDR10)
+    assert not any("Dolby Vision" in warning for warning in replaced.warnings)
