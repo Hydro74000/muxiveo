@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.service.operations import Catalog
 from core.service.ops import (
+    admin,
     batch,
     calibration,
     encode,
@@ -42,6 +43,17 @@ CATALOG = Catalog((
     library.tmdb_search,
     library.tmdb_details,
     library.bluray_titles,
+    admin.config_path,
+    admin.config_show,
+    admin.config_get,
+    admin.config_set,
+    admin.config_unset,
+    admin.config_reset,
+    admin.workdir_list,
+    admin.workdir_clean,
+    admin.nvencc_status,
+    admin.nvencc_install,
+    admin.nvencc_remove,
     plugins.plugins_list,
     plugins.plugins_install,
     plugins.plugins_update,

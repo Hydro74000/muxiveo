@@ -46,6 +46,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
 | `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
 | `tmdb search\|details`, `profile list\|show\|save\|delete\|capture`, `bluray-titles` | TMDB, profils enregistrés, titres d'un Blu-ray ; voir « TMDB, profils enregistrés, Blu-ray » |
+| `config path\|show\|get\|set\|unset\|reset`, `workdir list\|clean`, `nvencc status\|install\|update\|remove` | administration ; voir « Administration » |
 | `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
@@ -841,6 +842,26 @@ Muxiveo-cli bluray-titles /disques/FILM --min-duration 600    # playlists, du pl
 `--no-selection`, `--no-metadata`, `--no-flags`, `--no-order`, `--no-audio-variants` retirent une
 partie de la capture. Les profils sont ceux de l'interface (`<config>/profiles/decision/`). Une
 playlist Blu-ray s'utilise ensuite comme source (`…/BDMV/PLAYLIST/00800.mpls`).
+
+## Administration : configuration, dossier de travail, NVEncC
+
+```bash
+Muxiveo-cli config path                         # config.ini et fichier des réglages de l'interface
+Muxiveo-cli config show ui                      # réglages d'une section, avec leur provenance
+Muxiveo-cli config set ui.theme light           # écrit config.ini (comme Enregistrer des Paramètres)
+Muxiveo-cli config unset ui.theme               # retire la surcharge (le réglage de l'interface reste)
+Muxiveo-cli config reset ui.theme               # revient au défaut
+Muxiveo-cli workdir list                        # dossiers abandonnés (jobs actifs exclus)
+Muxiveo-cli workdir clean --dry-run
+Muxiveo-cli nvencc status --check               # présence, version, provenance, mise à jour
+Muxiveo-cli nvencc install | update | remove    # apt / dnf (sudo), sinon dossier utilisateur
+```
+
+Les réglages se nomment `section.clé` (ceux du panneau Paramètres, plus `plugins.tensorrt_enabled`
+et `plugins.auto_update`). Provenance affichée : `ini` (config.ini, prioritaire), `settings`
+(réglage enregistré par l'interface), `default`. `set` valide la valeur (booléen, entier borné, choix,
+langue de l'interface) avant d'écrire. `nvencc remove` ne retire que la copie installée par Muxiveo
+dans le dossier utilisateur ; un paquet système se retire par apt / dnf.
 
 ## Couche de service : `call`, `operations`, `--log-format events`
 

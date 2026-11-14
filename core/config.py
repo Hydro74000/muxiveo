@@ -538,6 +538,20 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
+    """Retire des clés de config.ini (commentaires conservés) : le réglage revient à QSettings, sinon au défaut."""
+    if not _INI_PATH.exists():
+        return
+    lines = _INI_PATH.read_text(encoding="utf-8-sig").splitlines()
+    lines = _remove_ini_keys(lines, {section: {key.lower() for key in keys} for section, keys in section_keys.items()})
+    _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def config_ini_path() -> Path:
+    """Fichier config.ini des surcharges explicites."""
+    return _INI_PATH
+
+
 def _windows_user_tools_dir() -> Path:
     """
     Dossier d'installation des outils binaires côté utilisateur
@@ -1483,6 +1497,32 @@ class AppConfig:
         self.trt_enabled = self._resolve_bool("plugins", "tensorrt_enabled", "plugins/tensorrt_enabled", True)
         self.plugins_auto_update = self._resolve_bool("plugins", "auto_update", "plugins/auto_update", True)
         self.trt_hint_shown = str(self._settings.value("plugins/tensorrt_hint_shown", "false") or "").lower() == "true"
+
+    def value_source(self, section: str, key: str) -> tuple[str, str | None, str | None]:
+        """Provenance d'un réglage : ``("ini" | "settings" | "default", valeur config.ini, valeur QSettings)``.
+
+        Une clé présente mais vide dans config.ini revient explicitement au défaut (provenance « ini »).
+        """
+        ini = self._ini_lookup(section, key)
+        ini_value = None if ini is _MISSING else str(ini)
+        settings_key = f"{section}/{key}"
+        settings_value = None
+        if self._settings is not None and self._settings.contains(settings_key):
+            raw = self._settings.value(settings_key)
+            settings_value = None if raw is None else str(raw)
+        if ini_value is not None:
+            return "ini", ini_value, settings_value
+        return ("settings" if settings_value not in (None, "") else "default"), None, settings_value
+
+    def forget_setting(self, section: str, key: str) -> None:
+        """Retire le réglage QSettings ``section/key`` (le défaut s'applique sans surcharge config.ini)."""
+        if self._settings is not None:
+            self._settings.remove(f"{section}/{key}")
+            self._settings.sync()
+
+    def settings_file(self) -> Path | None:
+        """Fichier QSettings (réglages de l'interface)."""
+        return Path(self._settings.fileName()) if self._settings is not None else None
 
     def reload(self) -> None:
         self._ini = _load_ini()

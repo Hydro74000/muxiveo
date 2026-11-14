@@ -15,7 +15,7 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Version, recherche de mise à jour | `version [--check]` | `system.version` | ✅ |
 | Outils détectés et leurs chemins | `tools` | `system.tools` | ✅ |
 | Encodeurs logiciels / matériels, presets, Vulkan, NVOF, TensorRT | `capabilities` | `system.capabilities` | ✅ |
-| Nettoyage du dossier de travail au démarrage | `workdir list\|clean` | `workdir.list/clean` | ⏳ L10 |
+| Nettoyage du dossier de travail au démarrage | `workdir list\|clean [--dry-run]` | `workdir.list/clean` | ✅ |
 
 ## Conteneur (remux)
 
@@ -114,11 +114,11 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 
 | Action GUI | CLI | Opération | État |
 |---|---|---|---|
-| Lire / modifier un réglage, recharger `config.ini` | `config get\|set\|unset\|reset\|show` | `config.*` | ⏳ L10 |
-| Thème, échelle, langue de l'interface | `config set ui.*` | `config.set` | ⏳ L10 |
+| Lire / modifier un réglage, recharger `config.ini` | `config path\|show\|get\|set\|unset\|reset` (provenance affichée) | `config.*` | ✅ |
+| Thème, échelle, langue de l'interface | `config set ui.*` | `config.set` | ✅ |
 | Extensions MVO-RIFE, TensorRT, FEL : installer, mettre à jour, supprimer | `plugins install\|update\|remove` | `plugins.*` | ✅ |
-| Réglages des extensions (TensorRT, mise à jour automatique) | `config set plugins.*` | `config.set` | ⏳ L10 |
-| NVEncC : installer, mettre à jour, supprimer | `tools install\|remove nvencc` | `tools.install/remove` | ⏳ L10 |
+| Réglages des extensions (TensorRT, mise à jour automatique) | `config set plugins.*` | `config.set` | ✅ |
+| NVEncC : installer, mettre à jour, supprimer | `nvencc status\|install\|update\|remove` | `nvencc.*` | ✅ |
 | Installer une mise à jour de Muxiveo | `version --install --yes` | `app.update_install` | ⏳ L11 |
 
 ## Hors périmètre
