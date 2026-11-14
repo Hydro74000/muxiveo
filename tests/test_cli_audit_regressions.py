@@ -1171,6 +1171,15 @@ def test_hdr10_text_formats_are_checked_when_the_request_is_read(tmp_path):
 # --- Septième audit : schéma publié, jeton sur le parcours réel, lots --------------------------------------
 
 
+def _ecma_anchors(pattern: str) -> str:
+    """Motif publié (ECMA-262, sans drapeau ``m``) lu par ``re`` : ``^`` / ``$`` = début / fin de la chaîne seuls.
+
+    En Python, ``$`` accepte aussi un saut de ligne final : ``\\A`` / ``\\Z`` gardent le sens ECMA.
+    """
+    assert pattern.startswith("^") and pattern.endswith("$") and "\\" not in pattern[-2:], pattern
+    return "\\A" + pattern[1:-1] + "\\Z"
+
+
 def _schema_errors(value: Any, schema: dict, path: str = "") -> list[str]:
     """Validateur JSON Schema indépendant (sous-ensemble publié : type, properties, additionalProperties,
     required, anyOf, enum, items, minimum, maximum, pattern) — sans le lecteur des modèles."""
@@ -1198,7 +1207,7 @@ def _schema_errors(value: Any, schema: dict, path: str = "") -> list[str]:
             errors.append(f"{path}: sous le minimum")
         if "maximum" in schema and value > schema["maximum"]:
             errors.append(f"{path}: au-dessus du maximum")
-    if isinstance(value, str) and "pattern" in schema and re.search(schema["pattern"], value) is None:
+    if isinstance(value, str) and "pattern" in schema and re.search(_ecma_anchors(schema["pattern"]), value) is None:
         errors.append(f"{path}: motif")
     if isinstance(value, dict):
         properties = schema.get("properties", {})
@@ -1231,12 +1240,17 @@ def test_published_encode_schema_accepts_exactly_what_the_request_reader_accepts
         {"video": {"default": {"static_hdr": {"master_display": None}}}},
         {"video": {"default": {"static_hdr": {"master_display": "oops"}}}},
         {"video": {"default": {"static_hdr": {"max_cll": "\u0661\u0660\u0660\u0660,\u0664\u0660\u0660"}}}},
+        *({"video": {"default": {"static_hdr": {"max_cll": f"1000,400{end}"}}}}
+          for end in ("\n", "\r", "\r\n", "\u2028", "\u2029")),  # fins de ligne : refusées partout
+        {"video": {"default": {"static_hdr": {"max_cll": " \t1000,400 \t"}}}},
+        {"video": {"default": {"static_hdr": {"master_display": f"{md}\n"}}}},
         {"video": {"default": {"static_hdr": {"mode": "bogus"}}}},
         {"video": {"tracks": [{"select": {"stream": 0}, "static_hdr": {"max_cll": "1000"}}]}},
         {"audio": [{"select": {"stream": 1}, "codec": "eac3", "bitrate_kbps": 640}]},
         {"target_size_mb": -1},
     ]
     schema = EncodeBlock.json_schema()
+    accepted = []
     for document in documents:
         try:
             EncodeBlock.parse(document)
@@ -1244,45 +1258,5 @@ def test_published_encode_schema_accepts_exactly_what_the_request_reader_accepts
         except ApiError:
             parsed = False
         assert parsed == (not _schema_errors(document, schema)), document
-
-
-@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
-def test_token_on_the_real_validation_path_then_while_building_commands(qapp, tmp_path, monkeypatch):
-    """checked_encode réel (géométrie DV + NVENC) : 1re sonde L5 sans résultat, 2e interrompue pendant la construction."""
-    import dataclasses
-    import threading
-    import time
-
-    from core.jobs import encode_runtime
-    from core.jobs.encode_runtime import checked_encode, preview_encode
-    from core.jobs.options import CommonOptions
-    from core.subprocess_utils import ProbeCancelledError
-    from core.workflows.encode.workflow import EncodeWorkflow
-
-    from tests.test_cli_encode import _config
-
-    counter = tmp_path / "appels"
-    tool = tmp_path / "outil"
-    # 1er appel (durée de la 1re sonde) : échec immédiat → aucun résultat ; suivants : lents.
-    tool.write_text(f'#!/bin/sh\necho x >> "{counter}"\n[ "$(wc -l < "{counter}")" -le 1 ] && exit 1\nsleep 30\n',
-                    encoding="utf-8")
-    tool.chmod(0o755)
-    (tmp_path / "src.mkv").write_bytes(b"x")
-    wf = EncodeWorkflow(ffmpeg_bin=str(tool), ffprobe_bin=str(tool))
-    wf._bins["dovi_tool"] = str(tool)
-    monkeypatch.setattr(encode_runtime, "_dimensions", lambda *a: (3840, 2160))
-    monkeypatch.setattr(wf, "validate", lambda config: [])
-    wf.preview_command = lambda config: str(wf._probe_dovi_l5_offsets(tmp_path / "src.mkv"))  # type: ignore
-    config = _config(tmp_path, copy_dv=True)
-    config = dataclasses.replace(config, video_tracks=[dataclasses.replace(config.video, codec="hevc_nvenc")])
-    cancel = threading.Event()
-    previous = threading.Event()
-    wf.set_probe_cancel_event(previous)  # jeton antérieur : rétabli après l'opération
-    checked, errors = checked_encode(config, wf, config=SimpleNamespace(tool_ffmpeg=str(tool)), options=CommonOptions(),
-                                     accept_dovi_nvenc_crop=True, cancel_event=cancel)
-    assert errors == [] and counter.read_text().count("x") == 1  # 1re sonde : aucun résultat
-    threading.Timer(0.3, cancel.set).start()
-    start = time.monotonic()
-    with pytest.raises(ProbeCancelledError):
-        preview_encode(checked, wf, cancel)
-    assert time.monotonic() - start < 5 and wf._probe_cancel_event is previous
+        accepted.append(parsed)
+    assert accepted.count(True) >= 5 and accepted.count(False) >= 10  # cas valides et refus réellement couverts

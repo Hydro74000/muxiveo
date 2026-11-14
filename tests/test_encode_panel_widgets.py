@@ -2954,21 +2954,23 @@ def _sdr_track_with_source_cll(index: int, path: Path):
 
 
 def test_hdr10_provenance_on_an_sdr_source_follows_user_actions(qt_app, monkeypatch):
-    """Source SDR à MaxCLL hérité : jamais injecté seul ; case cochée ou valeur saisie par l'utilisateur : gardé."""
+    """Source SDR à MaxCLL hérité : jamais injecté seul (case cochée par le programme compris) ; case cochée ou
+    valeur saisie par l'utilisateur : gardé."""
     from PySide6.QtTest import QTest
 
     from core.workflows.encode.domain.codecs import output_hdr_transfer
 
     monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
     path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
-    for action in ("click", "type"):
+    for action in ("programmatic", "click", "type"):
         panel = EncodePanel(AppConfig())
         panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
         panel.set_video_tracks([_sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)])
         try:
             _select_codec(panel, "libx265")
-            if action == "none":
+            if action == "programmatic":
                 panel._inject_hdr_cb.setChecked(True)  # changement programmatique : aucune saisie explicite
+                assert panel._inject_hdr_cb.isChecked() and panel._max_cll.text() == "1000,400"
             elif action == "click":
                 panel._inject_hdr_cb.click()
             else:
@@ -2979,8 +2981,8 @@ def test_hdr10_provenance_on_an_sdr_source_follows_user_actions(qt_app, monkeypa
             panel._video_list.setCurrentRow(1)  # piste quittée : normalisée comme les autres
             settings = {v.source_path: v for v in panel.collect_config().video_tracks}
             a = settings[path_a]
-            assert a.inject_hdr_meta == (action != "none"), action
-            assert (output_hdr_transfer(a) == "pq") == (action != "none"), action
+            assert a.inject_hdr_meta == (action != "programmatic"), action
+            assert (output_hdr_transfer(a) == "pq") == (action != "programmatic"), action
             if action == "type":
                 assert a.max_cll == "2000,500" and a.static_hdr_light_level_source == "manual"
             assert not settings[path_b].inject_hdr_meta  # marqueurs propres à la piste
