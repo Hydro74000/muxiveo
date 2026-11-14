@@ -389,6 +389,12 @@ def effective_dynamic_hdr_flags(state: Mapping[str, object], *, source_hdr: HDRT
     return copy_dv, copy_hdr10plus
 
 
+def restore_flags(state: Mapping[str, object]) -> tuple[bool, bool]:
+    """Dolby Vision / HDR10+ retirés par un codec, à rétablir au retour sur un codec qui les porte."""
+    flags = state.get("dynamic_hdr_disabled_by_codec")
+    return (bool(flags[0]), bool(flags[1])) if isinstance(flags, (tuple, list)) and len(flags) == 2 else (False, False)
+
+
 def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, codec: str,
                            source_transfer: str = "") -> None:
     """Politique HDR d'un codec sur un état de piste (règle du panneau Encodage au changement de codec).
@@ -409,9 +415,7 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
         return
     has_dv, has_hdr10plus = source_has_dv(source_hdr), source_has_hdr10plus(source_hdr)
     dv_ok, hdr10plus_ok = has_dv and is_dovi_codec(codec), has_hdr10plus and is_hdr10plus_codec(codec)
-    flags = state.get("dynamic_hdr_disabled_by_codec")
-    restore_dv, restore_hdr10plus = ((bool(flags[0]), bool(flags[1])) if isinstance(flags, (tuple, list))
-                                     and len(flags) == 2 else (False, False))
+    restore_dv, restore_hdr10plus = restore_flags(state)
     restore_dv = restore_dv or (has_dv and not dv_ok and bool(state.get("copy_dv")))
     restore_hdr10plus = restore_hdr10plus or (has_hdr10plus and not hdr10plus_ok and bool(state.get("copy_hdr10plus")))
     if dv_ok and restore_dv:
@@ -528,10 +532,21 @@ def default_video_state(ctx: SourceVideoContext, env: EncoderEnvironment | None 
 
 def propagate_state(template: Mapping[str, object], own: Mapping[str, object], ctx: SourceVideoContext,
                     env: EncoderEnvironment | None = None) -> dict[str, object]:
-    """Réglages communs de ``template`` appliqués à une piste ; HDR propre à sa source conservé."""
+    """Réglages communs de ``template`` appliqués à une piste ; HDR propre à sa source conservé.
+
+    Mémoire des options HDR retirées par un codec (``apply_codec_hdr_policy``) : un codec du modèle qui
+    porte ces options impose les choix du modèle (rien à rétablir) ; sinon la mémoire de la piste reste.
+    """
     state = copy_state(template)
     for key in PER_SOURCE_HDR_KEYS:
         state[key] = own.get(key, "")
+    codec = state_target_codec(state)
+    if codec != "copy":
+        if supports_hdr_output(codec):
+            state["hdr_disabled_by_codec"] = False
+        restore_dv, restore_hdr10plus = restore_flags(state)
+        state["dynamic_hdr_disabled_by_codec"] = (restore_dv and not is_dovi_codec(codec),
+                                                  restore_hdr10plus and not is_hdr10plus_codec(codec))
     return normalize_video_state(state, ctx, env)
 
 

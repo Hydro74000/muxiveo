@@ -235,3 +235,25 @@ def test_historic_batch_cancelled_before_any_job_exits_7(tmp_path, doubles, monk
                                    config=SimpleNamespace(), options=CommonOptions(), logger=logger,
                                    steps=cli_batch.cli_batch_steps(), cancel=cancel)
     assert outcome.cancelled and outcome.exit_code == 7 and doubles.ran == []
+
+
+def test_cancel_during_an_encode_preview_cancels_child_and_batch(tmp_path, doubles, monkeypatch):
+    from core.subprocess_utils import ProbeCancelledError
+
+    ctx, sink = _ctx()
+    monkeypatch.setattr(batch_ops, "resolve_from_job", lambda *a, **k: SimpleNamespace(config=SimpleNamespace()))
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: None)
+
+    def checked(*_a, **_k):
+        ctx.cancel.cancel()  # Ctrl+C pendant la sonde de géométrie
+        raise ProbeCancelledError("Sonde L5 annulée.")
+
+    monkeypatch.setattr(batch_ops, "checked_encode", checked)
+    items = [{**item, "encode": {"video": {"default": {"codec": "libx265"}}}} for item in _items(tmp_path, "a", "b")]
+    payload = {**_template(tmp_path, items), "dry_run": True, "continue_on_error": True}
+    result = call(CATALOG, "media.batch", payload, ctx)
+    assert result.status == "cancelled" and [job["status"] for job in result.jobs] == ["cancelled"]
+    assert _parent_states(sink, ctx)[-1] == JobState.CANCELLED.value
+    child = next(e.job for e in sink.events if e.parent == ctx.events.job)
+    states = [e.data["state"] for e in sink.events if e.job == child and e.type is EventType.STATE]
+    assert states == [JobState.RUNNING.value, JobState.CANCELLED.value]

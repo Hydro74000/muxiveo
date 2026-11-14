@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.jobs.batch import BatchOutcome, BatchSteps, discover_direct_batch_jobs, run_batch
-from core.jobs.constants import EXIT_OK, EXIT_VALIDATION
+from core.jobs.constants import EXIT_OK, EXIT_VALIDATION, EXIT_WORKFLOW
 from core.jobs.errors import exit_code_for
 from core.jobs.encode import resolve_from_job
 from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
@@ -158,15 +158,35 @@ class _Children:
         child.state(JobState.RUNNING, index=index)
         return EmitterLogger(child)
 
+    def _guarded(self, logger: Any, step: Any) -> int:
+        """Étape d'un job enfant ; toute issue lui donne un état final (annulation : ``cancelled``, code 6)."""
+        try:
+            return int(step())
+        except ApiError as error:
+            if not error.logged:
+                logger.emit("error", error.render())
+            self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
+            return exit_code_for(error)
+        except BaseException as exc:
+            if error_code(exc) is ErrorCode.CANCELLED and isinstance(exc, Exception):
+                logger.emit("error", "Opération annulée.")
+                self._final(logger, JobState.CANCELLED)
+                return EXIT_WORKFLOW
+            self._final(logger, JobState.FAILED)
+            raise
+
     def preview(self, config: Any, options: Any, logger: Any, remux_config: Any) -> int:
-        wf = remux_workflow(config, options)
-        errors = wf.validate(remux_config)
-        for error in errors:
-            logger.emit("error", error)
-        if not errors:
-            logger.emit("info", wf.preview_command(remux_config), event="batch_preview")
-        self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
-        return EXIT_OK if not errors else EXIT_VALIDATION
+        def step() -> int:
+            wf = remux_workflow(config, options)
+            errors = wf.validate(remux_config)
+            for error in errors:
+                logger.emit("error", error)
+            if not errors:
+                logger.emit("info", wf.preview_command(remux_config), event="batch_preview")
+            self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
+            return EXIT_OK if not errors else EXIT_VALIDATION
+
+        return self._guarded(logger, step)
 
     def run(self, config: Any, options: Any, logger: Any, remux_config: Any, *, force: bool) -> int:
         try:
@@ -192,16 +212,19 @@ class _Children:
     def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *,
                        accept_dovi_nvenc_crop: bool = False) -> int:
         """Aperçu avec les refus du lancement (géométrie DV + NVENC comprise)."""
-        wf = encode_workflow(config, options)
-        encode_config, errors = checked_encode(encode_config, wf, config=config, options=options,
-                                               accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
-                                               cancel_event=self.ctx.cancel.event)
-        for error in errors:
-            logger.emit("error", error)
-        if not errors:
-            logger.emit("info", preview_encode(encode_config, wf), event="batch_preview")
-        self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
-        return EXIT_OK if not errors else EXIT_VALIDATION
+        def step() -> int:
+            wf = encode_workflow(config, options)
+            checked, errors = checked_encode(encode_config, wf, config=config, options=options,
+                                             accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
+                                             cancel_event=self.ctx.cancel.event)
+            for error in errors:
+                logger.emit("error", error)
+            if not errors:
+                logger.emit("info", preview_encode(checked, wf), event="batch_preview")
+            self._final(logger, JobState.SUCCEEDED if not errors else JobState.FAILED)
+            return EXIT_OK if not errors else EXIT_VALIDATION
+
+        return self._guarded(logger, step)
 
     def run_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *, force: bool,
                    accept_dovi_nvenc_crop: bool = False) -> int:

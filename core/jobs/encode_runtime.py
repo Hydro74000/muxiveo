@@ -52,13 +52,20 @@ def encode_workflow(config: Any, options: CommonOptions) -> EncodeWorkflow:
     return wf
 
 
-def prepare_vulkan(wf: EncodeWorkflow, encode_config: EncodeConfig, ffmpeg: str) -> None:
-    """NLMeans demandé : sonde Vulkan (GPU dédié) transmise au workflow, comme le tableau de bord."""
+def prepare_vulkan(wf: EncodeWorkflow, encode_config: EncodeConfig, ffmpeg: str,
+                   cancel_event: threading.Event | None = None) -> None:
+    """NLMeans demandé : sonde Vulkan (GPU dédié) transmise au workflow, comme le tableau de bord.
+
+    ``cancel_event`` : posé aussi sur le workflow (sondes internes : bandes L5 du RPU).
+    """
+    setter = getattr(wf, "set_probe_cancel_event", None)  # doubles de test : sans sondes internes
+    if cancel_event is not None and setter is not None:
+        setter(cancel_event)
     if not any(video.filters.nlmeans_enabled for video in encode_config.video_tracks):
         return
     from core.workflows.encode.vulkan import detect_vulkan
 
-    wf.set_vulkan_capability(ffmpeg, detect_vulkan(ffmpeg))
+    wf.set_vulkan_capability(ffmpeg, detect_vulkan(ffmpeg, cancel_event))
 
 
 def align_dovi_nvenc(encode_config: EncodeConfig, wf: EncodeWorkflow, *, accept: bool,
@@ -131,7 +138,7 @@ def checked_encode(encode_config: EncodeConfig, wf: EncodeWorkflow, *, config: A
 
     ``cancel_event`` : inspection et sonde L5 annulables (l'annulation remonte, jamais un refus).
     """
-    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
+    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel_event)
     try:
         encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
                                          cancel_event=cancel_event)
@@ -160,7 +167,7 @@ def run_encode(
         raise JobError(f"Sortie déjà existante : {encode_config.output} (utiliser --force)", EXIT_EXISTS)
     wf = workflow_factory() if workflow_factory is not None else encode_workflow(config, options)
     wf.log_message.connect(lambda level, message: logger.emit(level, message))
-    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg))
+    prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel.event)
     encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
                                      cancel_event=cancel.event)
     errors = wf.validate(encode_config)

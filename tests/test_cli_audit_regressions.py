@@ -773,3 +773,118 @@ def test_previews_apply_the_launch_checks_and_the_crop_acceptance(monkeypatch):
     accepted = profile_ops.ProfilePreviewRequest.from_dict({"profile": "P", "inputs": ["/a.mkv"],
                                                             "encode": {"video": {}, "accept_dovi_nvenc_crop": True}})
     assert profile_ops.profile_preview.handler(accepted, _ctx()).command_text == "nvencc …"
+
+
+# --- Quatrième audit ---------------------------------------------------------------------------------
+
+
+def test_propagation_is_stable_and_follows_the_template_hdr_choices():
+    from core.inspector import HDRType
+    from core.workflows.encode.planning.track_settings import SourceVideoContext, propagate_state
+
+    ctx = SourceVideoContext(hdr_type=HDRType.DOLBY_VISION_HDR10PLUS, transfer="smpte2084")
+    own = {"codec": "libx264", "inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False,
+           "hdr_disabled_by_codec": True, "dynamic_hdr_disabled_by_codec": (True, True)}  # mémoire active
+    off = {"codec": "libx265", "inject_hdr_meta": False, "copy_dv": False, "copy_hdr10plus": False}
+    first = propagate_state(off, own, ctx)
+    second = propagate_state(off, first, ctx)
+    hdr = ("inject_hdr_meta", "copy_dv", "copy_hdr10plus")
+    assert [first[k] for k in hdr] == [second[k] for k in hdr] == [False, False, False]
+    on = {**off, "inject_hdr_meta": True, "copy_dv": True, "copy_hdr10plus": True}
+    assert [propagate_state(on, own, ctx)[k] for k in hdr] == [True, True, True]
+    # Modèle sans HDR : la mémoire de la piste est gardée pour le retour sur un codec HDR.
+    sdr = propagate_state({"codec": "libx264"}, own, ctx)
+    assert sdr["hdr_disabled_by_codec"] and sdr["dynamic_hdr_disabled_by_codec"] == (True, True)
+
+
+def test_panel_two_tracks_apply_all_preset_round_trip_keeps_hdr(qt_app, monkeypatch, tmp_path):
+    from core.config import AppConfig
+    from core.inspector import HDRType
+    from core.workflows.encode import EncodePreset, ProfileManager
+    from ui.panels.encode_panel.panel import EncodePanel
+
+    from tests.test_encode_panel_widgets import _COLOR, _PATH_A, _file_info, _select_codec, _video_entry, _video_track
+
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel._profiles = ProfileManager(tmp_path)
+    panel._profiles.save(EncodePreset(name="SDR", codec="libx264", crf=20, preset="slow"))
+    panel._profiles.save(EncodePreset(name="HDR", codec="libx265", crf=20, preset="slow"))
+    panel._refresh_profiles()
+    first, second = _video_entry(0), _video_entry(1)
+    first.entry_id, second.entry_id = "first", "second"
+    info = _file_info(_PATH_A, [_video_track(0, hdr), _video_track(1, hdr)], hdr_type=hdr)
+    panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        for name in ("SDR", "HDR"):
+            panel._set_combo_data(panel._profile_combo, name)
+            panel._load_profile()
+        for entry_id in ("first", "second"):
+            state = panel._video_settings_by_entry_id[entry_id]
+            assert (state["codec"], state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (
+                "libx265", True, True, True), entry_id
+    finally:
+        panel.close()
+
+
+def test_exports_with_added_chapters_and_strict_types(tmp_path):
+    from core.jobs.contract import validate_job_contract
+    from core.profiles.selectors import remux_config_to_exact_job
+    from core.service.errors import ApiError
+    from core.service.ops.media import MediaJobRequest
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+
+    track = TrackEntry(0, "video", "HEVC", "2160p", "und", "", entry_id="v0", file_id="f0")
+    config = RemuxConfig(sources=[SourceInput(path=tmp_path / "a.mkv", file_index=0, tracks=[track])],
+                         output=tmp_path / "o.mkv", track_order=[(0, 0, "v0")],
+                         chapter_overrides=[SimpleNamespace(timecode_s=0.0, name="Début")])  # sans source
+    job = remux_config_to_exact_job(config)
+    assert job["chapters"].get("source_index", None) is None
+    assert MediaJobRequest.parse({"job": job})[1] == ()
+    bad = {"version": 1, "input": [23], "sources": [{"path": str(tmp_path / "a.mkv"), "playlist": "oops"}],
+           "calibration": 23, "name": False, "fallback_profile": []}
+    with pytest.raises(ApiError) as caught:
+        MediaJobRequest.parse({"job": bad})
+    assert {d.path for d in caught.value.details} >= {"job.input[0]", "job.sources[0].playlist", "job.calibration",
+                                                      "job.name", "job.fallback_profile"}
+    validate_job_contract(bad)  # documents CLI : le contrat historique reste celui d'avant (pas de refus)
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+def test_duration_vulkan_and_workflow_probes_are_cancellable(tmp_path):
+    import threading
+    import time
+
+    from core.subprocess_utils import ProbeCancelledError
+    from core.video_sampling import probe_video_duration
+    from core.workflows.encode.vulkan import detect_vulkan
+    from core.workflows.encode.workflow import EncodeWorkflow
+    from core.workflows.encode.runtime.crop_detector import detect_black_bars_ffmpeg
+
+    source = tmp_path / "f.mkv"
+    source.write_bytes(b"x")
+    tool = str(_sleeping_tool(tmp_path))
+    probes = [
+        lambda cancel: probe_video_duration(source, ffprobe_bin=tool, cancel_event=cancel),
+        lambda cancel: detect_vulkan(tool, cancel),
+        # Durée inconnue : la recherche de durée elle-même est interrompue.
+        lambda cancel: detect_black_bars_ffmpeg(source, ffmpeg_bin=tool, ffprobe_bin=tool, cancel_event=cancel),
+    ]
+    workflow = EncodeWorkflow(ffmpeg_bin=tool, ffprobe_bin=tool)
+    workflow._bins["dovi_tool"] = tool
+
+    def internal_l5(cancel):
+        workflow.set_probe_cancel_event(cancel)
+        return workflow._probe_dovi_l5_offsets(source)  # appel interne, sans jeton explicite
+
+    probes.append(internal_l5)
+    for probe in probes:
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        start = time.monotonic()
+        with pytest.raises(ProbeCancelledError):
+            probe(cancel)
+        assert time.monotonic() - start < 5

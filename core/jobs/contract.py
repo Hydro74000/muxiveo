@@ -234,7 +234,7 @@ def _validate_chapters(errors: list[str], path: str, value: Any) -> None:
     if not isinstance(value, dict):
         errors.append(f"{path}: attendu false ou object, reçu {_type_name(value)}")
         return
-    if "source_index" in value:
+    if value.get("source_index") is not None:  # null : source des chapitres choisie automatiquement (exporteur)
         _expect(errors, f"{path}.source_index", value["source_index"], "integer", _is_int)
     if "include_source" in value:
         _expect(errors, f"{path}.include_source", value["include_source"], "bool", _is_bool)
@@ -374,6 +374,23 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
                     errors.append(f"{path}.tag_overrides.{key}: attendu string, reçu {_type_name(value)}")
     if errors:
         raise ContractError(errors)
+
+
+def strict_job_errors(job: dict[str, Any], *, path: str = "$") -> list[str]:
+    """Types que le contrat historique laisse passer, refusés pour une requête API (documents CLI inchangés)."""
+    errors: list[str] = []
+    raw_input = job.get("input")
+    if isinstance(raw_input, list):
+        _validate_string_list(errors, f"{path}.input", raw_input)
+    for key in ("calibration", "name", "fallback_profile"):
+        if key in job:
+            _expect(errors, f"{path}.{key}", job[key], "string", _is_string)
+    sources = job.get("sources")
+    if isinstance(sources, list):
+        for index, source in enumerate(sources):
+            if isinstance(source, dict) and "playlist" in source:
+                _expect(errors, f"{path}.sources[{index}].playlist", source["playlist"], "integer", _is_int)
+    return errors
 
 
 def validate_batch_contract(batch: dict[str, Any], *, path: str = "$") -> None:

@@ -490,6 +490,8 @@ class EncodeWorkflow(QObject):
         self._rife_bin: str | None = rife_bin
         self._rife_trt_plugin = ""
         self._rife_trt_cache = ""
+        #: Jeton des sondes internes posé par une opération headless (``set_probe_cancel_event``).
+        self._probe_cancel_event: threading.Event | None = None
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -4943,6 +4945,10 @@ class EncodeWorkflow(QObject):
             libplacebo_ready=self._nvencc_libplacebo_ready,
         )
 
+    def set_probe_cancel_event(self, cancel_event: threading.Event | None) -> None:
+        """Jeton des sondes internes (bandes L5 du RPU) d'une opération headless ; ``None`` : sans annulation."""
+        self._probe_cancel_event = cancel_event
+
     def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0,
                                cancel_event: threading.Event | None = None) -> tuple[int, int, int, int] | None:
         """Bandes L5 du RPU (sonde facultative : ``None`` si indisponible ; l'annulation remonte)."""
@@ -4958,8 +4964,9 @@ class EncodeWorkflow(QObject):
                     ffprobe_bin=self._ffprobe_path(),
                 )
                 self._dovi_geometry_detector_key = key
-            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index,
-                                                                 cancel_event=cancel_event)
+            return self._dovi_geometry_detector.probe_l5_offsets(
+                source, stream_index=stream_index,
+                cancel_event=cancel_event if cancel_event is not None else self._probe_cancel_event)
         except ProbeCancelledError:
             raise
         except Exception:

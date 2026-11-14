@@ -38,6 +38,7 @@ from core.jobs.batch import (
     write_batch_summary,
 )
 from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_VALIDATION, EXIT_WORKFLOW
+from core.service.errors import ErrorCode, error_code
 from core.jobs.errors import JobError
 from core.jobs.inspection import inspect_sources, source_path_items
 from core.jobs.json_io import deep_merge, json_default, load_json
@@ -458,17 +459,23 @@ def run_profile_batch(
                 break
         except Exception as exc:
             failures += 1
+            # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
+            job_cancelled = (cancel is not None and cancel.cancelled) or error_code(exc) is ErrorCode.CANCELLED
             summary_jobs.append(
                 {
                     "job_index": job_index,
                     "input": input_label,
                     "output": output_label,
-                    "status": "failed",
+                    "status": "cancelled" if job_cancelled else "failed",
                     "exit_code": getattr(exc, "exit_code", EXIT_WORKFLOW),
                     "error": str(exc),
                 }
             )
-            logger.emit("error", f"Job profil batch échoué : {exc}", event="profile_batch_job", job_index=job_index, status="failed")
+            logger.emit("error", f"Job profil batch échoué : {exc}", event="profile_batch_job", job_index=job_index,
+                        status="cancelled" if job_cancelled else "failed")
+            if job_cancelled:
+                cancelled = True
+                break
             if not continue_on_error:
                 break
     total = len(summary_jobs)

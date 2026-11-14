@@ -24,6 +24,7 @@ from core.output_commit import destination_key
 
 from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW
 from core.jobs.contract import validate_batch_contract, validate_job_contract
+from core.service.errors import ErrorCode, error_code
 from core.jobs.errors import JobError
 from core.jobs.inspection import source_path_items
 from core.jobs.loader import apply_metadata_overrides
@@ -586,12 +587,14 @@ def run_batch(
                 )
         except Exception as exc:
             failures += 1
+            # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
+            job_cancelled = (cancel is not None and cancel.cancelled) or error_code(exc) is ErrorCode.CANCELLED
             summary_jobs.append(
                 {
                     "job_index": job_index,
                     "input": input_label,
                     "output": output_label,
-                    "status": "failed",
+                    "status": "cancelled" if job_cancelled else "failed",
                     "exit_code": getattr(exc, "exit_code", EXIT_WORKFLOW),
                     "error": str(exc),
                 }
@@ -603,9 +606,12 @@ def run_batch(
                 job_index=job_index,
                 input=input_label,
                 output=output_label,
-                status="failed",
+                status="cancelled" if job_cancelled else "failed",
                 exception=repr(exc),
             )
+            if job_cancelled:
+                cancelled = True
+                break
             if not continue_on_error:
                 break
     exit_code = EXIT_OK if failures == 0 and not cancelled else EXIT_PARTIAL

@@ -152,18 +152,19 @@ class MediaJobRequest(Model):
     @classmethod
     def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
         """Écarts de valeurs du job au contrat v1 (types, énumérations, calibrations), avec leur chemin."""
-        from core.jobs.contract import validate_job_contract
+        from core.jobs.contract import strict_job_errors, validate_job_contract
         from core.jobs.errors import ContractError
 
         job = values.get("job")
         if not isinstance(job, dict):
             return []
+        errors = strict_job_errors(job, path="job")
         try:
             validate_job_contract(job, path="job")
         except ContractError as exc:
-            return [tuple(error.split(": ", 1)) if ": " in error else ("job", error)  # type: ignore[misc]
-                    for error in exc.errors]
-        return []
+            errors += exc.errors
+        return [tuple(error.split(": ", 1)) if ": " in error else ("job", error)  # type: ignore[misc]
+                for error in errors]
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:

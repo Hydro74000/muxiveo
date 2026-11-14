@@ -155,7 +155,7 @@ def test_capabilities_operation_reports_requested_sections(monkeypatch):
     monkeypatch.setattr(hardware.HardwareEncoderDetector, "detect_software", lambda self, ffmpeg: {"libx265"})
     monkeypatch.setattr(hardware.HardwareEncoderDetector, "detect",
                         lambda self, ffmpeg, nvencc_bin=None: ({"hevc_nvenc"}, ffmpeg))
-    monkeypatch.setattr(vulkan, "detect_vulkan", lambda ffmpeg: vulkan.VulkanCapability(reason="test"))
+    monkeypatch.setattr(vulkan, "detect_vulkan", lambda ffmpeg, cancel_event=None: vulkan.VulkanCapability(reason="test"))
     ctx = ExecutionContext.create(SimpleNamespace(tool_ffmpeg="ffmpeg"), ListSink())
     result = call(CATALOG, "system.capabilities", {"sections": ["encoders", "vulkan"]}, ctx)
     assert result.encoders == {"software": ["libx265"], "hardware": ["hevc_nvenc"]}

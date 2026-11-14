@@ -48,7 +48,7 @@ def detect_black_bars_ffmpeg(
     else:
         src_w, src_h = dimensions
 
-    duration = duration_s or probe_video_duration(source_path, ffprobe_bin=ffprobe_bin)
+    duration = duration_s or probe_video_duration(source_path, ffprobe_bin=ffprobe_bin, cancel_event=cancel_event)
     sample_times = video_sample_times(duration)
 
     detected_crops: list[tuple[int, int, int, int]] = []

@@ -262,7 +262,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                 "type": "object",
                 "additionalProperties": True,
                 "properties": {
-                    "source_index": {"type": "integer"},
+                    "source_index": {"type": ["integer", "null"]},
                     "include_source": {"type": "boolean"},
                     "import": {"type": "string"},
                     "add": {"type": "array", "items": {"$ref": "#/$defs/chapter"}},

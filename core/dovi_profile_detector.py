@@ -423,7 +423,7 @@ class DoviProfileDetector:
         key = (source_path, stat.st_mtime_ns, stat.st_size, stream_index, duration_s)
         if key in self._l5_cache:
             return self._l5_cache[key]
-        duration = duration_s or probe_video_duration(source_path, ffprobe_bin=self._ffprobe)
+        duration = duration_s or probe_video_duration(source_path, ffprobe_bin=self._ffprobe, cancel_event=cancel_event)
         if not duration or duration <= 0:
             return None
         samples: list[tuple[int, int, int, int]] = []

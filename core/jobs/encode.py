@@ -61,6 +61,7 @@ from core.workflows.encode.planning.track_settings import (
     is_pure_copy,
     normalize_video_state,
     preset_problem,
+    restore_flags,
     source_has_dv,
     source_has_hdr10plus,
     source_has_static_hdr10,
@@ -230,13 +231,13 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
     if spec.dolby_vision is not None:
         if spec.dolby_vision.mode is not None:
             state["copy_dv"] = spec.dolby_vision.mode == "copy"
-            state["dynamic_hdr_disabled_by_codec"] = (False, _restore_flags(state)[1])
+            state["dynamic_hdr_disabled_by_codec"] = (False, restore_flags(state)[1])
             intents.add(f"dv_{spec.dolby_vision.mode}")
         if spec.dolby_vision.profile is not None:
             state["dovi_profile"] = spec.dolby_vision.profile
     if spec.hdr10plus is not None and spec.hdr10plus.mode is not None:
         state["copy_hdr10plus"] = spec.hdr10plus.mode == "copy"
-        state["dynamic_hdr_disabled_by_codec"] = (_restore_flags(state)[0], False)
+        state["dynamic_hdr_disabled_by_codec"] = (restore_flags(state)[0], False)
         intents.add(f"hdr10plus_{spec.hdr10plus.mode}")
     if spec.fel is not None:
         for key, target in (("bake", "bake_dovi_fel"), ("precision", "fel_precision"), ("device", "fel_device"),
@@ -270,12 +271,6 @@ def _check_intents(state: Mapping[str, object], ctx: SourceVideoContext, intents
         warnings.append(f"{label} : Dolby Vision non copié (source sans Dolby Vision ou codec incompatible)")
     if "hdr10plus_copy" in intents and not state.get("copy_hdr10plus"):
         warnings.append(f"{label} : HDR10+ non copié (source sans HDR10+ ou codec incompatible)")
-
-
-def _restore_flags(state: Mapping[str, object]) -> tuple[bool, bool]:
-    """Dolby Vision / HDR10+ à rétablir au retour sur un codec qui les porte (``apply_codec_hdr_policy``)."""
-    flags = state.get("dynamic_hdr_disabled_by_codec")
-    return (bool(flags[0]), bool(flags[1])) if isinstance(flags, (tuple, list)) and len(flags) == 2 else (False, False)
 
 
 def _plan_entry(source: SourceInput, track: TrackEntry, settings: VideoEncodeSettings) -> dict[str, Any]:
