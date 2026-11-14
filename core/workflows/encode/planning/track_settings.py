@@ -450,6 +450,9 @@ def apply_codec_hdr_policy(state: dict[str, object], *, source_hdr: HDRType, cod
         state["tonemap_to_sdr"] = False
         state["hdr_disabled_by_codec"] = False
         state["dynamic_hdr_disabled_by_codec"] = (False, False)
+        if not state_allows_copy_static_hdr_edit(state, codec):
+            # Cases et valeurs imposées par la source : plus aucune saisie explicite.
+            state.update({marker: False for _name, _default, marker in STATIC_HDR_FIELDS}, static_hdr_manual=False)
         return
     has_dv, has_hdr10plus = source_has_dv(source_hdr), source_has_hdr10plus(source_hdr)
     dv_ok, hdr10plus_ok = has_dv and is_dovi_codec(codec), has_hdr10plus and is_hdr10plus_codec(codec)
@@ -521,8 +524,10 @@ def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
     normalized["copy_dv"] = copy_dv
     normalized["copy_hdr10plus"] = copy_hdr10plus
     md, cll = effective_static_hdr_fields(normalized, codec=target_codec)
-    normalized["master_display"] = md
-    normalized["max_cll"] = cll
+    for (name, _default, marker), value in zip(STATIC_HDR_FIELDS, (md, cll)):
+        if str(normalized.get(name) or "").strip() != value:
+            normalized[marker] = False  # valeur remplacée (source, champ vidé complété) : plus une saisie
+        normalized[name] = value
     return normalized
 
 

@@ -796,8 +796,14 @@ class EncodePanel(QWidget):
                 self._video_list.setCurrentRow(row)
                 if not self._inject_hdr_cb.isEnabled() or self._max_cll.isReadOnly():
                     return False
+                # Choix de l'utilisateur dans HDR Studio : saisie explicite, comme un clic et une frappe.
+                self._static_hdr_manual = True
+                self._static_hdr_field_manual["max_cll"] = True
                 self._inject_hdr_cb.setChecked(True)
                 self._max_cll.setText(f"{int(max_cll)},{int(max_fall)}")
+                self._on_hdr_option_clicked("inject_hdr_meta", True)
+                self._save_current_video_state()
+                self._sync_hdr_metadata_provenance()
                 return True
         return False
 
@@ -1039,6 +1045,9 @@ class EncodePanel(QWidget):
             # suivent peuvent le sauvegarder. Auto suit la profondeur de la
             # source sans figer une valeur qui fuirait vers d'autres pistes
             # (« Appliquer à toutes ») ou dans un profil.
+            # Piste sans état (nouvelle source) : rien des saisies de la piste affichée avant elle.
+            self._static_hdr_manual = False
+            self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
             if track is not None and self._current_video_entry_id is not None:
                 # Valeurs HDR10 de la source connues dès le premier état : le préremplissage ci-dessous
                 # reste classé « source » (provenance par champ, mesure FEL), pas « saisie ».
@@ -2517,6 +2526,9 @@ class EncodePanel(QWidget):
                 state["default_" + name] = value
             if state.get(name, "") == expected[name]:
                 state[name] = value
+                state[f"static_hdr_{name}_manual"] = False  # valeur de la source
+                if self._current_video_entry_id == key:
+                    self._static_hdr_field_manual[name] = False
         if self._current_video_entry_id == key:
             # Les deux champs font partie d'une seule mise à jour : leurs
             # textChanged ne doivent pas sauvegarder un état intermédiaire.
@@ -2550,8 +2562,10 @@ class EncodePanel(QWidget):
         expected_master_display, expected_max_cll = expected[1:]
         # Ne pas écraser une valeur saisie par l'utilisateur pendant le probe.
         if master_display and self._master_display.text() == expected_master_display:
+            self._static_hdr_field_manual["master_display"] = False  # valeur de la source
             self._master_display.setText(master_display)
         if max_cll and self._max_cll.text() == expected_max_cll:
+            self._static_hdr_field_manual["max_cll"] = False
             self._max_cll.setText(max_cll)
 
     def _extract_hdr_meta_fields(
@@ -2852,6 +2866,10 @@ class EncodePanel(QWidget):
             ) or {}
             default_md = str(prev.get("default_master_display") or "")
             default_cll = str(prev.get("default_max_cll") or "")
+            # Valeurs remplacées par celles de la source : plus des saisies ; Copy impose aussi la case.
+            self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
+            if codec_id == "copy":
+                self._static_hdr_manual = False
             self._master_display.blockSignals(True)
             self._max_cll.blockSignals(True)
             self._master_display.setText(default_md)
@@ -3241,6 +3259,8 @@ class EncodePanel(QWidget):
                 "static_hdr_metadata_confidence": estimate_obj.confidence,
                 "static_hdr_metadata_analysis_mode": estimate_obj.mode,
                 "static_hdr_metadata_analysis_request": "",
+                "static_hdr_master_display_manual": False,
+                "static_hdr_max_cll_manual": False,
             }
         )
         self._video_settings_by_entry_id[entry_id] = state
@@ -3541,6 +3561,7 @@ class EncodePanel(QWidget):
 
     def _mark_static_hdr_field(self, name: str) -> None:
         self._static_hdr_field_manual[name] = True
+        self._sync_hdr_metadata_provenance()
 
     def _sync_hdr_metadata_provenance(self) -> None:
         """Libellé de provenance des valeurs HDR10 statiques affichées (V25)."""
@@ -3556,8 +3577,21 @@ class EncodePanel(QWidget):
         default_md = str(state.get("default_master_display") or "").strip()
         default_cll = str(state.get("default_max_cll") or "").strip()
         editable = not self._master_display.isReadOnly()
+        shown = {"master_display": md, "max_cll": cll, "default_master_display": default_md,
+                 "default_max_cll": default_cll,
+                 **{f"static_hdr_{name}_manual": flag for name, flag in self._static_hdr_field_manual.items()}}
+        manual = editable and any(static_hdr_field_manual(shown, name) for name in ("master_display", "max_cll"))
         if str(state.get("static_hdr_metadata_analysis_request") or ""):
             text = translate_text("Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.")
+        elif manual:
+            text = (
+                translate_text(
+                    "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
+                    field="MaxCLL/MaxFALL" if md else "Master Display",
+                )
+                if self._selected_source_is_p5() and not (md and cll)
+                else translate_text("Saisie manuelle.")
+            )
         elif str(state.get("static_hdr_metadata_source") or "") == StaticHdrEstimateService.SOURCE_LABEL:
             text = translate_text(
                 "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).",
@@ -3578,15 +3612,8 @@ class EncodePanel(QWidget):
                     "(reconstruites si absentes et HDR dynamique copié)."
                 )
             )
-        elif md == default_md and cll == default_cll:
-            text = translate_text("Valeurs de la source.")
-        elif self._selected_source_is_p5() and not (md and cll):
-            text = translate_text(
-                "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
-                field="MaxCLL/MaxFALL" if md else "Master Display",
-            )
         else:
-            text = translate_text("Saisie manuelle.")
+            text = translate_text("Valeurs de la source.")
         self._hdr_meta_provenance.setText(text)
         if hasattr(self, "_hdr_meta_source_btn"):
             self._hdr_meta_source_btn.setEnabled(editable and bool(default_md or default_cll))
@@ -5250,13 +5277,17 @@ class EncodePanel(QWidget):
                                          RestoreSettings.from_value(state.get("restoration")))
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
             self._static_hdr_manual = bool(state.get("static_hdr_manual"))
-            self._static_hdr_field_manual = {"master_display": bool(state.get("static_hdr_master_display_manual")),
-                                             "max_cll": bool(state.get("static_hdr_max_cll_manual"))}
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
                 state,
                 codec=target_codec,
             )
+            # Réaffichage : la saisie reste explicite ; valeur remplacée (source, champ vide) : non.
+            self._static_hdr_field_manual = {
+                name: bool(state.get(f"static_hdr_{name}_manual"))
+                and str(state.get(name) or "").strip() == shown
+                for name, shown in (("master_display", md_state), ("max_cll", cll_state))
+            }
             self._master_display.setText(md_state)
             self._max_cll.setText(cll_state)
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
