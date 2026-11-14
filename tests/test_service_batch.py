@@ -380,3 +380,81 @@ def test_profile_batch_and_historic_batch_stop_after_a_failed_job(tmp_path, monk
                              dry_run=False, force=False, continue_on_error=continue_on_error, summary_path=None,
                              config=None, options=None, logger=SimpleNamespace(emit=lambda *a, **k: None))
     assert rc == 7 and ran == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv", "b.mkv"])
+
+
+@pytest.mark.parametrize("failing", ["a.mkv", "b.mkv"])
+@pytest.mark.parametrize("continue_on_error", [False, True])
+def test_encode_jobs_failing_in_the_runtime_follow_the_stop_rule(tmp_path, doubles, monkeypatch, failing,
+                                                                  continue_on_error):
+    ctx, sink = _ctx()
+    ran: list[str] = []
+    monkeypatch.setattr(batch_ops, "resolve_from_job",
+                        lambda block, remux, **k: SimpleNamespace(config=SimpleNamespace(output=remux.output)))
+
+    def run_encode(encode_config, **_kwargs):  # runtime : lève une erreur (jamais un code)
+        ran.append(encode_config.output.name)
+        if encode_config.output.name == failing:
+            raise ApiError(ErrorCode.WORKFLOW_FAILED, "x265 KO", logged=True)
+        return "fini"
+
+    monkeypatch.setattr(batch_ops, "run_encode", run_encode)
+    items = [{**item, "encode": {"video": {"default": {"codec": "libx265"}}}} for item in _items(tmp_path, "a", "b", "c")]
+    result = call(CATALOG, "media.batch", {**_template(tmp_path, items), "continue_on_error": continue_on_error}, ctx)
+    names = ["a.mkv", "b.mkv", "c.mkv"]
+    expected = names if continue_on_error else names[:names.index(failing) + 1]
+    assert ran == expected and result.failures == 1
+    assert result.status == ("failed" if expected == ["a.mkv"] else "partial")
+    assert [job["status"] for job in result.jobs] == ["failed" if name == failing else "success" for name in expected]
+    finals: dict[str, list[str]] = {}
+    for event in sink.events:
+        if event.parent == ctx.events.job and event.type is EventType.STATE and event.data["state"] != "running":
+            finals.setdefault(event.job, []).append(event.data["state"])
+    assert all(len(states) == 1 for states in finals.values())  # un seul état final par enfant
+    assert len(finals) == len(expected)
+
+
+@pytest.mark.parametrize("continue_on_error", [False, True])
+def test_historic_encode_steps_returning_a_failure_code_and_profile_previews_stop(tmp_path, monkeypatch,
+                                                                                   continue_on_error):
+    from cli import batch as cli_batch
+    from core.jobs.batch import BatchDiscovery
+    from core.jobs.options import CommonOptions
+    from core.jobs.profile import ProfileBatchSteps, run_profile_batch
+
+    jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv"),
+             "encode": {"video": {"default": {"codec": "libx265"}}}} for n in "abc"]
+    ran: list[str] = []
+    monkeypatch.setattr(cli_batch, "build_remux_config", lambda job, config, options, logger: SimpleNamespace(
+        output=Path(job["output"]), allow_missing_output_dir=False))
+    monkeypatch.setattr(cli_batch, "resolve_job_encode_config", lambda job, remux, *a, **k: SimpleNamespace(
+        output=remux.output))
+
+    def run_encode_config(_config, _options, _logger, encode_config, **_kwargs):  # callback : rend un code
+        ran.append(encode_config.output.name)
+        return 6 if encode_config.output.name == "a.mkv" else 0
+
+    monkeypatch.setattr(cli_batch, "run_encode_config", run_encode_config)
+    template = tmp_path / "t.json"
+    template.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    batch = tmp_path / "b.json"
+    batch.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    rc = cli_batch.run_batch(template_path=str(template), batch_path=str(batch), cli_inputs=None, input_dirs=None,
+                             recursive=False, include_patterns=None, exclude_patterns=None, output_dir=None,
+                             dry_run=False, force=False, continue_on_error=continue_on_error, summary_path=None,
+                             config=None, options=None, logger=SimpleNamespace(emit=lambda *a, **k: None))
+    assert rc == 7 and ran == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv"])
+    # Aperçu d'un lot de profils : premier aperçu refusé (code 3).
+    previews: list[str] = []
+    steps = ProfileBatchSteps(
+        load=lambda path, config: {}, discover=lambda **k: BatchDiscovery(jobs=jobs, scanned=3, selected=3,
+                                                                          explicit_inputs=0, roots=[]),
+        build=lambda profile, **k: (SimpleNamespace(output=Path(k["cli_output"])), {}),
+        preview=lambda _c, _o, _l, remux: previews.append(remux.output.name) or (3 if remux.output.name == "a.mkv" else 0),
+        run=lambda *a, **k: 0)
+    outcome = run_profile_batch("P", cli_inputs=[], input_dirs=None, recursive=False, include_patterns=None,
+                                exclude_patterns=None, output_dir=str(tmp_path), dry_run=True, force=False,
+                                continue_on_error=continue_on_error, summary_path=None, config=SimpleNamespace(),
+                                options=CommonOptions(), logger=SimpleNamespace(emit=lambda *a, **k: None),
+                                steps=steps)
+    assert previews == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv"])
+    assert outcome.exit_code == 7 and outcome.summary["failures"] == 1

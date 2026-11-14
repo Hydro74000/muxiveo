@@ -3169,3 +3169,45 @@ def test_apply_all_intent_survives_list_changes_and_is_cleared_by_reset(qt_app, 
         assert panel._hdr_common_intent == {}
     finally:
         panel.close()
+
+
+def test_apply_all_explicit_tonemap_survives_an_sdr_round_trip_unlike_the_automatic_one(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")  # tone mapping coché d'office (source HDR vers codec sans HDR)
+        assert panel._tonemap_cb.isChecked()
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()  # retiré au retour : il était automatique
+        panel._tonemap_cb.click()  # choix explicite
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert panel._tonemap_cb.isChecked() and settings[_PATH_A].tonemap_to_sdr
+    finally:
+        panel.close()
+
+
+def test_restored_track_states_with_and_without_explicit_markers(qt_app, monkeypatch):
+    """État d'une session antérieure (sans marqueurs) : provenance par comparaison ; avec marqueurs : saisie gardée."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
+    panel.set_video_tracks([_sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)])
+    try:
+        _select_codec(panel, "libx265")
+        base = dict(panel._video_settings_by_entry_id["sdr0"])
+        for markers, expected in (({}, False), ({"static_hdr_manual": True}, True),
+                                  ({"static_hdr_max_cll_manual": True}, True)):
+            state = {**base, "inject_hdr_meta": True, "dynamic_hdr_disabled_by_codec": [False, False], **markers}
+            for key in ("static_hdr_manual", "static_hdr_max_cll_manual", "static_hdr_master_display_manual"):
+                state.setdefault(key, False) if markers else state.pop(key, None)
+            panel._video_settings_by_entry_id["sdr0"] = state
+            panel._video_list.setCurrentRow(1)
+            panel._video_list.setCurrentRow(0)  # état restauré relu par le panneau
+            panel._video_list.setCurrentRow(1)
+            a = {v.source_path: v for v in panel.collect_config().video_tracks}[path_a]
+            assert a.inject_hdr_meta is expected, markers
+    finally:
+        panel.close()
