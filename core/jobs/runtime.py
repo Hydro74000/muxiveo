@@ -12,7 +12,7 @@ from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger
 from core.jobs.options import CommonOptions
 from core.service.context import CancelToken
-from core.service.errors import ApiError, ErrorCode
+from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.jobs import await_task
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig
@@ -89,4 +89,4 @@ def run_remux(
         logger.emit("error", "Opération annulée.")
         raise ApiError(ErrorCode.CANCELLED, "Opération annulée.", logged=True)
     logger.emit("error", outcome.message, exception=repr(outcome.exception))
-    raise ApiError(ErrorCode.WORKFLOW_FAILED, outcome.message, logged=True)
+    raise ApiError(error_code(outcome.exception), outcome.message, logged=True)

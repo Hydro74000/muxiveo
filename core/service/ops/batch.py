@@ -21,7 +21,7 @@ from core.jobs.profile import ProfileBatchSteps, build_profile_remux_config, loa
 from core.jobs.remux_config import build_remux_config
 from core.jobs.runtime import remux_workflow, run_remux
 from core.service.context import ExecutionContext
-from core.service.errors import ApiError, ErrorCode
+from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.events import JobState
 from core.service.models import Model, field
 from core.service.operations import operation
@@ -144,8 +144,8 @@ class _Children:
                 logger.emit("error", error.render())
             self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
             return exit_code_for(error)
-        except BaseException:
-            self._final(logger, JobState.FAILED)
+        except BaseException as exc:
+            self._final(logger, JobState.CANCELLED if error_code(exc) is ErrorCode.CANCELLED else JobState.FAILED)
             raise
         logger.events.artifact("output", str(remux_config.output))
         self._final(logger, JobState.SUCCEEDED)
@@ -178,8 +178,8 @@ class _Children:
                 logger.emit("error", error.render())
             self._final(logger, JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED)
             return exit_code_for(error)
-        except BaseException:
-            self._final(logger, JobState.FAILED)
+        except BaseException as exc:
+            self._final(logger, JobState.CANCELLED if error_code(exc) is ErrorCode.CANCELLED else JobState.FAILED)
             raise
         logger.events.artifact("output", str(encode_config.output))
         self._final(logger, JobState.SUCCEEDED)

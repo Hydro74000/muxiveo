@@ -16,7 +16,7 @@ from core.service.ops.system import SchemaResult, VersionResult
 from core.update_check import query_latest_release
 
 from cli.batch import run_batch
-from cli.constants import EXIT_ARGS, EXIT_PARTIAL, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
+from cli.constants import EXIT_ARGS, EXIT_OK, EXIT_UPDATE_AVAILABLE, EXIT_VALIDATION, EXIT_WORKFLOW
 from cli.errors import CliError
 from cli.jobs import apply_metadata_overrides
 from cli.jobs import load_job
@@ -27,7 +27,15 @@ from cli.profile import profile_apply, profile_batch, profile_preview, profile_v
 from cli.remux_config import config_to_template
 from cli.encode_options import apply_encode_options, encode_block_from_args
 from cli.interrupts import interrupt_guard
-from cli.service_adapter import envelope, overrides_from_args, overrides_from_options, print_json, render_api_error, run_operation
+from cli.service_adapter import (
+    envelope,
+    exit_code_for_result,
+    overrides_from_args,
+    overrides_from_options,
+    print_json,
+    render_api_error,
+    run_operation,
+)
 
 
 def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
@@ -407,7 +415,7 @@ def _batch_via_operation(args: argparse.Namespace, config: AppConfig, logger: Lo
         result, ctx = run_operation(name, payload, config=config, logger=logger,
                                     overrides=overrides_from_options(options), cancel=cancel)
     print_json(envelope(name, ctx.events.job, result=result))
-    return EXIT_OK if getattr(result, "status", "") == "succeeded" else EXIT_PARTIAL
+    return exit_code_for_result(result)
 
 
 def cmd_batch(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:

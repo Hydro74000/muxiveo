@@ -110,6 +110,16 @@ class Catalog:
         }
 
 
+#: États terminaux qu'un résultat peut annoncer lui-même (jobs parents : lots, Hybrid).
+_RESULT_STATES = {"partial": JobState.PARTIAL, "failed": JobState.FAILED, "cancelled": JobState.CANCELLED}
+
+
+def result_state(result: Model) -> JobState:
+    """État terminal d'un résultat : celui qu'il annonce (``status`` d'un job parent), sinon réussite."""
+    status = getattr(result, "status", None)
+    return _RESULT_STATES.get(status, JobState.SUCCEEDED) if isinstance(status, str) else JobState.SUCCEEDED
+
+
 def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext) -> Model:
     """Exécute une requête déjà validée ; émet l'état, le résultat ou l'erreur.
 
@@ -129,7 +139,7 @@ def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext) -> Model
         ctx.events.state(final, operation=spec.name)
         raise
     ctx.events.result(result.to_dict())
-    ctx.events.state(JobState.SUCCEEDED, operation=spec.name)
+    ctx.events.state(result_state(result), operation=spec.name)
     return result
 
 

@@ -108,3 +108,93 @@ def test_source_linked_to_a_track_with_its_own_sync_follows_it():
     loop_pairs = [({"sync": {"reference": 2}}, sources[1].tracks[0])]
     with pytest.raises(JobError, match="boucle"):
         resolve_syncs(job, sources, specs, loop_pairs, config=None, options=None, logger=logger, apply=apply)
+
+
+# --- Groupe 3 : états terminaux, codes d'erreur ---------------------------------------------------
+
+
+def _parent_op(status: str):
+    from core.service.models import Model
+    from core.service.operations import operation
+    from core.service.ops.batch import BatchResult
+
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Empty(Model):
+        pass
+
+    @operation("test.lot", request=_Empty, result=BatchResult, summary="Lot.")
+    def _lot(request, ctx):
+        return BatchResult(status=status, total=2, successes=1 if status == "partial" else 0,  # type: ignore[arg-type]
+                           failures=1 if status == "partial" else 2)
+
+    return _lot
+
+
+@pytest.mark.parametrize("status", ["succeeded", "partial", "failed", "cancelled"])
+def test_parent_result_status_sets_terminal_state_and_call_exit_code(status):
+    from cli.service_adapter import envelope, exit_code_for_result
+    from core.service.operations import Catalog
+
+    ctx = _ctx()
+    result = call(Catalog((_parent_op(status),)), "test.lot", {}, ctx)
+    states = [event.data.get("state") for event in ctx.events.sink.events if event.type.value == "state"]
+    assert states == ["running", status]
+    assert envelope("test.lot", ctx.events.job, result=result)["status"] == status
+    assert exit_code_for_result(result) == (0 if status == "succeeded" else 7)
+
+
+def test_wrapped_destination_conflict_and_fel_cancellation_keep_their_codes():
+    from core.fel.engine import FelCancelled
+    from core.output_commit import OutputBusyError
+    from core.service.errors import ApiError, ErrorCode
+    from core.workflows.remux_models import RemuxError
+
+    try:
+        try:
+            raise OutputBusyError(Path("/out.mkv"))
+        except OutputBusyError as exc:
+            raise RemuxError(str(exc)) from exc
+    except RemuxError as wrapped:
+        assert ApiError.from_exception(wrapped).code is ErrorCode.BUSY
+    assert ApiError.from_exception(FelCancelled("stop")).code is ErrorCode.CANCELLED
+    assert ApiError.from_exception(RuntimeError("x")).code is ErrorCode.WORKFLOW_FAILED
+
+
+def test_remux_failure_keeps_the_public_code_of_its_cause(tmp_path):
+    from core.jobs.options import CommonOptions
+    from core.jobs.runtime import run_remux
+    from core.runner import TaskSignals
+    from core.service.context import CancelToken
+    from core.service.errors import ApiError, ErrorCode
+
+    class _Wf:
+        log_message = backend_event = SimpleNamespace(connect=lambda *_a: None)
+
+        def run(self, _config):
+            signals = TaskSignals()
+            signals.failed.emit("stop", FelCancelled_())
+            return signals
+
+    from core.fel.engine import FelCancelled as FelCancelled_
+
+    remux = SimpleNamespace(output=tmp_path / "out.mkv")
+    logger = SimpleNamespace(emit=lambda *a, **k: None)
+    with pytest.raises(ApiError) as caught:
+        run_remux(remux, config=None, options=CommonOptions(), logger=logger,  # type: ignore[arg-type]
+                  cancel=CancelToken(), workflow_factory=_Wf)  # type: ignore[arg-type]
+    assert caught.value.code is ErrorCode.CANCELLED
+
+
+def test_hybrid_plan_reports_partial_when_an_episode_fails(monkeypatch):
+    from core.service.ops import hybrid as hybrid_ops
+
+    items = [SimpleNamespace(error=None, describe=lambda: {"episode": "E01"}),
+             SimpleNamespace(error=RuntimeError("x"), describe=lambda: {"episode": "E02", "error": "x"})]
+    spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None)
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
+    request = hybrid_ops.HybridPlanRequest.from_dict({"output_dir": "/out"})
+    assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "partial"
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items[1:]))
+    assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "failed"

@@ -108,6 +108,7 @@ class HybridResult(Model):
 
 @dataclass(frozen=True)
 class HybridPlanResult(Model):
+    status: Literal["succeeded", "partial", "failed"] = "succeeded"
     episodes: tuple[dict[str, Any], ...] = ()
     recipe: dict[str, Any] = field(default_factory=dict)
     exported: tuple[str, ...] = ()
@@ -189,8 +190,11 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
 
         atomic_write_text(Path(request.save_recipe), recipe_json(spec.recipe))
         ctx.events.artifact("recipe", str(request.save_recipe))
-    return HybridPlanResult(episodes=tuple(item.describe() for item in prepared), recipe=spec.recipe.to_dict(),
-                            exported=tuple(str(path) for path in exported))
+    failures = sum(1 for item in prepared if item.error is not None)
+    status: Literal["succeeded", "partial", "failed"] = (
+        "succeeded" if not failures else "failed" if failures == len(prepared) else "partial")
+    return HybridPlanResult(status=status, episodes=tuple(item.describe() for item in prepared),
+                            recipe=spec.recipe.to_dict(), exported=tuple(str(path) for path in exported))
 
 
 def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeeded", "partial", "failed", "cancelled"]:

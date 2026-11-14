@@ -8,13 +8,13 @@ from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accep
 from core.jobs.dynamic_sync import perform_dynamic_sync as perform_dynamic_sync  # réexport (tests, scripts)
 from core.service.ops.sync import detect_stream_kind as detect_stream_kind  # remplaçable (tests)
 from core.workflows.workflow_store import atomic_write_text
-from cli.constants import EXIT_OK, EXIT_PARTIAL
+from cli.constants import EXIT_OK
 from cli.options import common_options
 from cli.remux_config import build_remux_config
 from cli.runtime import run_remux_config
 from cli.interrupts import interrupt_guard
 from core.workflows.hybrid import HybridPair as HybridPair  # réexport (tests)
-from cli.service_adapter import envelope, overrides_from_args, print_json, run_operation
+from cli.service_adapter import envelope, exit_code_for_result, overrides_from_args, print_json, run_operation
 from core.jobs.hybrid_pairs import HybridOptions, HybridSteps, pairs_for
 from core.jobs.hybrid_pairs import prepare_pair as _prepare_pair
 from core.jobs.runtime import remux_workflow
@@ -178,7 +178,4 @@ def cmd_hybrid(args, config, logger):
             print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=False, indent=2))
         except UnicodeEncodeError:
             print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=True, indent=2))
-    if plan:
-        failed = any("error" in entry for entry in getattr(result, "episodes", ()))
-        return EXIT_PARTIAL if failed else EXIT_OK
-    return EXIT_OK if getattr(result, "status", "") == "succeeded" else EXIT_PARTIAL
+    return exit_code_for_result(result)

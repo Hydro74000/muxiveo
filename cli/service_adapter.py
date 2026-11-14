@@ -19,9 +19,9 @@ from core.json_documents import JsonDocumentError, parse_json_text, read_json_do
 from core.service.catalog import CATALOG
 from core.service.context import CancelToken, ExecutionContext, Overrides
 from core.service.errors import ApiError, ErrorCode
-from core.service.events import Event, EventType
+from core.service.events import Event, EventType, JobState
 from core.service.models import Model
-from core.service.operations import API_VERSION, call
+from core.service.operations import API_VERSION, call, result_state
 
 from cli.constants import (
     EXIT_ARGS,
@@ -50,6 +50,11 @@ EXIT_BY_ERROR: Mapping[ErrorCode, int] = {
 
 def exit_code_for(error: ApiError) -> int:
     return EXIT_BY_ERROR.get(error.code, EXIT_WORKFLOW)
+
+
+def exit_code_for_result(result: Model) -> int:
+    """Code de sortie d'un résultat : lot partiel, en échec ou interrompu → ``EXIT_PARTIAL`` (règle historique)."""
+    return EXIT_OK if result_state(result) is JobState.SUCCEEDED else EXIT_PARTIAL
 
 
 class LoggerSink:
@@ -95,7 +100,7 @@ def envelope(name: str, job: str, *, result: Model | None = None, error: ApiErro
     """Réponse publique d'un appel : statut, résultat ou erreur."""
     payload: dict[str, Any] = {"api_version": API_VERSION, "operation": name, "job": job}
     if error is None:
-        payload["status"] = "succeeded"
+        payload["status"] = result_state(result).value if result is not None else JobState.SUCCEEDED.value
         payload["result"] = result.to_dict() if result is not None else None
     else:
         payload["status"] = "cancelled" if error.code is ErrorCode.CANCELLED else "failed"
@@ -162,7 +167,7 @@ def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
         print_json(envelope(name, ctx.events.job, error=error))
         return exit_code_for(error)
     print_json(envelope(name, ctx.events.job, result=result))
-    return EXIT_OK
+    return exit_code_for_result(result)
 
 
 def cmd_operations(args: argparse.Namespace, config: Any, logger: Logger) -> int:
@@ -208,6 +213,7 @@ __all__ = [
     "cmd_operations",
     "envelope",
     "exit_code_for",
+    "exit_code_for_result",
     "overrides_from_args",
     "overrides_from_options",
     "print_json",

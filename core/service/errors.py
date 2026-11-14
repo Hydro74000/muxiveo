@@ -68,10 +68,50 @@ class ApiError(Exception):
         """Erreur publique correspondant à une exception quelconque levée par une opération."""
         if isinstance(exc, ApiError):
             return exc
-        from core.runner import ToolNotFoundError
-
-        if isinstance(exc, ToolNotFoundError):
-            return cls(ErrorCode.TOOL_MISSING, str(exc))
         if isinstance(exc, KeyboardInterrupt):
             return cls(ErrorCode.CANCELLED, "Interrompu.")
-        return cls(ErrorCode.WORKFLOW_FAILED, str(exc) or type(exc).__name__)
+        return cls(error_code(exc), str(exc) or type(exc).__name__)
+
+
+def error_code(exc: object) -> ErrorCode:
+    """Code public d'une exception, d'après elle-même ou ses causes (``raise … from``).
+
+    Les workflows enveloppent les refus de destination et les annulations dans leurs propres
+    erreurs (``RemuxError``, ``EncodeError``) : la cause d'origine fixe le code.
+    """
+    from core.output_commit import OutputBusyError
+    from core.runner import ToolNotFoundError
+
+    cancelled = _cancellation_types()
+    seen: set[int] = set()
+    current: BaseException | None = exc if isinstance(exc, BaseException) else None
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ApiError):
+            return current.code
+        if isinstance(current, ToolNotFoundError):
+            return ErrorCode.TOOL_MISSING
+        if isinstance(current, OutputBusyError):
+            return ErrorCode.BUSY
+        if isinstance(current, cancelled):
+            return ErrorCode.CANCELLED
+        current = current.__cause__
+    return ErrorCode.WORKFLOW_FAILED
+
+
+def _cancellation_types() -> tuple[type[BaseException], ...]:
+    """Exceptions d'annulation des outils et workflows (importées à la demande)."""
+    from core.fel.engine import FelCancelled
+    from core.hdr_inspection.inspector import InspectionCancelled as DynamicInspectionCancelled
+    from core.hdr_inspection.patch import PatchCancelled
+    from core.inspector import InspectionCancelled
+    from core.matroska.hevc.access_units import HevcStreamCancelled
+    from core.matroska.writer import MatroskaWriteCancelled
+    from core.nvencc_install import NvenccCancelled
+    from core.plugins import PluginCancelled
+    from core.runner import TaskCancelledError
+    from core.subprocess_utils import ProbeCancelledError
+
+    return (KeyboardInterrupt, TaskCancelledError, FelCancelled, DynamicInspectionCancelled, PatchCancelled,
+            InspectionCancelled, HevcStreamCancelled, MatroskaWriteCancelled, NvenccCancelled, PluginCancelled,
+            ProbeCancelledError)

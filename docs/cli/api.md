@@ -41,7 +41,8 @@ résolus depuis le dossier du fichier de requête (dossier courant pour stdin). 
 historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clés inconnues
 signalées par un avertissement, jamais refusées. Exemples de requêtes : `docs/cli/examples/`.
 
-**Réponse** (stdout, une ligne JSON) :
+**Réponse** (stdout, un objet JSON indenté) ; `status` = état terminal du job (pour un lot : celui de son
+résultat, voir plus bas) :
 
 ```json
 {"api_version": 1, "operation": "media.extract", "job": "…", "status": "succeeded", "result": {"outputs": [ … ]}}
@@ -60,7 +61,7 @@ Sur stderr, une ligne JSON par événement (toujours avec `call`, sur demande av
 
 | `type` | Contenu |
 |---|---|
-| `state` | état du job : `running`, `succeeded`, `failed`, `cancelled` |
+| `state` | état du job : `running`, puis `succeeded`, `partial`, `failed` ou `cancelled` |
 | `log` | message (`level`, `message`, `origin`) |
 | `progress` | avancement (`pct`, `stage`, `fps`, `eta_s`…) — opérations longues |
 | `warning` | avertissement (`message`, `code`) |
@@ -72,11 +73,15 @@ Sur stderr, une ligne JSON par événement (toujours avec `call`, sur demande av
 ## Lots, jobs enfants, résultats partiels
 
 `media.batch`, `profile.batch`, `hybrid.run` : un job enfant par élément (événements `parent` = lot).
-Le résultat du lot liste chaque enfant (état, sortie, erreur) avec `status` :
+Le résultat du lot liste chaque enfant (état, sortie, erreur) avec `status`, repris par l'état
+terminal du lot, l'enveloppe de `call` et le code retour :
 
-- `succeeded` : tous réussis ;
-- `partial` : au moins un réussi et au moins un en échec ou annulé (code retour 7) ;
+- `succeeded` : tous réussis (code retour 0) ;
+- `partial` : au moins un réussi et au moins un en échec ou annulé ;
 - `failed` / `cancelled` : aucun réussi.
+
+Lot non entièrement réussi (`partial`, `failed`, `cancelled`) : code retour 7, comme la commande
+`batch`. `hybrid.plan` suit la même règle d'après les épisodes dont la préparation a échoué.
 
 Une sortie publiée reste publiée (et listée) quel que soit le sort des suivants. Toutes les sorties
 sont préparées puis toute collision est refusée **avant** le premier job.
@@ -97,7 +102,7 @@ Dans un lot : le job en cours est annulé puis le lot s'arrête.
 | `tool_missing` | outil absent (FFmpeg, dovi_tool, extension…) | 4 |
 | `output_exists` | sortie existante sans `force` | 5 |
 | `workflow_failed`, `busy`, `cancelled` | échec, ressource occupée, annulation | 6 |
-| `partial` | lot partiellement réussi | 7 |
+| `partial` (ou `status` d'un lot autre que `succeeded`) | lot partiel, en échec ou interrompu | 7 |
 
 Avec `call`, une opération réussie renvoie 0 : son état métier (mise à jour disponible, synchro à
 relire…) est dans `result`.

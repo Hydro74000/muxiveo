@@ -906,8 +906,9 @@ options : [reference.md](reference.md) (générée par `help --format md`).
 
 **Lots** (`media.batch`, `profile.batch`, et `batch` en `--log-format events`) : chaque job est un job
 enfant (`parent` = lot) avec ses propres états ; le résultat donne `status` = `succeeded`, `partial`
-(au moins un succès et un échec ou une annulation), `failed` ou `cancelled`, et la liste des jobs. Les autres
-commandes rejoignent le catalogue au fil des versions (voir [parite-gui.md](parite-gui.md)).
+(au moins un succès et un échec ou une annulation), `failed` ou `cancelled`, et la liste des jobs ;
+ce statut est aussi l'état terminal du lot et celui de la réponse de `call` (code retour 7 hors
+`succeeded`). Les autres commandes rejoignent le catalogue au fil des versions (voir [parite-gui.md](parite-gui.md)).
 
 ```bash
 Muxiveo-cli operations
@@ -946,10 +947,11 @@ stdout à la place de sa sortie historique.
 | `tool_missing` | 4 |
 | `output_exists` | 5 |
 | `workflow_failed`, `busy`, `cancelled` | 6 |
-| `partial` | 7 |
+| `partial`, lot non entièrement réussi | 7 |
 
-Avec `call`, une opération réussie renvoie toujours 0 (l'état d'une mise à jour, par
-exemple, est dans `result`).
+Avec `call`, une opération réussie renvoie 0 (l'état d'une mise à jour, par exemple, est dans
+`result`) ; seul un lot (`media.batch`, `profile.batch`, `hybrid.run`, `hybrid.plan`) non entièrement
+réussi renvoie 7.
 
 **Annulation** : Ctrl+C pendant `remux` / `run` / `profile apply` annule proprement l'opération (processus arrêtés,
 fichier partiel et dossier de travail supprimés, code retour 6, « Opération annulée. »). Une
