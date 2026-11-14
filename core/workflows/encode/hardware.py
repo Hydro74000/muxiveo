@@ -33,6 +33,7 @@ from core.workflows.encode.catalog import (
 )
 from core.workflows.encode.hw_devices import (
     select_linux_hwaccel_device,
+    probe_windows_hwaccel_device,
     select_windows_hwaccel_device,
 )
 from core.workflows.encode.runtime.nvencc import (
@@ -133,7 +134,8 @@ class HardwareEncoderDetector:
             result = run_detection(
                 [resolved, "-hide_banner", "-encoders"],
                 cancel_event=self._cancel_event,
-                timeout=30,  # liste des encodeurs : jamais une attente sans borne
+                # Opération headless : bornée (et tuée à l'annulation) ; interface : sans délai, comme avant.
+                timeout=None,
                 capture_output=True,
                 check=False,
                 **subprocess_text_kwargs(),
@@ -657,6 +659,13 @@ class HardwareEncoderDetector:
     def _is_windows_runtime(ffmpeg_bin: str) -> bool:
         return sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe")
 
+    def _windows_device(self, codec_id: str, ffmpeg_bin: str) -> str | None:
+        """Adaptateur Windows : sélection en cache (interface) ; avec jeton, sondes tuées à l'annulation."""
+        resolved = self._resolve_ffmpeg(ffmpeg_bin)
+        if self._cancel_event is None:
+            return select_windows_hwaccel_device(codec_id, ffmpeg_bin=resolved)
+        return probe_windows_hwaccel_device(codec_id, ffmpeg_bin=resolved, cancel_event=self._cancel_event)
+
     def _vaapi_device(self) -> str | None:
         """Retourne le render node Linux ciblé pour VAAPI, ou None."""
         return select_linux_hwaccel_device("hevc_vaapi")
@@ -664,15 +673,15 @@ class HardwareEncoderDetector:
     def _qsv_device(self, ffmpeg_bin: str, codec_id: str = "hevc_qsv") -> str | None:
         """Retourne le device QSV ciblé selon l'OS, ou None."""
         if self._is_windows_runtime(ffmpeg_bin):
-            return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))
+            return self._windows_device(codec_id, ffmpeg_bin)
         return select_linux_hwaccel_device("hevc_qsv")
 
     def _amf_device(self, ffmpeg_bin: str, codec_id: str = "hevc_amf") -> str | None:
         if not self._is_windows_runtime(ffmpeg_bin):
             return None
-        return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))
+        return self._windows_device(codec_id, ffmpeg_bin)
 
     def _nvenc_device(self, ffmpeg_bin: str, codec_id: str = "hevc_nvenc") -> str | None:
         if not self._is_windows_runtime(ffmpeg_bin):
             return None
-        return select_windows_hwaccel_device(codec_id, ffmpeg_bin=self._resolve_ffmpeg(ffmpeg_bin))
+        return self._windows_device(codec_id, ffmpeg_bin)

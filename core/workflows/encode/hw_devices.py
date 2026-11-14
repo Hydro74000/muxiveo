@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from core.subprocess_utils import subprocess_windows_no_window_kwargs
+from core.subprocess_utils import run_detection, subprocess_windows_no_window_kwargs
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS as _AMF_CODECS,
     NVENC_VIDEO_CODECS as _NVENC_CODECS,
@@ -142,10 +143,12 @@ def _is_windows_runtime(ffmpeg_bin: str) -> bool:
     return sys.platform == "win32" or ffmpeg_bin.lower().endswith(".exe")
 
 
-def _probe_windows_adapter(cmd: list[str]) -> bool:
+def _probe_windows_adapter(cmd: list[str], cancel_event: threading.Event | None = None) -> bool:
+    """Sonde d'un adaptateur ; avec un jeton (opération headless), tuée à l'annulation (l'annulation remonte)."""
     try:
-        result = subprocess.run(
+        result = run_detection(
             cmd,
+            cancel_event=cancel_event,
             capture_output=True,
             check=False,
             timeout=5,
@@ -210,6 +213,17 @@ def select_windows_hwaccel_device(
     La resolution est basee sur des probes FFmpeg reels, ce qui evite de
     supposer que l'ordre WMI/DirectX/CUDA est identique.
     """
+    return _select_windows_adapter(codec_id, ffmpeg_bin, max_adapters, None)
+
+
+def probe_windows_hwaccel_device(codec_id: str, *, ffmpeg_bin: str = "ffmpeg", max_adapters: int = 8,
+                                 cancel_event: threading.Event) -> str | None:
+    """Même sélection, sans cache, sondes tuées à l'annulation (opération headless, ``ProbeCancelledError``)."""
+    return _select_windows_adapter(codec_id, ffmpeg_bin, max_adapters, cancel_event)
+
+
+def _select_windows_adapter(codec_id: str, ffmpeg_bin: str, max_adapters: int,
+                            cancel_event: threading.Event | None) -> str | None:
     if not _is_windows_runtime(ffmpeg_bin):
         return None
 
@@ -220,7 +234,7 @@ def select_windows_hwaccel_device(
         cmd = _windows_probe_command(ffmpeg_bin, codec_id, adapter_index)
         if cmd is None:
             return None
-        if _probe_windows_adapter(cmd):
+        if _probe_windows_adapter(cmd, cancel_event):
             return str(adapter_index)
     return None
 
@@ -229,5 +243,6 @@ __all__ = [
     "LinuxRenderNodeInfo",
     "detect_linux_render_nodes",
     "select_linux_hwaccel_device",
+    "probe_windows_hwaccel_device",
     "select_windows_hwaccel_device",
 ]
