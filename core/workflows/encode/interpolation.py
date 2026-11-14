@@ -177,6 +177,8 @@ _RIFE_VERSION_RE = re.compile(r"muxiveo-rife (\d+)\.(\d+)\.(\d+)")
 
 _RIFE_MATRICES = {"bt709", "bt2020nc", "bt2020", "bt601", "smpte170m", "bt470bg", "smpte240m", "fcc"}
 _RIFE_CHROMA_LOCATIONS = {"left", "center", "topleft"}
+# Positions chroma (noms ffprobe) -> valeur H.273 de ``--chromaloc`` NVEncC.
+_NVENCC_CHROMA_LOCATIONS = {"left": 0, "center": 1, "topleft": 2}
 # Noms ffprobe -> NVEncC ; une valeur inconnue reste omise.
 _NVENCC_PRIMARIES = {
     **{name: name for name in ("bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m", "film", "bt2020")},
@@ -224,13 +226,16 @@ class InterpolationSource:
     width: int = 0
     height: int = 0
 
-    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "") -> str:
+    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "", chroma: bool = False) -> str:
         """Filtre ``setparams`` posant le marquage couleur sur les images y4m.
 
         Depuis ffmpeg 7, l'encodeur lit ces propriétés sur les images : les options
         de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ) ;
-        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant).
+        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant) ; ``chroma`` :
+        position chroma transmise au moteur reposée aussi (le y4m 10 bits ne la porte pas,
+        une source « topleft » était sinon signalée « left »).
         """
+        location = [("chroma_location", self.chroma_location)] if chroma else []
         if hdr_pq or hdr_transfer in {"pq", "hlg"}:
             trc = "arib-std-b67" if hdr_transfer == "hlg" else "smpte2084"
             values = [("color_primaries", "bt2020"), ("color_trc", trc), ("colorspace", "bt2020nc")]
@@ -240,9 +245,10 @@ class InterpolationSource:
                                                       ("color_trc", self.transfer),
                                                       ("colorspace", self.colorspace)) if value]
             if not values:
-                return ""
+                # « left » = position par défaut des décodeurs : rien à reposer.
+                return f"setparams=chroma_location={self.chroma_location}" if chroma and self.chroma_location != "left" else ""
             color_range = "pc" if self.color_range == "full" else "tv"
-        return "setparams=" + ":".join(f"{key}={value}" for key, value in values) + f":range={color_range}"
+        return "setparams=" + ":".join(f"{key}={value}" for key, value in (*values, ("range", color_range), *location))
 
     def nvencc_color_args(self) -> list[str]:
         """Options NVEncC rétablissant le marquage couleur de la source."""
@@ -251,6 +257,10 @@ class InterpolationSource:
                                                  ("--colormatrix", self.colorspace, _NVENCC_MATRICES))
                 if value in mapping for opt in (flag, mapping[value])]
         return [*args, "--colorrange", self.color_range] if args else []
+
+    def nvencc_chroma_args(self) -> list[str]:
+        """``--chromaloc`` NVEncC de la position chroma transmise au moteur (perdue par le pipe y4m)."""
+        return ["--chromaloc", str(_NVENCC_CHROMA_LOCATIONS[self.chroma_location])]
 
     @property
     def decode_rate(self) -> str:

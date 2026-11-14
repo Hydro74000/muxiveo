@@ -788,7 +788,10 @@ class NvenccDirectOutputRunner:
                     dovi_rpu_prm=None if needs_ffmpeg_pipe else routing.dovi_rpu_prm,
                     source_dimensions=routing.source_dimensions,
                 )
-                if "--colorprim" not in encode_cmd and "-o" in encode_cmd:
+                need_color = "--colorprim" not in encode_cmd
+                # Position chroma perdue par le pipe y4m (FEL et copie DV la posent déjà).
+                need_chroma = needs_ffmpeg_pipe and "--chromaloc" not in encode_cmd
+                if (need_color or need_chroma) and "-o" in encode_cmd:
                     # Rétablir le marquage source : perdu en y4m et non repris
                     # automatiquement par NVEncC sans pipe. Le HDR PQ est déjà explicite.
                     probed = _probe_interpolation_source(
@@ -796,7 +799,10 @@ class NvenccDirectOutputRunner:
                         tonemap_to_sdr=bool(runtime_video.tonemap_to_sdr),
                         p5_to_hdr10=bool(runtime_video.p5_to_hdr10),
                     )
-                    color_args = probed.nvencc_color_args() if probed is not None else []
+                    color_args = [
+                        *(probed.nvencc_color_args() if need_color else []),
+                        *(probed.nvencc_chroma_args() if need_chroma else []),
+                    ] if probed is not None else []
                     # Une valeur saisie en paramètres avancés (ex. --colorrange) l'emporte.
                     present = {
                         _nvencc_option_name(token) for token in encode_cmd if _is_option_token(token)

@@ -67,6 +67,8 @@ from ..validation import MatroskaPacketValidation
 
 #: Types NAL des parameter sets (CodecPrivate hvcC et in-band).
 _PARAMETER_SET_TYPES = frozenset({32, 33, 34})  # VPS, SPS, PPS
+#: NAL dont une copie identique dans le même access unit n'apporte rien (parameter sets, SEI prefix).
+_DEDUPLICATED_TYPES = _PARAMETER_SET_TYPES | {39}
 
 _TRACK_TYPE_VIDEO = 1
 
@@ -151,8 +153,19 @@ def _au_to_block_payload(au: HevcAccessUnit, length_size: int | None) -> bytes:
     if all(nal.nal_type in _PARAMETER_SET_TYPES for nal in au.nal_units):
         return b""
     # Tri stable selon l'ordre canonique H.265 pour garantir que VPS/SPS/PPS
-    # précèdent impérativement les SEI prefix sur les keyframes.
-    ordered_nals = sorted(au.nal_units, key=lambda n: _canonical_nal_rank(n.nal_type))
+    # précèdent impérativement les SEI prefix sur les keyframes. Doublons exacts
+    # retirés : hevc_mp4toannexb recopie le CodecPrivate de l'encodeur (SEI x265
+    # compris) devant chaque IRAP qui porte déjà ses en-têtes.
+    seen: set[tuple[int, bytes]] = set()
+    unique_nals = []
+    for nal in au.nal_units:
+        if nal.nal_type in _DEDUPLICATED_TYPES:
+            key = (nal.nal_type, nal.payload)
+            if key in seen:
+                continue
+            seen.add(key)
+        unique_nals.append(nal)
+    ordered_nals = sorted(unique_nals, key=lambda n: _canonical_nal_rank(n.nal_type))
     if length_size is None:
         return b"".join(b"\x00\x00\x00\x01" + nal.payload for nal in ordered_nals)
     parts: list[bytes] = []

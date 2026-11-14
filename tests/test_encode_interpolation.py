@@ -169,6 +169,14 @@ class TestInterpolationSource:
         assert hlg.nvencc_color_args() == ["--colorprim", "bt2020", "--transfer", "arib-std-b67",
                                            "--colormatrix", "bt2020nc", "--colorrange", "limited"]
         assert interpolation_source_from_probe({"color_primaries": "unknown", "height": 1080}).setparams_filter() == ""
+        # Position chroma transmise au moteur reposée (le y4m 10 bits la perd : « topleft » relu « left »).
+        uhd = interpolation_source_from_probe({"color_transfer": "smpte2084", "chroma_location": "topleft"})
+        assert uhd.setparams_filter(hdr_transfer="pq", chroma=True) == (
+            "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv:chroma_location=topleft")
+        assert uhd.nvencc_chroma_args() == ["--chromaloc", "2"]
+        assert interpolation_source_from_probe({"chroma_location": "topleft"}).setparams_filter(chroma=True) == (
+            "setparams=chroma_location=topleft")
+        assert interpolation_source_from_probe({}).setparams_filter(chroma=True) == ""
         tonemapped = interpolation_source_from_probe({"color_transfer": "smpte2084"}, tonemap_to_sdr=True)
         assert tonemapped.setparams_filter().startswith("setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709")
 
@@ -403,6 +411,17 @@ class TestVideoOnlyBuilder:
         encode = command_stages(cmd)[-1]
         assert encode[encode.index("-vf") + 1].startswith(
             "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709")
+
+    def test_chroma_location_restored_after_y4m(self, tmp_path):
+        """Source UHD « topleft » : position reposée sur les images et en option (hevc_nvenc)."""
+        video = _video()
+        cfg = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video)
+        info = interpolation_source_from_probe({"color_primaries": "bt2020", "color_transfer": "smpte2084",
+                                                "color_space": "bt2020nc", "chroma_location": "topleft"})
+        [cmd] = _builder(info).build_video_only_mkv_commands(cfg, video, cfg.source, tmp_path / "v.mkv")
+        encode = command_stages(cmd)[-1]
+        assert encode[encode.index("-chroma_sample_location") + 1] == "topleft"
+        assert "chroma_location=topleft" in encode[encode.index("-vf") + 1]
 
     def test_vfr_source_normalized_before_rife(self, tmp_path):
         video = _video()

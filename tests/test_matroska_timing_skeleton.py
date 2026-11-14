@@ -326,15 +326,18 @@ def test_rewritten_blocks_keep_parameter_sets_in_band_and_hvcc_is_deduplicated()
 
     vps, sps, pps = (bytes([t << 1, 0x01]) + bytes([t]) * 6 for t in (32, 33, 34))
     idr = bytes([19 << 1, 0x01, 0x80]) + bytes(8)
-    # Doublons tels que produits par hevc_mp4toannexb (extradata + in-band).
-    nals = (vps, sps, pps, vps, sps, pps, idr)
+    mdcv, info, cll = (bytes([39 << 1, 0x01, t, 2, 0x11, 0x22, 0x80]) for t in (137, 5, 144))
+    # Doublons tels que produits par hevc_mp4toannexb (CodecPrivate x265, SEI compris, + in-band) ;
+    # deux SEI de même type mais de contenu différent restent tous deux.
+    other_info = bytes([39 << 1, 0x01, 5, 2, 0x33, 0x44, 0x80])
+    nals = (vps, sps, pps, mdcv, info, vps, sps, pps, mdcv, info, other_info, cll, idr)
     au = split_into_access_units(b"".join(b"\x00\x00\x00\x01" + nal for nal in nals))[0]
     payload = _au_to_block_payload(au, 4)
-    types, pos = [], 0
+    units, pos = [], 0
     while pos < len(payload):
         size = int.from_bytes(payload[pos:pos + 4], "big")
-        types.append(payload[pos + 4] >> 1)
+        units.append(payload[pos + 4:pos + 4 + size])
         pos += 4 + size
-    assert types == [32, 33, 34, 32, 33, 34, 19]
+    assert units == [vps, sps, pps, mdcv, info, other_info, cll, idr]
     components = _extract_hvcc_components(au)
     assert (components.vps, components.sps, components.pps) == ([vps], [sps], [pps])

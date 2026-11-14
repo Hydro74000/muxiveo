@@ -192,10 +192,15 @@ class VideoOnlyCommandBuilder:
         if encoder_offset_s > 0:
             cmd.extend(["-itsoffset", f"{encoder_offset_s:.6f}"])
         cmd.extend(["-f", "yuv4mpegpipe", "-i", "pipe:0"])
+        # Position chroma : FEL la pose lui-même (with_fel_input) ; sinon option explicite,
+        # hevc_nvenc ignorant celle des images.
+        chroma = video.fel_context is None
+        if chroma:
+            cmd.extend(["-chroma_sample_location", info.chroma_location])
         # Le y4m ne transporte pas le marquage couleur : posé sur les images
         # (setparams) avant les éventuels format/upload matériels de l'encodeur.
         vf = ",".join(part for part in (
-            info.setparams_filter(hdr_transfer=output_hdr_transfer(video)),
+            info.setparams_filter(hdr_transfer=output_hdr_transfer(video), chroma=chroma),
             build_encoder_vf(video, callbacks=domain, piped_frames=True),
         ) if part)
         if vf:
