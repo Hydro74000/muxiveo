@@ -138,7 +138,8 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
                 from core.inspector import FileInspector
                 from core.workflows.cadence import detect_cadence_from_metadata
 
-                inspector = FileInspector(ffprobe_bin=ffprobe, cancel_event=ctx.cancel.event)
+                inspector = FileInspector(ffprobe_bin=ffprobe, mediainfo_bin=ctx.tool("mediainfo"),
+                                          cancel_event=ctx.cancel.event)
                 ref_info = inspector.inspect(request.ref)
                 tgt_info = inspector.inspect(request.target)
                 ref_fps = next((v.frame_rate for v in ref_info.video_tracks if v.frame_rate), None)
