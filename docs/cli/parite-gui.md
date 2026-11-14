@@ -6,7 +6,7 @@ couche de service (`call <opération>`) et lot du plan de parité qui l'apporte.
 État : ✅ disponible · 🟡 partiel · ⏳ prévu (lot) · ⛔ exclu (motif indiqué)
 
 Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage (`media.run` avec bloc
-`encode`), `system.capabilities`, l'extraction `media.extract` et la correction HDR `hdr.patch` (voir `Muxiveo-cli operations`).
+`encode`), `system.capabilities`, l'extraction `media.extract`, la correction HDR `hdr.patch`, les calibrations `calibration.*` et `sync.waveform` (voir `Muxiveo-cli operations`).
 
 ## Tableau de bord
 
@@ -45,13 +45,13 @@ Opérations publiées : toutes les commandes existantes du CLI, plus l'encodage 
 | Extraire une pièce jointe (clic droit dans Pièces jointes) | `extract --attachment N\|NOM` | `media.extract` | ✅ |
 | Tout extraire d'une source | `extract --all` | `media.extract` (`all`) | ✅ CLI seul |
 | Inspecter le HDR d'une piste | `inspect --hdr` | `hdr.inspect` | ✅ |
-| Synchronisation automatique / approfondie d'une source | `--auto-sync`, `--quick-sync-check` | `media.run` | 🟡 une seule source ; toutes ⏳ L7 (`--auto-sync-all`) |
+| Synchronisation automatique / approfondie d'une source | `--auto-sync` (source 1), `--auto-sync-all`, `sources[i].sync.mode quick\|deep` | `media.run` | ✅ |
 | Synchroniser une piste de sous-titres | `sync-scan --type subtitle` | `sync.scan` | ✅ |
-| Références de synchro en chaîne (source synchronisée sur une autre source) | job JSON `sources[i].sync` | `media.run` | ⏳ L7 |
-| Synchro propre à une piste, décalage manuel | job JSON (`tracks[].sync`, `time_shift_ms`) | `media.run` | 🟡 décalage ; liens ⏳ L7 |
-| Synchro Studio : coupes, silences, jonctions, décalage depuis un segment | `calibration edit` | `calibration.edit` | ⏳ L7 |
-| Synchro Studio : cadence (méthode audio, résolution) | `--cadence-method` | `media.run` | 🟡 ; résolution seule ⏳ L7 |
-| Synchro Studio : forme d'onde | — | `sync.waveform` | ⏳ L7 (données pour un client graphique) |
+| Références de synchro en chaîne (source synchronisée sur une autre source) | job JSON `sources[i].sync` (boucle refusée) | `media.run` | ✅ |
+| Synchro propre à une piste, décalage manuel | job JSON (`tracks[].sync`, `time_shift_ms`) | `media.run` | ✅ |
+| Synchro Studio : coupes, silences, jonctions, décalage depuis un segment | `calibration edit` (+ `show`, `compose`, `invert`) | `calibration.*` | ✅ |
+| Synchro Studio : cadence (méthode audio, résolution) | `--cadence-method` ; `calibration edit --cadence-method --resolve-cadence` | `media.run`, `calibration.edit` | ✅ |
+| Synchro Studio : forme d'onde | `sync-waveform` | `sync.waveform` | ✅ (données pour un client graphique) |
 | Synchro Studio : pré-écoute | — | — | ⛔ lecture audio locale |
 | « Synchro à valider » | `--reject-coherent-sync` (refus), avertissement sinon | `media.run` | ✅ décision explicite |
 

@@ -64,10 +64,18 @@ def _resolve(value: Any, base_dir: Path) -> Any:
     return str(base_dir / value)
 
 
+def _resolve_source_item(item: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    resolved = dict(item, path=_resolve(item.get("path"), base_dir))
+    sync = resolved.get("sync")
+    if isinstance(sync, dict) and isinstance(sync.get("calibration"), str):
+        resolved["sync"] = dict(sync, calibration=_resolve(sync["calibration"], base_dir))
+    return resolved
+
+
 def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     """Copie de ``job`` dont les chemins relatifs sont résolus depuis ``base_dir``.
 
-    Champs concernés : ``sources`` (chaînes ou objets ``path``), ``input``,
+    Champs concernés : ``sources`` (chaînes ou objets ``path``, ``sync.calibration``), ``input``,
     ``extra_attachments``, ``chapters.import`` et ``output``.
     ``output_template`` n'est pas un chemin et reste inchangé.
     """
@@ -78,7 +86,7 @@ def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any
         resolved["sources"] = _resolve(sources, base_dir)
     elif isinstance(sources, list):
         resolved["sources"] = [
-            dict(item, path=_resolve(item.get("path"), base_dir)) if isinstance(item, dict) and "path" in item
+            _resolve_source_item(item, base_dir) if isinstance(item, dict) and "path" in item
             else _resolve(item, base_dir)
             for item in sources
         ]

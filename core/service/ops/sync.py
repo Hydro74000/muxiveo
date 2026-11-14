@@ -173,3 +173,41 @@ def sync_shift_subtitles(request: ShiftSubtitlesRequest, ctx: ExecutionContext) 
     shift_file(request.input, request.output, calibration)
     ctx.events.artifact("subtitles", str(request.output))
     return ShiftSubtitlesResult(output=str(request.output))
+
+
+@dataclass(frozen=True)
+class WaveformRequest(Model):
+    """Forme d'onde d'une piste audio sur une plage (pics d'amplitude), pour un client graphique."""
+
+    source: Path = field(description="Fichier source.")
+    stream: str = field(default="0:a:0", description="Flux : index ffprobe (« 3 ») ou spécificateur (« 0:a:1 »).")
+    start_s: float = field(default=0.0, minimum=0, description="Début de la plage (s).")
+    duration_s: float = field(default=60.0, minimum=0.1, maximum=3600, description="Durée de la plage (s).")
+    resolution_ms: int = field(default=10, minimum=1, maximum=1000, description="Largeur d'une tranche (ms).")
+
+
+@dataclass(frozen=True)
+class WaveformResult(Model):
+    start_s: float
+    resolution_ms: int
+    peaks: tuple[float, ...] = field(default=(), description="Pic d'amplitude (0–1) de chaque tranche.")
+
+
+@operation("sync.waveform", request=WaveformRequest, result=WaveformResult,
+           summary="Forme d'onde d'une piste audio sur une plage (pics par tranche), données du Synchro Studio.",
+           long_running=True, errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
+def sync_waveform(request: WaveformRequest, ctx: ExecutionContext) -> WaveformResult:
+    from core.service.errors import ApiError
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.sync_waveform import WaveformError, track_peaks
+
+    try:
+        peaks = track_peaks(ctx.tool("ffmpeg"), request.source, request.stream, start_s=request.start_s,
+                            duration_s=request.duration_s, resolution_ms=request.resolution_ms,
+                            cancel=ctx.cancel.event)
+    except ProbeCancelledError as exc:
+        raise ApiError(ErrorCode.CANCELLED, "Forme d'onde annulée.") from exc
+    except (WaveformError, OSError) as exc:
+        raise JobError(f"Forme d'onde impossible : {exc}", 6) from exc
+    return WaveformResult(start_s=request.start_s, resolution_ms=request.resolution_ms,
+                          peaks=tuple(round(float(value), 4) for value in peaks))

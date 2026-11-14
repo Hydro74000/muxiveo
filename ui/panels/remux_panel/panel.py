@@ -39,7 +39,6 @@ from core.i18n import apply_translations, translate_text
 from core.inspector import AttachmentInfo, ChapterEntry, FileInfo
 from core.jobs.errors import JobError
 from core.jobs.extract import LAYER_LABELS, ExtractionPlan, ExtractTools, plan_attachment, plan_track, read_attachment, start_extraction
-from core.lang_tags import language_key
 from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
 from core.runner import TaskSignals
@@ -70,6 +69,7 @@ from core.workflows.sync_calibration import (
     projected_calibration,
     invert_calibration,
 )
+from core.workflows.sync_links import depends_on, follows_track, measure_track, propagate, same_applied_sync
 from ui.panels.remux_panel.theme import (
     _C,
     _card,
@@ -92,19 +92,7 @@ from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 _CURRENT = object()
 
 
-def _same_applied_sync(first: SyncCalibration, second: SyncCalibration) -> bool:
-    """Même synchro une fois appliquée : décalage arrondi à la ms, ou coupures et cadence identiques
-    (méthode et mode demandé compris : les analyses suivantes en dépendent)."""
-    first_stored, second_stored = effective_calibration(first), effective_calibration(second)
-    if first_stored is None and second_stored is None:
-        return round(first.segments[0].shift_ms) == round(second.segments[0].shift_ms)
-    return (first_stored is not None and second_stored is not None
-            and first_stored.segments == second_stored.segments
-            and first_stored.cadence_mismatch == second_stored.cadence_mismatch
-            and first_stored.cadence_audio_method == second_stored.cadence_audio_method
-            and first_stored.cadence_pitch_factor == second_stored.cadence_pitch_factor
-            and (first_stored.cadence_mismatch is None
-                 or first_stored.cadence_method_requested == second_stored.cadence_method_requested))
+_same_applied_sync = same_applied_sync
 
 
 class _AudioSyncReferenceDialog(QDialog):
@@ -1640,15 +1628,8 @@ class RemuxPanel(QWidget):
     def _audio_sync_measure_entry(self, target: TrackEntry, reference: TrackEntry | None) -> TrackEntry:
         """Piste analysée pour synchroniser `target` : une piste de sa source dans la langue de la
         référence (hors commentaire), sinon `target`. Même chronologie : la synchro vaut pour la source."""
-        reference_language = language_key(reference.language) if reference is not None else ""
-        if not reference_language or language_key(target.language) == reference_language:
-            return target
-        return next((
-            track for track in self._track_table.current_tracks()
-            if track.file_id == target.file_id and track.track_type == "audio"
-            and not track.flag_commentary and self._audio_sync_family(track) is not None
-            and language_key(track.language) == reference_language
-        ), target)
+        return measure_track(target, reference, self._track_table.current_tracks(),
+                             usable=lambda track: self._audio_sync_family(track) is not None)
 
     def _subtitle_sync_reference_choices(self, target: TrackEntry) -> list[tuple[str, TrackEntry]]:
         choices: list[tuple[str, TrackEntry]] = []
@@ -1882,25 +1863,11 @@ class RemuxPanel(QWidget):
 
     def _sync_depends_on(self, file_id: str, other_file_id: str) -> bool:
         """La synchro de `file_id` découle-t-elle, même indirectement, de celle de `other_file_id` ?"""
-        seen: set[str] = set()
-        link = self._sync_links.get(file_id)
-        while link is not None and link.reference_file_id not in seen:
-            if link.reference_file_id == other_file_id:
-                return True
-            seen.add(link.reference_file_id)
-            link = self._sync_links.get(link.reference_file_id)
-        return False
+        return depends_on(self._sync_links, file_id, other_file_id)
 
     def _sync_follows_track(self, file_id: str, entry: TrackEntry) -> bool:
         """La synchro de `file_id` découle-t-elle, même indirectement, de la position de la piste `entry` ?"""
-        seen: set[str] = set()
-        link = self._sync_links.get(file_id)
-        while link is not None and link.reference_file_id not in seen:
-            if link.reference_entry_id == entry.entry_id:
-                return True
-            seen.add(link.reference_file_id)
-            link = self._sync_links.get(link.reference_file_id)
-        return False
+        return follows_track(self._sync_links, file_id, entry.entry_id)
 
     def _set_source_calibration(self, file_id: str, calibration: SyncCalibration, *,
                                 negligible: bool = False) -> bool:
@@ -2023,33 +1990,21 @@ class RemuxPanel(QWidget):
 
         Retourne vrai si une synchro a changé.
         """
-        queue = [file_id for file_id in changed if file_id]
-        done = set(queue)
-        updated = False
-        while queue:
-            reference_file_id = queue.pop(0)
-            for file_id, link in list(self._sync_links.items()):
-                if link.reference_file_id != reference_file_id or file_id in done:
-                    continue
-                done.add(file_id)
-                queue.append(file_id)
-                calibration = compose_calibrations(link.relative, self._reference_calibration(link))
-                offset = round(calibration.segments[0].shift_ms)
-                negligible = effective_calibration(calibration) is None and abs(offset) <= NEGLIGIBLE_SYNC_MS
-                if _same_applied_sync(SyncCalibration.linear(0) if negligible else calibration,
-                                      self._source_calibration(file_id)):
-                    continue
-                updated = True
-                self._set_source_calibration(file_id, calibration, negligible=negligible)
-                self.log_message.emit("INFO", translate_text(
-                    "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).",
-                    source=self._source_label(file_id),
-                    reference=self._source_label(reference_file_id),
-                    offset=f"{0 if negligible else offset:+d}",
-                ))
-        if updated:
+        updates = propagate(
+            self._sync_links, changed, reference_position=self._reference_calibration,
+            current=self._source_calibration,
+            apply=lambda file_id, calibration, negligible: self._set_source_calibration(
+                file_id, calibration, negligible=negligible))
+        for file_id, reference_file_id, offset in updates:
+            self.log_message.emit("INFO", translate_text(
+                "Synchro de « {source} » recalculée : elle suit sa référence « {reference} » ({offset} ms).",
+                source=self._source_label(file_id),
+                reference=self._source_label(reference_file_id),
+                offset=f"{offset:+d}",
+            ))
+        if updates:
             self._track_table.refresh_all_entries_info()
-        return updated
+        return bool(updates)
 
     def _detach_linear_source_calibration(self, file_id: str, edited_ids: set[str]) -> bool:
         """Convertit le décalage importé en valeurs par piste avant une saisie individuelle."""

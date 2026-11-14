@@ -86,6 +86,10 @@ def _validate_source(errors: list[str], path: str, value: Any) -> None:
                     errors.append(f"{path}.attachments[{index}]: attendu string ou integer, reçu {_type_name(item)}")
     if "copy_tags" in value:
         _expect(errors, f"{path}.copy_tags", value["copy_tags"], "bool", _is_bool)
+    if "sync" in value:
+        from core.jobs.source_sync import validate_sync_spec
+
+        validate_sync_spec(errors, f"{path}.sync", value["sync"])
 
 
 def _validate_flags(errors: list[str], path: str, flags: Any) -> None:
@@ -125,6 +129,10 @@ def _validate_track_edit(errors: list[str], path: str, value: Any) -> None:
         errors.append(f"{path}.sync_rewrite_mode: attendu {SYNC_REWRITE_MODES}")
     if "flags" in value:
         _validate_flags(errors, f"{path}.flags", value["flags"])
+    if "sync" in value:
+        from core.jobs.source_sync import validate_sync_spec
+
+        validate_sync_spec(errors, f"{path}.sync", value["sync"], track_level=True)
 
 
 def _validate_selector(errors: list[str], path: str, value: Any) -> None:
@@ -279,6 +287,8 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
         errors.append(f"{path}.clean_nfo: attendu boolean")
     if "auto_sync" in job and not isinstance(job["auto_sync"], bool):
         errors.append(f"{path}.auto_sync: attendu boolean")
+    if "auto_sync_all" in job and not isinstance(job["auto_sync_all"], bool):
+        errors.append(f"{path}.auto_sync_all: attendu boolean")
     if "detect_cuts" in job and not isinstance(job["detect_cuts"], bool):
         errors.append(f"{path}.detect_cuts: attendu boolean")
     if "drift_threshold_ms" in job and (not _is_int(job["drift_threshold_ms"]) or job["drift_threshold_ms"] <= 0):

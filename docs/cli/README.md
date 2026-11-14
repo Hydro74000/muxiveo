@@ -45,6 +45,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
 | `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
 | `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
+| `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
 | `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
@@ -156,6 +157,55 @@ Chaque source peut être une chaîne ou un objet :
 - `"none"` ou `false`;
 - `"all"` ou `true`;
 - une liste de noms ou indices.
+
+#### Synchro en chaîne : `sources[i].sync`
+
+Comme les références du panneau Conteneur : la source est mesurée face à une piste d'une autre
+source, et suit la position de cette référence dans la sortie (références en chaîne composées,
+résolues dans l'ordre des dépendances ; boucle refusée).
+
+```json
+"sources": [
+  {"path": "uhd.mkv"},
+  {"path": "bluray.mkv", "sync": {"reference": 0}},
+  {"path": "vf.mkv", "sync": {"reference": 1, "reference_track": "a:0", "mode": "deep"}},
+  {"path": "vo.mkv", "sync": {"reference": 0, "offset_ms": -120}}
+]
+```
+
+| Champ | Effet |
+|---|---|
+| `reference` | index de la source de référence (défaut 0) |
+| `reference_track` | piste de référence : `mkv_tid` ou `a:N` / `s:N` (défaut : première audio) |
+| `track` | piste mesurée (défaut : audio de la source dans la langue de la référence, hors commentaire) |
+| `mode` | `auto` (réglage `[sync] quick_audio_check`), `quick` (synchro rapide), `deep` (approfondie) |
+| `type` | `auto`, `audio` (corrélation acoustique) ou `subtitle` (sous-titres) |
+| `calibration` / `offset_ms` | synchro relative donnée (objet, fichier JSON, ou décalage constant) : aucune mesure |
+
+`--auto-sync-all` (ou `"auto_sync_all": true`) ajoute `{"reference": 0}` à chaque source ≥ 1 sans
+bloc ; `--auto-sync` reste limité à la source 1. Synchro propre à une piste (« Synchroniser cette
+piste », elle seule bouge) : `tracks[i].sync` (mêmes champs, sans `track`), prioritaire sur la synchro
+de sa source. Exemple : `docs/cli/examples/sync-links.json`.
+
+#### Calibrations : `calibration`, `sync-waveform`
+
+Mêmes éditions que le Synchro Studio (instants de sortie en ms ou `HH:MM:SS.mmm`, appliquées dans
+l'ordre de la ligne de commande) :
+
+```bash
+Muxiveo-cli calibration show calib.json
+Muxiveo-cli calibration edit calib.json --cut 600000-602500 --silence 1:00:00-1:00:04 \
+    --shift-from-segment 2:-120 -o calib2.json
+Muxiveo-cli calibration edit calib.json --cadence-method auto --resolve-cadence ref.mkv:1 cible.mkv:2 -o c.json
+Muxiveo-cli calibration compose mesure.json position-reference.json -o synchro.json
+Muxiveo-cli calibration invert synchro.json -o inverse.json
+Muxiveo-cli sync-waveform -i film.mkv --stream 0:a:0 --start 1:00:00 --duration 30 --resolution-ms 10
+```
+
+`--remove-junction N` retire la jonction du segment N, `--shift-ms MS` fixe le départ (toute la
+suite suit), `--shift-from-segment N:MS` fixe le segment N en reportant l'écart sur les suivants.
+`sync-waveform` publie les pics d'amplitude par tranche (données d'un client graphique) ; la
+pré-écoute reste propre à l'interface.
 
 ### `decision-profile`
 

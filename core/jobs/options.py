@@ -32,6 +32,8 @@ class CommonOptions:
     clean_nfo: bool | None = None
     crossfade_ms: int | None = None
     auto_sync: bool = False
+    #: Chaque source ≥ 1 sans ``sources[i].sync`` mesurée face à la source 0.
+    auto_sync_all: bool = False
     calibration: str | None = None
     detect_cuts: bool = False
     quick_sync_check: bool | None = None
@@ -65,6 +67,7 @@ class CommonOptions:
             clean_nfo=getattr(args, "clean_nfo", None),
             crossfade_ms=getattr(args, "crossfade_ms", None),
             auto_sync=bool(getattr(args, "auto_sync", False)),
+            auto_sync_all=bool(getattr(args, "auto_sync_all", False)),
             calibration=getattr(args, "calibration", None),
             detect_cuts=bool(getattr(args, "detect_cuts", False)),
             quick_sync_check=getattr(args, "quick_sync_check", None),

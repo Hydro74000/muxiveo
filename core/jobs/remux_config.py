@@ -106,11 +106,13 @@ def apply_explicit_track_edits(
     *,
     strict_selectors: bool = False,
     relaxed_selectors: bool = False,
-) -> None:
+) -> list[tuple[dict[str, Any], TrackEntry]]:
+    """Applique ``tracks[]`` ; retourne les paires (entrée, piste) appliquées."""
     specs = job.get("tracks", [])
     if not isinstance(specs, list):
-        return
+        return []
     source_tracks = [track for track in tracks if not track.is_new]
+    applied: list[tuple[dict[str, Any], TrackEntry]] = []
     for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             continue
@@ -135,6 +137,8 @@ def apply_explicit_track_edits(
         if track is None:
             continue
         apply_track_spec(track, spec)
+        applied.append((spec, track))
+    return applied
 
 
 def apply_audio_variants(
@@ -477,7 +481,7 @@ def build_remux_config(
         strict_selectors=strict_selectors,
         relaxed_selectors=relaxed_selectors,
     )
-    apply_explicit_track_edits(
+    edited_tracks = apply_explicit_track_edits(
         job,
         tracks,
         strict_selectors=strict_selectors,
@@ -491,9 +495,16 @@ def build_remux_config(
                 track.remove_closed_captions = options.remove_closed_captions
 
     # Synchronisation explicite via calibration ou dynamique via auto_sync
+    from core.jobs.source_sync import resolve_source_syncs, resolve_track_syncs, sync_specs
+
+    source_syncs = sync_specs(job, auto_sync_all=bool(job.get("auto_sync_all") or getattr(options, "auto_sync_all", False)))
     calib_file = job.get("calibration") or getattr(options, "calibration", None)
+    if 1 in source_syncs and calib_file:
+        raise JobError("--calibration et sources[1].sync (ou --auto-sync-all) s'excluent.", EXIT_ARGS)
     calib = None
-    if calib_file and not job.get("sync_calibrations"):
+    if 1 in source_syncs:
+        pass  # source 1 : lien de synchro du job (ci-dessous)
+    elif calib_file and not job.get("sync_calibrations"):
         import json
         calib = SyncCalibration.from_dict(json.loads(Path(calib_file).read_text(encoding="utf-8-sig")))
     elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
@@ -507,6 +518,20 @@ def build_remux_config(
             calib, sync_mode=job.get("sync_mode", "container"), sources=sources,
             sync_subtitles=job.get("sync_subtitles", "mirror"), sync_calibrations=job.get("sync_calibrations"),
         )
+
+    def apply_source_sync(calibration: SyncCalibration, source_index: int) -> None:
+        job["sync_mode"], job["sync_calibrations"] = apply_donor_calibration(
+            calibration, sync_mode=job.get("sync_mode", "container"), sources=sources,
+            sync_subtitles=job.get("sync_subtitles", "mirror"), sync_calibrations=job.get("sync_calibrations"),
+            source_index=source_index,
+        )
+
+    if source_syncs:
+        resolve_source_syncs(job, sources, source_syncs, config=config, options=options, logger=logger,
+                             apply=apply_source_sync)
+    if any(isinstance(spec.get("sync"), dict) for spec, _track in edited_tracks):
+        resolve_track_syncs(job, sources, edited_tracks, linked=set(source_syncs), config=config, options=options,
+                            logger=logger)
 
     from core.workflows.subtitle_heuristics import classify_subtitles
     with context.measure("sous-titres"):

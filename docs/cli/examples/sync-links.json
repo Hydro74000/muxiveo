@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sources": [
+    {"path": "/media/uhd/film.mkv"},
+    {"path": "/media/bluray/film.mkv", "sync": {"reference": 0, "mode": "deep"}},
+    {"path": "/media/vf/film.mkv", "sync": {"reference": 1, "reference_track": "a:0"}}
+  ],
+  "tracks": [
+    {"source": 2, "mkv_tid": 3, "sync": {"reference": 0, "type": "subtitle", "reference_track": "s:0"}}
+  ],
+  "sync_mode": "physical",
+  "output": "/media/sortie/film.mkv"
+}

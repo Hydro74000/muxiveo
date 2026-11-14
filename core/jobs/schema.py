@@ -86,8 +86,28 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "time_shift_ms": {"type": "integer"},
             "sync_calibration": {"type": ["object", "null"]},
             "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
+            "sync": sync_spec_schema(track_level=True),
         },
     }
+
+
+def sync_spec_schema(*, track_level: bool = False) -> dict[str, Any]:
+    """``sources[i].sync`` / ``tracks[i].sync`` : synchro face à la piste d'une autre source."""
+    selector = {"oneOf": [{"type": "integer"}, {"type": "string", "pattern": "^[asv]:[0-9]+$"}]}
+    properties: dict[str, Any] = {
+        "reference": {"type": "integer", "minimum": 0, "default": 0,
+                      "description": "Index de la source de référence."},
+        "reference_track": {**selector, "description": "Piste de référence (mkv_tid ou a:N / s:N ; défaut : 1re audio)."},
+        "mode": {"enum": ["auto", "quick", "deep"], "default": "auto",
+                 "description": "Mesure : réglage [sync] quick_audio_check, synchro rapide ou approfondie."},
+        "type": {"enum": ["auto", "audio", "subtitle"], "default": "auto"},
+        "calibration": {"oneOf": [{"type": "object"}, {"type": "string"}],
+                        "description": "Calibration relative donnée (objet ou fichier JSON) : aucune mesure."},
+        "offset_ms": {"type": "integer", "description": "Décalage relatif constant donné : aucune mesure."},
+    }
+    if not track_level:
+        properties["track"] = {**selector, "description": "Piste mesurée (défaut : audio dans la langue de la référence)."}
+    return {"type": "object", "additionalProperties": False, "properties": properties}
 
 
 def _variables_schema() -> dict[str, Any]:
@@ -151,6 +171,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "clean_nfo": {"type": "boolean", "default": True},
             "sync_calibrations": {"type": "object", "additionalProperties": {"type": "object"}},
             "auto_sync": {"type": "boolean"},
+            "auto_sync_all": {"type": "boolean"},
             "calibration": {"type": "string"},
             "detect_cuts": {"type": "boolean"},
             "drift_threshold_ms": {"type": "integer", "minimum": 1},
@@ -186,6 +207,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                                 ]
                             },
                             "copy_tags": {"type": "boolean"},
+                            "sync": sync_spec_schema(),
                         },
                     },
                 ]

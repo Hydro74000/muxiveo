@@ -1056,18 +1056,8 @@ class SyncStudioDialog(QDialog):
     def _on_shift_spin_changed(self, value: float) -> None:
         self._stop_playback()
         self.waveform.set_shift(value)
-        old_shift = self.current_calibration.segments[self._current_segment_index].shift_ms
-        delta = value - old_shift
-
-        # Propagation du delta vers les segments suivants pour préserver les sauts relatifs
-        new_segments = []
-        for i, s in enumerate(self.current_calibration.segments):
-            if i < self._current_segment_index:
-                new_segments.append(s)
-            else:
-                new_segments.append(SyncSegment(s.start_ms, s.shift_ms + delta))
-
-        self.current_calibration = replace(self.current_calibration, segments=tuple(new_segments))
+        # Écart reporté sur les segments suivants : sauts relatifs conservés.
+        self.current_calibration = self.current_calibration.with_segment_shift(self._current_segment_index, value)
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._update_cuts_table()
         self._push_waveform_calibration()

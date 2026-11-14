@@ -93,6 +93,8 @@ class JobOptions(Model):
     clean_nfo: bool | None = None
     crossfade_ms: int | None = field(default=None, description="Fondu aux raccords de synchro (ms).")
     auto_sync: bool = field(default=False, description="Analyser la synchro de la source 1 face à la source 0.")
+    auto_sync_all: bool = field(
+        default=False, description="Analyser la synchro de chaque source ≥ 1 (sans bloc `sync`) face à la source 0.")
     calibration: Path | None = field(default=None, description="Calibration de synchro explicite (JSON).")
     detect_cuts: bool = field(default=False, description="Détecter coupures et ruptures (multi-segments).")
     quick_sync_check: bool | None = field(default=None, description="Synchro rapide ; défaut : [sync] quick_audio_check.")

@@ -225,6 +225,18 @@ class SyncCalibration:
         upper = self.segments[index + 1].start_ms if index + 1 < len(self.segments) else math.inf
         return max(segment.start_ms, min(upper, donor))
 
+    def with_segment_shift(self, index: int, shift_ms: float) -> SyncCalibration:
+        """Décalage du segment ``index`` fixé à ``shift_ms`` ; l'écart est reporté sur les segments suivants
+        (sauts relatifs conservés, comme le champ « Décalage » du Synchro Studio)."""
+        if not 0 <= index < len(self.segments):
+            raise ValueError(f"Segment {index} inexistant ({len(self.segments)} segment(s)).")
+        if not math.isfinite(shift_ms):
+            raise ValueError("Décalage invalide.")
+        delta = float(shift_ms) - self.segments[index].shift_ms
+        segments = tuple(segment if position < index else SyncSegment(segment.start_ms, segment.shift_ms + delta)
+                         for position, segment in enumerate(self.segments))
+        return replace(self, segments=segments)
+
     def with_edit(self, output_start_ms: float, output_end_ms: float, *, silence: bool) -> SyncCalibration:
         """Ajoute une coupe (sortie de la section supprimée) ou un silence de la longueur de la section.
 
