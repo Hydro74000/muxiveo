@@ -463,12 +463,12 @@ def resolve_encode(
         chapter_overrides=remux_config.chapter_overrides,
         mux_backend=remux_config.mux_backend,
     )
+    if logger is not None:  # copie pure comprise : le job reste un remux, l'avertissement est publié
+        for warning in warnings:
+            logger.emit("warning", warning)
     if is_pure_copy(encode_config):
         return ResolvedEncode(None, tuple(video_plan), tuple(audio_plan), tuple(warnings))
     merged = merge_remux_into_encode_config(encode_config, remux_config)
-    if logger is not None:
-        for warning in warnings:
-            logger.emit("warning", warning)
     return ResolvedEncode(merged, tuple(video_plan), tuple(audio_plan), tuple(warnings))
 
 
