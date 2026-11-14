@@ -56,6 +56,25 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+#: Choix exclusifs d'un objet : une surcharge qui fournit une clé d'un groupe retire de la base celles de l'autre.
+#: ``static_hdr`` : analyse HDR10 P5→P8.1 (``estimate``) ou valeurs / mode explicites (la dernière couche gagne).
+EXCLUSIVE_KEYS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "static_hdr": (frozenset({"estimate"}), frozenset({"mode", "master_display", "max_cll"})),
+}
+
+
+def without_excluded(key: str, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """``base`` (objet de clé ``key``) sans les choix que ``override`` rend caducs (:data:`EXCLUSIVE_KEYS`)."""
+    groups = EXCLUSIVE_KEYS.get(key)
+    if groups is None:
+        return base
+    dropped: set[str] = set()
+    for group, other in (groups, groups[::-1]):
+        if group & override.keys():
+            dropped |= other
+    return {name: value for name, value in base.items() if name not in dropped}
+
+
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
@@ -64,7 +83,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
             and isinstance(merged[key], dict)
             and isinstance(value, dict)
         ):
-            merged[key] = deep_merge(merged[key], value)
+            merged[key] = deep_merge(without_excluded(key, merged[key], value), value)
         else:
             merged[key] = value
     return merged

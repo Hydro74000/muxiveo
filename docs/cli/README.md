@@ -791,7 +791,17 @@ SDR par défaut, tone mapping coché d'office comme dans le panneau (`tonemap.en
 `--video-set tonemap.enabled=false`, l'empêche). Retour sur un codec HDR (preset suivant, piste,
 `video.default`) : ce tone mapping est retiré et les options HDR10, Dolby Vision et HDR10+
 décochées pour le codec sans HDR sont rétablies, sauf choix explicite du job (`static_hdr`,
-`dolby_vision`, `hdr10plus`).
+`dolby_vision`, `hdr10plus`). Un choix explicite (`tonemap.enabled` vrai ou faux) est gardé aux
+changements de codec.
+
+**Couches** (`video.default`, puis `video.tracks[]`, puis options courtes) : la dernière couche qui
+fixe un choix le remplace (tone mapping, `mode` Dolby Vision / HDR10+ / HDR10 statique) ; une
+couche qui ne le touche pas (`algorithm` ou `profile` seuls) le laisse. `static_hdr.estimate`
+(analyse HDR10 P5→P8.1, sur champs vides comme le panneau) et `mode` / `master_display` /
+`max_cll` s'excluent : une couche ou une fusion de documents (gabarit, lot, `--video-set`) qui
+fournit l'un retire l'autre ; dans un même objet, `estimate` avec `mode: off` ou une valeur non
+vide est refusé (code 3). Une couche `manual` ne marque saisis que les champs qu'elle fournit ;
+`source` / `off` remettent les valeurs de la source.
 
 **Dolby Vision + NVENC** : quand l'alignement sur 32 lignes impose un recadrage, l'encodage est
 refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués) sauf

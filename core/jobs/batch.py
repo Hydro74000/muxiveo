@@ -28,7 +28,7 @@ from core.service.errors import ErrorCode, error_code
 from core.jobs.errors import JobError
 from core.jobs.inspection import source_path_items
 from core.jobs.loader import apply_metadata_overrides
-from core.jobs.json_io import deep_merge, load_job_document, load_json, write_json
+from core.jobs.json_io import deep_merge, load_job_document, load_json, without_excluded, write_json
 from core.jobs.logging import JobLogger as Logger
 from core.jobs.options import call_supported, CommonOptions
 from core.service.context import CancelToken
@@ -97,7 +97,8 @@ def _without(spec: dict[str, Any], overridden: dict[str, Any]) -> dict[str, Any]
         if key not in overridden or key == "select":
             kept[key] = value
         elif isinstance(value, dict) and isinstance(overridden[key], dict):
-            rest = _without(value, overridden[key])
+            # Choix exclusifs (``static_hdr`` : analyse ou valeurs) : la surcharge retire aussi l'autre choix.
+            rest = _without(without_excluded(key, value, overridden[key]), overridden[key])
             if rest:
                 kept[key] = rest
     return kept

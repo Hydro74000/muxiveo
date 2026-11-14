@@ -103,7 +103,8 @@ class StaticHdrSpec(Model):
     max_cll: str | None = field(default=None, description="MaxCLL,MaxFALL (nits).",
                                 pattern=optional_text_pattern(MAX_CLL_BODY))
     estimate: Literal["fast", "precise"] | None = field(
-        default=None, description="Estimation (source sans HDR10 statique, ex. Dolby Vision P5).")
+        default=None, description="Estimation (source sans HDR10 statique, ex. Dolby Vision P5), sur champs vides : "
+                                  "exclut mode off et toute valeur saisie ; une couche suivante avec mode la retire.")
 
 
 @dataclass(frozen=True)

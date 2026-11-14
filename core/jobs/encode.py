@@ -158,9 +158,12 @@ def _merge(current: object, spec: Any, cls: Any, *, enable_on_presence: bool) ->
     return cls.from_value(values)
 
 
-def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: EncoderEnvironment) -> set[str]:
-    """Applique une couche publique à un état ; renvoie les intentions à vérifier après normalisation."""
-    intents: set[str] = set()
+def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec,
+                     env: EncoderEnvironment) -> dict[str, str | None]:
+    """Applique une couche publique à un état ; renvoie ses intentions à vérifier après normalisation, par famille
+    (``static``, ``dv``, ``hdr10plus``, ``tonemap`` → intention ou ``None``) : une couche suivante qui touche la même
+    famille la remplace (``resolve_encode``)."""
+    intents: dict[str, str | None] = {}
     if spec.codec is not None:
         codec = spec.codec.strip().lower()
         if codec not in VIDEO_CODEC_IDS:
@@ -203,12 +206,33 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
     if spec.restoration is not None:
         state["restoration"] = _merge(state.get("restoration"), spec.restoration, RestoreSettings,
                                       enable_on_presence=True)
-    if spec.static_hdr is not None:
+    if spec.static_hdr is not None and spec.static_hdr.estimate is not None:
+        # Analyse HDR10 P5→P8.1 (règle du panneau : sur champs vides) : valeurs de la source, aucune saisie, HDR10
+        # injecté. Une couche la demande ou la retire en entier (les fusions de documents l'isolent, ``json_io``).
+        hdr = spec.static_hdr
+        typed = [name for name in ("master_display", "max_cll") if str(getattr(hdr, name) or "").strip()]
+        if hdr.mode == "off" or typed:
+            raise _fail("static_hdr : estimate (analyse sur champs vides) incompatible avec mode off ou des valeurs "
+                        f"saisies ({', '.join(typed) or 'mode off'})")
+        state.update(inject_hdr_meta=True, hdr_disabled_by_codec=False, static_hdr_manual=False,
+                     master_display=state.get("default_master_display") or "",
+                     max_cll=state.get("default_max_cll") or "", static_hdr_master_display_manual=False,
+                     static_hdr_max_cll_manual=False, static_hdr_metadata_analysis_request=hdr.estimate,
+                     static_hdr_metadata_analysis_mode="", static_hdr_metadata_source="",
+                     static_hdr_metadata_confidence="", static_hdr_analysis_disabled_by_codec="")
+        intents["static"] = None
+    elif spec.static_hdr is not None:
         hdr = spec.static_hdr
         mode = hdr.mode or ("manual" if hdr.master_display is not None or hdr.max_cll is not None else None)
         if mode is not None:
             state["hdr_disabled_by_codec"] = False  # choix explicite : rien à rétablir au changement de codec
             state["static_hdr_manual"] = mode == "manual"
+            intents["static"] = "static_off" if mode == "off" else None
+            # Mode explicite : une analyse demandée par une couche précédente est retirée (jamais à la place de ce
+            # choix au lancement).
+            state.update(static_hdr_metadata_analysis_request="", static_hdr_metadata_analysis_mode="",
+                         static_hdr_metadata_source="", static_hdr_metadata_confidence="",
+                         static_hdr_analysis_disabled_by_codec="")
         if mode in ("off", "source"):
             # Valeurs de la source et provenance remises ensemble (une couche suivante repart de la source).
             state.update(master_display=state.get("default_master_display") or "",
@@ -216,7 +240,6 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
                          static_hdr_max_cll_manual=False)
         if mode == "off":
             state["inject_hdr_meta"] = False
-            intents.add("static_off")
         elif mode == "source":
             state["inject_hdr_meta"] = True
         elif mode == "manual":
@@ -229,21 +252,17 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
                 state.update(master_display=hdr.master_display, static_hdr_master_display_manual=True)
             if hdr.max_cll is not None:
                 state.update(max_cll=hdr.max_cll, static_hdr_max_cll_manual=True)
-        if hdr.estimate is not None:
-            state.update(inject_hdr_meta=True, static_hdr_metadata_analysis_request=hdr.estimate,
-                         static_hdr_metadata_analysis_mode="", static_hdr_metadata_source="",
-                         static_hdr_metadata_confidence="")
     if spec.dolby_vision is not None:
         if spec.dolby_vision.mode is not None:
             state["copy_dv"] = spec.dolby_vision.mode == "copy"
             state["dynamic_hdr_disabled_by_codec"] = (False, restore_flags(state)[1])
-            intents.add(f"dv_{spec.dolby_vision.mode}")
+            intents["dv"] = f"dv_{spec.dolby_vision.mode}"
         if spec.dolby_vision.profile is not None:
             state["dovi_profile"] = spec.dolby_vision.profile
     if spec.hdr10plus is not None and spec.hdr10plus.mode is not None:
         state["copy_hdr10plus"] = spec.hdr10plus.mode == "copy"
         state["dynamic_hdr_disabled_by_codec"] = (restore_flags(state)[0], False)
-        intents.add(f"hdr10plus_{spec.hdr10plus.mode}")
+        intents["hdr10plus"] = f"hdr10plus_{spec.hdr10plus.mode}"
     if spec.fel is not None:
         for key, target in (("bake", "bake_dovi_fel"), ("precision", "fel_precision"), ("device", "fel_device"),
                             ("hdr10plus", "fel_hdr10plus")):
@@ -253,8 +272,7 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec, env: Encod
     if spec.tonemap is not None:
         if spec.tonemap.enabled is not None:  # choix explicite, gardé aux changements de codec
             state.update(tonemap_to_sdr=spec.tonemap.enabled, tonemap_choice=spec.tonemap.enabled)
-            if spec.tonemap.enabled:
-                intents.add("tonemap")
+            intents["tonemap"] = "tonemap" if spec.tonemap.enabled else None
         if spec.tonemap.algorithm is not None:
             state["tonemap_algorithm"] = spec.tonemap.algorithm
     return intents
@@ -405,9 +423,10 @@ def resolve_encode(
                 raise _fail(f"preset « {block.preset} » non applicable à la vidéo {source.file_index}:"
                             f"{track.mkv_tid} : {problem}")
             state = apply_preset_to_state(state, preset, ctx, env)
-        intents: set[str] = set()
+        families: dict[str, str | None] = {}
         for layer in layers:
-            intents |= apply_video_spec(state, layer, env)
+            families.update(apply_video_spec(state, layer, env))  # dernière couche de chaque famille
+        intents = {intent for intent in families.values() if intent}
         # Tone mapping : choix explicite des couches, sinon défaut du codec final (règle du panneau).
         state = normalize_video_state(state, ctx, env)
         label = f"vidéo {source.file_index}:{track.mkv_tid}"
