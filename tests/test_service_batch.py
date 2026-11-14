@@ -458,3 +458,110 @@ def test_historic_encode_steps_returning_a_failure_code_and_profile_previews_sto
                                 steps=steps)
     assert previews == (["a.mkv", "b.mkv", "c.mkv"] if continue_on_error else ["a.mkv"])
     assert outcome.exit_code == 7 and outcome.summary["failures"] == 1
+
+
+@pytest.mark.parametrize("failure", ["validation", "exception"])
+def test_batch_job_failing_after_the_token_is_raised_is_cancelled_everywhere(tmp_path, doubles, monkeypatch, failure):
+    """Audit 13 : issue non réussie avec jeton levé → job, enfant et lot annulés (plus d'enfant « failed »)."""
+    ctx, sink = _ctx()
+    monkeypatch.setattr(batch_ops, "resolve_from_job",
+                        lambda block, remux, **k: SimpleNamespace(config=SimpleNamespace(output=remux.output)))
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: SimpleNamespace())
+
+    def checked(encode_config, *_a, **_k):
+        ctx.cancel.cancel()  # jeton levé seul, sans exception typée d'annulation
+        if failure == "exception":
+            raise RuntimeError("sonde interrompue")
+        return encode_config, ["géométrie indisponible"]
+
+    monkeypatch.setattr(batch_ops, "checked_encode", checked)
+    items = [{**item, "encode": {"video": {"default": {"codec": "libx265"}}}} for item in _items(tmp_path, "a", "b")]
+    try:
+        result = call(CATALOG, "media.batch", {**_template(tmp_path, items), "dry_run": True}, ctx)
+        status = result.status
+    except ApiError as error:
+        status = error.code.value
+    assert status in ("cancelled", ErrorCode.CANCELLED.value)
+    finals = [e.data["state"] for e in sink.events if e.parent == ctx.events.job and e.type is EventType.STATE
+              and e.data["state"] != JobState.RUNNING.value]
+    assert finals == [JobState.CANCELLED.value]  # un seul enfant, annulé ; le suivant jamais lancé
+
+
+_CASES = [(kind, failure) for kind in ("remux-run", "remux-preview", "encode-run", "encode-preview")
+          for failure in ("api", "exception", "validation") if failure != "validation" or kind.endswith("preview")]
+
+
+@pytest.mark.parametrize("kind, failure", _CASES)
+def test_batch_success_then_failure_after_the_token_is_partial_and_stops(tmp_path, doubles, monkeypatch, kind,
+                                                                           failure):
+    """Audit 13 : 1er job réussi, 2e en échec après la levée du jeton → parent partiel, 2e annulé partout, 3e
+    jamais lancé, même avec --continue-on-error ; une réussite déjà publiée reste réussie."""
+    ctx, sink = _ctx()
+    calls: list[str] = []
+
+    def outcome(value: Any = None) -> Any:
+        calls.append("x")
+        if len(calls) < 2:
+            return value
+        ctx.cancel.cancel()
+        if failure == "api":
+            raise ApiError(ErrorCode.WORKFLOW_FAILED, "échec après annulation")
+        if failure == "exception":
+            raise RuntimeError("échec après annulation")
+        return ["géométrie indisponible"]  # validation en erreur (aperçu)
+
+    if kind.startswith("remux"):
+        if kind == "remux-run":
+            monkeypatch.setattr(batch_ops, "run_remux", lambda *a, **k: outcome("fini"))
+        else:
+            monkeypatch.setattr(batch_ops, "remux_workflow", lambda *a: SimpleNamespace(
+                validate=lambda config: outcome([]), preview_command=lambda config: "ffmpeg …"))
+        items = _items(tmp_path, "a", "b", "c")
+    else:
+        monkeypatch.setattr(batch_ops, "resolve_from_job",
+                            lambda block, remux, **k: SimpleNamespace(config=SimpleNamespace(output=remux.output)))
+        monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: SimpleNamespace())
+        if kind == "encode-run":
+            monkeypatch.setattr(batch_ops, "run_encode", lambda *a, **k: outcome("fini"))
+        else:
+            monkeypatch.setattr(batch_ops, "checked_encode", lambda cfg, *a, **k: (cfg, outcome([])))
+            monkeypatch.setattr(batch_ops, "preview_encode", lambda *a: "ffmpeg …")
+        items = [{**item, "encode": {"video": {"default": {"codec": "libx265"}}}}
+                 for item in _items(tmp_path, "a", "b", "c")]
+    request = {**_template(tmp_path, items), "continue_on_error": True, "dry_run": kind.endswith("preview")}
+    result = call(CATALOG, "media.batch", request, ctx)
+    assert result.status == "partial" and len(calls) == 2
+    assert [job["status"] for job in result.jobs] == ["success", "cancelled"]
+    finals: dict[str, list[str]] = {}
+    for event in sink.events:
+        if event.parent == ctx.events.job and event.type is EventType.STATE and event.data["state"] != "running":
+            finals.setdefault(event.job, []).append(event.data["state"])
+    assert sorted(finals.values()) == [[JobState.CANCELLED.value], [JobState.SUCCEEDED.value]]
+
+
+def test_profile_batch_failure_after_the_token_is_cancelled_for_the_child(tmp_path, doubles, monkeypatch):
+    from core.jobs.batch import BatchDiscovery
+
+    ctx, sink = _ctx()
+    jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv")} for n in "ab"]
+    monkeypatch.setattr(batch_ops, "load_decision_profile", lambda path, config: {})
+    monkeypatch.setattr(batch_ops, "discover_direct_batch_jobs", lambda **k: BatchDiscovery(
+        jobs=jobs, scanned=2, selected=2, explicit_inputs=0, roots=[]))
+    monkeypatch.setattr(batch_ops, "build_profile_remux_config", lambda profile, **k: (SimpleNamespace(
+        output=Path(k["cli_output"]), allow_missing_output_dir=False), {}))
+    done: list[str] = []
+
+    def run_remux(remux_config, *, cancel, **_k):
+        done.append(remux_config.output.name)
+        if len(done) == 2:
+            cancel.cancel()
+            raise RuntimeError("échec après annulation")
+        return "fini"
+
+    monkeypatch.setattr(batch_ops, "run_remux", run_remux)
+    result = call(CATALOG, "profile.batch", {"profile": "P", "sources": {"inputs": [j["sources"][0] for j in jobs]},
+                                             "output_dir": str(tmp_path), "continue_on_error": True}, ctx)
+    assert result.status == "partial" and [job["status"] for job in result.jobs] == ["success", "cancelled"]
+    finals = [e.data["state"] for e in sink.events if e.parent == ctx.events.job and e.type is EventType.STATE
+              and e.data["state"] != JobState.RUNNING.value]
+    assert sorted(finals) == [JobState.CANCELLED.value, JobState.SUCCEEDED.value]

@@ -259,7 +259,7 @@ def test_media_inspect_uses_tool_overrides(monkeypatch, tmp_path):
     seen: dict[str, Any] = {}
 
     class _Inspector:
-        def __init__(self, ffprobe_bin, mediainfo_bin):
+        def __init__(self, ffprobe_bin, mediainfo_bin, cancel_event=None):  # signature réelle (jeton)
             seen["bins"] = (ffprobe_bin, mediainfo_bin)
 
         def inspect(self, path):

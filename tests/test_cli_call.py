@@ -20,7 +20,7 @@ from core.update_check import UpdateInfo
 
 def _fake_inspection(monkeypatch) -> None:
     class _Inspector:
-        def __init__(self, ffprobe_bin, mediainfo_bin):
+        def __init__(self, ffprobe_bin, mediainfo_bin, cancel_event=None):  # signature réelle (jeton)
             pass
 
         def inspect(self, path):

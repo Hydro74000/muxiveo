@@ -2817,6 +2817,91 @@ class TestMetadataInjectCopyCodec:
         assert Path(estimate_mock.call_args.args[0]).name == "enc.hevc"
         assert ready == [("video-p5", estimate)]
 
+    @pytest.mark.parametrize("override, analysed", [(None, True), ({"mode": "manual", "max_cll": "2000,500"}, False),
+                                                     ({"mode": "off"}, False)])
+    def test_inherited_p5_analysis_runs_only_without_a_later_static_choice(self, tmp_path, override, analysed):
+        """Audit 13 : job CLI (source DV P5, P8.1, ``estimate`` par défaut) résolu puis exécuté : l'estimateur du
+        runtime n'est appelé que si aucune couche suivante n'a fixé le HDR10 (saisie, ``off``)."""
+        from core.inspector import HDRType
+        from core.jobs.encode import resolve_encode
+        from core.service.schemas.encode import EncodeBlock
+        from tests.test_encode_request import SRC, _job
+
+        remux, infos = _job(HDRType.DOLBY_VISION)
+        infos[str(SRC)].video_tracks[0].dovi_profile = 5
+        video_block: dict[str, Any] = {"default": {"codec": "libx265", "dolby_vision": {"mode": "copy", "profile": "2"},
+                                                   "static_hdr": {"estimate": "precise"}}}
+        if override is not None:
+            video_block["tracks"] = [{"select": {"stream": 0}, "static_hdr": override}]
+        resolved = resolve_encode(EncodeBlock.from_dict({"video": video_block}), remux, infos=infos,
+                                  config=SimpleNamespace(work_dir=tmp_path / "work", aac_bitrate_per_channel_kbps=96,
+                                                         eac3_bitrate_per_channel_kbps=96)).config.video_tracks[0]
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        video = _make_video_settings(
+            codec="libx265", copy_dv=True, dovi_profile="2", track_entry_id="video-p5",
+            inject_hdr_meta=resolved.inject_hdr_meta, master_display=resolved.master_display,
+            max_cll=resolved.max_cll,
+            static_hdr_metadata_analysis_request=resolved.static_hdr_metadata_analysis_request,
+        )
+        config = _make_config(source=src, output=tmp_path / "output.mkv", video=video, video_tracks=[video],
+                              work_dir=tmp_path / "work")
+        wf = _make_workflow(enabled=False)
+        estimate = StaticHdrEstimate(
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)", max_cll="900,300",
+            confidence="medium", sample_count=80, coverage=0.8, mode="precise",
+            analysis_method="linear_grayf32le", active_sample_count=80,
+        )
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            for arg in reversed(cmd):
+                path = Path(str(arg))
+                if path.suffix.lower() in {".hevc", ".mkv", ".bin", ".json"}:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        written: list[tuple[str, str]] = []
+
+        def _fake_static_patch(src_path, dst_path, *, master_display, max_cll):
+            written.append((master_display, max_cll))
+            dst_path.write_bytes(b"patched")
+            from core.workflows.hevc_static_hdr_metadata import StaticHdrSeiInjectionResult
+            return StaticHdrSeiInjectionResult(access_units=10, targeted_access_units=2, injected_access_units=2,
+                                               preserved_access_units=0)
+
+        decision = P7RoutingDecision(conversion_needed=True, sub_profile=DoviSubProfile.P5, convert_mode="3",
+                                     reason="Source P5 détectée.")
+        module = "core.workflows.encode.runtime.metadata_inject"
+        finalize = "core.workflows.common.matroska_finalize"
+        with patch(f"{module}.DoviP7Router.analyze", return_value=decision), \
+                patch.object(wf._runner, "_run_cmd", side_effect=_fake_run), \
+                patch.object(wf._static_hdr_estimator, "estimate_converted_static_hdr",
+                             return_value=estimate) as estimate_mock, \
+                patch(f"{module}.inject_static_hdr_sei_file", side_effect=_fake_static_patch), \
+                patch(f"{finalize}.validate_matroska_output", return_value=[]), \
+                patch(f"{finalize}.validate_final_output"), \
+                patch(f"{finalize}.publish_candidate",
+                      side_effect=lambda candidate, output: Path(output).write_bytes(b"mkv")):
+            # Fichiers simulés : contrôle final du conteneur neutralisé, pour une fin réellement réussie.
+            signals = wf._run_with_metadata_inject(config)
+            outcome: list[str] = []
+            signals.finished.connect(lambda *_: outcome.append("finished"), Qt.ConnectionType.QueuedConnection)
+            signals.failed.connect(lambda *a: outcome.append(f"failed {a}"), Qt.ConnectionType.QueuedConnection)
+            _collect_signals(signals)
+        assert outcome == ["finished"]  # fin réussie : pas un test qui passe grâce à un arrêt prématuré
+        # ``estimate_converted_static_hdr`` : analyse P5→P8.1 du BL final (l'estimation depuis le RPU des champs
+        # restés vides est distincte).
+        assert estimate_mock.called is analysed
+        assert (resolved.static_hdr_metadata_analysis_request != "") is analysed
+        if override == {"mode": "off"}:
+            assert not resolved.inject_hdr_meta and written == []  # « off » reste désactivé
+        elif override is not None:
+            assert written and written[-1][1] == "2000,500" and resolved.static_hdr_light_level_source == "manual"
+        else:
+            assert written and written[-1][1] == "900,300"  # valeurs de l'analyse écrites
+
     def test_p7_copy_normalize_takes_timing_from_source_track(self, tmp_path):
         """Copy + P8.1 : timing de la piste d'origine (annexB sans horodatage), flux converti injecté."""
         src = tmp_path / "source.mkv"

@@ -156,3 +156,37 @@ def test_sigint_during_call_returns_a_cancelled_response(tmp_path, monkeypatch):
     states = [json.loads(line).get("state") for line in stderr.splitlines() if line.startswith("{")]
     assert states[-1] == "cancelled"
     assert not out.exists()
+
+
+def test_sigint_during_the_stream_kind_probe_of_sync_scan_stops_it(tmp_path, monkeypatch):
+    """Audit 13 : la sonde du type de flux passe par le port CLI ; Ctrl+C la tue au lieu d'attendre son délai."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    source = tmp_path / "src.mkv"
+    make_av_container(source)
+    mark = tmp_path / "ffprobe-started"
+    ffprobe = tmp_path / "bin" / "ffprobe"
+    ffprobe.parent.mkdir()
+    ffprobe.write_text(f'#!/bin/sh\n: > "{mark}"\nexec sleep 120\n', encoding="utf-8")
+    ffprobe.chmod(0o755)
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "sync-scan", "--ref", str(source), "--target", str(source),
+         "--stream-ref", "1", "--stream-target", "1", "--no-cadence-auto", "--ffprobe", str(ffprobe),
+         "--mediainfo", "/bin/false", "--work-dir", str(tmp_path / "work")],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not mark.exists():
+            assert proc.poll() is None, proc.communicate()[1]
+            assert time.monotonic() < deadline, "sonde jamais lancée"
+            time.sleep(0.05)
+        started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        _stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert time.monotonic() - started < 8, "annulation attendue avant le délai de la sonde (10 s)"
+    assert proc.returncode == 6, stderr

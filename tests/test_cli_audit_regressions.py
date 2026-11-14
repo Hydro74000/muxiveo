@@ -1437,3 +1437,210 @@ def test_a_later_cli_layer_replaces_the_intents_of_an_earlier_one(default, track
     assert layered == direct
     with pytest.raises(JobError):  # intention finale contradictoire : refus inchangé
         _resolve({"video": {"default": default, "tracks": [{"select": {"stream": 0}, "codec": "copy"}]}}, hdr)
+
+
+# --- Treizième audit : jeton seul, rapport Hybrid, inspections annulables, fusions et null, avertissements -------
+
+
+@pytest.mark.parametrize("failure", ["validation", "exception"])
+def test_hybrid_failure_after_the_token_alone_is_cancelled_for_the_child_too(monkeypatch, tmp_path, failure):
+    from core.service.ops import batch as batch_ops
+
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    monkeypatch.setattr(batch_ops._Children, "encode", lambda self, *a, **k: SimpleNamespace(output=Path("/tmp/o.mkv")))
+    monkeypatch.setattr(batch_ops, "encode_workflow", lambda *a: SimpleNamespace())
+
+    def checked(cfg, *_a, **_k):
+        ctx.cancel.cancel()  # jeton seul : aucune exception typée d'annulation
+        if failure == "exception":
+            raise RuntimeError("géométrie illisible")
+        return cfg, ["géométrie indisponible"]
+
+    monkeypatch.setattr(batch_ops, "checked_encode", checked)
+    result = _hybrid_run(monkeypatch, tmp_path, ctx, count=2, dry_run=True, continue_on_error=True)
+    assert result.status == "cancelled" and [e["status"] for e in result.episodes] == ["cancelled"]
+    assert list(_finals(sink, ctx).values()) == [["cancelled"]]  # enfant cohérent avec l'épisode
+
+
+def test_hybrid_report_is_written_when_an_interrupt_propagates(monkeypatch, tmp_path):
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    _hybrid_children_steps(monkeypatch, [None, KeyboardInterrupt()], ctx)
+    report = tmp_path / "rapport.json"
+    with pytest.raises(KeyboardInterrupt):
+        _hybrid_run(monkeypatch, tmp_path, ctx, count=3, report_json=str(report))
+    episodes = json.loads(report.read_text(encoding="utf-8"))["episodes"]
+    assert [episode["status"] for episode in episodes] == ["ok", "cancelled"]
+
+
+def _slow_ffprobe(tmp_path: Path) -> Path:
+    tool = tmp_path / "ffprobe"
+    tool.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return tool
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+@pytest.mark.parametrize("operation", ["media.inspect", "media.extract", "sync.scan-cadence", "sync.scan-kind",
+                                       "sync.scan-kind-cli"])
+def test_public_inspections_stop_when_the_operation_is_cancelled(tmp_path, operation):
+    import threading
+    import time
+
+    from core.service.errors import ApiError, ErrorCode
+
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"x")
+    ctx = _ctx(tool_ffprobe=str(_slow_ffprobe(tmp_path)), tool_mediainfo="/bin/false", tool_ffmpeg="ffmpeg",
+               sync_cadence_auto_apply=True)
+    requests = {
+        "media.inspect": {"inputs": [str(source)]},
+        "media.extract": {"source": str(source), "all": True},
+        "sync.scan-cadence": {"ref": str(source), "target": str(source), "type": "audio", "cadence_auto": True},
+        "sync.scan-kind": {"ref": str(source), "target": str(source), "type": "auto", "stream_target": "1",
+                           "cadence_auto": False},
+    }
+    requests["sync.scan-kind-cli"] = requests["sync.scan-kind"]
+    if operation.endswith("-cli"):  # port fourni par la commande sync-scan (cli/hybrid.py) : jeton transmis par **k
+        from cli.hybrid import detect_stream_kind
+
+        ctx = ExecutionContext.create(ctx.config, ListSink(), ports={
+            "detect_stream_kind": lambda *a, **k: detect_stream_kind(*a, **k)})
+    threading.Timer(0.3, ctx.cancel.cancel).start()
+    start = time.monotonic()
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, operation.split("-")[0], requests[operation], ctx)
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert time.monotonic() - start < 5  # sonde tuée par le jeton, pas attendue
+
+
+def test_pure_copy_publishes_its_hdr_warnings():
+    from tests.test_encode_request import _resolve
+
+    emitted: list[tuple[str, str]] = []
+    logger = SimpleNamespace(emit=lambda level, message, **_k: emitted.append((level, message)))
+    from core.inspector import HDRType
+
+    resolved = _resolve({"video": {"default": {"codec": "copy", "dolby_vision": {"mode": "copy"}}}},
+                        HDRType.NONE, logger=logger)
+    assert resolved.config is None and resolved.warnings  # copie pure : le job reste un remux
+    assert [message for level, message in emitted if level == "warning"] == list(resolved.warnings)
+
+
+@pytest.mark.parametrize("base, override, expected", [
+    ({"mode": "off"}, {"estimate": None}, ("", False, "")),
+    ({"mode": "manual", "max_cll": "2000,500"}, {"estimate": None}, ("", True, "2000,500")),
+    ({"estimate": "fast"}, {"mode": None}, ("fast", True, "1000,400")),
+    ({"estimate": "fast"}, {"max_cll": None}, ("fast", True, "1000,400")),
+])
+def test_null_keys_never_remove_a_static_hdr_choice_in_merges(base, override, expected):
+    from core.jobs.batch import merge_encode_block
+    from core.jobs.json_io import deep_merge
+    from tests.test_encode_request import _hdr10_encode
+
+    def block(static_hdr: dict) -> dict:
+        return {"video": {"default": {"codec": "libx265", "static_hdr": static_hdr}}}
+
+    for encode in (merge_encode_block({"encode": block(base)}, block(override))["encode"],
+                   deep_merge({"encode": block(base)}, {"encode": block(override)})["encode"]):
+        settings = _hdr10_encode(encode)
+        assert (settings.static_hdr_metadata_analysis_request, settings.inject_hdr_meta, settings.max_cll) == expected
+
+
+def test_real_cli_path_reads_options_exports_and_rereads_the_same_static_choice(tmp_path):
+    """Lecture (load_job_document) → options analysées par le parseur → résolution → export → relecture."""
+    from cli.encode_options import apply_encode_options
+    from core.json_documents import portable_encode_block
+    from core.jobs.json_io import load_job_document
+    from tests.test_encode_request import _hdr10_encode
+
+    document = tmp_path / "job.json"
+    document.write_text(json.dumps({"version": 1, "sources": ["src.mkv"], "output": "sortie.mkv", "encode": {
+        "video": {"default": {"codec": "libx265", "static_hdr": {"estimate": "fast"}},
+                  "tracks": [{"select": {"stream": 0}, "static_hdr": {"estimate": "precise"}}]}}}), encoding="utf-8")
+    job = load_job_document(document)
+    assert job["sources"] == [str(tmp_path / "src.mkv")]  # document réellement relu (chemins résolus)
+    cases = (
+        (["--video-set", "static_hdr.max_cll=2000,500"], ("", "2000,500")),  # défaut CLI face à la piste du job
+        (["--video-set", "static_hdr.mode=null"], ("precise", "1000,400")),  # null d'une autre clé : rien retiré
+    )
+    for argv, expected in cases:
+        args = build_parser().parse_args(["encode", "-o", str(tmp_path / "o.mkv"), *argv])
+        merged = apply_encode_options(job, args)
+        settings = _hdr10_encode(merged["encode"])
+        assert (settings.static_hdr_metadata_analysis_request, settings.max_cll) == expected, argv
+        exported = tmp_path / "export.json"
+        exported.write_text(json.dumps({**merged, "encode": portable_encode_block(merged["encode"])}), encoding="utf-8")
+        reread = _hdr10_encode(load_job_document(exported)["encode"])
+        assert (reread.static_hdr_metadata_analysis_request, reread.max_cll) == expected, argv
+
+
+def test_encoded_path_publishes_each_warning_once():
+    from core.inspector import HDRType
+    from tests.test_encode_request import _resolve
+
+    emitted: list[str] = []
+    logger = SimpleNamespace(emit=lambda level, message, **_k: emitted.append(message) if level == "warning" else None)
+    resolved = _resolve({"video": {"default": {"codec": "libx265", "dolby_vision": {"mode": "copy"}}}},
+                        HDRType.NONE, logger=logger)
+    assert resolved.config is not None and resolved.warnings and emitted == list(resolved.warnings)
+
+
+@pytest.mark.parametrize("interrupted", [True, False])
+def test_hybrid_report_write_failure_never_hides_an_interrupt(monkeypatch, tmp_path, interrupted):
+    sink = ListSink()
+    ctx = ExecutionContext.create(SimpleNamespace(), sink)
+    _hybrid_children_steps(monkeypatch, [None, KeyboardInterrupt() if interrupted else None], ctx)
+    report = tmp_path / "rapport"
+    report.mkdir()  # écriture impossible : un dossier occupe le chemin
+    expected = KeyboardInterrupt if interrupted else OSError
+    with pytest.raises(expected):
+        _hybrid_run(monkeypatch, tmp_path, ctx, count=2, report_json=str(report))
+    logged = [e.data.get("message", "") for e in sink.events if e.type.value == "log"]
+    assert any("Rapport des épisodes non écrit" in message for message in logged) is interrupted
+    assert all(len(states) == 1 for states in _finals(sink, ctx).values())
+
+
+def _probe_scripts(tmp_path: Path, slow: str) -> tuple[Path, Path, Path]:
+    """FFprobe / MediaInfo de test : rapides, sauf l'appel ``slow`` (ffprobe, mediainfo, framecount) qui pose un
+    témoin puis attend."""
+    mark = tmp_path / "entree"
+    quick_probe = 'echo \'{"streams": [], "format": {"duration": "1.0"}}\''
+    ffprobe = tmp_path / "ffprobe"
+    ffprobe.write_text("#!/bin/sh\n" + (f'touch "{mark}"; exec sleep 30\n' if slow == "ffprobe" else quick_probe + "\n"),
+                       encoding="utf-8")
+    mediainfo = tmp_path / "mediainfo"
+    slow_case = {"mediainfo": "*Output=JSON*", "framecount": "*FrameCount*"}.get(slow, "__jamais__")
+    mediainfo.write_text("#!/bin/sh\ncase \"$*\" in " + slow_case + f') touch "{mark}"; exec sleep 30;; esac\n'
+                         "case \"$*\" in *Output=JSON*) echo '{}';; esac\n", encoding="utf-8")
+    for tool in (ffprobe, mediainfo):
+        tool.chmod(0o755)
+    return ffprobe, mediainfo, mark
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason="POSIX")
+@pytest.mark.parametrize("slow", ["ffprobe", "mediainfo", "framecount"])
+def test_inspection_is_cancelled_in_each_of_its_probes(tmp_path, slow):
+    import threading
+    import time
+
+    from core.service.errors import ApiError, ErrorCode
+
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"x")
+    ffprobe, mediainfo, mark = _probe_scripts(tmp_path, slow)
+    ctx = _ctx(tool_ffprobe=str(ffprobe), tool_mediainfo=str(mediainfo))
+
+    def cancel_on_entry() -> None:  # annulation au démarrage effectif de la sonde visée
+        deadline = time.monotonic() + 30
+        while not mark.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ctx.cancel.cancel()
+
+    threading.Thread(target=cancel_on_entry, daemon=True).start()
+    start = time.monotonic()
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "media.inspect", {"inputs": [str(source)]}, ctx)
+    assert mark.exists() and ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert time.monotonic() - start < 10  # sonde terminée par le jeton (30 s sinon)

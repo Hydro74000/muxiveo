@@ -1081,6 +1081,6 @@ def test_detect_stream_kind_reads_first_csv_field(monkeypatch):
     import cli.hybrid as hybrid
     import core.service.ops.sync as sync_ops
 
-    monkeypatch.setattr(sync_ops.subprocess, "run",
+    monkeypatch.setattr(sync_ops, "run_probe",  # sonde annulable (jeton de l'opération)
                         lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, stdout="video,\n", stderr=""))
     assert hybrid.detect_stream_kind("ffprobe", Path("/x.mkv"), "0", default="audio") == "video"

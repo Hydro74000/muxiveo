@@ -432,3 +432,13 @@ def test_a_replaced_intent_no_longer_warns():
                                    "tracks": [{"select": {"stream": 0}, "dolby_vision": {"mode": "off"}}]}},
                         HDRType.HDR10)
     assert not any("Dolby Vision" in warning for warning in replaced.warnings)
+
+
+def _hdr10_encode(encode: dict):
+    """Bloc ``encode`` complet résolu sur la source HDR10 de test (MaxCLL 1000,400)."""
+    remux, infos = _job(HDRType.HDR10)
+    infos[str(SRC)].video_tracks[0].raw = {"side_data_list": [
+        {"side_data_type": "Content light level metadata", "max_content": 1000, "max_average": 400}]}
+    config = SimpleNamespace(work_dir=Path("/tmp/work"), aac_bitrate_per_channel_kbps=96,
+                             eac3_bitrate_per_channel_kbps=96)
+    return resolve_encode(EncodeBlock.from_dict(encode), remux, infos=infos, config=config).config.video_tracks[0]
