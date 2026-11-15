@@ -2780,10 +2780,12 @@ class TestRemuxPanelDecisionProfiles:
         dialog = DecisionProfileEditorDialog(manager=manager, profile=captured)
         assert dialog.profile()["rules"] == captured["rules"]  # rien modifié : règles identiques
         assert dialog._match_language.text() == "fr-FR"
-        dialog._match_codec.setText("DTS")  # critère modifié : file_language et canaux conservés
+        dialog._match_codec.setText("DTS | AC3")  # critère réellement modifié : les autres repris à l'identique
         match = dialog.profile()["rules"][0]["match"]["all"]
-        assert {item["field"] for item in match} >= {"type", "file_language", "codec", "channels"}
-        assert "language" not in {item["field"] for item in match}
+        original = captured["rules"][0]["match"]["all"]
+        assert [item for item in match if item.get("field") != "codec" and "any" not in item] == [
+            item for item in original if item.get("field") != "codec"]
+        assert "language" not in {item.get("field") for item in match}
         manager.save(dialog.profile())
         dialog.close()
 
@@ -2793,6 +2795,92 @@ class TestRemuxPanelDecisionProfiles:
         assert [(t.title, t.language, t.flag_enabled, t.is_new) for t in result.tracks] == [
             ("", "", True, False), ("", "", False, True)]
         reloaded.close()
+
+    def test_profile_editor_codec_change_keeps_the_other_captured_criteria(self, qt_app, tmp_path):
+        """Audit 20 : sous-titre capturé (titre vidé), codec modifié → titre du fichier toujours préféré, langue du
+        fichier conservée ; deuxième application au tableau vidé : rien de manquant, rien de décoché."""
+        from core.profiles.decision import (
+            DecisionProfileManager, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def subs():
+            return [TrackEntry(mkv_tid=i, track_type="subtitle", codec="SUBRIP", display_info="", language="fr-FR",
+                               title=t, file_id="fid", orig_language="fr-FR", orig_title=t)
+                    for i, t in ((3, "Complets"), (4, "Forcés"))]
+
+        table = subs()
+        for track in table:
+            track.title = ""
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=table)],
+                             output=tmp_path / "o.mkv", track_order=[(0, t.mkv_tid, t.entry_id) for t in table])
+        captured = remux_config_to_decision_profile(config, name="Subs")
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile=captured)
+        dialog._match_codec.setText("SUBRIP | ASS")
+        profile = dialog.profile()
+        match = profile["rules"][0]["match"]["all"]
+        by_field = {item.get("field"): item for item in match}
+        assert by_field["file_title"] == {"field": "file_title", "op": "is", "value": "Complets", "required": False}
+        assert by_field["file_language"]["value"] == "fr-FR"
+        assert [item.get("field") for item in match].index("file_title") > [
+            item.get("field") for item in match].index("file_language")  # positions conservées
+        first = apply_decision_profile(profile, subs(), from_current_state=True)
+        for track in first.tracks:
+            track.title = ""
+        second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+        for result in (first, second):
+            assert result.report["missing_rules"] == [] and result.report["ambiguous_matches"] == []
+            assert all(track.enabled for track in result.tracks)
+        dialog.close()
+
+    @pytest.mark.parametrize("match", [
+        {"all": [{"field": "type", "op": "is", "value": "audio", "required": True},
+                 {"field": "language", "op": "is", "value": "en-US", "required": True},
+                 {"field": "file_language", "op": "is", "value": "fr-FR", "required": True, "weight": 30},
+                 {"any": [{"field": "codec", "op": "is", "value": "DTS"},
+                          {"field": "channels", "op": "is", "value": "5.1"}]},
+                 {"not": {"field": "title", "op": "contains", "value": "comment"}},
+                 {"field": "codec", "op": "is", "value": "DTS", "required": False}]},
+        {"any": [{"field": "language", "op": "is", "value": "fr-FR"}, {"field": "codec", "op": "is", "value": "AC3"}]},
+        {"field": "language", "op": "is", "value": "fr-FR", "required": True},
+    ], ids=["mixed-all", "root-any", "root-condition"])
+    def test_profile_editor_preserves_criteria_it_does_not_edit(self, qt_app, tmp_path, match):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        profile = {"version": 1, "kind": "decision-profile", "name": "P", "rules": [{
+            "id": "r", "match": copy.deepcopy(match), "actions": [{"type": "set_enabled", "value": True}]}]}
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=profile)
+        assert dialog.profile()["rules"][0]["match"] == match  # ouvert sans modification : identique
+        dialog._match_flags.setText("default")  # contrôle absent de la règle : critère ajouté en fin
+        edited = dialog.profile()["rules"][0]["match"]
+        if "all" in match and set(match) == {"all"}:
+            assert edited["all"][:len(match["all"])] == match["all"] and len(edited["all"]) == len(match["all"]) + 1
+        else:
+            assert edited["all"][0] == match and len(edited["all"]) == 2  # racine non représentable : conservée
+        dialog._match_flags.setText("")  # retour à la valeur de chargement
+        assert dialog.profile()["rules"][0]["match"] == match
+        reopened = DecisionProfileEditorDialog(manager=manager, profile=dialog.profile())
+        assert reopened.profile()["rules"][0]["match"] == match
+        dialog.close()
+        reopened.close()
+
+    def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        match = {"all": [{"field": "language", "op": "is", "value": "en-US", "required": True},
+                         {"field": "codec", "op": "is", "value": "DTS", "required": False},
+                         {"field": "file_language", "op": "is", "value": "fr-FR", "required": True}]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile={
+            "version": 1, "kind": "decision-profile", "name": "P", "rules": [{"id": "r", "match": match,
+                                                                            "actions": []}]})
+        dialog._match_language.setText("de-DE")
+        assert dialog.profile()["rules"][0]["match"]["all"] == [
+            {"field": "file_language", "op": "is", "value": "de-DE", "required": True},
+            {"field": "codec", "op": "is", "value": "DTS", "required": False}]
+        dialog.close()
 
     def test_profile_editor_no_commentary_template_prefills_visible_criteria(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager

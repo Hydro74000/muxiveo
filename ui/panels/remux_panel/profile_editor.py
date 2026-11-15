@@ -283,7 +283,7 @@ class DecisionProfileEditorDialog(QDialog):
         self._selected_rule_index = -1
         # Règle affichée telle que chargée : critères et actions repris à l'identique pour ce qui n'est pas modifié.
         self._loaded_match: dict[str, Any] | None = None
-        self._loaded_match_state: tuple[Any, ...] | None = None
+        self._loaded_match_groups: dict[str, Any] = {}
         self._loaded_actions: list[dict[str, Any]] | None = None
         self._loaded_action_state: dict[str, Any] = {}
         self._match_language_field = "language"
@@ -916,28 +916,19 @@ class DecisionProfileEditorDialog(QDialog):
             widget.blockSignals(False)
         self._sync_clear_fields()
         if rule is None:
-            self._loaded_match = self._loaded_match_state = self._loaded_actions = None
+            self._loaded_match = self._loaded_actions = None
+            self._loaded_match_groups = {}
             self._loaded_action_state = {}
             self._match_language_field = "language"
         else:
             match = rule.get("match", {})
             self._loaded_match = copy.deepcopy(match) if isinstance(match, dict) else {"all": []}
-            self._loaded_match_state = self._match_ui_state()
+            self._loaded_match_groups = self._match_group_state()
             actions = rule.get("actions", [])
             self._loaded_actions = copy.deepcopy(actions) if isinstance(actions, list) else []
             self._loaded_action_state = self._action_ui_state()
             self._match_language_field = (
                 "file_language" if _uses_field(self._loaded_match, "file_language") else "language")
-
-    def _match_ui_state(self) -> tuple[Any, ...]:
-        """Valeurs des critères affichés (comparées à celles du chargement)."""
-        return (
-            self._match_type.currentData(), self._match_language.text(), self._match_codec.text(),
-            self._match_codec_required.isChecked(), self._match_title.text(), self._match_flags.text(),
-            self._match_width.value(), self._match_height.value(), self._video_hdr.isChecked(),
-            self._video_hdr10plus.isChecked(), self._video_dolby_vision.isChecked(), self._match_keywords.text(),
-            self._match_preferred_keywords.text(),
-        )
 
     def _action_ui_state(self) -> dict[str, Any]:
         """Valeurs des actions affichées, par champ (comparées à celles du chargement)."""
@@ -991,11 +982,15 @@ class DecisionProfileEditorDialog(QDialog):
         rule = self._rules()[index]
         item.setText(str(rule.get("label") or rule.get("id") or "rule"))
 
-    def _simple_match_payload(self) -> dict[str, Any]:
+    def _rebuilt_conditions_by_group(self) -> dict[str, list[dict[str, Any]]]:
+        """Conditions reconstruites depuis les contrôles affichés, par groupe (ordre historique)."""
+        by_group: dict[str, list[dict[str, Any]]] = {}
         items: list[dict[str, Any]] = []
+        by_group["type"] = items
         track_type = str(self._match_type.currentData() or "")
         if track_type:
             items.append({"field": "type", "op": "is", "value": track_type, "required": True})
+        items = by_group["language"] = []
         language = self._match_language.text().strip()
         if language:
             items.append(
@@ -1006,6 +1001,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label=translate_text("Langue"),
                 )
             )
+        items = by_group["codec"] = []
         codec = self._match_codec.text().strip()
         if codec:
             codec_required = self._match_codec_required.isChecked()
@@ -1016,6 +1012,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label="Codec",
                 )
             )
+        items = by_group["title"] = []
         title = self._match_title.text().strip()
         if title:
             items.append(
@@ -1025,6 +1022,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label=translate_text("Titre contient"),
                 )
             )
+        items = by_group["flags"] = []
         flags = self._match_flags.text().strip()
         if flags:
             items.append(
@@ -1034,6 +1032,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label="Flags",
                 )
             )
+        items = by_group["video"] = []
         width = int(self._match_width.value())
         height = int(self._match_height.value())
         if width > 0:
@@ -1069,6 +1068,7 @@ class DecisionProfileEditorDialog(QDialog):
                     "required": False,
                 }
             )
+        items = by_group["keywords"] = []
         keywords = self._match_keywords.text().strip()
         if keywords:
             items.append(
@@ -1078,6 +1078,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label=translate_text("Keywords critères"),
                 )
             )
+        items = by_group["preferred"] = []
         preferred_keywords = self._match_preferred_keywords.text().strip()
         if preferred_keywords:
             items.append(
@@ -1087,12 +1088,55 @@ class DecisionProfileEditorDialog(QDialog):
                     label=translate_text("Keywords préférés"),
                 )
             )
-        if self._loaded_match is not None and self._match_ui_state() == self._loaded_match_state:
-            return copy.deepcopy(self._loaded_match)  # critères non modifiés : repris à l'identique
-        if self._loaded_match is not None:
-            # Critères que l'éditeur ne représente pas (ex. canaux d'une règle capturée) : conservés.
-            items.extend(copy.deepcopy(self._flatten_simple_match(self._loaded_match)["unmanaged"]))
-        return {"all": items} if items else {"all": []}
+        return by_group
+
+    def _simple_match_payload(self) -> dict[str, Any]:
+        """Critères de la règle : seuls les groupes de contrôles modifiés depuis le chargement sont réécrits.
+
+        Groupe inchangé → ses conditions reprises telles quelles (``required``, ``weight``, opérateurs, doublons), à
+        leur place ; groupe modifié → conditions reconstruites à la place de la première, les autres retirées ;
+        conditions non représentées (sous-arbre mixte, canaux d'une règle capturée…) conservées.
+        """
+        rebuilt = self._rebuilt_conditions_by_group()
+        if self._loaded_match is None:
+            return {"all": [condition for group in rebuilt.values() for condition in group]}
+        state = self._match_group_state()
+        changed = {group for group in rebuilt if state.get(group) != self._loaded_match_groups.get(group)}
+        if not changed:
+            return copy.deepcopy(self._loaded_match)
+        items: list[dict[str, Any]] = []
+        placed: set[str] = set()
+        for item, group in self._match_owners(self._loaded_match):
+            if group is None or group not in changed:
+                items.append(copy.deepcopy(item))
+            elif group not in placed:
+                items.extend(rebuilt[group])
+                placed.add(group)
+        for group, conditions in rebuilt.items():
+            if group in changed and group not in placed:
+                items.extend(conditions)
+        return {"all": items}
+
+    def _match_owners(self, match: Any) -> list[tuple[Any, str | None]]:
+        """Conditions chargées et groupe de contrôles qui les représente (None : non représentée)."""
+        if isinstance(match, dict) and isinstance(match.get("all"), list) and set(match) <= {"all"}:
+            return list(self._flatten_simple_match(match)["owners"])
+        return [(match, None)] if match else []  # racine any / condition seule : conservée telle quelle
+
+    def _match_group_state(self) -> dict[str, Any]:
+        """Valeurs des contrôles de critères, par groupe (comparées à celles du chargement)."""
+        return {
+            "type": self._match_type.currentData(),
+            "language": self._match_language.text(),
+            "codec": (self._match_codec.text(), self._match_codec_required.isChecked()),
+            "title": self._match_title.text(),
+            "flags": self._match_flags.text(),
+            "video": (self._match_width.value(), self._match_height.value(), self._video_hdr.isChecked(),
+                      self._video_hdr10plus.isChecked(), self._video_dolby_vision.isChecked()),
+            "keywords": self._match_keywords.text(),
+            "preferred": self._match_preferred_keywords.text(),
+        }
+
 
     def _criteria_expression_condition(self, text: str, atom_builder, *, label: str) -> dict[str, Any]:
         try:
@@ -1324,6 +1368,7 @@ class DecisionProfileEditorDialog(QDialog):
     def _flatten_simple_match(self, match: Any) -> dict[str, Any]:
         flat: dict[str, Any] = {
             "flags": [], "keywords": [], "preferred_keywords": [], "codec_required": False, "unmanaged": [],
+            "owners": [],
         }
         items = match.get("all", []) if isinstance(match, dict) else []
         for item in items if isinstance(items, list) else []:
@@ -1332,33 +1377,41 @@ class DecisionProfileEditorDialog(QDialog):
             expression = self._condition_expression(item, self._language_atom)
             if expression:
                 flat["language"] = expression
+                flat["owners"].append((item, "language"))
                 continue
             expression = self._condition_expression(item, self._codec_atom)
             if expression:
                 flat["codec"] = expression
                 flat["codec_required"] = self._condition_required(item)
+                flat["owners"].append((item, "codec"))
                 continue
             expression = self._condition_expression(item, self._title_atom)
             if expression:
                 flat["title_contains"] = expression
+                flat["owners"].append((item, "title"))
                 continue
             expression = self._condition_expression(item, self._flag_atom)
             if expression:
                 flat["flags"].append(expression)
+                flat["owners"].append((item, "flags"))
                 continue
             expression = self._condition_expression(item, lambda leaf: self._keyword_atom(leaf, required=True))
             if expression:
                 flat["keywords"].append(expression)
+                flat["owners"].append((item, "keywords"))
                 continue
             expression = self._condition_expression(item, lambda leaf: self._keyword_atom(leaf, required=False))
             if expression:
                 flat["preferred_keywords"].append(expression)
+                flat["owners"].append((item, "preferred"))
                 continue
             field = str(item.get("field") or "")
             value = item.get("value")
             if not self._consumes_condition(field, value, item):
                 flat["unmanaged"].append(item)
+                flat["owners"].append((item, None))
                 continue
+            flat["owners"].append((item, self._condition_group(field, item)))
             if field == "type":
                 flat["type"] = value
             elif field == "resolution" and isinstance(value, dict):
@@ -1395,6 +1448,19 @@ class DecisionProfileEditorDialog(QDialog):
                 target = "keywords" if bool(item.get("required", True)) else "preferred_keywords"
                 flat[target].append("{" + field + "}")
         return flat
+
+    @staticmethod
+    def _condition_group(field: str, item: dict[str, Any]) -> str:
+        """Groupe de contrôles d'une condition simple représentée (voir ``_consumes_condition``)."""
+        if field == "type":
+            return "type"
+        if field in {"resolution", "width", "height", "video_flags_hex"}:
+            return "video"
+        if field == "flags":
+            return "flags"
+        if field in {"title", "source_title"}:
+            return "title"
+        return "keywords" if bool(item.get("required", True)) else "preferred"
 
     @staticmethod
     def _consumes_condition(field: str, value: Any, item: dict[str, Any]) -> bool:
