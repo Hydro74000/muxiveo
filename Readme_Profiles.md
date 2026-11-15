@@ -69,9 +69,10 @@ L'éditeur réécrit seulement ce que vous modifiez : une règle ouverte puis en
 identique (ordre des actions, actions répétées, paramètres comme `write_mode`, critères qu'il n'affiche pas, par
 exemple les canaux d'une règle capturée, `required`, `weight`, sous-critères `any` / `not`) ; un champ modifié
 remplace ses actions ou ses critères à l'emplacement du premier (modifier la langue remplace toutes les conditions
-de langue affichées). Les critères vidéo sont modifiés en place : renseigner la hauteur ne touche ni la largeur ni
-la condition `resolution` au-delà de cette dimension, et cocher une case HDR ne change que son bit dans
-`video_flags_hex` (profondeur, résolution… conservées). Les variantes demandées par les règles sont affectées après
+de langue affichées). Les critères vidéo sont modifiés en place : renseigner la hauteur ne change que la hauteur
+(condition `height`, et hauteur de `resolution` ; la largeur de `resolution` reste la sienne), vider une dimension
+de `resolution` la remplace par une condition sur l'autre dimension (mêmes `required` / `weight`), et cocher une
+case HDR ne change que son bit dans `video_flags_hex` (profondeur, résolution… conservées). Les variantes demandées par les règles sont affectées après
 toutes les règles : seules les règles et groupes actifs comptent, et le clone garde l'état de la piste source au
 moment de l'action.
 
