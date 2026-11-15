@@ -1142,10 +1142,21 @@ class DecisionProfileEditorDialog(QDialog):
                 return None
             edited["value"] = size
         elif group == "resolution":
-            if width <= 0 and height <= 0:
-                return None
+            # Seule la dimension modifiée change (l'autre garde la valeur de la condition, même si un critère
+            # indépendant affiche une autre valeur) ; dimension vidée → condition sur l'autre dimension.
             resolution = dict(item["value"]) if isinstance(item.get("value"), dict) else {}
-            resolution.update(width=width, height=height, bucket=resolution_bucket(width, height))
+            if self._match_width.value() != self._loaded_match_groups.get("width"):
+                resolution["width"] = width
+            if self._match_height.value() != self._loaded_match_groups.get("height"):
+                resolution["height"] = height
+            kept_width, kept_height = int(resolution.get("width") or 0), int(resolution.get("height") or 0)
+            if kept_width <= 0 and kept_height <= 0:
+                return None
+            if kept_width <= 0 or kept_height <= 0:
+                field = "width" if kept_width > 0 else "height"
+                single = {key: value for key, value in item.items() if key not in {"field", "value"}}
+                return {"field": field, **single, "value": kept_width if kept_width > 0 else kept_height}
+            resolution.update(bucket=resolution_bucket(kept_width, kept_height))
             edited["value"] = resolution
         elif group == "video_flags":
             bits = self._parse_video_flags(item.get("value"))

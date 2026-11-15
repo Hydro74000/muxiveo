@@ -2949,6 +2949,43 @@ class TestRemuxPanelDecisionProfiles:
             assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
         dialog.close()
 
+    def test_profile_editor_height_edit_changes_only_the_height_of_resolution(self, qt_app, tmp_path):
+        """Audit 22 : ``resolution`` 3840×2160 + largeur indépendante 1280 ; hauteur seule modifiée → 3840×720
+        (la largeur affichée par l'autre critère ne contamine pas ``resolution``) ; sélection attendue."""
+        from core.profiles.decision import apply_decision_profile
+
+        resolution = {"field": "resolution", "op": "is", "required": True, "weight": 30,
+                      "value": {"width": 3840, "height": 2160, "bucket": "uhd"}}
+        width = {"field": "width", "op": "is", "value": 1280, "required": False, "weight": 1}
+        match = {"all": [{"field": "type", "op": "is", "value": "video", "required": True}, resolution, width]}
+        dialog = self._editor(tmp_path, match)
+        dialog._match_height.setValue(720)
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[1] == {**resolution, "value": {"width": 3840, "height": 720, "bucket": "uhd"}}
+        assert edited[2] == width and len(edited) == 3
+        result = apply_decision_profile(dialog.profile(), [self._video(0, "1280x720"), self._video(1, "3840x720")])
+        assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
+        dialog.close()
+
+    @pytest.mark.parametrize("cleared", ["width", "height"])
+    def test_profile_editor_clearing_one_dimension_keeps_an_applicable_condition(self, qt_app, tmp_path, cleared):
+        """Audit 22 : dimension vidée d'une ``resolution`` obligatoire → condition sur l'autre dimension, mêmes
+        ``required`` et ``weight`` ; toujours applicable à la vidéo 3840×2160."""
+        from core.profiles.decision import apply_decision_profile
+
+        resolution = {"field": "resolution", "op": "is", "required": True, "weight": 30,
+                      "value": {"width": 3840, "height": 2160, "bucket": "uhd"}}
+        dialog = self._editor(tmp_path, {"all": [{"field": "type", "op": "is", "value": "video", "required": True},
+                                                 resolution]})
+        (dialog._match_width if cleared == "width" else dialog._match_height).setValue(0)
+        remaining = "height" if cleared == "width" else "width"
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[1] == {"field": remaining, "op": "is", "required": True, "weight": 30,
+                             "value": 2160 if remaining == "height" else 3840}
+        result = apply_decision_profile(dialog.profile(), [self._video(0, "3840x2160")])
+        assert [t.title for t in result.tracks] == ["Choisie"]
+        dialog.close()
+
     def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
