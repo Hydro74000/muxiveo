@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 import re
@@ -385,9 +385,16 @@ class HybridRecipe:
             if not isinstance(raw, Mapping):
                 raise ValueError("Recette : piste attendue sous forme d'objet.")
             try:
-                return HybridTrackChoice(**dict(raw))
+                parsed = HybridTrackChoice(**dict(raw))
             except TypeError as exc:
                 raise ValueError(f"Recette : piste invalide ({exc}).") from exc
+            for item in fields(HybridTrackChoice):  # types réels (le constructeur ne les vérifie pas)
+                value = getattr(parsed, item.name)
+                expected = {"bool": bool, "int": int}.get(str(item.type), str)
+                if (not isinstance(value, expected) or (expected is int and isinstance(value, bool))
+                        or (isinstance(value, int) and not isinstance(value, bool) and value < 0)):
+                    raise ValueError(f"Recette : piste invalide ({item.name} de type ou de valeur invalide).")
+            return parsed
 
         choices = data.get("track_choices")
         recipe.track_choices = None if choices is None else tuple(choice(item) for item in choices)
@@ -864,6 +871,8 @@ def _select_matrix_tracks(
             for track in source.tracks:
                 choice = next(originals) if not track.is_new else None
                 track.enabled = choice in remaining
+                if choice is not None and track.enabled:
+                    variant_sources.discard(choice)  # recochée dans le modèle : piste retenue, plus seulement source
                 if choice is not None and not track.enabled and choice in variant_sources:
                     track.enabled = True  # candidate du profil pour cloner la variante, décochée ensuite
                     variant_sources.remove(choice)

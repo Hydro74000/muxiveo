@@ -796,3 +796,73 @@ def test_missing_variant_source_track_is_reported(assembly, tmp_path):
     (tmp_path / "p.json").write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "p", "rules": []}))
     with pytest.raises(ValueError, match="introuvables"):
         prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+
+
+def test_rechecked_variant_source_is_selected_not_reported_missing(assembly, tmp_path):
+    """Audit 22 : source de variante recochée après relecture de la recette (présente dans les deux listes) →
+    retenue, jamais « introuvable »."""
+    episode, _recipe, sources = assembly
+    recipe = HybridRecipe.from_witness_config(_variant_witness(sources, tmp_path, original_checked=False))
+    recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
+    recipe.sync_strategy = "none"
+    recipe.track_choices = (*recipe.track_choices, *recipe.variant_source_choices)  # recochée, liste non élaguée
+    profile_path = tmp_path / "variante.json"
+    profile_path.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "v", "rules": [{
+        "id": "v", "scope": "all", "match": {"all": [{"field": "codec", "op": "is", "value": "EAC3"},
+                                                     {"field": "language", "op": "is", "value": "fr-FR"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3"}]}]}))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    vf = [(t.codec, t.is_new, t.enabled) for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
+    assert ("EAC3", False, True) in vf and ("AC3", True, True) in vf
+
+
+def test_studio_prunes_variant_sources_rechecked_in_the_witness(assembly, qt_app):
+    from core.inspector import AudioTrack, SubtitleTrack, VideoTrack
+    from ui.panels.hybrid_studio import HybridStudio
+
+    _, _, sources = assembly
+    panel = HybridStudio(AppConfig())
+    try:
+        inspected = []
+        for source_index, source in enumerate(sources):
+            info = FileInfo(source.path, "matroska", 1, 100, None, track_enabled={})
+            for track in source.tracks:
+                if track.is_video:
+                    stream = VideoTrack(track.mkv_tid, track.codec, "", 64, 64, None, None, None, None, None, None,
+                                        language=track.language, title=track.title)
+                elif track.is_audio:
+                    stream = AudioTrack(track.mkv_tid, track.codec, "", 6, "5.1", 48000, None, track.language,
+                                        track.title)
+                else:
+                    stream = SubtitleTrack(track.mkv_tid, track.codec, track.language, track.title,
+                                           forced=track.orig_flag_forced)
+                getattr(info, f"{track.track_type}_tracks").append(stream)
+            inspected.append((f"Source {source_index}", "master" if source_index == 0 else "donor", info))
+        panel._populate_witness_table(inspected)
+        vf_item = next(item for item in panel.witness_track_items
+                       if item["role"] == "donor" and item["type"] == "audio" and item["choice"].title.lower() == "vf")
+        other = next(item for item in panel.witness_track_items if item is not vf_item and item["type"] == "audio")
+        panel.recipe = replace(panel.recipe, witness_variants=1,
+                               variant_source_choices=(vf_item["choice"], other["choice"]))
+        vf_item["checkbox"].setChecked(True)
+        other["checkbox"].setChecked(False)
+        panel.apply_witness_recipe()
+        assert panel.recipe.variant_source_choices == (other["choice"],)  # recochée : retirée des sources
+        assert panel.recipe.witness_variants == 1
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("field, value", [("source_id", []), ("occurrence", -1), ("forced", "true"),
+                                          ("occurrence", True), ("title", 3)])
+def test_recipe_choices_are_type_checked(field, value):
+    from dataclasses import asdict
+
+    from core.workflows.hybrid_matrix import HybridTrackChoice
+
+    raw = asdict(HybridTrackChoice.from_track("src_2", TrackEntry(1, "audio", "EAC3", "", "fr-FR", "VF")))
+    raw[field] = value
+    for payload in ({"witness_variants": 1, "variant_source_choices": [raw]}, {"track_choices": [raw]}):
+        with pytest.raises(ValueError, match="piste invalide"):
+            HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, **payload})
