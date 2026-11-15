@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -1187,6 +1187,11 @@ class _VariantRequest:
         language = ("clear",) if self.clear_language else ("value", self.language)
         return (*self.group, title, language)
 
+    @property
+    def wildcards(self) -> int:
+        """Contraintes absentes (titre hérité, langue non résolue) : ordre d'appariement des effacements."""
+        return int(not self.title and not self.clear_title) + int(not self.language and not self.clear_language)
+
     def accepts(self, track: TrackEntry) -> bool:
         """Variante existante compatible avec la cible (titre puis langue)."""
         if self.title and track.title != self.title:
@@ -1264,6 +1269,48 @@ def _apply_audio_variant_action(
     ))
 
 
+def _write_variant(request: _VariantRequest, variant: TrackEntry, temporary_tags_by_entry_id: dict[str, set[str]]) -> None:
+    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit)."""
+    if request.display_info is not None:
+        variant.codec = request.codec.upper()
+        variant.display_info = request.display_info
+    if request.title or request.clear_title:
+        variant.title = request.title
+    if request.language or request.clear_language:
+        variant.language = request.language
+    variant.enabled = bool(request.action.get("enabled", True))
+    flags = request.action.get("flags")
+    if isinstance(flags, Mapping):
+        for name, value in flags.items():
+            if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
+                setattr(variant, f"flag_{name}", bool(value))
+    temporary_tags_by_entry_id.setdefault(variant.entry_id, set()).add(request.rule_id)
+
+
+def _max_matching(
+    keys: list[tuple[Any, ...]],
+    candidates: list[TrackEntry],
+    accepts: Callable[[tuple[Any, ...], TrackEntry], bool],
+) -> dict[tuple[Any, ...], TrackEntry]:
+    """Appariement maximal cibles → variantes (chemins augmentants) ; cibles et variantes dans l'ordre donné."""
+    owner: dict[str, tuple[Any, ...]] = {}
+    by_id = {track.entry_id: track for track in candidates}
+
+    def assign(key: tuple[Any, ...], seen: set[str]) -> bool:
+        for track in candidates:
+            if track.entry_id in seen or not accepts(key, track):
+                continue
+            seen.add(track.entry_id)
+            if track.entry_id not in owner or assign(owner[track.entry_id], seen):
+                owner[track.entry_id] = key
+                return True
+        return False
+
+    for key in keys:
+        assign(key, set())
+    return {key: by_id[entry_id] for entry_id, key in owner.items()}
+
+
 def _materialize_variant_requests(
     requests: list[_VariantRequest],
     tracks: list[TrackEntry],
@@ -1272,67 +1319,62 @@ def _materialize_variant_requests(
     report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
 ) -> None:
-    """Affecte les demandes aux variantes, indépendamment de leur ordre, puis applique leurs écritures.
+    """Affecte les demandes de variantes après les règles.
 
-    Par piste source et codec : cibles à titre explicite ou effacé d'abord (variante identique / vide), puis cibles
-    héritées (variante au titre de la source, sinon toute variante libre : variante renommée ou vidée à la main
-    reprise), sinon création depuis le clone préparé de la première demande. Demandes de même cible : une seule
-    variante, écritures appliquées dans l'ordre des demandes (sélection, drapeau par drapeau, titre, langue).
+    1. Demandes d'effacement effectif (``clear``) : par piste source et codec, appariement maximal entre cibles
+       (identiques → même variante) et variantes libres compatibles, cibles les plus contraintes d'abord ; cible sans
+       variante → création depuis son clone. Ces variantes leur sont réservées.
+    2. Autres demandes : affectation historique à l'identique, dans l'ordre (première variante du codec dont le
+       titre explicite et la langue résolue correspondent, joker sinon ; création sinon ; écritures aussitôt
+       visibles des demandes suivantes), hors variantes réservées.
     """
-    targets: dict[tuple[Any, ...], list[_VariantRequest]] = {}
-    for request in requests:
-        targets.setdefault(request.target, []).append(request)
-    assigned: dict[tuple[Any, ...], TrackEntry] = {}
-    created: set[tuple[Any, ...]] = set()
+    entries: list[tuple[int, str, dict[str, Any]]] = []
+    reserved: set[str] = set()
+    clearing: dict[tuple[Any, ...], list[int]] = {}
+    for index, request in enumerate(requests):
+        if request.clear_title or request.clear_language:
+            clearing.setdefault(request.target, []).append(index)
     groups: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
-    for target, group_requests in targets.items():
-        groups.setdefault(group_requests[0].group, []).append(target)
-    for (source_id, target_codec), group_targets in groups.items():
-        free = [
+    for target, indexes in clearing.items():
+        groups.setdefault(requests[indexes[0]].group, []).append(target)
+    for (source_id, target_codec), keys in groups.items():
+        candidates = [
             track for track in tracks
             if track.is_new and track.source_entry_id == source_id and str(track.codec or "").upper() == target_codec
         ]
-        explicit = [target for target in group_targets if target[2][0] != "inherit"]
-        inherited = [target for target in group_targets if target[2][0] == "inherit"]
-        for target in explicit:
-            first = targets[target][0]
-            match = next((track for track in free if first.accepts(track)), None)
-            if match is not None:
-                assigned[target] = match
-                free.remove(match)
-        for target in inherited:
-            first = targets[target][0]
-            compatible = [track for track in free if first.accepts(track)]
-            match = next((track for track in compatible if track.title == first.inherited_title), None)
-            match = match or (compatible[0] if compatible else None)
-            if match is not None:
-                assigned[target] = match
-                free.remove(match)
-    for target, target_requests in targets.items():
-        if target not in assigned:
-            assigned[target] = target_requests[0].prepared
-            tracks.append(target_requests[0].prepared)
-            created.add(target)
-    reported: set[tuple[Any, ...]] = set()
-    for request in requests:
-        variant = assigned[request.target]
-        key = "created_variants" if request.target in created and request.target not in reported else "reused_variants"
-        reported.add(request.target)
-        report[key].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
-        if request.display_info is not None:
-            variant.codec = request.codec.upper()
-            variant.display_info = request.display_info
-        if request.title or request.clear_title:
-            variant.title = request.title
-        if request.language or request.clear_language:
-            variant.language = request.language
-        variant.enabled = bool(request.action.get("enabled", True))
-        flags = request.action.get("flags")
-        if isinstance(flags, Mapping):
-            for name, value in flags.items():
-                if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
-                    setattr(variant, f"flag_{name}", bool(value))
-        temporary_tags_by_entry_id.setdefault(variant.entry_id, set()).add(request.rule_id)
+        keys.sort(key=lambda key: (requests[clearing[key][0]].wildcards, clearing[key][0]))
+        matched = _max_matching(keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track))
+        for key in sorted(keys, key=lambda key: clearing[key][0]):
+            variant = matched.get(key)
+            created = variant is None
+            if variant is None:
+                variant = requests[clearing[key][0]].prepared
+                tracks.append(variant)
+            reserved.add(variant.entry_id)
+            for position, index in enumerate(clearing[key]):
+                kind = "created_variants" if created and position == 0 else "reused_variants"
+                entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
+                _write_variant(requests[index], variant, temporary_tags_by_entry_id)
+    for index, request in enumerate(requests):
+        if request.clear_title or request.clear_language:
+            continue
+        variant = next((
+            track for track in tracks
+            if track.is_new and track.source_entry_id == request.source_track.entry_id
+            and track.entry_id not in reserved
+            and str(track.codec or "").upper() == request.target_codec.upper()
+            and (not request.title or track.title == request.title)
+            and (not request.language or normalize_lang(track.language, track.title) == request.language)
+        ), None)
+        kind = "reused_variants"
+        if variant is None:
+            variant = request.prepared
+            tracks.append(variant)
+            kind = "created_variants"
+        entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
+        _write_variant(request, variant, temporary_tags_by_entry_id)
+    for _index, kind, summary in sorted(entries, key=lambda entry: entry[0]):
+        report[kind].append(summary)
 
 
 def apply_decision_profile(

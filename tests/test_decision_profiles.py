@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +18,7 @@ from core.profiles.decision import (
     validate_decision_profile,
 )
 from core.profiles.expressions import CriteriaExpressionError, compile_criteria_expression
-from core.profiles.keywords import KEYWORD_CATEGORIES, lang_name
+from core.profiles.keywords import KEYWORD_CATEGORIES, lang_name, normalize_lang
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry, clone_track_entry
 
 
@@ -1101,7 +1102,8 @@ def _states(tracks: list[TrackEntry]) -> list[tuple]:
 
     return [
         (track.entry_id, track.source_entry_id, track.is_new, track.codec, track.display_info, track.title,
-         track.language, track.enabled, *(getattr(track, f"flag_{name}") for name in FLAG_NAMES))
+         track.language, track.enabled, *(getattr(track, f"flag_{name}") for name in FLAG_NAMES),
+         track.time_shift_ms, track.file_language, track.file_title, track.orig_language, track.orig_title)
         for track in tracks
     ]
 
@@ -1309,16 +1311,153 @@ def test_inapplicable_clear_request_never_reserves_the_cleared_variant(inapplica
     assert [t.entry_id for t in ac3_of_source] == [cleared.entry_id]  # variante vide reprise, aucun doublon
 
 
+def _legacy_assignment(actions: list[dict], tracks: list[TrackEntry]) -> list[tuple]:
+    """Oracle : affectation historique (6cc89f0) des ``create_audio_variant`` d'une règle « audio, all », recopiée
+    telle quelle (première variante du codec dont titre explicite et langue résolue correspondent ; écritures
+    immédiates), avec les écritures actuelles (``flags.enabled``). États structurels (identifiants des variantes
+    créées remplacés par leur rang de création)."""
+    tracks = copy.deepcopy(tracks)
+    created: list[str] = []
+    for source in [t for t in tracks if not t.is_new and t.track_type == "audio"]:
+        for action in actions:
+            codec = str(action.get("codec") or "copy").strip()
+            title = str(action.get("title") or "")
+            language = normalize_lang(str(action.get("language") or source.language), title)
+            target = source.codec if not codec or codec.lower() == "copy" else codec.upper()
+            variant = next((t for t in tracks if t.is_new and t.source_entry_id == source.entry_id
+                            and str(t.codec or "").upper() == target.upper()
+                            and (not title or t.title == title)
+                            and (not language or normalize_lang(t.language, t.title) == language)), None)
+            if variant is None:
+                variant = clone_track_entry(source)
+                tracks.append(variant)
+                created.append(variant.entry_id)
+            if codec.lower() != "copy":
+                variant.codec = codec.upper()
+            if title:
+                variant.title = title
+            if language:
+                variant.language = language
+            variant.enabled = bool(action.get("enabled", True))
+            for name, value in (action.get("flags") or {}).items():
+                setattr(variant, f"flag_{name}", bool(value))
+    return _structural(tracks, created)
+
+
+def _structural(tracks: list[TrackEntry], created: list[str]) -> list[tuple]:
+    rank = {entry_id: f"new{index}" for index, entry_id in enumerate(created)}
+    return [(rank.get(state[0], state[0]), *state[1:3], *state[3:4], *state[5:]) for state in _states(tracks)]
+
+
+def _engine(actions: list[dict], tracks: list[TrackEntry]) -> tuple[list[tuple], dict]:
+    before = {t.entry_id for t in tracks}
+    result = apply_decision_profile(_variant_profile(*actions), copy.deepcopy(tracks))
+    created = [t.entry_id for t in result.tracks if t.entry_id not in before]
+    return _structural(result.tracks, created), result.report
+
+
+def _copie(source: TrackEntry, language: str) -> TrackEntry:
+    variant = clone_track_entry(source)
+    variant.codec, variant.title, variant.language = "AC3", "Copie", language
+    return variant
+
+
+_HISTORICAL_CASES = {
+    "copie-fr-en-sans-langue": (
+        lambda: (lambda s: [s, _copie(s, "fr-FR"), _copie(s, "en-US")])(_audio(1, language="", title="")),
+        [{"type": "create_audio_variant", "codec": "ac3", "title": "Copie"},
+         {"type": "create_audio_variant", "codec": "ac3", "title": "Copie", "language": "fr-FR"}]),
+    "heritage-et-titre-source": (
+        lambda: [_audio(1, title="VF")],
+        [_INHERIT, {"type": "create_audio_variant", "codec": "ac3", "title": "VF"}]),
+    "nommee-et-heritage": (
+        lambda: [_fresh_audio()],
+        [{"type": "create_audio_variant", "codec": "ac3", "title": "VF AC3"}, _INHERIT]),
+    "champs-vides-historiques": (
+        lambda: [_fresh_audio()],
+        [{"type": "create_audio_variant", "codec": "ac3", "title": "", "language": "", "enabled": False,
+          "flags": {"commentary": True}}, {"type": "create_audio_variant", "codec": "eac3", "bitrate_kbps": 640}]),
+    "variante-renommee": (
+        lambda: (lambda s: [s, (lambda v: (setattr(v, "codec", "AC3"), setattr(v, "title", "Main"), v)[2])(
+            clone_track_entry(s))])(_fresh_audio()),
+        [_INHERIT, {"type": "create_audio_variant", "codec": "ac3", "flags": {"enabled": False}}]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_HISTORICAL_CASES))
+@pytest.mark.parametrize("reverse", [False, True])
+def test_profiles_without_clear_keep_the_historical_assignment(case, reverse):
+    """Audit 21 : sans effacement, affectation identique à l'historique dans les deux ordres (réutilisation par
+    plusieurs demandes comprise : variante « Copie » française reprise deux fois, anglaise intacte)."""
+    make_tracks, actions = _HISTORICAL_CASES[case]
+    actions = list(reversed(actions)) if reverse else actions
+    tracks = make_tracks()
+    engine, report = _engine(actions, tracks)
+    assert engine == _legacy_assignment(actions, tracks)
+    _clean_report(SimpleNamespace(report=report))
+    if case == "copie-fr-en-sans-langue":
+        assert report["created_variants"] == [] and len(engine) == 3
+    if case == "heritage-et-titre-source":
+        assert len([state for state in engine if state[2]]) == 1  # une seule AC3 « VF »
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_clear_requests_are_matched_without_greed_and_never_merge_with_others(reverse):
+    source = _audio(1, language="", title="Audio")
+    empty_fr, empty_en = _preexisting_cleared(source), _preexisting_cleared(source)
+    empty_fr.language, empty_en.language = "fr-FR", "en-US"
+    requests = [{"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]},
+                {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"], "language": "fr-FR"}]
+    requests = list(reversed(requests)) if reverse else requests
+    result = apply_decision_profile(_variant_profile(*requests, _INHERIT), [source, empty_fr, empty_en])
+    _clean_report(result)
+    variants = [t for t in result.tracks if t.is_new]
+    assert [(t.entry_id, t.title, t.language) for t in variants[:2]] == [
+        (empty_fr.entry_id, "", "fr-FR"), (empty_en.entry_id, "", "en-US")]  # aucune création pour les effacements
+    assert [(t.title, t.is_new) for t in variants[2:]] == [("Audio", True)]  # l'héritage ne les reprend pas
+
+
 @pytest.mark.parametrize("order", [(0, 1, 2), (2, 1, 0), (1, 0, 2), (2, 0, 1)])
-def test_named_inherited_and_cleared_requests_are_independent_of_their_order(order):
+def test_cleared_variant_is_isolated_whatever_the_order(order):
+    """La variante effacée est toujours à part ; nommée et héritée suivent l'affectation historique (l'héritage
+    reprend toute variante du codec déjà présente : ordre historique)."""
     named = {"type": "create_audio_variant", "codec": "ac3", "title": "VF AC3"}
     requests = [named, _INHERIT, _CLEAR_TITLE]
-    profile = _variant_profile(*(requests[index] for index in order))
-    first = apply_decision_profile(profile, [_fresh_audio()])
+    actions = [requests[index] for index in order]
+    source = _fresh_audio()
+    first = apply_decision_profile(_variant_profile(*actions), copy.deepcopy([source]))
     before = _states(first.tracks)
-    second = apply_decision_profile(profile, first.tracks)
-    assert sorted(t.title for t in first.tracks if t.is_new) == ["", "Audio original", "VF AC3"]
+    second = apply_decision_profile(_variant_profile(*actions), first.tracks)
+    _clean_report(first)
+    _clean_report(second)
+    cleared = [t for t in first.tracks if t.is_new and not t.title]
+    assert len(cleared) == 1
+    others = [t for t in first.tracks if t not in cleared]
+    engine = _structural(others, [t.entry_id for t in others if t.is_new])
+    assert engine == _legacy_assignment([a for a in actions if a is not _CLEAR_TITLE], [source])
     assert _states(second.tracks) == before
+
+
+def test_clear_title_and_clear_language_targets_are_distinct():
+    title_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]}
+    language_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"]}
+    both = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title", "language"]}
+    first = apply_decision_profile(_variant_profile(title_only, language_only, both), [_fresh_audio()])
+    second = apply_decision_profile(_variant_profile(both, language_only, title_only), first.tracks)
+    for result in (first, second):
+        _clean_report(result)
+        assert sorted((t.title, t.language) for t in result.tracks if t.is_new) == [
+            ("", ""), ("", "fr-FR"), ("Audio original", "")]
+    assert len(second.report["created_variants"]) == 0
+
+
+def test_source_metadata_changed_between_two_requests():
+    profile = _variant_profile({"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]},
+                               {"type": "set_language", "value": "en-US"},
+                               {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]})
+    result = apply_decision_profile(profile, [_fresh_audio()])
+    _clean_report(result)
+    assert sorted((t.title, t.language) for t in result.tracks if t.is_new) == [("", "en-US"), ("", "fr-FR")]
 
 
 def test_clone_keeps_the_source_state_at_the_time_of_the_action():
@@ -1392,10 +1531,12 @@ def test_captured_audio_tracks_of_the_same_language_and_codec_are_told_apart_by_
     table[0].title, table[1].enabled = "", False
     profile = _capture(*table)
     first = apply_decision_profile(profile, pair(), from_current_state=True)
+    _clean_report(first)
+    assert [(t.mkv_tid, t.title, t.enabled) for t in first.tracks] == [(1, "", True), (2, "Commentaire", False)]
+    before = _states(first.tracks)  # avant la deuxième application (mêmes objets)
     second = apply_decision_profile(profile, first.tracks, from_current_state=True)
-    for result in (first, second):
-        _clean_report(result)
-        assert [(t.mkv_tid, t.title, t.enabled) for t in result.tracks] == [(1, "", True), (2, "Commentaire", False)]
+    _clean_report(second)
+    assert _states(second.tracks) == before
 
 
 def test_no_file_title_criterion_when_the_file_has_no_title():
