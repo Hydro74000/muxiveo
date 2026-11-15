@@ -8,6 +8,8 @@ avec le bloc ``encode``) ; collisions de sorties refusées avant le premier épi
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,13 +166,15 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
         recipe, keep_master_audio_langs=request.keep_master_audio, donor_audio_langs=request.donor_audio_langs,
         donor_sub_langs=request.donor_sub_langs, exclude_languages=request.exclude_langs,
         sync_strategy=request.sync, manual_shift_ms=request.shift_ms, sync_mode=chosen("sync_mode"),
-        sync_subtitles=chosen("sync_subtitles"),
+        sync_subtitles=chosen("sync_subtitles"), crossfade_ms=chosen("crossfade_ms"),
         cadence_auto_apply=common.cadence_auto if request.recipe is None or not common.cadence_auto else None,
         cadence_audio_method=common.cadence_method if common.cadence_method != "auto" else None)
     if request.shift_ms is not None and recipe.sync_strategy != "manual":
         raise JobError("--shift-ms s'utilise avec --sync manual.", EXIT_ARGS)
     if common.forced_threshold <= 0 or common.drift_threshold_ms <= 0 or not 0 <= (common.crossfade_ms or 0) <= 1000:
         raise JobError("Seuils hybrides invalides.", EXIT_ARGS)
+    # Fondu effectif (recette, sauf option explicite) : le même pour la préparation, le résultat et --save-recipe.
+    common = dataclasses.replace(common, crossfade_ms=recipe.crossfade_ms)
     return StudioSpec(
         sources=tuple(sources), output_dir=Path(request.output_dir).expanduser().resolve(),
         matching=MATCHING[request.matching],

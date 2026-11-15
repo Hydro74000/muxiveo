@@ -86,3 +86,28 @@ def test_cli_payload_is_a_valid_request():
     assert payload["keep_master_audio"] == ["eng", "jpn"] and payload["encode"]["video"]["default"]["codec"] == "libx265"
     request = HybridPlanRequest.parse(payload, allow_relative=True)[0]
     assert request.matching == "fuzzy" and request.export_jobs == Path("/jobs") and request.shift_ms == -80
+
+
+
+@pytest.mark.parametrize("recipe_fade, option, expected", [(20, None, 20), (80, "20", 20), (None, None, 80),
+                                                         (None, "30", 30)])
+def test_crossfade_of_the_recipe_reaches_the_preparation_and_the_saved_recipe(tmp_path, recipe_fade, option,
+                                                                             expected):
+    """Audit 29 : fondu de la recette utilisé sans option explicite ; option explicite prioritaire ; préparation,
+    recette renvoyée et recette sauvegardée identiques."""
+    from types import SimpleNamespace as NS
+
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops.hybrid import _spec
+
+    argv = ["hybrid", "--ref", str(tmp_path / "m.mkv"), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path),
+            "--plan"]
+    if recipe_fade is not None:
+        path = tmp_path / "r.json"
+        path.write_text(json.dumps(HybridRecipe(crossfade_ms=recipe_fade).to_dict()), encoding="utf-8")
+        argv += ["--recipe", str(path)]
+    if option is not None:
+        argv += ["--crossfade-ms", option]
+    request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
+    spec = _spec(request, ExecutionContext.create(NS(), ListSink()))
+    assert spec.recipe.crossfade_ms == spec.common.crossfade_ms == expected
