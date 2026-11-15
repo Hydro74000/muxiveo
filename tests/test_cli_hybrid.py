@@ -91,10 +91,9 @@ def test_cli_payload_is_a_valid_request():
 
 @pytest.mark.parametrize("recipe_fade, option, expected", [(20, None, 20), (80, "20", 20), (None, None, 80),
                                                          (None, "30", 30), (20, "80", 80)])
-def test_crossfade_of_the_recipe_reaches_the_preparation_and_the_saved_recipe(tmp_path, recipe_fade, option,
-                                                                             expected):
-    """Audit 29 : fondu de la recette utilisé sans option explicite ; option explicite prioritaire ; préparation,
-    recette renvoyée et recette sauvegardée identiques."""
+def test_crossfade_of_the_recipe_is_resolved_by_the_spec(tmp_path, recipe_fade, option, expected):
+    """Audit 29 : fondu effectif résolu par ``_spec`` (recette sans option, option saisie prioritaire) ; le parcours
+    complet préparation / résultat / sauvegarde est vérifié par ``test_hybrid_plan_uses_one_effective_recipe_…``."""
     from types import SimpleNamespace as NS
 
     from core.service import ExecutionContext, ListSink
@@ -194,3 +193,37 @@ def test_absent_cadence_options_keep_their_historical_defaults_outside_hybrid():
 
     common = JobOptions().to_common(Overrides())
     assert (common.cadence_auto, common.cadence_method) == (True, "auto")
+
+
+@pytest.mark.parametrize("given, expected", [
+    ([], (20, False, "asetrate")),
+    (["--crossfade-ms", "80", "--cadence-auto", "--cadence-method", "auto"], (80, True, "auto")),
+])
+def test_hybrid_plan_uses_one_effective_recipe_for_preparation_result_and_saved_recipe(tmp_path, monkeypatch,
+                                                                                        given, expected):
+    """Audits 29–32 : par l'opération ``hybrid.plan`` (requête du CLI), la recette reçue par la préparation, celle du
+    résultat et celle de ``--save-recipe`` portent le même fondu et la même cadence."""
+    from core.config import AppConfig
+    from core.service import ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+    from core.workflows.hybrid_matrix import MatrixEpisode
+
+    recipe_path, saved = tmp_path / "r.json", tmp_path / "effective.json"
+    recipe_path.write_text(json.dumps(HybridRecipe(crossfade_ms=20, cadence_auto_apply=False,
+                                                   cadence_audio_method="asetrate").to_dict()), encoding="utf-8")
+    seen = []
+
+    def prepare(episode, recipe, *_args, **_kwargs):
+        seen.append((recipe.crossfade_ms, recipe.cadence_auto_apply, recipe.cadence_audio_method))
+        raise RuntimeError("préparation interceptée")
+
+    monkeypatch.setattr("core.service.ops.hybrid.plan_episodes", lambda spec, logger: [
+        MatrixEpisode(season=1, episode=1, master_file=tmp_path / "m.mkv", donor_files=[])])
+    monkeypatch.setattr("core.jobs.hybrid_studio.prepare_matrix_episode", prepare)
+    argv = ["hybrid", "--ref", str(tmp_path / "m.mkv"), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path),
+            "--recipe", str(recipe_path), "--plan", "--save-recipe", str(saved), *given]
+    payload = hybrid_payload(build_parser().parse_args(argv))
+    result = call(CATALOG, "hybrid.plan", payload, ExecutionContext.create(AppConfig(), ListSink()))
+    assert seen == [expected]
+    for recipe in (result.recipe, json.loads(saved.read_text(encoding="utf-8"))):
+        assert (recipe["crossfade_ms"], recipe["cadence_auto_apply"], recipe["cadence_audio_method"]) == expected

@@ -1004,10 +1004,11 @@ def test_cadence_resolution_failure_prevents_processing(panel, tmp_path, monkeyp
 
 
 
-def test_imported_recipe_restores_its_controls_and_invalidates_the_prepared_plan(panel, qt_app, tmp_path,
-                                                                                  monkeypatch):
+def test_imported_recipe_restores_its_controls_and_changes_the_settings_signature(panel, qt_app, tmp_path,
+                                                                                    monkeypatch):
     """Audits 26–27 : import réel d'une recette (étiquette de sortie, chapitres, fondu) → fondu restauré dans son
-    contrôle (utilisé par la préparation), signature des réglages changée (plan repréparé à l'export)."""
+    contrôle (utilisé par la préparation) et signature des réglages changée (critère de repréparation à l'export ;
+    la conservation des plans est vérifiée par ``test_individual_preparation_with_changed_controls_…``)."""
     from dataclasses import replace
 
     from core.workflows.hybrid_matrix import HybridRecipe
