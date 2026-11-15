@@ -1010,6 +1010,7 @@ def _apply_rule_action(
     conflict_choices: Mapping[str, str] | None,
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
+    variant_clears: frozenset[str] = frozenset(),
 ) -> None:
     action_name = _action_type(action)
     tags = temporary_tags_by_entry_id.setdefault(track.entry_id, set())
@@ -1151,6 +1152,7 @@ def _apply_rule_action(
             report=report,
             source_index_by_file_id=source_index_by_file_id,
             variables=variables,
+            variant_clears=variant_clears,
         )
 
 
@@ -1164,6 +1166,7 @@ def _apply_audio_variant_action(
     report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
+    variant_clears: frozenset[str] = frozenset(),
 ) -> None:
     codec = str(action.get("codec") or action.get("target_codec") or "copy").strip()
     title_pattern = str(action.get("title_pattern") or action.get("pattern") or "")
@@ -1196,7 +1199,7 @@ def _apply_audio_variant_action(
     language = normalize_lang(raw_language, title)
     existing = _find_existing_variant(
         tracks, source_track, codec=codec, title=title, language=language,
-        clear_title=clear_title, clear_language=clear_language,
+        clear_title=clear_title, clear_language=clear_language, reserved_for_clear=variant_clears,
     )
     if existing is None:
         variant = clone_track_entry(source_track)
@@ -1239,10 +1242,17 @@ def _find_existing_variant(
     language: str,
     clear_title: bool = False,
     clear_language: bool = False,
+    reserved_for_clear: frozenset[str] = frozenset(),
 ) -> TrackEntry | None:
-    """Variante déjà créée : valeur demandée identique ; effacement demandé → valeur vide seulement (une
-    variante nommée n'est jamais reprise puis effacée) ; ni l'un ni l'autre → toute valeur."""
+    """Variante déjà créée, indépendamment de l'ordre des actions.
+
+    Valeur demandée → identique ; effacement → valeur vide seulement. Héritage du titre (ni valeur ni effacement) :
+    d'abord la variante au titre de la piste source, sinon toute variante (profils existants : variante renommée
+    par une autre règle), sauf une variante vidée alors que la source porte un titre quand le profil demande
+    ailleurs cet effacement (``reserved_for_clear``) : elle revient à cette demande.
+    """
     normalized_codec = source_track.codec if not codec or codec.lower() == "copy" else codec.upper()
+    candidates: list[TrackEntry] = []
     for track in tracks:
         if not track.is_new or track.source_entry_id != source_track.entry_id:
             continue
@@ -1256,8 +1266,31 @@ def _find_existing_variant(
             continue
         if clear_language and track.language:
             continue
+        candidates.append(track)
+    if title or clear_title:
+        return candidates[0] if candidates else None
+    inherited = source_track.title or ""
+    preferred = next((track for track in candidates if track.title == inherited), None)
+    if preferred is not None:
+        return preferred
+    for track in candidates:
+        if "title" in reserved_for_clear and inherited and not track.title:
+            continue
         return track
     return None
+
+
+def _profile_variant_clears(profile: Mapping[str, Any]) -> frozenset[str]:
+    """Champs (titre, langue) dont le profil demande l'effacement sur une variante (``clear``)."""
+    fields: set[str] = set()
+    for rule in profile.get("rules", []) if isinstance(profile.get("rules"), list) else []:
+        actions = rule.get("actions", []) if isinstance(rule, Mapping) else []
+        for action in actions if isinstance(actions, list) else []:
+            if isinstance(action, Mapping) and action.get("type") == "create_audio_variant":
+                clear = action.get("clear")
+                if isinstance(clear, list):
+                    fields.update(str(item) for item in clear if item in ("title", "language"))
+    return frozenset(fields)
 
 
 def apply_decision_profile(
@@ -1306,6 +1339,7 @@ def _apply_decision_profile_rules(
     original_tracks = [track for track in working if not track.is_new]
     variables = _profile_variables(profile.get("variables"))
     temporary_tags_by_entry_id: dict[str, set[str]] = {track.entry_id: set() for track in working}
+    variant_clears = _profile_variant_clears(profile)
     order_priorities: dict[str, int] = {}
     proposed: dict[tuple[str, str], dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -1392,6 +1426,7 @@ def _apply_decision_profile_rules(
                     conflict_choices=conflict_choices,
                     source_index_by_file_id=source_index_by_file_id,
                     variables=variables,
+                    variant_clears=variant_clears,
                 )
             report["applied_rules"] += 1
 
