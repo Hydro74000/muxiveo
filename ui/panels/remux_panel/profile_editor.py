@@ -527,6 +527,11 @@ class DecisionProfileEditorDialog(QDialog):
         self._action_language = KeywordLineEdit()
         self._title_pattern = KeywordLineEdit()
         self._title_pattern.setPlaceholderText("{lang_name} {codec} {channels} {audio_object}")
+        # Effacement explicite (action à valeur vide) : distinct d'un champ vide (aucune action).
+        self._action_language_clear = QCheckBox(translate_text("Effacer"))
+        self._title_clear = QCheckBox(translate_text("Effacer"))
+        self._action_language_clear.toggled.connect(self._sync_clear_fields)
+        self._title_clear.toggled.connect(self._sync_clear_fields)
         self._action_flags = KeywordLineEdit()
         self._action_flags.setPlaceholderText("default, !forced")
         self._action_tag = KeywordLineEdit()
@@ -538,8 +543,10 @@ class DecisionProfileEditorDialog(QDialog):
         action_grid.addWidget(self._action_enabled, 0, 1)
         action_grid.addWidget(QLabel(translate_text("Langue")), 1, 0)
         action_grid.addWidget(self._action_language, 1, 1)
+        action_grid.addWidget(self._action_language_clear, 1, 2)
         action_grid.addWidget(QLabel(translate_text("Titre pattern")), 2, 0)
         action_grid.addWidget(self._title_pattern, 2, 1)
+        action_grid.addWidget(self._title_clear, 2, 2)
         action_grid.addWidget(QLabel("Flags"), 3, 0)
         action_grid.addWidget(self._action_flags, 3, 1)
         action_grid.addWidget(QLabel(translate_text("Tags piste")), 4, 0)
@@ -571,7 +578,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_preferred_keywords,
             self._action_enabled,
             self._action_language,
+            self._action_language_clear,
             self._title_pattern,
+            self._title_clear,
             self._action_flags,
             self._action_tag,
             self._action_order,
@@ -769,7 +778,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_preferred_keywords,
             self._action_enabled,
             self._action_language,
+            self._action_language_clear,
             self._title_pattern,
+            self._title_clear,
             self._action_flags,
             self._action_tag,
             self._action_order,
@@ -795,7 +806,9 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_keywords.clear()
             self._match_preferred_keywords.clear()
             self._action_language.clear()
+            self._action_language_clear.setChecked(False)
             self._title_pattern.clear()
+            self._title_clear.setChecked(False)
             self._action_flags.clear()
             self._action_tag.clear()
             self._action_order.setValue(0)
@@ -825,8 +838,13 @@ class DecisionProfileEditorDialog(QDialog):
             self._set_combo_data(self._action_enabled, enabled_action.get("value") if isinstance(enabled_action, dict) else None)
             lang_action = next((action for action in actions if action.get("type") == "set_language"), None)
             self._action_language.setText(str(lang_action.get("value") or "") if isinstance(lang_action, dict) else "")
+            self._action_language_clear.setChecked(
+                isinstance(lang_action, dict) and not str(lang_action.get("value") or ""))
             title_action = next((action for action in actions if action.get("type") == "set_title"), None)
             self._title_pattern.setText(str(title_action.get("pattern") or title_action.get("value") or "") if isinstance(title_action, dict) else "")
+            self._title_clear.setChecked(
+                isinstance(title_action, dict)
+                and not str(title_action.get("pattern") or title_action.get("value") or ""))
             flag_action = next((action for action in actions if action.get("type") == "set_flags"), None)
             self._action_flags.setText(self._format_flag_action_values(flag_action.get("value", flag_action.get("flags", {})) if isinstance(flag_action, dict) else {}))
             tag_action = next((action for action in actions if action.get("type") == "add_track_tags"), None)
@@ -856,12 +874,21 @@ class DecisionProfileEditorDialog(QDialog):
             self._match_preferred_keywords,
             self._action_enabled,
             self._action_language,
+            self._action_language_clear,
             self._title_pattern,
+            self._title_clear,
             self._action_flags,
             self._action_tag,
             self._action_order,
         ):
             widget.blockSignals(False)
+        self._sync_clear_fields()
+
+    def _sync_clear_fields(self, *_args: Any) -> None:
+        """Champ grisé quand « Effacer » est coché (la valeur saisie n'est pas écrite)."""
+        for check, field in ((self._action_language_clear, self._action_language),
+                             (self._title_clear, self._title_pattern)):
+            field.setEnabled(check.isEnabled() and not check.isChecked())
 
     @staticmethod
     def _set_combo_data(combo: QComboBox, value: Any) -> None:
@@ -1161,10 +1188,14 @@ class DecisionProfileEditorDialog(QDialog):
         if enabled_value is not None:
             actions.append({"type": "set_enabled", "value": bool(enabled_value)})
         language = self._action_language.text().strip()
-        if language:
+        if self._action_language_clear.isChecked():
+            actions.append({"type": "set_language", "value": ""})
+        elif language:
             actions.append({"type": "set_language", "value": language})
         pattern = self._title_pattern.text().strip()
-        if pattern:
+        if self._title_clear.isChecked():
+            actions.append({"type": "set_title", "value": ""})
+        elif pattern:
             action = {"type": "set_title"}
             if "{" in pattern and "}" in pattern:
                 action["pattern"] = pattern

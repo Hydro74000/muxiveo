@@ -2658,6 +2658,45 @@ class TestRemuxPanelDecisionProfiles:
         assert by_field["codec_atmos"]["required"] is False
         dialog.close()
 
+    def test_profile_editor_keeps_clear_actions_through_edit_save_and_reload(self, qt_app, tmp_path):
+        """Effacements capturés (titre, langue) : conservés par l'éditeur, la sauvegarde et le rechargement."""
+        from core.profiles.decision import (
+            DecisionProfileManager, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def fresh():
+            return _track(1, "audio", file_id="fid", language="fr-FR", title="Audio original",
+                          orig_language="fr-FR", orig_title="Audio original")
+
+        cleared = fresh()
+        cleared.title = cleared.language = ""
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=[cleared])],
+                             output=tmp_path / "o.mkv", track_order=[(0, 1, cleared.entry_id)])
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=remux_config_to_decision_profile(
+            config, name="Effacer"))
+        assert dialog._title_clear.isChecked() and dialog._action_language_clear.isChecked()
+        assert not dialog._title_pattern.isEnabled() and not dialog._action_language.isEnabled()
+        dialog._action_order.setValue(7)  # autre champ modifié
+        actions = dialog.profile()["rules"][0]["actions"]
+        assert {"type": "set_title", "value": ""} in actions
+        assert {"type": "set_language", "value": ""} in actions
+        manager.save(dialog.profile())
+        dialog.close()
+
+        reloaded = DecisionProfileEditorDialog(manager=manager, profile=manager.load("Effacer"))
+        target = fresh()
+        apply_decision_profile(reloaded.profile(), [target])
+        assert (target.title, target.language) == ("", "")
+        reloaded._title_clear.setChecked(False)  # décoché : plus aucune action de titre
+        assert reloaded._title_pattern.isEnabled()
+        assert not [a for a in reloaded.profile()["rules"][0]["actions"] if a["type"] == "set_title"]
+        reloaded._action_language.setText("en-US")
+        reloaded._action_language_clear.setChecked(True)  # coché : la valeur saisie n'est pas écrite
+        assert {"type": "set_language", "value": ""} in reloaded.profile()["rules"][0]["actions"]
+        reloaded.close()
+
     def test_profile_editor_no_commentary_template_prefills_visible_criteria(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
