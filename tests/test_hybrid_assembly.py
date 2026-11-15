@@ -817,7 +817,7 @@ def test_rechecked_variant_source_is_selected_not_reported_missing(assembly, tmp
     assert ("EAC3", False, True) in vf and ("AC3", True, True) in vf
 
 
-def test_studio_prunes_variant_sources_rechecked_in_the_witness(assembly, qt_app):
+def test_studio_keeps_variant_sources_across_recheck_and_uncheck(assembly, qt_app):
     from core.inspector import AudioTrack, SubtitleTrack, VideoTrack
     from ui.panels.hybrid_studio import HybridStudio
 
@@ -848,8 +848,14 @@ def test_studio_prunes_variant_sources_rechecked_in_the_witness(assembly, qt_app
         vf_item["checkbox"].setChecked(True)
         other["checkbox"].setChecked(False)
         panel.apply_witness_recipe()
-        assert panel.recipe.variant_source_choices == (other["choice"],)  # recochée : retirée des sources
-        assert panel.recipe.witness_variants == 1
+        # Audit 23 : provenance gardée (une source recochée est retenue par la sélection, et redevient candidate
+        # de clonage une fois décochée).
+        assert panel.recipe.variant_source_choices == (vf_item["choice"], other["choice"])
+        assert vf_item["choice"] in panel.recipe.track_choices
+        vf_item["checkbox"].setChecked(False)
+        panel.apply_witness_recipe()
+        assert panel.recipe.variant_source_choices == (vf_item["choice"], other["choice"])
+        assert vf_item["choice"] not in panel.recipe.track_choices and panel.recipe.witness_variants == 1
     finally:
         panel.close()
 
@@ -866,3 +872,10 @@ def test_recipe_choices_are_type_checked(field, value):
     for payload in ({"witness_variants": 1, "variant_source_choices": [raw]}, {"track_choices": [raw]}):
         with pytest.raises(ValueError, match="piste invalide"):
             HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, **payload})
+
+
+@pytest.mark.parametrize("value", [2, False, {}, "", "x"])
+def test_recipe_containers_are_validated(value):
+    for key in ("track_choices", "track_overrides"):
+        with pytest.raises(ValueError, match=key):
+            HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, key: value})
