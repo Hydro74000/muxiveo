@@ -1186,6 +1186,7 @@ class _VariantRequest:
     display_info: str | None
     match_bitrate: bool = False  # capture : variantes jumelles distinguées par leur débit
     twin: int | None = None  # capture : rang d'une variante jumelle (variante propre, jamais partagée)
+    bitrate_kbps: int = 0  # débit demandé (0 : aucun) — population du rang de jumelle
 
     def bitrate_matches(self, track: TrackEntry) -> bool:
         """Critère de débit (``match_bitrate``) : variante au débit demandé seulement."""
@@ -1285,6 +1286,7 @@ def _apply_audio_variant_action(
         match_bitrate=bool(action.get("match_bitrate")),
         twin=(int(action["twin"]) if isinstance(action.get("twin"), int) and not isinstance(action.get("twin"), bool)
               else None),
+        bitrate_kbps=int(action.get("bitrate_kbps") or 0),
     ))
 
 
@@ -1330,8 +1332,11 @@ def _variant_preference(requests: list[_VariantRequest], track: TrackEntry, grou
     if not _variant_is_fixed_point(requests, track):
         return 0
     twin = requests[0].twin
-    if twin is not None and 0 < twin <= len(group) and group[twin - 1] is track:
-        return 2
+    if twin is not None:
+        # Même population qu'à la capture : jumelles de même débit (rang compté parmi elles).
+        group = [item for item in group if _bitrate_from_display(item.display_info) == requests[0].bitrate_kbps]
+        if 0 < twin <= len(group) and group[twin - 1] is track:
+            return 2
     return 1
 
 
@@ -1802,12 +1807,14 @@ def remux_config_to_decision_profile(
         by_entry_id = {track.entry_id: track for track in original_tracks}
         twins: dict[tuple[str, str, str, str], int] = {}
         twin_rank: dict[str, int] = {}
-        twin_members: dict[tuple[str, str, str, str], list[tuple[int, int, str]]] = {}
+        twin_members: dict[tuple[str, str, str, str, str], list[tuple[int, int, str]]] = {}
         for order, track in enumerate(all_tracks):
             if track.is_new and track.track_type == "audio":
-                key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
-                twin_members.setdefault(key, []).append((positions.get(track.entry_id, 1_000_000), order,
-                                                         track.entry_id))
+                # Rang compté parmi les jumelles de même débit (population relue à l'application).
+                member_key = (track.source_entry_id, track.codec.upper(), track.title,
+                              normalize_lang(track.language, ""), str(_bitrate_from_display(track.display_info)))
+                twin_members.setdefault(member_key, []).append((positions.get(track.entry_id, 1_000_000), order,
+                                                                track.entry_id))
         for members in twin_members.values():
             for rank, (_position, _order, entry_id) in enumerate(sorted(members), start=1):
                 twin_rank[entry_id] = rank

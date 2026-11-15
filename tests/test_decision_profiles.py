@@ -1963,3 +1963,66 @@ def test_capture_clears_an_empty_language_next_to_a_sibling_that_has_one(fresh_t
     _clean_report(result)
     assert sorted((t.language, t.flag_default, t.flag_commentary) for t in result.tracks if t.is_new) == [
         ("", False, True), ("fr-FR", True, False)]
+
+
+
+@pytest.mark.parametrize("layout", ["other_first", "other_between", "other_last"])
+@pytest.mark.parametrize("clear_titles", [False, True])
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_identical_twins_stay_stable_next_to_a_variant_of_another_bitrate(layout, clear_titles, fresh_tracks):
+    """Audit 35 : jumelles identiques à 640 kb/s à côté d'une variante à 320 kb/s (avant, entre, après) → identifiants
+    et ordre stables à chaque réapplication."""
+    def fresh():
+        source = _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+        source.enabled = False
+        return source
+
+    source = fresh()
+    other, first, second = (clone_track_entry(source) for _ in range(3))
+    other.display_info = "5.1  320 kbps"
+    for variant in (other, first, second):
+        variant.enabled = True
+        if clear_titles:
+            variant.title = ""
+    ordered = {"other_first": [other, first, second], "other_between": [first, other, second],
+               "other_last": [first, second, other]}[layout]
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, *ordered])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, variant.entry_id) for variant in ordered],
+    )
+    profile = remux_config_to_decision_profile(config, name="debits")
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, *ordered])  # ordre affiché
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    if not fresh_tracks:
+        assert [t.entry_id for t in result.tracks if t.is_new] == [variant.entry_id for variant in ordered]
+    assert [t.display_info.split("  ")[-1] for t in result.tracks if t.is_new] == [
+        v.display_info.split("  ")[-1] for v in ordered]
+    before = _states(result.tracks)
+    for _ in range(3):
+        result = apply_decision_profile(profile, result.tracks, from_current_state=True)
+        _clean_report(result)
+        assert _states(result.tracks) == before and result.report["created_variants"] == []
+
+
+def test_twins_listed_out_of_output_order_converge_after_the_first_application():
+    """Audit 34 (entrée littérale) : liste A, B mais sortie B, A. Le panneau transmet toujours l'ordre affiché ; avec
+    une liste dans un autre ordre, la première application aligne les identifiants sur l'ordre de sortie, puis tout
+    reste stable (aucune création, propriétés identiques)."""
+    source = _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+    source.enabled = False
+    first, second = clone_track_entry(source), clone_track_entry(source)
+    first.enabled = second.enabled = True
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, first, second])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, second.entry_id), (0, 1, first.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="liste")
+    result = apply_decision_profile(profile, copy.deepcopy([source, first, second]), from_current_state=True)
+    assert result.report["created_variants"] == []
+    before = _states(result.tracks)
+    for _ in range(3):
+        result = apply_decision_profile(profile, result.tracks, from_current_state=True)
+        assert _states(result.tracks) == before and result.report["created_variants"] == []
