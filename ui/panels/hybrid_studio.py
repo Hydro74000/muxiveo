@@ -1274,6 +1274,9 @@ class HybridStudio(QWidget):
         self.mirror.setChecked(recipe.sync_subtitles == "mirror")
         self.cadence_auto_apply.setChecked(recipe.cadence_auto_apply)
         self.manual_shift.setValue(recipe.manual_shift_ms)
+        crossfade = self.controls["crossfade-ms"]
+        if isinstance(crossfade, QSpinBox):
+            crossfade.setValue(recipe.crossfade_ms)  # sinon la préparation reprend le contrôle
         witness = getattr(self, "_witness_result", None)
         if witness is not None:
             self._populate_witness_table(*witness)
@@ -1585,8 +1588,24 @@ class HybridStudio(QWidget):
             self.sync_strategy.currentData(), self.manual_shift.value(),
             self.mode.currentData(), self.mirror.isChecked(), self.detect_cuts.isChecked(),
             self.cadence_auto_apply.isChecked(), self.cadence_method_combo.currentData(),
-            # Recette entière (chapitres, étiquette de sortie, variantes… : tout champ importé invalide le plan).
-            json.dumps(self.recipe.to_dict(), sort_keys=True, ensure_ascii=False),
+            # Recette effective entière (complétée par les contrôles, comme la préparation) : tout champ importé
+            # (chapitres, étiquette de sortie, variantes…) invalide le plan, jamais un simple rattrapage des
+            # contrôles dans ``self.recipe``.
+            json.dumps(self._effective_recipe().to_dict(), sort_keys=True, ensure_ascii=False),
+        )
+
+    def _effective_recipe(self) -> HybridRecipe:
+        """Recette telle que la préparation l'utilise : synchro, cadence et fondu lus dans les contrôles."""
+        return replace(
+            self.recipe,
+            sync_mode=self.mode.currentData() or "physical",
+            sync_subtitles="mirror" if self.mirror.isChecked() else "none",
+            sync_strategy=self.sync_strategy.currentData() or "auto",
+            manual_shift_ms=self.manual_shift.value(),
+            cadence_auto_apply=self.cadence_auto_apply.isChecked(),
+            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
+            crossfade_ms=(int(crossfade.value()) if isinstance(crossfade := self.controls["crossfade-ms"], QSpinBox)
+                          else self.recipe.crossfade_ms),
         )
 
     def _source_signature(self):

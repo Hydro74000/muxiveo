@@ -1004,20 +1004,51 @@ def test_cadence_resolution_failure_prevents_processing(panel, tmp_path, monkeyp
 
 
 
-@pytest.mark.parametrize("field, value", [("output_tag", "NOUVEAU"), ("keep_master_chapters", False),
-                                          ("crossfade_ms", 20)])
-def test_imported_recipe_changes_invalidate_the_prepared_plan(qt_app, field, value):
-    """Audit 26 : tout champ de recette (étiquette de sortie, chapitres…) entre dans la signature des réglages :
-    un plan préparé avant l'import est repréparé à l'export."""
+def test_imported_recipe_restores_its_controls_and_invalidates_the_prepared_plan(panel, qt_app, tmp_path,
+                                                                                  monkeypatch):
+    """Audits 26–27 : import réel d'une recette (étiquette de sortie, chapitres, fondu) → fondu restauré dans son
+    contrôle (utilisé par la préparation), signature des réglages changée (plan repréparé à l'export)."""
     from dataclasses import replace
 
-    from core.config import AppConfig
-    from ui.panels.hybrid_studio import HybridStudio
+    from core.workflows.hybrid_matrix import HybridRecipe
 
-    panel = HybridStudio(AppConfig())
-    try:
-        before = panel._settings_signature()
-        panel.recipe = replace(panel.recipe, **{field: value})
-        assert panel._settings_signature() != before
-    finally:
-        panel.close()
+    before = panel._settings_signature()
+    recipe = replace(HybridRecipe(), output_tag="NOUVEAU", keep_master_chapters=False, crossfade_ms=20)
+    path = tmp_path / "recette.json"
+    path.write_text(json.dumps(recipe.to_dict()), encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName", lambda *_a, **_k: (str(path), ""))
+    panel.import_recipe()
+    assert panel.controls["crossfade-ms"].value() == 20
+    effective = panel._effective_recipe()
+    assert (effective.crossfade_ms, effective.output_tag, effective.keep_master_chapters) == (20, "NOUVEAU", False)
+    assert panel._settings_signature() != before
+
+
+@pytest.mark.parametrize("change", ["crossfade", "sync_strategy"])
+def test_individual_preparation_with_changed_controls_survives_the_export(panel, season, monkeypatch, qt_app,
+                                                                          tmp_path, change):
+    """Audit 27 : contrôle modifié avant une préparation individuelle → l'export d'un lot incomplet garde le plan
+    préparé (le rattrapage de la recette par les contrôles ne change pas la signature)."""
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    if change == "crossfade":
+        panel.controls["crossfade-ms"].setValue(40)
+    else:
+        panel.sync_strategy.setCurrentIndex(panel.sync_strategy.findData("manual"))
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    assert 0 in panel.jobs
+    edited = panel.jobs[0]
+    season.clear()
+    saved = []
+
+    def save(*_args):
+        saved.append(dict(panel.jobs))
+        panel._finish_operation("finished", "test")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    monkeypatch.setattr(panel, "_save_jobs", save)
+    panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert saved and saved[0].get(0) is edited  # plan préparé individuellement conservé
