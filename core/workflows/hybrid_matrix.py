@@ -397,7 +397,11 @@ class HybridRecipe:
             return parsed
 
         choices = data.get("track_choices")
+        if choices is not None and not isinstance(choices, list):
+            raise ValueError("Recette : track_choices attendu liste de pistes ou null.")
         recipe.track_choices = None if choices is None else tuple(choice(item) for item in choices)
+        if not isinstance(data.get("track_overrides", []), (list, type(None))):
+            raise ValueError("Recette : track_overrides attendu liste.")
         overrides: dict[HybridTrackChoice, dict[str, str]] = {}
         for item in data.get("track_overrides") or ():
             values = item.get("set") if isinstance(item, Mapping) else None
