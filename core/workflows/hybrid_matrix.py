@@ -454,9 +454,10 @@ class HybridRecipe:
                 "master" if index == master_index else f"src_{index + 1}",
                 [replace(track, enabled=True) for track in originals],
             )
+            # Toute piste d'origine d'une variante cochée, cochée ou non : décochée plus tard dans le Studio, elle
+            # reste candidate de clonage (cochée, la sélection la retient simplement).
             variant_sources.extend(
-                choice for choice, track in zip(choices, originals)
-                if track.entry_id in wanted and not track.enabled
+                choice for choice, track in zip(choices, originals) if track.entry_id in wanted
             )
         recipe.variant_source_choices = tuple(variant_sources)
         recipe.cadence_auto_apply = getattr(remux_config, "cadence_auto_apply", True)

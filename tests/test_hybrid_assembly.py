@@ -717,13 +717,13 @@ def test_witness_with_an_audio_variant_builds_an_applicable_recipe(assembly, tmp
     recipe.sync_strategy = "none"
     assert recipe.witness_variants == 1
     assert all(choice.codec != "AC3" for choice in recipe.track_choices or ())
-    assert len(recipe.variant_source_choices) == (0 if original_checked else 1)
+    assert len(recipe.variant_source_choices) == 1  # provenance gardée, original coché ou non
     if path == "json":
         recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
     elif path == "overrides":
         recipe = recipe_with_overrides(recipe, crossfade_ms=20)
     assert recipe.witness_variants == 1
-    assert len(recipe.variant_source_choices) == (0 if original_checked else 1)
+    assert len(recipe.variant_source_choices) == 1
 
     with pytest.raises(ValueError, match="variante"):
         prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), CommonOptions(), Logger())
@@ -879,3 +879,24 @@ def test_recipe_containers_are_validated(value):
     for key in ("track_choices", "track_overrides"):
         with pytest.raises(ValueError, match=key):
             HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, key: value})
+
+
+def test_original_checked_at_capture_then_unchecked_still_recreates_its_variant(assembly, tmp_path):
+    """Audit 24 : original coché au moment de la capture, décoché ensuite (Studio) → toujours candidat de clonage,
+    variante recréée, original écarté de la sortie."""
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    episode, _recipe, sources = assembly
+    witness = _variant_witness(sources, tmp_path, original_checked=True)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.sync_strategy = "none"
+    source_choice = recipe.variant_source_choices[0]
+    assert source_choice in recipe.track_choices
+    recipe.track_choices = tuple(choice for choice in recipe.track_choices if choice != source_choice)  # décochée
+    recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
+    profile_path = tmp_path / "capture.json"
+    profile_path.write_text(json.dumps(remux_config_to_decision_profile(witness, name="Témoin")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    vf = [(t.codec, t.is_new, t.enabled) for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
+    assert ("AC3", True, True) in vf and ("EAC3", False, False) in vf
