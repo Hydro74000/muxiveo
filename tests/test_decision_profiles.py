@@ -1664,3 +1664,50 @@ def test_variant_keeps_the_file_language_and_title_of_its_source_stream():
     clone = clone_track_entry(empty)
     assert (clone.file_language, clone.file_title) == ("", "")  # valeur physique vide, aucun repli
     assert (track_field_values(clone)["file_language"], track_field_values(clone)["file_title"]) == ("", "")
+
+
+
+# --- Audit 26 : capture du débit d'une variante de même codec, ordre du tableau ---------------------------------
+
+
+def test_capture_keeps_the_bitrate_of_a_same_codec_variant_on_fresh_tracks():
+    def fresh():
+        return _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+
+    source = fresh()
+    variant = clone_track_entry(source)
+    variant.title, variant.display_info = "Compatibilite", "5.1  448 kbps"
+    pure_copy = clone_track_entry(source)
+    pure_copy.title = "Copie"
+    action, copy_action = [rule["actions"][0] for rule in _capture(source, variant, pure_copy)["rules"][-2:]]
+    assert (action["codec"], action["bitrate_kbps"]) == ("ac3", 448)
+    assert copy_action["codec"] == "copy"  # copie réelle (même débit)
+    result = apply_decision_profile(_capture(source, variant, pure_copy), [fresh()], from_current_state=True)
+    _clean_report(result)
+    created = {t.title: t.display_info for t in result.tracks if t.is_new}
+    assert created == {"Compatibilite": "5.1  448 kbps", "Copie": "5.1  640 kbps"}
+
+
+def test_capture_restores_the_table_order_across_sources_and_variants():
+    video = _video(0, "1920x1080")
+    audio = _audio(1, title="VF")
+    other = _audio(0, language="en-US", title="VO")
+    other.file_id = "src1"
+    variant = clone_track_entry(audio)
+    variant.codec = "AC3"
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/a.mkv"), file_index=0, tracks=[video, audio, variant]),
+                 SourceInput(path=Path("/tmp/b.mkv"), file_index=1, tracks=[other])],
+        output=Path("/tmp/out.mkv"),
+        track_order=[(1, 0, other.entry_id), (0, 0, video.entry_id), (0, 1, variant.entry_id),
+                     (0, 1, audio.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="ordre")
+    validate_decision_profile(profile)
+    fresh = [_video(0, "1920x1080"), _audio(1, title="VF"), _audio(0, language="en-US", title="VO")]
+    fresh[2].file_id = "src1"
+    result = apply_decision_profile(profile, fresh, source_index_by_file_id={"src0": 0, "src1": 1},
+                                    from_current_state=True)
+    _clean_report(result)
+    assert [(t.title, t.codec, t.is_new) for t in result.tracks] == [
+        ("VO", "EAC3", False), ("", "HEVC", False), ("VF", "AC3", True), ("VF", "EAC3", False)]

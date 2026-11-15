@@ -1265,8 +1265,16 @@ def _apply_audio_variant_action(
     ))
 
 
-def _write_variant(request: _VariantRequest, variant: TrackEntry, temporary_tags_by_entry_id: dict[str, set[str]]) -> None:
-    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit)."""
+def _write_variant(
+    request: _VariantRequest,
+    variant: TrackEntry,
+    temporary_tags_by_entry_id: dict[str, set[str]],
+    order_priorities: dict[str, int] | None = None,
+) -> None:
+    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit, rang)."""
+    order = request.action.get("order_priority")
+    if order_priorities is not None and isinstance(order, int) and not isinstance(order, bool) and order > 0:
+        order_priorities[variant.entry_id] = order
     if request.display_info is not None:
         variant.codec = request.codec.upper()
         variant.display_info = request.display_info
@@ -1333,6 +1341,7 @@ def _materialize_variant_requests(
     temporary_tags_by_entry_id: dict[str, set[str]],
     report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
+    order_priorities: dict[str, int] | None = None,
 ) -> None:
     """Affecte les demandes de variantes après les règles.
 
@@ -1374,7 +1383,7 @@ def _materialize_variant_requests(
             for position, index in enumerate(clearing[key]):
                 kind = "created_variants" if created and position == 0 else "reused_variants"
                 entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
-                _write_variant(requests[index], variant, temporary_tags_by_entry_id)
+                _write_variant(requests[index], variant, temporary_tags_by_entry_id, order_priorities)
     for index, request in enumerate(requests):
         if request.clear_title or request.clear_language:
             continue
@@ -1392,7 +1401,7 @@ def _materialize_variant_requests(
             tracks.append(variant)
             kind = "created_variants"
         entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
-        _write_variant(request, variant, temporary_tags_by_entry_id)
+        _write_variant(request, variant, temporary_tags_by_entry_id, order_priorities)
     for _index, kind, summary in sorted(entries, key=lambda entry: entry[0]):
         report[kind].append(summary)
 
@@ -1540,6 +1549,7 @@ def _apply_decision_profile_rules(
         temporary_tags_by_entry_id=temporary_tags_by_entry_id,
         report=report,
         source_index_by_file_id=source_index_by_file_id,
+        order_priorities=order_priorities,
     )
 
     selection_policy = profile.get("selection_policy", {})
@@ -1678,6 +1688,15 @@ def remux_config_to_decision_profile(
     """Capture the current remux table as an editable decision-profile v1."""
     all_tracks = [track for source in config.sources for track in source.tracks]
     original_tracks = [track for track in all_tracks if not track.is_new]
+    # Ordre du tableau (``track_order``, sources mêlées et variantes comprises) : rang de sortie de chaque piste.
+    file_index_by_entry = {track.entry_id: source.file_index for source in config.sources for track in source.tracks}
+    positions: dict[str, int] = {}
+    for position, item in enumerate(config.track_order or ()):
+        entry_id = item[2] if len(item) > 2 else next(
+            (track.entry_id for track in original_tracks
+             if file_index_by_entry.get(track.entry_id) == item[0] and int(track.mkv_tid) == int(item[1])), "")
+        if entry_id and entry_id not in positions:
+            positions[entry_id] = position + 1
     groups = [
         {"id": "video", "label": "Video", "enabled": True, "priority": 300},
         {"id": "audio", "label": "Audio", "enabled": True, "priority": 200},
@@ -1704,7 +1723,7 @@ def remux_config_to_decision_profile(
         if include_flags:
             actions.append({"type": "set_flags", "value": _flag_action_payload(track)})
         if include_order and track.enabled:
-            actions.append({"type": "set_order_priority", "value": index + 1})
+            actions.append({"type": "set_order_priority", "value": positions.get(track.entry_id, index + 1)})
         if not actions:
             continue
         rule_id = f"{track.track_type}_{index + 1}"
@@ -1729,7 +1748,13 @@ def remux_config_to_decision_profile(
             source_track = by_entry_id.get(track.source_entry_id)
             if source_track is None:
                 continue
-            codec = track.codec.lower() if track.codec.upper() != source_track.codec.upper() else "copy"
+            bitrate = _bitrate_from_display(track.display_info)
+            # « copy » seulement pour une copie réelle (même codec, même débit) : sinon codec explicite, pour que le
+            # débit soit appliqué à la recréation (le moteur l'ignore avec « copy »).
+            same_bitrate = not bitrate or bitrate == _bitrate_from_display(
+                source_track.orig_display_info or source_track.display_info)
+            codec = ("copy" if track.codec.upper() == source_track.codec.upper() and same_bitrate
+                     else track.codec.lower())
             action: dict[str, Any] = {
                 "type": "create_audio_variant",
                 "codec": codec,
@@ -1749,9 +1774,10 @@ def remux_config_to_decision_profile(
             ]
             if clear:
                 action["clear"] = clear
-            bitrate = _bitrate_from_display(track.display_info)
             if bitrate:
                 action["bitrate_kbps"] = bitrate
+            if include_order and track.enabled and track.entry_id in positions:
+                action["order_priority"] = positions[track.entry_id]
             rules.append(
                 {
                     "id": f"audio_variant_{index + 1}",
