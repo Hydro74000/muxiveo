@@ -874,6 +874,12 @@ def _field_change(
     key = (track.entry_id, field)
     rule_id = str(rule.get("id") or "")
     previous = proposed.get(key)
+    if (previous is not None and previous.get("value") == value and previous.get("rule_id") != rule_id
+            and priority_key < tuple(previous.get("priority_key") or (0, 0))):
+        # Même valeur, priorité plus basse : la priorité retenue reste la plus haute (sinon une règle plus basse
+        # réécrivant la même valeur l'abaissait, et une règle suivante de son niveau entrait en conflit).
+        _assign_track_field(track, field, value)
+        return True
     if previous is None or previous.get("value") == value or previous.get("rule_id") == rule_id:
         proposed[key] = {"rule_id": rule_id, "value": value, "priority_key": priority_key}
         _assign_track_field(track, field, value)

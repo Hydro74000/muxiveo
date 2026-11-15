@@ -3168,6 +3168,26 @@ class TestRemuxPanelDecisionProfiles:
         assert moved["b"] > moved["a"]
         dialog.close()
 
+    def test_profile_editor_rule_move_keeps_valid_a_four_writer_profile_with_repeated_values(self, qt_app, tmp_path):
+        """Audit 30 : A10 X, B9 Y, C9 Y, D9 X (valide) ; A descendue sous B → toujours valide."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": value}]}
+                 for rule_id, priority, value in (("a", 10, "X"), ("b", 9, "Y"), ("c", 9, "Y"), ("d", 9, "X"))]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Quatre", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        result = apply_decision_profile(dialog.profile(), [copy.deepcopy(track)])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["Y"]
+        dialog.close()
+
     def test_profile_editor_rule_move_across_group_priorities_only_reorders_the_list(self, qt_app, tmp_path):
         """Audit 29 : règles de groupes de priorités différentes → priorités inchangées, message explicite (l'ordre
         d'exécution suit les groupes)."""

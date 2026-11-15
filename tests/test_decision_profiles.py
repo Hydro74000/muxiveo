@@ -1781,3 +1781,29 @@ def test_capture_keeps_cleared_twin_variants_apart(cleared, fresh_tracks):
     before = _states(result.tracks)
     again = apply_decision_profile(profile, result.tracks, from_current_state=True)
     assert _states(again.tracks) == before and again.report["created_variants"] == []
+
+
+
+def test_same_value_from_a_lower_rule_keeps_the_winning_priority():
+    """Audit 30 : une règle plus basse réécrivant la même valeur n'abaisse pas la priorité retenue (sinon une règle
+    suivante de son niveau entrait en conflit)."""
+    audio = {"all": [{"field": "type", "op": "is", "value": "audio"}]}
+    profile = {"version": 1, "kind": "decision-profile", "name": "p", "rules": [
+        {"id": "b", "priority": 9, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "Y"}]},
+        {"id": "c", "priority": 7, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "Y"}]},
+        {"id": "d", "priority": 7, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "X"}]},
+    ]}
+    result = apply_decision_profile(profile, [_fresh_audio()])
+    assert result.report["conflicts"] == [] and result.tracks[0].title == "Y"
+
+
+def test_equal_priority_same_value_keeps_the_historical_conflict_identity():
+    """Égalité de priorité : comportement historique (dernière règle de même valeur retenue pour l'identifiant)."""
+    audio = {"all": [{"field": "type", "op": "is", "value": "audio"}]}
+    profile = {"version": 1, "kind": "decision-profile", "name": "p", "rules": [
+        {"id": "a", "priority": 9, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "X"}]},
+        {"id": "b", "priority": 9, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "X"}]},
+        {"id": "c", "priority": 9, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "Y"}]},
+    ]}
+    conflicts = apply_decision_profile(profile, [_fresh_audio()]).report["conflicts"]
+    assert [(c["current_rule_id"], c["new_rule_id"]) for c in conflicts] == [("b", "c")]
