@@ -61,6 +61,7 @@ _FIELD_WEIGHTS = {
     "codec_dtsx": 10,
     "title": 4,
     "source_title": 4,
+    "file_title": 4,
     "flags": 6,
     "flag_enabled": 4,
     "flag_default": 4,
@@ -526,6 +527,10 @@ def _condition_leaf_result(
         matched = _compare_value(actual, op, expected) or (
             similarity > 0 and op not in {"not_is", "ne", "!=", "not_contains", "not_in"}
         )
+    elif field == "file_title" and op in {"is", "eq", "=="}:
+        # Titre textuel : comparaison exacte, jamais la normalisation de langue (titres à tirets).
+        similarity = 0
+        matched = str(actual or "").strip().casefold() == str(expected or "").strip().casefold()
     elif field == "language":
         similarity = 0
         # Forme d'avant la détection de « VFQ » (fr-FR) : une règle déjà enregistrée
@@ -1502,7 +1507,12 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
     items: list[dict[str, Any]] = [_condition("type", "is", track.track_type, required=True)]
     # Langue lue dans le fichier (``file_language``) : stable face aux éditions, aux règles déjà appliquées et à
     # l'application depuis l'état courant du panneau ; jamais la valeur courante.
-    lang = normalize_lang(track.orig_language, track.orig_title)
+    lang = normalize_lang(track.physical_language, track.physical_title)
+    # Titre lu dans le fichier : départage préféré (jamais obligatoire) de pistes de même langue et codec,
+    # stable quand le titre courant est vidé ou modifié.
+    file_title = (
+        [_condition("file_title", "is", track.physical_title, required=False)] if track.physical_title else []
+    )
     file_language = (
         _condition("file_language", "is", lang, required=True)
         if lang else _condition("file_language", "missing", "", required=True)
@@ -1526,6 +1536,7 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
         items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
+        items.extend(file_title)
         channels = _channels_from_display(track.orig_display_info or track.display_info)
         if channels:
             items.append(_condition("channels", "is", channels, required=False))
@@ -1536,8 +1547,7 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
         items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
-        if track.orig_title:
-            items.append(_condition("source_title", "contains", track.orig_title, required=False))
+        items.extend(file_title)
     return {"all": items}
 
 
@@ -1625,8 +1635,8 @@ def remux_config_to_decision_profile(
             # règle, ou celle du fichier) : effacement explicite.
             clear = [
                 name for name, value, current, physical in (
-                    ("title", track.title, source_track.title, source_track.orig_title),
-                    ("language", track.language, source_track.language, source_track.orig_language),
+                    ("title", track.title, source_track.title, source_track.physical_title),
+                    ("language", track.language, source_track.language, source_track.physical_language),
                 )
                 if not (value or "").strip() and ((current or "").strip() or (physical or "").strip())
             ]

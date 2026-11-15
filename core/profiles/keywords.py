@@ -61,6 +61,7 @@ DECISION_KEYWORDS = (
     "file_language",
     "title",
     "source_title",
+    "file_title",
     "codec",
     "codec_raw",
     "codec_name",
@@ -98,7 +99,7 @@ TITLE_KEYWORDS = DECISION_KEYWORDS
 KEYWORD_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Piste", ("type", "source_index", "track_index", "track_tags")),
     ("Langue", ("language", "lang", "lang_name", "source_language", "file_language")),
-    ("Source", ("title", "source_title")),
+    ("Source", ("title", "source_title", "file_title")),
     (
         "Audio",
         (
@@ -530,8 +531,10 @@ def track_field_values(
         "lang": lang,
         "lang_name": lang_name(lang),
         "source_language": source_lang,
-        # Langue lue dans le fichier : jamais modifiée par les éditions, les règles ni l'état du tableau.
-        "file_language": normalize_lang(track.orig_language, track.orig_title),
+        # Langue / titre lus dans le fichier : jamais modifiés par les éditions, les règles ni l'état du tableau
+        # (variante : valeurs du fichier de sa piste source).
+        "file_language": normalize_lang(track.physical_language, track.physical_title),
+        "file_title": track.physical_title,
         "title": track.title,
         "source_title": source_title,
         "codec": codec,

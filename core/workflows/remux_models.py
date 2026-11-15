@@ -100,6 +100,20 @@ class TrackEntry:
     #: (langue, titre) du tableau figés pendant l'application d'un profil depuis l'état courant :
     #: valeurs « source » du profil, même vides. None hors application.
     working_source: tuple[str, str] | None = field(default=None, repr=False)
+    #: Langue / titre lus dans le fichier pour une variante (posés au clonage) ; None : valeurs d'origine
+    #: (``orig_*``) de la piste, lues dans le fichier. "" = valeur physique vide (aucun repli).
+    file_language: str | None = field(default=None, repr=False)
+    file_title: str | None = field(default=None, repr=False)
+
+    @property
+    def physical_language(self) -> str:
+        """Langue lue dans le fichier, jamais modifiée par les éditions ni par les règles (variantes comprises)."""
+        return self.file_language if self.file_language is not None else self.orig_language
+
+    @property
+    def physical_title(self) -> str:
+        """Titre lu dans le fichier, jamais modifié par les éditions ni par les règles (variantes comprises)."""
+        return self.file_title if self.file_title is not None else self.orig_title
 
     def __post_init__(self) -> None:
         if not self.orig_codec:
@@ -467,6 +481,9 @@ def clone_track_entry(
         entry_id=entry_id or uuid4().hex,
         source_entry_id=source_entry_id,
         is_new=True,
+        # Valeurs du fichier propagées (clone de clone compris) ; orig_* = état au clonage (édition détectée).
+        file_language=entry.physical_language,
+        file_title=entry.physical_title,
         orig_language=entry.language,
         orig_title=entry.title,
         orig_flag_enabled=entry.flag_enabled,
