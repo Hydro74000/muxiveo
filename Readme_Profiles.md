@@ -56,7 +56,13 @@ Un titre ou une langue vidés dans la table sont capturés comme un effacement :
 **Effacer** à côté de **Langue** et de **Titre pattern** écrit cet effacement ; un champ vide n'écrit rien. Sans
 `clear`, un `title` ou une `language` vides d'une variante reprennent ceux de la piste source (profils existants
 inchangés). Le drapeau Matroska `FlagEnabled` d'une variante passe par `flags.enabled` ; la clé `enabled` de
-l'action reste la sélection de la piste.
+l'action reste la sélection de la piste. Une variante déjà présente est reprise quel que soit l'ordre des actions :
+valeur demandée identique, effacement → variante vide, héritage → d'abord celle qui porte la valeur de la piste
+source (une variante vidée revient aux demandes d'effacement du profil).
+
+L'éditeur réécrit seulement ce que vous modifiez : une règle ouverte puis enregistrée sans changement ressort
+identique (ordre des actions, actions répétées, paramètres comme `write_mode`, critères qu'il n'affiche pas, par
+exemple les canaux d'une règle capturée) ; un champ modifié remplace ses actions à l'emplacement de la première.
 
 Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
 
@@ -257,11 +263,17 @@ Exemples :
 
 Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
 
+`{file_language}` est la langue lue dans le fichier : contrairement à `{language}` (valeur courante, modifiée par
+les règles déjà appliquées) et à `{source_language}` (état du tableau au départ quand le profil est appliqué depuis
+le panneau), elle ne change jamais. Les règles capturées s'y ancrent (`file_language is fr-FR`, ou `missing` pour une
+piste sans langue) : elles retrouvent la même piste sur un fichier fraîchement inspecté comme sur un tableau déjà
+modifié ou à la deuxième application.
+
 Keywords disponibles au premier lot :
 
 ```text
 {type} {source_index} {track_index}
-{language} {lang} {lang_name} {source_language}
+{language} {lang} {lang_name} {source_language} {file_language}
 {title} {source_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object}
 {atmos} {dtsx} {codec_atmos} {codec_dtsx}
