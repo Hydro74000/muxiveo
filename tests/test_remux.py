@@ -2866,6 +2866,89 @@ class TestRemuxPanelDecisionProfiles:
         dialog.close()
         reopened.close()
 
+    @staticmethod
+    def _video(mkv_tid: int, display_info: str) -> TrackEntry:
+        return TrackEntry(mkv_tid=mkv_tid, track_type="video", codec="HEVC", display_info=display_info,
+                          language="und", title="", file_id="fid", orig_language="und")
+
+    def _editor(self, tmp_path, match):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        return DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile={
+            "version": 1, "kind": "decision-profile", "name": "V", "rules": [{
+                "id": "v", "scope": "best", "match": copy.deepcopy(match),
+                "actions": [{"type": "set_title", "value": "Choisie"}]}]})
+
+    def test_profile_editor_height_edit_keeps_a_required_weighted_width(self, qt_app, tmp_path):
+        """Audit 21 : hauteur seule renseignée → largeur obligatoire et pondérée inchangée, sélection inchangée."""
+        from core.profiles.decision import apply_decision_profile
+
+        width = {"field": "width", "op": "is", "value": 1280, "required": True, "weight": 30}
+        match = {"all": [{"field": "type", "op": "is", "value": "video", "required": True}, width]}
+        dialog = self._editor(tmp_path, match)
+        dialog._match_height.setValue(720)
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[:2] == match["all"]
+        assert edited[2] == {"field": "height", "op": "is", "value": 720, "required": False}
+        for profile in ({"version": 1, "kind": "decision-profile", "name": "V",
+                         "rules": [{"id": "v", "scope": "best", "match": match,
+                                    "actions": [{"type": "set_title", "value": "Choisie"}]}]}, dialog.profile()):
+            result = apply_decision_profile(profile, [self._video(0, "3840x2160")])
+            assert [t.title for t in result.tracks] == [""]  # 4K jamais retenue (largeur obligatoire)
+        dialog._match_height.setValue(0)  # retour à la valeur de chargement
+        assert dialog.profile()["rules"][0]["match"] == match
+        dialog.close()
+
+    def test_profile_editor_updates_captured_resolution_in_place_and_keeps_video_bits(self, qt_app, tmp_path):
+        """Règle vidéo capturée : ``resolution`` mise à jour en place (métadonnées gardées, aucun doublon),
+        ``video_flags_hex`` intact tant que les cases HDR ne changent pas ; seule la case HDR modifiée bascule son
+        bit ; sélection identique sur plusieurs vidéos candidates."""
+        from core.profiles.decision import (
+            VIDEO_FLAG_DOLBY_VISION, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from core.profiles.keywords import parse_video_flags
+
+        uhd = self._video(0, "3840x2160  HDR10  10 bits")
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=[uhd])],
+                             output=tmp_path / "o.mkv", track_order=[(0, 0, uhd.entry_id)])
+        captured = remux_config_to_decision_profile(config, name="V")
+        rule = captured["rules"][0]
+        rule["match"]["all"].append({"field": "width", "op": "is", "value": 3840, "required": False, "weight": 7})
+        resolution = next(i for i in rule["match"]["all"] if i["field"] == "resolution")
+        resolution.update(required=True, weight=25)
+        flags_before = next(i for i in rule["match"]["all"] if i["field"] == "video_flags_hex")
+        dialog = self._editor(tmp_path, rule["match"])
+
+        dialog._match_height.setValue(1600)
+        edited = {i["field"]: i for i in dialog.profile()["rules"][0]["match"]["all"]}
+        assert [i["field"] for i in dialog.profile()["rules"][0]["match"]["all"]] == [
+            i["field"] for i in rule["match"]["all"]]  # aucun ajout, positions gardées
+        assert edited["resolution"]["value"]["height"] == 1600 and edited["resolution"]["weight"] == 25
+        assert edited["resolution"]["required"] is True and edited["width"] == rule["match"]["all"][-1]
+        assert edited["video_flags_hex"] == flags_before
+        dialog._match_width.setValue(3000)
+        edited = {i["field"]: i for i in dialog.profile()["rules"][0]["match"]["all"]}
+        assert edited["width"] == {**rule["match"]["all"][-1], "value": 3000}  # largeur indépendante en place
+        dialog._match_width.setValue(3840)
+        dialog._match_height.setValue(2160)
+        assert dialog.profile()["rules"][0]["match"] == rule["match"]  # retour aux valeurs initiales
+
+        dialog._video_dolby_vision.setChecked(True)
+        flags_after = next(i for i in dialog.profile()["rules"][0]["match"]["all"] if i["field"] == "video_flags_hex")
+        before_bits, after_bits = parse_video_flags(flags_before["value"]), parse_video_flags(flags_after["value"])
+        assert after_bits == before_bits | VIDEO_FLAG_DOLBY_VISION  # bits non édités (profondeur…) conservés
+        dialog._video_dolby_vision.setChecked(False)
+
+        dialog._match_title.setText("rien")  # autre critère modifié
+        dialog._match_title.setText("")
+        candidates = [self._video(0, "1920x1080"), self._video(1, "3840x2160  HDR10  10 bits"),
+                      self._video(2, "3840x1600  HDR10  10 bits")]
+        for profile in ({**captured, "rules": [rule]}, dialog.profile()):
+            result = apply_decision_profile(profile, copy.deepcopy(candidates))
+            assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
+        dialog.close()
+
     def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog

@@ -50,7 +50,7 @@ from core.profiles.expressions import (
     CriteriaExpressionParser as _CriteriaExpressionParser,
     criteria_ast_condition,
 )
-from core.profiles.keywords import KEYWORD_CATEGORIES, is_none_keyword, keyword_to_match_field
+from core.profiles.keywords import KEYWORD_CATEGORIES, is_none_keyword, keyword_to_match_field, resolution_bucket
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.theme import _C
@@ -70,6 +70,8 @@ _ACTION_FIELDS = {
     "remove_track_tags": "tags",
     "set_order_priority": "order",
 }
+# Critères vidéo modifiés en place (valeur seule) : jamais reconstruits.
+_VIDEO_IN_PLACE_GROUPS = frozenset({"width", "height", "resolution", "video_flags"})
 # Critère « Langue » : langue courante ou langue lue dans le fichier (règles capturées).
 _LANGUAGE_FIELDS = frozenset({"language", "file_language"})
 _KEYWORD_MATCH_FIELDS = frozenset({
@@ -1032,7 +1034,7 @@ class DecisionProfileEditorDialog(QDialog):
                     label="Flags",
                 )
             )
-        items = by_group["video"] = []
+        items = by_group["width"] = []
         width = int(self._match_width.value())
         height = int(self._match_height.value())
         if width > 0:
@@ -1044,6 +1046,7 @@ class DecisionProfileEditorDialog(QDialog):
                     "required": False,
                 }
             )
+        items = by_group["height"] = []
         if height > 0:
             items.append(
                 {
@@ -1053,6 +1056,7 @@ class DecisionProfileEditorDialog(QDialog):
                     "required": False,
                 }
             )
+        items = by_group["video_flags"] = []
         if self._video_hdr.isChecked() or self._video_hdr10plus.isChecked() or self._video_dolby_vision.isChecked():
             items.append(
                 {
@@ -1068,6 +1072,7 @@ class DecisionProfileEditorDialog(QDialog):
                     "required": False,
                 }
             )
+        by_group["resolution"] = []  # mise à jour en place (``_edited_video_condition``)
         items = by_group["keywords"] = []
         keywords = self._match_keywords.text().strip()
         if keywords:
@@ -1106,16 +1111,52 @@ class DecisionProfileEditorDialog(QDialog):
             return copy.deepcopy(self._loaded_match)
         items: list[dict[str, Any]] = []
         placed: set[str] = set()
-        for item, group in self._match_owners(self._loaded_match):
+        owners = self._match_owners(self._loaded_match)
+        represented = {group for _item, group in owners if group}
+        if "resolution" in represented:
+            represented |= {"width", "height"}
+        for item, group in owners:
             if group is None or group not in changed:
                 items.append(copy.deepcopy(item))
+            elif group in _VIDEO_IN_PLACE_GROUPS:
+                edited = self._edited_video_condition(item, group)  # valeur mise à jour, métadonnées gardées
+                if edited is not None:
+                    items.append(edited)
+                placed.add(group)
             elif group not in placed:
                 items.extend(rebuilt[group])
                 placed.add(group)
         for group, conditions in rebuilt.items():
-            if group in changed and group not in placed:
+            if group in changed and group not in placed and group not in represented:
                 items.extend(conditions)
         return {"all": items}
+
+    def _edited_video_condition(self, item: dict[str, Any], group: str) -> dict[str, Any] | None:
+        """Condition vidéo modifiée en place : seule la valeur éditée change (``required``, ``weight``, opérateur et
+        bits non édités conservés) ; None si la valeur est vidée."""
+        edited = copy.deepcopy(item)
+        width, height = int(self._match_width.value()), int(self._match_height.value())
+        if group in {"width", "height"}:
+            size = width if group == "width" else height
+            if size <= 0:
+                return None
+            edited["value"] = size
+        elif group == "resolution":
+            if width <= 0 and height <= 0:
+                return None
+            resolution = dict(item["value"]) if isinstance(item.get("value"), dict) else {}
+            resolution.update(width=width, height=height, bucket=resolution_bucket(width, height))
+            edited["value"] = resolution
+        elif group == "video_flags":
+            bits = self._parse_video_flags(item.get("value"))
+            for flag, checked in ((VIDEO_FLAG_HDR, self._video_hdr.isChecked()),
+                                  (VIDEO_FLAG_HDR10PLUS, self._video_hdr10plus.isChecked()),
+                                  (VIDEO_FLAG_DOLBY_VISION, self._video_dolby_vision.isChecked())):
+                bits = bits | flag if checked else bits & ~flag
+            if not bits:
+                return None
+            edited["value"] = f"0x{bits:08X}"
+        return edited
 
     def _match_owners(self, match: Any) -> list[tuple[Any, str | None]]:
         """Conditions chargées et groupe de contrôles qui les représente (None : non représentée)."""
@@ -1131,8 +1172,11 @@ class DecisionProfileEditorDialog(QDialog):
             "codec": (self._match_codec.text(), self._match_codec_required.isChecked()),
             "title": self._match_title.text(),
             "flags": self._match_flags.text(),
-            "video": (self._match_width.value(), self._match_height.value(), self._video_hdr.isChecked(),
-                      self._video_hdr10plus.isChecked(), self._video_dolby_vision.isChecked()),
+            "width": self._match_width.value(),
+            "height": self._match_height.value(),
+            "resolution": (self._match_width.value(), self._match_height.value()),
+            "video_flags": (self._video_hdr.isChecked(), self._video_hdr10plus.isChecked(),
+                            self._video_dolby_vision.isChecked()),
             "keywords": self._match_keywords.text(),
             "preferred": self._match_preferred_keywords.text(),
         }
@@ -1454,8 +1498,10 @@ class DecisionProfileEditorDialog(QDialog):
         """Groupe de contrôles d'une condition simple représentée (voir ``_consumes_condition``)."""
         if field == "type":
             return "type"
-        if field in {"resolution", "width", "height", "video_flags_hex"}:
-            return "video"
+        if field in {"resolution", "width", "height"}:
+            return field
+        if field == "video_flags_hex":
+            return "video_flags"
         if field == "flags":
             return "flags"
         if field in {"title", "source_title"}:
