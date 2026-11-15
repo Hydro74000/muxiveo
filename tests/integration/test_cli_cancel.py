@@ -288,3 +288,58 @@ def test_sigint_during_a_cadence_resolution_of_calibration_edit_returns_6(tmp_pa
             proc.kill()
     assert proc.returncode == 6, stderr
     _assert_probe_killed(int(mark.read_text()))  # sonde de l'analyse tuée
+
+
+@pytest.mark.skipif(not Path("/proc").exists(), reason="Linux")
+@pytest.mark.parametrize("slow", ["--version", "--capabilities"])
+@pytest.mark.parametrize("feature", [{"interpolation": {"factor": 2}}, {"restoration": {"enabled": True}}],
+                         ids=["interpolation", "restoration"])
+def test_sigint_during_an_engine_probe_of_media_validate_returns_a_cancelled_response(tmp_path, slow, feature):
+    """Audit 17 : ``call media.validate`` (vrai validateur) → sonde du moteur vidéo tuée, réponse et état « annulé »."""
+    src = tmp_path / "src.mkv"
+    make_av_container(src)
+    rife, pid, child = tmp_path / "bin" / "muxiveo-rife", tmp_path / "rife.pid", tmp_path / "rife.child"
+    rife.parent.mkdir()
+    capabilities = '{"contract": 1, "options": ["feature-cache", "restore-sharpen"], "models": [], "restore": {}}'
+    rife.write_text(
+        "#!/bin/sh\n"
+        f'case "$*" in *{slow}*) sleep 120 & echo $! > "{child}"; echo $$ > "{pid}"; wait; exit 0;; esac\n'
+        f"case \"$*\" in *--version*) echo 'muxiveo-rife 1.9.0';; *--capabilities*) echo '{capabilities}';; esac\n",
+        encoding="utf-8")
+    rife.chmod(0o755)
+    config_home = tmp_path / "config"
+    config_home.mkdir()
+    (config_home / "config.ini").write_text(f"[tools]\nmuxiveo_rife = {rife}\n", encoding="utf-8")
+    request = tmp_path / "requete.json"
+    request.write_text(json.dumps({"job": {"version": 1, "sources": ["src.mkv"], "output": "sortie.mkv", "encode": {
+        "video": {"default": {"codec": "libx265", **feature}}}}}), encoding="utf-8")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "MUXIVEO_CONFIG_HOME": str(config_home),
+           "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"), "XDG_DATA_HOME": str(tmp_path / "xdg-data")}
+    proc = subprocess.Popen(
+        [sys.executable, str(ROOT / "main.py"), "--cli", "call", "media.validate", "--request", str(request),
+         "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe", "--mediainfo", "/bin/false",
+         "--work-dir", str(tmp_path / "work")],
+        cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not (pid.exists() and pid.read_text().strip() and child.exists() and child.read_text().strip()):
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "sonde du moteur jamais lancée"
+            time.sleep(0.05)
+        started = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert time.monotonic() - started < 10, "sonde attendue au lieu d'être tuée"
+    assert proc.returncode == 6, stderr
+    response = json.loads(stdout)
+    assert response["status"] == "cancelled" and response["error"]["code"] == "cancelled"
+    events = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
+    assert [event["state"] for event in events if event["type"] == "state"][-1] == "cancelled"
+    assert not any(event["type"] == "result" for event in events)
+    _assert_probe_killed(int(pid.read_text()))
+    _assert_probe_killed(int(child.read_text()))

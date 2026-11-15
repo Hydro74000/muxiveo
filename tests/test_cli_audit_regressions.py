@@ -2050,6 +2050,39 @@ def test_windows_adapter_selection_is_killed_with_a_token(tmp_path, monkeypatch,
 
 
 @_LINUX
+@pytest.mark.parametrize("codec, slow", [("hevc_qsv", "*-qsv_device*"), ("h264_amf", "*d3d11va=*"),
+                                         ("hevc_nvenc", "*-gpu*")])
+def test_windows_adapter_probes_are_killed_through_system_capabilities(tmp_path, codec, slow):
+    """Raccordement complet : opération → détecteur → sélection d'adaptateur Windows (FFmpeg ``.exe`` simulé)."""
+    import time
+
+    from core.service.errors import ApiError, ErrorCode
+    from core.workflows.encode.hw_devices import select_windows_hwaccel_device
+
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    pid, child, adapters = (ffmpeg.with_suffix(suffix) for suffix in (".pid", ".child", ".adapters"))
+    ffmpeg.write_text(
+        f'#!/bin/sh\ncase "$*" in\n'
+        f'  *-encoders*) echo " V....D {codec}  Encodeur simulé";;\n'
+        f'  {slow}) echo "$*" >> "{adapters}"; sleep 30 & echo $! > "{child}"; echo $$ > "{pid}"; wait;;\n'
+        f'esac\n',
+        encoding="utf-8",
+    )
+    ffmpeg.chmod(0o755)
+    select_windows_hwaccel_device.cache_clear()
+    ctx = _ctx(tool_ffmpeg=str(ffmpeg), tool_nvencc="")
+    _cancel_when([pid, child], ctx.cancel.event)
+    start = time.monotonic()
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "system.capabilities", {"sections": ["encoders"]}, ctx)
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert time.monotonic() - start < 10
+    assert _process_gone(int(pid.read_text())) and _process_gone(int(child.read_text()))
+    assert len(adapters.read_text().splitlines()) == 1  # arrêt avant l'adaptateur suivant
+    assert select_windows_hwaccel_device.cache_info().currsize == 0  # cache de l'interface jamais alimenté
+
+
+@_LINUX
 def test_parallel_hardware_probes_are_all_killed_with_a_token(tmp_path, monkeypatch):
     import threading
 
@@ -2336,7 +2369,7 @@ def test_engine_probe_cache_follows_the_token_and_never_keeps_a_cancelled_result
     import threading
 
     from core.subprocess_utils import ProbeCancelledError
-    from core.workflows.encode.interpolation import clear_rife_version_cache, rife_capabilities, rife_presets
+    from core.workflows.encode.interpolation import clear_rife_version_cache, rife_capabilities
 
     clear_rife_version_cache()
     rife, calls = _counting_rife(tmp_path / "rife", slow="--capabilities")
@@ -2360,7 +2393,34 @@ def test_engine_probe_cache_follows_the_token_and_never_keeps_a_cancelled_result
     with pytest.raises(ProbeCancelledError):  # cache chaud, jeton déjà levé : jamais une valeur
         rife_capabilities(str(rife), raised)
     clear_rife_version_cache()
-    assert rife_presets(str(rife)) == rife_presets(str(rife))  # préréglages : cache vidé puis relu
+
+
+def test_clearing_the_engine_caches_rereads_a_real_presets_file(tmp_path):
+    """``clear_rife_version_cache`` vide aussi les préréglages : le ``presets.json`` est relu, pas resservi."""
+    import os
+
+    from core.workflows.encode.interpolation import clear_rife_version_cache, rife_presets
+
+    rife = tmp_path / "muxiveo-rife"
+    rife.write_text("#!/bin/sh\n", encoding="utf-8")
+    rife.chmod(0o755)
+    presets = tmp_path / "presets.json"
+
+    def write(model: str) -> None:
+        presets.write_text(json.dumps({"schema": 1, "presets": {"fast": {"engine": "rife", "model": model}}}),
+                           encoding="utf-8")
+
+    clear_rife_version_cache()
+    write("modele-a")
+    assert rife_presets(str(rife))["fast"].model == "modele-a"
+    stat = presets.stat()
+    write("modele-b")  # même taille, même inode, date remise : identité inchangée
+    os.utime(presets, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert (presets.stat().st_ino, presets.stat().st_size) == (stat.st_ino, stat.st_size)
+    assert rife_presets(str(rife))["fast"].model == "modele-a"  # cache de session (identité identique)
+    clear_rife_version_cache()
+    assert rife_presets(str(rife))["fast"].model == "modele-b"  # cache vidé : fichier relu
+    clear_rife_version_cache()
 
 
 def test_engine_probe_returning_despite_the_token_is_never_cached(monkeypatch):
@@ -2438,6 +2498,42 @@ def test_real_encode_validation_kills_the_engine_probes_with_the_operation_token
         with probe_cancel_scope(wf, event):  # comme checked_encode / preview_encode
             wf.validate(config)
     assert _process_gone(int(rife.with_suffix(".pid").read_text()))
+    clear_rife_version_cache()
+
+
+@_LINUX
+@pytest.mark.parametrize("feature", ["interpolation", "restoration"])
+def test_workflow_command_built_with_a_cold_engine_cache_is_killed_with_the_token(qapp, tmp_path, feature):
+    """Commandes du workflow (aperçu = lancement) avec un cache du moteur froid : sonde tuée par le jeton."""
+    import dataclasses
+    import threading
+
+    from core.jobs.encode_runtime import probe_cancel_scope
+    from core.subprocess_utils import ProbeCancelledError
+    from core.workflows.encode.interpolation import clear_rife_version_cache
+    from core.workflows.encode.models import FrameInterpolationSettings, RestoreSettings
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    from tests.test_cli_encode import _config
+
+    rife, calls = _counting_rife(tmp_path / "rife")
+    config = _config(tmp_path)
+    video = (dataclasses.replace(config.video, interpolation=FrameInterpolationSettings(enabled=True, factor=2))
+             if feature == "interpolation" else
+             dataclasses.replace(config.video, restoration=RestoreSettings(enabled=True)))
+    config = dataclasses.replace(config, video=video, video_tracks=[video])
+    (tmp_path / "src.mkv").write_bytes(b"x")
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+    wf._rife_bin = str(rife)
+    clear_rife_version_cache()  # cache froid à la construction (vidé, évincé ou binaire remplacé)
+    rife_slow, _ = _counting_rife(tmp_path / "rife", slow="--version")
+    event = threading.Event()
+    _cancel_when([rife_slow.with_suffix(".pid")], event)
+    with pytest.raises(ProbeCancelledError):
+        with probe_cancel_scope(wf, event):
+            wf.preview_command(config)
+    assert _process_gone(int(rife_slow.with_suffix(".pid").read_text()))
+    assert "--version" in calls.read_text().split()
     clear_rife_version_cache()
 
 
