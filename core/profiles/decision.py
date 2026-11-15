@@ -1356,7 +1356,7 @@ def _materialize_variant_requests(
     for (source_id, target_codec), keys in groups.items():
         candidates = [
             track for track in tracks
-            if track.is_new and track.source_entry_id == source_id
+            if track.is_new and track.source_entry_id == source_id and track.entry_id not in reserved
             and (not target_codec or str(track.codec or "").upper() == target_codec)
         ]
         keys.sort(key=lambda key: clearing[key][0])

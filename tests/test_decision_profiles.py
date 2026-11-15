@@ -1520,6 +1520,25 @@ def test_mixed_clear_and_historical_requests_are_stable_on_reapplication(panel):
         assert _states(again.tracks) == before and again.report["created_variants"] == []
 
 
+def test_clear_targets_of_different_codec_groups_never_share_a_reserved_variant():
+    """Audit 24 : effacement ``copy`` (codec source vide : joker) puis effacement AC3 → deux variantes distinctes,
+    chacune avec sa sélection."""
+    source = _audio(1, language="", title="", codec="")
+    existing = clone_track_entry(source)
+    existing.codec = "AC3"
+    profile = _variant_profile(
+        {"type": "create_audio_variant", "codec": "copy", "clear": ["title"], "enabled": False},
+        {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"], "enabled": True},
+    )
+    result = apply_decision_profile(profile, [source, existing])
+    _clean_report(result)
+    variants = [t for t in result.tracks if t.is_new]
+    assert len(variants) == 2 and len({t.entry_id for t in variants}) == 2
+    assert sorted(t.enabled for t in variants) == [False, True]
+    ids = [entry["entry_id"] for entry in result.report["created_variants"] + result.report["reused_variants"]]
+    assert len(ids) == len(set(ids)) == 2
+
+
 def test_clear_title_and_clear_language_targets_are_distinct():
     title_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]}
     language_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"]}
