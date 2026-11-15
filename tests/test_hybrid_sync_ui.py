@@ -1001,3 +1001,23 @@ def test_cadence_resolution_failure_prevents_processing(panel, tmp_path, monkeyp
     assert panel._finalize_cadence_methods([0], lambda: continued.append(True))
     _wait(qt_app, lambda: not panel.busy)
     assert not continued and "Lecture impossible" in panel.status.text()
+
+
+
+@pytest.mark.parametrize("field, value", [("output_tag", "NOUVEAU"), ("keep_master_chapters", False),
+                                          ("crossfade_ms", 20)])
+def test_imported_recipe_changes_invalidate_the_prepared_plan(qt_app, field, value):
+    """Audit 26 : tout champ de recette (étiquette de sortie, chapitres…) entre dans la signature des réglages :
+    un plan préparé avant l'import est repréparé à l'export."""
+    from dataclasses import replace
+
+    from core.config import AppConfig
+    from ui.panels.hybrid_studio import HybridStudio
+
+    panel = HybridStudio(AppConfig())
+    try:
+        before = panel._settings_signature()
+        panel.recipe = replace(panel.recipe, **{field: value})
+        assert panel._settings_signature() != before
+    finally:
+        panel.close()

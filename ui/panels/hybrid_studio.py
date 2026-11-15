@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from dataclasses import dataclass, replace
@@ -1584,10 +1585,8 @@ class HybridStudio(QWidget):
             self.sync_strategy.currentData(), self.manual_shift.value(),
             self.mode.currentData(), self.mirror.isChecked(), self.detect_cuts.isChecked(),
             self.cadence_auto_apply.isChecked(), self.cadence_method_combo.currentData(),
-            tuple(self.recipe.keep_master_audio_langs), tuple(self.recipe.donor_audio_langs),
-            tuple(self.recipe.donor_sub_langs), self.recipe.keep_master_video,
-            self.recipe.track_choices,
-            tuple((choice, tuple(sorted(values.items()))) for choice, values in self.recipe.track_overrides.items()),
+            # Recette entière (chapitres, étiquette de sortie, variantes… : tout champ importé invalide le plan).
+            json.dumps(self.recipe.to_dict(), sort_keys=True, ensure_ascii=False),
         )
 
     def _source_signature(self):
