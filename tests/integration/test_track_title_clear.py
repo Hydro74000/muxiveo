@@ -1,4 +1,5 @@
-"""Titre de piste vidé (profil) : absent de la sortie réelle, variantes audio comprises, remux et encodage."""
+"""Titre et langue de piste vidés (profil) : effacés dans la sortie réelle, variantes audio comprises, remux et
+encodage."""
 
 from __future__ import annotations
 
@@ -27,7 +28,8 @@ def _titled_source(tmp_path: Path) -> Path:
     make_av_container(plain, duration=1.0)
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(plain), "-map", "0", "-c", "copy",
-         "-metadata:s:v:0", "title=BEN.THE.MEN", "-metadata:s:a:0", "title=Audio original", "-y", str(src)],
+         "-metadata:s:v:0", "title=BEN.THE.MEN", "-metadata:s:a:0", "title=Audio original",
+         "-metadata:s:a:0", "language=fre", "-y", str(src)],
         check=True,
     )
     return src
@@ -42,7 +44,8 @@ def _profile(tmp_path: Path) -> Path:
          "actions": [{"type": "set_title", "value": ""}]},
         {"id": "audio", "priority": 20, "scope": "all",
          "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
-         "actions": [{"type": "set_title", "value": ""}, {"type": "create_audio_variant", "codec": "ac3"}]},
+         "actions": [{"type": "set_title", "value": ""}, {"type": "set_language", "value": ""},
+                     {"type": "create_audio_variant", "codec": "ac3"}]},
     ]}), encoding="utf-8")
     return path
 
@@ -67,3 +70,4 @@ def test_cleared_titles_stay_empty_in_output(tmp_path, backend, encode):
     assert [stream["codec_type"] for stream in streams] == ["video", "audio", "audio"]
     assert [stream["codec_name"] for stream in streams[1:]] == ["aac", "ac3"]
     assert [stream.get("tags", {}).get("title", "") for stream in streams] == ["", "", ""]
+    assert [stream.get("tags", {}).get("language", "und") for stream in streams[1:]] == ["und", "und"]

@@ -361,6 +361,35 @@ class TestLanguageClearPropagation:
         planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
         assert [item.name for item in planned[1:]] == ["", ""]
 
+    def test_audio_variant_cloned_after_language_clear_gets_und(self, tmp_path, qt_app):
+        """Langue vidée puis variante : ``und`` en sortie, jamais la langue du flux source."""
+        from core.workflows.remux_models import clone_track_entry
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="DTS", display_info="",
+            language="", title="Audio", orig_language="fra", orig_title="Audio",
+        )
+        variant = clone_track_entry(audio)
+        assert variant.orig_language == ""
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=audio.entry_id),
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=variant.entry_id, codec="ac3"),
+            ],
+        )
+        result = _merge(enc, _remux_cfg(src, out, tracks=[video, audio, variant]))
+
+        assert [(edit.track_order, edit.language) for edit in result.track_meta_edits] == [(2, "und"), (3, "und")]
+
     def test_untitled_source_video_emits_no_title_edit(self, tmp_path, qt_app):
         src = tmp_path / "src.mkv"
         src.touch()
