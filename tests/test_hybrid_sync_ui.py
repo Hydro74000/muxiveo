@@ -1080,3 +1080,35 @@ def test_each_imported_recipe_field_changes_the_settings_signature(panel, qt_app
     monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName", lambda *_a, **_k: (str(path), ""))
     panel.import_recipe()
     assert panel._settings_signature() != before
+
+
+
+def test_prepared_plan_is_reprepared_at_export_after_importing_a_different_recipe(panel, season, monkeypatch,
+                                                                                  qt_app, tmp_path):
+    """Audit 33 : plan préparé, puis recette importée (étiquette différente) → l'export repréparé tout (le plan
+    préparé avec l'ancienne recette n'est pas exporté)."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    prepared = panel.jobs[0]
+    recipe_path = tmp_path / "recette.json"
+    recipe_path.write_text(json.dumps(replace(panel._effective_recipe(), output_tag="NOUVEAU").to_dict()),
+                           encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName",
+                        lambda *_a, **_k: (str(recipe_path), ""))
+    panel.import_recipe()
+    saved = []
+
+    def save(*_args):
+        saved.append(dict(panel.jobs))
+        panel._finish_operation("finished", "test")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    monkeypatch.setattr(panel, "_save_jobs", save)
+    panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert saved and 0 in saved[0] and saved[0][0] is not prepared  # repréparé avec la recette importée

@@ -227,3 +227,40 @@ def test_hybrid_plan_uses_one_effective_recipe_for_preparation_result_and_saved_
     assert seen == [expected]
     for recipe in (result.recipe, json.loads(saved.read_text(encoding="utf-8"))):
         assert (recipe["crossfade_ms"], recipe["cadence_auto_apply"], recipe["cadence_audio_method"]) == expected
+
+
+
+def test_hybrid_plan_with_a_successful_preparation_exports_the_effective_recipe_and_jobs(tmp_path, monkeypatch):
+    """Audit 33 : préparation réussie (plan produit) → résultat « succeeded », exact-job exporté, recette effective
+    (fondu de la recette) dans le résultat et la sauvegarde."""
+    from core.config import AppConfig
+    from core.service import ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+    from core.workflows.hybrid_matrix import MatrixEpisode
+    from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
+
+    master = tmp_path / "Show.S01E01.mkv"
+    master.write_bytes(b"x")
+    recipe_path, saved, jobs = tmp_path / "r.json", tmp_path / "effective.json", tmp_path / "jobs"
+    recipe_path.write_text(json.dumps(HybridRecipe(crossfade_ms=20).to_dict()), encoding="utf-8")
+    seen = []
+
+    def prepare(episode, recipe, output_dir, *_args, **_kwargs):
+        seen.append(recipe.crossfade_ms)
+        video = TrackEntry(0, "video", "HEVC", "1920x1080", "und", "", file_id="src0")
+        config = RemuxConfig([SourceInput(master, 0, [video])], Path(output_dir) / "Show.S01E01.mkv",
+                             [(0, 0, video.entry_id)], crossfade_ms=recipe.crossfade_ms)
+        return config, None
+
+    monkeypatch.setattr("core.service.ops.hybrid.plan_episodes", lambda spec, logger: [
+        MatrixEpisode(season=1, episode=1, master_file=master, donor_files=[])])
+    monkeypatch.setattr("core.jobs.hybrid_studio.prepare_matrix_episode", prepare)
+    argv = ["hybrid", "--ref", str(master), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path / "out"),
+            "--recipe", str(recipe_path), "--plan", "--save-recipe", str(saved), "--export-jobs", str(jobs)]
+    result = call(CATALOG, "hybrid.plan", hybrid_payload(build_parser().parse_args(argv)),
+                  ExecutionContext.create(AppConfig(), ListSink()))
+    assert result.status == "succeeded" and seen == [20]
+    assert result.recipe["crossfade_ms"] == json.loads(saved.read_text(encoding="utf-8"))["crossfade_ms"] == 20
+    assert [Path(path).parent for path in result.exported] == [jobs]
+    exported = json.loads(Path(result.exported[0]).read_text(encoding="utf-8"))
+    assert exported["crossfade_ms"] == 20
