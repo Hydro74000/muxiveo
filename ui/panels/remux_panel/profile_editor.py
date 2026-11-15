@@ -1770,23 +1770,19 @@ class DecisionProfileEditorDialog(QDialog):
         self._store_current_rule()
         rules = self._rules()
         rules[row], rules[new_row] = rules[new_row], rules[row]
-        # Ordre d'exécution échangé avec la voisine : priorités échangées (jamais d'égalité créée) ; priorités
-        # égales → la règle déplacée passe juste après (descente) ou juste avant (montée) sa voisine.
+        # La règle déplacée passe juste après (descente) ou juste avant (montée) sa voisine, à un niveau de priorité
+        # qu'elle occupe seule : niveau occupé → les autres règles de ce côté décalées d'un cran (ordre relatif et
+        # égalités existantes conservés). Aucune égalité, donc aucun conflit, n'est créée.
         moved, neighbor = rules[new_row], rules[row]
-        moved_priority, neighbor_priority = int(moved.get("priority") or 0), int(neighbor.get("priority") or 0)
-        if moved_priority != neighbor_priority:
-            moved["priority"], neighbor["priority"] = neighbor_priority, moved_priority
-        else:
-            target = neighbor_priority - delta
-            if any(int(rule.get("priority") or 0) == target for rule in rules if rule is not moved):
-                # Niveau occupé : les règles de ce côté sont décalées d'un cran (ordre relatif conservé).
-                for rule in rules:
-                    if rule is moved or rule is neighbor:
-                        continue
-                    priority = int(rule.get("priority") or 0)
-                    if (delta > 0 and priority <= target) or (delta < 0 and priority >= target):
-                        rule["priority"] = priority - delta
-            moved["priority"] = target
+        target = int(neighbor.get("priority") or 0) - delta
+        if any(int(rule.get("priority") or 0) == target for rule in rules if rule is not moved):
+            for rule in rules:
+                if rule is moved or rule is neighbor:
+                    continue
+                priority = int(rule.get("priority") or 0)
+                if (delta > 0 and priority <= target) or (delta < 0 and priority >= target):
+                    rule["priority"] = priority - delta
+        moved["priority"] = target
         # Priorité changée hors des contrôles : règle rechargée (contrôles et valeurs de référence à jour), sinon la
         # restauration des valeurs non modifiées annulerait l'ajustement.
         self._load_rule(rules[new_row])

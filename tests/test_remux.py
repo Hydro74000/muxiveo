@@ -3107,6 +3107,37 @@ class TestRemuxPanelDecisionProfiles:
         assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["A"]
         dialog.close()
 
+    @pytest.mark.parametrize("priorities, row, delta", [((10, 9, 9), 0, 1), ((10, 10, 9), 2, -1), ((10, 9, 8), 2, -1)])
+    def test_profile_editor_rule_move_never_creates_a_priority_tie(self, qt_app, tmp_path, priorities, row, delta):
+        """Audit 28 : quelles que soient les priorités, la règle déplacée occupe seule son niveau (aucune égalité, donc
+        aucun conflit) ; elle passe juste après / avant sa voisine ; les autres gardent leur ordre relatif."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        actions = ({"type": "set_title", "value": "A"}, {"type": "set_flags", "value": {"commentary": True}},
+                   {"type": "set_title", "value": "C"})
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio, "actions": [action]}
+                 for rule_id, priority, action in zip("abc", priorities, actions)]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Trois", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(row)
+        dialog._move_current_rule(delta)
+        moved = dialog.profile()["rules"]
+        mover = moved[row + delta]
+        neighbor = moved[row]
+        others = [rule for rule in moved if rule is not mover]
+        assert all(int(rule["priority"]) != int(mover["priority"]) for rule in others)
+        assert (int(mover["priority"]) < int(neighbor["priority"])) is (delta > 0)
+        before = {rule["id"]: rule["priority"] for rule in rules if rule["id"] != mover["id"]}
+        after = {rule["id"]: rule["priority"] for rule in others}
+        assert sorted(before, key=before.get) == sorted(after, key=after.get)  # ordre relatif des autres
+        assert apply_decision_profile(dialog.profile(), [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog.close()
+
     def test_profile_editor_toggles_only_the_edited_bit_of_each_video_mask(self, qt_app, tmp_path):
         """Audit 25 : deux masques ``video_flags_hex`` (HDR + HDR10+, HDR seul) ; Dolby Vision cochée → seul son bit
         ajouté à chacun ; sélection conforme au masque conservé."""
