@@ -1177,7 +1177,13 @@ def _apply_audio_variant_action(
         if title_pattern
         else str(action.get("title") or "")
     )
-    raw_language = str(action.get("language") or source_track.language)
+    # « clear » : effacement explicite (titre, langue) ; une valeur vide seule hérite de la source
+    # (profils antérieurs inchangés).
+    clear = action.get("clear")
+    clear_fields = {str(item) for item in clear} if isinstance(clear, list) else set()
+    clear_title = "title" in clear_fields and not title
+    clear_language = "language" in clear_fields and not str(action.get("language") or "")
+    raw_language = "" if clear_language else str(action.get("language") or source_track.language)
     if "{" in raw_language and "}" in raw_language:
         raw_language = render_title_pattern(
             raw_language,
@@ -1187,7 +1193,10 @@ def _apply_audio_variant_action(
             variables=variables,
         )
     language = normalize_lang(raw_language, title)
-    existing = _find_existing_variant(tracks, source_track, codec=codec, title=title, language=language)
+    existing = _find_existing_variant(
+        tracks, source_track, codec=codec, title=title, language=language,
+        clear_title=clear_title, clear_language=clear_language,
+    )
     if existing is None:
         variant = clone_track_entry(source_track)
         tracks.append(variant)
@@ -1206,9 +1215,9 @@ def _apply_audio_variant_action(
         if bitrate > 0:
             parts.append(f"{bitrate} kbps")
         variant.display_info = "  ".join(parts)
-    if title:
+    if title or clear_title:
         variant.title = title
-    if language:
+    if language or clear_language:
         variant.language = language
     variant.enabled = bool(action.get("enabled", True))
     flags = action.get("flags")
@@ -1227,7 +1236,11 @@ def _find_existing_variant(
     codec: str,
     title: str,
     language: str,
+    clear_title: bool = False,
+    clear_language: bool = False,
 ) -> TrackEntry | None:
+    """Variante déjà créée : valeur demandée identique ; effacement demandé → valeur vide seulement (une
+    variante nommée n'est jamais reprise puis effacée) ; ni l'un ni l'autre → toute valeur."""
     normalized_codec = source_track.codec if not codec or codec.lower() == "copy" else codec.upper()
     for track in tracks:
         if not track.is_new or track.source_entry_id != source_track.entry_id:
@@ -1236,7 +1249,11 @@ def _find_existing_variant(
             continue
         if title and track.title != title:
             continue
+        if clear_title and track.title:
+            continue
         if language and normalize_lang(track.language, track.title) != language:
+            continue
+        if clear_language and track.language:
             continue
         return track
     return None
@@ -1516,10 +1533,15 @@ def remux_config_to_decision_profile(
         if include_selection:
             actions.append({"type": "set_enabled", "value": bool(track.enabled)})
         if include_metadata:
+            # Valeur vidée (origine renseignée) : effacement rejoué ; jamais renseignée : aucune action.
             if track.language:
                 actions.append({"type": "set_language", "value": normalize_lang(track.language, track.title)})
+            elif (track.orig_language or "").strip():
+                actions.append({"type": "set_language", "value": ""})
             if track.title:
                 actions.append({"type": "set_title", "value": track.title})
+            elif (track.orig_title or "").strip():
+                actions.append({"type": "set_title", "value": ""})
             if int(track.time_shift_ms or 0) != 0:
                 actions.append({"type": "set_time_shift_ms", "value": int(track.time_shift_ms or 0)})
         if include_flags:
@@ -1555,10 +1577,20 @@ def remux_config_to_decision_profile(
                 "type": "create_audio_variant",
                 "codec": codec,
                 "enabled": bool(track.enabled),
-                "language": normalize_lang(track.language or source_track.language, track.title),
+                "language": normalize_lang(track.language, track.title),
                 "title": track.title,
                 "flags": _flag_action_payload(track),
             }
+            # Titre / langue vidés alors que le flux source en porte : effacement explicite.
+            clear = [
+                name for name, value, physical in (
+                    ("title", track.title, source_track.orig_title),
+                    ("language", track.language, source_track.orig_language),
+                )
+                if not (value or "").strip() and (physical or "").strip()
+            ]
+            if clear:
+                action["clear"] = clear
             bitrate = _bitrate_from_display(track.display_info)
             if bitrate:
                 action["bitrate_kbps"] = bitrate

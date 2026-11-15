@@ -930,3 +930,163 @@ def test_report_lists_fields_written_even_with_an_unchanged_value():
     result = apply_decision_profile(profile, [track])
     assert result.report["written_fields"] == {track.entry_id: ["time_shift_ms"]}
     assert result.tracks[0].time_shift_ms == 50
+
+
+# --- Audit 18 : capture → application des effacements et des drapeaux (originaux et variantes) -------------------
+
+
+def _capture(*tracks: TrackEntry) -> dict:
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/source.mkv"), file_index=0, tracks=list(tracks))],
+        output=Path("/tmp/out.mkv"),
+        track_order=[(0, track.mkv_tid, track.entry_id) for track in tracks],
+    )
+    return remux_config_to_decision_profile(config, name="capture")
+
+
+def _fresh_audio() -> TrackEntry:
+    """Piste telle qu'une nouvelle inspection la donne (valeurs physiques)."""
+    return _audio(1, language="fr-FR", title="Audio original", codec="DTS", display_info="5.1  768 kbps")
+
+
+@pytest.mark.parametrize("cleared", [("title",), ("language",), ("title", "language")])
+def test_capture_replays_cleared_title_and_language_of_an_original(cleared):
+    track = _fresh_audio()
+    if "title" in cleared:
+        track.title = ""
+    if "language" in cleared:
+        track.language = ""
+    profile = _capture(track)
+    actions = profile["rules"][0]["actions"]
+    target = _fresh_audio()
+
+    apply_decision_profile(profile, [target])
+
+    assert ({"type": "set_title", "value": ""} in actions) is ("title" in cleared)
+    assert ({"type": "set_language", "value": ""} in actions) is ("language" in cleared)
+    assert target.title == ("" if "title" in cleared else "Audio original")
+    assert target.language == ("" if "language" in cleared else "fr-FR")
+
+
+def test_capture_never_clears_a_value_that_was_never_set():
+    track = _audio(1, language="", title="")
+    actions = _capture(track)["rules"][0]["actions"]
+    assert not [action for action in actions if action["type"] in {"set_title", "set_language"}]
+
+
+@pytest.mark.parametrize("cleared", [("title",), ("language",), ("title", "language")])
+def test_capture_replays_cleared_title_and_language_of_an_audio_variant(cleared):
+    source = _fresh_audio()
+    variant = clone_track_entry(source)
+    variant.codec = "AC3"
+    if "title" in cleared:
+        variant.title = ""
+    if "language" in cleared:
+        variant.language = ""
+    profile = _capture(source, variant)
+    action = profile["rules"][-1]["actions"][0]
+    target = _fresh_audio()
+
+    result = apply_decision_profile(profile, [target])
+
+    assert action["clear"] == [name for name in ("title", "language") if name in cleared]
+    created = [track for track in result.tracks if track.is_new]
+    assert len(created) == 1
+    assert created[0].title == ("" if "title" in cleared else "Audio original")
+    assert created[0].language == ("" if "language" in cleared else "fr-FR")
+    assert (target.title, target.language) == ("Audio original", "fr-FR")  # original intact
+
+
+def test_legacy_variant_action_with_empty_values_still_inherits_the_source():
+    """Profils antérieurs : ``title`` / ``language`` vides sans ``clear`` → valeurs de la source (inchangé)."""
+    profile = {"version": 1, "kind": "decision-profile", "name": "ancien", "rules": [{
+        "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3", "title": "", "language": ""}],
+    }]}
+    result = apply_decision_profile(profile, [_fresh_audio()])
+    created = [track for track in result.tracks if track.is_new]
+    assert [(track.title, track.language) for track in created] == [("Audio original", "fr-FR")]
+
+
+def test_title_pattern_wins_over_a_clear_request():
+    profile = {"version": 1, "kind": "decision-profile", "name": "motif", "rules": [{
+        "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3", "title_pattern": "VF AC3 {channels}",
+                     "clear": ["title"]}],
+    }]}
+    result = apply_decision_profile(profile, [_fresh_audio()])
+    assert [track.title for track in result.tracks if track.is_new] == ["VF AC3 5.1"]
+
+
+@pytest.mark.parametrize("named_first", [True, False])
+def test_named_and_cleared_variants_never_merge_and_stay_stable(named_first):
+    named = {"type": "create_audio_variant", "codec": "ac3", "title": "VF AC3", "language": "fr-FR"}
+    cleared = {"type": "create_audio_variant", "codec": "ac3", "title": "", "language": "",
+               "clear": ["title", "language"]}
+    actions = [named, cleared] if named_first else [cleared, named]
+    profile = {"version": 1, "kind": "decision-profile", "name": "deux", "rules": [{
+        "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]}, "actions": actions,
+    }]}
+    first = apply_decision_profile(profile, [_fresh_audio()])
+    second = apply_decision_profile(profile, first.tracks)
+    for result in (first, second):
+        variants = sorted((track.title, track.language) for track in result.tracks if track.is_new)
+        assert variants == [("", ""), ("VF AC3", "fr-FR")]
+
+
+@pytest.mark.parametrize("source_flag, variant_flag", [(True, False), (False, True)])
+def test_capture_reapplies_the_mkv_enabled_flag_of_an_audio_variant(source_flag, variant_flag):
+    source = _fresh_audio()
+    source.flag_enabled = source.orig_flag_enabled = source_flag
+    variant = clone_track_entry(source)
+    variant.codec = "AC3"
+    variant.flag_enabled = variant_flag
+    variant.flag_commentary = True
+    profile = _capture(source, variant)
+    action = profile["rules"][-1]["actions"][0]
+    assert action["enabled"] is True and action["flags"]["enabled"] is variant_flag
+    target = _fresh_audio()
+    target.flag_enabled = target.orig_flag_enabled = source_flag
+
+    first = apply_decision_profile(profile, [target])
+    second = apply_decision_profile(profile, first.tracks)  # variante reprise
+
+    for result in (first, second):
+        created = [track for track in result.tracks if track.is_new]
+        assert len(created) == 1
+        assert created[0].flag_enabled is variant_flag and created[0].enabled  # drapeau ≠ sélection
+        assert created[0].flag_commentary is True
+    assert target.flag_enabled is source_flag  # original intact
+
+
+def test_variant_without_mkv_enabled_flag_inherits_it_from_the_source():
+    profile = {"version": 1, "kind": "decision-profile", "name": "v", "rules": [{
+        "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3", "flags": {"default": False}}],
+    }]}
+    source = _fresh_audio()
+    source.flag_enabled = False
+    result = apply_decision_profile(profile, [source])
+    assert [track.flag_enabled for track in result.tracks if track.is_new] == [False]
+
+
+def test_decision_profile_schema_accepts_the_clear_intent():
+    from core.jobs.schema import build_decision_profile_schema_v1
+
+    def action_schemas(node):
+        if isinstance(node, dict):
+            if "title_pattern" in node.get("properties", {}):
+                yield node
+            for value in node.values():
+                yield from action_schemas(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from action_schemas(value)
+
+    schemas = list(action_schemas(build_decision_profile_schema_v1()))
+    assert schemas and all(schema["properties"]["clear"]["items"]["enum"] == ["title", "language"]
+                           for schema in schemas)
+    source = _fresh_audio()
+    variant = clone_track_entry(source)
+    variant.title = ""
+    validate_decision_profile(_capture(source, variant))

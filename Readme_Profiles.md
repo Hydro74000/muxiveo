@@ -50,6 +50,14 @@ Deux départs sont possibles :
 - **Profil vide** : construire les règles à la main ;
 - **Capturer l'état courant** : partir de la table de pistes actuelle puis ajuster.
 
+Un titre ou une langue vidés dans la table sont capturés comme un effacement : action `set_title` /
+`set_language` à valeur vide pour une piste d'origine, `"clear": ["title", "language"]` pour une variante audio
+(`create_audio_variant`). Une valeur jamais renseignée ne produit aucune action. Dans l'éditeur, la case
+**Effacer** à côté de **Langue** et de **Titre pattern** écrit cet effacement ; un champ vide n'écrit rien. Sans
+`clear`, un `title` ou une `language` vides d'une variante reprennent ceux de la piste source (profils existants
+inchangés). Le drapeau Matroska `FlagEnabled` d'une variante passe par `flags.enabled` ; la clé `enabled` de
+l'action reste la sélection de la piste.
+
 Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
 
 ## Comprendre une règle
@@ -381,5 +389,8 @@ muxiveo --cli preview --config exact-job.json
 muxiveo --cli run --config exact-job.json
 muxiveo --cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
+
+Chaque piste et variante y porte ses flags Matroska complets, `flags.enabled` (`FlagEnabled`) compris, distinct
+de la sélection `enabled` ; un job exporté avant cette clé garde le drapeau de l'inspection.
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.

@@ -71,3 +71,30 @@ def test_cleared_titles_stay_empty_in_output(tmp_path, backend, encode):
     assert [stream["codec_name"] for stream in streams[1:]] == ["aac", "ac3"]
     assert [stream.get("tags", {}).get("title", "") for stream in streams] == ["", "", ""]
     assert [stream.get("tags", {}).get("language", "und") for stream in streams[1:]] == ["und", "und"]
+
+
+@pytest.mark.parametrize("backend", ["native", "ffmpeg"])
+@pytest.mark.parametrize("encode", [False, True], ids=["remux", "encode"])
+def test_captured_variant_clear_and_mkv_enabled_flag_reach_the_output(tmp_path, backend, encode):
+    """Variante capturée (titre et langue vidés, ``FlagEnabled`` 0, sélection gardée) : sortie réelle conforme."""
+    from core.matroska.reader import MatroskaReader
+
+    src, out = _titled_source(tmp_path), tmp_path / "out.mkv"
+    profile = tmp_path / "capture.json"
+    profile.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "Capture", "rules": [{
+        "id": "variant", "priority": 20, "scope": "all",
+        "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3", "enabled": True, "title": "", "language": "",
+                     "clear": ["title", "language"], "flags": {"enabled": False, "commentary": True}}],
+    }]}), encoding="utf-8")
+    result = _cli(tmp_path, "profile", "apply", "--profile", str(profile), "-i", str(src), "-o", str(out),
+                  "--mux-backend", backend, *(ENCODE if encode else []))
+    assert result.returncode == 0, result.stderr
+    streams = ffprobe_json(out)["streams"]
+    audio = [stream for stream in streams if stream["codec_type"] == "audio"]
+    assert [stream["codec_name"] for stream in audio] == ["aac", "ac3"]
+    assert [stream.get("tags", {}).get("title", "") for stream in audio] == ["Audio original", ""]
+    assert [stream.get("tags", {}).get("language", "und") for stream in audio] == ["fre", "und"]
+    tracks = [track for track in MatroskaReader(out).tracks() if track.track_type == 2]
+    assert [(bool(track.flag_enabled), bool(track.flag_commentary)) for track in tracks] == [
+        (True, False), (False, True)]

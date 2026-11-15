@@ -383,6 +383,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "title_pattern": {"type": "string"},
             "enabled": {"type": "boolean"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
+            "clear": {"type": "array", "items": {"enum": ["title", "language"]}, "uniqueItems": True},
         },
     }
     rule_schema: dict[str, Any] = {
