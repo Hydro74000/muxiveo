@@ -68,8 +68,11 @@ def merge_remux_into_encode_config(
         lang = (track.language or "").strip()
         orig_lang = (track.orig_language or "").strip()
         title = (track.title or "").strip()
-        # Titre de la source vidé dans le panneau : effacé en sortie (sinon repris de la source).
-        title_cleared = not title and bool((track.orig_title or "").strip())
+        # Titre vide = pas de titre en sortie (sinon repris du flux source). Une variante
+        # (clone) a pour titre d'origine celui du clone, pas celui du flux physique.
+        title_cleared = not title and (
+            bool((track.orig_title or "").strip()) or bool(track.source_entry_id)
+        )
         if not lang and orig_lang and lang != orig_lang:
             lang = "und"
         has_flag_state = any((

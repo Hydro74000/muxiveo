@@ -327,6 +327,40 @@ class TestLanguageClearPropagation:
         planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
         assert planned[0].name == ""
 
+    def test_audio_variant_cloned_after_title_clear_keeps_empty_title(self, tmp_path, qt_app):
+        """Variante créée après l'effacement : son titre d'origine (clone) est vide, le flux source non."""
+        from core.workflows.remux_models import clone_track_entry
+        from core.workflows.encode.planning.track_metadata import resolve_track_metadata
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="DTS", display_info="",
+            language="", title="", orig_language="", orig_title="Audio original",
+        )
+        variant = clone_track_entry(audio)
+        assert variant.orig_title == ""
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=audio.entry_id),
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=variant.entry_id, codec="ac3"),
+            ],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video, audio, variant])
+
+        result = _merge(enc, rmx)
+
+        assert [(edit.track_order, edit.title) for edit in result.track_meta_edits] == [(2, ""), (3, "")]
+        planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
+        assert [item.name for item in planned[1:]] == ["", ""]
+
     def test_untitled_source_video_emits_no_title_edit(self, tmp_path, qt_app):
         src = tmp_path / "src.mkv"
         src.touch()
