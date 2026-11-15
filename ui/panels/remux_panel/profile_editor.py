@@ -1195,11 +1195,17 @@ class DecisionProfileEditorDialog(QDialog):
             resolution.update(bucket=resolution_bucket(kept_width, kept_height))
             edited["value"] = resolution
         elif group == "video_flags":
+            # Seules les cases modifiées depuis le chargement basculent leur bit (masques multiples : les autres bits
+            # de chaque masque restent les siens).
             bits = self._parse_video_flags(item.get("value"))
-            for flag, checked in ((VIDEO_FLAG_HDR, self._video_hdr.isChecked()),
-                                  (VIDEO_FLAG_HDR10PLUS, self._video_hdr10plus.isChecked()),
-                                  (VIDEO_FLAG_DOLBY_VISION, self._video_dolby_vision.isChecked())):
-                bits = bits | flag if checked else bits & ~flag
+            loaded = self._loaded_match_groups.get("video_flags") or (None, None, None)
+            for flag, checked, initial in zip(
+                    (VIDEO_FLAG_HDR, VIDEO_FLAG_HDR10PLUS, VIDEO_FLAG_DOLBY_VISION),
+                    (self._video_hdr.isChecked(), self._video_hdr10plus.isChecked(),
+                     self._video_dolby_vision.isChecked()),
+                    loaded):
+                if checked != initial:
+                    bits = bits | flag if checked else bits & ~flag
             if not bits:
                 return None
             edited["value"] = f"0x{bits:08X}"
@@ -1765,6 +1771,9 @@ class DecisionProfileEditorDialog(QDialog):
         rules = self._rules()
         rules[row], rules[new_row] = rules[new_row], rules[row]
         rules[new_row]["priority"] = int(rules[new_row].get("priority") or 0) + (-delta)
+        # Priorité changée hors des contrôles : règle rechargée (contrôles et valeurs de référence à jour), sinon la
+        # restauration des valeurs non modifiées annulerait l'ajustement.
+        self._load_rule(rules[new_row])
         self._selected_rule_index = new_row
         self._refresh_rule_list()
         self._rule_list.setCurrentRow(new_row)
