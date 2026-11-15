@@ -313,10 +313,11 @@ class HybridRecipe:
     track_choices: tuple[HybridTrackChoice, ...] | None = None
     #: Langue / titre saisis sur le témoin, appliqués aux pistes retenues avant le profil.
     track_overrides: dict[HybridTrackChoice, dict[str, str]] = field(default_factory=dict)
-    #: Variantes audio du témoin (recréées par un profil seulement) ; hors du format JSON de la recette.
-    witness_variants: int = field(default=0, repr=False, compare=False)
+    #: Variantes audio cochées du témoin (recréées par un profil seulement). Clé JSON facultative.
+    witness_variants: int = field(default=0, repr=False)
     #: Pistes décochées du témoin dont une variante cochée dérive : candidates du profil (clonage), jamais sorties.
-    variant_source_choices: tuple[HybridTrackChoice, ...] = field(default=(), repr=False, compare=False)
+    #: Clé JSON facultative.
+    variant_source_choices: tuple[HybridTrackChoice, ...] = field(default=(), repr=False)
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     sync_strategy: str = "auto"  # "auto", "manual" ou "none"
@@ -341,6 +342,11 @@ class HybridRecipe:
                                  else [asdict(choice) for choice in self.track_choices])
         data["track_overrides"] = [{"track": asdict(choice), "set": dict(values)}
                                    for choice, values in self.track_overrides.items()]
+        # Témoin à variantes seulement : recettes sans variante inchangées (une version antérieure refuse ces clés).
+        if self.witness_variants:
+            data["witness_variants"] = self.witness_variants
+        if self.variant_source_choices:
+            data["variant_source_choices"] = [asdict(choice) for choice in self.variant_source_choices]
         return data
 
     @classmethod
@@ -355,7 +361,8 @@ class HybridRecipe:
         simple = {"keep_master_video": bool, "keep_master_chapters": bool, "sync_mode": str, "sync_subtitles": str,
                   "sync_strategy": str, "manual_shift_ms": int, "crossfade_ms": int, "cadence_auto_apply": bool,
                   "cadence_audio_method": str, "output_tag": str}
-        unknown = sorted(set(data) - lists - set(simple) - {"format", "version", "track_choices", "track_overrides"})
+        unknown = sorted(set(data) - lists - set(simple) - {"format", "version", "track_choices", "track_overrides",
+                                                             "witness_variants", "variant_source_choices"})
         if unknown:
             raise ValueError("Recette : champ(s) inconnu(s) : " + ", ".join(unknown))
         for name in lists & set(data):
@@ -391,6 +398,16 @@ class HybridRecipe:
                 raise ValueError("Recette : surcharge de piste attendue {track, set: {language, title}}.")
             overrides[choice(item.get("track"))] = {key: str(value) for key, value in values.items()}
         recipe.track_overrides = overrides
+        variants = data.get("witness_variants", 0)
+        if not isinstance(variants, int) or isinstance(variants, bool) or variants < 0:
+            raise ValueError("Recette : witness_variants attendu entier positif ou nul.")
+        sources = data.get("variant_source_choices", [])
+        if not isinstance(sources, list):
+            raise ValueError("Recette : variant_source_choices attendu liste de pistes.")
+        recipe.witness_variants = variants
+        recipe.variant_source_choices = tuple(choice(item) for item in sources)
+        if recipe.variant_source_choices and not recipe.witness_variants:
+            raise ValueError("Recette : pistes sources de variantes sans variante (witness_variants).")
         return recipe
 
     @classmethod
