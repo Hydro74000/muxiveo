@@ -289,6 +289,7 @@ class DecisionProfileEditorDialog(QDialog):
         self._loaded_actions: list[dict[str, Any]] | None = None
         self._loaded_action_state: dict[str, Any] = {}
         self._match_language_field = "language"
+        self._loaded_rule_meta: dict[str, Any] = {}
 
         self.setWindowTitle(translate_text("Éditeur de profil"))
         self.setModal(True)
@@ -917,6 +918,7 @@ class DecisionProfileEditorDialog(QDialog):
         ):
             widget.blockSignals(False)
         self._sync_clear_fields()
+        self._loaded_rule_meta = self._rule_meta_state() if rule is not None else {}
         if rule is None:
             self._loaded_match = self._loaded_actions = None
             self._loaded_match_groups = {}
@@ -931,6 +933,17 @@ class DecisionProfileEditorDialog(QDialog):
             self._loaded_action_state = self._action_ui_state()
             self._match_language_field = (
                 "file_language" if _uses_field(self._loaded_match, "file_language") else "language")
+
+    def _rule_meta_state(self) -> dict[str, Any]:
+        """Valeurs des contrôles de métadonnées de la règle (comparées à celles du chargement)."""
+        return {
+            "label": self._rule_label.text(),
+            "enabled": self._rule_enabled.isChecked(),
+            "group_id": self._rule_group.currentData(),
+            "priority": self._rule_priority.value(),
+            "scope": self._rule_scope.currentData(),
+            "write_mode": self._rule_write_mode.currentData(),
+        }
 
     def _action_ui_state(self) -> dict[str, Any]:
         """Valeurs des actions affichées, par champ (comparées à celles du chargement)."""
@@ -955,20 +968,33 @@ class DecisionProfileEditorDialog(QDialog):
             if combo.itemData(index) == value:
                 combo.setCurrentIndex(index)
                 return
+        if isinstance(value, str) and value:
+            # Valeur hors liste (groupe personnalisé, alias de mode d'écriture…) : affichée telle quelle, gardée.
+            combo.addItem(value, value)
+            combo.setCurrentIndex(combo.count() - 1)
+            return
         combo.setCurrentIndex(0)
 
     def _store_current_rule(self) -> None:
         if self._selected_rule_index < 0 or self._selected_rule_index >= len(self._rules()):
             return
         rule = self._rules()[self._selected_rule_index]
-        rule["label"] = self._rule_label.text().strip() or str(rule.get("id") or "rule")
-        rule["enabled"] = self._rule_enabled.isChecked()
-        rule["group_id"] = str(self._rule_group.currentData() or "")
-        rule["priority"] = int(self._rule_priority.value())
-        rule["scope"] = str(self._rule_scope.currentData() or "best")
-        write_mode = str(self._rule_write_mode.currentData() or "priority")
-        if "write_mode" in rule or write_mode != "priority":  # défaut implicite non ajouté
-            rule["write_mode"] = write_mode
+        # Métadonnées de règle réécrites seulement si leur contrôle a changé (groupe personnalisé, alias de mode
+        # d'écriture, clé absente : conservés tels quels).
+        meta = self._rule_meta_state()
+        changed = {name for name, value in meta.items() if value != self._loaded_rule_meta.get(name)}
+        if "label" in changed:
+            rule["label"] = self._rule_label.text().strip() or str(rule.get("id") or "rule")
+        if "enabled" in changed:
+            rule["enabled"] = self._rule_enabled.isChecked()
+        if "group_id" in changed:
+            rule["group_id"] = str(self._rule_group.currentData() or "")
+        if "priority" in changed:
+            rule["priority"] = int(self._rule_priority.value())
+        if "scope" in changed:
+            rule["scope"] = str(self._rule_scope.currentData() or "best")
+        if "write_mode" in changed:
+            rule["write_mode"] = str(self._rule_write_mode.currentData() or "priority")
         try:
             rule["match"] = self._simple_match_payload()
             rule["actions"] = self._simple_actions_payload(rule)

@@ -2986,6 +2986,41 @@ class TestRemuxPanelDecisionProfiles:
         assert [t.title for t in result.tracks] == ["Choisie"]
         dialog.close()
 
+    def test_profile_editor_keeps_rule_metadata_it_does_not_edit(self, qt_app, tmp_path):
+        """Audit 23 : profil ouvert puis repris sans modification (chaque règle visitée) → règles identiques :
+        groupe personnalisé désactivé, alias historique de mode d'écriture, clés absentes ; résultat inchangé."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Méta",
+                   "groups": [{"id": "custom", "enabled": False}],
+                   "rules": [
+                       {"id": "masquee", "group_id": "custom", "match": audio,
+                        "actions": [{"type": "set_title", "value": "Groupe désactivé"}]},
+                       {"id": "avant", "priority": 10, "match": audio,
+                        "actions": [{"type": "set_title", "value": "Avant"}]},
+                       {"id": "apres", "priority": 0, "write_mode": "replace", "match": audio,
+                        "actions": [{"type": "set_title", "value": "Après"}]},
+                   ]}
+
+        def outcome(candidate):
+            track = _track(1, "audio", file_id="fid", title="Origine")
+            return [t.title for t in apply_decision_profile(candidate, [track]).tracks]
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        for row in range(len(profile["rules"])):
+            dialog._rule_list.setCurrentRow(row)
+        assert dialog.profile()["rules"] == profile["rules"]
+        assert outcome(dialog.profile()) == outcome(profile) == ["Après"]
+        dialog._rule_list.setCurrentRow(0)
+        assert dialog._rule_group.currentData() == "custom"  # groupe personnalisé affiché, non remplacé
+        dialog._rule_priority.setValue(5)  # métadonnée modifiée : seule elle change
+        rule = dialog.profile()["rules"][0]
+        assert rule == {**profile["rules"][0], "priority": 5}
+        dialog.close()
+
     def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
