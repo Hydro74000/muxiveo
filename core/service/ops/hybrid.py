@@ -143,7 +143,8 @@ class HybridPlanResult(Model):
 
 def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
     payload = request.options.to_dict()
-    explicit = {key for key in _HYBRID_DEFAULTS if payload.get(key) is not None}  # options réellement fournies
+    explicit = {key for key in (*_HYBRID_DEFAULTS, "cadence_auto", "cadence_method")
+                if payload.get(key) is not None}  # options réellement fournies
     for key, value in _HYBRID_DEFAULTS.items():
         if payload.get(key) is None:
             payload[key] = value
@@ -169,8 +170,9 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
         donor_sub_langs=request.donor_sub_langs, exclude_languages=request.exclude_langs,
         sync_strategy=request.sync, manual_shift_ms=request.shift_ms, sync_mode=chosen("sync_mode"),
         sync_subtitles=chosen("sync_subtitles"), crossfade_ms=chosen("crossfade_ms"),
-        cadence_auto_apply=common.cadence_auto if request.recipe is None or not common.cadence_auto else None,
-        cadence_audio_method=common.cadence_method if common.cadence_method != "auto" else None)
+        cadence_auto_apply=common.cadence_auto if request.recipe is None or "cadence_auto" in explicit else None,
+        cadence_audio_method=(common.cadence_method if request.recipe is None or "cadence_method" in explicit
+                              else None))
     if request.shift_ms is not None and recipe.sync_strategy != "manual":
         raise JobError("--shift-ms s'utilise avec --sync manual.", EXIT_ARGS)
     # Fondu effectif (recette, sauf option fournie) : le même pour la préparation, le résultat et --save-recipe ;

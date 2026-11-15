@@ -32,6 +32,16 @@ class _ExplicitStore(argparse.Action):
         namespace.explicit_options = explicit
 
 
+class _ExplicitBoolean(argparse.BooleanOptionalAction):
+    """``--x`` / ``--no-x`` mémorisé comme explicite (voir ``_ExplicitStore``)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        super().__call__(parser, namespace, values, option_string)
+        explicit = set(getattr(namespace, "explicit_options", ()) or ())
+        explicit.add(self.dest)
+        namespace.explicit_options = explicit
+
+
 def _add_sync_options(parser):
     parser.add_argument("--sync-mode", choices=("physical", "container"), default=None, action=_ExplicitStore)
     parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None, action=_ExplicitStore)
@@ -63,7 +73,7 @@ def _add_sync_options(parser):
     parser.add_argument("--drift-threshold-ms", type=int, default=25, help="Seuil de dérive en ms pour détecter une coupure.")
     parser.add_argument(
         "--cadence-auto",
-        action=argparse.BooleanOptionalAction,
+        action=_ExplicitBoolean,
         default=True,
         help="Détection et conversion automatique de cadence PAL <-> Cinéma.",
     )
@@ -71,6 +81,7 @@ def _add_sync_options(parser):
         "--cadence-method",
         choices=("auto", "atempo", "asetrate"),
         default="auto",
+        action=_ExplicitStore,
         help="Méthode de conversion audio pour cadence : auto (analyse acoustique du pitch, défaut), atempo (tonalité préservée) ou asetrate (hauteur naturelle / pitch shift).",
     )
     parser.add_argument("--export-workflow", help="Sauvegarder le workflow exact sans exécuter.")

@@ -103,8 +103,10 @@ class JobOptions(Model):
     reject_coherent_sync: bool = field(
         default=False, description="Refuser une synchro cohérente en partie non vérifiée.")
     drift_threshold_ms: int = field(default=25, description="Seuil de dérive d'une coupure (ms).")
-    cadence_auto: bool = field(default=True, description="Conversion de cadence PAL ↔ cinéma automatique.")
-    cadence_method: Literal["auto", "atempo", "asetrate"] = "auto"
+    cadence_auto: bool | None = field(
+        default=None, description="Conversion de cadence PAL ↔ cinéma automatique ; défaut : activée.")
+    cadence_method: Literal["auto", "atempo", "asetrate"] | None = field(
+        default=None, description="Méthode audio de la conversion de cadence ; défaut : auto.")
     keep_failed_work_dir: bool = field(
         default=False, description="Encodage en échec : conserver le dossier de travail (fichiers produits).")
 
@@ -118,6 +120,9 @@ class JobOptions(Model):
     def to_common(self, overrides: Overrides, **extra: Any) -> CommonOptions:
         values = self.to_dict()
         values["calibration"] = str(self.calibration) if self.calibration is not None else None
+        # Cadence absente : valeurs historiques (l'absence n'est distinguée que par l'hybridation, face à une recette).
+        values["cadence_auto"] = True if self.cadence_auto is None else self.cadence_auto
+        values["cadence_method"] = self.cadence_method or "auto"
         return CommonOptions(
             ffmpeg=overrides.ffmpeg,
             ffprobe=overrides.ffprobe,
@@ -130,7 +135,7 @@ class JobOptions(Model):
 
 
 _NULLABLE = {"nfo", "remove_closed_captions", "sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms",
-             "calibration", "quick_sync_check"}
+             "calibration", "quick_sync_check", "cadence_auto", "cadence_method"}
 
 
 @dataclass(frozen=True)

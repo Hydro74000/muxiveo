@@ -146,3 +146,51 @@ def test_out_of_range_crossfade_is_refused_from_a_recipe_or_an_option(tmp_path, 
     request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
     with pytest.raises(JobError, match="crossfade_ms|Seuils"):
         _spec(request, ExecutionContext.create(NS(), ListSink()))
+
+
+
+@pytest.mark.parametrize("given, expected", [
+    ([], (False, "asetrate")),
+    (["--cadence-auto", "--cadence-method", "auto"], (True, "auto")),
+    (["--cadence-method", "atempo"], (False, "atempo")),
+])
+def test_explicit_cadence_options_override_the_recipe(tmp_path, given, expected):
+    """Audit 31 : options de cadence saisies (même égales au défaut) prioritaires sur la recette ; absentes, la
+    recette s'applique."""
+    from types import SimpleNamespace as NS
+
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops.hybrid import _spec
+
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(HybridRecipe(cadence_auto_apply=False, cadence_audio_method="asetrate").to_dict()),
+                    encoding="utf-8")
+    argv = ["hybrid", "--ref", str(tmp_path / "m.mkv"), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path),
+            "--recipe", str(path), "--plan", *given]
+    request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
+    spec = _spec(request, ExecutionContext.create(NS(), ListSink()))
+    assert (spec.recipe.cadence_auto_apply, spec.recipe.cadence_audio_method) == expected
+
+
+def test_explicit_cadence_options_in_an_api_request_override_the_recipe(tmp_path):
+    from types import SimpleNamespace as NS
+
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops.hybrid import _spec
+
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(HybridRecipe(cadence_auto_apply=False, cadence_audio_method="asetrate").to_dict()),
+                    encoding="utf-8")
+    request = HybridPlanRequest.from_dict({
+        "ref": str(tmp_path / "m.mkv"), "donor": str(tmp_path / "d.mkv"), "output_dir": str(tmp_path),
+        "recipe": str(path), "options": {"cadence_auto": True, "cadence_method": "auto"}})
+    spec = _spec(request, ExecutionContext.create(NS(), ListSink()))
+    assert (spec.recipe.cadence_auto_apply, spec.recipe.cadence_audio_method) == (True, "auto")
+
+
+def test_absent_cadence_options_keep_their_historical_defaults_outside_hybrid():
+    from core.service.context import Overrides
+    from core.service.ops.media import JobOptions
+
+    common = JobOptions().to_common(Overrides())
+    assert (common.cadence_auto, common.cadence_method) == (True, "auto")

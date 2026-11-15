@@ -131,7 +131,8 @@ def hybrid_payload(args) -> dict:
     # même égaux au défaut, ils l'emportent sur la recette.
     explicit = set(getattr(args, "explicit_options", ()) or ())
     absent: dict[str, Any] = {
-        name: None for name in ("sync_mode", "sync_subtitles", "crossfade_ms") if name not in explicit}
+        name: None for name in ("sync_mode", "sync_subtitles", "crossfade_ms", "cadence_auto", "cadence_method")
+        if name not in explicit}
     common = dataclasses.replace(common_options(args), **absent)
     payload: dict = {
         "output_dir": args.output_dir, "options": JobOptions.from_common(common),
