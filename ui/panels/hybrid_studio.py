@@ -1199,6 +1199,9 @@ class HybridStudio(QWidget):
         recipe.donor_audio_langs = donor_audio_langs
         recipe.donor_sub_langs = donor_sub_langs
         recipe.track_choices = tuple(choices)
+        # Source de variante recochée dans le témoin : piste retenue, plus seulement candidate de clonage.
+        recipe.variant_source_choices = tuple(
+            choice for choice in recipe.variant_source_choices if choice not in set(choices))
         recipe.track_overrides = overrides
         recipe.sync_mode = self.mode.currentData() or "physical"
         recipe.sync_subtitles = "mirror" if self.mirror.isChecked() else "none"
