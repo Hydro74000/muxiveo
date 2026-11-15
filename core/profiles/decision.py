@@ -1586,13 +1586,14 @@ def remux_config_to_decision_profile(
                 "title": track.title,
                 "flags": _flag_action_payload(track),
             }
-            # Titre / langue vidés alors que le flux source en porte : effacement explicite.
+            # Titre / langue vidés alors que le clone hériterait d'une valeur (celle de l'original, rétablie par sa
+            # règle, ou celle du fichier) : effacement explicite.
             clear = [
-                name for name, value, physical in (
-                    ("title", track.title, source_track.orig_title),
-                    ("language", track.language, source_track.orig_language),
+                name for name, value, current, physical in (
+                    ("title", track.title, source_track.title, source_track.orig_title),
+                    ("language", track.language, source_track.language, source_track.orig_language),
                 )
-                if not (value or "").strip() and (physical or "").strip()
+                if not (value or "").strip() and ((current or "").strip() or (physical or "").strip())
             ]
             if clear:
                 action["clear"] = clear
