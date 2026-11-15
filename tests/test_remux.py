@@ -3101,7 +3101,7 @@ class TestRemuxPanelDecisionProfiles:
         dialog._rule_list.setCurrentRow(0)
         dialog._move_current_rule(1)
         priorities = [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]]
-        assert priorities == [("b", 10), ("a", 9), ("c", 8)]
+        assert priorities == [("b", 9), ("a", 8), ("c", 7)]
         track = _track(1, "audio", file_id="fid", title="Origine")
         result = apply_decision_profile(dialog.profile(), [track])
         assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["A"]
@@ -3132,10 +3132,66 @@ class TestRemuxPanelDecisionProfiles:
         others = [rule for rule in moved if rule is not mover]
         assert all(int(rule["priority"]) != int(mover["priority"]) for rule in others)
         assert (int(mover["priority"]) < int(neighbor["priority"])) is (delta > 0)
-        before = {rule["id"]: rule["priority"] for rule in rules if rule["id"] != mover["id"]}
-        after = {rule["id"]: rule["priority"] for rule in others}
-        assert sorted(before, key=before.get) == sorted(after, key=after.get)  # ordre relatif des autres
+        third = next(rule for rule in rules if rule["id"] not in {mover["id"], neighbor["id"]})
+        new_third = next(rule for rule in moved if rule["id"] == third["id"])
+        for rule in (mover, neighbor):  # aucune des deux ne passe sous une règle qu'elle dominait
+            old_rule = next(item for item in rules if item["id"] == rule["id"])
+            if int(old_rule["priority"]) > int(third["priority"]):
+                assert int(rule["priority"]) > int(new_third["priority"])
+        assert int(neighbor["priority"]) != int(new_third["priority"])
         assert apply_decision_profile(dialog.profile(), [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog.close()
+
+    @pytest.mark.parametrize("priorities", [(10, 9, 9), (10, 10, 9), (10, 9, 8), (9, 9, 9)])
+    def test_profile_editor_rule_move_keeps_a_valid_profile_with_three_concurrent_writers(self, qt_app, tmp_path,
+                                                                                          priorities):
+        """Audit 29 : trois règles écrivant le titre ; un profil valide le reste après déplacement de A sous B (aucun
+        conflit masqué révélé)."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": rule_id.upper()}]}
+                 for rule_id, priority in zip("abc", priorities)]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Titres", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        valid_before = apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        result = apply_decision_profile(dialog.profile(), [copy.deepcopy(track)])
+        if valid_before:
+            assert result.report["conflicts"] == []
+        moved = {rule["id"]: rule["priority"] for rule in dialog.profile()["rules"]}
+        assert moved["b"] > moved["a"]
+        dialog.close()
+
+    def test_profile_editor_rule_move_across_group_priorities_only_reorders_the_list(self, qt_app, tmp_path):
+        """Audit 29 : règles de groupes de priorités différentes → priorités inchangées, message explicite (l'ordre
+        d'exécution suit les groupes)."""
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Groupes",
+                   "groups": [{"id": "g1", "priority": 10}, {"id": "g2", "priority": 1}],
+                   "rules": [{"id": "a", "group_id": "g1", "priority": 10, "match": audio,
+                              "actions": [{"type": "set_title", "value": "A"}]},
+                             {"id": "b", "group_id": "g2", "priority": 9, "match": audio,
+                              "actions": [{"type": "set_title", "value": "B"}]}]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        rules = dialog.profile()["rules"]
+        assert [(rule["id"], rule["priority"]) for rule in rules] == [("b", 9), ("a", 10)]
+        from core.i18n import translate_text
+
+        assert not dialog._move_note.isHidden() and dialog._move_note.text() == translate_text(
+            "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre "
+            "affiché change.")
         dialog.close()
 
     def test_profile_editor_toggles_only_the_edited_bit_of_each_video_mask(self, qt_app, tmp_path):

@@ -460,6 +460,10 @@ class DecisionProfileEditorDialog(QDialog):
         row.addWidget(up_btn)
         row.addWidget(down_btn)
         layout.addLayout(row)
+        self._move_note = QLabel()
+        self._move_note.setWordWrap(True)
+        self._move_note.setVisible(False)
+        layout.addWidget(self._move_note)
         return panel
 
     def _build_center_panel(self) -> QWidget:
@@ -1770,19 +1774,7 @@ class DecisionProfileEditorDialog(QDialog):
         self._store_current_rule()
         rules = self._rules()
         rules[row], rules[new_row] = rules[new_row], rules[row]
-        # La règle déplacée passe juste après (descente) ou juste avant (montée) sa voisine, à un niveau de priorité
-        # qu'elle occupe seule : niveau occupé → les autres règles de ce côté décalées d'un cran (ordre relatif et
-        # égalités existantes conservés). Aucune égalité, donc aucun conflit, n'est créée.
-        moved, neighbor = rules[new_row], rules[row]
-        target = int(neighbor.get("priority") or 0) - delta
-        if any(int(rule.get("priority") or 0) == target for rule in rules if rule is not moved):
-            for rule in rules:
-                if rule is moved or rule is neighbor:
-                    continue
-                priority = int(rule.get("priority") or 0)
-                if (delta > 0 and priority <= target) or (delta < 0 and priority >= target):
-                    rule["priority"] = priority - delta
-        moved["priority"] = target
+        self._reorder_after_move(rules[new_row], rules[row], delta)
         # Priorité changée hors des contrôles : règle rechargée (contrôles et valeurs de référence à jour), sinon la
         # restauration des valeurs non modifiées annulerait l'ajustement.
         self._load_rule(rules[new_row])
@@ -1790,6 +1782,45 @@ class DecisionProfileEditorDialog(QDialog):
         self._refresh_rule_list()
         self._rule_list.setCurrentRow(new_row)
         self._refresh_preview()
+
+    def _reorder_after_move(self, moved: dict[str, Any], neighbor: dict[str, Any], delta: int) -> None:
+        """Ordre d'exécution des deux règles échangé, sans conflit possible.
+
+        Les deux règles prennent chacune un niveau de priorité unique, juste sous l'ancien niveau le plus haut des
+        deux (au-dessus de toutes les règles qu'elles dominaient) ; les règles plus basses du même groupe de priorité
+        sont décalées si la place manque (ordre relatif et égalités conservés). Aucune égalité n'est créée et aucune
+        règle ne passe sous une autre qu'elle dominait : un profil valide le reste. Groupes de priorités
+        différentes : l'ordre d'exécution suit la priorité des groupes, seule la liste change (message).
+        """
+        group_priority = {str(group.get("id") or ""): int(group.get("priority") or 0)
+                          for group in self._profile.get("groups", []) if isinstance(group, dict)}
+
+        def class_of(rule: dict[str, Any]) -> int:
+            return group_priority.get(str(rule.get("group_id") or ""), 0)
+
+        def priority(rule: dict[str, Any]) -> int:
+            return int(rule.get("priority") or 0)
+
+        if class_of(moved) != class_of(neighbor):
+            self._move_note.setText(translate_text(
+                "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre "
+                "affiché change."))
+            self._move_note.setVisible(True)
+            return
+        self._move_note.setVisible(False)
+        upper, lower = (neighbor, moved) if delta > 0 else (moved, neighbor)
+        top = max(priority(moved), priority(neighbor))
+        same = [rule for rule in self._rules()
+                if rule is not moved and rule is not neighbor and class_of(rule) == class_of(moved)]
+        below = [priority(rule) for rule in same if priority(rule) < top]
+        if below:
+            missing = 2 - (top - max(below) - 1)
+            if missing > 0:
+                ceiling = max(below)
+                for rule in same:
+                    if priority(rule) <= ceiling:
+                        rule["priority"] = priority(rule) - missing
+        upper["priority"], lower["priority"] = top - 1, top - 2
 
     def _use_blank_profile(self) -> None:
         self._profile = blank_decision_profile()

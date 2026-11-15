@@ -11362,5 +11362,9 @@
   "{name} existe déjà. Le remplacer ?": {
     "fra": "{name} existe déjà. Le remplacer ?",
     "eng": "{name} already exists. Replace it?"
+  },
+  "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre affiché change.": {
+    "fra": "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre affiché change.",
+    "eng": "Rules from different groups: execution order follows group priority; only the displayed order changes."
   }
 }
