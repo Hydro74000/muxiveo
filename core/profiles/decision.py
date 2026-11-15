@@ -1214,7 +1214,7 @@ def _apply_audio_variant_action(
     flags = action.get("flags")
     if isinstance(flags, Mapping):
         for name, value in flags.items():
-            if name in FLAG_NAMES and name != "enabled":
+            if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
                 setattr(variant, f"flag_{name}", bool(value))
     tags = temporary_tags_by_entry_id.setdefault(variant.entry_id, set())
     tags.add(str(rule.get("id") or "variant"))
