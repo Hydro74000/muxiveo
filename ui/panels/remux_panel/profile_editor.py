@@ -60,6 +60,32 @@ from ui.widgets.token_line_edit import TokenChoice, TokenLineEdit, add_token_sub
 # Jetons de nommage, identiques dans toutes les langues.
 _OUTPUT_TEMPLATE_EXAMPLE = "{title:release}.{year}.{video-resolution:best}-{group}"
 
+# Champ de l'éditeur reconstruisant chaque type d'action gérée.
+_ACTION_FIELDS = {
+    "set_enabled": "enabled",
+    "set_language": "language",
+    "set_title": "title",
+    "set_flags": "flags",
+    "add_track_tags": "tags",
+    "remove_track_tags": "tags",
+    "set_order_priority": "order",
+}
+# Critère « Langue » : langue courante ou langue lue dans le fichier (règles capturées).
+_LANGUAGE_FIELDS = frozenset({"language", "file_language"})
+_KEYWORD_MATCH_FIELDS = frozenset({
+    "codec_atmos", "codec_dtsx", "video_hdr", "video_hdr10", "video_hdr10plus", "video_dolby_vision", "video_hlg",
+    "video_sdr",
+})
+
+
+def _uses_field(node: Any, field: str) -> bool:
+    """Le critère (ou un de ses sous-critères) porte sur ``field``."""
+    if isinstance(node, dict):
+        return node.get("field") == field or any(_uses_field(value, field) for value in node.values())
+    if isinstance(node, list):
+        return any(_uses_field(value, field) for value in node)
+    return False
+
 KEYWORD_CATEGORIES_FLAT = {
     keyword
     for _category, keywords in KEYWORD_CATEGORIES
@@ -255,6 +281,12 @@ class DecisionProfileEditorDialog(QDialog):
         self._aliases: dict[str, dict[str, str]] = {}
         self._match_error = ""
         self._selected_rule_index = -1
+        # Règle affichée telle que chargée : critères et actions repris à l'identique pour ce qui n'est pas modifié.
+        self._loaded_match: dict[str, Any] | None = None
+        self._loaded_match_state: tuple[Any, ...] | None = None
+        self._loaded_actions: list[dict[str, Any]] | None = None
+        self._loaded_action_state: dict[str, Any] = {}
+        self._match_language_field = "language"
 
         self.setWindowTitle(translate_text("Éditeur de profil"))
         self.setModal(True)
@@ -883,6 +915,40 @@ class DecisionProfileEditorDialog(QDialog):
         ):
             widget.blockSignals(False)
         self._sync_clear_fields()
+        if rule is None:
+            self._loaded_match = self._loaded_match_state = self._loaded_actions = None
+            self._loaded_action_state = {}
+            self._match_language_field = "language"
+        else:
+            match = rule.get("match", {})
+            self._loaded_match = copy.deepcopy(match) if isinstance(match, dict) else {"all": []}
+            self._loaded_match_state = self._match_ui_state()
+            actions = rule.get("actions", [])
+            self._loaded_actions = copy.deepcopy(actions) if isinstance(actions, list) else []
+            self._loaded_action_state = self._action_ui_state()
+            self._match_language_field = (
+                "file_language" if _uses_field(self._loaded_match, "file_language") else "language")
+
+    def _match_ui_state(self) -> tuple[Any, ...]:
+        """Valeurs des critères affichés (comparées à celles du chargement)."""
+        return (
+            self._match_type.currentData(), self._match_language.text(), self._match_codec.text(),
+            self._match_codec_required.isChecked(), self._match_title.text(), self._match_flags.text(),
+            self._match_width.value(), self._match_height.value(), self._video_hdr.isChecked(),
+            self._video_hdr10plus.isChecked(), self._video_dolby_vision.isChecked(), self._match_keywords.text(),
+            self._match_preferred_keywords.text(),
+        )
+
+    def _action_ui_state(self) -> dict[str, Any]:
+        """Valeurs des actions affichées, par champ (comparées à celles du chargement)."""
+        return {
+            "enabled": self._action_enabled.currentData(),
+            "language": (self._action_language.text(), self._action_language_clear.isChecked()),
+            "title": (self._title_pattern.text(), self._title_clear.isChecked()),
+            "flags": self._action_flags.text(),
+            "tags": self._action_tag.text(),
+            "order": self._action_order.value(),
+        }
 
     def _sync_clear_fields(self, *_args: Any) -> None:
         """Champ grisé quand « Effacer » est coché (la valeur saisie n'est pas écrite)."""
@@ -907,7 +973,9 @@ class DecisionProfileEditorDialog(QDialog):
         rule["group_id"] = str(self._rule_group.currentData() or "")
         rule["priority"] = int(self._rule_priority.value())
         rule["scope"] = str(self._rule_scope.currentData() or "best")
-        rule["write_mode"] = str(self._rule_write_mode.currentData() or "priority")
+        write_mode = str(self._rule_write_mode.currentData() or "priority")
+        if "write_mode" in rule or write_mode != "priority":  # défaut implicite non ajouté
+            rule["write_mode"] = write_mode
         try:
             rule["match"] = self._simple_match_payload()
             rule["actions"] = self._simple_actions_payload(rule)
@@ -933,7 +1001,8 @@ class DecisionProfileEditorDialog(QDialog):
             items.append(
                 self._criteria_expression_condition(
                     language,
-                    lambda atom: self._text_or_keyword_condition(atom, field="language", op="is", required=True),
+                    lambda atom: self._text_or_keyword_condition(
+                        atom, field=self._match_language_field, op="is", required=True),
                     label=translate_text("Langue"),
                 )
             )
@@ -1018,6 +1087,11 @@ class DecisionProfileEditorDialog(QDialog):
                     label=translate_text("Keywords préférés"),
                 )
             )
+        if self._loaded_match is not None and self._match_ui_state() == self._loaded_match_state:
+            return copy.deepcopy(self._loaded_match)  # critères non modifiés : repris à l'identique
+        if self._loaded_match is not None:
+            # Critères que l'éditeur ne représente pas (ex. canaux d'une règle capturée) : conservés.
+            items.extend(copy.deepcopy(self._flatten_simple_match(self._loaded_match)["unmanaged"]))
         return {"all": items} if items else {"all": []}
 
     def _criteria_expression_condition(self, text: str, atom_builder, *, label: str) -> dict[str, Any]:
@@ -1178,20 +1252,49 @@ class DecisionProfileEditorDialog(QDialog):
             "remove_track_tags",
             "set_order_priority",
         }
-        existing_actions = existing_rule.get("actions", []) if isinstance(existing_rule, dict) else []
-        actions: list[dict[str, Any]] = [
-            copy.deepcopy(action)
-            for action in existing_actions
-            if isinstance(action, dict) and str(action.get("type") or "") not in managed
-        ]
+        loaded = self._loaded_actions is not None
+        existing_actions = (
+            self._loaded_actions if loaded
+            else existing_rule.get("actions", []) if isinstance(existing_rule, dict) else []
+        )
+        rebuilt = self._rebuilt_actions_by_field()
+        state = self._action_ui_state()
+        changed = {
+            field for field in rebuilt
+            if not loaded or state.get(field) != self._loaded_action_state.get(field)
+        }
+        actions: list[dict[str, Any]] = []
+        placed: set[str] = set()
+        for action in existing_actions or []:
+            if not isinstance(action, dict):
+                continue
+            action_type = str(action.get("type") or "")
+            field = _ACTION_FIELDS.get(action_type) if action_type in managed else None
+            if field is None or field not in changed:
+                actions.append(copy.deepcopy(action))  # champ non modifié : occurrence reprise telle quelle
+            elif field not in placed:
+                actions.extend(rebuilt[field])  # champ modifié : à la place de sa première occurrence
+                placed.add(field)
+        for field, field_actions in rebuilt.items():
+            if field in changed and field not in placed:
+                actions.extend(field_actions)
+        return actions
+
+    def _rebuilt_actions_by_field(self) -> dict[str, list[dict[str, Any]]]:
+        """Actions reconstruites depuis les champs affichés, par champ (ordre d'ajout historique)."""
+        by_field: dict[str, list[dict[str, Any]]] = {}
+        actions: list[dict[str, Any]] = []
+        by_field["enabled"] = actions
         enabled_value = self._action_enabled.currentData()
         if enabled_value is not None:
             actions.append({"type": "set_enabled", "value": bool(enabled_value)})
+        actions = by_field["language"] = []
         language = self._action_language.text().strip()
         if self._action_language_clear.isChecked():
             actions.append({"type": "set_language", "value": ""})
         elif language:
             actions.append({"type": "set_language", "value": language})
+        actions = by_field["title"] = []
         pattern = self._title_pattern.text().strip()
         if self._title_clear.isChecked():
             actions.append({"type": "set_title", "value": ""})
@@ -1202,21 +1305,26 @@ class DecisionProfileEditorDialog(QDialog):
             else:
                 action["value"] = pattern
             actions.append(action)
+        actions = by_field["flags"] = []
         flags = self._parse_flag_action_values(self._action_flags.text())
         if flags:
             actions.append({"type": "set_flags", "value": flags})
+        actions = by_field["tags"] = []
         add_tags, remove_tags = self._parse_track_tag_action_values(self._action_tag.text())
         if remove_tags:
             actions.append({"type": "remove_track_tags", "value": remove_tags})
         if add_tags:
             actions.append({"type": "add_track_tags", "value": add_tags})
+        actions = by_field["order"] = []
         order_priority = int(self._action_order.value())
         if order_priority > 0:
             actions.append({"type": "set_order_priority", "value": order_priority})
-        return actions
+        return by_field
 
     def _flatten_simple_match(self, match: Any) -> dict[str, Any]:
-        flat: dict[str, Any] = {"flags": [], "keywords": [], "preferred_keywords": [], "codec_required": False}
+        flat: dict[str, Any] = {
+            "flags": [], "keywords": [], "preferred_keywords": [], "codec_required": False, "unmanaged": [],
+        }
         items = match.get("all", []) if isinstance(match, dict) else []
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
@@ -1248,6 +1356,9 @@ class DecisionProfileEditorDialog(QDialog):
                 continue
             field = str(item.get("field") or "")
             value = item.get("value")
+            if not self._consumes_condition(field, value, item):
+                flat["unmanaged"].append(item)
+                continue
             if field == "type":
                 flat["type"] = value
             elif field == "resolution" and isinstance(value, dict):
@@ -1284,6 +1395,17 @@ class DecisionProfileEditorDialog(QDialog):
                 target = "keywords" if bool(item.get("required", True)) else "preferred_keywords"
                 flat[target].append("{" + field + "}")
         return flat
+
+    @staticmethod
+    def _consumes_condition(field: str, value: Any, item: dict[str, Any]) -> bool:
+        """Condition simple représentée par un champ de l'éditeur (sinon conservée telle quelle)."""
+        if field in {"type", "width", "height", "video_flags_hex", "title", "source_title"}:
+            return True
+        if field == "resolution":
+            return isinstance(value, dict)
+        if field == "flags":
+            return item.get("op") in {"missing", "not_exists"}
+        return value is True and (field.startswith("flag_") or field in _KEYWORD_MATCH_FIELDS)
 
     def _condition_expression(self, condition: Any, atom_builder) -> str:
         parsed = self._condition_expression_parts(condition, atom_builder)
@@ -1349,9 +1471,9 @@ class DecisionProfileEditorDialog(QDialog):
 
     @staticmethod
     def _language_atom(condition: dict[str, Any]) -> str:
-        if condition.get("field") == "language" and condition.get("op") in {"missing", "not_exists"}:
+        if condition.get("field") in _LANGUAGE_FIELDS and condition.get("op") in {"missing", "not_exists"}:
             return "{none}"
-        if condition.get("field") == "language" and condition.get("op") == "is":
+        if condition.get("field") in _LANGUAGE_FIELDS and condition.get("op") == "is":
             return str(condition.get("value") or "")
         return ""
 
