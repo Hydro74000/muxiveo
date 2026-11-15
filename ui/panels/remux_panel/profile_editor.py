@@ -1770,7 +1770,14 @@ class DecisionProfileEditorDialog(QDialog):
         self._store_current_rule()
         rules = self._rules()
         rules[row], rules[new_row] = rules[new_row], rules[row]
-        rules[new_row]["priority"] = int(rules[new_row].get("priority") or 0) + (-delta)
+        # Ordre d'exécution échangé avec la voisine : priorités échangées (jamais d'égalité créée) ; priorités
+        # égales → la règle déplacée passe juste après (descente) ou juste avant (montée) sa voisine.
+        moved, neighbor = rules[new_row], rules[row]
+        moved_priority, neighbor_priority = int(moved.get("priority") or 0), int(neighbor.get("priority") or 0)
+        if moved_priority != neighbor_priority:
+            moved["priority"], neighbor["priority"] = neighbor_priority, moved_priority
+        else:
+            moved["priority"] = neighbor_priority - delta
         # Priorité changée hors des contrôles : règle rechargée (contrôles et valeurs de référence à jour), sinon la
         # restauration des valeurs non modifiées annulerait l'ajustement.
         self._load_rule(rules[new_row])

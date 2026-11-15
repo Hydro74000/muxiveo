@@ -3047,31 +3047,37 @@ class TestRemuxPanelDecisionProfiles:
         assert [t.title for t in apply_decision_profile(dialog.profile(), [track]).tracks] == ["Renommé"]
         dialog.close()
 
-    def test_profile_editor_rule_move_keeps_its_priority_adjustment(self, qt_app, tmp_path):
-        """Audit 25 : règle descendue → priorité ajustée conservée (jamais restaurée), résultat d'application
-        attendu."""
+    @pytest.mark.parametrize("write_mode, priorities, expected", [
+        ("override", (10, 9), "A"), ("priority", (10, 9), "B"), ("override", (10, 8), "A"), ("priority", (10, 8), "B"),
+        ("priority", (9, 9), "B"),
+    ])
+    def test_profile_editor_rule_move_swaps_execution_order(self, qt_app, tmp_path, write_mode, priorities, expected):
+        """Audits 25–26 : règle A descendue sous B → ordre d'exécution échangé (priorités échangées, ou A juste sous B
+        si elles sont égales), jamais d'égalité ni de conflit ; ajustement conservé aux sélections suivantes."""
         from core.profiles.decision import DecisionProfileManager, apply_decision_profile
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
         audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
-        profile = {"version": 1, "kind": "decision-profile", "name": "Ordre", "rules": [
-            {"id": "a", "priority": 10, "scope": "all", "write_mode": "override", "match": audio,
-             "actions": [{"type": "set_title", "value": "A"}]},
-            {"id": "b", "priority": 9, "scope": "all", "write_mode": "override", "match": audio,
-             "actions": [{"type": "set_title", "value": "B"}]},
-        ]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": rule_id.upper()}]}
+                 for rule_id, priority in zip(("a", "b"), priorities)]
+        if write_mode != "priority":
+            for rule in rules:
+                rule["write_mode"] = write_mode
+        profile = {"version": 1, "kind": "decision-profile", "name": "Ordre", "rules": rules}
         dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
                                              profile=copy.deepcopy(profile))
         dialog._rule_list.setCurrentRow(0)
         dialog._move_current_rule(1)
-        moved = dialog.profile()["rules"]
-        assert [(rule["id"], rule["priority"]) for rule in moved] == [("b", 9), ("a", 9)]
-        assert dialog._rule_priority.value() == 9  # contrôle cohérent avec la règle
+        moved = [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]]
+        assert [rule_id for rule_id, _priority in moved] == ["b", "a"] and moved[0][1] > moved[1][1]
+        assert dialog._rule_priority.value() == moved[1][1]  # contrôle cohérent avec la règle
         dialog._rule_list.setCurrentRow(0)
         dialog._rule_list.setCurrentRow(1)  # nouvelles sélections : rien n'est restauré
-        assert [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]] == [("b", 9), ("a", 9)]
+        assert [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]] == moved
         track = _track(1, "audio", file_id="fid", title="Origine")
-        assert [t.title for t in apply_decision_profile(dialog.profile(), [track]).tracks] == ["A"]
+        result = apply_decision_profile(dialog.profile(), [track])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == [expected]
         dialog.close()
 
     def test_profile_editor_toggles_only_the_edited_bit_of_each_video_mask(self, qt_app, tmp_path):
