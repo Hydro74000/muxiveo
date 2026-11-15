@@ -654,7 +654,6 @@ def _flags_payload(track: TrackEntry) -> dict[str, bool]:
     return {
         name: _flag_value(track, name, original=False)
         for name in FLAG_NAMES
-        if name != "enabled"
     }
 
 

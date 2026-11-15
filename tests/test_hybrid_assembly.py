@@ -262,10 +262,19 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     subtitle_ids = {t.entry_id for t in active_subs}
     subtitle_order = [item[2] for item in result.track_order if item[2] in subtitle_ids]
     assert subtitle_order[-1] == forced.entry_id  # L'ordre du profil prime sur forced_first.
+    forced.flag_enabled = False  # drapeau Matroska désactivé, piste gardée (sélection)
     path = tmp_path / "detected.exact-job.json"
     save_workflow(path, remux_config_to_exact_job(result))
     restored = build_remux_config(load_workflow(path), AppConfig(), CommonOptions(), Logger())
     assert remux_config_to_exact_job(restored) == remux_config_to_exact_job(result)
+
+    def states(config):  # état des pistes reconstruites, pas seulement deux exports
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.title, t.language, t.enabled,
+                       t.flag_enabled, t.flag_default, t.flag_forced, t.flag_hearing_impaired)
+                      for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)
+    assert not next(t for s in restored.sources for t in s.tracks if t.orig_title == "Forcés").flag_enabled
 
 
 def test_no_implicit_fallback_for_unchecked_tracks(assembly, tmp_path):
