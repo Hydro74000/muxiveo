@@ -56,16 +56,24 @@ Un titre ou une langue vidés dans la table sont capturés comme un effacement :
 **Effacer** à côté de **Langue** et de **Titre pattern** écrit cet effacement ; un champ vide n'écrit rien. Sans
 `clear`, un `title` ou une `language` vides d'une variante reprennent ceux de la piste source (profils existants
 inchangés). Le drapeau Matroska `FlagEnabled` d'une variante passe par `flags.enabled` ; la clé `enabled` de
-l'action reste la sélection de la piste. Une variante déjà présente est reprise quel que soit l'ordre des actions :
-valeur demandée identique, effacement → variante vide, héritage → d'abord celle qui porte la valeur de la piste
-source (une variante vidée revient aux demandes d'effacement du profil).
+l'action reste la sélection de la piste.
+
+Reprise d'une variante déjà présente : une demande sans effacement suit la règle historique, dans l'ordre des
+actions (première variante du même codec dont le titre et la langue demandés correspondent ; titre ou langue non
+demandés : n'importe laquelle ; plusieurs demandes peuvent reprendre la même variante ; l'héritage reprend donc
+toute variante du codec déjà présente ou créée par une action précédente). Une demande d'effacement (`clear`) reçoit
+une variante qui lui est propre (vide sur le champ effacé), jamais partagée avec les autres demandes, et les
+variantes vides existantes sont réparties entre les effacements sans doublon, quel que soit leur ordre.
 
 L'éditeur réécrit seulement ce que vous modifiez : une règle ouverte puis enregistrée sans changement ressort
 identique (ordre des actions, actions répétées, paramètres comme `write_mode`, critères qu'il n'affiche pas, par
 exemple les canaux d'une règle capturée, `required`, `weight`, sous-critères `any` / `not`) ; un champ modifié
 remplace ses actions ou ses critères à l'emplacement du premier (modifier la langue remplace toutes les conditions
-de langue affichées). Les variantes demandées par les règles sont affectées après toutes les règles : seules les
-règles et groupes actifs comptent, et le clone garde l'état de la piste source au moment de l'action.
+de langue affichées). Les critères vidéo sont modifiés en place : renseigner la hauteur ne touche ni la largeur ni
+la condition `resolution` au-delà de cette dimension, et cocher une case HDR ne change que son bit dans
+`video_flags_hex` (profondeur, résolution… conservées). Les variantes demandées par les règles sont affectées après
+toutes les règles : seules les règles et groupes actifs comptent, et le clone garde l'état de la piste source au
+moment de l'action.
 
 Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
 
