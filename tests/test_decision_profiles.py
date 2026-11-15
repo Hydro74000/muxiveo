@@ -1411,6 +1411,9 @@ _HISTORICAL_CASES = {
          {"type": "create_audio_variant", "codec": "ac3", "title_pattern": "{lang_name} AC3 {channels}",
           "bitrate_kbps": 640, "flags": {"default": True}},
          {"type": "create_audio_variant", "codec": "copy", "language": "{language}"}]),
+    "copy-codec-source-vide": (
+        lambda: (lambda s: [s, _copie(s, "fr-FR")])((lambda t: (setattr(t, "codec", ""), t)[1])(_fresh_audio())),
+        [{"type": "create_audio_variant", "codec": "copy", "title": "Copie"}]),
     "variante-renommee": (
         lambda: (lambda s: [s, (lambda v: (setattr(v, "codec", "AC3"), setattr(v, "title", "Main"), v)[2])(
             clone_track_entry(s))])(_fresh_audio()),
@@ -1492,6 +1495,27 @@ def test_clear_targets_keep_their_variant_and_writes_on_a_second_panel_applicati
     before = _states(first.tracks)
     for _ in range(2):
         again = apply_decision_profile(profile, first.tracks, from_current_state=True)
+        _clean_report(again)
+        assert _states(again.tracks) == before and again.report["created_variants"] == []
+
+
+@pytest.mark.parametrize("panel", [False, True])
+def test_mixed_clear_and_historical_requests_are_stable_on_reapplication(panel):
+    """Audit 23 : effacements et demande historique sur des variantes vides préexistantes → chaque demande retrouve
+    sa variante à chaque réapplication (aucun échange de débit, aucune création)."""
+    source = _audio(1, language="", title="", codec="DTS")
+    empty_fr, empty_none = _preexisting_cleared(source), _preexisting_cleared(source)
+    empty_fr.language = "fr-FR"
+    profile = _variant_profile(
+        {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"], "bitrate_kbps": 448},
+        {"type": "create_audio_variant", "codec": "ac3", "language": "fr-FR", "bitrate_kbps": 512},
+        {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"], "language": "fr-FR", "bitrate_kbps": 576},
+    )
+    first = apply_decision_profile(profile, [source, empty_fr, empty_none], from_current_state=panel)
+    _clean_report(first)
+    before = _states(first.tracks)
+    for _ in range(3):
+        again = apply_decision_profile(profile, first.tracks, from_current_state=panel)
         _clean_report(again)
         assert _states(again.tracks) == before and again.report["created_variants"] == []
 

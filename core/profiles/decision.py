@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -1282,20 +1283,32 @@ def _write_variant(request: _VariantRequest, variant: TrackEntry, temporary_tags
     temporary_tags_by_entry_id.setdefault(variant.entry_id, set()).add(request.rule_id)
 
 
+def _variant_is_fixed_point(requests: list[_VariantRequest], track: TrackEntry) -> bool:
+    """Variante déjà produite par ces demandes : leurs écritures n'y changent rien (deuxième application)."""
+    probe = copy.deepcopy(track)
+    for request in requests:
+        _write_variant(request, probe, {})
+    fields = ("codec", "display_info", "title", "language", "enabled", *(f"flag_{name}" for name in FLAG_NAMES))
+    return all(getattr(probe, name) == getattr(track, name) for name in fields)
+
+
 def _max_matching(
     keys: list[tuple[Any, ...]],
     candidates: list[TrackEntry],
     accepts: Callable[[tuple[Any, ...], TrackEntry], bool],
+    prefers: Callable[[tuple[Any, ...], TrackEntry], bool] = lambda _key, _track: False,
 ) -> dict[tuple[Any, ...], TrackEntry]:
-    """Appariement maximal cibles → variantes, stable : chaque cible prend d'abord la première variante libre
-    compatible (ordre du tableau) ; une cible déjà servie n'est déplacée que si une cible suivante n'a sinon aucune
-    variante (chemin augmentant). Cibles dans l'ordre des demandes."""
+    """Appariement maximal cibles → variantes, stable : chaque cible prend d'abord la variante libre qui est déjà
+    la sienne (``prefers`` : ses écritures n'y changent rien), sinon la première variante libre compatible (ordre
+    du tableau) ; une cible déjà servie n'est déplacée que si une cible suivante n'a sinon aucune variante (chemin
+    augmentant). Cibles dans l'ordre des demandes."""
     owner: dict[str, tuple[Any, ...]] = {}
     by_id = {track.entry_id: track for track in candidates}
 
     def assign(key: tuple[Any, ...], seen: set[str]) -> bool:
-        free = next((track for track in candidates
-                     if track.entry_id not in owner and track.entry_id not in seen and accepts(key, track)), None)
+        free_tracks = [track for track in candidates
+                       if track.entry_id not in owner and track.entry_id not in seen and accepts(key, track)]
+        free = next((track for track in free_tracks if prefers(key, track)), free_tracks[0] if free_tracks else None)
         if free is not None:
             owner[free.entry_id] = key
             return True
@@ -1343,10 +1356,14 @@ def _materialize_variant_requests(
     for (source_id, target_codec), keys in groups.items():
         candidates = [
             track for track in tracks
-            if track.is_new and track.source_entry_id == source_id and str(track.codec or "").upper() == target_codec
+            if track.is_new and track.source_entry_id == source_id
+            and (not target_codec or str(track.codec or "").upper() == target_codec)
         ]
         keys.sort(key=lambda key: clearing[key][0])
-        matched = _max_matching(keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track))
+        matched = _max_matching(
+            keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track),
+            lambda key, track: _variant_is_fixed_point([requests[index] for index in clearing[key]], track),
+        )
         for key in sorted(keys, key=lambda key: clearing[key][0]):
             variant = matched.get(key)
             created = variant is None
@@ -1365,7 +1382,7 @@ def _materialize_variant_requests(
             track for track in tracks
             if track.is_new and track.source_entry_id == request.source_track.entry_id
             and track.entry_id not in reserved
-            and str(track.codec or "").upper() == request.target_codec.upper()
+            and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
             and (not request.title or track.title == request.title)
             and (not request.language or normalize_lang(track.language, track.title) == request.language)
         ), None)
