@@ -1822,3 +1822,48 @@ def test_replacing_with_the_same_value_hands_the_write_over_as_before(mode):
     ]}
     result = apply_decision_profile(profile, [_fresh_audio()])
     assert result.tracks[0].title == "Y" and result.report["skipped_writes"] == []
+
+
+@pytest.mark.parametrize("clear_titles", [False, True])
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_capture_keeps_equal_bitrate_twin_variants_with_their_own_selection_and_flags(clear_titles, fresh_tracks):
+    """Audit 32 : deux variantes identiques (codec, débit, titre, langue) mais de sélection / drapeaux différents →
+    capturées avec leur rang de jumelle, recréées ou reprises distinctes, chacune avec ses propriétés, stables à la
+    réapplication."""
+    def fresh():
+        source = _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+        source.enabled = False
+        return source
+
+    source = fresh()
+    first, second = clone_track_entry(source), clone_track_entry(source)
+    first.enabled, first.flag_default = True, True
+    second.enabled, second.flag_commentary = False, True
+    if clear_titles:
+        first.title = second.title = ""
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, first, second])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, first.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="jumelles")
+    validate_decision_profile(profile)
+    assert [rule["actions"][0]["twin"] for rule in profile["rules"] if rule["id"].startswith("audio_variant")] == [1, 2]
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, first, second])
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    variants = sorted(((t.enabled, t.flag_default, t.flag_commentary) for t in result.tracks if t.is_new),
+                      reverse=True)
+    assert variants == [(True, True, False), (False, False, True)]
+    before = _states(result.tracks)
+    again = apply_decision_profile(profile, result.tracks, from_current_state=True)
+    _clean_report(again)
+    assert _states(again.tracks) == before and again.report["created_variants"] == []
+
+
+def test_profiles_without_twin_rank_keep_sharing_one_variant():
+    profile = _variant_profile({"type": "create_audio_variant", "codec": "ac3", "flags": {"default": True}},
+                               {"type": "create_audio_variant", "codec": "ac3", "flags": {"commentary": True}})
+    result = apply_decision_profile(profile, [_audio(1, codec="AC3")])
+    variants = [t for t in result.tracks if t.is_new]
+    assert len(variants) == 1 and variants[0].flag_default and variants[0].flag_commentary

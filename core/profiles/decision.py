@@ -1185,6 +1185,7 @@ class _VariantRequest:
     inherited_title: str  # titre de la piste source à l'instant de l'action
     display_info: str | None
     match_bitrate: bool = False  # capture : variantes jumelles distinguées par leur débit
+    twin: int | None = None  # capture : rang d'une variante jumelle (variante propre, jamais partagée)
 
     def bitrate_matches(self, track: TrackEntry) -> bool:
         """Critère de débit (``match_bitrate``) : variante au débit demandé seulement."""
@@ -1203,7 +1204,7 @@ class _VariantRequest:
         title = ("value", self.title) if self.title else ("clear",) if self.clear_title else ("inherit",)
         language = ("clear",) if self.clear_language else ("value", self.language)
         bitrate = _bitrate_from_display(self.display_info) if self.match_bitrate and self.display_info else None
-        return (*self.group, title, language, bitrate)
+        return (*self.group, title, language, bitrate, self.twin)
 
     def accepts(self, track: TrackEntry) -> bool:
         """Variante existante compatible avec la cible (titre puis langue)."""
@@ -1282,6 +1283,8 @@ def _apply_audio_variant_action(
         inherited_title=source_track.title or "",
         display_info=display_info,
         match_bitrate=bool(action.get("match_bitrate")),
+        twin=(int(action["twin"]) if isinstance(action.get("twin"), int) and not isinstance(action.get("twin"), bool)
+              else None),
     ))
 
 
@@ -1404,23 +1407,29 @@ def _materialize_variant_requests(
                 kind = "created_variants" if created and position == 0 else "reused_variants"
                 entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
                 _write_variant(requests[index], variant, temporary_tags_by_entry_id, order_priorities)
+    twin_claimed: set[str] = set()  # variantes servies par une jumelle capturée (``twin``) : propres à elle
     for index, request in enumerate(requests):
         if request.clear_title or request.clear_language:
             continue
-        variant = next((
+        compatible = [
             track for track in tracks
             if track.is_new and track.source_entry_id == request.source_track.entry_id
             and track.entry_id not in reserved
+            and (request.twin is None or track.entry_id not in twin_claimed)
             and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
             and (not request.title or track.title == request.title)
             and (not request.language or normalize_lang(track.language, track.title) == request.language)
             and request.bitrate_matches(track)
-        ), None)
+        ]
+        variant = (next((track for track in compatible if _variant_is_fixed_point([request], track)), None)
+                   if request.twin is not None else None) or (compatible[0] if compatible else None)
         kind = "reused_variants"
         if variant is None:
             variant = request.prepared
             tracks.append(variant)
             kind = "created_variants"
+        if request.twin is not None:
+            twin_claimed.add(variant.entry_id)
         entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
         _write_variant(request, variant, temporary_tags_by_entry_id, order_priorities)
     for _index, kind, summary in sorted(entries, key=lambda entry: entry[0]):
@@ -1766,6 +1775,7 @@ def remux_config_to_decision_profile(
     if include_audio_variants:
         by_entry_id = {track.entry_id: track for track in original_tracks}
         twins: dict[tuple[str, str, str, str], int] = {}
+        twin_rank: dict[tuple[str, str, str, str], int] = {}
         for track in all_tracks:
             if track.is_new and track.track_type == "audio":
                 key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
@@ -1800,13 +1810,17 @@ def remux_config_to_decision_profile(
             ]
             if clear:
                 action["clear"] = clear
+            twin_key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
             if bitrate:
                 action["bitrate_kbps"] = bitrate
-                twin_key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
                 if twins.get(twin_key, 0) > 1:
                     # Variantes jumelles (même codec, titre, langue) : distinguées par leur débit à la reprise.
                     action["match_bitrate"] = True
                     action["codec"] = track.codec.lower()
+            if twins.get(twin_key, 0) > 1:
+                # Jumelles (même débit compris) : chacune sa variante, jamais partagée (sélection, drapeaux).
+                twin_rank[twin_key] = twin_rank.get(twin_key, 0) + 1
+                action["twin"] = twin_rank[twin_key]
             if include_order and track.enabled and track.entry_id in positions:
                 action["order_priority"] = positions[track.entry_id]
             rules.append(
