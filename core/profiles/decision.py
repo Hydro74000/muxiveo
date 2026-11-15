@@ -1015,7 +1015,7 @@ def _apply_rule_action(
     conflict_choices: Mapping[str, str] | None,
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
-    variant_clears: frozenset[str] = frozenset(),
+    variant_requests: list[_VariantRequest],
 ) -> None:
     action_name = _action_type(action)
     tags = temporary_tags_by_entry_id.setdefault(track.entry_id, set())
@@ -1151,28 +1151,64 @@ def _apply_rule_action(
         _apply_audio_variant_action(
             action,
             track,
-            tracks=tracks,
             rule=rule,
             temporary_tags_by_entry_id=temporary_tags_by_entry_id,
-            report=report,
             source_index_by_file_id=source_index_by_file_id,
             variables=variables,
-            variant_clears=variant_clears,
+            variant_requests=variant_requests,
         )
+
+
+@dataclass
+class _VariantRequest:
+    """Demande ``create_audio_variant`` relevée pendant les règles, affectée après elles (ordre indifférent)."""
+
+    action: Mapping[str, Any]
+    rule_id: str
+    source_track: TrackEntry
+    prepared: TrackEntry  # clone de la piste source à l'instant de l'action (création seulement)
+    codec: str  # codec demandé (« copy » : codec source)
+    target_codec: str  # codec de la variante, normalisé
+    title: str
+    clear_title: bool
+    language: str
+    clear_language: bool
+    inherited_title: str  # titre de la piste source à l'instant de l'action
+    display_info: str | None
+
+    @property
+    def group(self) -> tuple[str, str]:
+        return (self.source_track.entry_id, self.target_codec.upper())
+
+    @property
+    def target(self) -> tuple[Any, ...]:
+        """Cible : intention de titre (valeur / effacement / héritage) et de langue (valeur / effacement)."""
+        title = ("value", self.title) if self.title else ("clear",) if self.clear_title else ("inherit",)
+        language = ("clear",) if self.clear_language else ("value", self.language)
+        return (*self.group, title, language)
+
+    def accepts(self, track: TrackEntry) -> bool:
+        """Variante existante compatible avec la cible (titre puis langue)."""
+        if self.title and track.title != self.title:
+            return False
+        if self.clear_title and track.title:
+            return False
+        if self.clear_language:
+            return not track.language
+        return not self.language or normalize_lang(track.language, track.title) == self.language
 
 
 def _apply_audio_variant_action(
     action: Mapping[str, Any],
     source_track: TrackEntry,
     *,
-    tracks: list[TrackEntry],
     rule: Mapping[str, Any],
     temporary_tags_by_entry_id: dict[str, set[str]],
-    report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
-    variant_clears: frozenset[str] = frozenset(),
+    variant_requests: list[_VariantRequest],
 ) -> None:
+    """Relève la demande (valeurs résolues sur l'état de la piste source à cet instant)."""
     codec = str(action.get("codec") or action.get("target_codec") or "copy").strip()
     title_pattern = str(action.get("title_pattern") or action.get("pattern") or "")
     title = (
@@ -1201,20 +1237,8 @@ def _apply_audio_variant_action(
             source_index_by_file_id=source_index_by_file_id,
             variables=variables,
         )
-    language = normalize_lang(raw_language, title)
-    existing = _find_existing_variant(
-        tracks, source_track, codec=codec, title=title, language=language,
-        clear_title=clear_title, clear_language=clear_language, reserved_for_clear=variant_clears,
-    )
-    if existing is None:
-        variant = clone_track_entry(source_track)
-        tracks.append(variant)
-        report["created_variants"].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
-    else:
-        variant = existing
-        report["reused_variants"].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
+    display_info: str | None = None
     if codec and codec.lower() != "copy":
-        variant.codec = codec.upper()
         bitrate = int(action.get("bitrate_kbps") or 0)
         parts = [
             part.strip()
@@ -1223,79 +1247,92 @@ def _apply_audio_variant_action(
         ]
         if bitrate > 0:
             parts.append(f"{bitrate} kbps")
-        variant.display_info = "  ".join(parts)
-    if title or clear_title:
-        variant.title = title
-    if language or clear_language:
-        variant.language = language
-    variant.enabled = bool(action.get("enabled", True))
-    flags = action.get("flags")
-    if isinstance(flags, Mapping):
-        for name, value in flags.items():
-            if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
-                setattr(variant, f"flag_{name}", bool(value))
-    tags = temporary_tags_by_entry_id.setdefault(variant.entry_id, set())
-    tags.add(str(rule.get("id") or "variant"))
+        display_info = "  ".join(parts)
+    variant_requests.append(_VariantRequest(
+        action=action,
+        rule_id=str(rule.get("id") or "variant"),
+        source_track=source_track,
+        prepared=clone_track_entry(source_track),
+        codec=codec,
+        target_codec=source_track.codec if not codec or codec.lower() == "copy" else codec.upper(),
+        title=title,
+        clear_title=clear_title,
+        language=normalize_lang(raw_language, title),
+        clear_language=clear_language,
+        inherited_title=source_track.title or "",
+        display_info=display_info,
+    ))
 
 
-def _find_existing_variant(
+def _materialize_variant_requests(
+    requests: list[_VariantRequest],
     tracks: list[TrackEntry],
-    source_track: TrackEntry,
     *,
-    codec: str,
-    title: str,
-    language: str,
-    clear_title: bool = False,
-    clear_language: bool = False,
-    reserved_for_clear: frozenset[str] = frozenset(),
-) -> TrackEntry | None:
-    """Variante déjà créée, indépendamment de l'ordre des actions.
+    temporary_tags_by_entry_id: dict[str, set[str]],
+    report: dict[str, Any],
+    source_index_by_file_id: Mapping[str, int] | None,
+) -> None:
+    """Affecte les demandes aux variantes, indépendamment de leur ordre, puis applique leurs écritures.
 
-    Valeur demandée → identique ; effacement → valeur vide seulement. Héritage du titre (ni valeur ni effacement) :
-    d'abord la variante au titre de la piste source, sinon toute variante (profils existants : variante renommée
-    par une autre règle), sauf une variante vidée alors que la source porte un titre quand le profil demande
-    ailleurs cet effacement (``reserved_for_clear``) : elle revient à cette demande.
+    Par piste source et codec : cibles à titre explicite ou effacé d'abord (variante identique / vide), puis cibles
+    héritées (variante au titre de la source, sinon toute variante libre : variante renommée ou vidée à la main
+    reprise), sinon création depuis le clone préparé de la première demande. Demandes de même cible : une seule
+    variante, écritures appliquées dans l'ordre des demandes (sélection, drapeau par drapeau, titre, langue).
     """
-    normalized_codec = source_track.codec if not codec or codec.lower() == "copy" else codec.upper()
-    candidates: list[TrackEntry] = []
-    for track in tracks:
-        if not track.is_new or track.source_entry_id != source_track.entry_id:
-            continue
-        if normalized_codec and str(track.codec or "").upper() != normalized_codec.upper():
-            continue
-        if title and track.title != title:
-            continue
-        if clear_title and track.title:
-            continue
-        if language and normalize_lang(track.language, track.title) != language:
-            continue
-        if clear_language and track.language:
-            continue
-        candidates.append(track)
-    if title or clear_title:
-        return candidates[0] if candidates else None
-    inherited = source_track.title or ""
-    preferred = next((track for track in candidates if track.title == inherited), None)
-    if preferred is not None:
-        return preferred
-    for track in candidates:
-        if "title" in reserved_for_clear and inherited and not track.title:
-            continue
-        return track
-    return None
-
-
-def _profile_variant_clears(profile: Mapping[str, Any]) -> frozenset[str]:
-    """Champs (titre, langue) dont le profil demande l'effacement sur une variante (``clear``)."""
-    fields: set[str] = set()
-    for rule in profile.get("rules", []) if isinstance(profile.get("rules"), list) else []:
-        actions = rule.get("actions", []) if isinstance(rule, Mapping) else []
-        for action in actions if isinstance(actions, list) else []:
-            if isinstance(action, Mapping) and action.get("type") == "create_audio_variant":
-                clear = action.get("clear")
-                if isinstance(clear, list):
-                    fields.update(str(item) for item in clear if item in ("title", "language"))
-    return frozenset(fields)
+    targets: dict[tuple[Any, ...], list[_VariantRequest]] = {}
+    for request in requests:
+        targets.setdefault(request.target, []).append(request)
+    assigned: dict[tuple[Any, ...], TrackEntry] = {}
+    created: set[tuple[Any, ...]] = set()
+    groups: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
+    for target, group_requests in targets.items():
+        groups.setdefault(group_requests[0].group, []).append(target)
+    for (source_id, target_codec), group_targets in groups.items():
+        free = [
+            track for track in tracks
+            if track.is_new and track.source_entry_id == source_id and str(track.codec or "").upper() == target_codec
+        ]
+        explicit = [target for target in group_targets if target[2][0] != "inherit"]
+        inherited = [target for target in group_targets if target[2][0] == "inherit"]
+        for target in explicit:
+            first = targets[target][0]
+            match = next((track for track in free if first.accepts(track)), None)
+            if match is not None:
+                assigned[target] = match
+                free.remove(match)
+        for target in inherited:
+            first = targets[target][0]
+            compatible = [track for track in free if first.accepts(track)]
+            match = next((track for track in compatible if track.title == first.inherited_title), None)
+            match = match or (compatible[0] if compatible else None)
+            if match is not None:
+                assigned[target] = match
+                free.remove(match)
+    for target, target_requests in targets.items():
+        if target not in assigned:
+            assigned[target] = target_requests[0].prepared
+            tracks.append(target_requests[0].prepared)
+            created.add(target)
+    reported: set[tuple[Any, ...]] = set()
+    for request in requests:
+        variant = assigned[request.target]
+        key = "created_variants" if request.target in created and request.target not in reported else "reused_variants"
+        reported.add(request.target)
+        report[key].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
+        if request.display_info is not None:
+            variant.codec = request.codec.upper()
+            variant.display_info = request.display_info
+        if request.title or request.clear_title:
+            variant.title = request.title
+        if request.language or request.clear_language:
+            variant.language = request.language
+        variant.enabled = bool(request.action.get("enabled", True))
+        flags = request.action.get("flags")
+        if isinstance(flags, Mapping):
+            for name, value in flags.items():
+                if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
+                    setattr(variant, f"flag_{name}", bool(value))
+        temporary_tags_by_entry_id.setdefault(variant.entry_id, set()).add(request.rule_id)
 
 
 def apply_decision_profile(
@@ -1344,7 +1381,7 @@ def _apply_decision_profile_rules(
     original_tracks = [track for track in working if not track.is_new]
     variables = _profile_variables(profile.get("variables"))
     temporary_tags_by_entry_id: dict[str, set[str]] = {track.entry_id: set() for track in working}
-    variant_clears = _profile_variant_clears(profile)
+    variant_requests: list[_VariantRequest] = []
     order_priorities: dict[str, int] = {}
     proposed: dict[tuple[str, str], dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -1431,9 +1468,17 @@ def _apply_decision_profile_rules(
                     conflict_choices=conflict_choices,
                     source_index_by_file_id=source_index_by_file_id,
                     variables=variables,
-                    variant_clears=variant_clears,
+                    variant_requests=variant_requests,
                 )
             report["applied_rules"] += 1
+
+    _materialize_variant_requests(
+        variant_requests,
+        working,
+        temporary_tags_by_entry_id=temporary_tags_by_entry_id,
+        report=report,
+        source_index_by_file_id=source_index_by_file_id,
+    )
 
     selection_policy = profile.get("selection_policy", {})
     disable_types: set[str] = set()
