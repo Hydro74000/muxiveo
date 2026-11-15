@@ -1187,11 +1187,6 @@ class _VariantRequest:
         language = ("clear",) if self.clear_language else ("value", self.language)
         return (*self.group, title, language)
 
-    @property
-    def wildcards(self) -> int:
-        """Contraintes absentes (titre hérité, langue non résolue) : ordre d'appariement des effacements."""
-        return int(not self.title and not self.clear_title) + int(not self.language and not self.clear_language)
-
     def accepts(self, track: TrackEntry) -> bool:
         """Variante existante compatible avec la cible (titre puis langue)."""
         if self.title and track.title != self.title:
@@ -1292,16 +1287,23 @@ def _max_matching(
     candidates: list[TrackEntry],
     accepts: Callable[[tuple[Any, ...], TrackEntry], bool],
 ) -> dict[tuple[Any, ...], TrackEntry]:
-    """Appariement maximal cibles → variantes (chemins augmentants) ; cibles et variantes dans l'ordre donné."""
+    """Appariement maximal cibles → variantes, stable : chaque cible prend d'abord la première variante libre
+    compatible (ordre du tableau) ; une cible déjà servie n'est déplacée que si une cible suivante n'a sinon aucune
+    variante (chemin augmentant). Cibles dans l'ordre des demandes."""
     owner: dict[str, tuple[Any, ...]] = {}
     by_id = {track.entry_id: track for track in candidates}
 
     def assign(key: tuple[Any, ...], seen: set[str]) -> bool:
+        free = next((track for track in candidates
+                     if track.entry_id not in owner and track.entry_id not in seen and accepts(key, track)), None)
+        if free is not None:
+            owner[free.entry_id] = key
+            return True
         for track in candidates:
             if track.entry_id in seen or not accepts(key, track):
                 continue
             seen.add(track.entry_id)
-            if track.entry_id not in owner or assign(owner[track.entry_id], seen):
+            if assign(owner[track.entry_id], seen):
                 owner[track.entry_id] = key
                 return True
         return False
@@ -1321,9 +1323,10 @@ def _materialize_variant_requests(
 ) -> None:
     """Affecte les demandes de variantes après les règles.
 
-    1. Demandes d'effacement effectif (``clear``) : par piste source et codec, appariement maximal entre cibles
-       (identiques → même variante) et variantes libres compatibles, cibles les plus contraintes d'abord ; cible sans
-       variante → création depuis son clone. Ces variantes leur sont réservées.
+    1. Demandes d'effacement effectif (``clear``) : par piste source et codec, appariement maximal et stable entre
+       cibles (identiques → même variante ; ordre des demandes) et variantes libres compatibles ; cible sans variante
+       → création depuis son clone (ordre des demandes : une deuxième application retrouve les mêmes). Ces variantes
+       leur sont réservées.
     2. Autres demandes : affectation historique à l'identique, dans l'ordre (première variante du codec dont le
        titre explicite et la langue résolue correspondent, joker sinon ; création sinon ; écritures aussitôt
        visibles des demandes suivantes), hors variantes réservées.
@@ -1342,7 +1345,7 @@ def _materialize_variant_requests(
             track for track in tracks
             if track.is_new and track.source_entry_id == source_id and str(track.codec or "").upper() == target_codec
         ]
-        keys.sort(key=lambda key: (requests[clearing[key][0]].wildcards, clearing[key][0]))
+        keys.sort(key=lambda key: clearing[key][0])
         matched = _max_matching(keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track))
         for key in sorted(keys, key=lambda key: clearing[key][0]):
             variant = matched.get(key)

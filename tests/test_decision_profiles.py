@@ -836,7 +836,9 @@ def test_audio_variant_not_duplicated_on_second_apply():
     }
 
     first = apply_decision_profile(profile, [track])
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(profile, first.tracks)
+    assert _states(second.tracks) == before
 
     assert len([item for item in first.tracks if item.is_new]) == 1
     assert len([item for item in second.tracks if item.is_new]) == 1
@@ -1029,7 +1031,9 @@ def test_named_and_cleared_variants_never_merge_and_stay_stable(named_first):
         "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]}, "actions": actions,
     }]}
     first = apply_decision_profile(profile, [_fresh_audio()])
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(profile, first.tracks)
+    assert _states(second.tracks) == before
     for result in (first, second):
         variants = sorted((track.title, track.language) for track in result.tracks if track.is_new)
         assert variants == [("", ""), ("VF AC3", "fr-FR")]
@@ -1050,7 +1054,9 @@ def test_capture_reapplies_the_mkv_enabled_flag_of_an_audio_variant(source_flag,
     target.flag_enabled = target.orig_flag_enabled = source_flag
 
     first = apply_decision_profile(profile, [target])
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(profile, first.tracks)  # variante reprise
+    assert _states(second.tracks) == before
 
     for result in (first, second):
         created = [track for track in result.tracks if track.is_new]
@@ -1164,7 +1170,9 @@ def test_file_language_is_stable_when_a_title_changes_the_region():
     track.title = "VFQ"  # régionaliserait fr-CA si la langue de travail suivait le titre
     profile = _capture(track)
     fresh = apply_decision_profile(profile, [_audio(1, language="fra", title="")], from_current_state=True)
+    before = _states(fresh.tracks)  # instantané avant la réapplication
     again = apply_decision_profile(profile, fresh.tracks, from_current_state=True)
+    assert _states(again.tracks) == before
     for result in (fresh, again):
         _clean_report(result)
         assert result.tracks[0].title == "VFQ"
@@ -1178,7 +1186,9 @@ def test_capture_of_two_originals_with_swapped_languages_is_stable():
     table[0].language, table[1].language = "en-US", "fr-FR"
     profile = _capture(*table)
     first = apply_decision_profile(profile, fresh_pair(), from_current_state=True)
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+    assert _states(second.tracks) == before
     for result in (first, second):
         _clean_report(result)
         assert [(t.title, t.language) for t in result.tracks] == [("A", "en-US"), ("B", "fr-FR")]
@@ -1205,7 +1215,9 @@ def test_variant_clear_follows_what_the_clone_would_inherit(include_metadata, fi
     action = profile["rules"][-1]["actions"][0]
     assert action["clear"] == [field]
     first = apply_decision_profile(profile, [fresh()], from_current_state=True)
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+    assert _states(second.tracks) == before
     for result in (first, second):
         _clean_report(result)
         created = [t for t in result.tracks if t.is_new]
@@ -1260,7 +1272,9 @@ def test_legacy_profile_reuses_a_variant_renamed_or_cleared_in_the_table():
         first = apply_decision_profile(profile, [_fresh_audio()])
         variant = next(t for t in first.tracks if t.is_new)
         variant.title = edited_title
+        before = _states(first.tracks)  # instantané avant la réapplication
         again = apply_decision_profile(profile, first.tracks)
+        assert _states(again.tracks) == before
         assert [t.entry_id for t in again.tracks] == [t.entry_id for t in first.tracks]
         assert next(t for t in again.tracks if t.is_new).title == edited_title
 
@@ -1269,7 +1283,9 @@ def test_language_clear_and_inherit_never_merge():
     clear_language = {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"]}
     for actions in ([_INHERIT, clear_language], [clear_language, _INHERIT]):
         first = apply_decision_profile(_variant_profile(*actions), [_fresh_audio()])
+        before = _states(first.tracks)  # instantané avant la réapplication
         second = apply_decision_profile(_variant_profile(*actions), first.tracks)
+        assert _states(second.tracks) == before
         for result in (first, second):
             assert sorted(t.language for t in result.tracks if t.is_new) == ["", "fr-FR"]
 
@@ -1312,28 +1328,39 @@ def test_inapplicable_clear_request_never_reserves_the_cleared_variant(inapplica
 
 
 def _legacy_assignment(actions: list[dict], tracks: list[TrackEntry]) -> list[tuple]:
-    """Oracle : affectation historique (6cc89f0) des ``create_audio_variant`` d'une règle « audio, all », recopiée
-    telle quelle (première variante du codec dont titre explicite et langue résolue correspondent ; écritures
-    immédiates), avec les écritures actuelles (``flags.enabled``). États structurels (identifiants des variantes
-    créées remplacés par leur rang de création)."""
+    """Oracle : ``_apply_audio_variant_action`` / ``_find_existing_variant`` de 6cc89f0 recopiés (motifs de titre et
+    de langue, codec cible, débit, écritures immédiates) pour une règle « audio, all » sans autre action ; seule
+    différence voulue : ``flags.enabled`` appliqué. États structurels complets (identifiants des variantes créées
+    remplacés par leur rang de création)."""
     tracks = copy.deepcopy(tracks)
     created: list[str] = []
     for source in [t for t in tracks if not t.is_new and t.track_type == "audio"]:
         for action in actions:
-            codec = str(action.get("codec") or "copy").strip()
-            title = str(action.get("title") or "")
-            language = normalize_lang(str(action.get("language") or source.language), title)
+            codec = str(action.get("codec") or action.get("target_codec") or "copy").strip()
+            title_pattern = str(action.get("title_pattern") or action.get("pattern") or "")
+            title = (render_title_pattern(title_pattern, source, temporary_tags=set())
+                     if title_pattern else str(action.get("title") or ""))
+            raw_language = str(action.get("language") or source.language)
+            if "{" in raw_language and "}" in raw_language:
+                raw_language = render_title_pattern(raw_language, source, temporary_tags=set())
+            language = normalize_lang(raw_language, title)
             target = source.codec if not codec or codec.lower() == "copy" else codec.upper()
             variant = next((t for t in tracks if t.is_new and t.source_entry_id == source.entry_id
-                            and str(t.codec or "").upper() == target.upper()
+                            and (not target or str(t.codec or "").upper() == target.upper())
                             and (not title or t.title == title)
                             and (not language or normalize_lang(t.language, t.title) == language)), None)
             if variant is None:
                 variant = clone_track_entry(source)
                 tracks.append(variant)
                 created.append(variant.entry_id)
-            if codec.lower() != "copy":
+            if codec and codec.lower() != "copy":
                 variant.codec = codec.upper()
+                bitrate = int(action.get("bitrate_kbps") or 0)
+                parts = [part.strip() for part in str(source.orig_display_info or source.display_info or "")
+                         .replace("·", "  ").split("  ") if part.strip() and "kbps" not in part.lower()]
+                if bitrate > 0:
+                    parts.append(f"{bitrate} kbps")
+                variant.display_info = "  ".join(parts)
             if title:
                 variant.title = title
             if language:
@@ -1346,7 +1373,7 @@ def _legacy_assignment(actions: list[dict], tracks: list[TrackEntry]) -> list[tu
 
 def _structural(tracks: list[TrackEntry], created: list[str]) -> list[tuple]:
     rank = {entry_id: f"new{index}" for index, entry_id in enumerate(created)}
-    return [(rank.get(state[0], state[0]), *state[1:3], *state[3:4], *state[5:]) for state in _states(tracks)]
+    return [(rank.get(state[0], state[0]), *state[1:]) for state in _states(tracks)]
 
 
 def _engine(actions: list[dict], tracks: list[TrackEntry]) -> tuple[list[tuple], dict]:
@@ -1377,6 +1404,13 @@ _HISTORICAL_CASES = {
         lambda: [_fresh_audio()],
         [{"type": "create_audio_variant", "codec": "ac3", "title": "", "language": "", "enabled": False,
           "flags": {"commentary": True}}, {"type": "create_audio_variant", "codec": "eac3", "bitrate_kbps": 640}]),
+    "motifs-copy-debits": (
+        lambda: [_fresh_audio()],
+        [{"type": "create_audio_variant", "codec": "ac3", "title_pattern": "{lang_name} AC3 {channels}",
+          "bitrate_kbps": 448},
+         {"type": "create_audio_variant", "codec": "ac3", "title_pattern": "{lang_name} AC3 {channels}",
+          "bitrate_kbps": 640, "flags": {"default": True}},
+         {"type": "create_audio_variant", "codec": "copy", "language": "{language}"}]),
     "variante-renommee": (
         lambda: (lambda s: [s, (lambda v: (setattr(v, "codec", "AC3"), setattr(v, "title", "Main"), v)[2])(
             clone_track_entry(s))])(_fresh_audio()),
@@ -1438,12 +1472,38 @@ def test_cleared_variant_is_isolated_whatever_the_order(order):
     assert _states(second.tracks) == before
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_clear_targets_keep_their_variant_and_writes_on_a_second_panel_application(reverse):
+    """Audit 22 : deux effacements aux titre / langue identiques en sortie, débits et drapeaux différents → la
+    deuxième application (panneau) retrouve chacun sa variante, sans échange de propriétés."""
+    requests = [
+        {"type": "create_audio_variant", "codec": "ac3", "clear": ["title", "language"], "bitrate_kbps": 640,
+         "flags": {"default": True}},
+        {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"], "bitrate_kbps": 448,
+         "flags": {"default": False}},
+    ]
+    requests = list(reversed(requests)) if reverse else requests
+    profile = _variant_profile(*requests)
+    first = apply_decision_profile(profile, [_audio(1, language="", title="Audio", codec="DTS")],
+                                   from_current_state=True)
+    _clean_report(first)
+    assert sorted((t.display_info.split("  ")[-1], t.flag_default) for t in first.tracks if t.is_new) == [
+        ("448 kbps", False), ("640 kbps", True)]
+    before = _states(first.tracks)
+    for _ in range(2):
+        again = apply_decision_profile(profile, first.tracks, from_current_state=True)
+        _clean_report(again)
+        assert _states(again.tracks) == before and again.report["created_variants"] == []
+
+
 def test_clear_title_and_clear_language_targets_are_distinct():
     title_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]}
     language_only = {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"]}
     both = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title", "language"]}
     first = apply_decision_profile(_variant_profile(title_only, language_only, both), [_fresh_audio()])
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(_variant_profile(both, language_only, title_only), first.tracks)
+    assert _states(second.tracks) == before
     for result in (first, second):
         _clean_report(result)
         assert sorted((t.title, t.language) for t in result.tracks if t.is_new) == [
@@ -1488,7 +1548,9 @@ def test_requests_of_the_same_target_share_one_variant_and_merge_their_writes():
 def test_copy_variant_targets_the_source_codec_and_is_reused():
     copy_action = {"type": "create_audio_variant", "codec": "copy", "title": "Copie"}
     first = apply_decision_profile(_variant_profile(copy_action), [_fresh_audio()])
+    before = _states(first.tracks)  # instantané avant la réapplication
     second = apply_decision_profile(_variant_profile(copy_action), first.tracks)
+    assert _states(second.tracks) == before
     assert [(t.codec, t.title) for t in second.tracks if t.is_new] == [("DTS", "Copie")]
     assert [t.entry_id for t in second.tracks] == [t.entry_id for t in first.tracks]
 
