@@ -3021,6 +3021,32 @@ class TestRemuxPanelDecisionProfiles:
         assert rule == {**profile["rules"][0], "priority": 5}
         dialog.close()
 
+    def test_profile_editor_restores_rule_metadata_reverted_to_its_initial_value(self, qt_app, tmp_path):
+        """Audit 24 : métadonnée modifiée puis ramenée à sa valeur de chargement → valeur d'origine dans le profil
+        (clé absente comprise), cohérente avec le contrôle affiché."""
+        from core.profiles.decision import apply_decision_profile
+
+        rule = {"id": "r", "group_id": "custom", "write_mode": "replace",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]},
+                "actions": [{"type": "set_title", "value": "Renommé"}]}
+        dialog = self._editor(tmp_path, rule["match"])
+        dialog._profile["rules"][0] = copy.deepcopy(rule)
+        dialog._load_rule(dialog._profile["rules"][0])
+        dialog._rule_enabled.setChecked(False)
+        dialog._rule_priority.setValue(5)
+        dialog._set_combo_data(dialog._rule_group, "video")
+        dialog._set_combo_data(dialog._rule_write_mode, "priority")
+        dialog._store_current_rule()
+        assert dialog._profile["rules"][0]["enabled"] is False and dialog._profile["rules"][0]["priority"] == 5
+        dialog._rule_enabled.setChecked(True)
+        dialog._rule_priority.setValue(0)
+        dialog._set_combo_data(dialog._rule_group, "custom")
+        dialog._set_combo_data(dialog._rule_write_mode, "replace")
+        assert dialog.profile()["rules"][0] == rule  # enabled / priority absents, group et alias d'origine
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert [t.title for t in apply_decision_profile(dialog.profile(), [track]).tracks] == ["Renommé"]
+        dialog.close()
+
     def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog

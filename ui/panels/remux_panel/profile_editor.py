@@ -290,6 +290,7 @@ class DecisionProfileEditorDialog(QDialog):
         self._loaded_action_state: dict[str, Any] = {}
         self._match_language_field = "language"
         self._loaded_rule_meta: dict[str, Any] = {}
+        self._loaded_rule_raw: dict[str, tuple[bool, Any]] = {}
 
         self.setWindowTitle(translate_text("Éditeur de profil"))
         self.setModal(True)
@@ -919,6 +920,9 @@ class DecisionProfileEditorDialog(QDialog):
             widget.blockSignals(False)
         self._sync_clear_fields()
         self._loaded_rule_meta = self._rule_meta_state() if rule is not None else {}
+        self._loaded_rule_raw = {
+            name: (name in rule, copy.deepcopy(rule.get(name))) for name in self._loaded_rule_meta
+        } if rule is not None else {}
         if rule is None:
             self._loaded_match = self._loaded_actions = None
             self._loaded_match_groups = {}
@@ -983,6 +987,12 @@ class DecisionProfileEditorDialog(QDialog):
         # d'écriture, clé absente : conservés tels quels).
         meta = self._rule_meta_state()
         changed = {name for name, value in meta.items() if value != self._loaded_rule_meta.get(name)}
+        for name, (present, value) in self._loaded_rule_raw.items():
+            if name not in changed:  # contrôle revenu (ou resté) à sa valeur de chargement : valeur d'origine
+                if present:
+                    rule[name] = copy.deepcopy(value)
+                else:
+                    rule.pop(name, None)
         if "label" in changed:
             rule["label"] = self._rule_label.text().strip() or str(rule.get("id") or "rule")
         if "enabled" in changed:
