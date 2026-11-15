@@ -1749,3 +1749,35 @@ def test_variants_without_match_bitrate_keep_the_historical_reuse():
                                {"type": "create_audio_variant", "codec": "ac3", "bitrate_kbps": 192})
     result = apply_decision_profile(profile, [_audio(1, codec="AC3", display_info="5.1  640 kbps")])
     assert [t.display_info.split("  ")[-1] for t in result.tracks if t.is_new] == ["192 kbps"]
+
+
+
+@pytest.mark.parametrize("cleared", [("title",), ("language",), ("title", "language")])
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_capture_keeps_cleared_twin_variants_apart(cleared, fresh_tracks):
+    """Audit 28 : jumelles (448 / 192 kb/s) aux titre et / ou langue vidés → effacements distincts par débit, chacune
+    recréée ou reprise à son rang."""
+    def fresh():
+        return _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+
+    source = fresh()
+    high, low = clone_track_entry(source), clone_track_entry(source)
+    high.display_info, low.display_info = "5.1  448 kbps", "5.1  192 kbps"
+    for variant in (high, low):
+        for field in cleared:
+            setattr(variant, field, "")
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, high, low])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, high.entry_id), (0, 1, source.entry_id), (0, 1, low.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="jumelles")
+    actions = [rule["actions"][0] for rule in profile["rules"] if rule["id"].startswith("audio_variant")]
+    assert all(action["match_bitrate"] and action["clear"] == list(cleared) for action in actions)
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, high, low])
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    assert [t.display_info.split("  ")[-1] for t in result.tracks] == ["448 kbps", "640 kbps", "192 kbps"]
+    before = _states(result.tracks)
+    again = apply_decision_profile(profile, result.tracks, from_current_state=True)
+    assert _states(again.tracks) == before and again.report["created_variants"] == []

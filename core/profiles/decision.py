@@ -1190,10 +1190,12 @@ class _VariantRequest:
 
     @property
     def target(self) -> tuple[Any, ...]:
-        """Cible : intention de titre (valeur / effacement / héritage) et de langue (valeur / effacement)."""
+        """Cible : intention de titre (valeur / effacement / héritage), de langue (valeur / effacement) et, avec
+        ``match_bitrate``, débit (variantes jumelles distinctes)."""
         title = ("value", self.title) if self.title else ("clear",) if self.clear_title else ("inherit",)
         language = ("clear",) if self.clear_language else ("value", self.language)
-        return (*self.group, title, language)
+        bitrate = _bitrate_from_display(self.display_info) if self.match_bitrate and self.display_info else None
+        return (*self.group, title, language, bitrate)
 
     def accepts(self, track: TrackEntry) -> bool:
         """Variante existante compatible avec la cible (titre puis langue)."""
