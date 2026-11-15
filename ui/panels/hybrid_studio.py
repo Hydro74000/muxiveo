@@ -1224,13 +1224,8 @@ class HybridStudio(QWidget):
         self._update_output_preview()
 
     def _recipe_with_controls(self) -> HybridRecipe:
-        """Recette courante complétée des réglages de synchro affichés."""
-        return replace(
-            self.recipe, cadence_auto_apply=self.cadence_auto_apply.isChecked(),
-            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
-            sync_mode=self.mode.currentData() or "physical",
-            sync_subtitles="mirror" if self.mirror.isChecked() else "none",
-            sync_strategy=self.sync_strategy.currentData() or "auto", manual_shift_ms=self.manual_shift.value())
+        """Recette courante complétée des réglages affichés (export, signature, préparation : une seule source)."""
+        return self._effective_recipe()
 
     def export_recipe(self) -> None:
         """Recette (pistes du modèle, langues, synchro) en JSON, réutilisable par `hybrid --recipe`."""

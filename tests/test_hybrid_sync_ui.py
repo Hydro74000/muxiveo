@@ -1052,3 +1052,30 @@ def test_individual_preparation_with_changed_controls_survives_the_export(panel,
     panel.export_jobs()
     _wait(qt_app, lambda: not panel.busy)
     assert saved and saved[0].get(0) is edited  # plan préparé individuellement conservé
+
+
+
+def test_exported_recipe_keeps_the_crossfade_shown_in_the_studio(panel, qt_app, tmp_path, monkeypatch):
+    """Audit 28 : fondu modifié dans l'interface → export de la recette → relecture : même fondu."""
+    from core.jobs.hybrid_studio import load_recipe
+
+    panel.controls["crossfade-ms"].setValue(20)
+    path = tmp_path / "export.json"
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getSaveFileName", lambda *_a, **_k: (str(path), ""))
+    panel.export_recipe()
+    assert load_recipe(path).crossfade_ms == 20
+
+
+@pytest.mark.parametrize("field, value", [("output_tag", "NOUVEAU"), ("keep_master_chapters", False)])
+def test_each_imported_recipe_field_changes_the_settings_signature(panel, qt_app, tmp_path, monkeypatch, field,
+                                                                  value):
+    from dataclasses import replace
+
+    from core.workflows.hybrid_matrix import HybridRecipe
+
+    before = panel._settings_signature()
+    path = tmp_path / "recette.json"
+    path.write_text(json.dumps(replace(HybridRecipe(), **{field: value}).to_dict()), encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName", lambda *_a, **_k: (str(path), ""))
+    panel.import_recipe()
+    assert panel._settings_signature() != before
