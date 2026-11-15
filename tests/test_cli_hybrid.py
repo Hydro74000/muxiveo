@@ -90,7 +90,7 @@ def test_cli_payload_is_a_valid_request():
 
 
 @pytest.mark.parametrize("recipe_fade, option, expected", [(20, None, 20), (80, "20", 20), (None, None, 80),
-                                                         (None, "30", 30)])
+                                                         (None, "30", 30), (20, "80", 80)])
 def test_crossfade_of_the_recipe_reaches_the_preparation_and_the_saved_recipe(tmp_path, recipe_fade, option,
                                                                              expected):
     """Audit 29 : fondu de la recette utilisé sans option explicite ; option explicite prioritaire ; préparation,
@@ -111,3 +111,38 @@ def test_crossfade_of_the_recipe_reaches_the_preparation_and_the_saved_recipe(tm
     request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
     spec = _spec(request, ExecutionContext.create(NS(), ListSink()))
     assert spec.recipe.crossfade_ms == spec.common.crossfade_ms == expected
+
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_explicit_sync_option_equal_to_the_default_overrides_the_recipe(tmp_path, explicit):
+    """Audit 30 : ``--sync-mode physical`` saisi (valeur par défaut) l'emporte sur la recette ``container`` ; absent,
+    la recette s'applique."""
+    from types import SimpleNamespace as NS
+
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops.hybrid import _spec
+
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps(HybridRecipe(sync_mode="container").to_dict()), encoding="utf-8")
+    argv = ["hybrid", "--ref", str(tmp_path / "m.mkv"), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path),
+            "--recipe", str(path), "--plan", *(["--sync-mode", "physical"] if explicit else [])]
+    request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
+    spec = _spec(request, ExecutionContext.create(NS(), ListSink()))
+    assert spec.recipe.sync_mode == ("physical" if explicit else "container")
+
+
+@pytest.mark.parametrize("fade", [-10, 5000])
+def test_out_of_range_crossfade_is_refused_from_a_recipe_or_an_option(tmp_path, fade):
+    from types import SimpleNamespace as NS
+
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops.hybrid import _spec
+
+    with pytest.raises(ValueError, match="crossfade_ms"):
+        HybridRecipe.from_dict({**HybridRecipe().to_dict(), "crossfade_ms": fade})
+    argv = ["hybrid", "--ref", str(tmp_path / "m.mkv"), "--donor", str(tmp_path / "d.mkv"), "-o", str(tmp_path),
+            "--plan", "--crossfade-ms", str(fade)]
+    request = HybridPlanRequest.parse(hybrid_payload(build_parser().parse_args(argv)), allow_relative=True)[0]
+    with pytest.raises(JobError, match="crossfade_ms|Seuils"):
+        _spec(request, ExecutionContext.create(NS(), ListSink()))

@@ -143,6 +143,7 @@ class HybridPlanResult(Model):
 
 def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
     payload = request.options.to_dict()
+    explicit = {key for key in _HYBRID_DEFAULTS if payload.get(key) is not None}  # options réellement fournies
     for key, value in _HYBRID_DEFAULTS.items():
         if payload.get(key) is None:
             payload[key] = value
@@ -158,9 +159,10 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
     recipe = load_recipe(request.recipe) if request.recipe is not None else HybridRecipe()
 
     def chosen(name: str) -> Any:
-        """Réglage de synchro des options : prioritaire sauf valeur par défaut avec une recette."""
+        """Réglage des options : prioritaire s'il a été fourni (même égal au défaut) ou sans recette ; sinon celui
+        de la recette."""
         value = getattr(common, name)
-        return value if request.recipe is None or value != _HYBRID_DEFAULTS[name] else None
+        return value if request.recipe is None or name in explicit else None
 
     recipe = recipe_with_overrides(
         recipe, keep_master_audio_langs=request.keep_master_audio, donor_audio_langs=request.donor_audio_langs,
@@ -171,10 +173,11 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
         cadence_audio_method=common.cadence_method if common.cadence_method != "auto" else None)
     if request.shift_ms is not None and recipe.sync_strategy != "manual":
         raise JobError("--shift-ms s'utilise avec --sync manual.", EXIT_ARGS)
+    # Fondu effectif (recette, sauf option fournie) : le même pour la préparation, le résultat et --save-recipe ;
+    # contrôlé après la recette (une valeur importée hors plage est refusée ici, avant tout traitement).
+    common = dataclasses.replace(common, crossfade_ms=recipe.crossfade_ms)
     if common.forced_threshold <= 0 or common.drift_threshold_ms <= 0 or not 0 <= (common.crossfade_ms or 0) <= 1000:
         raise JobError("Seuils hybrides invalides.", EXIT_ARGS)
-    # Fondu effectif (recette, sauf option explicite) : le même pour la préparation, le résultat et --save-recipe.
-    common = dataclasses.replace(common, crossfade_ms=recipe.crossfade_ms)
     return StudioSpec(
         sources=tuple(sources), output_dir=Path(request.output_dir).expanduser().resolve(),
         matching=MATCHING[request.matching],

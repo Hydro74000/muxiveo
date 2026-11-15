@@ -1,6 +1,8 @@
 """Commandes hybrides et outils autonomes de calibration."""
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from pathlib import Path
 
@@ -123,8 +125,16 @@ def hybrid_payload(args) -> dict:
     from core.jobs.hybrid_studio import ROLES, parse_pairs, parse_sources
     from core.service.ops.media import JobOptions
 
+    import dataclasses
+
+    # Synchro et fondu non saisis : absents de la requête (défauts du service, ou valeurs de la recette) ; saisis,
+    # même égaux au défaut, ils l'emportent sur la recette.
+    explicit = set(getattr(args, "explicit_options", ()) or ())
+    absent: dict[str, Any] = {
+        name: None for name in ("sync_mode", "sync_subtitles", "crossfade_ms") if name not in explicit}
+    common = dataclasses.replace(common_options(args), **absent)
     payload: dict = {
-        "output_dir": args.output_dir, "options": JobOptions.from_common(common_options(args)),
+        "output_dir": args.output_dir, "options": JobOptions.from_common(common),
         "tag": str(args.tag), "no_cover": bool(args.no_cover), "dry_run": bool(args.dry_run),
         "force": bool(args.force), "continue_on_error": bool(args.continue_on_error),
         "output_all": bool(getattr(args, "output_all", False)),

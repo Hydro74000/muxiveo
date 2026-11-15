@@ -21,13 +21,24 @@ from cli.service_adapter import cmd_call, cmd_operations
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
 
+class _ExplicitStore(argparse.Action):
+    """Valeur saisie, mémorisée comme explicite (``explicit_options``) : distingue une option fournie égale au défaut
+    d'une option absente (``hybrid`` : la recette prime seulement sur une option absente)."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        explicit = set(getattr(namespace, "explicit_options", ()) or ())
+        explicit.add(self.dest)
+        namespace.explicit_options = explicit
+
+
 def _add_sync_options(parser):
-    parser.add_argument("--sync-mode", choices=("physical", "container"), default=None)
-    parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None)
+    parser.add_argument("--sync-mode", choices=("physical", "container"), default=None, action=_ExplicitStore)
+    parser.add_argument("--sync-subtitles", choices=("mirror", "none"), default=None, action=_ExplicitStore)
     parser.add_argument("--clean-nfo", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--remove-closed-captions", action=argparse.BooleanOptionalAction, default=None,
                         help="Retirer les sous-titres embarqués EIA-608/708 détectés, sans réencodage")
-    parser.add_argument("--crossfade-ms", type=int, default=None)
+    parser.add_argument("--crossfade-ms", type=int, default=None, action=_ExplicitStore)
     parser.add_argument("--auto-forced-subs", action="store_true")
     parser.add_argument("--forced-threshold", type=int, default=50)
     parser.add_argument("--auto-sdh", action="store_true")

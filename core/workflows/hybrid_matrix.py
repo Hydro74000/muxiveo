@@ -376,6 +376,8 @@ class HybridRecipe:
                 if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
                     raise ValueError(f"Recette : {name} de type invalide.")
                 setattr(recipe, name, value)
+        if not 0 <= recipe.crossfade_ms <= 1000:
+            raise ValueError("Recette : crossfade_ms attendu entre 0 et 1000 ms.")
         if recipe.sync_mode not in ("physical", "container") or recipe.sync_subtitles not in ("mirror", "none") \
                 or recipe.sync_strategy not in ("auto", "manual", "none") \
                 or recipe.cadence_audio_method not in ("auto", "atempo", "asetrate"):
