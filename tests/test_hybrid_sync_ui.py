@@ -1101,6 +1101,15 @@ def test_prepared_plan_is_reprepared_at_export_after_importing_a_different_recip
     monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName",
                         lambda *_a, **_k: (str(recipe_path), ""))
     panel.import_recipe()
+    import ui.panels.hybrid_studio as studio
+
+    fake, tags = studio.prepare_matrix_episode, []
+
+    def record(episode, recipe, *args, **kwargs):  # recette réellement transmise à la repréparation
+        tags.append(recipe.output_tag)
+        return fake(episode, recipe, *args, **kwargs)
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", record)
     saved = []
 
     def save(*_args):
@@ -1111,4 +1120,5 @@ def test_prepared_plan_is_reprepared_at_export_after_importing_a_different_recip
     monkeypatch.setattr(panel, "_save_jobs", save)
     panel.export_jobs()
     _wait(qt_app, lambda: not panel.busy)
-    assert saved and 0 in saved[0] and saved[0][0] is not prepared  # repréparé avec la recette importée
+    assert saved and 0 in saved[0] and saved[0][0] is not prepared  # repréparé…
+    assert tags and set(tags) == {"NOUVEAU"}  # …avec la recette importée
