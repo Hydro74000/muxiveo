@@ -682,3 +682,47 @@ def test_captured_profile_with_a_cleared_variant_survives_hybrid_and_exact_job(a
                       for s in config.sources for t in s.tracks)
 
     assert states(restored) == states(result)
+
+
+@pytest.mark.parametrize("original_checked", [True, False])
+def test_witness_with_an_audio_variant_builds_an_applicable_recipe(assembly, tmp_path, original_checked):
+    """Audit 20 : variante du témoin jamais comptée comme piste physique ; recréée par le profil (capture du témoin),
+    y compris quand seule la variante est cochée ; sans profil : refus explicite."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_models import clone_track_entry
+
+    episode, _recipe, sources = assembly
+    witness_sources = copy.deepcopy(sources)
+    donor = witness_sources[1]
+    vf = next(t for t in donor.tracks if t.is_audio and t.title == "VF")
+    vf.enabled = original_checked
+    variant = clone_track_entry(vf)
+    variant.codec, variant.enabled, variant.flag_enabled = "AC3", True, False
+    donor.tracks.append(variant)
+    witness = RemuxConfig(witness_sources, tmp_path / "out.mkv", [], crossfade_ms=0)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.sync_strategy = "none"
+    assert recipe.witness_variants == 1
+    assert all(choice.codec != "AC3" for choice in recipe.track_choices or ())
+    assert "witness_variants" not in recipe.to_dict()
+
+    with pytest.raises(ValueError, match="variante"):
+        prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), CommonOptions(), Logger())
+
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(remux_config_to_decision_profile(witness, name="Témoin")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    donor_audio = sorted((t.codec, t.is_new, t.enabled, t.flag_enabled)
+                         for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"
+                         and (t.enabled or t.is_new))
+    assert ("AC3", True, True, False) in donor_audio
+    assert (("EAC3", False, True, True) in donor_audio) is original_checked
+    restored = build_remux_config(json.loads(json.dumps(remux_config_to_exact_job(result))), AppConfig(),
+                                  CommonOptions(), Logger())
+
+    def states(config):
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.codec, t.title, t.language, t.enabled,
+                       t.flag_enabled) for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)

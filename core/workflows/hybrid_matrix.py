@@ -313,6 +313,10 @@ class HybridRecipe:
     track_choices: tuple[HybridTrackChoice, ...] | None = None
     #: Langue / titre saisis sur le témoin, appliqués aux pistes retenues avant le profil.
     track_overrides: dict[HybridTrackChoice, dict[str, str]] = field(default_factory=dict)
+    #: Variantes audio du témoin (recréées par un profil seulement) ; hors du format JSON de la recette.
+    witness_variants: int = field(default=0, repr=False, compare=False)
+    #: Pistes décochées du témoin dont une variante cochée dérive : candidates du profil (clonage), jamais sorties.
+    variant_source_choices: tuple[HybridTrackChoice, ...] = field(default=(), repr=False, compare=False)
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     sync_strategy: str = "auto"  # "auto", "manual" ou "none"
@@ -403,11 +407,30 @@ class HybridRecipe:
         recipe.sync_subtitles = getattr(remux_config, "sync_subtitles", "mirror") or "mirror"
         recipe.crossfade_ms = remux_config.crossfade_ms
         recipe.keep_master_chapters = remux_config.keep_chapters
+        # Variantes (clones) : jamais des pistes physiques ; filtrées avant le décompte des pistes identiques.
         recipe.track_choices = tuple(
             choice
             for index, source in enumerate(remux_config.sources)
-            for choice in witness_track_choices("master" if index == master_index else f"src_{index + 1}", source.tracks)
+            for choice in witness_track_choices(
+                "master" if index == master_index else f"src_{index + 1}",
+                [track for track in source.tracks if not track.is_new],
+            )
         )
+        recipe.witness_variants = sum(
+            1 for source in remux_config.sources for track in source.tracks if track.is_new and track.enabled)
+        variant_sources: list[HybridTrackChoice] = []
+        for index, source in enumerate(remux_config.sources):
+            originals = [track for track in source.tracks if not track.is_new]
+            wanted = {track.source_entry_id for track in source.tracks if track.is_new and track.enabled}
+            choices = witness_track_choices(
+                "master" if index == master_index else f"src_{index + 1}",
+                [replace(track, enabled=True) for track in originals],
+            )
+            variant_sources.extend(
+                choice for choice, track in zip(choices, originals)
+                if track.entry_id in wanted and not track.enabled
+            )
+        recipe.variant_source_choices = tuple(variant_sources)
         recipe.cadence_auto_apply = getattr(remux_config, "cadence_auto_apply", True)
         recipe.cadence_audio_method = getattr(remux_config, "cadence_audio_method", "auto") or "auto"
 
@@ -803,9 +826,19 @@ def _language_selected(language: str | None, expected: list[str]) -> bool:
     return False
 
 
-def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, recipe: HybridRecipe, *, has_profile: bool) -> None:
+def _select_matrix_tracks(
+    sources: list[SourceInput], episode: MatrixEpisode, recipe: HybridRecipe, *, has_profile: bool,
+) -> set[str]:
+    """Coche les pistes retenues ; renvoie les pistes candidates seulement pour cloner une variante du témoin."""
+    if recipe.witness_variants and not has_profile:
+        raise ValueError(
+            f"Le modèle témoin contient {recipe.witness_variants} variante(s) audio : seul un profil décisionnel "
+            "peut les recréer sur chaque épisode (le modèle ne retient que les pistes du fichier)."
+        )
+    variant_only: set[str] = set()
     if recipe.track_choices is not None:
         remaining = set(recipe.track_choices)
+        variant_sources = set(recipe.variant_source_choices)
         source_ids = ["master", *(source.source_id for source, _ in episode.donor_files)]
         for source_id, source in zip(source_ids, sources):
             # Utiliser les métadonnées d'origine : un profil peut renommer une piste.
@@ -814,14 +847,20 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
             for track in source.tracks:
                 choice = next(originals) if not track.is_new else None
                 track.enabled = choice in remaining
+                if choice is not None and not track.enabled and choice in variant_sources:
+                    track.enabled = True  # candidate du profil pour cloner la variante, décochée ensuite
+                    variant_sources.remove(choice)
+                    variant_only.add(track.entry_id)
+                    continue
                 if choice is not None and track.enabled:
                     remaining.remove(choice)
                     for name, value in recipe.track_overrides.get(choice, {}).items():
                         setattr(track, name, value)
+        remaining |= variant_sources
         if remaining:
             descriptions = ", ".join(f"{c.source_id}/{c.track_type}/{c.language}/{c.title}" for c in sorted(remaining, key=repr))
             raise ValueError(f"Pistes du modèle témoin introuvables pour {episode.display_name} : {descriptions}")
-        return
+        return variant_only
 
     master_source = sources[0]
     master_has_preferred_audio = any(
@@ -857,6 +896,7 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
                 track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
             elif has_profile and track.track_type in {"audio", "subtitle"}:
                 track.enabled = True
+    return variant_only
 
 
 def prepare_matrix_episode(
@@ -925,10 +965,12 @@ def prepare_matrix_episode(
     profile_name = getattr(options, "profile", None)
 
     selected_ids: set[str] = set()
+    variant_only_ids: set[str] = set()
 
     def select_tracks(sources):
-        _select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name))
-        selected_ids.update(t.entry_id for source in sources for t in source.tracks if t.enabled)
+        variant_only_ids.update(_select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name)))
+        selected_ids.update(t.entry_id for source in sources for t in source.tracks
+                            if t.enabled and t.entry_id not in variant_only_ids)
 
     profile = None
     if profile_name:
@@ -942,6 +984,14 @@ def prepare_matrix_episode(
             config=config, options=build_options, logger=logger, preview=True,
             metadata_job=job_payload, select_tracks=select_tracks, context=context,
         )
+        if variant_only_ids:
+            # Pistes décochées du témoin, candidates pour cloner leur variante : jamais sorties.
+            for source in remux_config.sources:
+                for track in source.tracks:
+                    if track.entry_id in variant_only_ids:
+                        track.enabled = False
+            remux_config.track_order = [
+                item for item in remux_config.track_order if len(item) < 3 or item[2] not in variant_only_ids]
         logger.emit("info", f"{episode.display_name} : profil {profile.get('name') or profile_name} appliqué "
                     f"sur les pistes candidates ({report.get('applied_rules', 0)} règles, "
                     f"{len(remux_config.track_order)} pistes finales).")
