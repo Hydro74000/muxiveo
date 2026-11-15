@@ -48,6 +48,7 @@ _FIELD_WEIGHTS = {
     "type": 40,
     "language": 18,
     "lang": 18,
+    "file_language": 18,
     "codec": 8,
     "codec_raw": 8,
     "codec_name": 8,
@@ -1464,7 +1465,13 @@ def _condition(field: str, op: str, value: Any, *, required: bool = True, weight
 
 def _match_for_track(track: TrackEntry) -> dict[str, Any]:
     items: list[dict[str, Any]] = [_condition("type", "is", track.track_type, required=True)]
-    lang = normalize_lang(track.orig_language or track.language, track.orig_title or track.title)
+    # Langue lue dans le fichier (``file_language``) : stable face aux éditions, aux règles déjà appliquées et à
+    # l'application depuis l'état courant du panneau ; jamais la valeur courante.
+    lang = normalize_lang(track.orig_language, track.orig_title)
+    file_language = (
+        _condition("file_language", "is", lang, required=True)
+        if lang else _condition("file_language", "missing", "", required=True)
+    )
     codec = str(track.orig_codec or track.codec or "").strip().upper()
     if track.track_type == "video":
         if codec:
@@ -1481,8 +1488,7 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
             )
         items.append(_condition("video_flags_hex", "is", video_flags_hex(track), required=False))
     elif track.track_type == "audio":
-        if lang:
-            items.append(_condition("language", "is", lang, required=True))
+        items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
         channels = _channels_from_display(track.orig_display_info or track.display_info)
@@ -1492,8 +1498,7 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
         if audio_object:
             items.append(_condition("audio_object", "is", audio_object, required=False))
     elif track.track_type == "subtitle":
-        if lang:
-            items.append(_condition("language", "is", lang, required=True))
+        items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
         if track.orig_title:
