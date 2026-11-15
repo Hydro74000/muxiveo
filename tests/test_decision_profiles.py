@@ -1807,3 +1807,18 @@ def test_equal_priority_same_value_keeps_the_historical_conflict_identity():
     ]}
     conflicts = apply_decision_profile(profile, [_fresh_audio()]).report["conflicts"]
     assert [(c["current_rule_id"], c["new_rule_id"]) for c in conflicts] == [("b", "c")]
+
+
+
+@pytest.mark.parametrize("mode", ["override", "add"])
+def test_replacing_with_the_same_value_hands_the_write_over_as_before(mode):
+    """Audit 31 : « Remplacer » (et « Ajouter ») d'une même valeur transfère l'écriture à la règle (comportement
+    historique) : son écriture suivante en priorité n'est pas ignorée."""
+    audio = {"all": [{"field": "type", "op": "is", "value": "audio"}]}
+    profile = {"version": 1, "kind": "decision-profile", "name": "p", "rules": [
+        {"id": "a", "priority": 100, "scope": "all", "match": audio, "actions": [{"type": "set_title", "value": "X"}]},
+        {"id": "b", "priority": 50, "scope": "all", "match": audio,
+         "actions": [{"type": "set_title", "value": "X", "mode": mode}, {"type": "set_title", "value": "Y"}]},
+    ]}
+    result = apply_decision_profile(profile, [_fresh_audio()])
+    assert result.tracks[0].title == "Y" and result.report["skipped_writes"] == []
