@@ -1176,6 +1176,13 @@ class _VariantRequest:
     clear_language: bool
     inherited_title: str  # titre de la piste source à l'instant de l'action
     display_info: str | None
+    match_bitrate: bool = False  # capture : variantes jumelles distinguées par leur débit
+
+    def bitrate_matches(self, track: TrackEntry) -> bool:
+        """Critère de débit (``match_bitrate``) : variante au débit demandé seulement."""
+        if not self.match_bitrate or self.display_info is None:
+            return True
+        return _bitrate_from_display(track.display_info) == _bitrate_from_display(self.display_info)
 
     @property
     def group(self) -> tuple[str, str]:
@@ -1193,6 +1200,8 @@ class _VariantRequest:
         if self.title and track.title != self.title:
             return False
         if self.clear_title and track.title:
+            return False
+        if not self.bitrate_matches(track):
             return False
         if self.clear_language:
             return not track.language
@@ -1262,6 +1271,7 @@ def _apply_audio_variant_action(
         clear_language=clear_language,
         inherited_title=source_track.title or "",
         display_info=display_info,
+        match_bitrate=bool(action.get("match_bitrate")),
     ))
 
 
@@ -1394,6 +1404,7 @@ def _materialize_variant_requests(
             and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
             and (not request.title or track.title == request.title)
             and (not request.language or normalize_lang(track.language, track.title) == request.language)
+            and request.bitrate_matches(track)
         ), None)
         kind = "reused_variants"
         if variant is None:
@@ -1744,6 +1755,11 @@ def remux_config_to_decision_profile(
 
     if include_audio_variants:
         by_entry_id = {track.entry_id: track for track in original_tracks}
+        twins: dict[tuple[str, str, str, str], int] = {}
+        for track in all_tracks:
+            if track.is_new and track.track_type == "audio":
+                key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
+                twins[key] = twins.get(key, 0) + 1
         for index, track in enumerate(track for track in all_tracks if track.is_new and track.track_type == "audio"):
             source_track = by_entry_id.get(track.source_entry_id)
             if source_track is None:
@@ -1776,6 +1792,11 @@ def remux_config_to_decision_profile(
                 action["clear"] = clear
             if bitrate:
                 action["bitrate_kbps"] = bitrate
+                twin_key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
+                if twins.get(twin_key, 0) > 1:
+                    # Variantes jumelles (même codec, titre, langue) : distinguées par leur débit à la reprise.
+                    action["match_bitrate"] = True
+                    action["codec"] = track.codec.lower()
             if include_order and track.enabled and track.entry_id in positions:
                 action["order_priority"] = positions[track.entry_id]
             rules.append(
