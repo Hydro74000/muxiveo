@@ -1902,3 +1902,64 @@ def test_capture_keeps_a_named_variant_apart_from_untitled_twins_of_an_untitled_
     again = apply_decision_profile(profile, result.tracks, from_current_state=True)
     _clean_report(again)
     assert _states(again.tracks) == before and again.report["created_variants"] == []
+
+
+@pytest.mark.parametrize("clear_titles", [False, True])
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_identical_twins_keep_their_identity_and_order_on_every_reapplication(clear_titles, fresh_tracks):
+    """Audit 34 : deux jumelles strictement identiques, ordre de sortie inversé (B avant A) → l'ordre et les
+    identifiants restent les mêmes à chaque réapplication."""
+    def fresh():
+        source = _audio(1, codec="AC3", title="VF", display_info="5.1  640 kbps")
+        source.enabled = False
+        return source
+
+    source = fresh()
+    first, second = clone_track_entry(source), clone_track_entry(source)
+    for twin in (first, second):
+        twin.enabled = True
+        if clear_titles:
+            twin.title = ""
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, first, second])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, second.entry_id), (0, 1, first.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="identiques")
+    # Tableau du panneau : pistes dans l'ordre affiché (sortie : B puis A).
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, second, first])
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    if not fresh_tracks:
+        assert [t.entry_id for t in result.tracks if t.is_new] == [second.entry_id, first.entry_id]
+    before = _states(result.tracks)
+    for _ in range(3):
+        result = apply_decision_profile(profile, result.tracks, from_current_state=True)
+        _clean_report(result)
+        assert _states(result.tracks) == before and result.report["created_variants"] == []
+
+
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_capture_clears_an_empty_language_next_to_a_sibling_that_has_one(fresh_tracks):
+    """Audit 34 : source sans langue, variante sans langue à côté d'une sœur en ``fr-FR`` → effacement explicite de
+    la langue, deux variantes distinctes."""
+    def fresh():
+        return _audio(1, language="", title="", codec="AC3", display_info="5.1  640 kbps")
+
+    source = fresh()
+    french, untagged = clone_track_entry(source), clone_track_entry(source)
+    french.language, french.flag_default = "fr-FR", True
+    untagged.flag_commentary = True
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, untagged, french])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, untagged.entry_id), (0, 1, french.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="langues")
+    actions = {rule["id"]: rule["actions"][0] for rule in profile["rules"] if rule["id"].startswith("audio_variant")}
+    assert any(action.get("clear") == ["language"] for action in actions.values())
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, untagged, french])
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    assert sorted((t.language, t.flag_default, t.flag_commentary) for t in result.tracks if t.is_new) == [
+        ("", False, True), ("fr-FR", True, False)]

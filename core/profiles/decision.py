@@ -1323,11 +1323,23 @@ def _variant_is_fixed_point(requests: list[_VariantRequest], track: TrackEntry) 
     return all(getattr(probe, name) == getattr(track, name) for name in fields)
 
 
+def _variant_preference(requests: list[_VariantRequest], track: TrackEntry, group: list[TrackEntry]) -> int:
+    """Préférence d'une variante pour une cible : 2 = déjà à son image et au rang de jumelle capturé (ordre du
+    tableau parmi ``group``), 1 = déjà à son image, 0 = simplement compatible. Jumelles identiques : chacune
+    retrouve la sienne à chaque réapplication (identifiants et ordre stables)."""
+    if not _variant_is_fixed_point(requests, track):
+        return 0
+    twin = requests[0].twin
+    if twin is not None and 0 < twin <= len(group) and group[twin - 1] is track:
+        return 2
+    return 1
+
+
 def _max_matching(
     keys: list[tuple[Any, ...]],
     candidates: list[TrackEntry],
     accepts: Callable[[tuple[Any, ...], TrackEntry], bool],
-    prefers: Callable[[tuple[Any, ...], TrackEntry], bool] = lambda _key, _track: False,
+    prefers: Callable[[tuple[Any, ...], TrackEntry], int] = lambda _key, _track: 0,
 ) -> dict[tuple[Any, ...], TrackEntry]:
     """Appariement maximal cibles → variantes, stable : chaque cible prend d'abord la variante libre qui est déjà
     la sienne (``prefers`` : ses écritures n'y changent rien), sinon la première variante libre compatible (ordre
@@ -1339,7 +1351,9 @@ def _max_matching(
     def assign(key: tuple[Any, ...], seen: set[str]) -> bool:
         free_tracks = [track for track in candidates
                        if track.entry_id not in owner and track.entry_id not in seen and accepts(key, track)]
-        free = next((track for track in free_tracks if prefers(key, track)), free_tracks[0] if free_tracks else None)
+        # Plus haute préférence d'abord (``prefers`` : 2 = déjà à son image et à son rang, 1 = à son image), puis ordre
+        # du tableau.
+        free = max(free_tracks, key=lambda track: prefers(key, track), default=None)
         if free is not None:
             owner[free.entry_id] = key
             return True
@@ -1394,7 +1408,9 @@ def _materialize_variant_requests(
         keys.sort(key=lambda key: clearing[key][0])
         matched = _max_matching(
             keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track),
-            lambda key, track: _variant_is_fixed_point([requests[index] for index in clearing[key]], track),
+            lambda key, track: _variant_preference(
+                [requests[index] for index in clearing[key]], track,
+                [item for item in candidates if requests[clearing[key][0]].accepts(item)]),
         )
         for key in sorted(keys, key=lambda key: clearing[key][0]):
             variant = matched.get(key)
@@ -1421,8 +1437,18 @@ def _materialize_variant_requests(
             and (not request.language or normalize_lang(track.language, track.title) == request.language)
             and request.bitrate_matches(track)
         ]
-        variant = (next((track for track in compatible if _variant_is_fixed_point([request], track)), None)
-                   if request.twin is not None else None) or (compatible[0] if compatible else None)
+        if request.twin is not None and compatible:
+            group = [
+                track for track in tracks
+                if track.is_new and track.source_entry_id == request.source_track.entry_id
+                and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
+                and (not request.title or track.title == request.title)
+                and (not request.language or normalize_lang(track.language, track.title) == request.language)
+                and request.bitrate_matches(track)
+            ]
+            variant = max(compatible, key=lambda track: _variant_preference([request], track, group))
+        else:
+            variant = compatible[0] if compatible else None
         kind = "reused_variants"
         if variant is None:
             variant = request.prepared
@@ -1775,7 +1801,16 @@ def remux_config_to_decision_profile(
     if include_audio_variants:
         by_entry_id = {track.entry_id: track for track in original_tracks}
         twins: dict[tuple[str, str, str, str], int] = {}
-        twin_rank: dict[tuple[str, str, str, str], int] = {}
+        twin_rank: dict[str, int] = {}
+        twin_members: dict[tuple[str, str, str, str], list[tuple[int, int, str]]] = {}
+        for order, track in enumerate(all_tracks):
+            if track.is_new and track.track_type == "audio":
+                key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
+                twin_members.setdefault(key, []).append((positions.get(track.entry_id, 1_000_000), order,
+                                                         track.entry_id))
+        for members in twin_members.values():
+            for rank, (_position, _order, entry_id) in enumerate(sorted(members), start=1):
+                twin_rank[entry_id] = rank
         # Variantes sœurs (même source, même codec) portant un titre / une langue : une variante vide à côté doit
         # être effacée explicitement, sinon sa demande (joker) pourrait reprendre la sœur nommée.
         titled_siblings: set[tuple[str, str]] = set()
@@ -1831,9 +1866,9 @@ def remux_config_to_decision_profile(
                     action["match_bitrate"] = True
                     action["codec"] = track.codec.lower()
             if twins.get(twin_key, 0) > 1:
-                # Jumelles (même débit compris) : chacune sa variante, jamais partagée (sélection, drapeaux).
-                twin_rank[twin_key] = twin_rank.get(twin_key, 0) + 1
-                action["twin"] = twin_rank[twin_key]
+                # Jumelles (même débit compris) : chacune sa variante, jamais partagée (sélection, drapeaux) ; rang
+                # = position dans le tableau parmi ses jumelles (reprise stable de la même variante).
+                action["twin"] = twin_rank[track.entry_id]
             if include_order and track.enabled and track.entry_id in positions:
                 action["order_priority"] = positions[track.entry_id]
             rules.append(
