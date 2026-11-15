@@ -1867,3 +1867,38 @@ def test_profiles_without_twin_rank_keep_sharing_one_variant():
     result = apply_decision_profile(profile, [_audio(1, codec="AC3")])
     variants = [t for t in result.tracks if t.is_new]
     assert len(variants) == 1 and variants[0].flag_default and variants[0].flag_commentary
+
+
+
+@pytest.mark.parametrize("named_first", [True, False])
+@pytest.mark.parametrize("fresh_tracks", [True, False])
+def test_capture_keeps_a_named_variant_apart_from_untitled_twins_of_an_untitled_source(named_first, fresh_tracks):
+    """Audit 33 : source sans titre, variante nommée + deux jumelles sans titre (sélection / drapeaux différents) →
+    trois variantes, chacune avec ses propriétés (effacement explicite du titre des jumelles)."""
+    def fresh():
+        source = _audio(1, codec="AC3", title="", display_info="5.1  640 kbps")
+        source.enabled = False
+        return source
+
+    source = fresh()
+    named, first, second = (clone_track_entry(source) for _ in range(3))
+    named.title, named.enabled, named.flag_commentary = "Named", True, True
+    first.enabled, first.flag_default = True, True
+    second.enabled = False
+    variants = [named, first, second] if named_first else [first, second, named]
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[source, *variants])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, named.entry_id), (0, 1, first.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="nommee")
+    validate_decision_profile(profile)
+    tracks = [fresh()] if fresh_tracks else copy.deepcopy([source, *variants])
+    result = apply_decision_profile(profile, tracks, from_current_state=True)
+    _clean_report(result)
+    expected = sorted([("Named", True, False, True), ("", True, True, False), ("", False, False, False)])
+    assert sorted((t.title, t.enabled, t.flag_default, t.flag_commentary) for t in result.tracks if t.is_new) == expected
+    before = _states(result.tracks)
+    again = apply_decision_profile(profile, result.tracks, from_current_state=True)
+    _clean_report(again)
+    assert _states(again.tracks) == before and again.report["created_variants"] == []

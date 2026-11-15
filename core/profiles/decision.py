@@ -1776,6 +1776,16 @@ def remux_config_to_decision_profile(
         by_entry_id = {track.entry_id: track for track in original_tracks}
         twins: dict[tuple[str, str, str, str], int] = {}
         twin_rank: dict[tuple[str, str, str, str], int] = {}
+        # Variantes sœurs (même source, même codec) portant un titre / une langue : une variante vide à côté doit
+        # être effacée explicitement, sinon sa demande (joker) pourrait reprendre la sœur nommée.
+        titled_siblings: set[tuple[str, str]] = set()
+        languaged_siblings: set[tuple[str, str]] = set()
+        for track in all_tracks:
+            if track.is_new and track.track_type == "audio":
+                if (track.title or "").strip():
+                    titled_siblings.add((track.source_entry_id, track.codec.upper()))
+                if (track.language or "").strip():
+                    languaged_siblings.add((track.source_entry_id, track.codec.upper()))
         for track in all_tracks:
             if track.is_new and track.track_type == "audio":
                 key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
@@ -1801,12 +1811,15 @@ def remux_config_to_decision_profile(
             }
             # Titre / langue vidés alors que le clone hériterait d'une valeur (celle de l'original, rétablie par sa
             # règle, ou celle du fichier) : effacement explicite.
+            sibling_key = (track.source_entry_id, track.codec.upper())
             clear = [
-                name for name, value, current, physical in (
-                    ("title", track.title, source_track.title, source_track.physical_title),
-                    ("language", track.language, source_track.language, source_track.physical_language),
+                name for name, value, current, physical, siblings in (
+                    ("title", track.title, source_track.title, source_track.physical_title, titled_siblings),
+                    ("language", track.language, source_track.language, source_track.physical_language,
+                     languaged_siblings),
                 )
-                if not (value or "").strip() and ((current or "").strip() or (physical or "").strip())
+                if not (value or "").strip()
+                and ((current or "").strip() or (physical or "").strip() or sibling_key in siblings)
             ]
             if clear:
                 action["clear"] = clear
