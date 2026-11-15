@@ -62,7 +62,10 @@ source (une variante vidée revient aux demandes d'effacement du profil).
 
 L'éditeur réécrit seulement ce que vous modifiez : une règle ouverte puis enregistrée sans changement ressort
 identique (ordre des actions, actions répétées, paramètres comme `write_mode`, critères qu'il n'affiche pas, par
-exemple les canaux d'une règle capturée) ; un champ modifié remplace ses actions à l'emplacement de la première.
+exemple les canaux d'une règle capturée, `required`, `weight`, sous-critères `any` / `not`) ; un champ modifié
+remplace ses actions ou ses critères à l'emplacement du premier (modifier la langue remplace toutes les conditions
+de langue affichées). Les variantes demandées par les règles sont affectées après toutes les règles : seules les
+règles et groupes actifs comptent, et le clone garde l'état de la piste source au moment de l'action.
 
 Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
 
@@ -263,18 +266,21 @@ Exemples :
 
 Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
 
-`{file_language}` est la langue lue dans le fichier : contrairement à `{language}` (valeur courante, modifiée par
-les règles déjà appliquées) et à `{source_language}` (état du tableau au départ quand le profil est appliqué depuis
-le panneau), elle ne change jamais. Les règles capturées s'y ancrent (`file_language is fr-FR`, ou `missing` pour une
-piste sans langue) : elles retrouvent la même piste sur un fichier fraîchement inspecté comme sur un tableau déjà
-modifié ou à la deuxième application.
+`{file_language}` et `{file_title}` sont la langue et le titre lus dans le fichier : contrairement à `{language}` /
+`{title}` (valeurs courantes, modifiées par les règles déjà appliquées) et à `{source_language}` / `{source_title}`
+(état du tableau au départ quand le profil est appliqué depuis le panneau), ils ne changent jamais ; une variante
+garde ceux du flux dont elle dérive. Les règles capturées s'y ancrent : `file_language is fr-FR` (ou `missing` pour
+une piste sans langue), et `file_title is <titre du fichier>` en critère préféré pour départager des pistes de même
+langue et de même codec. Elles retrouvent ainsi la même piste sur un fichier fraîchement inspecté comme sur un
+tableau déjà modifié ou à la deuxième application. Les profils capturés avant cette version (`source_title`) gardent
+leur comportement : les recapturer pour en profiter.
 
 Keywords disponibles au premier lot :
 
 ```text
 {type} {source_index} {track_index}
 {language} {lang} {lang_name} {source_language} {file_language}
-{title} {source_title}
+{title} {source_title} {file_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object}
 {atmos} {dtsx} {codec_atmos} {codec_dtsx}
 {resolution} {width} {height} {hdr} {video_flags_hex}

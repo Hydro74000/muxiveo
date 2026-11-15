@@ -334,7 +334,7 @@ Keywords de renommage disponibles :
 ```text
 {type} {source_index} {track_index}
 {language} {lang} {lang_name} {source_language} {file_language}
-{title} {source_title}
+{title} {source_title} {file_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
 {resolution} {width} {height} {hdr} {video_flags_hex}
 {video_hdr} {video_hdr10} {video_hdr10plus}
