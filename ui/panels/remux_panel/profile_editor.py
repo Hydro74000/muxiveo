@@ -1777,7 +1777,16 @@ class DecisionProfileEditorDialog(QDialog):
         if moved_priority != neighbor_priority:
             moved["priority"], neighbor["priority"] = neighbor_priority, moved_priority
         else:
-            moved["priority"] = neighbor_priority - delta
+            target = neighbor_priority - delta
+            if any(int(rule.get("priority") or 0) == target for rule in rules if rule is not moved):
+                # Niveau occupé : les règles de ce côté sont décalées d'un cran (ordre relatif conservé).
+                for rule in rules:
+                    if rule is moved or rule is neighbor:
+                        continue
+                    priority = int(rule.get("priority") or 0)
+                    if (delta > 0 and priority <= target) or (delta < 0 and priority >= target):
+                        rule["priority"] = priority - delta
+            moved["priority"] = target
         # Priorité changée hors des contrôles : règle rechargée (contrôles et valeurs de référence à jour), sinon la
         # restauration des valeurs non modifiées annulerait l'ajustement.
         self._load_rule(rules[new_row])

@@ -3080,6 +3080,33 @@ class TestRemuxPanelDecisionProfiles:
         assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == [expected]
         dialog.close()
 
+    def test_profile_editor_rule_move_with_equal_priorities_never_collides_with_a_third_rule(self, qt_app,
+                                                                                             tmp_path):
+        """Audit 27 : A(10), B(10), C(9) ; A descendue sous B → niveau 9 occupé par C : C décalée, ordre B > A > C,
+        profil toujours valide (titre A)."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Trois", "rules": [
+            {"id": "a", "priority": 10, "scope": "all", "match": audio,
+             "actions": [{"type": "set_title", "value": "A"}]},
+            {"id": "b", "priority": 10, "scope": "all", "match": audio,
+             "actions": [{"type": "set_flags", "value": {"commentary": True}}]},
+            {"id": "c", "priority": 9, "scope": "all", "match": audio,
+             "actions": [{"type": "set_title", "value": "C"}]},
+        ]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        priorities = [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]]
+        assert priorities == [("b", 10), ("a", 9), ("c", 8)]
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        result = apply_decision_profile(dialog.profile(), [track])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["A"]
+        dialog.close()
+
     def test_profile_editor_toggles_only_the_edited_bit_of_each_video_mask(self, qt_app, tmp_path):
         """Audit 25 : deux masques ``video_flags_hex`` (HDR + HDR10+, HDR seul) ; Dolby Vision cochée → seul son bit
         ajouté à chacun ; sélection conforme au masque conservé."""
