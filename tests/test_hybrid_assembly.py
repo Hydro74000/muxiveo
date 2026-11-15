@@ -900,3 +900,10 @@ def test_original_checked_at_capture_then_unchecked_still_recreates_its_variant(
     result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
     vf = [(t.codec, t.is_new, t.enabled) for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
     assert ("AC3", True, True) in vf and ("EAC3", False, False) in vf
+
+
+def test_recipe_with_variants_but_no_sources_is_refused_explicitly():
+    """Audit 25 : recette à variantes sans provenance (export d'une version de développement) → refus explicite, au
+    lieu d'une variante perdue en silence."""
+    with pytest.raises(ValueError, match="réexporter"):
+        HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, "witness_variants": 1})

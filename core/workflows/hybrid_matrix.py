@@ -419,6 +419,11 @@ class HybridRecipe:
         recipe.variant_source_choices = tuple(choice(item) for item in sources)
         if recipe.variant_source_choices and not recipe.witness_variants:
             raise ValueError("Recette : pistes sources de variantes sans variante (witness_variants).")
+        if recipe.witness_variants and not recipe.variant_source_choices:
+            # Variantes sans provenance (export d'une version de développement) : la variante serait perdue en
+            # silence dès que sa piste d'origine est décochée.
+            raise ValueError("Recette : variantes du témoin sans pistes sources (variant_source_choices) ; "
+                             "réexporter la recette depuis le Hybrid Studio.")
         return recipe
 
     @classmethod
