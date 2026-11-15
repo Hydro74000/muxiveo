@@ -647,3 +647,38 @@ def test_export_reprepares_changed_settings_before_writing(assembly, tmp_path, m
         assert panel._prepared_signature == panel._settings_signature()
     finally:
         panel.close()
+
+
+def test_captured_profile_with_a_cleared_variant_survives_hybrid_and_exact_job(assembly, tmp_path):
+    """Audit 19 : capture réelle d'un épisode préparé (VF vidée, variante AC3 vidée et FlagEnabled=0), appliquée
+    par Hybrid à l'épisode, puis exact-job reconstruit : pistes identiques."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_models import clone_track_entry
+
+    episode, recipe, _sources = assembly
+    base, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), CommonOptions(), Logger())
+    vf = next(t for s in base.sources for t in s.tracks if t.enabled and t.is_audio and t.language == "fr-FR")
+    vf.title = vf.language = ""
+    variant = clone_track_entry(vf)
+    variant.codec, variant.flag_enabled = "AC3", False
+    source = next(s for s in base.sources if vf in s.tracks)
+    source.tracks.append(variant)
+    base.track_order = [*base.track_order, (source.file_index, variant.mkv_tid, variant.entry_id)]
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(remux_config_to_decision_profile(base, name="Capture")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path))
+
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+
+    donor_audio = sorted((t.title, t.language, t.flag_enabled, t.is_new, t.codec)
+                         for s in result.sources for t in s.tracks if t.is_audio and t.enabled and t.file_id == vf.file_id)
+    assert donor_audio == [("", "", False, True, "AC3"), ("", "", True, False, "EAC3")]
+    restored = build_remux_config(json.loads(json.dumps(remux_config_to_exact_job(result))), AppConfig(),
+                                  CommonOptions(), Logger())
+
+    def states(config):
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.codec, t.title, t.language, t.enabled,
+                       t.flag_enabled, t.flag_default, t.flag_forced)
+                      for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)

@@ -98,3 +98,41 @@ def test_captured_variant_clear_and_mkv_enabled_flag_reach_the_output(tmp_path, 
     tracks = [track for track in MatroskaReader(out).tracks() if track.track_type == 2]
     assert [(bool(track.flag_enabled), bool(track.flag_commentary)) for track in tracks] == [
         (True, False), (False, True)]
+
+
+@pytest.mark.parametrize("backend, encode", [("native", False), ("ffmpeg", True)], ids=["remux-native", "encode-ffmpeg"])
+def test_real_capture_reapplied_by_profile_apply_reaches_the_output(qt_app, tmp_path, backend, encode):
+    """Audit 19 : capture produite par ``remux_config_to_decision_profile`` (pas écrite à la main) d'un tableau où
+    l'audio et sa variante AC3 sont vidés (variante : FlagEnabled=0), puis ``profile apply`` : sortie conforme."""
+    from cli.logging import Logger
+    from core.config import AppConfig
+    from core.jobs.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+    from core.matroska.reader import MatroskaReader
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_models import clone_track_entry
+
+    src, out = _titled_source(tmp_path), tmp_path / "out.mkv"
+    app_config = AppConfig()
+    app_config.tool_ffprobe = shutil.which("ffprobe") or "ffprobe"
+    app_config.tool_mediainfo = shutil.which("mediainfo") or "mediainfo"
+    table = build_remux_config({"version": 1, "sources": [str(src)], "output": str(out)}, app_config,
+                               CommonOptions(), Logger())
+    audio = next(t for t in table.sources[0].tracks if t.track_type == "audio")
+    audio.title = audio.language = ""
+    variant = clone_track_entry(audio)
+    variant.codec, variant.flag_enabled = "AC3", False
+    table.sources[0].tracks.append(variant)
+    table.track_order = [*table.track_order, (0, variant.mkv_tid, variant.entry_id)]
+    profile = tmp_path / "capture.json"
+    profile.write_text(json.dumps(remux_config_to_decision_profile(table, name="Capture")), encoding="utf-8")
+
+    result = _cli(tmp_path, "profile", "apply", "--profile", str(profile), "-i", str(src), "-o", str(out),
+                  "--mux-backend", backend, *(ENCODE if encode else []))
+    assert result.returncode == 0, result.stderr
+    audio_streams = [s for s in ffprobe_json(out)["streams"] if s["codec_type"] == "audio"]
+    assert [s["codec_name"] for s in audio_streams] == ["aac", "ac3"]
+    assert [s.get("tags", {}).get("title", "") for s in audio_streams] == ["", ""]
+    assert [s.get("tags", {}).get("language", "und") for s in audio_streams] == ["und", "und"]
+    tracks = [t for t in MatroskaReader(out).tracks() if t.track_type == 2]
+    assert [bool(t.flag_enabled) for t in tracks] == [True, False]

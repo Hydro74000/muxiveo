@@ -1090,3 +1090,179 @@ def test_decision_profile_schema_accepts_the_clear_intent():
     variant = clone_track_entry(source)
     variant.title = ""
     validate_decision_profile(_capture(source, variant))
+
+
+# --- Audit 19 : ancrage des règles capturées, clear d'après l'héritage, affectation des variantes ------------------
+
+
+def _states(tracks: list[TrackEntry]) -> list[tuple]:
+    return [
+        (track.entry_id if not track.is_new else "variant", track.codec, track.title, track.language, track.enabled,
+         *(getattr(track, f"flag_{name}") for name in ("enabled", "default", "forced", "commentary")))
+        for track in tracks
+    ]
+
+
+def _clean_report(result) -> None:
+    assert result.report["missing_rules"] == [] and result.report["ambiguous_matches"] == []
+    assert result.report["conflicts"] == []
+
+
+def _edited_table(original_edit) -> list[TrackEntry]:
+    original = _fresh_audio()
+    original_edit(original)
+    variant = clone_track_entry(original)
+    variant.codec = "AC3"
+    variant.title, variant.language = "", ""
+    variant.flag_enabled = False
+    return [original, variant]
+
+
+@pytest.mark.parametrize("edit", [
+    lambda t: (setattr(t, "title", ""), setattr(t, "language", "")),
+    lambda t: setattr(t, "language", "en-US"),
+], ids=["cleared", "changed"])
+def test_capture_with_original_and_variant_reapplies_to_fresh_and_edited_tables(edit):
+    table = _edited_table(edit)
+    profile = _capture(*table)
+    assert all(item["field"] != "language" for rule in profile["rules"] for item in rule["match"]["all"])
+
+    fresh = apply_decision_profile(profile, [_fresh_audio()], from_current_state=True)
+    _clean_report(fresh)
+    expected = [(table[0].title, table[0].language), ("", "")]
+    assert [(t.title, t.language) for t in fresh.tracks] == expected
+    assert [t.flag_enabled for t in fresh.tracks] == [True, False] and all(t.enabled for t in fresh.tracks)
+
+    again = apply_decision_profile(profile, fresh.tracks, from_current_state=True)  # deuxième application (panneau)
+    _clean_report(again)
+    assert _states(again.tracks) == _states(fresh.tracks)
+
+    on_table = apply_decision_profile(profile, table, from_current_state=True)  # tableau déjà édité
+    _clean_report(on_table)
+    assert len(on_table.tracks) == 2 and [(t.title, t.language) for t in on_table.tracks] == expected
+
+
+def test_capture_of_a_language_set_on_a_track_without_one_still_matches_the_file():
+    track = _audio(1, language="", title="")
+    track.language = "fr-FR"
+    profile = _capture(track)
+    criterion = next(item for item in profile["rules"][0]["match"]["all"] if item["field"] == "file_language")
+    assert criterion["op"] == "missing"
+    fresh = apply_decision_profile(profile, [_audio(1, language="", title="")], from_current_state=True)
+    _clean_report(fresh)
+    assert fresh.tracks[0].language == "fr-FR"
+
+
+def test_file_language_is_stable_when_a_title_changes_the_region():
+    track = _audio(1, language="fra", title="")
+    track.title = "VFQ"  # régionaliserait fr-CA si la langue de travail suivait le titre
+    profile = _capture(track)
+    fresh = apply_decision_profile(profile, [_audio(1, language="fra", title="")], from_current_state=True)
+    again = apply_decision_profile(profile, fresh.tracks, from_current_state=True)
+    for result in (fresh, again):
+        _clean_report(result)
+        assert result.tracks[0].title == "VFQ"
+
+
+def test_capture_of_two_originals_with_swapped_languages_is_stable():
+    def fresh_pair():
+        return [_audio(1, language="fr-FR", title="A"), _audio(2, language="en-US", title="B")]
+
+    table = fresh_pair()
+    table[0].language, table[1].language = "en-US", "fr-FR"
+    profile = _capture(*table)
+    first = apply_decision_profile(profile, fresh_pair(), from_current_state=True)
+    second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+    for result in (first, second):
+        _clean_report(result)
+        assert [(t.title, t.language) for t in result.tracks] == [("A", "en-US"), ("B", "fr-FR")]
+
+
+@pytest.mark.parametrize("include_metadata", [True, False])
+@pytest.mark.parametrize("field", ["title", "language"])
+def test_variant_clear_follows_what_the_clone_would_inherit(include_metadata, field):
+    """Source physiquement vide, valeur ajoutée à l'original, variante vidée : ``clear`` présent."""
+    def fresh():
+        return _audio(1, language="", title="")
+
+    original = fresh()
+    setattr(original, field, "Titre ajouté" if field == "title" else "fr-FR")
+    variant = clone_track_entry(original)
+    variant.codec = "AC3"
+    setattr(variant, field, "")
+    config = RemuxConfig(
+        sources=[SourceInput(path=Path("/tmp/s.mkv"), file_index=0, tracks=[original, variant])],
+        output=Path("/tmp/o.mkv"),
+        track_order=[(0, 1, original.entry_id), (0, 1, variant.entry_id)],
+    )
+    profile = remux_config_to_decision_profile(config, name="c", include_metadata=include_metadata)
+    action = profile["rules"][-1]["actions"][0]
+    assert action["clear"] == [field]
+    first = apply_decision_profile(profile, [fresh()], from_current_state=True)
+    second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+    for result in (first, second):
+        _clean_report(result)
+        created = [t for t in result.tracks if t.is_new]
+        assert len(created) == 1 and getattr(created[0], field) == ""
+        expected = (getattr(original, field) if include_metadata else "")
+        assert getattr(result.tracks[0], field) == expected
+
+
+def test_no_clear_when_neither_the_original_nor_the_file_carries_a_value():
+    original = _audio(1, language="fr-FR", title="")
+    variant = clone_track_entry(original)
+    variant.codec = "AC3"
+    assert "clear" not in _capture(original, variant)["rules"][-1]["actions"][0]
+
+
+_INHERIT = {"type": "create_audio_variant", "codec": "ac3"}
+_CLEAR_TITLE = {"type": "create_audio_variant", "codec": "ac3", "clear": ["title"]}
+
+
+def _variant_profile(*actions: dict) -> dict:
+    return {"version": 1, "kind": "decision-profile", "name": "variantes", "rules": [{
+        "id": "v", "match": {"all": [{"field": "type", "op": "is", "value": "audio"}]}, "actions": list(actions),
+    }]}
+
+
+@pytest.mark.parametrize("order", ["inherit_first", "clear_first"])
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_inherited_and_cleared_variants_are_assigned_whatever_the_order(order, preexisting):
+    actions = [_INHERIT, _CLEAR_TITLE] if order == "inherit_first" else [_CLEAR_TITLE, _INHERIT]
+    source = _fresh_audio()
+    tracks = [source]
+    if preexisting:  # variante déjà effacée dans le tableau
+        cleared = clone_track_entry(source)
+        cleared.codec, cleared.title = "AC3", ""
+        tracks.append(cleared)
+    first = apply_decision_profile(_variant_profile(*actions), tracks)
+    second = apply_decision_profile(_variant_profile(*actions), first.tracks)
+    for result in (first, second):
+        _clean_report(result)
+        assert sorted(t.title for t in result.tracks if t.is_new) == ["", "Audio original"]
+    ids = [t.entry_id for t in first.tracks]
+    assert [t.entry_id for t in second.tracks] == ids  # mêmes variantes reprises, rien de recréé
+    if preexisting:
+        assert next(t for t in second.tracks if t.is_new and not t.title).entry_id == cleared.entry_id
+
+
+def test_legacy_profile_reuses_a_variant_renamed_or_cleared_in_the_table():
+    """Profil sans ``clear`` : variante renommée ou vidée à la main reprise (les règles ne visent jamais les
+    variantes), aucun doublon."""
+    profile = _variant_profile(_INHERIT)
+    for edited_title in ("Renommée à la main", ""):
+        first = apply_decision_profile(profile, [_fresh_audio()])
+        variant = next(t for t in first.tracks if t.is_new)
+        variant.title = edited_title
+        again = apply_decision_profile(profile, first.tracks)
+        assert [t.entry_id for t in again.tracks] == [t.entry_id for t in first.tracks]
+        assert next(t for t in again.tracks if t.is_new).title == edited_title
+
+
+def test_language_clear_and_inherit_never_merge():
+    clear_language = {"type": "create_audio_variant", "codec": "ac3", "clear": ["language"]}
+    for actions in ([_INHERIT, clear_language], [clear_language, _INHERIT]):
+        first = apply_decision_profile(_variant_profile(*actions), [_fresh_audio()])
+        second = apply_decision_profile(_variant_profile(*actions), first.tracks)
+        for result in (first, second):
+            assert sorted(t.language for t in result.tracks if t.is_new) == ["", "fr-FR"]
