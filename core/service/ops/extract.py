@@ -84,7 +84,7 @@ def _plans(request: ExtractRequest, info: Any) -> list[tuple[ExtractionPlan, Pat
     result=ExtractResult,
     summary="Extraire des pistes (flux élémentaire ou Matroska), couches Dolby Vision (EL, BL, RPU), HDR10+ "
             "ou pièces jointes.",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED,
             ErrorCode.BUSY),

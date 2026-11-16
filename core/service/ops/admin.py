@@ -335,7 +335,7 @@ class NvenccInstallResult(Model):
     message: str = ""
 
 
-@operation("nvencc.install", request=NvenccInstallRequest, result=NvenccInstallResult, long_running=True,
+@operation("nvencc.install", request=NvenccInstallRequest, result=NvenccInstallResult, long_running=True, progress=True,
            mutating=True, summary="Installer ou mettre à jour NVEncC (paquet apt/dnf, sinon dossier utilisateur).")
 def nvencc_install(request: NvenccInstallRequest, ctx: ExecutionContext) -> NvenccInstallResult:
     from core import nvencc_install as nv

@@ -284,7 +284,7 @@ def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeede
     result=HybridResult,
     summary="Hybrider une paire ou une saison (moteur du Hybrid Studio) : vidéo du master, audio / sous-titres "
             "des donneurs calés ; encodage par épisode avec le bloc `encode`.",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     uses_gpu=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.TOOL_MISSING,

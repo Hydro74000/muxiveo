@@ -64,8 +64,11 @@ def run_remux(
     cancel: CancelToken,
     force: bool = False,
     workflow_factory: Callable[[], RemuxWorkflow] | None = None,
+    progress: Callable[..., None] | None = None,
 ) -> str:
     """Remuxe ``remux_config`` jusqu'au nettoyage complet ; renvoie le message de fin du workflow.
+
+    ``progress(pct=…)`` : pourcentage publié par la tâche (barre chiffrée de la GUI).
 
     Échec ou annulation : message publié au journal (forme historique du CLI), puis
     :class:`ApiError` marquée ``logged``.
@@ -80,8 +83,9 @@ def run_remux(
         signals = wf.run(remux_config)
     except RemuxValidationError as exc:  # refus avant tout lancement : code public « validation », un détail par écart
         raise ApiError(ErrorCode.VALIDATION, str(exc), details=[ErrorDetail("", error) for error in exc.errors]) from exc
-    progress: Any = (lambda line: logger.emit("info", line)) if options.verbose else None
-    outcome = await_task(signals, cancel, on_progress=progress)
+    on_line: Any = (lambda line: logger.emit("info", line)) if options.verbose else None
+    on_pct = (lambda pct: progress(pct=pct)) if progress is not None else None
+    outcome = await_task(signals, cancel, on_progress=on_line, on_progress_pct=on_pct)
     if outcome.status == "finished":
         if outcome.result:
             logger.emit("info", outcome.result)

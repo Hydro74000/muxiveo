@@ -186,7 +186,7 @@ def plugins_list(request: PluginsListRequest, ctx: ExecutionContext) -> PluginsL
 
 @operation("plugins.install", request=PluginInstallRequest, result=PluginInstallResult,
            summary="Télécharger et installer une extension (TensorRT : licence NVIDIA à accepter).",
-           long_running=True, mutating=True, uses_gpu=True, errors=_ERRORS)
+           long_running=True, progress=True, mutating=True, uses_gpu=True, errors=_ERRORS)
 def plugins_install(request: PluginInstallRequest, ctx: ExecutionContext) -> PluginInstallResult:
     _require_platform(ctx)
     status = _statuses(ctx, [request.name])[request.name]
@@ -196,7 +196,7 @@ def plugins_install(request: PluginInstallRequest, ctx: ExecutionContext) -> Plu
 
 
 @operation("plugins.update", request=PluginUpdateRequest, result=PluginUpdateResult,
-           summary="Mettre à jour une extension, ou toutes celles installées.", long_running=True, mutating=True,
+           summary="Mettre à jour une extension, ou toutes celles installées.", long_running=True, progress=True, mutating=True,
            uses_gpu=True, errors=_ERRORS)
 def plugins_update(request: PluginUpdateRequest, ctx: ExecutionContext) -> PluginUpdateResult:
     _require_platform(ctx)

@@ -37,6 +37,8 @@ class OperationSpec:
     mutating: bool = False
     uses_gpu: bool = False
     errors: tuple[ErrorCode, ...] = ()
+    #: Publie des événements ``progress`` (pourcentage, vitesse…) : annoncé par ``describe()``.
+    progress: bool = False
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -45,8 +47,8 @@ class OperationSpec:
             "mutating": self.mutating,
             "uses_gpu": self.uses_gpu,
             "errors": sorted({ErrorCode.INVALID_REQUEST.value, *(code.value for code in self.errors)}),
-            # Événements possibles (progression : opérations longues ; artefacts : opérations qui écrivent).
-            "events": ["state", "log", "warning", *(["progress"] if self.long_running else []),
+            # Événements possibles (progression : opérations qui la publient ; artefacts : opérations qui écrivent).
+            "events": ["state", "log", "warning", *(["progress"] if self.progress else []),
                        *(["artifact"] if self.mutating else []), "result", "error"],
             "request": self.request.json_schema(),
             "result": self.result.json_schema(),
@@ -63,12 +65,13 @@ def operation(
     mutating: bool = False,
     uses_gpu: bool = False,
     errors: Iterable[ErrorCode] = (),
+    progress: bool = False,
 ) -> Callable[[Handler], OperationSpec]:
     """Décorateur : transforme un gestionnaire en :class:`OperationSpec`."""
 
     def wrap(handler: Handler) -> OperationSpec:
         return OperationSpec(name, summary, request, result, handler, long_running, mutating, uses_gpu,
-                             tuple(errors))
+                             tuple(errors), progress)
 
     return wrap
 

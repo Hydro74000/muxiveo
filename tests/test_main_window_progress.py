@@ -9,13 +9,16 @@ import pytest
 
 from core.i18n import current_language, set_current_language
 from core.workflows.common.sync_rewrite import sync_rewrite_stage_progress_line
+from core.workflows.encode.progress_tracking import EncodeProgressTracker
+from core.workflows.encode.progress_tracking import (
+    ENCODE_INTERNAL_PROGRESS_PREFIX as _ENCODE_INTERNAL_PROGRESS_PREFIX,
+    multi_encode_remaining_seconds as _multi_encode_remaining_seconds,
+    select_multi_encode_label as _select_multi_encode_label,
+)
 from ui.main_window import (
     MainWindow,
-    _ENCODE_INTERNAL_PROGRESS_PREFIX,
     _is_encode_stage_message,
-    _multi_encode_remaining_seconds,
     _parse_sync_rewrite_stage_progress,
-    _select_multi_encode_label,
     _sync_rewrite_stage_label,
 )
 
@@ -102,12 +105,10 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     dummy = SimpleNamespace()
     dummy._running = True
     dummy._op_mode = "encode"
-    dummy._op_encode_multi_targets = {
+    dummy._op_encode_progress = EncodeProgressTracker(targets={
         1: {"duration_s": 600.0, "total_frames": None, "source_name": "a.mkv"},
         2: {"duration_s": 1200.0, "total_frames": None, "source_name": "b.mkv"},
-    }
-    dummy._op_encode_multi_state = {}
-    dummy._op_encode_multi_active_label = None
+    })
     dummy._op_encode_multi_reselect_timer = _FakeTimer()
     dummy._prog_bar = _FakeProgressBar()
     dummy._prog_lbl = _FakeLabel()
@@ -115,7 +116,6 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     dummy._stop_prep_progress = MagicMock()
 
     dummy._op_stage_label = ""
-    dummy._ensure_multi_encode_state = MethodType(MainWindow._ensure_multi_encode_state, dummy)
     dummy._multi_encode_progress_parts = MethodType(MainWindow._multi_encode_progress_parts, dummy)
     dummy._reevaluate_multi_encode_progress = MethodType(MainWindow._reevaluate_multi_encode_progress, dummy)
     dummy._handle_encode_internal_progress = MethodType(MainWindow._handle_encode_internal_progress, dummy)
@@ -138,11 +138,11 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
         assert dummy._handle_encode_internal_progress(line_track_1) is True
     with patch("ui.main_window.time.monotonic", return_value=600.0):
         assert dummy._handle_encode_internal_progress(line_track_2) is True
-    dummy._op_encode_multi_state["ffmpeg-video-2"]["started_at"] = 0.0
+    dummy._op_encode_progress.states["ffmpeg-video-2"]["started_at"] = 0.0
     with patch("ui.main_window.time.monotonic", return_value=600.0):
         dummy._reevaluate_multi_encode_progress()
 
-    assert dummy._op_encode_multi_active_label == "ffmpeg-video-2"
+    assert dummy._op_encode_progress.active_label == "ffmpeg-video-2"
     assert dummy._prog_bar.value == 10
     assert "Piste vidéo 2/2" in dummy._prog_lbl.text
     assert "10%" in dummy._prog_lbl.text
@@ -150,7 +150,7 @@ def test_handle_encode_internal_progress_updates_longest_remaining_bar_and_legen
     with patch("ui.main_window.time.monotonic", return_value=601.0):
         assert dummy._handle_encode_internal_progress(done_track_2) is True
 
-    assert dummy._op_encode_multi_active_label == "ffmpeg-video-1"
+    assert dummy._op_encode_progress.active_label == "ffmpeg-video-1"
     assert dummy._prog_bar.value == 50
     assert "Piste vidéo 1/2" in dummy._prog_lbl.text
 
@@ -435,8 +435,7 @@ def _debug_routing_dummy(tmp_path) -> SimpleNamespace:
     dummy._op_mode = "encode"
     dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="nvencc_hevc"))
     dummy._op_stage_label = ""
-    dummy._op_encode_fps = None
-    dummy._op_encode_frame = None
+    dummy._op_encode_progress = EncodeProgressTracker()
     dummy._NOISE_RE = MainWindow._NOISE_RE
     dummy._capture_verbose_progress_line = MagicMock()
     dummy._handle_encode_internal_progress = MagicMock(return_value=False)
@@ -467,8 +466,6 @@ def test_truncated_edit_config_block_released_by_next_command(tmp_path) -> None:
     """Bloc EditConfig interrompu : la commande suivante rétablit le journal."""
     dummy = _debug_routing_dummy(tmp_path)
     dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: None)
-    dummy._eta_tracker_video = MagicMock()
-    dummy._eta_tracker_frame = MagicMock()
     for line in ("EditConfig {", '"mode": 0,', '"active_area": {'):
         dummy._on_op_progress(line)
     dummy._on_op_progress("$ ffmpeg -i in.mkv out.mkv")

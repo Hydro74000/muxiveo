@@ -183,7 +183,7 @@ def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: E
 
 
 @operation("profile.apply", request=ProfileApplyRequest, result=MediaRunResult,
-           summary="Appliquer un profil à des sources et remuxer (ou encoder).", long_running=True, mutating=True,
+           summary="Appliquer un profil à des sources et remuxer (ou encoder).", long_running=True, progress=True, mutating=True,
            uses_gpu=True,
            errors=(ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY, ErrorCode.TOOL_MISSING,
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
@@ -199,11 +199,10 @@ def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaR
         message = run_encode(resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
                              cancel=ctx.cancel, force=request.force,
                              accept_dovi_nvenc_crop=bool((request.encode or {}).get("accept_dovi_nvenc_crop")),
-                             on_progress=lambda event: ctx.events.progress(pct=event.percent, stage=event.stage_label,
-                                                                           fps=event.fps, eta_s=event.eta_seconds))
+                             progress=ctx.events.progress)
         ctx.events.artifact("output", str(resolved.config.output))
         return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
     message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
-                        cancel=ctx.cancel, force=request.force)
+                        cancel=ctx.cancel, force=request.force, progress=ctx.events.progress)
     ctx.events.artifact("output", str(remux_config.output))
     return MediaRunResult(status="completed", output=str(remux_config.output), message=message)

@@ -332,7 +332,7 @@ def test_media_run_reports_output_artifact(monkeypatch, tmp_path):
     monkeypatch.setattr(media, "build_remux_config", lambda job, config, options, logger, **_k: SimpleNamespace(output=output))
     seen: dict[str, Any] = {}
 
-    def run(remux_config, *, config, options, logger, cancel, force):
+    def run(remux_config, *, config, options, logger, cancel, force, progress=None):
         seen.update(force=force, cancel=cancel)
         logger.emit("info", "STEP 1")
         return "fini"

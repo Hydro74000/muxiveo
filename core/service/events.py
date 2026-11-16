@@ -134,8 +134,9 @@ class Emitter:
         self.emit(EventType.WARNING, **payload)
 
     def progress(self, *, pct: float | None = None, stage: str | None = None, **fields: Any) -> None:
-        payload = {key: value for key, value in (("pct", pct), ("stage", stage)) if value is not None}
-        self.emit(EventType.PROGRESS, **payload, **fields)
+        """Progression ; champs inconnus (``None``) omis."""
+        payload = {key: value for key, value in (("pct", pct), ("stage", stage), *fields.items()) if value is not None}
+        self.emit(EventType.PROGRESS, **payload)
 
     def artifact(self, kind: str, path: str, **fields: Any) -> None:
         self.emit(EventType.ARTIFACT, kind=kind, path=path, **fields)

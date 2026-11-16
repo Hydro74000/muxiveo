@@ -452,7 +452,7 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
     result=HdrPatchResult,
     summary="Corriger les métadonnées HDR sans réencodage : MaxCLL/MaxFALL, MDCV, RPU (L6, L5, L11, écran, CM v4.0), "
             "HDR10+ (retrait, TSDML, profil A, plafond, recalcul), réalignement d'après la mesure.",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     uses_gpu=True,
     errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.OUTPUT_EXISTS,

@@ -44,6 +44,7 @@ from core.workflows.encode import (
     FrameInterpolationSettings, ProfileManager, QualityMode, RestoreSettings, VideoCropSettings, VideoEncodeSettings,
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
+from core.workflows.encode.progress_tracking import progress_target
 from core.workflows.encode.interpolation import (
     INTERPOLATION_DEFAULT_QUALITY,
     INTERPOLATION_FACTORS,
@@ -4342,26 +4343,10 @@ class EncodePanel(QWidget):
             if current_info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
                 current_info = self._file_info
 
-            duration_s: float | None = None
-            total_frames: int | None = None
-            if current_info is not None:
-                resolved_track = self._video_track_for_entry(current_info, current_track)
-                duration_s = (
-                    getattr(resolved_track, "duration_s", None)
-                    or getattr(current_info, "duration_s", None)
-                    or config.duration_s
-                )
-                frames_obj = getattr(current_info, "frame_count", None)
-                if isinstance(frames_obj, int) and frames_obj > 0:
-                    total_frames = frames_obj
-            else:
-                duration_s = config.duration_s
-
-            targets[index] = {
-                "duration_s": duration_s if isinstance(duration_s, (int, float)) and duration_s > 0 else None,
-                "total_frames": total_frames,
-                "source_name": source_path.name,
-            }
+            resolved_track = (
+                self._video_track_for_entry(current_info, current_track) if current_info is not None else None
+            )
+            targets[index] = progress_target(current_info, resolved_track, config.duration_s, source_path.name)
         return targets
 
     def set_operation_running(self, running: bool) -> None:

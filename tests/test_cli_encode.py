@@ -17,6 +17,7 @@ from core.jobs.batch import BatchSteps, PlannedBatchJob, execute_job
 from core.jobs.errors import JobError
 from core.jobs.options import CommonOptions
 from core.runner import TaskSignals
+from core.workflows.encode.backends.models import ProgressEvent
 from core.service import ApiError, CancelToken, ErrorCode, ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.workflows.encode.models import EncodeConfig, VideoCropSettings, VideoEncodeSettings
@@ -49,7 +50,7 @@ class _FakeWorkflow(QObject):
         return self.errors
 
     def parse_progress(self, _config, line):
-        return SimpleNamespace(percent=50.0, stage_label=None, fps=24.0, frame=12, eta_seconds=1.0) \
+        return ProgressEvent(raw_line=line, percent=50.0, fps=24.0, frame=12, eta_seconds=1.0, should_log=False) \
             if line.startswith("frame=") else None
 
     def run(self, config, validate=True, retain_failed_work_dir=False):
@@ -75,7 +76,7 @@ def _run(tmp_path, wf, **kwargs):
     try:
         result = encode_runtime.run_encode(_config(tmp_path), config=config, options=CommonOptions(**kwargs.pop(
             "options", {})), logger=logger, cancel=kwargs.pop("cancel", CancelToken()), workflow_factory=lambda: wf,
-            on_progress=events.append, **kwargs)
+            progress=lambda **fields: events.append(fields), **kwargs)
     except (ApiError, JobError) as error:
         result = error
     return result, logger, events
@@ -83,7 +84,7 @@ def _run(tmp_path, wf, **kwargs):
 
 def test_run_encode_returns_summary_and_forwards_progress(qapp, tmp_path):
     result, logger, events = _run(tmp_path, _FakeWorkflow())
-    assert result == "encoded 25 frames" and events and events[0].percent == 50.0
+    assert result == "encoded 25 frames" and events and events[0]["pct"] == 50
     assert not any("ffmpeg …" in message for _l, message, _f in logger.records), "sortie brute hors verbose"
     _result, logger, _events = _run(tmp_path, _FakeWorkflow(), options={"verbose": True})
     assert any(message.startswith("ffmpeg …") for _l, message, _f in logger.records)
@@ -95,7 +96,8 @@ def test_run_encode_refusals(qapp, tmp_path):
     assert isinstance(result, JobError) and result.exit_code == 5
     (tmp_path / "out.mkv").unlink()
     result, _l, _e = _run(tmp_path, _FakeWorkflow(errors=["preset inconnu"]))
-    assert isinstance(result, JobError) and result.exit_code == 3 and "preset inconnu" in result.message
+    assert isinstance(result, ApiError) and result.code is ErrorCode.VALIDATION and "preset inconnu" in result.message
+    assert [detail.message for detail in result.details] == ["preset inconnu"]
 
 
 def test_run_encode_failure_and_cancel_are_logged_once(qapp, tmp_path):

@@ -7,6 +7,7 @@ interactive : le recadrage imposé par Dolby Vision + NVENC n'est appliqué que 
 from __future__ import annotations
 
 import threading
+import time
 
 import dataclasses
 from contextlib import contextmanager
@@ -21,6 +22,12 @@ from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
+from core.workflows.encode.progress_tracking import (
+    EncodeProgressTracker,
+    ProgressSnapshot,
+    parse_encode_internal_progress,
+    progress_targets,
+)
 from core.workflows.encode.workflow import EncodeWorkflow
 
 #: Encodeurs Dolby Vision sans débordement du canevas UHD (alternatives proposées).
@@ -171,10 +178,13 @@ def run_encode(
     force: bool = False,
     accept_dovi_nvenc_crop: bool = False,
     workflow_factory: Callable[[], EncodeWorkflow] | None = None,
-    on_progress: Callable[[Any], None] | None = None,
+    progress: Callable[..., None] | None = None,
+    cache: Any = None,
 ) -> str:
     """Encode jusqu'au nettoyage complet ; renvoie le message de fin.
 
+    ``progress(**champs)`` : progression chiffrée (``pct``, ``fps``, ``frame``, ``eta_s``, ``track``…), calculée comme
+    la GUI (:class:`EncodeProgressTracker`) ; ``cache`` : ``PreparationCache`` des inspections déjà faites (cibles).
     Échec ou annulation : message publié au journal, puis :class:`ApiError` marquée ``logged``.
     """
     if encode_config.output.exists() and not force:
@@ -183,12 +193,12 @@ def run_encode(
     relay(wf.log_message, lambda level, message: logger.emit(level, message))
     with probe_cancel_scope(wf, cancel.event):  # sondes internes annulables jusqu'au nettoyage
         return _run_checked_encode(wf, encode_config, options=options, config=config, logger=logger, cancel=cancel,
-                                   accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, on_progress=on_progress)
+                                   accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, progress=progress, cache=cache)
 
 
 def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, options: CommonOptions, config: Any,
                         logger: JobLogger, cancel: CancelToken, accept_dovi_nvenc_crop: bool,
-                        on_progress: Callable[[Any], None] | None) -> str:
+                        progress: Callable[..., None] | None, cache: Any) -> str:
     prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel.event)
     encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
                                      cancel_event=cancel.event)
@@ -197,19 +207,33 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
         raise ApiError(ErrorCode.VALIDATION, "Encodage refusé :\n" + "\n".join(f"- {error}" for error in errors),
                        details=[ErrorDetail("", error) for error in errors])
 
-    def progress(line: str) -> None:
-        event = wf.parse_progress(encode_config, line)
+    tracker = _progress_tracker(encode_config, config=config, options=options, cancel=cancel,
+                                cache=cache) if progress is not None else None
+    lock = threading.Lock()  # lignes de préparations concurrentes : lecture → calcul → publication, dans l'ordre
+    last: dict[str, Any] = {}
+
+    def on_line(line: str) -> None:
         if options.verbose:
             logger.emit("info", line)
-        if event is not None and on_progress is not None:
-            on_progress(event)
+        if tracker is None or progress is None:
+            return
+        with lock:
+            snapshot = track_progress_line(tracker, line, time.monotonic(),
+                                           parse=lambda text: wf.parse_progress(encode_config, text))
+            fields = progress_fields(snapshot) if snapshot is not None else {}
+            # Comme la barre de la GUI : rien à publier sans pourcentage, vitesse ni ETA, ni sans changement
+            # (FFmpeg écrit une clé par ligne : ``out_time``, ``out_time_ms``, ``bitrate``…).
+            if fields.keys() & {"pct", "fps", "eta_s"} and fields != last:
+                last.clear()
+                last.update(fields)
+                progress(**fields)
 
     keep = bool(getattr(options, "keep_failed_work_dir", False))
     retained: list[Any] = []
     if keep:
         relay(wf.failed_work_dir_retained, retained.append)
     signals = wf.run(encode_config, validate=False, retain_failed_work_dir=keep)
-    outcome = await_task(signals, cancel, on_progress=progress)
+    outcome = await_task(signals, cancel, on_progress=on_line)
     for item in retained:  # échec avec fichiers produits : dossier gardé, proposé au prochain « Nettoyer »
         item.keep()
         logger.emit("info", f"Fichiers temporaires conservés : {item.path} (proposés au nettoyage au prochain "
@@ -240,3 +264,70 @@ def preview_encode(encode_config: EncodeConfig, wf: EncodeWorkflow,
     """
     with probe_cancel_scope(wf, cancel_event):
         return wf.preview_command(encode_config)
+
+
+def track_progress_line(tracker: EncodeProgressTracker, line: str, now: float,
+                        parse: Callable[[str], Any]) -> ProgressSnapshot | None:
+    """Ligne de sortie de l'encodage → instantané de progression (``None`` : rien de nouveau), règles de la GUI.
+
+    ``parse`` : normalisation du backend (``EncodeWorkflow.parse_progress``) ; lignes internes multi-pistes et
+    lignes brutes FFmpeg lues par le suivi.
+    """
+    internal = parse_encode_internal_progress(line)
+    if internal is not None:
+        label = str(internal.get("label") or "").strip()
+        if str(internal.get("kind") or "") != "encode_ffmpeg" or not label.startswith("ffmpeg-video-"):
+            return None
+        raw_line = str(internal.get("line") or "")
+        tracker.state(label, now)
+        if str(internal.get("event") or "").strip().lower() == "done":
+            tracker.internal_done(label, now)
+        elif raw_line.startswith("$ "):
+            return None
+        else:
+            tracker.internal_line(label, raw_line, now)
+        return tracker.multi_snapshot(now)
+    if line.startswith("$ "):
+        tracker.command_started()
+        return None
+    event = parse(line)
+    if event is not None:
+        return tracker.on_event(event, now)
+    return tracker.on_line(line, now).snapshot
+
+
+def progress_fields(snapshot: ProgressSnapshot) -> dict[str, Any]:
+    """Champs d'un événement ``progress`` (inconnus omis ; vitesse nulle = inconnue, comme dans la GUI)."""
+    fields = {
+        "pct": snapshot.pct, "fps": snapshot.fps if snapshot.fps and snapshot.fps > 0 else None,
+        "frame": snapshot.frame, "eta_s": snapshot.eta_s,
+        "track": snapshot.track, "track_count": snapshot.track_count, "pass_index": snapshot.pass_index,
+        "pass_count": snapshot.pass_count if snapshot.pass_index is not None else None,
+    }
+    return {key: value for key, value in fields.items() if value is not None}
+
+
+def _progress_tracker(encode_config: EncodeConfig, *, config: Any, options: CommonOptions, cancel: CancelToken,
+                      cache: Any) -> EncodeProgressTracker:
+    """Suivi avec les cibles de chaque piste vidéo (durée, nombre d'images) lues dans les inspections."""
+    from core.inspector import FileInspector
+    from core.workflows.preparation_cache import PreparationCache
+
+    inspector = FileInspector(ffprobe_bin=str(options.ffprobe or getattr(config, "tool_ffprobe", None) or "ffprobe"),
+                              mediainfo_bin=str(options.mediainfo or getattr(config, "tool_mediainfo", None)
+                                                or "mediainfo"),
+                              cancel_event=cancel.event)
+    store = cache if cache is not None else PreparationCache()
+
+    def info_for(path: Any) -> Any:
+        try:
+            return store.inspect(inspector, path)
+        except Exception:  # progression facultative : une inspection impossible ne bloque pas l'encodage
+            return None
+
+    targets = progress_targets(encode_config, info_for)
+    first = targets.get(1, {})
+    duration = first.get("duration_s")
+    frames = first.get("total_frames")
+    return EncodeProgressTracker(duration_s=duration if isinstance(duration, (int, float)) else None,
+                                 total_frames=frames if isinstance(frames, int) else None, targets=targets)

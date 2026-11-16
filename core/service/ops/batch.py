@@ -234,7 +234,7 @@ class _Children:
     def run(self, config: Any, options: Any, logger: Any, remux_config: Any, *, force: bool) -> int:
         def step() -> int:
             run_remux(remux_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
-                      force=force)
+                      force=force, progress=logger.events.progress)
             logger.events.artifact("output", str(remux_config.output))
             self._final(logger, JobState.SUCCEEDED)
             return EXIT_OK
@@ -268,8 +268,7 @@ class _Children:
         def step() -> int:
             run_encode(encode_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
                        force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
-                       on_progress=lambda event: logger.events.progress(pct=event.percent, stage=event.stage_label,
-                                                                        fps=event.fps, eta_s=event.eta_seconds))
+                       progress=logger.events.progress)
             logger.events.artifact("output", str(encode_config.output))
             self._final(logger, JobState.SUCCEEDED)
             return EXIT_OK
@@ -301,7 +300,7 @@ _BATCH_ERRORS = (ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.TOOL_M
     request=BatchRequest,
     result=BatchResult,
     summary="Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance.",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     uses_gpu=True,
     errors=_BATCH_ERRORS,
@@ -347,7 +346,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
     request=ProfileBatchRequest,
     result=BatchResult,
     summary="Appliquer un profil décisionnel à un lot de fichiers ; collisions refusées d'avance.",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     uses_gpu=True,
     errors=_BATCH_ERRORS,

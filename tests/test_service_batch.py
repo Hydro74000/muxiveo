@@ -42,7 +42,7 @@ def doubles(monkeypatch):
     def build(job, _config, _options, _logger, **_kwargs):  # context : préparation annulable
         return SimpleNamespace(output=Path(str(job["output"])).absolute(), allow_missing_output_dir=False)
 
-    def run_remux(remux_config, *, config, options, logger, cancel, force):
+    def run_remux(remux_config, *, config, options, logger, cancel, force, progress=None):
         name = remux_config.output.name
         ran.append(name)
         behaviour = plan.get(name, "ok")

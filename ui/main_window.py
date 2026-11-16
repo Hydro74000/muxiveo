@@ -101,11 +101,15 @@ from ui.confirm import confirm_close_while_running, confirm_overwrite
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
-    _FPS_RE,
     _FRAME_RE,
     EtaTracker,
     _fmt_eta,
     ffmpeg_progress_seconds,
+)
+from core.workflows.encode.progress_tracking import (
+    EncodeProgressTracker,
+    ProgressSnapshot,
+    parse_encode_internal_progress as _parse_encode_internal_progress,
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
@@ -263,8 +267,6 @@ def _is_ffmpeg_info_noise(line: str) -> bool:
 # Hauteur réservée au cadre/titre de fenêtre dans la zone utile de l'écran.
 _WINDOW_FRAME_MARGIN_PX = 40
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
-_ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
-_MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -273,26 +275,6 @@ def _is_encode_stage_message(line: str) -> bool:
 
 def _is_encode_progress_noise(line: str) -> bool:
     return any(line.startswith(prefix) for prefix in _ENCODE_PROGRESS_NOISE_PREFIXES)
-
-
-def _fmt_progress_percent(percent: float | int) -> str:
-    value = float(percent)
-    if abs(value - round(value)) < 0.05:
-        return f"{int(round(value))}%"
-    return f"{value:.1f}%"
-
-
-def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
-    if not line.startswith(_ENCODE_INTERNAL_PROGRESS_PREFIX):
-        return None
-    payload = line[len(_ENCODE_INTERNAL_PROGRESS_PREFIX):].strip()
-    if not payload:
-        return None
-    try:
-        obj = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
 
 
 def _parse_sync_rewrite_stage_progress(line: str) -> tuple[str, str] | None:
@@ -318,30 +300,6 @@ def _sync_rewrite_stage_label(track_type: str, name: str) -> str:
     if track_type == "audio":
         return translate_text("Synchro piste audio {name}", name=name)
     return translate_text("Synchro sous-titre {name}", name=name)
-
-
-def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
-    match = _MULTI_ENCODE_LABEL_RE.match(str(label).strip())
-    if match is None:
-        return None
-    order = int(match.group(1))
-    pass_index_raw = match.group(2)
-    if pass_index_raw is None:
-        return order, None, 1
-    pass_index = int(pass_index_raw)
-    return order, pass_index, 2
-
-
-def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> float:
-    value = state.get(key, default)
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return default
-    return default
 
 
 def _config_file_logging_enabled(config: object) -> bool:
@@ -390,75 +348,6 @@ def _ensure_verbose_file_logger(window: object) -> VerboseFileLogger:
     setattr(window, "_verbose_file_logger", logger)
     return logger
 
-
-def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
-    """
-    ETA d'un encode multi-stream basé sur la vitesse lissée (EWMA), pas sur
-    la moyenne depuis le début. Évite l'ETA gonflé pendant l'init de ffmpeg.
-    """
-    tracker = state.get("eta_tracker")
-    if not isinstance(tracker, EtaTracker):
-        tracker = EtaTracker(warmup_progress=1.0)
-        state["eta_tracker"] = tracker
-
-    duration_s = state.get("duration_s")
-    elapsed_video = state.get("elapsed_video")
-    if (
-        isinstance(duration_s, (int, float))
-        and duration_s > 0
-        and isinstance(elapsed_video, (int, float))
-        and elapsed_video >= 0
-    ):
-        tracker.update(float(elapsed_video), now)
-        return tracker.eta(float(duration_s), float(elapsed_video))
-
-    total_frames = state.get("total_frames")
-    frame = state.get("frame")
-    fps_value = state.get("fps")
-    if (
-        isinstance(total_frames, int)
-        and total_frames > 0
-        and isinstance(frame, int)
-        and frame > 0
-        and total_frames > frame
-    ):
-        # Si ffmpeg a déjà fourni un fps, on l'utilise tel quel — c'est le
-        # même chiffre que l'utilisateur voit dans le label, donc cohérent.
-        if isinstance(fps_value, (int, float)) and fps_value > 0:
-            return tracker.eta_from_speed(float(total_frames), float(frame), float(fps_value))
-        tracker.update(float(frame), now)
-        return tracker.eta(float(total_frames), float(frame))
-    return None
-
-
-def _select_multi_encode_label(
-    states: dict[str, dict[str, object]],
-    active_label: str | None,
-    now: float,
-) -> str | None:
-    candidates = [
-        (label, state)
-        for label, state in states.items()
-        if not bool(state.get("done", False))
-    ]
-    if not candidates:
-        return None
-
-    scored: list[tuple[int, float, float, int, str]] = []
-    for label, state in candidates:
-        remaining_s = _multi_encode_remaining_seconds(state, now)
-        known_remaining = 1 if remaining_s is not None else 0
-        scored.append(
-            (
-                known_remaining,
-                float(remaining_s if remaining_s is not None else -1.0),
-                _state_float(state, "last_update", 0.0),
-                1 if label == active_label else 0,
-                label,
-            )
-        )
-    scored.sort(reverse=True)
-    return scored[0][4]
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -1581,19 +1470,14 @@ class MainWindow(QMainWindow):
         # Encodage en échec : dossier de travail gardé jusqu'au choix de l'utilisateur (popup).
         self._failed_work_dir: RetainedProcessWorkDir | None = None
         self._op_extract_duration_s: float | None = None
-        self._op_encode_fps: float | None = None
-        self._op_encode_frame: int | None = None
-        # Trackers ETA lissés (EWMA) pour les barres single-stream (remux et
-        # encode). Le multi-encode utilise un tracker par label dans le state.
+        # Tracker ETA lissé (EWMA) des barres remux / extraction. L'encodage utilise le suivi du cœur
+        # (``EncodeProgressTracker`` : une commande, ou une progression par piste / passe), partagé avec l'API.
         self._eta_tracker_video = EtaTracker(warmup_progress=1.0)
-        self._eta_tracker_frame = EtaTracker(warmup_progress=24.0)
+        self._op_encode_progress = EncodeProgressTracker()
         # Légende de l'étape en cours (« Encodage vidéo… », « Injection RPU
         # Dolby Vision… »…). Mise à jour quand un message d'étape arrive et
         # préfixée aux métriques ffmpeg sur la barre de progression.
         self._op_stage_label: str = ""
-        self._op_encode_multi_targets: dict[int, dict[str, object]] = {}
-        self._op_encode_multi_state: dict[str, dict[str, object]] = {}
-        self._op_encode_multi_active_label: str | None = None
         self._op_encode_multi_reselect_timer = QTimer(self)
         self._op_encode_multi_reselect_timer.setInterval(60_000)
         self._op_encode_multi_reselect_timer.timeout.connect(self._reevaluate_multi_encode_progress)
@@ -2455,10 +2339,7 @@ class MainWindow(QMainWindow):
         self._signals = task_signals
         self._ffmpeg_version_logged = False
         self._op_encode_config = None
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = label
         self._reset_multi_encode_progress_tracking()
 
@@ -2494,10 +2375,7 @@ class MainWindow(QMainWindow):
         self._signals = None
         self._ffmpeg_version_logged = False
         self._op_encode_config = None
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = label
         self._reset_multi_encode_progress_tracking()
 
@@ -2594,14 +2472,15 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(True)
         self._cancel_btn.setEnabled(True)
         self._expand_log_panel()
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = ""
         self._reset_multi_encode_progress_tracking()
         if self._op_mode == "encode" and self._op_encode_config is not None:
-            self._op_encode_multi_targets = self._encode_panel.get_video_progress_targets(self._op_encode_config)
+            self._op_encode_progress = EncodeProgressTracker(
+                duration_s=self._encode_panel.get_duration_s(),
+                total_frames=self._encode_panel.get_total_frames(),
+                targets=self._encode_panel.get_video_progress_targets(self._op_encode_config),
+            )
         self._prep_progress_active = False
         if self._prep_progress_timer.isActive():
             self._prep_progress_timer.stop()
@@ -2635,130 +2514,42 @@ class MainWindow(QMainWindow):
     def _reset_multi_encode_progress_tracking(self) -> None:
         if self._op_encode_multi_reselect_timer.isActive():
             self._op_encode_multi_reselect_timer.stop()
-        self._op_encode_multi_targets = {}
-        self._op_encode_multi_state = {}
-        self._op_encode_multi_active_label = None
+        self._op_encode_progress = EncodeProgressTracker()
 
-    def _ensure_multi_encode_state(self, label: str) -> dict[str, object]:
-        state = self._op_encode_multi_state.get(label)
-        if state is not None:
-            return state
-
-        parsed = _parse_multi_encode_label(label)
-        order = 0
-        pass_index: int | None = None
-        pass_count = 1
-        if parsed is not None:
-            order, pass_index, pass_count = parsed
-        target = self._op_encode_multi_targets.get(order, {})
-        state = {
-            "label": label,
-            "order": order,
-            "pass_index": pass_index,
-            "pass_count": pass_count,
-            "duration_s": target.get("duration_s"),
-            "total_frames": target.get("total_frames"),
-            "source_name": target.get("source_name"),
-            "started_at": time.monotonic(),
-            "last_update": 0.0,
-            "fps": None,
-            "frame": None,
-            "elapsed_video": None,
-            "done": False,
-        }
-        self._op_encode_multi_state[label] = state
-        return state
-
-    def _multi_encode_progress_parts(
-        self,
-        state: dict[str, object],
-        *,
-        now: float,
-    ) -> tuple[list[str], int | None]:
-        order_raw = state.get("order")
-        if isinstance(order_raw, int):
-            order = order_raw
-        elif isinstance(order_raw, float):
-            order = int(order_raw)
-        elif isinstance(order_raw, str):
-            try:
-                order = int(order_raw.strip())
-            except ValueError:
-                order = 0
-        else:
-            order = 0
-        total_tracks = max(self._op_encode_multi_targets) if self._op_encode_multi_targets else 0
+    def _multi_encode_progress_parts(self, snapshot: ProgressSnapshot) -> list[str]:
+        """Libellé de la piste / passe affichée (encodage multi-pistes)."""
+        order = snapshot.track or 0
+        total_tracks = snapshot.track_count or 0
         track_label = (
             translate_text("Piste vidéo {current}/{total}", current=order, total=total_tracks)
             if order > 0 and total_tracks > 1
             else translate_text("Piste vidéo")
         )
         parts = [track_label]
-
-        pass_index = state.get("pass_index")
-        pass_count_raw = state.get("pass_count")
-        if isinstance(pass_count_raw, int):
-            pass_count = pass_count_raw
-        elif isinstance(pass_count_raw, float):
-            pass_count = int(pass_count_raw)
-        elif isinstance(pass_count_raw, str):
-            try:
-                pass_count = int(pass_count_raw.strip())
-            except ValueError:
-                pass_count = 1
-        else:
-            pass_count = 1
-        if isinstance(pass_index, int) and pass_count > 1:
+        if snapshot.pass_index is not None and (snapshot.pass_count or 1) > 1:
             parts.append(
-                translate_text("passe {current}/{total}", current=pass_index, total=pass_count)
+                translate_text("passe {current}/{total}", current=snapshot.pass_index, total=snapshot.pass_count)
             )
-
-        fps_value = state.get("fps")
-        pct: int | None = None
-        duration_s = state.get("duration_s")
-        elapsed_video = state.get("elapsed_video")
-        if isinstance(duration_s, (int, float)) and duration_s > 0 and isinstance(elapsed_video, (int, float)):
-            pct = min(99, int(float(elapsed_video) / float(duration_s) * 100))
-        else:
-            total_frames = state.get("total_frames")
-            frame = state.get("frame")
-            if isinstance(total_frames, int) and total_frames > 0 and isinstance(frame, int):
-                pct = min(99, int(frame / total_frames * 100))
-
-        if pct is not None:
-            parts.append(f"{pct}%")
-        if isinstance(fps_value, (int, float)) and fps_value > 0:
-            parts.append(f"{float(fps_value):.1f} fps")
-
-        remaining_s = _multi_encode_remaining_seconds(state, now)
-        if remaining_s is not None:
-            parts.append(f"ETA {_fmt_eta(remaining_s)}")
-        return parts, pct
+        if snapshot.pct is not None:
+            parts.append(f"{snapshot.pct}%")
+        if snapshot.fps is not None and snapshot.fps > 0:
+            parts.append(f"{float(snapshot.fps):.1f} fps")
+        if snapshot.eta_s is not None:
+            parts.append(f"ETA {_fmt_eta(snapshot.eta_s)}")
+        return parts
 
     def _reevaluate_multi_encode_progress(self) -> None:
-        if not self._running or self._op_mode != "encode" or not self._op_encode_multi_state:
+        tracker = self._op_encode_progress
+        if not self._running or self._op_mode != "encode" or not tracker.states:
             return
-        now = time.monotonic()
-        active_label = _select_multi_encode_label(
-            self._op_encode_multi_state,
-            self._op_encode_multi_active_label,
-            now,
-        )
-        if active_label is None:
-            self._op_encode_multi_active_label = None
+        snapshot = tracker.multi_snapshot(time.monotonic())
+        if snapshot is None:
             return
-
-        self._op_encode_multi_active_label = active_label
-        state = self._op_encode_multi_state.get(active_label)
-        if state is None:
-            return
-
-        parts, pct = self._multi_encode_progress_parts(state, now=now)
-        if pct is not None:
+        if snapshot.pct is not None:
             self._stop_prep_progress()
-            self._prog_bar.setValue(pct)
-        self._prog_lbl.setText(self._format_progress_label(*parts))
-        if len(self._op_encode_multi_state) > 1 and not self._op_encode_multi_reselect_timer.isActive():
+            self._prog_bar.setValue(snapshot.pct)
+        self._prog_lbl.setText(self._format_progress_label(*self._multi_encode_progress_parts(snapshot)))
+        if len(tracker.states) > 1 and not self._op_encode_multi_reselect_timer.isActive():
             self._op_encode_multi_reselect_timer.start()
 
     def _handle_encode_internal_progress(self, line: str) -> bool:
@@ -2774,11 +2565,12 @@ class MainWindow(QMainWindow):
 
         event = str(payload.get("event") or "").strip().lower()
         raw_line = str(payload.get("line") or "")
-        state = self._ensure_multi_encode_state(label)
+        tracker = self._op_encode_progress
+        now = time.monotonic()
+        tracker.state(label, now)
 
         if event == "done":
-            state["done"] = True
-            state["last_update"] = time.monotonic()
+            tracker.internal_done(label, now)
             self._reevaluate_multi_encode_progress()
             return True
 
@@ -2786,22 +2578,7 @@ class MainWindow(QMainWindow):
             self.log_requested.emit("INFO", f"[MEDIA] {raw_line}")
             return True
 
-        fps_m = _FPS_RE.search(raw_line)
-        if fps_m:
-            try:
-                state["fps"] = float(fps_m.group(1))
-            except ValueError:
-                state["fps"] = None
-        frame_m = _FRAME_RE.search(raw_line)
-        if frame_m:
-            try:
-                state["frame"] = int(frame_m.group(1))
-            except ValueError:
-                state["frame"] = None
-        elapsed_video = ffmpeg_progress_seconds(raw_line)
-        if elapsed_video is not None:
-            state["elapsed_video"] = elapsed_video
-        state["last_update"] = time.monotonic()
+        tracker.internal_line(label, raw_line, now)
         self._reevaluate_multi_encode_progress()
 
         if _is_encode_progress_noise(raw_line):
@@ -2926,13 +2703,11 @@ class MainWindow(QMainWindow):
                 return
             if self._NOISE_RE.search(line):
                 return
+            tracker = self._op_encode_progress
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._tool_json_depth = 0  # bloc EditConfig éventuellement tronqué
-                self._op_encode_fps = None
-                self._op_encode_frame = None
-                self._eta_tracker_video.reset()
-                self._eta_tracker_frame.reset()
+                tracker.command_started()
                 self.log_requested.emit("INFO", f"[MEDIA] {line}")
                 return
             rife_progress_line = parse_rife_progress(line) is not None
@@ -2946,139 +2721,32 @@ class MainWindow(QMainWindow):
                 else None
             )
             if progress_event is not None:
-                if progress_event.fps is not None:
-                    self._op_encode_fps = progress_event.fps
-                if progress_event.frame is not None:
-                    self._op_encode_frame = progress_event.frame
-
-                pct_value: int | None = None
-                pct_label = ""
-                if progress_event.percent is not None:
-                    pct_value = max(0, min(99, int(progress_event.percent)))
-                    pct_label = _fmt_progress_percent(progress_event.percent)
-                elif progress_event.elapsed_seconds is not None:
-                    dur = self._encode_panel.get_duration_s()
-                    if dur and dur > 0:
-                        pct_value = min(99, int(progress_event.elapsed_seconds / dur * 100))
-                        pct_label = f"{pct_value}%"
-                elif progress_event.frame is not None:
-                    total_frames = self._encode_panel.get_total_frames()
-                    if total_frames and total_frames > 0:
-                        pct_value = min(99, int(progress_event.frame / total_frames * 100))
-                        pct_label = f"{pct_value}%"
-
-                if pct_value is not None:
+                snapshot = tracker.on_event(progress_event, time.monotonic())
+                if snapshot.pct is not None:
                     self._stop_prep_progress()
-                    self._prog_bar.setValue(pct_value)
-
-                fps_str = (
-                    f"{progress_event.fps:.1f} fps"
-                    if progress_event.fps is not None and progress_event.fps > 0
-                    else ""
-                )
-                eta_s = progress_event.eta_seconds
-                if (
-                    eta_s is None
-                    and progress_event.elapsed_seconds is not None
-                ):
-                    dur = self._encode_panel.get_duration_s()
-                    if dur and dur > 0:
-                        self._eta_tracker_video.update(progress_event.elapsed_seconds, time.monotonic())
-                        eta_s = self._eta_tracker_video.eta(dur, progress_event.elapsed_seconds)
-                if (
-                    eta_s is None
-                    and progress_event.frame is not None
-                ):
-                    total_frames = self._encode_panel.get_total_frames()
-                    if total_frames and total_frames > 0:
-                        if progress_event.fps is not None and progress_event.fps > 0 and total_frames > progress_event.frame:
-                            eta_s = self._eta_tracker_frame.eta_from_speed(
-                                float(total_frames),
-                                float(progress_event.frame),
-                                float(progress_event.fps),
-                            )
-                        else:
-                            self._eta_tracker_frame.update(float(progress_event.frame), time.monotonic())
-                            eta_s = self._eta_tracker_frame.eta(float(total_frames), float(progress_event.frame))
-                eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
-                if pct_label or fps_str or eta_str:
-                    self._prog_lbl.setText(self._format_progress_label(pct_label, fps_str, eta_str))
+                    self._prog_bar.setValue(snapshot.pct)
+                fps_str = f"{snapshot.fps:.1f} fps" if snapshot.fps is not None and snapshot.fps > 0 else ""
+                eta_str = f"ETA {_fmt_eta(snapshot.eta_s)}" if snapshot.eta_s is not None else ""
+                if snapshot.pct_label or fps_str or eta_str:
+                    self._prog_lbl.setText(self._format_progress_label(snapshot.pct_label, fps_str, eta_str))
                 if progress_event.should_log:
                     self.log_requested.emit("INFO", f"[MEDIA] {progress_event.raw_line}")
                 return
-            fps_m = _FPS_RE.search(line)
-            if fps_m:
-                try:
-                    self._op_encode_fps = float(fps_m.group(1))
-                except ValueError:
-                    self._op_encode_fps = None
-            frame_m = _FRAME_RE.search(line)
-            if frame_m:
-                try:
-                    self._op_encode_frame = int(frame_m.group(1))
-                except ValueError:
-                    self._op_encode_frame = None
-            elapsed_video = ffmpeg_progress_seconds(line)
-            if elapsed_video is not None:
-                self._stop_prep_progress()
-                dur = self._encode_panel.get_duration_s()
-                if dur and dur > 0:
-                    pct = min(99, int(elapsed_video / dur * 100))
-                    self._prog_bar.setValue(pct)
-                    fps_str = (
-                        f"{self._op_encode_fps:.1f} fps"
-                        if self._op_encode_fps is not None and self._op_encode_fps > 0
-                        else ""
-                    )
-                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
-                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
-                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
-                    parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText(self._format_progress_label(*parts))
-                return
-            if frame_m is not None and self._op_encode_frame is not None:
-                total_frames = self._encode_panel.get_total_frames()
-                if total_frames and total_frames > 0:
+            outcome = tracker.on_line(line, time.monotonic())
+            if outcome.handled:
+                if outcome.elapsed_seen or outcome.snapshot is not None:
                     self._stop_prep_progress()
-                    pct = min(99, int(self._op_encode_frame / total_frames * 100))
-                    self._prog_bar.setValue(pct)
-                    fps_str = (
-                        f"{self._op_encode_fps:.1f} fps"
-                        if self._op_encode_fps is not None and self._op_encode_fps > 0
-                        else ""
-                    )
-                    encode_eta_s: float | None = None
-                    # Si ffmpeg a rapporté un fps instantané, l'utiliser
-                    # directement : c'est déjà la moyenne glissante côté ffmpeg
-                    # et c'est ce que l'utilisateur voit comme "fps". L'ETA
-                    # affiché reste cohérent avec le débit affiché.
-                    if (
-                        self._op_encode_fps is not None
-                        and self._op_encode_fps > 0
-                        and total_frames > self._op_encode_frame
-                    ):
-                        encode_eta_s = self._eta_tracker_frame.eta_from_speed(
-                            float(total_frames),
-                            float(self._op_encode_frame),
-                            float(self._op_encode_fps),
-                        )
-                    else:
-                        # Fallback : EWMA sur la vitesse instantanée mesurée.
-                        self._eta_tracker_frame.update(
-                            float(self._op_encode_frame), time.monotonic()
-                        )
-                        encode_eta_s = self._eta_tracker_frame.eta(
-                            float(total_frames), float(self._op_encode_frame)
-                        )
-                    eta_str = f"ETA {_fmt_eta(encode_eta_s)}" if encode_eta_s is not None else ""
-                    parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText(self._format_progress_label(*parts))
+                if outcome.snapshot is not None:
+                    snapshot = outcome.snapshot
+                    self._prog_bar.setValue(snapshot.pct or 0)
+                    fps_str = f"{snapshot.fps:.1f} fps" if snapshot.fps is not None and snapshot.fps > 0 else ""
+                    eta_str = f"ETA {_fmt_eta(snapshot.eta_s)}" if snapshot.eta_s is not None else ""
+                    self._prog_lbl.setText(self._format_progress_label(snapshot.pct_label, fps_str, eta_str))
                 return
             if _is_encode_progress_noise(line):
                 return
             if _is_encode_stage_message(line):
-                self._op_encode_fps = None
-                self._op_encode_frame = None
+                tracker.stage_changed()
                 if _is_encode_indeterminate_stage(line):
                     self._start_prep_progress()
                 else:

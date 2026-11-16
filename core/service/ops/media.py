@@ -341,7 +341,7 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
     request=MediaRunRequest,
     result=MediaRunResult,
     summary="Exécuter un job de remux ou d'encodage (ou enregistrer son job exact).",
-    long_running=True,
+    long_running=True, progress=True,
     mutating=True,
     uses_gpu=True,
     errors=(*_JOB_ERRORS, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY),
@@ -368,13 +368,11 @@ def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult
             resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
             cancel=ctx.cancel, force=request.force,
             accept_dovi_nvenc_crop=bool(encode.get("accept_dovi_nvenc_crop")),
-            on_progress=lambda event: ctx.events.progress(
-                pct=event.percent, stage=event.stage_label, fps=event.fps, frame=event.frame,
-                eta_s=event.eta_seconds),
+            progress=ctx.events.progress, cache=cache,
         )
         ctx.events.artifact("output", str(resolved.config.output))
         return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
     message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
-                        cancel=ctx.cancel, force=request.force)
+                        cancel=ctx.cancel, force=request.force, progress=ctx.events.progress)
     ctx.events.artifact("output", str(remux_config.output))
     return MediaRunResult(status="completed", output=str(remux_config.output), message=message)

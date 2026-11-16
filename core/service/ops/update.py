@@ -45,7 +45,7 @@ class UpdateInstallResult(Model):
     message: str = ""
 
 
-@operation("app.update_install", request=UpdateInstallRequest, result=UpdateInstallResult, long_running=True,
+@operation("app.update_install", request=UpdateInstallRequest, result=UpdateInstallResult, long_running=True, progress=True,
            mutating=True, summary="Télécharger et installer la dernière version (sans relancer l'interface).",
            errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> UpdateInstallResult:
