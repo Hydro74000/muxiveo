@@ -381,15 +381,25 @@ def stage_percent(line: str) -> ProgressSnapshot | None:
 class TimelineProgress:
     """Progression d'une commande de remux : pourcentage du muxer natif, ou temps écrit / durée de la première entrée.
 
-    La durée vient de l'en-tête FFmpeg (``Duration:`` de l'entrée 0, la source principale comme dans la GUI) quand
-    elle n'est pas fournie : aucune inspection supplémentaire.
+    La durée vient de l'en-tête FFmpeg de chaque commande (``Duration:`` de son entrée 0) quand elle n'est pas
+    fournie : aucune inspection supplémentaire. Chaque commande (ligne ``$ …``, réécritures audio préalables puis
+    remux final) repart de zéro : sa durée et son ETA lui sont propres.
     """
 
     def __init__(self, duration_s: float | None = None) -> None:
+        self._fixed_duration = duration_s
         self.duration_s = duration_s
         self._eta = EtaTracker(warmup_progress=1.0)
 
+    def command_started(self) -> None:
+        """Nouvelle commande : durée relue dans son en-tête (sauf durée fournie), ETA remis à zéro."""
+        self.duration_s = self._fixed_duration
+        self._eta.reset()
+
     def on_line(self, line: str, now: float) -> ProgressSnapshot | None:
+        if line.startswith("$ "):
+            self.command_started()
+            return None
         snapshot = stage_percent(line)
         if snapshot is not None:
             return snapshot

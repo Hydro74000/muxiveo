@@ -185,11 +185,13 @@ def episode_options(spec: StudioSpec, config: Any, cancel: CancelToken) -> Simpl
 
 
 def prepare_episodes(spec: StudioSpec, episodes: Sequence[MatrixEpisode], config: Any,
-                     logger_for: Callable[[MatrixEpisode], Any], cancel: CancelToken) -> list[PreparedEpisode]:
-    """Plans de tous les épisodes, préparés en parallèle (cache de session partagé), puis méthodes de cadence
-    « auto » tranchées par l'analyse de hauteur. Erreurs rattachées à leur épisode."""
+                     logger_for: Callable[[MatrixEpisode], Any], cancel: CancelToken,
+                     cache: PreparationCache | None = None) -> list[PreparedEpisode]:
+    """Plans de tous les épisodes, préparés en parallèle (cache de session partagé, fourni par l'appelant pour être
+    repris par l'encodage), puis méthodes de cadence « auto » tranchées par l'analyse de hauteur. Erreurs rattachées
+    à leur épisode."""
     options = episode_options(spec, config, cancel)
-    cache = PreparationCache()
+    cache = cache if cache is not None else PreparationCache()
     recipe = spec.recipe
     if getattr(spec.common, "crossfade_ms", None) is not None:
         recipe = dataclasses.replace(recipe, crossfade_ms=int(spec.common.crossfade_ms or 0))

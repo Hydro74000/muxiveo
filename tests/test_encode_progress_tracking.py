@@ -409,3 +409,54 @@ def test_progress_targets_reuse_the_inspections_of_the_preparation(monkeypatch, 
     tracker = encode_runtime._progress_tracker(config, config=SimpleNamespace(), options=CommonOptions(),
                                                cancel=CancelToken(), cache=cache)
     assert (tracker.duration_s, tracker.total_frames) == (60.0, 1440)
+
+
+def test_each_remux_command_has_its_own_duration_and_eta():
+    from core.workflows.encode.progress_tracking import TimelineProgress
+
+    timeline = TimelineProgress()
+    lines = ["$ ffmpeg -i donneur.mka réécriture", "  Duration: 00:01:40.00, start: 0", "time=00:00:50.00",
+             "$ ffmpeg -i film.mkv remux", "  Duration: 00:03:20.00, start: 0"]
+    snapshots = [timeline.on_line(line, float(index)) for index, line in enumerate(lines)]
+    assert snapshots[2] is not None and snapshots[2].pct == 50  # préparation : sa propre durée
+    final = timeline.on_line("time=00:00:50.00", 9.0)
+    assert final is not None and final.pct == 25 and final.eta_s is None  # remux final : 200 s, ETA neuf
+
+
+def test_batch_children_share_one_inspection_cache_across_phases(monkeypatch):
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops import batch as batch_ops
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(batch_ops, "resolve_from_job", lambda *a, **k: seen.setdefault("resolve", k["cache"]) and None)
+    monkeypatch.setattr(batch_ops, "run_encode", lambda *a, **k: seen.setdefault("run", k["cache"]))
+    children = batch_ops._Children(ExecutionContext.create(SimpleNamespace(), ListSink()))
+    logger = children.logger(0)
+    children.encode({"encode": {}}, SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), logger)
+    children.run_encode(SimpleNamespace(), SimpleNamespace(), logger, SimpleNamespace(output="o.mkv"), force=False)
+    assert seen["resolve"] is seen["run"] is children.context().cache
+
+
+def test_hybrid_encoding_reuses_the_preparation_cache(monkeypatch):
+    from core.service import ExecutionContext, ListSink
+    from core.service.ops import hybrid as hybrid_ops
+
+    seen: dict[str, Any] = {}
+
+    def fake_prepare(request, ctx, cache=None):
+        seen["prepare"] = cache
+        return SimpleNamespace(output_template="", output_dir="/o"), []
+
+    class _Children:
+        def __init__(self, ctx, cache=None):
+            seen["children"] = cache
+
+    monkeypatch.setattr(hybrid_ops, "_prepare", fake_prepare)
+    monkeypatch.setattr(hybrid_ops, "_Children", _Children)
+    monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a, **k: None)
+    try:
+        hybrid_ops.hybrid_run.handler(SimpleNamespace(continue_on_error=False, report_json=None),
+                                      ExecutionContext.create(SimpleNamespace(), ListSink()))
+    except Exception:  # noqa: BLE001 - seul le raccordement du cache est vérifié ici
+        pass
+    assert seen["prepare"] is not None and seen["children"] is seen["prepare"]

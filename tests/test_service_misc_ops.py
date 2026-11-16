@@ -159,13 +159,13 @@ def test_hybrid_run_applies_hybrid_defaults(monkeypatch, tmp_path):
     seen: dict[str, Any] = {}
     episode = MatrixEpisode(season=1, episode=2, master_file=Path("/r.mkv"))
 
-    def prepare(spec, episodes, config, logger_for, cancel):
+    def prepare(spec, episodes, config, logger_for, cancel, cache=None):
         seen.update(spec=spec, cancel=cancel)
         return [PreparedEpisode(episode, SimpleNamespace(output=tmp_path / "o.mkv", allow_missing_output_dir=True))]
 
     class Children:
-        def __init__(self, ctx):
-            pass
+        def __init__(self, ctx, cache=None):
+            seen["cache"] = cache
 
         def logger(self, index):
             return SimpleNamespace(emit=lambda *a, **k: None)

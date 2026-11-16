@@ -193,10 +193,10 @@ def test_hybrid_plan_reports_partial_when_an_episode_fails(monkeypatch):
     items = [SimpleNamespace(error=None, describe=lambda: {"episode": "E01"}),
              SimpleNamespace(error=RuntimeError("x"), describe=lambda: {"episode": "E02", "error": "x"})]
     spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None)
-    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx, cache=None: (spec, items))
     request = hybrid_ops.HybridPlanRequest.from_dict({"output_dir": "/out"})
     assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "partial"
-    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items[1:]))
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx, cache=None: (spec, items[1:]))
     assert hybrid_ops.hybrid_plan.handler(request, _ctx()).status == "failed"
 
 
@@ -682,7 +682,7 @@ def test_hybrid_plan_cancelled_during_encode_validation_exports_nothing(monkeypa
     item = SimpleNamespace(error=None, remux_config=SimpleNamespace(output=tmp_path / "E01.mkv"),
                            episode=SimpleNamespace(display_name="E01"), describe=lambda: {"episode": "E01"})
     spec = SimpleNamespace(recipe=SimpleNamespace(to_dict=lambda: {}), output_template=None, common=None)
-    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, [item]))
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx, cache=None: (spec, [item]))
     encode_config = SimpleNamespace()
     monkeypatch.setattr("core.jobs.encode.resolve_from_job",
                         lambda *a, **k: ResolvedEncode(config=encode_config, video=()))  # type: ignore[arg-type]
@@ -1275,7 +1275,7 @@ def _hybrid_run(monkeypatch, tmp_path, ctx, count: int = 1, **request: Any):
                                                      donor_files=[]))
              for i in range(count)]
     spec = SimpleNamespace(common=None, output_template=None)
-    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx: (spec, items))
+    monkeypatch.setattr(hybrid_ops, "_prepare", lambda request, ctx, cache=None: (spec, items))
     monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a, **k: None)
     payload = {"output_dir": str(tmp_path), "encode": {"video": {}}, **request}
     return hybrid_ops.hybrid_run.handler(hybrid_ops.HybridRequest.from_dict(payload), ctx)

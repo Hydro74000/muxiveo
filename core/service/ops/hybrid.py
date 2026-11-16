@@ -33,6 +33,7 @@ from core.jobs.hybrid_studio import (
 from core.jobs.logging import EmitterLogger
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
+from core.workflows.preparation_cache import PreparationCache
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.service.ops.batch import _Children
@@ -197,12 +198,13 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
         output_template=request.output_template, output_all=request.output_all)
 
 
-def _prepare(request: HybridRequest, ctx: ExecutionContext) -> tuple[StudioSpec, list[PreparedEpisode]]:
+def _prepare(request: HybridRequest, ctx: ExecutionContext,
+             cache: PreparationCache | None = None) -> tuple[StudioSpec, list[PreparedEpisode]]:
     spec = _spec(request, ctx)
     logger = EmitterLogger(ctx.events)
     episodes = plan_episodes(spec, logger)
     logger.emit("info", f"[HYBRID] {len(episodes)} épisode(s) apparié(s) ; préparation des plans…")
-    prepared = prepare_episodes(spec, episodes, ctx.config, lambda _episode: logger, ctx.cancel)
+    prepared = prepare_episodes(spec, episodes, ctx.config, lambda _episode: logger, ctx.cancel, cache=cache)
     for item in prepared:
         if item.error is not None:
             logger.emit("error", f"[HYBRID] {item.episode.display_name} : {item.error}")
@@ -299,13 +301,14 @@ def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeede
             ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )
 def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
-    spec, prepared = _prepare(request, ctx)
+    cache = PreparationCache()  # inspections de la préparation reprises par l'encodage des épisodes
+    spec, prepared = _prepare(request, ctx, cache)
     logger = EmitterLogger(ctx.events)
     failed_early = next((index for index, item in enumerate(prepared) if item.error is not None), None)
     if failed_early is not None and not request.continue_on_error:
         prepared = prepared[:failed_early + 1]
     check_outputs([item for item in prepared if item.error is None], spec.output_template)
-    children = _Children(ctx)
+    children = _Children(ctx, cache)
     entries: list[dict[str, Any]] = []
     cancelled = False
     for index, item in enumerate(prepared):

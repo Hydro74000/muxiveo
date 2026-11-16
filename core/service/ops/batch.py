@@ -186,11 +186,16 @@ def _result(outcome: BatchOutcome) -> BatchResult:
 class _Children:
     """Journal de chaque job du lot : émetteur enfant, états ``running`` puis final (toujours un seul)."""
 
-    def __init__(self, ctx: ExecutionContext) -> None:
+    def __init__(self, ctx: ExecutionContext, cache: PreparationCache | None = None) -> None:
         self.ctx = ctx
         self._finished: set[str] = set()
-        # Inspections partagées par la résolution de l'encodage et sa progression (clé : chemin, taille, date).
-        self._cache = PreparationCache()
+        # Inspections partagées par la préparation, la résolution de l'encodage et sa progression (clé : chemin,
+        # taille, date) ; Hybrid fournit celui de sa préparation.
+        self._cache = cache if cache is not None else PreparationCache()
+
+    def context(self) -> PreparationContext:
+        """Contexte de préparation des jobs du lot : cache partagé, annulation."""
+        return PreparationContext(cache=self._cache, cancel_event=self.ctx.cancel.event)
 
     def logger(self, index: int) -> EmitterLogger:
         child = self.ctx.events.child()
@@ -353,7 +358,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
         mux_backend=request.mux_backend,
         encode_overrides=request.encode,
         steps=children.steps(lambda job, config, options, logger: build_remux_config(
-            job, config, options, logger, context=PreparationContext(cancel_event=ctx.cancel.event))),
+            job, config, options, logger, context=children.context())),
         cancel=ctx.cancel,
         job_logger=children.logger,
     )
@@ -399,7 +404,7 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         steps=ProfileBatchSteps(load=lambda path, conf: load_decision_profile(path, conf, base_dir=ctx.base_dir),
                                 discover=discover_direct_batch_jobs,
                                 build=lambda profile, **kwargs: build_profile_remux_config(
-                                    profile, context=PreparationContext(cancel_event=ctx.cancel.event), **kwargs),
+                                    profile, context=children.context(), **kwargs),
                                 preview=children.preview, run=children.run,
                                 encode=children.encode, preview_encode=children.preview_encode,
                                 run_encode=children.run_encode, finish=children.finish),
