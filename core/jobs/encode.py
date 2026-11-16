@@ -562,7 +562,7 @@ def resolve_from_job(
                                 else inspector.inspect(Path(source.path)))
              for source in remux_config.sources}
     ffmpeg = str(getattr(options, "ffmpeg", None) or config.tool_ffmpeg)
-    return resolve_encode(
+    resolved = resolve_encode(
         block, remux_config, infos=infos, config=config,
         load_preset=preset_loader(Path(config.app_data_dir) / "encode_profiles",
                                   getattr(options, "base_dir", Path())),
@@ -571,3 +571,21 @@ def resolve_from_job(
                                       ffprobe_bin=ffprobe, cancel_event=cancel_event),
         logger=logger,
     )
+    if getattr(options, "api", False) and resolved.config is not None:
+        _refuse_foreign_extra_params(resolved.config, ffmpeg=ffmpeg,
+                                     nvencc=str(getattr(config, "tool_nvencc", None) or "nvencc"))
+    return resolved
+
+
+def _refuse_foreign_extra_params(encode_config: Any, *, ffmpeg: str, nvencc: str) -> None:
+    """Requête de l'API : paramètres libres effectifs (presets compris) limités aux options de l'encodeur."""
+    from core.service.errors import ApiError, ErrorCode, ErrorDetail
+    from core.workflows.encode.domain.api_extra_params import api_extra_params_errors
+    from core.workflows.encode.planning.track_settings import routing_video_tracks
+
+    errors = [error for video in routing_video_tracks(encode_config)
+              for error in api_extra_params_errors(getattr(video, "codec", ""), getattr(video, "extra_params", ""),
+                                                   ffmpeg=ffmpeg, nvencc=nvencc)]
+    if errors:
+        raise ApiError(ErrorCode.VALIDATION, "Paramètres libres refusés :\n" + "\n".join(f"- {e}" for e in errors),
+                       details=[ErrorDetail("", error) for error in errors])

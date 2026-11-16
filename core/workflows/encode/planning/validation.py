@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from core.file_types import windows_filename_error, windows_path_length_error
 from core.workflows.common.track_types import TrackTimeOffset
@@ -154,6 +154,7 @@ def validate_encode_config(
         errors.append("Durée du fichier source inconnue — mode taille cible impossible.")
 
     for index, video in enumerate(planned_video_tracks, start=1):
+        errors.extend(f"Piste vidéo #{index} — {problem}" for problem in filter_field_errors(video))
         if video.inject_hdr_meta and not video.tonemap_to_sdr:
             if video.master_display and not _MASTER_DISPLAY_RE.fullmatch(video.master_display):
                 errors.append(
@@ -202,3 +203,36 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
         if problem:
             errors.append(f"Piste vidéo #{index} — paramètres avancés invalides : {problem}.")
     return errors
+
+
+#: Valeurs des champs texte insérés tels quels dans le graphe de filtres FFmpeg (``yadif=mode:parité:deint``) : toute
+#: autre valeur (« , », « : », « ; », « [ »…) ajouterait un filtre ou une option, quelle que soit sa provenance
+#: (bloc ``encode``, preset, document).
+YADIF_FIELD_VALUES: dict[str, frozenset[str]] = {
+    "yadif_mode": frozenset({"send_frame", "send_field", "send_frame_nospatial", "send_field_nospatial",
+                             "0", "1", "2", "3"}),
+    "yadif_parity": frozenset({"auto", "tff", "bff", "-1", "0", "1"}),
+    "yadif_deint": frozenset({"all", "interlaced", "0", "1"}),
+}
+
+
+def filter_field_errors(video: Any) -> list[str]:
+    """Champs texte de filtres hors de leurs valeurs (YADIF ; algorithme de tone mapping selon le moteur)."""
+    from core.workflows.encode.catalog import NVENCC_VIDEO_CODECS, TONEMAP_ALGORITHMS
+    from core.workflows.encode.runtime.nvencc import _LIBPLACEBO_TONEMAP_FUNCTIONS
+
+    problems: list[str] = []
+    filters = getattr(video, "filters", None)
+    if filters is not None and getattr(filters, "yadif_enabled", False):
+        for name, allowed in YADIF_FIELD_VALUES.items():
+            value = str(getattr(filters, name, "") or "").strip()
+            if value and value not in allowed:
+                problems.append(f"{name} « {value} » invalide (attendu : {', '.join(sorted(allowed))})")
+    if getattr(video, "tonemap_to_sdr", False):
+        algorithm = str(getattr(video, "tonemap_algorithm", "") or "").strip()
+        nvencc = getattr(video, "codec", "") in NVENCC_VIDEO_CODECS
+        allowed_algorithms = _LIBPLACEBO_TONEMAP_FUNCTIONS if nvencc else frozenset(TONEMAP_ALGORITHMS)
+        if algorithm and algorithm not in allowed_algorithms:
+            problems.append(f"algorithme de tone mapping « {algorithm} » invalide "
+                            f"(attendu : {', '.join(sorted(allowed_algorithms))})")
+    return problems
