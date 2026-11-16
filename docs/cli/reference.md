@@ -10,26 +10,22 @@ Inspecter une ou plusieurs sources : pistes, HDR, chapitres, pièces jointes (JS
 
 ```text
 muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                             [--clean-nfo | --no-clean-nfo]
-                             [--remove-closed-captions | --no-remove-closed-captions]
-                             [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                             [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                             [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                             [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                             [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                             [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                             [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                             [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                             [--output-template OUTPUT_TEMPLATE] [--output-all]
-                             [--log-format {text,jsonl,events}] [--verbose] [--config-template]
-                             [--with-encode] [--output OUTPUT] [--hdr {static,dynamic,measure}]
-                             [--hdr-track HDR_TRACK] [--hdr-report HDR_REPORT] [--hdr-compare]
-                             [--hdr-offset HDR_OFFSET] [--hdr-fail-on {warn,error}] [--hdr-fast]
-                             [--hdr-no-cache] [--hdr-fel] [--hdr-fel-interval SECONDES]
-                             [--hdr-fel-survival ENCODEUR:KBPS] [--hdr-fel-min {moderate,useful}]
-                             [--hdr-fel-moments DOSSIER] [--hdr-fel-exposure EV] [--hdr-advice]
-                             [--hdr-display-peak NITS] [--hdr-tv-model {maxcll,mdcv,dynamic}]
-                             input [input ...]
+                      [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                      [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                      [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                      [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                      [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                      [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                      [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                      [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                      [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                      [--verbose] [--config-template] [--with-encode] [--output OUTPUT]
+                      [--hdr {static,dynamic,measure}] [--hdr-track HDR_TRACK] [--hdr-report HDR_REPORT]
+                      [--hdr-compare] [--hdr-offset HDR_OFFSET] [--hdr-fail-on {warn,error}] [--hdr-fast]
+                      [--hdr-no-cache] [--hdr-fel] [--hdr-fel-interval SECONDES]
+                      [--hdr-fel-survival ENCODEUR:KBPS] [--hdr-fel-min {moderate,useful}]
+                      [--hdr-fel-moments DOSSIER] [--hdr-fel-exposure EV] [--hdr-advice]
+                      [--hdr-display-peak NITS] [--hdr-tv-model {maxcll,mdcv,dynamic}] input [input ...]
 ```
 
 | Option | Effet |
@@ -99,31 +95,28 @@ Valider un job (ou un profil) sans rien exécuter ; --json publie le plan résol
 
 ```text
 muxiveo --cli validate [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                              [--clean-nfo | --no-clean-nfo]
-                              [--remove-closed-captions | --no-remove-closed-captions]
-                              [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                              [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                              [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                              [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                              [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                              [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                              [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                              [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                              [--output-template OUTPUT_TEMPLATE] [--output-all]
-                              [--log-format {text,jsonl,events}] [--verbose] [--profile PROFILE] [-i INPUT]
-                              [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
-                              [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force] [--dry-run]
-                              [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
-                              [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                              [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                              [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                              [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                              [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                              [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                              [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                              [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                              [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                              [--video-set CLÉ.POINTÉE=VALEUR] [--json]
+                       [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                       [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                       [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
+                       [--calibration CALIBRATION] [--detect-cuts]
+                       [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                       [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                       [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                       [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                       [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                       [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                       [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
+                       [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
+                       [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
+                       [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
+                       [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                       [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
+                       [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
+                       [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
+                       [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                       [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                       [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                       [--json]
 ```
 
 | Option | Effet |
@@ -210,31 +203,27 @@ Afficher les commandes prévues (FFmpeg, encodeur) sans les exécuter.
 
 ```text
 muxiveo --cli preview [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                             [--clean-nfo | --no-clean-nfo]
-                             [--remove-closed-captions | --no-remove-closed-captions]
-                             [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                             [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                             [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                             [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                             [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                             [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                             [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                             [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                             [--output-template OUTPUT_TEMPLATE] [--output-all]
-                             [--log-format {text,jsonl,events}] [--verbose] [--profile PROFILE] [-i INPUT]
-                             [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
-                             [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force] [--dry-run]
-                             [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
-                             [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                             [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                             [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                             [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                             [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                             [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                             [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                             [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                             [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                             [--video-set CLÉ.POINTÉE=VALEUR] [--json]
+                      [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                      [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                      [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                      [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                      [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                      [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                      [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                      [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                      [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                      [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
+                      [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
+                      [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
+                      [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
+                      [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                      [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
+                      [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
+                      [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
+                      [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                      [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                      [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                      [--json]
 ```
 
 | Option | Effet |
@@ -321,30 +310,27 @@ Remuxer des sources selon le job ou les options (sélection des pistes, synchro,
 
 ```text
 muxiveo --cli remux [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                           [--clean-nfo | --no-clean-nfo]
-                           [--remove-closed-captions | --no-remove-closed-captions]
-                           [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                           [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
-                           [--calibration CALIBRATION] [--detect-cuts]
-                           [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                           [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                           [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                           [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                           [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                           [--output-template OUTPUT_TEMPLATE] [--output-all]
-                           [--log-format {text,jsonl,events}] [--verbose] [--profile PROFILE] [-i INPUT]
-                           [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY]
-                           [--no-cover] [--no-attach] [--force] [--dry-run] [--nfo] [--no-nfo]
-                           [--writing-application WRITING_APPLICATION] [--encode-preset NOM|FICHIER]
-                           [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
-                           [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                           [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                           [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                           [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                           [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                           [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                           [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                           [--video-set CLÉ.POINTÉE=VALEUR] [--save SAVE]
+                    [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                    [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                    [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                    [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                    [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                    [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                    [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                    [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                    [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                    [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
+                    [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
+                    [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
+                    [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
+                    [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                    [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
+                    [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                    [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                    [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                    [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                    [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                    [--save SAVE]
 ```
 
 | Option | Effet |
@@ -431,29 +417,26 @@ Exécuter un job JSON (exact-job ou contrat v1), remux ou encodage selon son blo
 
 ```text
 muxiveo --cli run [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                         [--clean-nfo | --no-clean-nfo]
-                         [--remove-closed-captions | --no-remove-closed-captions]
-                         [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                         [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
-                         [--calibration CALIBRATION] [--detect-cuts]
-                         [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                         [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                         [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                         [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                         [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                         [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
-                         [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
-                         [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
-                         [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
-                         [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
-                         [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
-                         [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE]
-                         [--resize PRESET|LxH|N%] [--deinterlace]
-                         [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                         [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                         [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                         [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                         [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                  [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                  [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                  [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                  [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                  [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                  [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                  [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                  [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                  [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                  [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
+                  [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
+                  [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
+                  [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
+                  [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                  [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
+                  [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                  [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                  [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                  [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                  [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -539,33 +522,29 @@ Appliquer un gabarit (ou un profil) à un lot de jobs ou de fichiers ; collision
 
 ```text
 muxiveo --cli batch [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                           [--clean-nfo | --no-clean-nfo]
-                           [--remove-closed-captions | --no-remove-closed-captions]
-                           [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                           [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
-                           [--calibration CALIBRATION] [--detect-cuts]
-                           [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                           [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                           [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                           [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                           [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                           [--output-template OUTPUT_TEMPLATE] [--output-all]
-                           [--log-format {text,jsonl,events}] [--verbose] [--template TEMPLATE]
-                           [--profile PROFILE] [--batch BATCH] [-i INPUT] [--input-dir INPUT_DIR]
-                           [--recursive] [--include INCLUDE] [--exclude EXCLUDE] [--output-dir OUTPUT_DIR]
-                           [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover]
-                           [--no-attach] [--force] [--dry-run] [--continue-on-error] [--summary SUMMARY]
-                           [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
-                           [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                           [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                           [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                           [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                           [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                           [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                           [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                           [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                           [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                           [--video-set CLÉ.POINTÉE=VALEUR]
+                    [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                    [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                    [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                    [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                    [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                    [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                    [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                    [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                    [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                    [--verbose] [--template TEMPLATE] [--profile PROFILE] [--batch BATCH] [-i INPUT]
+                    [--input-dir INPUT_DIR] [--recursive] [--include INCLUDE] [--exclude EXCLUDE]
+                    [--output-dir OUTPUT_DIR] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
+                    [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force] [--dry-run]
+                    [--continue-on-error] [--summary SUMMARY] [--nfo] [--no-nfo]
+                    [--writing-application WRITING_APPLICATION] [--encode-preset NOM|FICHIER]
+                    [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
+                    [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
+                    [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
+                    [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                    [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                    [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                    [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                    [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -659,10 +638,10 @@ Extrait des éléments d'une source vers des fichiers autonomes : piste en flux 
 
 ```text
 muxiveo --cli extract [-h] -i FICHIER [--track SEL] [--layer {stream,el,bl,rpu,hdr10plus}]
-                             [--attachment N|NOM] [--all] [-o SORTIE] [--output-dir DOSSIER]
-                             [--format {raw,mkv}] [--force] [--dry-run] [--json] [--ffmpeg FFMPEG]
-                             [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                             [--log-format {text,jsonl,events}] [--verbose]
+                      [--attachment N|NOM] [--all] [-o SORTIE] [--output-dir DOSSIER] [--format {raw,mkv}]
+                      [--force] [--dry-run] [--json] [--ffmpeg FFMPEG] [--ffprobe FFPROBE]
+                      [--mediainfo MEDIAINFO] [--work-dir WORK_DIR] [--log-format {text,jsonl,events}]
+                      [--verbose]
 ```
 
 | Option | Effet |
@@ -699,9 +678,8 @@ extract -i film.mkv --all --output-dir film/
 Lister les titres (playlists) d'un Blu-ray, du plus long au plus court.
 
 ```text
-muxiveo --cli bluray-titles [-h] [--min-duration S] [--json] [--log-format {text,jsonl,events}]
-                                   [--verbose]
-                                   DISQUE
+muxiveo --cli bluray-titles [-h] [--min-duration S] [--json] [--log-format {text,jsonl,events}] [--verbose]
+                            DISQUE
 ```
 
 | Option | Effet |
@@ -726,31 +704,28 @@ Encoder : job + bloc `encode` ou options d'encodage ; aperçus réels avec --pre
 
 ```text
 muxiveo --cli encode [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                            [--clean-nfo | --no-clean-nfo]
-                            [--remove-closed-captions | --no-remove-closed-captions]
-                            [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                            [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
-                            [--calibration CALIBRATION] [--detect-cuts]
-                            [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                            [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                            [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                            [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                            [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                            [--output-template OUTPUT_TEMPLATE] [--output-all]
-                            [--log-format {text,jsonl,events}] [--verbose] [--profile PROFILE] [-i INPUT]
-                            [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY]
-                            [--no-cover] [--no-attach] [--force] [--dry-run] [--nfo] [--no-nfo]
-                            [--writing-application WRITING_APPLICATION] [--encode-preset NOM|FICHIER]
-                            [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
-                            [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                            [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                            [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                            [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                            [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                            [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                            [--video-set CLÉ.POINTÉE=VALEUR] [--preview-image SECONDES]
-                            [--preview-video SECONDES:DURÉE] [--random-scene] [--preview-dir DOSSIER]
+                     [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                     [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                     [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                     [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                     [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                     [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                     [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                     [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                     [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                     [--verbose] [--profile PROFILE] [-i INPUT] [-o OUTPUT] [--auto-tmdb] [--tmdb]
+                     [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
+                     [--dry-run] [--nfo] [--no-nfo] [--writing-application WRITING_APPLICATION]
+                     [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE] [--crf CRF]
+                     [--cq CQ] [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                     [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
+                     [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
+                     [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
+                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                     [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                     [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                     [--preview-image SECONDES] [--preview-video SECONDES:DURÉE] [--random-scene]
+                     [--preview-dir DOSSIER]
 ```
 
 | Option | Effet |
@@ -892,19 +867,17 @@ Enregistrer un preset d'après les options d'encodage (réglages d'encodeur seul
 
 ```text
 muxiveo --cli encode-preset save [-h] [--description DESCRIPTION] [--encode-preset NOM|FICHIER]
-                                        [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ]
-                                        [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
-                                        [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE]
-                                        [--resize PRESET|LxH|N%] [--deinterlace]
-                                        [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
-                                        [--interpolate xN|CADENCE]
-                                        [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                                        [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}]
-                                        [--bake-fel] [--audio-codec SOURCE:FLUX=CODEC[:KBPS]]
-                                        [--video-track SOURCE:FLUX] [--accept-dovi-nvenc-crop]
-                                        [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR] [--force]
-                                        [--log-format {text,jsonl,events}]
-                                        NOM
+                                 [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ]
+                                 [--bitrate KBPS] [--target-size MIO] [--encoder-preset PRESET]
+                                 [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE]
+                                 [--resize PRESET|LxH|N%] [--deinterlace]
+                                 [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                                 [--interpolation-preset {fast,balanced,quality,ultra,light}]
+                                 [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                                 [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                                 [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
+                                 [--video-set CLÉ.POINTÉE=VALEUR] [--force] [--log-format {text,jsonl,events}]
+                                 NOM
 ```
 
 | Option | Effet |
@@ -949,9 +922,8 @@ muxiveo --cli encode-preset save "x265 rapide" --video-codec libx265 --crf 22 --
 Importer un preset depuis un fichier JSON.
 
 ```text
-muxiveo --cli encode-preset import [-h] [--name IMPORT_NAME] [--force]
-                                          [--log-format {text,jsonl,events}]
-                                          FICHIER
+muxiveo --cli encode-preset import [-h] [--name IMPORT_NAME] [--force] [--log-format {text,jsonl,events}]
+                                   FICHIER
 ```
 
 | Option | Effet |
@@ -1013,7 +985,7 @@ Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, mot
 
 ```text
 muxiveo --cli capabilities [-h] [--section {encoders,presets,vulkan,gpu,rife}] [--ffmpeg FFMPEG]
-                                  [--log-format {text,jsonl,events}]
+                           [--log-format {text,jsonl,events}]
 ```
 
 | Option | Effet |
@@ -1037,15 +1009,14 @@ muxiveo --cli capabilities --section encoders
 
 ```text
 muxiveo --cli hdr-patch [-h] -i FICHIER -o SORTIE [--hdr-track N] [--max-cll NITS] [--max-fall NITS]
-                               [--light-levels {suggested}] [--mdcv suggested|PRIMAIRES:MIN:MAX]
-                               [--l6 MAX:MIN:CLL:FALL] [--l5 G,D,H,B] [--l11 TYPE[:POINT_BLANC[:ref]]]
-                               [--rpu-display MIN:MAX] [--remove-cmv4] [--no-mastering-sync]
-                               [--hdr10plus-remove] [--hdr10plus-target NITS] [--hdr10plus-profile-a]
-                               [--hdr10plus-cap NITS] [--hdr10plus-recompute]
-                               [--realign all|static,mdcv,l6,hdr10plus] [--measure {cached,fast,full}]
-                               [--display-peak NITS] [--force] [--dry-run] [--json] [--ffmpeg FFMPEG]
-                               [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                               [--threads THREADS] [--log-format {text,jsonl,events}] [--verbose]
+                        [--light-levels {suggested}] [--mdcv suggested|PRIMAIRES:MIN:MAX]
+                        [--l6 MAX:MIN:CLL:FALL] [--l5 G,D,H,B] [--l11 TYPE[:POINT_BLANC[:ref]]]
+                        [--rpu-display MIN:MAX] [--remove-cmv4] [--no-mastering-sync] [--hdr10plus-remove]
+                        [--hdr10plus-target NITS] [--hdr10plus-profile-a] [--hdr10plus-cap NITS]
+                        [--hdr10plus-recompute] [--realign all|static,mdcv,l6,hdr10plus]
+                        [--measure {cached,fast,full}] [--display-peak NITS] [--force] [--dry-run] [--json]
+                        [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
+                        [--threads THREADS] [--log-format {text,jsonl,events}] [--verbose]
 ```
 
 | Option | Effet |
@@ -1100,20 +1071,19 @@ Mesurer le calage d'une piste (audio ou sous-titres) face à une référence ; c
 
 ```text
 muxiveo --cli sync-scan [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                               [--clean-nfo | --no-clean-nfo]
-                               [--remove-closed-captions | --no-remove-closed-captions]
-                               [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                               [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                               [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                               [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                               [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                               [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                               [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                               [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                               [--output-template OUTPUT_TEMPLATE] [--output-all]
-                               [--log-format {text,jsonl,events}] [--verbose] --ref REF --target TARGET
-                               [--stream-ref STREAM_REF] [--stream-target STREAM_TARGET]
-                               [--type {auto,audio,subtitle}] [--output-json OUTPUT_JSON]
+                        [--clean-nfo | --no-clean-nfo]
+                        [--remove-closed-captions | --no-remove-closed-captions] [--crossfade-ms CROSSFADE_MS]
+                        [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
+                        [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                        [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                        [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                        [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                        [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                        [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                        [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                        [--verbose] --ref REF --target TARGET [--stream-ref STREAM_REF]
+                        [--stream-target STREAM_TARGET] [--type {auto,audio,subtitle}]
+                        [--output-json OUTPUT_JSON]
 ```
 
 | Option | Effet |
@@ -1166,11 +1136,11 @@ muxiveo --cli sync-scan --ref uhd.mkv --target vf.mkv --detect-cuts
 Recaler un fichier de sous-titres texte (SRT, ASS) : décalage fixe ou calibration.
 
 ```text
-muxiveo --cli shift-subs [-h] [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE]
-                                [--mediainfo MEDIAINFO] [--work-dir WORK_DIR] [--threads THREADS]
-                                [--mux-backend {auto,native,ffmpeg}] [--output-template OUTPUT_TEMPLATE]
-                                [--output-all] [--log-format {text,jsonl,events}] [--verbose] -i INPUT
-                                -o OUTPUT (--offset-ms OFFSET_MS | --calibration CALIBRATION) [--force]
+muxiveo --cli shift-subs [-h] [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                         [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                         [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                         [--verbose] -i INPUT -o OUTPUT (--offset-ms OFFSET_MS | --calibration CALIBRATION)
+                         [--force]
 ```
 
 | Option | Effet |
@@ -1240,11 +1210,10 @@ muxiveo --cli calibration show calib.json
 
 ```text
 muxiveo --cli calibration edit [-h] [--cut DÉBUT-FIN] [--silence DÉBUT-FIN] [--remove-junction N]
-                                      [--shift-ms MS] [--shift-from-segment N:MS]
-                                      [--cadence-method {atempo,asetrate,auto}]
-                                      [--resolve-cadence REF:INDEX CIBLE:INDEX] [-o SORTIE] [--force]
-                                      [--log-format {text,jsonl,events}] [--verbose]
-                                      FICHIER
+                               [--shift-ms MS] [--shift-from-segment N:MS]
+                               [--cadence-method {atempo,asetrate,auto}]
+                               [--resolve-cadence REF:INDEX CIBLE:INDEX] [-o SORTIE] [--force]
+                               [--log-format {text,jsonl,events}] [--verbose] FICHIER
 ```
 
 | Option | Effet |
@@ -1275,9 +1244,8 @@ calibration edit calib.json --cadence-method auto --resolve-cadence ref.mkv:1 ci
 Composer deux calibrations : mesure face à une référence elle-même synchronisée.
 
 ```text
-muxiveo --cli calibration compose [-h] [-o SORTIE] [--force] [--log-format {text,jsonl,events}]
-                                         [--verbose]
-                                         MESURE POSITION
+muxiveo --cli calibration compose [-h] [-o SORTIE] [--force] [--log-format {text,jsonl,events}] [--verbose]
+                                  MESURE POSITION
 ```
 
 | Option | Effet |
@@ -1300,9 +1268,8 @@ muxiveo --cli calibration compose mesure.json position.json -o synchro.json
 Inverser une calibration (référence face à la cible).
 
 ```text
-muxiveo --cli calibration invert [-h] [-o SORTIE] [--force] [--log-format {text,jsonl,events}]
-                                        [--verbose]
-                                        FICHIER
+muxiveo --cli calibration invert [-h] [-o SORTIE] [--force] [--log-format {text,jsonl,events}] [--verbose]
+                                 FICHIER
 ```
 
 | Option | Effet |
@@ -1325,8 +1292,8 @@ Forme d'onde d'une piste audio sur une plage (pics par tranche, JSON).
 
 ```text
 muxiveo --cli sync-waveform [-h] -i FICHIER [--stream STREAM] [--start INSTANT] [--duration S]
-                                   [--resolution-ms MS] [--ffmpeg FFMPEG] [--log-format {text,jsonl,events}]
-                                   [--verbose]
+                            [--resolution-ms MS] [--ffmpeg FFMPEG] [--log-format {text,jsonl,events}]
+                            [--verbose]
 ```
 
 | Option | Effet |
@@ -1354,36 +1321,30 @@ Hybrider une paire ou une saison sur le moteur du Hybrid Studio : vidéo du mast
 
 ```text
 muxiveo --cli hybrid [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                            [--clean-nfo | --no-clean-nfo]
-                            [--remove-closed-captions | --no-remove-closed-captions]
-                            [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                            [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
-                            [--calibration CALIBRATION] [--detect-cuts]
-                            [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                            [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
-                            [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
-                            [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                            [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                            [--output-template OUTPUT_TEMPLATE] [--output-all]
-                            [--log-format {text,jsonl,events}] [--verbose] [--ref REF] [--donor DONOR]
-                            [--ref-dir REF_DIR] [--donor-dir DONOR_DIR] [--profile PROFILE]
-                            [--report-json REPORT_JSON] -o OUTPUT_DIR [--auto-tmdb [AUTO_TMDB]]
-                            [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--tag TAG] [--purge-temp] [--dry-run]
-                            [--force] [--continue-on-error] [--source RÔLE=CHEMIN]
-                            [--matching {episode,fuzzy,order}] [--pair MASTER::DONNEUR] [--recipe FICHIER]
-                            [--keep-master-audio LANGUES] [--donor-audio-langs LANGUES]
-                            [--donor-sub-langs LANGUES] [--exclude-langs LANGUES] [--sync {auto,manual,none}]
-                            [--shift-ms SHIFT_MS] [--plan] [--export-jobs DOSSIER] [--save-recipe FICHIER]
-                            [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                            [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                            [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                            [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
-                            [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
-                            [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                            [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                            [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                            [--video-set CLÉ.POINTÉE=VALEUR]
+                     [--clean-nfo | --no-clean-nfo] [--remove-closed-captions | --no-remove-closed-captions]
+                     [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs] [--forced-threshold FORCED_THRESHOLD]
+                     [--auto-sdh] [--auto-sync] [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                     [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                     [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                     [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                     [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                     [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                     [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
+                     [--verbose] [--ref REF] [--donor DONOR] [--ref-dir REF_DIR] [--donor-dir DONOR_DIR]
+                     [--profile PROFILE] [--report-json REPORT_JSON] -o OUTPUT_DIR [--auto-tmdb [AUTO_TMDB]]
+                     [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--tag TAG] [--purge-temp] [--dry-run] [--force]
+                     [--continue-on-error] [--source RÔLE=CHEMIN] [--matching {episode,fuzzy,order}]
+                     [--pair MASTER::DONNEUR] [--recipe FICHIER] [--keep-master-audio LANGUES]
+                     [--donor-audio-langs LANGUES] [--donor-sub-langs LANGUES] [--exclude-langs LANGUES]
+                     [--sync {auto,manual,none}] [--shift-ms SHIFT_MS] [--plan] [--export-jobs DOSSIER]
+                     [--save-recipe FICHIER] [--encode-preset NOM|FICHIER] [--video-codec CODEC]
+                     [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
+                     [--encoder-preset PRESET] [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE]
+                     [--resize PRESET|LxH|N%] [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
+                     [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
+                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                     [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                     [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -1500,21 +1461,18 @@ Valider un profil décisionnel v1.
 
 ```text
 muxiveo --cli profile validate [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                                      [--clean-nfo | --no-clean-nfo]
-                                      [--remove-closed-captions | --no-remove-closed-captions]
-                                      [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                                      [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                                      [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                                      [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                                      [--drift-threshold-ms DRIFT_THRESHOLD_MS]
-                                      [--cadence-auto | --no-cadence-auto]
-                                      [--cadence-method {auto,atempo,asetrate}]
-                                      [--export-workflow EXPORT_WORKFLOW] [--config CONFIG] [--ffmpeg FFMPEG]
-                                      [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                                      [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                                      [--output-template OUTPUT_TEMPLATE] [--output-all]
-                                      [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE
-                                      [--json]
+                               [--clean-nfo | --no-clean-nfo]
+                               [--remove-closed-captions | --no-remove-closed-captions]
+                               [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                               [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
+                               [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                               [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                               [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                               [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                               [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                               [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                               [--output-template OUTPUT_TEMPLATE] [--output-all]
+                               [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE [--json]
 ```
 
 | Option | Effet |
@@ -1563,33 +1521,30 @@ Prévisualiser un profil sur des sources (pistes retenues, nom, commandes).
 
 ```text
 muxiveo --cli profile preview [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                                     [--clean-nfo | --no-clean-nfo]
-                                     [--remove-closed-captions | --no-remove-closed-captions]
-                                     [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                                     [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                                     [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                                     [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                                     [--drift-threshold-ms DRIFT_THRESHOLD_MS]
-                                     [--cadence-auto | --no-cadence-auto]
-                                     [--cadence-method {auto,atempo,asetrate}]
-                                     [--export-workflow EXPORT_WORKFLOW] [--config CONFIG] [--ffmpeg FFMPEG]
-                                     [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                                     [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                                     [--output-template OUTPUT_TEMPLATE] [--output-all]
-                                     [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE -i INPUT
-                                     [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
-                                     [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--json]
-                                     [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                                     [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                                     [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                                     [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
-                                     [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
-                                     [--interpolate xN|CADENCE]
-                                     [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}]
-                                     [--bake-fel] [--audio-codec SOURCE:FLUX=CODEC[:KBPS]]
-                                     [--video-track SOURCE:FLUX] [--accept-dovi-nvenc-crop]
-                                     [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
+                              [--clean-nfo | --no-clean-nfo]
+                              [--remove-closed-captions | --no-remove-closed-captions]
+                              [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                              [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
+                              [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                              [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                              [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                              [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                              [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                              [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                              [--output-template OUTPUT_TEMPLATE] [--output-all]
+                              [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE -i INPUT
+                              [-o OUTPUT] [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
+                              [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--json]
+                              [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
+                              [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
+                              [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
+                              [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
+                              [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                              [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                              [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                              [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                              [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
+                              [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -1670,33 +1625,29 @@ Appliquer un profil et remuxer (ou encoder avec les options d'encodage).
 
 ```text
 muxiveo --cli profile apply [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                                   [--clean-nfo | --no-clean-nfo]
-                                   [--remove-closed-captions | --no-remove-closed-captions]
-                                   [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                                   [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                                   [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                                   [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                                   [--drift-threshold-ms DRIFT_THRESHOLD_MS]
-                                   [--cadence-auto | --no-cadence-auto]
-                                   [--cadence-method {auto,atempo,asetrate}]
-                                   [--export-workflow EXPORT_WORKFLOW] [--config CONFIG] [--ffmpeg FFMPEG]
-                                   [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                                   [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                                   [--output-template OUTPUT_TEMPLATE] [--output-all]
-                                   [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE -i INPUT
-                                   -o OUTPUT [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
-                                   [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--force]
-                                   [--dry-run] [--encode-preset NOM|FICHIER] [--video-codec CODEC]
-                                   [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
-                                   [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                                   [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
-                                   [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
-                                   [--interpolate xN|CADENCE]
-                                   [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                                   [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                                   [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                                   [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                                   [--video-set CLÉ.POINTÉE=VALEUR]
+                            [--clean-nfo | --no-clean-nfo]
+                            [--remove-closed-captions | --no-remove-closed-captions]
+                            [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                            [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
+                            [--calibration CALIBRATION] [--detect-cuts]
+                            [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                            [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                            [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                            [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                            [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                            [--output-template OUTPUT_TEMPLATE] [--output-all]
+                            [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE -i INPUT -o
+                            OUTPUT [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY]
+                            [--no-cover] [--no-attach] [--force] [--dry-run] [--encode-preset NOM|FICHIER]
+                            [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
+                            [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
+                            [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
+                            [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                            [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                            [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                            [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
+                            [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -1778,35 +1729,31 @@ Appliquer un profil à un lot de fichiers.
 
 ```text
 muxiveo --cli profile batch [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                                   [--clean-nfo | --no-clean-nfo]
-                                   [--remove-closed-captions | --no-remove-closed-captions]
-                                   [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                                   [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                                   [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                                   [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                                   [--drift-threshold-ms DRIFT_THRESHOLD_MS]
-                                   [--cadence-auto | --no-cadence-auto]
-                                   [--cadence-method {auto,atempo,asetrate}]
-                                   [--export-workflow EXPORT_WORKFLOW] [--config CONFIG] [--ffmpeg FFMPEG]
-                                   [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                                   [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                                   [--output-template OUTPUT_TEMPLATE] [--output-all]
-                                   [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE [-i INPUT]
-                                   [--input-dir INPUT_DIR] [--recursive] [--include INCLUDE]
-                                   [--exclude EXCLUDE] --output-dir OUTPUT_DIR [--auto-tmdb] [--tmdb]
-                                   [--tmdb-id TMDB_ID] [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach]
-                                   [--dry-run] [--force] [--continue-on-error] [--summary SUMMARY]
-                                   [--encode-preset NOM|FICHIER] [--video-codec CODEC] [--rate-control MODE]
-                                   [--crf CRF] [--cq CQ] [--bitrate KBPS] [--target-size MIO]
-                                   [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
-                                   [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
-                                   [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
-                                   [--interpolate xN|CADENCE]
-                                   [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                                   [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                                   [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                                   [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                                   [--video-set CLÉ.POINTÉE=VALEUR]
+                            [--clean-nfo | --no-clean-nfo]
+                            [--remove-closed-captions | --no-remove-closed-captions]
+                            [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                            [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync] [--auto-sync-all]
+                            [--calibration CALIBRATION] [--detect-cuts]
+                            [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                            [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                            [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                            [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                            [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                            [--output-template OUTPUT_TEMPLATE] [--output-all]
+                            [--log-format {text,jsonl,events}] [--verbose] --profile PROFILE [-i INPUT]
+                            [--input-dir INPUT_DIR] [--recursive] [--include INCLUDE] [--exclude EXCLUDE]
+                            --output-dir OUTPUT_DIR [--auto-tmdb] [--tmdb] [--tmdb-id TMDB_ID]
+                            [--tmdb-apikey TMDB_APIKEY] [--no-cover] [--no-attach] [--dry-run] [--force]
+                            [--continue-on-error] [--summary SUMMARY] [--encode-preset NOM|FICHIER]
+                            [--video-codec CODEC] [--rate-control MODE] [--crf CRF] [--cq CQ] [--bitrate KBPS]
+                            [--target-size MIO] [--encoder-preset PRESET] [--bit-depth {auto,8,10}]
+                            [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
+                            [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
+                            [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
+                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                            [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
+                            [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
+                            [--video-set CLÉ.POINTÉE=VALEUR]
 ```
 
 | Option | Effet |
@@ -1934,9 +1881,8 @@ muxiveo --cli profile show Films
 Enregistrer un profil depuis un fichier JSON (validé).
 
 ```text
-muxiveo --cli profile save [-h] [--name PROFILE_NAME] [--force] [--json]
-                                  [--log-format {text,jsonl,events}] [--verbose]
-                                  FICHIER
+muxiveo --cli profile save [-h] [--name PROFILE_NAME] [--force] [--json] [--log-format {text,jsonl,events}]
+                           [--verbose] FICHIER
 ```
 
 | Option | Effet |
@@ -1981,23 +1927,21 @@ Construit le job (sources -i, ou --config) puis en capture la sélection, les m�
 
 ```text
 muxiveo --cli profile capture [-h] [--sync-mode {physical,container}] [--sync-subtitles {mirror,none}]
-                                     [--clean-nfo | --no-clean-nfo]
-                                     [--remove-closed-captions | --no-remove-closed-captions]
-                                     [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
-                                     [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
-                                     [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
-                                     [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
-                                     [--drift-threshold-ms DRIFT_THRESHOLD_MS]
-                                     [--cadence-auto | --no-cadence-auto]
-                                     [--cadence-method {auto,atempo,asetrate}]
-                                     [--export-workflow EXPORT_WORKFLOW] [--config CONFIG] [--ffmpeg FFMPEG]
-                                     [--ffprobe FFPROBE] [--mediainfo MEDIAINFO] [--work-dir WORK_DIR]
-                                     [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
-                                     [--output-template OUTPUT_TEMPLATE] [--output-all]
-                                     [--log-format {text,jsonl,events}] [--verbose] [-i INPUT] [-o OUTPUT]
-                                     [--name PROFILE_NAME] [--description DESCRIPTION] [--no-selection]
-                                     [--no-metadata] [--no-flags] [--no-order] [--no-audio-variants] [--save]
-                                     [--force] [--json]
+                              [--clean-nfo | --no-clean-nfo]
+                              [--remove-closed-captions | --no-remove-closed-captions]
+                              [--crossfade-ms CROSSFADE_MS] [--auto-forced-subs]
+                              [--forced-threshold FORCED_THRESHOLD] [--auto-sdh] [--auto-sync]
+                              [--auto-sync-all] [--calibration CALIBRATION] [--detect-cuts]
+                              [--quick-sync-check | --no-quick-sync-check] [--reject-coherent-sync]
+                              [--drift-threshold-ms DRIFT_THRESHOLD_MS] [--cadence-auto | --no-cadence-auto]
+                              [--cadence-method {auto,atempo,asetrate}] [--export-workflow EXPORT_WORKFLOW]
+                              [--config CONFIG] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                              [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
+                              [--output-template OUTPUT_TEMPLATE] [--output-all]
+                              [--log-format {text,jsonl,events}] [--verbose] [-i INPUT] [-o OUTPUT]
+                              [--name PROFILE_NAME] [--description DESCRIPTION] [--no-selection]
+                              [--no-metadata] [--no-flags] [--no-order] [--no-audio-variants] [--save]
+                              [--force] [--json]
 ```
 
 | Option | Effet |
@@ -2072,9 +2016,8 @@ Rechercher sur TMDB (25 résultats au plus).
 
 ```text
 muxiveo --cli tmdb search [-h] [--kind {all,movie,tv}] [--year YEAR] [--language LANGUAGE]
-                                 [--tmdb-apikey TMDB_APIKEY] [--json] [--log-format {text,jsonl,events}]
-                                 [--verbose]
-                                 TITRE
+                          [--tmdb-apikey TMDB_APIKEY] [--json] [--log-format {text,jsonl,events}] [--verbose]
+                          TITRE
 ```
 
 | Option | Effet |
@@ -2100,9 +2043,8 @@ Fiche TMDB complète, titre de conteneur et balises MKV.
 
 ```text
 muxiveo --cli tmdb details [-h] [--kind {movie,tv}] [--season SEASON] [--episode EPISODE]
-                                  [--language LANGUAGE] [--tmdb-apikey TMDB_APIKEY] [--json]
-                                  [--log-format {text,jsonl,events}] [--verbose]
-                                  ID
+                           [--language LANGUAGE] [--tmdb-apikey TMDB_APIKEY] [--json]
+                           [--log-format {text,jsonl,events}] [--verbose] ID
 ```
 
 | Option | Effet |
@@ -2131,7 +2073,7 @@ Version de Muxiveo ; --check compare à la dernière release du canal (code 8 si
 
 ```text
 muxiveo --cli version [-h] [--check] [--channel {stable,unstable}] [--install] [--yes]
-                             [--log-format {text,jsonl,events}]
+                      [--log-format {text,jsonl,events}]
 ```
 
 | Option | Effet |
@@ -2249,8 +2191,7 @@ muxiveo --cli config get ffmpeg.threads
 Écrire un réglage dans config.ini (valeur validée).
 
 ```text
-muxiveo --cli config set [-h] [--json] [--log-format {text,jsonl,events}] [--verbose]
-                                SECTION.CLÉ VALEUR
+muxiveo --cli config set [-h] [--json] [--log-format {text,jsonl,events}] [--verbose] SECTION.CLÉ VALEUR
 ```
 
 | Option | Effet |
@@ -2329,8 +2270,7 @@ muxiveo --cli workdir clean --dry-run
 Éléments nettoyables (jobs actifs exclus).
 
 ```text
-muxiveo --cli workdir list [-h] [--work-dir WORK_DIR] [--json] [--log-format {text,jsonl,events}]
-                                  [--verbose]
+muxiveo --cli workdir list [-h] [--work-dir WORK_DIR] [--json] [--log-format {text,jsonl,events}] [--verbose]
 ```
 
 | Option | Effet |
@@ -2351,8 +2291,8 @@ muxiveo --cli workdir list
 Nettoyer le dossier de travail (comme « Nettoyer » au démarrage).
 
 ```text
-muxiveo --cli workdir clean [-h] [--dry-run] [--work-dir WORK_DIR] [--json]
-                                   [--log-format {text,jsonl,events}] [--verbose]
+muxiveo --cli workdir clean [-h] [--dry-run] [--work-dir WORK_DIR] [--json] [--log-format {text,jsonl,events}]
+                            [--verbose]
 ```
 
 | Option | Effet |
@@ -2409,7 +2349,7 @@ Installer une extension (TensorRT : --accept-license).
 
 ```text
 muxiveo --cli plugins install [-h] [--log-format {text,jsonl,events}] [--accept-license] [--force]
-                                     {mvo-rife,mvo-rife-trt,mvo-fel}
+                              {mvo-rife,mvo-rife-trt,mvo-fel}
 ```
 
 | Option | Effet |
@@ -2505,7 +2445,7 @@ Installer NVEncC (apt / dnf, sinon dossier utilisateur).
 
 ```text
 muxiveo --cli nvencc install [-h] [--method {apt,dnf,user,windows}] [--no-sudo] [--json]
-                                    [--log-format {text,jsonl,events}] [--verbose]
+                             [--log-format {text,jsonl,events}] [--verbose]
 ```
 
 | Option | Effet |
@@ -2528,7 +2468,7 @@ Mettre à jour NVEncC si une version plus récente existe.
 
 ```text
 muxiveo --cli nvencc update [-h] [--method {apt,dnf,user,windows}] [--no-sudo] [--json]
-                                   [--log-format {text,jsonl,events}] [--verbose]
+                            [--log-format {text,jsonl,events}] [--verbose]
 ```
 
 | Option | Effet |
@@ -2571,7 +2511,7 @@ Schéma JSON du contrat (jobs, exact-job, profils) ou du catalogue de l'API.
 
 ```text
 muxiveo --cli schema [-h] [--output OUTPUT] [--version {1,exact-job,decision-profile,all,api}]
-                            [--log-format {text,jsonl,events}]
+                     [--log-format {text,jsonl,events}]
 ```
 
 | Option | Effet |
@@ -2619,9 +2559,8 @@ muxiveo --cli help --format md > reference.md
 Exécute une opération du catalogue (voir `operations`) avec une requête JSON stricte. Réponse sur stdout ({status, result | error}), événements versionnés sur stderr.
 
 ```text
-muxiveo --cli call [-h] [--request FICHIER|-] [--ffmpeg FFMPEG] [--ffprobe FFPROBE]
-                          [--mediainfo MEDIAINFO] [--work-dir WORK_DIR] [--threads THREADS]
-                          OPÉRATION
+muxiveo --cli call [-h] [--request FICHIER|-] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
+                   [--work-dir WORK_DIR] [--threads THREADS] OPÉRATION
 ```
 
 | Option | Effet |

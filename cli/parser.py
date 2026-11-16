@@ -35,6 +35,12 @@ class _ExplicitStore(argparse.Action):
 class _ExplicitBoolean(argparse.BooleanOptionalAction):
     """``--x`` / ``--no-x`` mémorisé comme explicite (voir ``_ExplicitStore``)."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Python < 3.12 ajoute « (default: %(default)s) » à l'aide : texte d'origine conservé
+        # (la valeur par défaut est affichée et traduite par l'aide du CLI).
+        self.help = kwargs.get("help")
+
     def __call__(self, parser, namespace, values, option_string=None):
         super().__call__(parser, namespace, values, option_string)
         explicit = set(getattr(namespace, "explicit_options", ()) or ())

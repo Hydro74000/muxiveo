@@ -412,6 +412,35 @@ def _parser_for(root: argparse.ArgumentParser, path: list[str]) -> argparse.Argu
     return current
 
 
+def _markdown_usage(parser: argparse.ArgumentParser, width: int = 110) -> str:
+    """Usage replié par Muxiveo, identique quelle que soit la version de Python.
+
+    Le découpage d'argparse change selon les versions (3.12 sépare « -o » de « OUTPUT ») : l'usage est
+    remis sur une ligne puis replié entre groupes complets (« [...] », « (...) »).
+    """
+    words = parser.format_usage().replace("usage: ", "", 1).split()
+    prog = len(parser.prog.split())
+    groups: list[str] = [" ".join(words[:prog])]
+    current: list[str] = []
+    depth = 0
+    for word in words[prog:]:
+        current.append(word)
+        depth += word.count("[") + word.count("(") - word.count("]") - word.count(")")
+        if depth <= 0:
+            groups.append(" ".join(current))
+            current, depth = [], 0
+    if current:
+        groups.append(" ".join(current))
+    indent = " " * (len(groups[0]) + 1)
+    lines = [groups[0]]
+    for group in groups[1:]:
+        if len(lines[-1]) + 1 + len(group) <= width:
+            lines[-1] += " " + group
+        else:
+            lines.append(indent + group)
+    return "\n".join(lines)
+
+
 def render_markdown(root: argparse.ArgumentParser, language: str = "fra") -> str:
     """Référence Markdown de toutes les commandes et du catalogue de l'API (source de docs/cli/reference.md)."""
     from core.service.catalog import CATALOG
@@ -434,8 +463,7 @@ def render_markdown(root: argparse.ArgumentParser, language: str = "fra") -> str
                 lines += [f"### `{' '.join(path)}`", ""]
                 if sub.description:
                     lines += [t(sub.description), ""]
-                usage = sub.format_usage().replace("usage: ", "").strip()
-                lines += ["```text", usage, "```", ""]
+                lines += ["```text", _markdown_usage(sub), "```", ""]
                 rows = []
                 for action in sub._actions:
                     if isinstance(action, (argparse._HelpAction, argparse._SubParsersAction)):

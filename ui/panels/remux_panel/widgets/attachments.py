@@ -1325,7 +1325,7 @@ class _AttachmentPanel(QFrame):
             self._sync_tag_overrides()
         item.changed.connect(self.changed)
         item.remove_clicked.connect(self._on_remove_item)
-        item.extract_clicked.connect(lambda widget: self.extract_requested.emit(widget.file_id, widget.att))
+        item.extract_clicked.connect(self._on_extract_item)
         self._update_state()
 
     def _set_edited_tags(
@@ -1373,6 +1373,14 @@ class _AttachmentPanel(QFrame):
                 else translate_text("Tags supprimés")
             )
         self._edit_tags_btn.setEnabled(True)
+
+    def _on_extract_item(self, item: _AttachmentItemWidget) -> None:
+        """« Extraire… » d'une pièce jointe embarquée.
+
+        Slot lié (référence faible) : une lambda gardant le panneau en vie le libérerait pendant la
+        destruction différée de l'item, puis détruirait l'item une seconde fois (SIGBUS).
+        """
+        self.extract_requested.emit(item.file_id, item.att)
 
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
