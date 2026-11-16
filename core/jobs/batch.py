@@ -19,10 +19,10 @@ from typing import Any
 from core.config import AppConfig
 from core.bluray import discover_titles, find_disc_root
 from core.file_types import is_accepted
-from core.json_documents import resolve_document_paths
+from core.json_documents import document_path_errors, resolve_document_paths, without_internal_keys
 from core.output_commit import destination_key
 
-from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW
+from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW, EXIT_VALIDATION
 from core.jobs.contract import validate_batch_contract, validate_job_contract
 from core.service.errors import ErrorCode, error_code
 from core.jobs.errors import JobError
@@ -382,6 +382,16 @@ def log_batch_failures(logger: Logger, summary_jobs: list[dict[str, Any]], *, ev
         )
 
 
+def api_file_document(document: Any, base_dir: Path, where: str) -> Any:
+    """Document lu d'un fichier pour une requête de l'API : chemins utilisables ici (déjà résolus depuis le dossier
+    du document), clés internes ``_…`` retirées avant que le moteur n'ajoute les siennes."""
+    errors = document_path_errors(document, base_dir, prefix=where)
+    if errors:
+        raise JobError("Document refusé :\n" + "\n".join(f"- {path} : {message}" for path, message in errors),
+                       EXIT_VALIDATION)
+    return without_internal_keys(document)
+
+
 def run_batch(
     *,
     template_path: str,
@@ -424,6 +434,8 @@ def run_batch(
     # Chemins relatifs du template et des items du fichier batch : résolus
     # depuis le dossier de leur propre document.
     template = load_job_document(Path(template_path))
+    if getattr(options, "api", False):
+        template = api_file_document(template, Path(template_path).expanduser().absolute().parent, "template")
     validate_job_contract(template, require_version=True)
 
     discovery: BatchDiscovery | None = None
@@ -466,6 +478,8 @@ def run_batch(
             break  # Ctrl+C pendant la préparation : aucun job lancé (phase 2)
         if batch_base is not None:
             item = resolve_document_paths(item, batch_base)
+            if getattr(options, "api", False):
+                item = api_file_document(item, batch_base, f"jobs[{job_index}]")
         job = deep_merge(template, item)
         if mux_backend:
             job["mux_backend"] = mux_backend

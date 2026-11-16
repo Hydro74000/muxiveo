@@ -34,6 +34,7 @@ from core.jobs.chapters import chapter_entries
 from core.jobs.constants import EXIT_ARGS, EXIT_VALIDATION
 from core.jobs.contract import validate_job_contract
 from core.jobs.errors import JobError
+from core.json_documents import path_kind
 from core.jobs.inspection import inspect_sources
 from core.jobs.json_io import deep_merge
 from core.jobs.logging import JobLogger as Logger
@@ -367,8 +368,11 @@ def resolve_final_output(
             variables=template_variables,
         )
         rendered = render_output_template(template, ctx)
-        rendered_path = Path(rendered)
-        if rendered_path.is_absolute():
+        kind = path_kind(rendered)
+        if kind == "unusable":  # « C:/out.mkv » sous POSIX, « \\out.mkv » sous Windows : jamais rattaché
+            raise JobError(f"Sortie rendue inutilisable sur ce système : {rendered}", EXIT_VALIDATION)
+        rendered_path = Path(rendered).expanduser()
+        if kind == "absolute":
             return rendered_path
         batch_dir = str(job.get("_batch_output_dir") or "").strip()
         if batch_dir:
@@ -380,7 +384,7 @@ def resolve_final_output(
         if base_dir is None:
             raise JobError(f"Sortie relative « {rendered} » sans dossier de référence : indiquer un dossier de "
                            "sortie (`output` terminé par /) ou un gabarit absolu.", EXIT_VALIDATION)
-        return Path(base_dir) / rendered_path.expanduser()
+        return Path(base_dir) / rendered_path
     raw = job.get("output")
     if raw:
         return Path(str(raw)).expanduser()

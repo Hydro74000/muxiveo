@@ -88,7 +88,9 @@ class ProfileJobRequest(Model):
         """Clés internes ``_…`` des métadonnées ignorées (jamais honorées depuis une requête)."""
         from core.json_documents import without_internal_keys
 
-        return {**values, "metadata": without_internal_keys(values.get("metadata"))}
+        if not isinstance(values.get("metadata"), dict):
+            return values  # champ absent : défaut du modèle
+        return {**values, "metadata": without_internal_keys(values["metadata"])}
 
     @classmethod
     def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:

@@ -111,9 +111,10 @@ def load_decision_profile(path: str | Path, config: AppConfig | None = None, *,
     return profile
 
 
-def snapshot_decision_profile(path: str | Path, config: AppConfig | None = None) -> tuple[tuple[str, str], dict[str, Any]]:
+def snapshot_decision_profile(path: str | Path, config: AppConfig | None = None, *,
+                              base_dir: Path | None = Path()) -> tuple[tuple[str, str], dict[str, Any]]:
     """Fige le document validé et son identité, même après réécriture sans changement de date."""
-    resolved = resolve_decision_profile_path(path, config).resolve()
+    resolved = resolve_decision_profile_path(path, config, base_dir=base_dir).resolve()
     profile = load_decision_profile(resolved, config)
     digest = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     return (str(resolved), digest), profile

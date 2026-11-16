@@ -396,7 +396,8 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         no_cover=meta.no_cover,
         no_attach=meta.no_attach,
         encode_block=request.encode,
-        steps=ProfileBatchSteps(load=load_decision_profile, discover=discover_direct_batch_jobs,
+        steps=ProfileBatchSteps(load=lambda path, conf: load_decision_profile(path, conf, base_dir=ctx.base_dir),
+                                discover=discover_direct_batch_jobs,
                                 build=lambda profile, **kwargs: build_profile_remux_config(
                                     profile, context=PreparationContext(cancel_event=ctx.cancel.event), **kwargs),
                                 preview=children.preview, run=children.run,

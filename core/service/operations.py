@@ -163,9 +163,13 @@ def call(
     En mode tolérant (requête, ou seulement ses documents : ``strict_documents=False``), chaque
     clé inconnue devient un événement ``warning``.
     """
+    # Une seule base : celle de l'appel, sinon celle du contexte ; admission et exécution l'emploient toutes deux.
+    effective = Path(base_dir) if base_dir is not None else ctx.base_dir
+    if not allow_relative and effective != ctx.base_dir:
+        ctx = dataclasses.replace(ctx, base_dir=effective)
     try:
         spec = catalog.get(name)
-        request, warnings = spec.request.parse(payload, strict=strict, base_dir=base_dir,
+        request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,
                                                allow_relative=allow_relative, strict_documents=strict_documents)
     except ApiError as error:
         ctx.events.error(error.to_dict())
@@ -173,6 +177,4 @@ def call(
         raise
     for warning in warnings:
         ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
-    if base_dir is not None and not allow_relative and ctx.base_dir is None:
-        ctx = dataclasses.replace(ctx, base_dir=Path(base_dir))  # valeurs relatives tardives : dossier de la requête
     return execute(spec, request, ctx)

@@ -58,13 +58,13 @@ def path_kind(value: str) -> PathKind:
     ``unusable`` : absolu pour l'autre OS (``C:/film.mkv`` ou UNC sous POSIX) ou ambigu sous Windows
     (``C:film.mkv`` relatif au lecteur, ``\\film.mkv`` enraciné sans lecteur) — jamais rattaché à un dossier.
     """
-    text = value.strip()
-    if Path(text).expanduser().is_absolute():
+    # Valeur classée telle qu'elle sera utilisée (aucun blanc retiré : « /m » précédé d'un espace est relatif).
+    if Path(value).expanduser().is_absolute():
         return "absolute"
-    windows = PureWindowsPath(text)
+    windows = PureWindowsPath(value)
     if os.name == "nt":
         return "unusable" if windows.drive or windows.root else "relative"
-    return "unusable" if windows.drive or text.startswith("\\") else "relative"
+    return "unusable" if windows.drive or value.startswith("\\") else "relative"
 
 
 def _resolve(value: Any, base_dir: Path) -> Any:
@@ -89,7 +89,7 @@ def _map_document_paths(job: dict[str, Any], visit: Callable[[str, str], str], *
     (``preset_base`` : dossier où le chercher). ``output_template`` n'est pas un chemin.
     """
     def one(slot: str, value: Any) -> Any:
-        return visit(slot, value) if isinstance(value, str) and value else value
+        return visit(slot, value) if isinstance(value, str) else value
 
     def sync_of(item: dict[str, Any], slot: str) -> dict[str, Any]:
         sync = item.get("sync")
@@ -196,6 +196,8 @@ def without_internal_keys(document: Any) -> Any:
 
 
 def _path_problem(value: str, base_dir: Path | None) -> str:
+    if not value.strip():
+        return "chemin attendu"
     kind = path_kind(value)
     if kind == "unusable":
         return "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)"

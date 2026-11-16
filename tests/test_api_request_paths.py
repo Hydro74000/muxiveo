@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,7 +35,7 @@ def test_job_paths_need_a_reference_folder_and_never_use_the_process_cwd(tmp_pat
         assert request.job["sources"][0] == str(tmp_path / "req" / "a.mkv")
         assert request.job["work_dir"] == str(tmp_path / "req" / "travail")
         assert request.job["encode"]["preset"] == str(tmp_path / "req" / "presets/x.json")
-    named, _ = MediaJobRequest.parse({"job": {"sources": ["/m/a.mkv"], "output": "/m/o.mkv",
+    named, _ = MediaJobRequest.parse({"job": {"sources": [str(tmp_path / "a.mkv")], "output": str(tmp_path / "o.mkv"),
                                               "encode": {"preset": "Film/4K"}}})
     assert named.job["encode"]["preset"] == "Film/4K"  # nom de preset enregistré : jamais un chemin
 
@@ -52,10 +53,10 @@ def test_paths_of_another_os_are_refused_not_attached(tmp_path):
     assert "inutilisable" in _details(caught.value)["source"]
 
 
-def test_internal_keys_of_a_request_document_are_ignored():
+def test_internal_keys_of_a_request_document_are_ignored(tmp_path):
     from core.service.ops.media import MediaJobRequest
 
-    request, _ = MediaJobRequest.parse({"job": {"sources": ["/m/a.mkv"], "output": "/m/o.mkv",
+    request, _ = MediaJobRequest.parse({"job": {"sources": [str(tmp_path / "a.mkv")], "output": str(tmp_path / "o"),
                                                 "_batch_output_dir": "/ailleurs", "_allow_missing_output_dir": True}})
     assert "_batch_output_dir" not in request.job and "_allow_missing_output_dir" not in request.job
     legacy, _ = MediaJobRequest.parse({"job": {"sources": ["a.mkv"], "_batch_output_dir": "/x"}},
@@ -66,7 +67,7 @@ def test_internal_keys_of_a_request_document_are_ignored():
 def test_profile_request_metadata_is_a_closed_job_subset(tmp_path):
     from core.service.ops.profile import ProfileApplyRequest
 
-    base = {"profile": "Film", "inputs": ["/m/a.mkv"]}
+    base = {"profile": "Film", "inputs": [str(tmp_path / "a.mkv")]}
     with pytest.raises(ApiError) as caught:
         ProfileApplyRequest.parse({**base, "metadata": {"sortie": "x"}})
     assert "metadata.sortie" in _details(caught.value)
@@ -123,7 +124,7 @@ def test_job_tool_keys_are_never_read(monkeypatch):
     monkeypatch.setattr(inspection, "FileInspector", _Inspector)
     config = SimpleNamespace(tool_ffprobe="/opt/ffprobe", tool_mediainfo="/opt/mediainfo")
     with pytest.raises(Exception):
-        inspection.inspect_sources({"sources": ["/m/a.mkv"], "ffprobe": "/tmp/evil", "mediainfo": "/tmp/evil"},
+        inspection.inspect_sources({"sources": ["a.mkv"], "ffprobe": "/tmp/evil", "mediainfo": "/tmp/evil"},
                                    config, CommonOptions(), SimpleNamespace(emit=lambda *a, **k: None))
     assert seen == {"ffprobe": "/opt/ffprobe", "mediainfo": "/opt/mediainfo"}
 
@@ -132,7 +133,7 @@ def test_tmdb_cover_must_come_from_the_tmdb_image_cdn():
     from core.jobs.contract import strict_job_errors, validate_job_contract
     from core.jobs.errors import ContractError
 
-    ok = {"version": 1, "sources": ["/a.mkv"], "tmdb_cover": ["https://image.tmdb.org/t/p/original/x.jpg", "c.jpg"]}
+    ok = {"version": 1, "sources": ["a.mkv"], "tmdb_cover": ["https://image.tmdb.org/t/p/original/x.jpg", "c.jpg"]}
     validate_job_contract(ok, path="job")
     with pytest.raises(ContractError, match="tmdb_cover"):
         validate_job_contract({**ok, "tmdb_cover": ["http://192.168.1.1/admin", "c.jpg"]}, path="job")
@@ -145,7 +146,8 @@ def test_preview_capture_needs_a_folder_without_reference(tmp_path):
 
     ctx = ExecutionContext.create(SimpleNamespace(), ListSink())
     with pytest.raises(ApiError) as caught:
-        call(CATALOG, "encode.preview_capture", {"job": {"sources": ["/m/a.mkv"], "output": "/m/o.mkv"}}, ctx)
+        call(CATALOG, "encode.preview_capture",
+             {"job": {"sources": [str(tmp_path / "a.mkv")], "output": str(tmp_path / "o.mkv")}}, ctx)
     assert caught.value.code is ErrorCode.VALIDATION and "output_dir" in caught.value.message
 
 
@@ -157,3 +159,97 @@ def test_two_pass_log_cleanup_never_touches_the_process_cwd(tmp_path, monkeypatc
     log.write_text("x", encoding="utf-8")
     TwoPassLogCleanupService.cleanup(None)
     assert log.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="conventions Windows")
+def test_windows_drive_relative_and_rooted_paths_are_refused(tmp_path):
+    from core.service.ops.media import MediaJobRequest
+
+    for value in ("C:film.mkv", r"\film.mkv"):
+        with pytest.raises(ApiError) as caught:
+            MediaJobRequest.parse({"job": {"sources": [value], "output": str(tmp_path / "o.mkv")}}, base_dir=tmp_path)
+        assert "inutilisable" in _details(caught.value)["job.sources[0]"]
+
+
+def test_empty_or_padded_sources_are_classified_as_used(tmp_path):
+    from core.service.ops.media import MediaJobRequest
+
+    output = str(tmp_path / "o.mkv")
+    with pytest.raises(ApiError) as caught:
+        MediaJobRequest.parse({"job": {"sources": [""], "output": output}}, base_dir=tmp_path)
+    assert _details(caught.value)["job.sources[0]"] == "chemin attendu"
+    with pytest.raises(ApiError) as caught:  # « ␠/abs » est relatif tel qu'il sera utilisé
+        MediaJobRequest.parse({"job": {"sources": [" " + str(tmp_path / "a.mkv")], "output": output}})
+    assert "job.sources[0]" in _details(caught.value)
+
+
+def test_profile_request_without_metadata_keeps_its_default(tmp_path):
+    from core.service.ops.profile import ProfileApplyRequest
+
+    request, _ = ProfileApplyRequest.parse({"profile": "Film", "inputs": [str(tmp_path / "a.mkv")]})
+    assert request.metadata == {}
+
+
+def test_registered_profile_wins_over_a_homonym_in_the_cwd(tmp_path, monkeypatch):
+    import json
+
+    from core.jobs.profile import load_decision_profile, snapshot_decision_profile
+    from core.profiles.decision import DecisionProfileManager
+
+    registered = {"version": 1, "kind": "decision-profile", "name": "P"}
+    DecisionProfileManager(tmp_path / "profils" / "decision").save(registered)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "P.json").write_text(json.dumps({**registered, "name": "Intrus"}), encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    config = SimpleNamespace(profiles_dir=tmp_path / "profils")
+    assert load_decision_profile("P", config, base_dir=None)["name"] == "P"
+    assert snapshot_decision_profile("P", config, base_dir=None)[1]["name"] == "P"
+    assert load_decision_profile("P", config)["name"] == "Intrus"  # commande historique : dossier courant
+
+
+def test_batch_file_documents_are_checked_and_cleaned_for_api_requests(tmp_path):
+    from core.jobs.batch import api_file_document
+
+    clean = api_file_document({"sources": [str(tmp_path / "a.mkv")], "_batch_output_dir": "."}, tmp_path, "template")
+    assert clean == {"sources": [str(tmp_path / "a.mkv")]}
+    if os.name != "nt":
+        with pytest.raises(JobError) as caught:
+            api_file_document({"sources": ["C:/film.mkv"]}, tmp_path, "jobs[0]")
+        assert "jobs[0].sources[0]" in str(caught.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="conventions POSIX")
+def test_rendered_output_of_another_os_is_refused(tmp_path):
+    from core.jobs.remux_config import resolve_final_output
+
+    with pytest.raises(JobError, match="inutilisable"):
+        resolve_final_output(cli_output=None, job={"output_template": "C:/sorties/film.mkv"},
+                             sources=[SimpleNamespace(path=tmp_path / "Film.mkv")], details=None, base_dir=tmp_path)
+
+
+def test_admission_and_execution_share_one_reference_folder(tmp_path):
+    from dataclasses import dataclass
+
+    from core.service import ExecutionContext, ListSink, Model, call, field, operation
+    from core.service.operations import Catalog
+
+    @dataclass(frozen=True)
+    class _Req(Model):
+        source: Path = field(description="Fichier.")
+
+    @dataclass(frozen=True)
+    class _Res(Model):
+        source: str
+        base: str
+
+    @operation("test.base", request=_Req, result=_Res, summary="Base effective.")
+    def _op(request: _Req, ctx: ExecutionContext) -> _Res:
+        return _Res(source=str(request.source), base=str(ctx.base_dir))
+
+    catalog = Catalog((_op,))
+    ctx = ExecutionContext.create(SimpleNamespace(), ListSink(), base_dir=tmp_path / "ctx")
+    result = call(catalog, "test.base", {"source": "a.mkv"}, ctx)
+    assert (result.source, result.base) == (str(tmp_path / "ctx" / "a.mkv"), str(tmp_path / "ctx"))
+    result = call(catalog, "test.base", {"source": "a.mkv"}, ctx, base_dir=tmp_path / "req")
+    assert (result.source, result.base) == (str(tmp_path / "req" / "a.mkv"), str(tmp_path / "req"))

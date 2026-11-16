@@ -179,7 +179,8 @@ def episode_options(spec: StudioSpec, config: Any, cancel: CancelToken) -> Simpl
     if spec.profile:
         from core.jobs.profile import snapshot_decision_profile
 
-        values["profile_version"], values["profile_snapshot"] = snapshot_decision_profile(spec.profile, config)
+        values["profile_version"], values["profile_snapshot"] = snapshot_decision_profile(
+            spec.profile, config, base_dir=spec.common.base_dir)
     return SimpleNamespace(**values)
 
 

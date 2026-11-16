@@ -544,7 +544,7 @@ def test_profile_batch_failure_after_the_token_is_cancelled_for_the_child(tmp_pa
 
     ctx, sink = _ctx()
     jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv")} for n in "ab"]
-    monkeypatch.setattr(batch_ops, "load_decision_profile", lambda path, config: {})
+    monkeypatch.setattr(batch_ops, "load_decision_profile", lambda path, config, **_k: {})
     monkeypatch.setattr(batch_ops, "discover_direct_batch_jobs", lambda **k: BatchDiscovery(
         jobs=jobs, scanned=2, selected=2, explicit_inputs=0, roots=[]))
     monkeypatch.setattr(batch_ops, "build_profile_remux_config", lambda profile, **k: (SimpleNamespace(
