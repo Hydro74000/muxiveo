@@ -792,7 +792,7 @@ class TestAppConfigWindowsToolAutodetect:
     def test_windows_tool_persistence_writes_ini_atomically_on_load_and_reload(self, tmp_path):
         """Persistance des outils détectés (chargement puis ``reload``) : remplacement atomique, droits conservés."""
         import core.config as cfg_mod
-        from core.atomic_io import atomic_write_text as real_atomic
+        from core.atomic_io import atomic_rewrite_text as real_atomic
         from core.config import AppConfig
 
         ini_path = tmp_path / "config.ini"
@@ -803,15 +803,15 @@ class TestAppConfigWindowsToolAutodetect:
         tool_path.write_text("", encoding="utf-8")
         writes: list[Path] = []
 
-        def recording_atomic(path, content, **kwargs):
+        def recording_atomic(path, content):
             writes.append(Path(path))
-            real_atomic(path, content, **kwargs)
+            real_atomic(path, content)
 
         with patch("core.config.QSettings") as mock_qs, \
              patch("core.config.sys.platform", "win32"), \
              patch("core.config.shutil.which", return_value=None), \
              patch("core.config._app_data_dir", return_value=tmp_path), \
-             patch("core.config.atomic_write_text", side_effect=recording_atomic), \
+             patch("core.config.atomic_rewrite_text", side_effect=recording_atomic), \
              patch.object(cfg_mod, "_INI_PATH", ini_path):
             mock_qs.return_value = self._mock_qsettings()
             cfg = AppConfig()
@@ -1139,6 +1139,25 @@ def test_setup_initializes_ui_language_in_config_ini(tmp_path):
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
     assert "language = fra" in ini_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="droits POSIX")
+def test_setup_rewrites_config_ini_atomically_keeping_its_mode(tmp_path):
+    """Langue (setup) et outils détectés : config.ini remplacé atomiquement, droits conservés."""
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\n[tools]\n", encoding="utf-8")
+    ini_path.chmod(0o640)
+    with patch.object(setup_mod, "atomic_rewrite_text", wraps=setup_mod.atomic_rewrite_text) as rewrite, \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_system_language_code", return_value="fra"):
+        setup_mod.initialize_config_ini_language(dry_run=False, force=False)
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"}, dry_run=False)
+    assert [call.args[0] for call in rewrite.call_args_list] == [ini_path, ini_path]
+    text = ini_path.read_text(encoding="utf-8")
+    assert "language = fra" in text and "ffmpeg = /opt/ffmpeg" in text
+    assert ini_path.stat().st_mode & 0o777 == 0o640
 
 
 def test_setup_windows_first_launch_uses_system_language_without_dialog(tmp_path):

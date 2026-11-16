@@ -26,7 +26,7 @@ from types import ModuleType
 from PySide6.QtCore import QSettings, QStandardPaths
 
 from core import plugins
-from core.atomic_io import atomic_write_text
+from core.atomic_io import atomic_rewrite_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.nvencc_install import user_binary as nvencc_user_binary
 from core.subprocess_utils import subprocess_text_kwargs
@@ -510,12 +510,7 @@ def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str
 
 def _write_ini_text(path: Path, lines: list[str]) -> None:
     """Écrit ``config.ini`` atomiquement (jamais lu à moitié par un autre processus), droits existants conservés."""
-    try:
-        mode: int | None = path.stat().st_mode & 0o777
-    except OSError:
-        mode = None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n", mode=mode)
+    atomic_rewrite_text(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:

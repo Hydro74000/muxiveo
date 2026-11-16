@@ -457,6 +457,11 @@ def _cache_of(spec: PluginSpec, cache_dir: Path | None) -> Path | None:
     return spec.cache_dir() if spec.cache_dir is not None else None
 
 
+def _check_cancelled(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise PluginCancelled("installation annulée")
+
+
 def install(
     spec: PluginSpec,
     root: Path | None = None,
@@ -488,6 +493,7 @@ def install(
         _download(asset, archive, progress, cancel)
         staging.mkdir()
         _extract(archive, staging, asset.name.endswith(".zip"))
+        _check_cancelled(cancel)
         entries = [p for p in staging.iterdir()]
         if len(entries) != 1 or not entries[0].is_dir():
             raise PluginError("structure d'archive inattendue")
@@ -495,6 +501,7 @@ def install(
         if str(manifest.get("version")) != version:
             raise PluginError(f"version {manifest.get('version')} au lieu de {version}")
         _verify_files(entries[0], manifest)
+        _check_cancelled(cancel)  # dernière occasion : ensuite la version est activée
         target = base / f"{version}-{token}"
         entries[0].rename(target)
         atomic_write_text(base / _POINTER, json.dumps(

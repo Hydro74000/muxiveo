@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from core.atomic_io import atomic_rewrite_text
 from core.ui_language import system_ui_language
 from core import nvencc_install
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
@@ -753,8 +754,7 @@ def _update_ini_tools_section(
     if dry_run:
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    atomic_rewrite_text(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _system_language_code() -> str:
@@ -824,8 +824,7 @@ def initialize_config_ini_language(
         ok(f"[dry-run] config.ini UI language would be set to {detected}")
         return
 
-    ini_path.parent.mkdir(parents=True, exist_ok=True)
-    ini_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    atomic_rewrite_text(ini_path, "\n".join(lines).rstrip() + "\n")
     ok(f"config.ini UI language set to {detected}")
 
 

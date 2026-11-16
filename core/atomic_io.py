@@ -37,4 +37,15 @@ def atomic_write_bytes(path: Path, content: bytes, *, mode: int | None = None) -
         Path(name).unlink(missing_ok=True)
 
 
-__all__ = ["atomic_write_bytes", "atomic_write_text"]
+def atomic_rewrite_text(path: Path, content: str) -> None:
+    """Réécrit un fichier de configuration modifié sur place : remplacement atomique, droits existants conservés."""
+    path = Path(path)
+    try:
+        mode: int | None = path.stat().st_mode & 0o777
+    except OSError:
+        mode = None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, content, mode=mode)
+
+
+__all__ = ["atomic_rewrite_text", "atomic_write_bytes", "atomic_write_text"]

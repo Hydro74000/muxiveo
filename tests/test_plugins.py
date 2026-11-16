@@ -184,6 +184,25 @@ def test_cancelled_download_installs_nothing(tmp_path):
     assert plugins.installed_plugin(plugins.TRT, root) is None
 
 
+@pytest.mark.parametrize("phase", ["_extract", "_verify_files"])
+def test_cancel_after_download_never_activates_the_version(tmp_path, monkeypatch, phase):
+    """Annulation pendant l'extraction ou la vérification : rien n'est activé, aucun reste."""
+    root = tmp_path / "plugins"
+    cancel = threading.Event()
+    real = getattr(plugins, phase)
+
+    def then_cancel(*args, **kwargs):
+        result = real(*args, **kwargs)
+        cancel.set()
+        return result
+
+    monkeypatch.setattr(plugins, phase, then_cancel)
+    with pytest.raises(plugins.PluginCancelled):
+        plugins.install(plugins.TRT, root, asset=_archive(tmp_path), cancel=cancel)
+    assert plugins.installed_plugin(plugins.TRT, root) is None
+    assert [p.name for p in (root / plugins.TRT_PLUGIN_ID).iterdir()] == []
+
+
 def test_remove_deletes_plugin_and_engine_cache(tmp_path):
     root = tmp_path / "plugins"
     cache = tmp_path / "trt-engines"
