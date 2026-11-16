@@ -31,6 +31,8 @@ class Logger:
         # Format « events » : journal de la session CLI publié comme événements versionnés.
         self.event_sink = EventStreamSink(self.stream) if fmt == "events" else None
         self.events = Emitter(self.event_sink) if self.event_sink is not None else None
+        # Les workflows publient depuis leurs fils d'exécution (relais directs) : une ligne à la fois.
+        self._lock = threading.Lock()
 
     def emit(self, level: str, message: str, **fields: Any) -> None:
         if self.events is not None:
@@ -38,9 +40,11 @@ class Logger:
             return
         if self.fmt == "jsonl":
             payload = {"level": level.lower(), "message": message, **fields}
-            print(json.dumps(payload, ensure_ascii=False, default=json_default), file=self.stream)
-            return
-        print(f"[{level.upper()}] {message}", file=self.stream)
+            line = json.dumps(payload, ensure_ascii=False, default=json_default)
+        else:
+            line = f"[{level.upper()}] {message}"
+        with self._lock:
+            print(line, file=self.stream)
 
     def workflow_log(self, level: str, message: str) -> None:
         self.emit(level, message)

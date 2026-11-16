@@ -57,10 +57,11 @@ class ApiError(Exception):
         return payload
 
     def render(self) -> str:
-        """Message lisible, détails compris (une ligne par champ)."""
-        if not self.details:
+        """Message lisible, détails compris (une ligne par champ ; ceux que le message cite déjà sont omis)."""
+        extra = [d for d in self.details if d.path or d.message not in self.message]
+        if not extra:
             return self.message
-        lines = [self.message, *(f"- {d.path or '(requête)'} : {d.message}" for d in self.details)]
+        lines = [self.message, *(f"- {d.path or '(requête)'} : {d.message}" for d in extra)]
         return "\n".join(lines)
 
     @classmethod

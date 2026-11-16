@@ -109,6 +109,16 @@ def await_task(
     return outcome["value"]
 
 
+def relay(signal: Any, slot: Callable[..., Any]) -> None:
+    """Relie un signal de workflow à ``slot`` en connexion directe (appel dans le fil émetteur).
+
+    Une connexion automatique vers une fonction se met en file dans le fil où elle a été créée : hors du
+    fil Qt (job d'un service), ce fil n'a pas de boucle d'événements et l'appel ne serait jamais livré.
+    ``slot`` doit donc être thread-safe (``Emitter``, journal verrouillé…).
+    """
+    signal.connect(slot, Qt.ConnectionType.DirectConnection)
+
+
 def _connect(signals: Any, record: Callable[[TaskOutcome], None], *, direct: bool) -> None:
     signals.connect_terminal(
         finished=lambda result="": record(TaskOutcome("finished", result=str(result or ""))),

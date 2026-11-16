@@ -327,6 +327,14 @@ class RemuxError(RuntimeError):
     """Erreur levée lors de la validation ou de l'exécution du remuxage."""
 
 
+class RemuxValidationError(RemuxError):
+    """Remux refusé par la validation : un message par écart (``errors``), joints par des retours à la ligne."""
+
+    def __init__(self, errors: list[str] | tuple[str, ...]) -> None:
+        self.errors = tuple(errors)
+        super().__init__("\n".join(self.errors))
+
+
 # =============================================================================
 # Fabrique depuis FileInfo
 # =============================================================================

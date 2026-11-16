@@ -788,6 +788,41 @@ class TestAppConfigWindowsToolAutodetect:
         assert cfg.tool_dovi_tool == str(tool_path)
         assert f"dovi_tool = {tool_path}" in ini_path.read_text(encoding="utf-8")
 
+    @pytest.mark.skipif(os.name == "nt", reason="droits POSIX")
+    def test_windows_tool_persistence_writes_ini_atomically_on_load_and_reload(self, tmp_path):
+        """Persistance des outils détectés (chargement puis ``reload``) : remplacement atomique, droits conservés."""
+        import core.config as cfg_mod
+        from core.atomic_io import atomic_write_text as real_atomic
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+        ini_path.chmod(0o640)
+        tool_path = tmp_path / "tools" / "dovi_tool.exe"
+        tool_path.parent.mkdir(parents=True, exist_ok=True)
+        tool_path.write_text("", encoding="utf-8")
+        writes: list[Path] = []
+
+        def recording_atomic(path, content, **kwargs):
+            writes.append(Path(path))
+            real_atomic(path, content, **kwargs)
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "win32"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch("core.config.atomic_write_text", side_effect=recording_atomic), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+            ini_path.write_text("[tools]\n", encoding="utf-8")  # valeur retirée entre-temps
+            cfg.reload()
+
+        assert writes == [ini_path, ini_path]  # chargement puis rechargement
+        assert f"dovi_tool = {tool_path}" in ini_path.read_text(encoding="utf-8")
+        assert ini_path.stat().st_mode & 0o777 == 0o640
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".config.ini.")] == []
+
     def test_windows_autodetects_winget_tool_and_updates_ini(self, tmp_path):
         """Un binaire installé via winget est détecté et écrit dans config.ini."""
         import core.config as cfg_mod

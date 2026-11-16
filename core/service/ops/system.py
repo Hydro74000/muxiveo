@@ -134,8 +134,8 @@ class CapabilitiesResult(Model):
            summary="Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO.",
            long_running=True, uses_gpu=True, errors=(ErrorCode.CANCELLED,))
 def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> CapabilitiesResult:
-    """Sondes tuées à l'annulation (jeton transmis aux détecteurs) ; chaque section est en outre attendue sur le
-    jeton (sondes en cache du moteur, bornées à 15 s) : jamais un résultat publié après l'annulation."""
+    """Sondes tuées à l'annulation (jeton transmis aux détecteurs, sondes en cache du moteur bornées à 15 s) ;
+    l'opération attend la fin de chaque section : jamais un résultat publié après l'annulation."""
     import dataclasses
 
     from core import plugins
@@ -185,37 +185,14 @@ def system_capabilities(request: CapabilitiesRequest, ctx: ExecutionContext) -> 
     return CapabilitiesResult(**values)
 
 
-#: Attente maximale d'une sonde annulée (tuée par le jeton) avant de rendre ``cancelled``.
-_CANCEL_GRACE_S = 2.0
-
-
 def _section(ctx: ExecutionContext, probe: Callable[[], Any]) -> Any:
-    """Section de ``system.capabilities`` dans un fil auxiliaire attendu sur le jeton.
+    """Section de ``system.capabilities`` exécutée dans le fil de l'opération.
 
-    Annulation : ses sondes, qui reçoivent le jeton, sont tuées ; le fil est attendu au plus
-    :data:`_CANCEL_GRACE_S` (le temps de tuer la sonde en cours, jamais une attente sans borne), puis ``cancelled`` ;
-    un résultat tardif est ignoré (rien n'est publié). Exception de la sonde : relancée.
+    Ses sondes reçoivent le jeton (tuées à l'annulation) et sont bornées par leur délai : la section se termine
+    toujours, et l'opération ne rend la main qu'après elle (aucune sonde ne survit au job). Annulée entre-temps :
+    ``cancelled``, résultat ignoré (rien n'est publié). Exception de la sonde : relancée.
     """
-    import threading
-
     ctx.cancel.raise_if_cancelled()
-    done = threading.Event()
-    outcome: dict[str, Any] = {}
-
-    def work() -> None:
-        try:
-            outcome["value"] = probe()
-        except BaseException as exc:  # relancée dans le fil de l'opération
-            outcome["error"] = exc
-        finally:
-            done.set()
-
-    threading.Thread(target=work, name="capabilities-probe", daemon=True).start()
-    while not done.wait(0.05):
-        if ctx.cancel.cancelled:
-            done.wait(_CANCEL_GRACE_S)  # sonde tuée avant la fin de l'opération (et du processus CLI)
-            break
+    value = probe()
     ctx.cancel.raise_if_cancelled()
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["value"]
+    return value

@@ -60,6 +60,27 @@ def test_trt_install_requires_license_before_any_download(monkeypatch):
     assert caught.value.exit_code == 2 and "--accept-license" in caught.value.message
 
 
+def test_plugin_install_passes_the_token_and_reports_cancellation(monkeypatch):
+    from core.service.errors import ErrorCode
+
+    monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: "linux-x86_64")
+    monkeypatch.setattr("core.service.ops.plugins.plugin_status", lambda spec, config, feed: {
+        "name": spec.id, "label": "MVO", "available_version": "9.9.9", "compatible": True, "status": ""})
+    ctx, sink = _ctx()
+    seen: list[Any] = []
+
+    def cancelled_install(*_a: Any, cancel: Any = None, **_k: Any) -> None:
+        seen.append(cancel)
+        raise plugins.PluginCancelled("installation annulée")
+
+    monkeypatch.setattr(plugins, "install", cancelled_install)
+    with pytest.raises(Exception) as caught:
+        call(CATALOG, "plugins.install", {"name": "mvo-rife"}, ctx)
+    assert seen == [ctx.cancel.event]
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert [e.data["state"] for e in sink.events if e.type is EventType.STATE][-1] == "cancelled"
+
+
 def test_plugins_update_reports_each_extension(monkeypatch):
     monkeypatch.setattr(plugins, "platform_tag", lambda *_a, **_k: "linux-x86_64")
     statuses = {

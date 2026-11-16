@@ -218,12 +218,35 @@ def test_warm_up_builds_each_model_with_its_rife_model(tmp_path):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 3 if "--uhd" in cmd else 0, stdout="", stderr="error: refusé\n")
 
-    with patch("core.plugins.subprocess.run", side_effect=fake_run):
+    with patch("core.plugins.run_probe", side_effect=fake_run):
         failures = plugins.warm_up(str(rife), plugin, tmp_path / "cache")
     assert len(calls) == 2  # rife-v4.15 sans modèle ncnn : ignoré
     assert all(c[c.index("--backend") + 1] == "tensorrt" and c[c.index("--trt-plugin") + 1] == str(plugin.path) for c in calls)
     assert "--uhd" in calls[1] and "--uhd" not in calls[0]
     assert failures == ["rife-v4.6-uhd : error: refusé"]
+
+
+def test_warm_up_is_cancelled_with_its_running_probe(tmp_path):
+    import threading
+
+    from core.subprocess_utils import ProbeCancelledError
+
+    rife_dir = tmp_path / "rife"
+    (rife_dir / "rife-models" / "rife-v4.6").mkdir(parents=True)
+    (rife_dir / "rife-models" / "rife-v4.6" / "flownet.param").write_text("")
+    rife = rife_dir / "muxiveo-rife"
+    rife.write_text("")
+    plugin = plugins.InstalledPlugin("1.0.0", tmp_path / "plugin", {"models": ["rife-v4.6"]})
+    cancel = threading.Event()
+    seen: list[Any] = []
+
+    def cancelled_probe(cmd, **kw):
+        seen.append(kw.get("cancel_event"))
+        raise ProbeCancelledError("Sonde annulée.")
+
+    with patch("core.plugins.run_probe", side_effect=cancelled_probe), pytest.raises(plugins.PluginCancelled):
+        plugins.warm_up(str(rife), plugin, tmp_path / "cache", cancel=cancel)
+    assert seen == [cancel]  # préparation en cours tuée par le jeton (run_probe)
 
 
 def test_rife_stage_passes_plugin_only_when_given():

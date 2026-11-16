@@ -43,6 +43,7 @@ from core.workflows.remux_mapping import (
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
+    RemuxValidationError,
 )
 from core.workflows.remux_backend import (
     FfmpegRemuxBackend, NativeMatroskaBackend,
@@ -322,7 +323,7 @@ class RemuxWorkflow(QObject):
         )
         errors = self.validate(config, plan=plan)
         if errors:
-            raise RemuxError("\n".join(errors))
+            raise RemuxValidationError(errors)
         if plan.fallback:
             self.log_message.emit(
                 "WARN",

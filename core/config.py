@@ -26,6 +26,7 @@ from types import ModuleType
 from PySide6.QtCore import QSettings, QStandardPaths
 
 from core import plugins
+from core.atomic_io import atomic_write_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.nvencc_install import user_binary as nvencc_user_binary
 from core.subprocess_utils import subprocess_text_kwargs
@@ -155,7 +156,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
                     continue
         kept.append(line)
     if removed:
-        path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        _write_ini_text(path, kept)
     return removed
 
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
@@ -367,7 +368,7 @@ def _sanitize_windows_ini_file(path: Path) -> None:
     sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
     if sanitized != original:
-        path.write_text(sanitized, encoding="utf-8")
+        _write_ini_text(path, sanitized_lines)
 
 
 def rerun_application_setup() -> None:
@@ -507,6 +508,16 @@ def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str
 
 
 
+def _write_ini_text(path: Path, lines: list[str]) -> None:
+    """Écrit ``config.ini`` atomiquement (jamais lu à moitié par un autre processus), droits existants conservés."""
+    try:
+        mode: int | None = path.stat().st_mode & 0o777
+    except OSError:
+        mode = None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, "\n".join(lines).rstrip() + "\n", mode=mode)
+
+
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
     if not tool_values:
@@ -515,8 +526,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_ini_text(path, lines)
 
 
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
@@ -534,8 +544,7 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     if removed_keys:
         lines = _remove_ini_keys(lines, removed_keys)
 
-    _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_ini_text(_INI_PATH, lines)
 
 
 def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
@@ -544,7 +553,7 @@ def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
         return
     lines = _INI_PATH.read_text(encoding="utf-8-sig").splitlines()
     lines = _remove_ini_keys(lines, {section: {key.lower() for key in keys} for section, keys in section_keys.items()})
-    _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_ini_text(_INI_PATH, lines)
 
 
 def config_ini_path() -> Path:

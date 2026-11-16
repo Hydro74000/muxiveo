@@ -12,10 +12,10 @@ from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger
 from core.jobs.options import CommonOptions
 from core.service.context import CancelToken
-from core.service.errors import ApiError, ErrorCode, error_code
-from core.service.jobs import await_task
+from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
+from core.service.jobs import await_task, relay
 from core.workflows.remux import RemuxWorkflow
-from core.workflows.remux_models import RemuxConfig
+from core.workflows.remux_models import RemuxConfig, RemuxValidationError
 
 
 def remux_workflow(config: AppConfig, options: CommonOptions) -> RemuxWorkflow:
@@ -73,11 +73,13 @@ def run_remux(
     if remux_config.output.exists() and not force:
         raise JobError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
     wf = workflow_factory() if workflow_factory is not None else remux_workflow(config, options)
-    wf.log_message.connect(lambda level, message: logger.emit(level, message))
-    wf.backend_event.connect(
-        lambda report: logger.emit("info", "Sélection du backend de remuxage.", event="mux_backend", **dict(report))
-    )
-    signals = wf.run(remux_config)
+    relay(wf.log_message, lambda level, message: logger.emit(level, message))
+    relay(wf.backend_event,
+          lambda report: logger.emit("info", "Sélection du backend de remuxage.", event="mux_backend", **dict(report)))
+    try:
+        signals = wf.run(remux_config)
+    except RemuxValidationError as exc:  # refus avant tout lancement : code public « validation », un détail par écart
+        raise ApiError(ErrorCode.VALIDATION, str(exc), details=[ErrorDetail("", error) for error in exc.errors]) from exc
     progress: Any = (lambda line: logger.emit("info", line)) if options.verbose else None
     outcome = await_task(signals, cancel, on_progress=progress)
     if outcome.status == "finished":

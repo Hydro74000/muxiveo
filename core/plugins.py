@@ -48,7 +48,7 @@ from pathlib import Path
 from core.atomic_io import atomic_write_text
 from core.file_lock import FileLock, lock_is_free
 from core.github_release import ReleaseAsset, fetch_release_by_repo, file_sha256, select_asset, verify_download
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe
 from core.version import (
     APP_USER_AGENT,
     MUXIVEO_PLUGINS_REPOSITORY,
@@ -537,11 +537,13 @@ def _probe_y4m() -> bytes:
 
 
 def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = None,
-            log: Callable[[str], None] | None = None, timeout: float = 300.0) -> list[str]:
+            log: Callable[[str], None] | None = None, timeout: float = 300.0,
+            cancel: threading.Event | None = None) -> list[str]:
     """Prépare (et met en cache) le moteur TensorRT de chaque modèle fourni ; retourne les échecs.
 
     Sert aussi de test de bon fonctionnement juste après l'installation. Les modèles dont muxiveo-rife n'a
-    pas la version ncnn (repli Vulkan) sont ignorés.
+    pas la version ncnn (repli Vulkan) sont ignorés. ``cancel`` : préparation en cours tuée, puis
+    :class:`PluginCancelled`.
     """
     cache_dir = cache_dir or trt_engine_cache_dir()
     models_dir = Path(shutil.which(rife_bin) or rife_bin).resolve().parent / "rife-models"
@@ -563,11 +565,10 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
             if log:
                 log(name)
             try:
-                # Binaire muxiveo-rife configuré, arguments construits ici, sans shell.
-                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                result = subprocess.run(  # nosec B603
-                    cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
-                )
+                # Binaire muxiveo-rife configuré, arguments construits ici, sans shell ; tué à l'annulation.
+                result = run_probe(cmd, timeout=timeout, cancel_event=cancel)
+            except ProbeCancelledError as exc:
+                raise PluginCancelled("préparation du moteur annulée") from exc
             except (OSError, subprocess.SubprocessError) as exc:
                 failures.append(f"{name} : {exc}")
                 continue

@@ -1899,22 +1899,20 @@ def test_capabilities_never_publishes_a_late_result_and_relays_probe_errors(monk
     ctx = ExecutionContext.create(SimpleNamespace(), sink)
     returned = threading.Event()
 
-    def slow_gpu(_rife, **kwargs):  # sonde qui ignore le jeton : l'opération n'attend pas
+    def slow_gpu(_rife, **kwargs):  # sonde qui ignore le jeton : attendue (aucune sous-tâche ne survit au job)
         seen.append(kwargs.get("cancel_event"))
-        time.sleep(5)
+        time.sleep(0.6)
         returned.set()
         return interpolation.GpuAcceleration(interpolation.NvofCapability(reason="tard"),
                                              interpolation.TrtCapability(reason="tard"))
 
     monkeypatch.setattr(interpolation, "detect_gpu_acceleration", slow_gpu)
-    threading.Timer(0.2, ctx.cancel.cancel).start()
-    start = time.monotonic()
+    threading.Timer(0.1, ctx.cancel.cancel).start()
     with pytest.raises(Exception) as caught:
         call(CATALOG, "system.capabilities", {"sections": ["gpu"]}, ctx)
-    # Délai de grâce (2 s, temps de tuer une sonde qui reçoit le jeton), jamais toute la sonde (5 s).
-    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED and time.monotonic() - start < 3
+    assert ApiError.from_exception(caught.value).code is ErrorCode.CANCELLED
+    assert returned.is_set()  # la sonde est terminée quand l'opération rend la main…
     assert seen == [ctx.cancel.event]  # jeton transmis à la sonde
-    assert returned.wait(10)  # retour tardif effectivement survenu…
     from core.service.events import EventType
 
     assert not any(e.type is EventType.RESULT for e in sink.events)  # …sans rien publier

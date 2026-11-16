@@ -93,14 +93,18 @@ def _install(ctx: ExecutionContext, spec: plugins.PluginSpec, status: dict[str, 
             display(done, total)
 
     try:
-        installed = plugins.install(spec, version=status["available_version"], progress=progress)
+        installed = plugins.install(spec, version=status["available_version"], progress=progress,
+                                    cancel=ctx.cancel.event)
+    except plugins.PluginCancelled:
+        _end_display(ctx)
+        raise  # code public « cancelled » (core.service.errors)
     except plugins.PluginError as exc:
         _end_display(ctx)
         raise _fail(ctx, f"Installation impossible : {exc}", EXIT_WORKFLOW) from exc
     _end_display(ctx)
     if spec is plugins.TRT:
         rife = getattr(ctx.config, "tool_muxiveo_rife", None) or ""
-        failures = plugins.warm_up(rife, installed,
+        failures = plugins.warm_up(rife, installed, cancel=ctx.cancel.event,
                                    log=lambda m: ctx.events.log("info", f"Préparation du moteur {m}")) if rife else []
         if failures:
             raise _fail(ctx, "Extension installée mais inutilisable ici : " + "; ".join(failures[:2]), EXIT_TOOL,

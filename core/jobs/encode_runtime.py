@@ -18,8 +18,8 @@ from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger
 from core.jobs.options import CommonOptions
 from core.service.context import CancelToken
-from core.service.errors import ApiError, ErrorCode, error_code
-from core.service.jobs import await_task
+from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
+from core.service.jobs import await_task, relay
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
 from core.workflows.encode.workflow import EncodeWorkflow
 
@@ -180,7 +180,7 @@ def run_encode(
     if encode_config.output.exists() and not force:
         raise JobError(f"Sortie déjà existante : {encode_config.output} (utiliser --force)", EXIT_EXISTS)
     wf = workflow_factory() if workflow_factory is not None else encode_workflow(config, options)
-    wf.log_message.connect(lambda level, message: logger.emit(level, message))
+    relay(wf.log_message, lambda level, message: logger.emit(level, message))
     with probe_cancel_scope(wf, cancel.event):  # sondes internes annulables jusqu'au nettoyage
         return _run_checked_encode(wf, encode_config, options=options, config=config, logger=logger, cancel=cancel,
                                    accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, on_progress=on_progress)
@@ -194,7 +194,8 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
                                      cancel_event=cancel.event)
     errors = wf.validate(encode_config)
     if errors:
-        raise JobError("Encodage refusé :\n" + "\n".join(f"- {error}" for error in errors), EXIT_VALIDATION)
+        raise ApiError(ErrorCode.VALIDATION, "Encodage refusé :\n" + "\n".join(f"- {error}" for error in errors),
+                       details=[ErrorDetail("", error) for error in errors])
 
     def progress(line: str) -> None:
         event = wf.parse_progress(encode_config, line)
@@ -206,7 +207,7 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
     keep = bool(getattr(options, "keep_failed_work_dir", False))
     retained: list[Any] = []
     if keep:
-        wf.failed_work_dir_retained.connect(retained.append)
+        relay(wf.failed_work_dir_retained, retained.append)
     signals = wf.run(encode_config, validate=False, retain_failed_work_dir=keep)
     outcome = await_task(signals, cancel, on_progress=progress)
     for item in retained:  # échec avec fichiers produits : dossier gardé, proposé au prochain « Nettoyer »

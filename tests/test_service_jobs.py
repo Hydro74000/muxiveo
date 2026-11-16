@@ -188,6 +188,87 @@ def test_run_remux_cancel_too_late_keeps_success(qapp, monkeypatch, tmp_path):
         in logger.records
 
 
+def _in_job_thread(target) -> dict[str, Any]:
+    """Exécute ``target`` dans un fil sans boucle Qt (job d'un service) ; renvoie son résultat ou son erreur."""
+    outcome: dict[str, Any] = {}
+
+    def job() -> None:
+        try:
+            outcome["result"] = target()
+        except BaseException as exc:  # noqa: BLE001 - restitué au test
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=job)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive()
+    return outcome
+
+
+def test_run_remux_off_qt_thread_delivers_workflow_logs(qapp, monkeypatch, tmp_path):
+    """Workflow créé dans un fil de job, journal émis depuis son fil d'exécution : livré (relais direct)."""
+    created: dict[str, _FakeWorkflow] = {}
+
+    def work(signals: TaskSignals) -> None:
+        created["wf"].log_message.emit("INFO", "étape 1")
+        signals.finished.emit("ok")
+
+    def factory(_config, _options) -> _FakeWorkflow:
+        created["wf"] = _FakeWorkflow(work)
+        return created["wf"]
+
+    monkeypatch.setattr(runtime, "remux_workflow", factory)
+    logger = _Logger()
+    outcome = _in_job_thread(lambda: runtime.run_remux(
+        SimpleNamespace(output=tmp_path / "out.mkv"), config=SimpleNamespace(), options=CommonOptions(),
+        logger=logger, cancel=CancelToken()))
+    assert outcome == {"result": "ok"}
+    assert ("INFO", "étape 1", {}) in logger.records
+    assert logger.records[0][2]["event"] == "mux_backend"
+
+
+class _FakeEncodeWorkflow(QObject):
+    log_message = Signal(str, str)
+    failed_work_dir_retained = Signal(object)
+
+    def __init__(self, work) -> None:
+        super().__init__()
+        self._work = work
+
+    def validate(self, _config) -> list[str]:
+        return []
+
+    def parse_progress(self, _config, _line):
+        return None
+
+    def run(self, _config, *, validate: bool, retain_failed_work_dir: bool) -> TaskSignals:
+        return _start(self._work)
+
+
+def test_run_encode_off_qt_thread_delivers_workflow_logs(qapp, monkeypatch, tmp_path):
+    from core.jobs import encode_runtime
+
+    created: dict[str, _FakeEncodeWorkflow] = {}
+
+    def work(signals: TaskSignals) -> None:
+        created["wf"].log_message.emit("WARN", "repli")
+        signals.finished.emit("Encodage terminé")
+
+    def factory() -> _FakeEncodeWorkflow:
+        created["wf"] = _FakeEncodeWorkflow(work)
+        return created["wf"]
+
+    monkeypatch.setattr(encode_runtime, "prepare_vulkan", lambda *a, **k: None)
+    monkeypatch.setattr(encode_runtime, "align_dovi_nvenc", lambda config, *a, **k: config)
+    logger = _Logger()
+    outcome = _in_job_thread(lambda: encode_runtime.run_encode(
+        SimpleNamespace(output=tmp_path / "out.mkv"), config=SimpleNamespace(tool_ffmpeg="ffmpeg"),
+        options=CommonOptions(), logger=logger, cancel=CancelToken(),
+        workflow_factory=factory))  # type: ignore[arg-type]
+    assert outcome == {"result": "Encodage terminé"}
+    assert ("WARN", "repli", {}) in logger.records
+
+
 def test_run_remux_refuses_existing_output(qapp, monkeypatch, tmp_path):
     (tmp_path / "out.mkv").write_bytes(b"x")
     _logger, result = _run_remux(monkeypatch, tmp_path, lambda s: s.finished.emit(""))
