@@ -351,6 +351,13 @@ def test_job_options_round_trip_common_options():
                             cadence_method="atempo", verbose=True)
     payload = media.JobOptions.from_common(options)
     parsed = media.JobOptions.from_dict(payload, allow_relative=True)
-    rebuilt = parsed.to_common(media.Overrides(ffprobe="/x/ffprobe"))
+    from core.service.context import Overrides
+
+    ctx = ExecutionContext.create(SimpleNamespace(), ListSink(), overrides=Overrides(ffprobe="/x/ffprobe"), api=False,
+                                  base_dir=Path("/jobs"))
+    rebuilt = parsed.to_common(ctx)
     assert rebuilt == CommonOptions(ffprobe="/x/ffprobe", sync_mode="physical", calibration="c.json",
-                                    drift_threshold_ms=40, cadence_method="atempo", verbose=True)
+                                    drift_threshold_ms=40, cadence_method="atempo", verbose=True, api=False,
+                                    base_dir=Path("/jobs"))
+    api = parsed.to_common(ExecutionContext.create(SimpleNamespace(), ListSink()))  # requête de l'API : aucun dossier implicite
+    assert api.api is True and api.base_dir is None

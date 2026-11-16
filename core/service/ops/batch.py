@@ -86,6 +86,14 @@ class BatchRequest(Model):
         return encode_block_errors(values.get("encode"), "encode")
 
     @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : preset fichier du bloc ``encode`` et profil fichier utilisables ici."""
+        from core.json_documents import encode_path_errors, reference_path_errors
+
+        return (encode_path_errors(values.get("encode"), base_dir)
+                + reference_path_errors("profile", values.get("profile"), base_dir, name_allowed=True))
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Depuis le dossier de la requête : profil fichier, preset fichier du bloc ``encode``."""
         from core.json_documents import resolve_encode_paths, resolve_profile_reference
@@ -125,6 +133,14 @@ class ProfileBatchRequest(Model):
         from core.service.schemas.encode import encode_block_errors
 
         return encode_block_errors(values.get("encode"), "encode")
+
+    @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : preset fichier du bloc ``encode`` et profil fichier utilisables ici."""
+        from core.json_documents import encode_path_errors, reference_path_errors
+
+        return (encode_path_errors(values.get("encode"), base_dir)
+                + reference_path_errors("profile", values.get("profile"), base_dir, name_allowed=True))
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
@@ -322,7 +338,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
         continue_on_error=request.continue_on_error,
         summary_path=str(request.summary) if request.summary is not None else None,
         config=ctx.config,
-        options=request.options.to_common(ctx.overrides, export_directory=True),
+        options=request.options.to_common(ctx, export_directory=True),
         logger=EmitterLogger(ctx.events),
         auto_tmdb=meta.auto_tmdb,
         tmdb_id=meta.tmdb_id,
@@ -367,7 +383,7 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         continue_on_error=request.continue_on_error,
         summary_path=str(request.summary) if request.summary is not None else None,
         config=ctx.config,
-        options=request.options.to_common(ctx.overrides, export_directory=True),
+        options=request.options.to_common(ctx, export_directory=True),
         logger=EmitterLogger(ctx.events),
         auto_tmdb=meta.auto_tmdb,
         tmdb_id=meta.tmdb_id,

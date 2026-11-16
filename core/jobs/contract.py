@@ -15,6 +15,9 @@ from core.jobs.constants import (
 )
 from core.jobs.errors import ContractError
 
+#: Couvertures TMDB acceptées dans un job (``tmdb_cover``) : images du CDN TMDB, seule source de l'interface.
+TMDB_IMAGE_URL_PREFIX = "https://image.tmdb.org/"
+
 
 def _type_name(value: Any) -> str:
     if isinstance(value, bool):
@@ -319,6 +322,9 @@ def validate_job_contract(job: dict[str, Any], *, path: str = "$", require_versi
     if "tmdb_cover" in job and (not isinstance(job["tmdb_cover"], list) or len(job["tmdb_cover"]) != 2
                                or not all(isinstance(value, str) for value in job["tmdb_cover"])):
         errors.append(f"{path}.tmdb_cover: attendu [url, nom]")
+    elif "tmdb_cover" in job and not job["tmdb_cover"][0].startswith(TMDB_IMAGE_URL_PREFIX):
+        # Seule source produite par l'interface : jamais une requête réseau vers une autre adresse.
+        errors.append(f"{path}.tmdb_cover: URL {TMDB_IMAGE_URL_PREFIX}… attendue")
     if "sources" in job:
         sources = job["sources"]
         if isinstance(sources, str):

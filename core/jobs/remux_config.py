@@ -343,11 +343,13 @@ def resolve_final_output(
     final_track_order: list[tuple[int, int, str]] | None = None,
     preview: bool = False,
     variables: dict[str, Any] | None = None,
+    base_dir: Path | None = Path(),
 ) -> Path:
     """Calcule le chemin de sortie final, en rendant le template si présent.
 
     Priorité : ``cli_output`` > ``job.output_template`` > ``job.output`` >
-    fallback preview > erreur.
+    fallback preview > erreur. Gabarit rendu relatif sans dossier de sortie : sous ``base_dir`` (dossier de
+    référence ; ``None`` : refusé, jamais le dossier courant d'un service).
     """
     if cli_output:
         return Path(str(cli_output)).expanduser()
@@ -368,14 +370,17 @@ def resolve_final_output(
         rendered_path = Path(rendered)
         if rendered_path.is_absolute():
             return rendered_path
-        base_dir = str(job.get("_batch_output_dir") or "").strip()
-        if base_dir:
-            return Path(base_dir).expanduser() / rendered_path
-        # `-o dossier` + template relatif : le dossier sert de base (sinon cwd).
+        batch_dir = str(job.get("_batch_output_dir") or "").strip()
+        if batch_dir:
+            return Path(batch_dir).expanduser() / rendered_path
+        # `-o dossier` + template relatif : le dossier sert de base (sinon le dossier de référence).
         raw_output = str(job.get("output") or "").strip()
         if raw_output and (raw_output.endswith(("/", "\\")) or Path(raw_output).expanduser().is_dir()):
             return Path(raw_output).expanduser() / rendered_path
-        return rendered_path.expanduser()
+        if base_dir is None:
+            raise JobError(f"Sortie relative « {rendered} » sans dossier de référence : indiquer un dossier de "
+                           "sortie (`output` terminé par /) ou un gabarit absolu.", EXIT_VALIDATION)
+        return Path(base_dir) / rendered_path.expanduser()
     raw = job.get("output")
     if raw:
         return Path(str(raw)).expanduser()
@@ -568,6 +573,7 @@ def build_remux_config(
         tracks=tracks,
         final_track_order=final_track_order,
         variables=job.get("variables") if isinstance(job.get("variables"), dict) else None,
+        base_dir=options.base_dir,
     )
 
     tmdb_wins = auto_tmdb_metadata_enabled(job)

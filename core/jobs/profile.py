@@ -55,7 +55,10 @@ from core.jobs.remux_config import (
 from core.jobs.tmdb import auto_tmdb_metadata_enabled
 
 
-def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None = None) -> list[Path]:
+def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None = None, *,
+                             base_dir: Path | None = Path()) -> list[Path]:
+    """Fichiers candidats d'un profil : chemin donné (relatif : sous ``base_dir``, jamais sans dossier de
+    référence), puis profils enregistrés."""
     raw_text = str(raw_profile or "").strip()
     raw = Path(raw_text).expanduser()
     candidates: list[Path] = []
@@ -64,9 +67,11 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
         if path not in candidates:
             candidates.append(path)
 
-    add(raw)
-    if not raw.suffix:
-        add(raw.with_suffix(".json"))
+    given = raw if raw.is_absolute() else (Path(base_dir) / raw if base_dir is not None else None)
+    if given is not None:
+        add(given)
+        if not given.suffix:
+            add(given.with_suffix(".json"))
 
     if config is not None:
         default_dir = Path(config.profiles_dir) / "decision"
@@ -83,16 +88,19 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
     return candidates
 
 
-def resolve_decision_profile_path(raw_profile: str | Path, config: AppConfig | None = None) -> Path:
-    for candidate in _profile_path_candidates(raw_profile, config):
+def resolve_decision_profile_path(raw_profile: str | Path, config: AppConfig | None = None, *,
+                                  base_dir: Path | None = Path()) -> Path:
+    candidates = _profile_path_candidates(raw_profile, config, base_dir=base_dir)
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
-    searched = ", ".join(str(path) for path in _profile_path_candidates(raw_profile, config))
+    searched = ", ".join(str(path) for path in candidates)
     raise JobError(f"Profil introuvable : {raw_profile}. Chemins testés : {searched}", EXIT_ARGS)
 
 
-def load_decision_profile(path: str | Path, config: AppConfig | None = None) -> dict[str, Any]:
-    profile_path = resolve_decision_profile_path(path, config)
+def load_decision_profile(path: str | Path, config: AppConfig | None = None, *,
+                          base_dir: Path | None = Path()) -> dict[str, Any]:
+    profile_path = resolve_decision_profile_path(path, config, base_dir=base_dir)
     profile = load_json(profile_path)
     try:
         validate_decision_profile(profile)
@@ -236,6 +244,7 @@ def build_profile_remux_config(
         final_track_order=final_track_order,
         preview=preview,
         variables=_output_variables(profile, metadata),
+        base_dir=options.base_dir,
     )
     tmdb_wins = auto_tmdb_metadata_enabled(metadata)
     tag_overrides = merge_tmdb_tag_overrides(

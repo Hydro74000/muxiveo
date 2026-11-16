@@ -65,10 +65,30 @@ class ProfileJobRequest(Model):
 
     @classmethod
     def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
-        """Clés inconnues du bloc ``encode`` (refusées en requête, signalées en CLI)."""
+        """Clés inconnues du bloc ``encode`` et des métadonnées (sous-ensemble d'un job), refusées en requête."""
+        from core.jobs.schema import unknown_job_keys
         from core.service.schemas.encode import encode_block_issues
 
-        return encode_block_issues(values.get("encode"), "encode")
+        metadata = values.get("metadata")
+        unknown = [(key, "clé inconnue du contrat de job") for key in unknown_job_keys(metadata, path="metadata")]
+        return encode_block_issues(values.get("encode"), "encode") + unknown
+
+    @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : profil, sortie, preset et chemins des métadonnées utilisables ici."""
+        from core.json_documents import document_path_errors, encode_path_errors, reference_path_errors
+
+        return (reference_path_errors("profile", values.get("profile"), base_dir, name_allowed=True)
+                + reference_path_errors("output", values.get("output"), base_dir, name_allowed=False)
+                + encode_path_errors(values.get("encode"), base_dir)
+                + document_path_errors(values.get("metadata"), base_dir, prefix="metadata"))
+
+    @classmethod
+    def without_internal_keys(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Clés internes ``_…`` des métadonnées ignorées (jamais honorées depuis une requête)."""
+        from core.json_documents import without_internal_keys
+
+        return {**values, "metadata": without_internal_keys(values.get("metadata"))}
 
     @classmethod
     def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
@@ -81,11 +101,13 @@ class ProfileJobRequest(Model):
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Depuis le dossier de la requête : profil fichier, sortie (``/`` final gardé), preset fichier du bloc
         ``encode``."""
-        from core.json_documents import resolve_encode_paths, resolve_output_reference
+        from core.json_documents import resolve_document_paths, resolve_encode_paths, resolve_output_reference
 
         values = _resolve_profile(values, base_dir)
         if isinstance(values.get("output"), str):
             values = {**values, "output": resolve_output_reference(values["output"], base_dir)}
+        if isinstance(values.get("metadata"), dict):
+            values = {**values, "metadata": resolve_document_paths(values["metadata"], base_dir)}
         if isinstance(values.get("encode"), dict):
             values = {**values, "encode": resolve_encode_paths(values["encode"], base_dir)}
         return values
@@ -121,13 +143,13 @@ class ProfilePreviewResult(Model):
 @operation("profile.validate", request=ProfileRequest, result=ProfileValidateResult,
            summary="Valider un profil décisionnel v1.", errors=(ErrorCode.VALIDATION,))
 def profile_validate(request: ProfileRequest, ctx: ExecutionContext) -> ProfileValidateResult:
-    summary = profile_summary(load_decision_profile(request.profile, ctx.config))
+    summary = profile_summary(load_decision_profile(request.profile, ctx.config, base_dir=ctx.base_dir))
     return ProfileValidateResult(**summary)
 
 
 def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
-    options = request.options.to_common(ctx.overrides)
-    profile = load_decision_profile(request.profile, ctx.config)
+    options = request.options.to_common(ctx)
+    profile = load_decision_profile(request.profile, ctx.config, base_dir=options.base_dir)
     remux_config, report = build_profile_remux_config(
         profile,
         cli_inputs=[str(path) for path in request.inputs],

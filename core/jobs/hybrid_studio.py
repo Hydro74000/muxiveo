@@ -238,7 +238,7 @@ def check_outputs(prepared: Sequence[PreparedEpisode], template: str = "") -> No
 
 
 def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
-                encode: dict[str, Any] | None = None) -> list[Path]:
+                encode: dict[str, Any] | None = None, base_dir: Path | None = Path()) -> list[Path]:
     """Exact-jobs finalisés des épisodes préparés (« Sauvegarder les workflows » du Studio).
 
     ``encode`` : bloc d'encodage de la commande, conservé dans chaque job exact.
@@ -248,7 +248,7 @@ def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
 
     from core.json_documents import portable_encode_block
 
-    encode = portable_encode_block(encode)
+    encode = portable_encode_block(encode, base_dir)
     ready = [item.remux_config for item in prepared if item.remux_config is not None]
     payloads = [(directory / (config.output.stem + ".exact-job.json"),
                  {**remux_config_to_exact_job(config), **({"encode": encode} if encode is not None else {})})

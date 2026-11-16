@@ -472,8 +472,10 @@ class TwoPassLogCleanupService:
 
     @staticmethod
     def cleanup(cwd: Path | None) -> None:
-        base_dir = cwd or Path.cwd()
-        for path in base_dir.glob("ffmpeg2pass-*.log*"):
+        """Journaux de deux passes du dossier de travail ; sans dossier, rien (jamais le dossier courant)."""
+        if cwd is None:
+            return
+        for path in cwd.glob("ffmpeg2pass-*.log*"):
             try:
                 path.unlink(missing_ok=True)
             except OSError:

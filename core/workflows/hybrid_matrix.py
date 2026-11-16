@@ -1014,7 +1014,8 @@ def prepare_matrix_episode(
     if profile_name:
         from core.jobs.profile import build_profile_remux_config, load_decision_profile
         snapshot = getattr(options, "profile_snapshot", None)
-        profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(profile_name, config))
+        profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(
+            profile_name, config, base_dir=getattr(options, "base_dir", Path())))
         profile.pop("auto_sync", None)
         profile.pop("sync", None)
         remux_config, report = build_profile_remux_config(

@@ -91,11 +91,21 @@ def snapshot_config(config: Any) -> Any:
 
 @dataclass(frozen=True)
 class ExecutionContext:
+    """Contexte d'un appel.
+
+    ``api`` : requête de l'API (``call``, service, intégration Python ; faux pour les commandes historiques du
+    CLI) — paramètres libres de l'encodeur limités à ses options. ``base_dir`` : dossier de référence des
+    valeurs relatives (commande historique : dossier courant ; ``call`` : dossier de la requête ; service : celui
+    de la soumission) ; ``None`` : aucune valeur relative n'est acceptée, jamais le dossier courant du processus.
+    """
+
     config: Any
     events: Emitter
     cancel: CancelToken = field(default_factory=CancelToken)
     overrides: Overrides = field(default_factory=Overrides)
     ports: Mapping[str, Callable[..., Any]] = field(default_factory=dict)
+    api: bool = True
+    base_dir: Path | None = None
 
     @classmethod
     def create(
@@ -108,6 +118,8 @@ class ExecutionContext:
         cancel: CancelToken | None = None,
         overrides: Overrides | None = None,
         ports: Mapping[str, Callable[..., Any]] | None = None,
+        api: bool = True,
+        base_dir: Path | None = None,
     ) -> ExecutionContext:
         return cls(
             config=snapshot_config(config),
@@ -115,6 +127,8 @@ class ExecutionContext:
             cancel=cancel or CancelToken(),
             overrides=overrides or Overrides(),
             ports=dict(ports or {}),
+            api=api,
+            base_dir=base_dir,
         )
 
     def tool(self, name: str) -> str:

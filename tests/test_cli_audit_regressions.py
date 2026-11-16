@@ -526,7 +526,8 @@ def test_real_exact_job_exports_pass_the_strict_contract(tmp_path):
         sources=sources, output=tmp_path / "out.mkv",
         track_order=[(0, 0, "v0"), (0, 1, "a0"), (0, 1, "var1"), (1, 0, "s1")],
         extra_attachments=[tmp_path / "cover.jpg"], file_title="Film", tag_overrides={"SEASON": "1", "EPISODE": "2"},
-        tmdb_cover=("https://image/x.jpg", "cover.jpg"), sync_mode="physical", sync_subtitles="none",
+        tmdb_cover=("https://image.tmdb.org/t/p/original/x.jpg", "cover.jpg"), sync_mode="physical",
+        sync_subtitles="none",
         sync_calibrations={"1": {"segments": [{"start_ms": 0, "shift_ms": 80.0}]}},
         chapter_overrides=[SimpleNamespace(timecode_s=0.0, name="Début")], chapter_source_index=0,
     )
@@ -710,7 +711,8 @@ def test_registered_preset_names_with_a_slash_stay_names(monkeypatch, tmp_path):
     ProfileManager(tmp_path / "presets").save(EncodePreset(name="Film/4K", codec="libx265", crf=18, preset="slow"))
     monkeypatch.chdir(tmp_path)
     assert preset_loader(tmp_path / "presets")("Film/4K").crf == 18
-    assert portable_encode_block({"preset": "Film/4K"}) == {"preset": "Film/4K"}
+    assert portable_encode_block({"preset": "Film/4K"}, tmp_path) == {"preset": "Film/4K"}
+    assert portable_encode_block({"preset": "Film/4K"}, None) == {"preset": "Film/4K"}
     assert resolve_document_paths({"encode": {"preset": "Film/4K"}}, tmp_path)["encode"]["preset"] == "Film/4K"
     request = HybridPlanRequest.parse({"output_dir": "o", "encode": {"preset": "Film/4K"}}, base_dir=tmp_path)[0]
     assert request.encode == {"preset": "Film/4K"}
@@ -1583,7 +1585,8 @@ def test_cli_options_merged_into_a_read_job_then_its_portable_block_keep_the_sta
         settings = _hdr10_encode(merged["encode"])
         assert (settings.static_hdr_metadata_analysis_request, settings.max_cll) == expected, argv
         exported = tmp_path / "export.json"
-        exported.write_text(json.dumps({**merged, "encode": portable_encode_block(merged["encode"])}), encoding="utf-8")
+        exported.write_text(json.dumps({**merged, "encode": portable_encode_block(merged["encode"], Path.cwd())}),
+                            encoding="utf-8")
         reread = _hdr10_encode(load_job_document(exported)["encode"])
         assert (reread.static_hdr_metadata_analysis_request, reread.max_cll) == expected, argv
 
@@ -2178,19 +2181,38 @@ def _family_script(path: Path, slow: str) -> Path:
     return path
 
 
-def test_windows_path_conventions_stay_untouched_in_requests(tmp_path):
-    """Requêtes publiques (``from_dict`` avec dossier de base) : lecteur, racine simple, UNC jamais préfixés."""
+def test_windows_path_conventions_are_never_rebased_in_requests(tmp_path):
+    """Requêtes publiques (``from_dict`` avec dossier de base) : lecteur, racine simple, UNC jamais préfixés ;
+    inutilisables sur cet OS (absolus pour l'autre, ou ambigus sous Windows) : refusés, jamais rattachés."""
+    import os
+
+    from core.json_documents import path_kind
+    from core.service.errors import ApiError
     from core.service.ops.batch import ProfileBatchRequest
     from core.service.ops.profile import ProfileApplyRequest
 
     base = {"inputs": [str(tmp_path / "src.mkv")]}
     for profile in (r"C:\jobs\film.json", r"\jobs\film.json", r"\\srv\partage\film.json", "/jobs/film.json"):
+        if path_kind(profile) == "unusable":
+            with pytest.raises(ApiError, match="Requête invalide") as caught:
+                ProfileApplyRequest.from_dict({**base, "profile": profile}, base_dir=tmp_path)
+            assert caught.value.details[0].path == "profile"
+            continue
         assert ProfileApplyRequest.from_dict({**base, "profile": profile}, base_dir=tmp_path).profile == profile
         assert ProfileBatchRequest.from_dict({"profile": profile, "output_dir": str(tmp_path)},
                                              base_dir=tmp_path).profile == profile
     for output in (r"C:\sorties" + "\\", r"\sorties" + "\\", r"\\srv\partage\o.mkv", r"C:\o.mkv"):
+        if path_kind(output) == "unusable":
+            with pytest.raises(ApiError):
+                ProfileApplyRequest.from_dict({**base, "profile": "P", "output": output}, base_dir=tmp_path)
+            continue
         request = ProfileApplyRequest.from_dict({**base, "profile": "P", "output": output}, base_dir=tmp_path)
         assert request.output == output
+    expected = {"absolute": [r"C:\o.mkv", r"\\srv\p\o.mkv"], "unusable": [r"\o.mkv", "C:o.mkv"]} if os.name == "nt" \
+        else {"absolute": ["/o.mkv"], "unusable": [r"C:\o.mkv", "C:/o.mkv", r"\\srv\p\o.mkv", r"\o.mkv", "C:o.mkv"]}
+    for kind, values in expected.items():
+        assert [path_kind(value) for value in values] == [kind] * len(values)
+    assert path_kind("films/o.mkv") == "relative"
 
 
 @pytest.mark.parametrize("analyser", ["late", "raises"])

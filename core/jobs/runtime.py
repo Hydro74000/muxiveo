@@ -50,7 +50,7 @@ def export_exact_job(remux_config: RemuxConfig, options: CommonOptions, *, encod
     if encode is not None:
         from core.json_documents import portable_encode_block
 
-        job = {**job, "encode": portable_encode_block(encode)}
+        job = {**job, "encode": portable_encode_block(encode, options.base_dir)}
     save_workflow(destination, job)
     return destination
 

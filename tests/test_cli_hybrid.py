@@ -188,10 +188,11 @@ def test_explicit_cadence_options_in_an_api_request_override_the_recipe(tmp_path
 
 
 def test_absent_cadence_options_keep_their_historical_defaults_outside_hybrid():
-    from core.service.context import Overrides
+    from core.service.context import ExecutionContext
+    from core.service.events import NullSink
     from core.service.ops.media import JobOptions
 
-    common = JobOptions().to_common(Overrides())
+    common = JobOptions().to_common(ExecutionContext.create(SimpleNamespace(), NullSink()))
     assert (common.cadence_auto, common.cadence_method) == (True, "auto")
 
 

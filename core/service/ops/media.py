@@ -18,7 +18,7 @@ from core.jobs.remux_config import build_remux_config
 from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
 from core.jobs.serializers import serialize_file_info, serialize_remux_config
 from core.json_documents import resolve_document_paths
-from core.service.context import ExecutionContext, Overrides
+from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
@@ -117,7 +117,9 @@ class JobOptions(Model):
         payload = {name: getattr(options, name) for name in names}
         return {key: value for key, value in payload.items() if value is not None or key in _NULLABLE}
 
-    def to_common(self, overrides: Overrides, **extra: Any) -> CommonOptions:
+    def to_common(self, ctx: ExecutionContext, **extra: Any) -> CommonOptions:
+        """Options du job pour cet appel : surcharges d'outils, requête de l'API, dossier de référence."""
+        overrides = ctx.overrides
         values = self.to_dict()
         values["calibration"] = str(self.calibration) if self.calibration is not None else None
         # Cadence absente : valeurs historiques (l'absence n'est distinguée que par l'hybridation, face à une recette).
@@ -129,6 +131,8 @@ class JobOptions(Model):
             mediainfo=overrides.mediainfo,
             threads=overrides.threads,
             work_dir=str(overrides.work_dir) if overrides.work_dir is not None else None,
+            api=ctx.api,
+            base_dir=ctx.base_dir,
             **values,
             **extra,
         )
@@ -173,6 +177,21 @@ class MediaJobRequest(Model):
             errors += exc.errors
         found = [tuple(error.split(": ", 1)) if ": " in error else ("job", error) for error in errors]
         return found + encode_block_errors(job.get("encode"), "job.encode")  # type: ignore[return-value]
+
+    @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : chemins du job utilisables ici, relatifs seulement avec un dossier de référence."""
+        from core.json_documents import document_path_errors
+
+        return document_path_errors(values.get("job"), base_dir, prefix="job")
+
+    @classmethod
+    def without_internal_keys(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Clés internes ``_…`` du job ignorées (``_batch_output_dir``… ne s'injectent pas par une requête)."""
+        from core.json_documents import without_internal_keys
+
+        return {**values, "job": without_internal_keys(values.get("job"))} if isinstance(values.get("job"), dict) \
+            else values
 
     @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
@@ -233,7 +252,7 @@ def _build(request: MediaJobRequest, ctx: ExecutionContext) -> tuple[RemuxConfig
 def _build_cached(request: MediaJobRequest, ctx: ExecutionContext,
                   **extra: Any) -> tuple[RemuxConfig, CommonOptions, PreparationCache]:
     """Job de remux construit avec un cache d'inspection réutilisé par la résolution de l'encodage."""
-    options = request.options.to_common(ctx.overrides, **extra)
+    options = request.options.to_common(ctx, **extra)
     cache = PreparationCache()
     remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
                                       EmitterLogger(ctx.events),
@@ -348,7 +367,7 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
 )
 def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult:
     options = request.options.to_common(
-        ctx.overrides,
+        ctx,
         export_workflow=str(request.export_workflow) if request.export_workflow is not None else None,
         export_directory=request.export_directory,
     )

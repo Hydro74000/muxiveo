@@ -184,6 +184,17 @@ def _parse_model(cls: type, data: Any, path: str, state: _Parse) -> Any:
             state.fail(_join(path, child), message)
     if len(state.errors) > errors_before:
         return None
+    if not state.allow_relative:
+        # Requête de l'API : chemins des documents utilisables ici, relatifs seulement avec un dossier de référence.
+        path_errors = getattr(cls, "document_path_errors", None)
+        if path_errors is not None:
+            for child, message in path_errors(values, state.base_dir):
+                state.fail(_join(path, child), message)
+        if len(state.errors) > errors_before:
+            return None
+        internal = getattr(cls, "without_internal_keys", None)
+        if internal is not None:
+            values = internal(values)
     resolve = getattr(cls, "resolve_relative_paths", None)
     if resolve is not None and state.base_dir is not None and not state.allow_relative:
         values = resolve(values, state.base_dir)
@@ -281,6 +292,11 @@ def _parse_path(value: Any, path: str, state: _Parse) -> Any:
         return value
     candidate = Path(value).expanduser()
     if candidate.is_absolute() or state.allow_relative:
+        return candidate
+    from core.json_documents import path_kind
+
+    if path_kind(value) == "unusable":  # « C:film.mkv », chemin Windows sous POSIX : jamais rattaché à un dossier
+        state.fail(path, "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)")
         return candidate
     if state.base_dir is not None:
         return state.base_dir / candidate

@@ -13,7 +13,7 @@ from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, probe_canc
 from core.jobs.errors import JobError
 from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
-from core.service.errors import ErrorCode
+from core.service.errors import ApiError, ErrorCode
 from core.service.jobs import await_task, raise_for_outcome
 from core.service.models import Model, field
 from core.service.operations import operation
@@ -30,7 +30,8 @@ from core.workflows.encode.profiles import ProfileManager
 class PreviewCaptureRequest(MediaJobRequest):
     """Aperçu réel d'un job encodé (comme les boutons Aperçu du panneau Encodage)."""
 
-    output_dir: Path = field(default=Path("."), description="Dossier où copier les captures.")
+    output_dir: Path | None = field(default=None,
+                                    description="Dossier où copier les captures ; défaut : dossier de la requête.")
     mode: Literal["image", "video"] = "image"
     timecode_s: float = field(default=0.0, minimum=0, description="Instant de l'aperçu (secondes).")
     duration_s: float | None = field(default=None, minimum=0.5, description="Durée (vidéo : 5–30 s).")
@@ -74,6 +75,10 @@ def _deliver(source: Path, target_dir: Path, name: str) -> Path:
     errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
 )
 def encode_preview_capture(request: PreviewCaptureRequest, ctx: ExecutionContext) -> PreviewCaptureResult:
+    output_dir = request.output_dir if request.output_dir is not None else ctx.base_dir
+    if output_dir is None:  # refus avant tout travail
+        raise ApiError(ErrorCode.VALIDATION, "Dossier des captures requis (`output_dir`) : aucun dossier de référence.")
+    target_dir = Path(output_dir)
     remux_config, options, cache = _build_cached(request, ctx)
     resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
     if resolved is None or resolved.config is None:
@@ -88,7 +93,6 @@ def encode_preview_capture(request: PreviewCaptureRequest, ctx: ExecutionContext
     raise_for_outcome(outcome, ctx.cancel, cancelled="Aperçu annulé.",
                       failed=lambda message: JobError(f"Aperçu impossible : {message}", EXIT_WORKFLOW))
     payload = json.loads(outcome.result or "{}")
-    target_dir = Path(request.output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(resolved.config.output).stem
     captures: list[dict[str, Any]] = []

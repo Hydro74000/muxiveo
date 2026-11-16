@@ -503,14 +503,17 @@ def _detect_crop(crop: VideoCropSettings, info: FileInfo, track: TrackEntry, sta
     return VideoCropSettings(enabled=True, unit="px", top=top, bottom=bottom, left=left, right=right, auto=False)
 
 
-def preset_loader(profiles_dir: Path) -> Callable[[str], EncodePreset]:
-    """Preset par nom (presets enregistrés de la GUI) ou par chemin JSON."""
+def preset_loader(profiles_dir: Path, base_dir: Path | None = Path()) -> Callable[[str], EncodePreset]:
+    """Preset par nom (presets enregistrés de la GUI) ou par chemin JSON (relatif : sous ``base_dir``, dossier de
+    référence ; ``None`` : un nom relatif n'est jamais cherché comme fichier)."""
     from core.json_documents import preset_is_file, read_json_document
     from core.workflows.encode.profiles import ProfileManager
 
     def load(name_or_path: str) -> EncodePreset:
         path = Path(name_or_path).expanduser()
-        if preset_is_file(name_or_path, Path.cwd()):
+        if not path.is_absolute() and base_dir is not None:
+            path = Path(base_dir) / path
+        if preset_is_file(name_or_path, base_dir):
             try:
                 return ProfileManager._preset(read_json_document(path))
             except (OSError, ValueError, TypeError) as exc:
@@ -561,7 +564,8 @@ def resolve_from_job(
     ffmpeg = str(getattr(options, "ffmpeg", None) or config.tool_ffmpeg)
     return resolve_encode(
         block, remux_config, infos=infos, config=config,
-        load_preset=preset_loader(Path(config.app_data_dir) / "encode_profiles"),
+        load_preset=preset_loader(Path(config.app_data_dir) / "encode_profiles",
+                                  getattr(options, "base_dir", Path())),
         detect_crop=functools.partial(detect_video_crop, ffmpeg_bin=ffmpeg,
                                       dovi_tool_bin=str(getattr(config, "tool_dovi_tool", "dovi_tool")),
                                       ffprobe_bin=ffprobe, cancel_event=cancel_event),

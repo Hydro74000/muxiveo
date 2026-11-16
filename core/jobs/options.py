@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from core.config import AppConfig
@@ -43,6 +44,11 @@ class CommonOptions:
     cadence_method: str = "auto"
     #: Encodage en échec : dossier de travail conservé (fichiers produits) au lieu d'être supprimé.
     keep_failed_work_dir: bool = False
+    #: Requête de l'API : paramètres libres de l'encodeur limités à ses options (CLI historique et GUI : libres).
+    api: bool = False
+    #: Dossier de référence des valeurs relatives tardives (gabarit de sortie, preset ou profil par fichier) ;
+    #: commandes historiques : dossier courant ; ``None`` (API sans dossier) : valeur relative refusée.
+    base_dir: Path | None = field(default_factory=Path.cwd)
 
     @classmethod
     def from_namespace(cls, args: Any) -> "CommonOptions":

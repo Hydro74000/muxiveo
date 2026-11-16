@@ -49,8 +49,9 @@ def inspect_sources(
     cache: PreparationCache | None = None,
     cancel_event: threading.Event | None = None,
 ) -> tuple[list[SourceInput], list[FileInfo], list[TrackEntry]]:
-    ffprobe = options.ffprobe or job.get("ffprobe") or config.tool_ffprobe
-    mediainfo = options.mediainfo or job.get("mediainfo") or config.tool_mediainfo
+    # Outils : options de l'appel ou configuration, jamais un exécutable désigné par un document.
+    ffprobe = options.ffprobe or config.tool_ffprobe
+    mediainfo = options.mediainfo or config.tool_mediainfo
     inspector = FileInspector(
         ffprobe_bin=str(ffprobe),
         mediainfo_bin=str(mediainfo),

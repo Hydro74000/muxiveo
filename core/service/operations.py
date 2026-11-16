@@ -9,6 +9,7 @@ de bord d'import.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,4 +173,6 @@ def call(
         raise
     for warning in warnings:
         ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
+    if base_dir is not None and not allow_relative and ctx.base_dir is None:
+        ctx = dataclasses.replace(ctx, base_dir=Path(base_dir))  # valeurs relatives tardives : dossier de la requête
     return execute(spec, request, ctx)

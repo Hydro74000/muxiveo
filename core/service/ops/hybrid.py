@@ -106,6 +106,14 @@ class HybridRequest(Model):
         return encode_block_errors(values.get("encode"), "encode")
 
     @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : preset fichier du bloc ``encode`` et profil fichier utilisables ici."""
+        from core.json_documents import encode_path_errors, reference_path_errors
+
+        return (encode_path_errors(values.get("encode"), base_dir)
+                + reference_path_errors("profile", values.get("profile"), base_dir, name_allowed=True))
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Depuis le dossier de la requête : profil fichier, preset fichier du bloc ``encode``."""
         from core.json_documents import resolve_encode_paths, resolve_profile_reference
@@ -148,7 +156,7 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
     for key, value in _HYBRID_DEFAULTS.items():
         if payload.get(key) is None:
             payload[key] = value
-    common = JobOptions.from_dict(payload, allow_relative=True).to_common(ctx.overrides)
+    common = JobOptions.from_dict(payload, allow_relative=True).to_common(ctx)
     sources = [(ROLES[item.role], Path(item.path)) for item in request.sources]
     for path, role in ((request.ref, "master"), (request.ref_dir, "master"), (request.donor, "donor"),
                        (request.donor_dir, "donor")):
@@ -254,7 +262,7 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)
         valid = [item for item, entry in zip(prepared, episodes) if "error" not in entry]  # encodage refusé : non exporté
-        exported = export_jobs(valid, Path(request.export_jobs), encode=request.encode)
+        exported = export_jobs(valid, Path(request.export_jobs), encode=request.encode, base_dir=ctx.base_dir)
         for path in exported:
             ctx.events.artifact("exact-job", str(path))
     if request.save_recipe is not None:
@@ -328,7 +336,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 if request.encode is not None:
                     from core.json_documents import portable_encode_block
 
-                    job = {**job, "encode": portable_encode_block(request.encode)}
+                    job = {**job, "encode": portable_encode_block(request.encode, ctx.base_dir)}
                 save_workflow(destination, job)
                 entry["status"] = "exported"
             else:

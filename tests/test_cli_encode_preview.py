@@ -136,4 +136,4 @@ def test_preview_refuses_a_job_without_encoding(tmp_path, monkeypatch):
     monkeypatch.setattr(encode_ops, "_build_cached", lambda request, ctx: ("remux", SimpleNamespace(), None))
     monkeypatch.setattr(encode_ops, "resolve_job_encode", lambda *a: None)
     with pytest.raises(JobError, match="n'encode rien"):
-        call(CATALOG, "encode.preview_capture", {"job": {}}, _ctx(tmp_path))
+        call(CATALOG, "encode.preview_capture", {"job": {}}, _ctx(tmp_path), base_dir=tmp_path)

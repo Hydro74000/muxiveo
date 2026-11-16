@@ -92,7 +92,9 @@ def run_operation(
     Chemins de l'argv conservés tels quels (relatifs au cwd) : sorties historiques inchangées.
     Documents (``--config``, templates) tolérants : une clé hors contrat est signalée, jamais refusée.
     """
-    ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides, ports=ports, cancel=cancel)
+    # Commande historique (pas une requête de l'API) : valeurs relatives depuis le dossier courant, paramètres libres.
+    ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides, ports=ports, cancel=cancel,
+                                  api=False, base_dir=Path.cwd())
     result = call(CATALOG, name, dict(payload), ctx, allow_relative=True, strict_documents=False)
     return result, ctx
 
