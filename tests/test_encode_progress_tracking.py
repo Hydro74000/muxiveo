@@ -284,3 +284,128 @@ def test_run_encode_publishes_only_informative_changes(qapp, monkeypatch, tmp_pa
                               progress=lambda **fields: published.append(fields))
     # fps=0 : inconnue ; out_time_us : même pourcentage ; bitrate / speed : rien ; ETA : pas encore mesurable.
     assert published == [{"pct": 10}, {"pct": 20, "fps": 24.0}]
+
+
+def test_stage_percent_and_remux_timeline():
+    from core.workflows.encode.progress_tracking import TOOL_PERCENT_PREFIX, TimelineProgress, stage_percent
+
+    assembly = stage_percent("Assemblage Matroska : 50% (500 paquets, 12.0 Mio)")
+    assert assembly is not None and (assembly.pct, assembly.stage) == (50, "assembly")
+    tool = stage_percent(f"{TOOL_PERCENT_PREFIX}42")
+    assert tool is not None and (tool.pct, tool.stage) == (42, "metadata")
+    assert stage_percent("frame=10 time=00:00:01.00") is None
+    timeline = TimelineProgress()
+    assert timeline.on_line("frame=1 time=00:00:10.00", 1.0) is None  # durée encore inconnue
+    assert timeline.on_line("  Duration: 00:01:40.00, start: 0.000000, bitrate: 1000 kb/s", 1.0) is None
+    assert timeline.on_line("  Duration: 00:00:05.00, start: 0.000000", 1.0) is None  # entrée suivante : ignorée
+    snapshot = timeline.on_line("frame=1 time=00:00:25.00", 2.0)
+    assert snapshot is not None and snapshot.pct == 25 and snapshot.stage is None
+
+
+def _signals_emitting(emissions):
+    """Tâche qui émet ``emissions`` (lignes ou pourcentages) après l'abonnement, puis finit."""
+    from core.runner import TaskSignals
+
+    signals = TaskSignals()
+
+    def work() -> None:
+        time.sleep(0.05)
+        for item in emissions:
+            if isinstance(item, int):
+                signals.progress_pct.emit(item)
+            else:
+                signals.progress.emit(item)
+        signals.finished.emit("fini")
+
+    threading.Thread(target=work).start()
+    return signals
+
+
+def test_remux_publishes_ffmpeg_and_native_progress(qapp, tmp_path):
+    from PySide6.QtCore import QObject, Signal
+
+    from core.jobs import runtime
+    from core.jobs.options import CommonOptions
+    from core.service.context import CancelToken
+
+    emissions = ["  Duration: 00:01:40.00, start: 0.000000", "frame=10 time=00:00:10.00",
+                 "frame=11 time=00:00:10.00", "Assemblage Matroska : 50% (500 paquets, 12.0 Mio)", 80]
+
+    class _Wf(QObject):
+        log_message = Signal(str, str)
+        backend_event = Signal(object)
+
+        def run(self, _config):
+            return _signals_emitting(emissions)
+
+    published: list[dict[str, Any]] = []
+    runtime.run_remux(SimpleNamespace(output=tmp_path / "out.mkv"), config=SimpleNamespace(), options=CommonOptions(),
+                      logger=SimpleNamespace(emit=lambda *a, **k: None), cancel=CancelToken(),
+                      workflow_factory=_Wf, progress=lambda **fields: published.append(fields))  # type: ignore[arg-type]
+    assert published == [{"pct": 10}, {"pct": 50, "stage": "assembly"}, {"pct": 80}]
+
+
+def test_encode_publishes_assembly_and_tool_percentages(qapp, monkeypatch, tmp_path):
+    from PySide6.QtCore import QObject, Signal
+
+    from core.jobs import encode_runtime
+    from core.jobs.options import CommonOptions
+    from core.service.context import CancelToken
+
+    monkeypatch.setattr(encode_runtime, "prepare_vulkan", lambda *_a, **_k: None)
+    monkeypatch.setattr(encode_runtime, "align_dovi_nvenc", lambda config, *_a, **_k: config)
+    monkeypatch.setattr(encode_runtime, "_progress_tracker",
+                        lambda *_a, **_k: encode_runtime.EncodeProgressTracker(duration_s=100.0))
+
+    class _Wf(QObject):
+        log_message = Signal(str, str)
+        failed_work_dir_retained = Signal(object)
+
+        def validate(self, _config):
+            return []
+
+        def parse_progress(self, _config, _line):
+            return None
+
+        def run(self, _config, *, validate, retain_failed_work_dir):
+            return _signals_emitting(["out_time=00:00:30.000000", 15,
+                                      "Assemblage Matroska : 70% (700 paquets, 30.0 Mio)"])
+
+    published: list[dict[str, Any]] = []
+    encode_runtime.run_encode(SimpleNamespace(output=tmp_path / "out.mkv"), config=SimpleNamespace(tool_ffmpeg="ffmpeg"),
+                              options=CommonOptions(), logger=SimpleNamespace(emit=lambda *a, **k: None),
+                              cancel=CancelToken(), workflow_factory=_Wf,  # type: ignore[arg-type]
+                              progress=lambda **fields: published.append(fields))
+    assert published == [{"pct": 30}, {"pct": 15, "stage": "metadata"}, {"pct": 70, "stage": "assembly"}]
+
+
+def test_progress_targets_reuse_the_inspections_of_the_preparation(monkeypatch, tmp_path):
+    from core import inspector as inspector_module
+    from core.jobs import encode_runtime
+    from core.jobs.options import CommonOptions
+    from core.service.context import CancelToken
+    from core.workflows.preparation_cache import PreparationCache
+
+    source = tmp_path / "a.mkv"
+    source.write_bytes(b"x")
+    video = SimpleNamespace(index=0, duration_s=60.0)
+    info = SimpleNamespace(video_tracks=[video], primary_video=video, duration_s=60.0, frame_count=1440)
+    cache = PreparationCache()
+    tools = ("ffprobe", "mediainfo")
+    cache.inspect(SimpleNamespace(inspect=lambda _path: info, tool_signature=tools), source)  # préparation
+
+    class _NoInspection:
+        tool_signature = tools
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def inspect(self, _path):
+            raise AssertionError("inspection en double")
+
+    monkeypatch.setattr(inspector_module, "FileInspector", _NoInspection)
+    config = SimpleNamespace(source=source, duration_s=None,
+                             video_tracks=[SimpleNamespace(source_path=str(source), stream_index=0)])
+    tracker = encode_runtime._progress_tracker(config, config=SimpleNamespace(), options=CommonOptions(),
+                                               cancel=CancelToken(), cache=cache)
+    assert (tracker.duration_s, tracker.total_frames) == (60.0, 1440)

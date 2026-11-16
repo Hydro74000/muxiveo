@@ -13,7 +13,7 @@ from core.jobs.logging import EmitterLogger
 from core.jobs.profile import build_profile_remux_config, load_decision_profile, profile_summary
 from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
 from core.jobs.serializers import serialize_remux_config, serialize_track_preview
-from core.workflows.preparation_cache import PreparationContext
+from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
@@ -148,7 +148,9 @@ def profile_validate(request: ProfileRequest, ctx: ExecutionContext) -> ProfileV
 
 
 def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
+    """Job du profil, avec le cache d'inspections réutilisé par la résolution de l'encodage et sa progression."""
     options = request.options.to_common(ctx)
+    cache = PreparationCache()
     profile = load_decision_profile(request.profile, ctx.config, base_dir=options.base_dir)
     remux_config, report = build_profile_remux_config(
         profile,
@@ -159,18 +161,18 @@ def _build(request: ProfileJobRequest, ctx: ExecutionContext, *, preview: bool):
         logger=EmitterLogger(ctx.events),
         preview=preview,
         metadata_job=dict(request.metadata),
-        context=PreparationContext(cancel_event=ctx.cancel.event),
+        context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event),
     )
     ctx.cancel.raise_if_cancelled()  # préparation annulée : rien n'est exporté ni lancé
-    return remux_config, report, options
+    return remux_config, report, options, cache
 
 
 @operation("profile.preview", request=ProfilePreviewRequest, result=ProfilePreviewResult,
            summary="Appliquer un profil à des sources sans exécuter : pistes retenues, décisions, commandes.",
            uses_gpu=True, errors=(ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED))
 def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> ProfilePreviewResult:
-    remux_config, report, options = _build(request, ctx, preview=True)
-    resolved = _resolve(request, remux_config, options, ctx)
+    remux_config, report, options, cache = _build(request, ctx, preview=True)
+    resolved = _resolve(request, remux_config, options, ctx, cache)
     plan = encode_plan_payload(resolved)
     base: dict[str, Any] = dict(
         profile_report=report,
@@ -199,8 +201,8 @@ def profile_preview(request: ProfilePreviewRequest, ctx: ExecutionContext) -> Pr
     return ProfilePreviewResult(**base)
 
 
-def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: ExecutionContext):
-    return resolve_from_job(request.encode, remux_config, config=ctx.config, options=options,
+def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: ExecutionContext, cache: Any):
+    return resolve_from_job(request.encode, remux_config, config=ctx.config, options=options, cache=cache,
                             logger=EmitterLogger(ctx.events), report_unknown=False, cancel_event=ctx.cancel.event)
 
 
@@ -210,18 +212,18 @@ def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: E
            errors=(ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY, ErrorCode.TOOL_MISSING,
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaRunResult:
-    remux_config, _report, options = _build(request, ctx, preview=False)
+    remux_config, _report, options, cache = _build(request, ctx, preview=False)
     if request.export_workflow is not None:
         destination = export_exact_job(remux_config, dataclasses.replace(options, export_workflow=str(
             request.export_workflow)), encode=request.encode)
         ctx.events.artifact("exact-job", str(destination))
         return MediaRunResult(status="exported", output=str(destination))
-    resolved = _resolve(request, remux_config, options, ctx)
+    resolved = _resolve(request, remux_config, options, ctx, cache)
     if resolved is not None and resolved.config is not None:
         message = run_encode(resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
                              cancel=ctx.cancel, force=request.force,
                              accept_dovi_nvenc_crop=bool((request.encode or {}).get("accept_dovi_nvenc_crop")),
-                             progress=ctx.events.progress)
+                             progress=ctx.events.progress, cache=cache)
         ctx.events.artifact("output", str(resolved.config.output))
         return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
     message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),

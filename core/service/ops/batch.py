@@ -16,6 +16,7 @@ from core.jobs.batch import BatchOutcome, BatchSteps, discover_direct_batch_jobs
 from core.jobs.constants import EXIT_OK, EXIT_VALIDATION, EXIT_WORKFLOW
 from core.jobs.errors import exit_code_for
 from core.jobs.encode import resolve_from_job
+from core.workflows.preparation_cache import PreparationCache
 from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.logging import EmitterLogger
 from core.jobs.profile import ProfileBatchSteps, build_profile_remux_config, load_decision_profile, run_profile_batch
@@ -188,6 +189,8 @@ class _Children:
     def __init__(self, ctx: ExecutionContext) -> None:
         self.ctx = ctx
         self._finished: set[str] = set()
+        # Inspections partagées par la résolution de l'encodage et sa progression (clé : chemin, taille, date).
+        self._cache = PreparationCache()
 
     def logger(self, index: int) -> EmitterLogger:
         child = self.ctx.events.child()
@@ -259,7 +262,7 @@ class _Children:
 
     def encode(self, job: dict[str, Any], remux_config: Any, config: Any, options: Any, logger: Any) -> Any:
         resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger,
-                                    cancel_event=self.ctx.cancel.event)
+                                    cancel_event=self.ctx.cancel.event, cache=self._cache)
         return None if resolved is None else resolved.config
 
     def preview_encode(self, config: Any, options: Any, logger: Any, encode_config: Any, *,
@@ -284,7 +287,7 @@ class _Children:
         def step() -> int:
             run_encode(encode_config, config=config, options=options, logger=logger, cancel=self.ctx.cancel,
                        force=force, accept_dovi_nvenc_crop=accept_dovi_nvenc_crop,
-                       progress=logger.events.progress)
+                       progress=logger.events.progress, cache=self._cache)
             logger.events.artifact("output", str(encode_config.output))
             self._final(logger, JobState.SUCCEEDED)
             return EXIT_OK

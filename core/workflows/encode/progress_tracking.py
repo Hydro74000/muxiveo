@@ -28,6 +28,11 @@ _OUT_TIME_RE = re.compile(r"\bout_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _OUT_TIME_TICKS_RE = re.compile(r"\bout_time_(?:ms|us)=(\d+)")
 FRAME_RE = re.compile(r"\bframe=\s*(\d+)")
 _MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
+#: En-tête FFmpeg de la première entrée (``  Duration: 01:23:45.67, start: …``) : durée de référence d'un remux.
+_INPUT_DURATION_RE = re.compile(r"^\s*Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_PERCENT_RE = re.compile(r"(\d+)%")
+#: Pourcentage des outils lus sur PTY (dovi_tool, hdr10plus_tool) relayé en ligne (``core/runner.py``).
+TOOL_PERCENT_PREFIX = "__MRE_PCT__ "
 
 
 def _hms_to_seconds(match: re.Match[str]) -> float:
@@ -351,6 +356,54 @@ class ProgressSnapshot:
     track_count: int | None = None
     pass_index: int | None = None
     pass_count: int | None = None
+    stage: str | None = None  # étape annexe identifiée : « assembly » (mux Matroska), « metadata » (outils DV/HDR10+)
+
+
+def stage_percent(line: str) -> ProgressSnapshot | None:
+    """Pourcentage d'une étape annexe, comme la barre de la GUI : assemblage Matroska natif, outils DV / HDR10+."""
+    from core.matroska.progress import native_mux_progress_label
+
+    if native_mux_progress_label(line) is not None:
+        match = _PERCENT_RE.search(line)
+        if match is None:
+            return None
+        pct = max(0, min(100, int(match.group(1))))
+        return ProgressSnapshot(pct=pct, pct_label=f"{pct}%", stage="assembly")
+    if line.startswith(TOOL_PERCENT_PREFIX):
+        try:
+            pct = max(0, min(100, int(line[len(TOOL_PERCENT_PREFIX):].strip())))
+        except ValueError:
+            return None
+        return ProgressSnapshot(pct=pct, pct_label=f"{pct}%", stage="metadata")
+    return None
+
+
+class TimelineProgress:
+    """Progression d'une commande de remux : pourcentage du muxer natif, ou temps écrit / durée de la première entrée.
+
+    La durée vient de l'en-tête FFmpeg (``Duration:`` de l'entrée 0, la source principale comme dans la GUI) quand
+    elle n'est pas fournie : aucune inspection supplémentaire.
+    """
+
+    def __init__(self, duration_s: float | None = None) -> None:
+        self.duration_s = duration_s
+        self._eta = EtaTracker(warmup_progress=1.0)
+
+    def on_line(self, line: str, now: float) -> ProgressSnapshot | None:
+        snapshot = stage_percent(line)
+        if snapshot is not None:
+            return snapshot
+        if self.duration_s is None:
+            match = _INPUT_DURATION_RE.match(line)
+            if match is not None:
+                self.duration_s = _hms_to_seconds(match) or None
+                return None
+        elapsed = ffmpeg_progress_seconds(line)
+        if elapsed is None or not self.duration_s:
+            return None
+        pct = min(99, int(elapsed / self.duration_s * 100))
+        self._eta.update(elapsed, now)
+        return ProgressSnapshot(pct=pct, pct_label=f"{pct}%", eta_s=self._eta.eta(self.duration_s, elapsed))
 
 
 @dataclass(frozen=True)
@@ -573,6 +626,8 @@ __all__ = [
     "FRAME_RE",
     "LineOutcome",
     "ProgressSnapshot",
+    "TOOL_PERCENT_PREFIX",
+    "TimelineProgress",
     "ffmpeg_progress_seconds",
     "fmt_progress_percent",
     "multi_encode_remaining_seconds",
@@ -581,4 +636,5 @@ __all__ = [
     "progress_target",
     "progress_targets",
     "select_multi_encode_label",
+    "stage_percent",
 ]

@@ -23,10 +23,12 @@ from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
 from core.workflows.encode.progress_tracking import (
+    TOOL_PERCENT_PREFIX,
     EncodeProgressTracker,
     ProgressSnapshot,
     parse_encode_internal_progress,
     progress_targets,
+    stage_percent,
 )
 from core.workflows.encode.workflow import EncodeWorkflow
 
@@ -212,28 +214,36 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
     lock = threading.Lock()  # lignes de préparations concurrentes : lecture → calcul → publication, dans l'ordre
     last: dict[str, Any] = {}
 
+    def publish(snapshot: ProgressSnapshot | None) -> None:  # sous ``lock``
+        assert progress is not None
+        fields = progress_fields(snapshot) if snapshot is not None else {}
+        # Comme la barre de la GUI : rien à publier sans pourcentage, vitesse ni ETA, ni sans changement
+        # (FFmpeg écrit une clé par ligne : ``out_time``, ``out_time_ms``, ``bitrate``…).
+        if fields.keys() & {"pct", "fps", "eta_s"} and fields != last:
+            last.clear()
+            last.update(fields)
+            progress(**fields)
+
     def on_line(line: str) -> None:
         if options.verbose:
             logger.emit("info", line)
         if tracker is None or progress is None:
             return
         with lock:
-            snapshot = track_progress_line(tracker, line, time.monotonic(),
-                                           parse=lambda text: wf.parse_progress(encode_config, text))
-            fields = progress_fields(snapshot) if snapshot is not None else {}
-            # Comme la barre de la GUI : rien à publier sans pourcentage, vitesse ni ETA, ni sans changement
-            # (FFmpeg écrit une clé par ligne : ``out_time``, ``out_time_ms``, ``bitrate``…).
-            if fields.keys() & {"pct", "fps", "eta_s"} and fields != last:
-                last.clear()
-                last.update(fields)
-                progress(**fields)
+            publish(track_progress_line(tracker, line, time.monotonic(),
+                                        parse=lambda text: wf.parse_progress(encode_config, text)))
+
+    def on_pct(pct: int) -> None:  # outils lus sur PTY (dovi_tool, hdr10plus_tool) : pourcentage de l'étape
+        if progress is not None:
+            with lock:
+                publish(stage_percent(f"{TOOL_PERCENT_PREFIX}{int(pct)}"))
 
     keep = bool(getattr(options, "keep_failed_work_dir", False))
     retained: list[Any] = []
     if keep:
         relay(wf.failed_work_dir_retained, retained.append)
     signals = wf.run(encode_config, validate=False, retain_failed_work_dir=keep)
-    outcome = await_task(signals, cancel, on_progress=on_line)
+    outcome = await_task(signals, cancel, on_progress=on_line, on_progress_pct=on_pct)
     for item in retained:  # échec avec fichiers produits : dossier gardé, proposé au prochain « Nettoyer »
         item.keep()
         logger.emit("info", f"Fichiers temporaires conservés : {item.path} (proposés au nettoyage au prochain "
@@ -290,6 +300,9 @@ def track_progress_line(tracker: EncodeProgressTracker, line: str, now: float,
     if line.startswith("$ "):
         tracker.command_started()
         return None
+    stage = stage_percent(line)  # assemblage Matroska, outils DV / HDR10+ : barre de l'étape, comme la GUI
+    if stage is not None:
+        return stage
     event = parse(line)
     if event is not None:
         return tracker.on_event(event, now)
@@ -303,6 +316,7 @@ def progress_fields(snapshot: ProgressSnapshot) -> dict[str, Any]:
         "frame": snapshot.frame, "eta_s": snapshot.eta_s,
         "track": snapshot.track, "track_count": snapshot.track_count, "pass_index": snapshot.pass_index,
         "pass_count": snapshot.pass_count if snapshot.pass_index is not None else None,
+        "stage": snapshot.stage,
     }
     return {key: value for key, value in fields.items() if value is not None}
 

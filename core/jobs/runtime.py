@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ from core.jobs.options import CommonOptions
 from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
+from core.workflows.encode.progress_tracking import TimelineProgress
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig, RemuxValidationError
 
@@ -68,7 +71,8 @@ def run_remux(
 ) -> str:
     """Remuxe ``remux_config`` jusqu'au nettoyage complet ; renvoie le message de fin du workflow.
 
-    ``progress(pct=…)`` : pourcentage publié par la tâche (barre chiffrée de la GUI).
+    ``progress(pct=…, eta_s=…, stage=…)`` : pourcentage du muxer natif ou temps écrit / durée de la source
+    principale (en-tête FFmpeg), comme la barre de la GUI.
 
     Échec ou annulation : message publié au journal (forme historique du CLI), puis
     :class:`ApiError` marquée ``logged``.
@@ -83,8 +87,31 @@ def run_remux(
         signals = wf.run(remux_config)
     except RemuxValidationError as exc:  # refus avant tout lancement : code public « validation », un détail par écart
         raise ApiError(ErrorCode.VALIDATION, str(exc), details=[ErrorDetail("", error) for error in exc.errors]) from exc
-    on_line: Any = (lambda line: logger.emit("info", line)) if options.verbose else None
-    on_pct = (lambda pct: progress(pct=pct)) if progress is not None else None
+    timeline = TimelineProgress()
+    lock = threading.Lock()
+    last: dict[str, Any] = {}
+
+    def publish(fields: dict[str, Any]) -> None:  # sous ``lock`` : rien de vide ni de répété
+        if progress is not None and fields and fields != last:
+            last.clear()
+            last.update(fields)
+            progress(**fields)
+
+    def on_line(line: str) -> None:
+        if options.verbose:
+            logger.emit("info", line)
+        if progress is None:
+            return
+        with lock:
+            snapshot = timeline.on_line(line, time.monotonic())
+            if snapshot is not None:
+                publish({key: value for key, value in (("pct", snapshot.pct), ("eta_s", snapshot.eta_s),
+                                                       ("stage", snapshot.stage)) if value is not None})
+
+    def on_pct(pct: int) -> None:
+        with lock:
+            publish({"pct": int(pct)})
+
     outcome = await_task(signals, cancel, on_progress=on_line, on_progress_pct=on_pct)
     if outcome.status == "finished":
         if outcome.result:

@@ -28,7 +28,7 @@ def test_profile_apply_exports_instead_of_running(monkeypatch, tmp_path):
     remux = SimpleNamespace(output=tmp_path / "film.mkv")
     from core.jobs.options import CommonOptions
 
-    monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (remux, {}, CommonOptions()))
+    monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (remux, {}, CommonOptions(), None))
     monkeypatch.setattr(profile_ops, "run_remux", lambda *a, **k: pytest.fail("aucun remux attendu"))
     monkeypatch.setattr("core.profiles.selectors.remux_config_to_exact_job", lambda config: {"version": 1})
     destination = tmp_path / "job.json"
@@ -762,7 +762,7 @@ def test_previews_apply_the_launch_checks_and_the_crop_acceptance(monkeypatch):
 
     resolved = ResolvedEncode(config=SimpleNamespace(), video=())  # type: ignore[arg-type]
     monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (SimpleNamespace(sources=[]), {},
-                                                                               CommonOptions()))
+                                                                               CommonOptions(), None))
     monkeypatch.setattr(profile_ops, "_resolve", lambda *a: resolved)
     monkeypatch.setattr(profile_ops, "encode_workflow", lambda *a: None)
     monkeypatch.setattr(profile_ops, "serialize_remux_config", lambda config: {})
@@ -1062,7 +1062,7 @@ def test_token_reaches_the_probes_run_while_building_preview_commands(qapp, tmp_
     elif path == "profile.preview":
         from core.service.ops import profile as ops
 
-        monkeypatch.setattr(ops, "_build", lambda request, ctx, preview: (SimpleNamespace(sources=[]), {}, CommonOptions()))
+        monkeypatch.setattr(ops, "_build", lambda request, ctx, preview: (SimpleNamespace(sources=[]), {}, CommonOptions(), None))
         monkeypatch.setattr(ops, "_resolve", lambda *a: resolved)
         monkeypatch.setattr(ops, "encode_workflow", lambda *a: wf)
         monkeypatch.setattr(ops, "checked_encode", checked)
@@ -1758,7 +1758,7 @@ def test_single_job_after_the_token_is_cancelled_or_kept_succeeded(qapp, monkeyp
         monkeypatch.setattr(media_ops, "resolve_job_encode", lambda *a: SimpleNamespace(config=encode_config))
         request: dict[str, Any] = {"job": {"version": 1}}
     else:
-        monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (remux, {}, CommonOptions()))
+        monkeypatch.setattr(profile_ops, "_build", lambda request, ctx, preview: (remux, {}, CommonOptions(), None))
         monkeypatch.setattr(profile_ops, "_resolve", lambda *a: SimpleNamespace(config=encode_config))
         request = {"profile": "P", "inputs": [str(tmp_path / "src.mkv")]}
     if ending == "failed":
