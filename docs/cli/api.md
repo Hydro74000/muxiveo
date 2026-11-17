@@ -279,7 +279,8 @@ erreur compris ; il reste consultable au moins jusqu'à la livraison de son éta
 échec pendant l'annonce (`queued`) laisse le job connu, en échec ; l'état final est publié même si la
 destination refuse l'événement `result` ou `error` qui le précède. `shutdown(timeout)` confie l'arrêt à un
 coordinateur (fin des jobs, des annonces et des annulations en cours, livraison de chaque état final) et
-l'attend au plus `timeout` s : vrai s'il a fini, faux s'il poursuit seul (destination bloquée) ; un rappel
+l'attend au plus `timeout` s : vrai s'il a fini, faux s'il poursuit seul (destination bloquée) ; appelé
+depuis une destination, un rappel d'annulation ou un job, il déclenche l'arrêt sans l'attendre ; un rappel
 d'annulation en échec n'empêche ni les autres rappels ni l'annulation des autres jobs (première erreur
 relancée à la fin).
 

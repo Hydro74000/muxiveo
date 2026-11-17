@@ -15,7 +15,8 @@ from __future__ import annotations
 import builtins
 import collections
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,19 @@ HISTORY_LIMIT = 100
 
 _TERMINAL = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED, JobState.PARTIAL}
 _TERMINAL_VALUES = {state.value for state in _TERMINAL}
+
+#: Profondeur des rappels en cours dans ce fil (livraison à une destination, rappels d'annulation) : un arrêt
+#: demandé depuis l'un d'eux ne peut pas attendre sa propre fin.
+_CALLBACK = threading.local()
+
+
+@contextmanager
+def _in_callback() -> Iterator[None]:
+    _CALLBACK.depth = getattr(_CALLBACK, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _CALLBACK.depth -= 1
 
 
 def _now() -> str:
@@ -122,7 +136,8 @@ class _ProgressTap:
         if event.type is EventType.PROGRESS and own:
             self._job.progress = dict(event.data)  # affectation atomique : lue par get() / list()
         try:
-            self._sink.emit(event)
+            with _in_callback():
+                self._sink.emit(event)
         finally:  # destination en échec comprise : rien d'autre ne sera livré pour ce job
             if own and event.type is EventType.STATE and event.data.get("state") in _TERMINAL_VALUES:
                 self._on_published(self._job)
@@ -238,13 +253,14 @@ class JobManager:
                 self._pending.remove(target)
                 self._finish_locked(target, ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
                 self._schedule()  # une exclusive retirée ne fait plus barrière
+            else:
+                self._cancelling += 1  # réservé dès la sélection : l'arrêt attend ces rappels et leurs émissions
         if queued:
             self._publish_terminal([target])
             return True
-        with self._lock:
-            self._cancelling += 1  # rappels suivis : l'arrêt attend leurs émissions
         try:
-            target.cancel.cancel()  # en cours, ou en cours d'annonce (submit() le retire) : hors du verrou
+            with _in_callback():
+                target.cancel.cancel()  # en cours, ou en cours d'annonce (submit() le retire) : hors du verrou
         finally:
             with self._lock:
                 self._cancelling -= 1
@@ -257,6 +273,8 @@ class JobManager:
 
         Attend le coordinateur au plus ``timeout`` s (destination ou rappel bloqué : il poursuit seul) et renvoie
         vrai s'il a fini ; une destination ou un rappel en échec n'interrompt rien (première erreur relancée).
+        Depuis un fil dont l'arrêt dépend (job, destination, rappel d'annulation, coordinateur) : arrêt déclenché
+        sans attente (``False`` tant qu'il n'est pas fini).
         """
         with self._lock:
             self._closed = True
@@ -264,7 +282,9 @@ class JobManager:
                 self._stopper = threading.Thread(target=self._stop, name="job-manager-shutdown", daemon=True)
                 self._stopper.start()
             stopper = self._stopper
-        stopper.join(timeout)
+            current = threading.current_thread()
+            reentrant = (getattr(_CALLBACK, "depth", 0) > 0 or current in self._threads or current is stopper)
+        stopper.join(0 if reentrant else timeout)
         if stopper.is_alive():
             return False
         if self._stop_failure is not None:

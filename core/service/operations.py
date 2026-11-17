@@ -161,8 +161,8 @@ def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext, *,
     appelé avant les événements terminaux (un gestionnaire y enregistre la fin du job : une destination qui
     le consulte en recevant ces événements la voit déjà).
     """
-    ctx.events.state(JobState.RUNNING, operation=spec.name)
     try:
+        ctx.events.state(JobState.RUNNING, operation=spec.name)  # refusée par la destination : état final tenté
         ctx.cancel.raise_if_cancelled()
         result = spec.handler(request, ctx)
         if not isinstance(result, spec.result):
@@ -218,8 +218,10 @@ def call(
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,
                                                allow_relative=allow_relative, strict_documents=strict_documents)
     except Exception as exc:  # refus d'admission (ou défaut imprévu de lecture) : publié avant d'être propagé
-        ctx.events.error(ApiError.from_exception(exc).to_dict())
-        ctx.events.state(JobState.FAILED, operation=name)
+        try:
+            ctx.events.error(ApiError.from_exception(exc).to_dict())
+        finally:  # état final toujours tenté, même si la destination refuse l'erreur
+            ctx.events.state(JobState.FAILED, operation=name)
         raise
     for warning in warnings:
         ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)

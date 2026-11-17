@@ -612,3 +612,78 @@ def test_shutdown_timeout_is_kept_with_a_blocked_sink():
     assert manager.shutdown(timeout=0.2) is False and time.monotonic() - started < 2
     gate.set()
     assert manager.shutdown(timeout=10)
+
+
+def test_a_cancellation_in_progress_holds_the_shutdown_even_if_the_job_ends_alone():
+    """Annulation en cours (jeton pas encore levé) pendant que le job finit seul : l'arrêt attend ses rappels.
+    Réservation prise dans la même section verrouillée que la sélection du job (aucune fenêtre entre les deux)."""
+    gate = threading.Event()
+    manager, _ = _manager(max_jobs=1)
+    job = manager.submit("t.job", {"name": "r"})
+    _until(lambda: _STARTED == ["r"])
+    token = manager._jobs[job].cancel
+    original = token.cancel
+
+    def suspended() -> None:
+        _release("r")  # le job se termine pendant que l'annulation attend
+        gate.wait(10)
+        original()
+
+    token.cancel = suspended  # type: ignore[method-assign]
+    canceller = threading.Thread(target=manager.cancel, args=(job,))
+    canceller.start()
+    _done(manager, job)
+    assert manager.shutdown(timeout=0.3) is False
+    gate.set()
+    assert manager.shutdown(timeout=5)
+    canceller.join(5)
+
+
+def test_shutdown_requested_from_a_sink_or_a_callback_never_waits_for_itself():
+    holder: dict[str, JobManager] = {}
+    answers: list[bool] = []
+
+    class _Stopping(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.data.get("state") == "succeeded":
+                answers.append(holder["m"].shutdown())  # fil du job, en livraison : déclenche sans attendre
+
+    manager, _ = _manager(_Stopping())
+    holder["m"] = manager
+    _release("s")
+    job = manager.submit("t.analysis", {"name": "s"})
+    _until(lambda: answers == [False])
+    assert manager.shutdown(timeout=5) and _state(manager, job) is JobState.SUCCEEDED
+
+    second, _ = _manager()
+    job = second.submit("t.watch", {"name": "w"})
+    _until(lambda: "w" in _STARTED)
+    second._jobs[job].cancel.on_cancel(lambda: answers.append(second.shutdown()))
+    stopper = threading.Thread(target=second.cancel, args=(job,))
+    stopper.start()
+    stopper.join(5)
+    assert not stopper.is_alive() and answers == [False, False]
+    assert second.shutdown(timeout=5)
+
+
+def test_direct_calls_always_try_the_final_state():
+    from core.service import call
+
+    class _Refusing(ListSink):
+        def __init__(self, refused: Callable[[Event], bool]) -> None:
+            super().__init__()
+            self._refused = refused
+
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if self._refused(event):
+                raise RuntimeError("destination en échec")
+
+    for refused, name, payload in ((lambda e: e.type is EventType.ERROR, "t.secret", {}),
+                                   (lambda e: e.data.get("state") == "running", "t.analysis", {"name": "z"})):
+        _release("z")
+        sink = _Refusing(refused)
+        with pytest.raises((ApiError, RuntimeError)):
+            call(_CATALOG, name, payload, ExecutionContext.create(SimpleNamespace(), sink))
+        assert sink.events[-1].type is EventType.STATE and sink.events[-1].data["state"] == "failed"
