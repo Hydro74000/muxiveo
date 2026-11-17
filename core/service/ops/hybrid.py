@@ -215,7 +215,7 @@ def _prepare(request: HybridRequest, ctx: ExecutionContext,
 
 @operation(
     "hybrid.plan",
-    request=HybridPlanRequest,
+    queue="job", request=HybridPlanRequest,
     result=HybridPlanResult,
     summary="Préparer une hybridation sans l'exécuter : appariement, pistes retenues, calibrations, sorties ; "
             "exact-jobs finalisés et recette effective en option.",
@@ -292,7 +292,7 @@ def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeede
 
 @operation(
     "hybrid.run",
-    request=HybridRequest,
+    queue="job", request=HybridRequest,
     result=HybridResult,
     summary="Hybrider une paire ou une saison (moteur du Hybrid Studio) : vidéo du master, audio / sous-titres "
             "des donneurs calés ; encodage par épisode avec le bloc `encode`.",

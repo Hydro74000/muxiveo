@@ -94,7 +94,7 @@ def _plans(request: ExtractRequest, info: Any) -> list[tuple[ExtractionPlan, Pat
 
 @operation(
     "media.extract",
-    request=ExtractRequest,
+    queue="job", request=ExtractRequest,
     result=ExtractResult,
     summary="Extraire des pistes (flux élémentaire ou Matroska), couches Dolby Vision (EL, BL, RPU), HDR10+ "
             "ou pièces jointes.",

@@ -230,6 +230,9 @@ def build_parser() -> argparse.ArgumentParser:
     call.add_argument("--mediainfo", help="Chemin mediainfo pour cet appel.")
     call.add_argument("--work-dir", help="Dossier de travail pour cet appel.")
     call.add_argument("--threads", type=int, help="Threads ffmpeg pour cet appel.")
+    call.add_argument("--allow-privileged", action="store_true",
+                      help="Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, "
+                           "nettoyage du dossier de travail).")
     call.set_defaults(func=cmd_call, log_format="events")
 
     operations = sub.add_parser("operations", help="Lister les opérations de la couche de service.")

@@ -343,7 +343,7 @@ _BATCH_ERRORS = (ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.TOOL_M
 
 @operation(
     "media.batch",
-    request=BatchRequest,
+    queue="job", request=BatchRequest,
     result=BatchResult,
     summary="Exécuter un lot de jobs de remux (template + fichier batch ou sources) ; collisions refusées d'avance.",
     long_running=True, progress=True,
@@ -389,7 +389,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
 
 @operation(
     "profile.batch",
-    request=ProfileBatchRequest,
+    queue="job", request=ProfileBatchRequest,
     result=BatchResult,
     summary="Appliquer un profil décisionnel à un lot de fichiers ; collisions refusées d'avance.",
     long_running=True, progress=True,

@@ -449,7 +449,7 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
 
 @operation(
     "hdr.patch",
-    request=HdrPatchRequest,
+    queue="job", request=HdrPatchRequest,
     result=HdrPatchResult,
     summary="Corriger les métadonnées HDR sans réencodage : MaxCLL/MaxFALL, MDCV, RPU (L6, L5, L11, écran, CM v4.0), "
             "HDR10+ (retrait, TSDML, profil A, plafond, recalcul), réalignement d'après la mesure.",

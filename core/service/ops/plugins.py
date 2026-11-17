@@ -218,7 +218,7 @@ def plugins_list(request: PluginsListRequest, ctx: ExecutionContext) -> PluginsL
     return PluginsListResult(extensions=tuple(_statuses(ctx, names).values()))
 
 
-@operation("plugins.install", request=PluginInstallRequest, result=PluginInstallResult,
+@operation("plugins.install", privileged=True, queue="exclusive", request=PluginInstallRequest, result=PluginInstallResult,
            summary="Télécharger et installer une extension (TensorRT : licence NVIDIA à accepter).",
            long_running=True, progress=True, mutating=True, uses_gpu=True, errors=_ERRORS)
 def plugins_install(request: PluginInstallRequest, ctx: ExecutionContext) -> PluginInstallResult:
@@ -229,7 +229,7 @@ def plugins_install(request: PluginInstallRequest, ctx: ExecutionContext) -> Plu
     return PluginInstallResult(**done)
 
 
-@operation("plugins.update", request=PluginUpdateRequest, result=PluginUpdateResult,
+@operation("plugins.update", privileged=True, queue="exclusive", request=PluginUpdateRequest, result=PluginUpdateResult,
            summary="Mettre à jour une extension, ou toutes celles installées.", long_running=True, progress=True, mutating=True,
            uses_gpu=True, errors=_ERRORS)
 def plugins_update(request: PluginUpdateRequest, ctx: ExecutionContext) -> PluginUpdateResult:
@@ -256,7 +256,7 @@ def plugins_update(request: PluginUpdateRequest, ctx: ExecutionContext) -> Plugi
     return PluginUpdateResult(extensions=tuple(items))
 
 
-@operation("plugins.remove", request=PluginRemoveRequest, result=PluginRemoveResult,
+@operation("plugins.remove", privileged=True, queue="exclusive", request=PluginRemoveRequest, result=PluginRemoveResult,
            summary="Supprimer une extension (et le cache de ses moteurs).", mutating=True, errors=_ERRORS)
 def plugins_remove(request: PluginRemoveRequest, ctx: ExecutionContext) -> PluginRemoveResult:
     _require_platform(ctx)

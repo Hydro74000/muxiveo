@@ -97,6 +97,8 @@ class ExecutionContext:
     CLI) — paramètres libres de l'encodeur limités à ses options. ``base_dir`` : dossier de référence des
     valeurs relatives (commande historique : dossier courant ; ``call`` : dossier de la requête ; service : celui
     de la soumission) ; ``None`` : aucune valeur relative n'est acceptée, jamais le dossier courant du processus.
+    ``allow_privileged`` : opérations privilégiées (configuration, extensions, mise à jour) autorisées — commandes
+    historiques, ``call --allow-privileged`` ; refusées par défaut.
     """
 
     config: Any
@@ -106,6 +108,7 @@ class ExecutionContext:
     ports: Mapping[str, Callable[..., Any]] = field(default_factory=dict)
     api: bool = True
     base_dir: Path | None = None
+    allow_privileged: bool = False
 
     @classmethod
     def create(
@@ -120,6 +123,7 @@ class ExecutionContext:
         ports: Mapping[str, Callable[..., Any]] | None = None,
         api: bool = True,
         base_dir: Path | None = None,
+        allow_privileged: bool = False,
     ) -> ExecutionContext:
         return cls(
             config=snapshot_config(config),
@@ -129,6 +133,7 @@ class ExecutionContext:
             ports=dict(ports or {}),
             api=api,
             base_dir=base_dir,
+            allow_privileged=allow_privileged,
         )
 
     def tool(self, name: str) -> str:

@@ -13,7 +13,7 @@ import dataclasses
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
@@ -26,6 +26,10 @@ from core.service.schemas.documents import used_definitions
 API_VERSION = 1
 
 Handler = Callable[[Any, ExecutionContext], Model]
+#: File d'ordonnancement d'un gestionnaire de jobs : ``analysis`` (inspections, aperçus, analyses : client réactif
+#: pendant un long traitement), ``job`` (produit ou transforme des médias), ``exclusive`` (configuration,
+#: extensions, mise à jour : exécutée seule).
+Queue = Literal["analysis", "job", "exclusive"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,11 @@ class OperationSpec:
     errors: tuple[ErrorCode, ...] = ()
     #: Publie des événements ``progress`` (pourcentage, vitesse…) : annoncé par ``describe()``.
     progress: bool = False
+    #: Modifie la configuration, les extensions ou l'installation : refusée sans autorisation explicite
+    #: (``ExecutionContext.allow_privileged``).
+    privileged: bool = False
+    #: File d'ordonnancement (déclarée par l'opération, jamais déduite des autres indicateurs).
+    queue: Queue = "analysis"
 
     def describe(self, *, definitions: bool = True) -> dict[str, Any]:
         """Description publiée ; ``definitions`` : document autonome (``$defs`` partagées qu'il utilise jointes),
@@ -50,7 +59,10 @@ class OperationSpec:
             "long_running": self.long_running,
             "mutating": self.mutating,
             "uses_gpu": self.uses_gpu,
-            "errors": sorted({ErrorCode.INVALID_REQUEST.value, *(code.value for code in self.errors)}),
+            "privileged": self.privileged,
+            "queue": self.queue,
+            "errors": sorted({ErrorCode.INVALID_REQUEST.value, *(code.value for code in self.errors),
+                              *([ErrorCode.FORBIDDEN.value] if self.privileged else [])}),
             # Événements possibles (progression : opérations qui la publient ; artefacts : opérations qui écrivent).
             "events": ["state", "log", "warning", *(["progress"] if self.progress else []),
                        *(["artifact"] if self.mutating else []), "result", "error"],
@@ -72,12 +84,14 @@ def operation(
     uses_gpu: bool = False,
     errors: Iterable[ErrorCode] = (),
     progress: bool = False,
+    privileged: bool = False,
+    queue: Queue = "analysis",
 ) -> Callable[[Handler], OperationSpec]:
     """Décorateur : transforme un gestionnaire en :class:`OperationSpec`."""
 
     def wrap(handler: Handler) -> OperationSpec:
         return OperationSpec(name, summary, request, result, handler, long_running, mutating, uses_gpu,
-                             tuple(errors), progress)
+                             tuple(errors), progress, privileged, queue)
 
     return wrap
 
@@ -131,6 +145,13 @@ def result_state(result: Model) -> JobState:
     return _RESULT_STATES.get(status, JobState.SUCCEEDED) if isinstance(status, str) else JobState.SUCCEEDED
 
 
+def authorize(spec: OperationSpec, ctx: ExecutionContext) -> None:
+    """Opération privilégiée sans autorisation explicite du contexte → ``forbidden``."""
+    if spec.privileged and not ctx.allow_privileged:
+        raise ApiError(ErrorCode.FORBIDDEN, f"Opération privilégiée non autorisée : {spec.name} "
+                                            "(autorisation explicite requise, ex. `call --allow-privileged`).")
+
+
 def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext) -> Model:
     """Exécute une requête déjà validée ; émet l'état, le résultat ou l'erreur.
 
@@ -176,6 +197,7 @@ def call(
         ctx = dataclasses.replace(ctx, base_dir=effective)
     try:
         spec = catalog.get(name)
+        authorize(spec, ctx)
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,
                                                allow_relative=allow_relative, strict_documents=strict_documents)
     except ApiError as error:

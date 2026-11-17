@@ -42,7 +42,7 @@ def test_invalid_values_are_refused(name, raw):
 
 
 def _ctx(**config: Any) -> ExecutionContext:
-    return ExecutionContext.create(SimpleNamespace(tool_nvencc="nvencc", **config), ListSink())
+    return ExecutionContext.create(SimpleNamespace(tool_nvencc="nvencc", **config), ListSink(), allow_privileged=True)
 
 
 def _fake_nvencc(monkeypatch, tmp_path: Path, *, version: str, latest: str, user: bool = False) -> list[Any]:
@@ -75,7 +75,7 @@ def test_nvencc_update_only_when_newer(monkeypatch, tmp_path):
     assert status.update_available and status.provenance == "system"
     sink = ListSink()
     result: Any = call(CATALOG, "nvencc.install", {"only_if_newer": True, "interactive": False},
-                       ExecutionContext.create(SimpleNamespace(tool_nvencc="nvencc"), sink))
+                       ExecutionContext.create(SimpleNamespace(tool_nvencc="nvencc"), sink, allow_privileged=True))
     assert result.installed and calls == [(None, False)]
     assert {event.type.value for event in sink.events} >= {"progress", "warning", "artifact"}
     _fake_nvencc(monkeypatch, tmp_path, version="9.40", latest="9.40")

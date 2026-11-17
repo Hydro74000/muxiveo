@@ -76,7 +76,7 @@ def _deliver(source: Path, target_dir: Path, name: str) -> Path:
 
 @operation(
     "encode.preview_capture",
-    request=PreviewCaptureRequest,
+    queue="job", request=PreviewCaptureRequest,
     result=PreviewCaptureResult,
     summary="Aperçu réel d'un job encodé : images ou extrait vidéo encodés avec les réglages du job.",
     long_running=True,

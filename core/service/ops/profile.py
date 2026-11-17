@@ -217,7 +217,7 @@ def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: E
                             logger=EmitterLogger(ctx.events), report_unknown=False, cancel_event=ctx.cancel.event)
 
 
-@operation("profile.apply", request=ProfileApplyRequest, result=MediaRunResult,
+@operation("profile.apply", queue="job", request=ProfileApplyRequest, result=MediaRunResult,
            summary="Appliquer un profil à des sources et remuxer (ou encoder).", long_running=True, progress=True, mutating=True,
            uses_gpu=True,
            errors=(ErrorCode.VALIDATION, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY, ErrorCode.TOOL_MISSING,

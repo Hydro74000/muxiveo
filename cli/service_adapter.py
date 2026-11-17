@@ -37,6 +37,7 @@ from cli.logging import Logger
 #: Code de sortie du CLI pour chaque code d'erreur public (codes historiques conservés).
 EXIT_BY_ERROR: Mapping[ErrorCode, int] = {
     ErrorCode.INVALID_REQUEST: EXIT_ARGS,
+    ErrorCode.FORBIDDEN: EXIT_VALIDATION,
     ErrorCode.UNKNOWN_OPERATION: EXIT_ARGS,
     ErrorCode.VALIDATION: EXIT_VALIDATION,
     ErrorCode.TOOL_MISSING: EXIT_TOOL,
@@ -94,7 +95,7 @@ def run_operation(
     """
     # Commande historique (pas une requête de l'API) : valeurs relatives depuis le dossier courant, paramètres libres.
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides, ports=ports, cancel=cancel,
-                                  api=False, base_dir=Path.cwd())
+                                  api=False, base_dir=Path.cwd(), allow_privileged=True)
     result = call(CATALOG, name, dict(payload), ctx, allow_relative=True, strict_documents=False)
     return result, ctx
 
@@ -158,7 +159,8 @@ def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
     name = str(args.operation)
     from cli.interrupts import interrupt_guard
 
-    ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides_from_args(args))
+    ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides_from_args(args),
+                                  allow_privileged=bool(getattr(args, "allow_privileged", False)))
     try:
         payload, base_dir = _read_request(args.request)
         with interrupt_guard(ctx.cancel):  # Ctrl+C : annulation propre, réponse « cancelled »

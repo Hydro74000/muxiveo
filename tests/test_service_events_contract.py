@@ -83,7 +83,8 @@ def test_events_of_real_operations_respect_their_variant(monkeypatch):
 
     monkeypatch.setattr(plugins, "install", install)
     with pytest.raises(Exception):
-        call(CATALOG, "plugins.install", {"name": "mvo-rife"}, ExecutionContext.create(SimpleNamespace(), sink))
+        call(CATALOG, "plugins.install", {"name": "mvo-rife"},
+             ExecutionContext.create(SimpleNamespace(), sink, allow_privileged=True))
     types = {event.type for event in sink.events}
     assert {EventType.STATE, EventType.RESULT, EventType.PROGRESS, EventType.ERROR} <= types
     for event in sink.events:

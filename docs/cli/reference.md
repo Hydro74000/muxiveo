@@ -2560,7 +2560,7 @@ Exécute une opération du catalogue (voir `operations`) avec une requête JSON 
 
 ```text
 muxiveo --cli call [-h] [--request FICHIER|-] [--ffmpeg FFMPEG] [--ffprobe FFPROBE] [--mediainfo MEDIAINFO]
-                   [--work-dir WORK_DIR] [--threads THREADS] OPÉRATION
+                   [--work-dir WORK_DIR] [--threads THREADS] [--allow-privileged] OPÉRATION
 ```
 
 | Option | Effet |
@@ -2572,12 +2572,14 @@ muxiveo --cli call [-h] [--request FICHIER|-] [--ffmpeg FFMPEG] [--ffprobe FFPRO
 | `--mediainfo` | Chemin mediainfo pour cet appel. |
 | `--work-dir` | Dossier de travail pour cet appel. |
 | `--threads` | Threads ffmpeg pour cet appel. |
+| `--allow-privileged` | Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail). |
 
 **Exemples**
 
 ```bash
 muxiveo --cli call media.inspect --request requete.json
 muxiveo --cli call media.extract --request - < requete.json
+muxiveo --cli call config.set --allow-privileged --request reglage.json
 ```
 
 ### `operations`

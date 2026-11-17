@@ -405,7 +405,7 @@ def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPrevi
 
 @operation(
     "media.run",
-    request=MediaRunRequest,
+    queue="job", request=MediaRunRequest,
     result=MediaRunResult,
     summary="Exécuter un job de remux ou d'encodage (ou enregistrer son job exact).",
     long_running=True, progress=True,

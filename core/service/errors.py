@@ -17,6 +17,7 @@ class ErrorCode(str, Enum):
     """Codes d'erreur publics (stables d'une version à l'autre)."""
 
     INVALID_REQUEST = "invalid_request"      # requête mal formée (types, clés, champs requis)
+    FORBIDDEN = "forbidden"                  # opération privilégiée sans autorisation explicite
     UNKNOWN_OPERATION = "unknown_operation"  # opération absente du catalogue
     VALIDATION = "validation"                # requête bien formée mais refusée par les règles métier
     TOOL_MISSING = "tool_missing"            # outil externe introuvable

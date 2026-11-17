@@ -20,6 +20,7 @@ from tests._json_schema import result_errors
 
 def _ctx(config: Any = None, **kwargs: Any) -> tuple[ExecutionContext, ListSink]:
     sink = ListSink()
+    kwargs.setdefault("allow_privileged", True)  # opérations privilégiées appelées comme par une commande historique
     return ExecutionContext.create(config or SimpleNamespace(), sink, **kwargs), sink
 
 

@@ -33,7 +33,8 @@ def _ctx(tmp_path: Path, *, kind=up.InstallKind.APPIMAGE, newer: bool = True, bl
     ports = {"install_kind": lambda: kind, "collect_update_results": lambda kind: [{"ok": True, "version": "5.1"}],
              "query_latest_release": lambda channel: info, "self_install_blocker": lambda kind: blocker,
              "download_update": download, "apply_update": apply}
-    return ExecutionContext.create(SimpleNamespace(update_channel="stable"), ListSink(), ports=ports)
+    return ExecutionContext.create(SimpleNamespace(update_channel="stable"), ListSink(), ports=ports,
+                                   allow_privileged=True)
 
 
 def test_install_requires_confirmation_then_installs_without_relaunch(tmp_path, monkeypatch):
@@ -44,16 +45,18 @@ def test_install_requires_confirmation_then_installs_without_relaunch(tmp_path, 
     seen: dict[str, Any] = {}
     result: Any = call(CATALOG, "app.update_install", {"confirm": True}, _ctx(tmp_path, seen=seen))
     assert result.status == "installed" and result.latest == "99.0.0" and result.previous[0]["version"] == "5.1"
+    assert result.restart_required
     assert seen == {"download_relaunch": False, "apply_relaunch": False}
     scheduled: Any = call(CATALOG, "app.update_install", {"confirm": True},
                           _ctx(tmp_path, kind=up.InstallKind.SOURCE_ARCHIVE, applied=up.APPLY_SCHEDULED))
     assert scheduled.status == "scheduled" and "prochain démarrage" in scheduled.message
+    assert scheduled.restart_required
 
 
 def test_install_refusals(tmp_path, monkeypatch):
     monkeypatch.setattr(up, "can_self_update", lambda info, kind=None: True)
     up_to_date: Any = call(CATALOG, "app.update_install", {"confirm": True}, _ctx(tmp_path, newer=False))
-    assert up_to_date.status == "up_to_date"
+    assert up_to_date.status == "up_to_date" and not up_to_date.restart_required
     with pytest.raises(JobError, match="modifiable"):
         call(CATALOG, "app.update_install", {"confirm": True}, _ctx(tmp_path, blocker=up.BLOCKER_NOT_WRITABLE))
     with pytest.raises(JobError, match="mode d'installation"):

@@ -43,9 +43,12 @@ class UpdateInstallResult(Model):
     kind: str = ""
     previous: tuple[dict[str, Any], ...] = field(default=(), description="Comptes rendus des mises à jour passées.")
     message: str = ""
+    restart_required: bool = field(
+        default=False, description="Vrai si installée ou programmée : l'application doit quitter (puis être relancée) "
+                                   "pour que la nouvelle version s'applique.")
 
 
-@operation("app.update_install", request=UpdateInstallRequest, result=UpdateInstallResult, long_running=True, progress=True,
+@operation("app.update_install", privileged=True, queue="exclusive", request=UpdateInstallRequest, result=UpdateInstallResult, long_running=True, progress=True,
            mutating=True, summary="Télécharger et installer la dernière version (sans relancer l'interface).",
            errors=(ErrorCode.INVALID_REQUEST, ErrorCode.VALIDATION, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> UpdateInstallResult:
@@ -93,4 +96,5 @@ def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> 
                else f"Version {info.version} prête : installation à la fin de ce processus "
                     "(compte rendu au prochain démarrage).")
     return UpdateInstallResult(status=status, current=APP_VERSION, latest=info.version, kind=kind.value,
+                               restart_required=status in ("installed", "scheduled"),
                                previous=previous, message=message)

@@ -122,7 +122,7 @@ class ConfigPathResult(Model):
     config_dir: str | None = None
 
 
-@operation("config.path", request=ConfigPathRequest, result=ConfigPathResult,
+@operation("config.path", queue="exclusive", request=ConfigPathRequest, result=ConfigPathResult,
            summary="Emplacements de config.ini (surcharges) et du fichier de réglages de l'interface.")
 def config_path(_request: ConfigPathRequest, ctx: ExecutionContext) -> ConfigPathResult:
     from core.config import AppConfig, config_ini_path
@@ -159,7 +159,7 @@ class ConfigEntriesResult(Model):
     warnings: tuple[str, ...] = ()
 
 
-@operation("config.show", request=ConfigShowRequest, result=ConfigEntriesResult,
+@operation("config.show", queue="exclusive", request=ConfigShowRequest, result=ConfigEntriesResult,
            summary="Réglages : valeur effective et provenance (config.ini, réglage de l'interface, défaut).")
 def config_show(request: ConfigShowRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
     from core.config import AppConfig
@@ -177,7 +177,7 @@ class ConfigKeyRequest(Model):
     key: str = field(description="Réglage `section.clé` (voir config show).")
 
 
-@operation("config.get", request=ConfigKeyRequest, result=ConfigEntriesResult,
+@operation("config.get", queue="exclusive", request=ConfigKeyRequest, result=ConfigEntriesResult,
            summary="Un réglage : valeur effective et provenance.")
 def config_get(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
     from core.config import AppConfig
@@ -192,7 +192,7 @@ class ConfigSetRequest(Model):
     value: str = field(description="Nouvelle valeur (texte ; booléens true/false).")
 
 
-@operation("config.set", request=ConfigSetRequest, result=ConfigEntriesResult, mutating=True,
+@operation("config.set", privileged=True, queue="exclusive", request=ConfigSetRequest, result=ConfigEntriesResult, mutating=True,
            summary="Écrire un réglage dans config.ini (comme Enregistrer du panneau Paramètres).")
 def config_set(request: ConfigSetRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
     from core.config import AppConfig, write_ini_settings
@@ -205,7 +205,7 @@ def config_set(request: ConfigSetRequest, ctx: ExecutionContext) -> ConfigEntrie
     return ConfigEntriesResult(entries=(describe(config, request.key, spec),))
 
 
-@operation("config.unset", request=ConfigKeyRequest, result=ConfigEntriesResult, mutating=True,
+@operation("config.unset", privileged=True, queue="exclusive", request=ConfigKeyRequest, result=ConfigEntriesResult, mutating=True,
            summary="Retirer la surcharge config.ini d'un réglage (le réglage de l'interface peut réapparaître).")
 def config_unset(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
     from core.config import AppConfig, remove_ini_settings
@@ -220,7 +220,7 @@ def config_unset(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntr
     return ConfigEntriesResult(entries=(entry,), warnings=warnings)
 
 
-@operation("config.reset", request=ConfigKeyRequest, result=ConfigEntriesResult, mutating=True,
+@operation("config.reset", privileged=True, queue="exclusive", request=ConfigKeyRequest, result=ConfigEntriesResult, mutating=True,
            summary="Ramener un réglage au défaut (surcharge config.ini et réglage de l'interface retirés).")
 def config_reset(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
     from core.config import AppConfig, remove_ini_settings
@@ -282,7 +282,7 @@ def workdir_list(_request: WorkdirRequest, ctx: ExecutionContext) -> WorkdirResu
     return WorkdirResult(work_dir=str(work_dir), entries=_entries(cleanable_work_dir_entries(work_dir)))
 
 
-@operation("workdir.clean", request=WorkdirRequest, result=WorkdirResult, mutating=True,
+@operation("workdir.clean", privileged=True, queue="exclusive", request=WorkdirRequest, result=WorkdirResult, mutating=True,
            summary="Nettoyer le dossier de travail (comme « Nettoyer » au démarrage) ; dry_run : liste seule.")
 def workdir_clean(request: WorkdirRequest, ctx: ExecutionContext) -> WorkdirResult:
     from core.workdir import cleanable_work_dir_entries, clear_work_dir
@@ -358,7 +358,7 @@ class NvenccInstallResult(Model):
     message: str = ""
 
 
-@operation("nvencc.install", request=NvenccInstallRequest, result=NvenccInstallResult, long_running=True, progress=True,
+@operation("nvencc.install", privileged=True, queue="exclusive", request=NvenccInstallRequest, result=NvenccInstallResult, long_running=True, progress=True,
            mutating=True, summary="Installer ou mettre à jour NVEncC (paquet apt/dnf, sinon dossier utilisateur).")
 def nvencc_install(request: NvenccInstallRequest, ctx: ExecutionContext) -> NvenccInstallResult:
     from core import nvencc_install as nv
@@ -405,7 +405,7 @@ class NvenccRemoveResult(Model):
     message: str = ""
 
 
-@operation("nvencc.remove", request=NvenccRemoveRequest, result=NvenccRemoveResult, mutating=True,
+@operation("nvencc.remove", privileged=True, queue="exclusive", request=NvenccRemoveRequest, result=NvenccRemoveResult, mutating=True,
            summary="Supprimer la copie utilisateur de NVEncC (un paquet système se retire par apt / dnf).")
 def nvencc_remove(_request: NvenccRemoveRequest, ctx: ExecutionContext) -> NvenccRemoveResult:
     from core import nvencc_install as nv

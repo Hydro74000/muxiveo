@@ -11366,5 +11366,9 @@
   "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre affiché change.": {
     "fra": "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre affiché change.",
     "eng": "Rules from different groups: execution order follows group priority; only the displayed order changes."
+  },
+  "Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail).": {
+    "fra": "Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail).",
+    "eng": "Allow a privileged operation (settings, extensions, NVEncC, update, work folder cleanup)."
   }
 }
