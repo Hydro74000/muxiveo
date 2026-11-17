@@ -130,6 +130,15 @@ def path_kind(value: str) -> PathKind:
     return "unusable" if windows.drive or value.startswith("\\") else "relative"
 
 
+def is_file(path: Path) -> bool:
+    """Fichier présent ; une sonde en échec (nom trop long, ENAMETOOLONG sous Python 3.11) vaut « absent », comme
+    ``Path.is_file`` à partir de Python 3.12 : jamais d'erreur interne à l'admission."""
+    try:
+        return path.is_file()
+    except (OSError, ValueError):
+        return False
+
+
 def _resolve(value: Any, base_dir: Path) -> Any:
     if not isinstance(value, str) or not value or path_kind(value) != "relative":
         return value
@@ -330,8 +339,8 @@ def resolve_profile_reference(value: str, base_dir: Path) -> str:
     if not text or path_kind(text) != "relative":  # absolu, ~, C:\…, \…, UNC : inchangés
         return value
     candidate = Path(base_dir) / path
-    if (text.lower().endswith(".json") or candidate.is_file()
-            or (candidate.name and not path.suffix and candidate.with_suffix(".json").is_file())):
+    if (text.lower().endswith(".json") or is_file(candidate)
+            or (candidate.name and not path.suffix and is_file(candidate.with_suffix(".json")))):
         return str(candidate)
     return value
 
@@ -355,9 +364,9 @@ def preset_is_file(value: str, base_dir: Path | None = None) -> bool:
         return True  # chemin (inutilisable ici : refusé tel quel, jamais sondé relativement à un lecteur)
     path = Path(value).expanduser()
     if path.is_absolute():
-        return path.is_file()
+        return is_file(path)
     # Sans dossier de référence, un nom relatif reste un nom (jamais cherché dans le dossier courant).
-    return base_dir is not None and (Path(base_dir) / path).is_file()
+    return base_dir is not None and is_file(Path(base_dir) / path)
 
 
 __all__ = ["JsonDocumentError", "PathKind", "document_path_errors", "encode_path_errors", "parse_json_text",

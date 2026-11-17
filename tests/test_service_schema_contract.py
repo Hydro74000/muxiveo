@@ -397,3 +397,16 @@ def test_the_budget_covers_the_final_separator_kept_by_resolution():
     assert all(budget.spend(base, value) for value in values)
     resolved = resolve_document_paths({"sources": values}, base)["sources"]
     assert sum(len(path) for path in resolved) <= budget.used <= MAX_RESOLVED_PATH_CHARS
+
+
+def test_a_failing_file_probe_never_crashes_the_admission(monkeypatch):
+    """Python 3.11 : ``is_file`` propage ENAMETOOLONG ; la sonde vaut alors « absent » (nom), comme en 3.12+."""
+    import errno
+
+    def too_long(_self: Path) -> bool:
+        raise OSError(errno.ENAMETOOLONG, "File name too long")
+
+    monkeypatch.setattr(Path, "is_file", too_long)
+    job = _job(encode={"preset": "p" * 256})
+    CATALOG.get("media.validate").request.parse({"job": job}, base_dir=Path("/media"))
+    CATALOG.get("profile.validate").request.parse({"profile": "p" * 256}, base_dir=Path("/media"))
