@@ -305,9 +305,12 @@ def _parse_path(value: Any, path: str, state: _Parse) -> Any:
     if not isinstance(value, str) or not value.strip():
         state.fail(path, "chemin attendu")
         return value
+    if "\0" in value:
+        state.fail(path, "caractère nul interdit dans un chemin")
+        return value
     try:
         candidate = Path(value).expanduser()
-    except RuntimeError:  # « ~inconnu/… » : dossier personnel introuvable
+    except (RuntimeError, ValueError, OSError):  # « ~inconnu/… » : dossier personnel introuvable
         state.fail(path, "dossier personnel inconnu (~utilisateur)")
         return value
     if candidate.is_absolute() or state.allow_relative:

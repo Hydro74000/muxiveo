@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from core.service.catalog import CATALOG
-from core.service.errors import ApiError
+from core.service.errors import ApiError, ErrorCode
 from tests import _json_schema as schema_check
 
 _ROOT = str(Path.cwd().anchor)
@@ -329,3 +329,21 @@ def test_deeply_nested_criteria_are_refused_not_crashed():
     negated = {**_RULE, "match": {"field": "type", "expr": "!" * 300 + "audio"}}
     with pytest.raises(ApiError):
         CATALOG.get("profile.save").request.parse({"profile": {"name": "p", "rules": [negated]}})
+
+
+def test_profile_and_output_references_share_the_resolution_budget():
+    from core.json_documents import MAX_RESOLVED_PATH_CHARS, reference_path_errors, resolution_budget
+
+    with resolution_budget() as budget:
+        budget.used = MAX_RESOLVED_PATH_CHARS - 10  # chemins typés et documents déjà résolus
+        problems = reference_path_errors("output", "o.mkv", Path("/" + "b" * 100), name_allowed=False)
+    assert problems and "chemins relatifs trop nombreux" in problems[0][1]
+
+
+def test_a_nul_character_in_a_path_is_refused_not_crashed():
+    for value in ("~no\0user/a.mkv", "/films/a\0b.mkv", "a\0.mkv"):
+        for operation, payload in (("media.inspect", {"inputs": [value]}),
+                                   ("media.validate", {"job": {"sources": [value], "output": _OUTPUT}})):
+            with pytest.raises(ApiError) as caught:
+                CATALOG.get(operation).request.parse(payload, base_dir=Path("/media"))
+            assert caught.value.code is ErrorCode.INVALID_REQUEST, (operation, value)

@@ -71,10 +71,12 @@ def current_budget() -> ResolutionBudget:
 
 
 def home_unknown(value: str) -> bool:
-    """``~utilisateur`` dont le dossier personnel est introuvable : chemin jamais résolu."""
+    """``~utilisateur`` dont le dossier personnel est introuvable (ou nom invalide) : chemin jamais résolu."""
+    if "\0" in value:
+        return False  # caractère nul : refusé à part, jamais développé
     try:
         Path(value).expanduser()
-    except RuntimeError:
+    except (RuntimeError, ValueError, OSError):
         return True
     return False
 
@@ -118,7 +120,7 @@ def path_kind(value: str) -> PathKind:
     (``C:film.mkv`` relatif au lecteur, ``\\film.mkv`` enraciné sans lecteur) — jamais rattaché à un dossier.
     """
     # Valeur classée telle qu'elle sera utilisée (aucun blanc retiré : « /m » précédé d'un espace est relatif).
-    if home_unknown(value):  # « ~inconnu/a » : jamais rattaché à un dossier
+    if "\0" in value or home_unknown(value):  # caractère nul, « ~inconnu/a » : jamais rattaché à un dossier
         return "unusable"
     if Path(value).expanduser().is_absolute():
         return "absolute"
@@ -252,7 +254,7 @@ def reference_path_errors(slot: str, value: Any, base_dir: Path | None, *,
     text = value.strip() if name_allowed else value
     if name_allowed and path_kind(text) == "relative" and not text.lower().endswith(".json"):
         return []
-    message = _path_problem(text, base_dir)
+    message = _path_problem(text, base_dir, current_budget())  # résolu ensuite : compté dans le budget
     return [(slot, message)] if message else []
 
 
@@ -266,6 +268,8 @@ def without_internal_keys(document: Any) -> Any:
 def _path_problem(value: str, base_dir: Path | None, budget: ResolutionBudget | None = None) -> str:
     if not value.strip():
         return "chemin attendu"
+    if "\0" in value:
+        return "caractère nul interdit dans un chemin"
     kind = path_kind(value)
     if home_unknown(value):
         return "dossier personnel inconnu (~utilisateur)"
