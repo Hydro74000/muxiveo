@@ -182,7 +182,8 @@ def reference_path_errors(slot: str, value: Any, base_dir: Path | None, *,
     de référence. ``name_allowed`` : un texte relatif sans suffixe ``.json`` est le nom d'un élément enregistré."""
     if not isinstance(value, str) or not value.strip():
         return []
-    text = value.strip()  # comme le chargeur des profils, qui retire les blancs avant de chercher
+    # Classé tel qu'il sera utilisé : profil sans ses blancs (comme son chargeur), sortie telle quelle.
+    text = value.strip() if name_allowed else value
     if name_allowed and path_kind(text) == "relative" and not text.lower().endswith(".json"):
         return []
     message = _path_problem(text, base_dir)
@@ -259,8 +260,8 @@ def preset_is_file(value: str, base_dir: Path | None = None) -> bool:
     Règle unique du chargeur (``core.jobs.encode.preset_loader``) et des documents : un nom
     enregistré peut contenir ``/`` (``Film/4K``) sans devenir un chemin.
     """
-    if value.lower().endswith(".json"):
-        return True
+    if value.lower().endswith(".json") or path_kind(value) == "unusable":
+        return True  # chemin (inutilisable ici : refusé tel quel, jamais sondé relativement à un lecteur)
     path = Path(value).expanduser()
     if path.is_absolute():
         return path.is_file()

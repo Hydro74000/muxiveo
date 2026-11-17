@@ -510,6 +510,10 @@ def preset_loader(profiles_dir: Path, base_dir: Path | None = Path()) -> Callabl
     from core.workflows.encode.profiles import ProfileManager
 
     def load(name_or_path: str) -> EncodePreset:
+        from core.json_documents import path_kind
+
+        if path_kind(name_or_path) == "unusable":
+            raise _fail(f"preset : chemin inutilisable sur ce système ({name_or_path})")
         path = Path(name_or_path).expanduser()
         if not path.is_absolute() and base_dir is not None:
             path = Path(base_dir) / path

@@ -285,3 +285,30 @@ def test_hybrid_rendered_names_stay_in_the_output_folder(template):
 
     with pytest.raises(ValueError, match="dossier de sortie"):
         render_output_filename(template, {})
+
+
+def test_profile_output_is_checked_as_it_will_be_used(tmp_path):
+    from core.service.ops.profile import ProfilePreviewRequest
+
+    with pytest.raises(ApiError) as caught:  # « ␠/abs » : relatif tel qu'il sera utilisé, sans dossier de référence
+        ProfilePreviewRequest.parse({"profile": "Film", "inputs": [str(tmp_path / "a.mkv")],
+                                     "output": " " + str(tmp_path / "o.mkv")})
+    assert "output" in _details(caught.value)
+
+
+@pytest.mark.parametrize("preset", ["C:rapide", "C:/presets/rapide"])
+def test_unusable_preset_paths_are_refused_without_probing(preset, tmp_path, monkeypatch):
+    from core.jobs.encode import preset_loader
+    from core.json_documents import path_kind, preset_is_file
+    from core.service.ops.media import MediaJobRequest
+
+    if path_kind(preset) != "unusable":
+        pytest.skip("chemin utilisable sur cet OS")
+    monkeypatch.setattr(Path, "is_file", lambda self: pytest.fail(f"sonde : {self}"))
+    assert preset_is_file(preset, tmp_path)
+    with pytest.raises(ApiError) as caught:
+        MediaJobRequest.parse({"job": {"sources": [str(tmp_path / "a.mkv")], "output": str(tmp_path / "o.mkv"),
+                                       "encode": {"preset": preset}}}, base_dir=tmp_path)
+    assert "job.encode.preset" in _details(caught.value)
+    with pytest.raises(Exception, match="inutilisable"):
+        preset_loader(tmp_path / "presets", tmp_path)(preset)
