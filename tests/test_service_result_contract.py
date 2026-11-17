@@ -84,6 +84,26 @@ class _Config:
             key, ("default", None, None))
 
 
+def test_tmdb_secrets_are_redacted_for_api_requests_without_privilege():
+    """Requête de l'API sans `--allow-privileged` : clé et token TMDB masqués (renseignés ou non reste visible) ;
+    autorisée ou commande historique : valeurs inchangées."""
+    def secrets(ctx: ExecutionContext, operation: str, payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        result = call(CATALOG, operation, payload, ctx, allow_relative=not ctx.api)
+        assert not result_errors(operation, result)
+        return {e["key"]: e for e in result.entries if e["key"].startswith("metadata.tmdb_")}
+
+    shown = secrets(_ctx(ports={"app_config": _Config}), "config.show", {"section": "metadata"})
+    assert {key: (e["value"], e.get("redacted")) for key, e in shown.items()} == {
+        "metadata.tmdb_api_key": ("********", True), "metadata.tmdb_bearer_token": ("********", True)}
+    got = secrets(_ctx(ports={"app_config": _Config}), "config.get", {"key": "metadata.tmdb_api_key"})
+    assert got["metadata.tmdb_api_key"]["value"] == "********"
+    for ctx in (_ctx(ports={"app_config": _Config}, allow_privileged=True),
+                ExecutionContext.create(SimpleNamespace(), ListSink(), ports={"app_config": _Config}, api=False)):
+        revealed = secrets(ctx, "config.show", {"section": "metadata"})
+        assert revealed["metadata.tmdb_api_key"]["value"] == "valeur-tmdb_api_key"
+        assert "redacted" not in revealed["metadata.tmdb_api_key"]
+
+
 def test_config_and_workdir_entries(monkeypatch, tmp_path):
     ctx = _ctx(ports={"app_config": _Config})
     result = call(CATALOG, "config.show", {"section": "ui"}, ctx)

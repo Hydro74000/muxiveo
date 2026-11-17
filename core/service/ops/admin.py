@@ -48,7 +48,17 @@ def _display(value: Any) -> Any:
     return str(value) if isinstance(value, Path) else value
 
 
-def describe(config: Any, name: str, spec: dict[str, Any]) -> dict[str, Any]:
+#: Réglages secrets (identifiants de services) : masqués dans une requête de l'API sans autorisation privilégiée.
+SECRET_SETTINGS = frozenset({"metadata.tmdb_api_key", "metadata.tmdb_bearer_token"})
+_REDACTED = "********"
+
+
+def _reveal(ctx: ExecutionContext) -> bool:
+    """Secrets lisibles : commande historique, ou requête de l'API autorisée (``--allow-privileged``)."""
+    return not ctx.api or ctx.allow_privileged
+
+
+def describe(config: Any, name: str, spec: dict[str, Any], *, reveal: bool = True) -> dict[str, Any]:
     source, ini_value, settings_value = config.value_source(spec["section"], spec["key"])
     entry: dict[str, Any] = {"key": name, "label": spec.get("label", ""), "kind": spec["kind"],
                              "value": _display(getattr(config, spec["attr"], None)), "source": source}
@@ -62,6 +72,11 @@ def describe(config: Any, name: str, spec: dict[str, Any]) -> dict[str, Any]:
         entry["choices"] = list(spec["steps"])
     if source == "ini" and settings_value not in (None, "") and settings_value != ini_value:
         entry["masked"] = "config.ini masque le réglage de l'interface"
+    if not reveal and name in SECRET_SETTINGS:  # renseigné ou non reste visible, jamais la valeur
+        for field_name in ("value", "ini_value", "settings_value"):
+            if entry.get(field_name) not in (None, ""):
+                entry[field_name] = _REDACTED
+        entry["redacted"] = True
     return entry
 
 
@@ -151,6 +166,8 @@ class ConfigEntry(Model):
     settings_value: str = field(default="", description="Valeur du réglage de l'interface (absente sans réglage).")
     choices: tuple[Any, ...] = field(default=(), description="Valeurs admises (réglages à choix ou à paliers).")
     masked: str = field(default="", description="config.ini masque un réglage différent de l'interface.")
+    redacted: bool = field(default=False, description="Secret masqué (requête de l'API sans `--allow-privileged`) : "
+                                                      "valeurs renseignées remplacées par `********`.")
 
 
 @dataclass(frozen=True)
@@ -165,7 +182,7 @@ def config_show(request: ConfigShowRequest, ctx: ExecutionContext) -> ConfigEntr
     from core.config import AppConfig
 
     config = ctx.port("app_config", AppConfig)()
-    entries = [describe(config, name, spec) for name, spec in config_fields().items()
+    entries = [describe(config, name, spec, reveal=_reveal(ctx)) for name, spec in config_fields().items()
                if request.section is None or spec["section"] == request.section]
     if request.section is not None and not entries:
         raise JobError(f"Section inconnue : {request.section}", EXIT_ARGS)
@@ -183,7 +200,8 @@ def config_get(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntrie
     from core.config import AppConfig
 
     spec = _spec(request.key)
-    return ConfigEntriesResult(entries=(describe(ctx.port("app_config", AppConfig)(), request.key, spec),))
+    return ConfigEntriesResult(entries=(describe(ctx.port("app_config", AppConfig)(), request.key, spec,
+                                                 reveal=_reveal(ctx)),))
 
 
 @dataclass(frozen=True)

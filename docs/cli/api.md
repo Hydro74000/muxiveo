@@ -288,7 +288,10 @@ relancée à la fin).
 
 Le cœur ne confine pas les chemins : une requête lit et écrit partout où l'OS le permet au processus
 (comme les sorties du CLI). Il refuse en revanche les redirections (exécutables, réseau, ajouts à la
-commande hors de l'encodeur) et les opérations privilégiées non autorisées. **Toute exposition au-delà
+commande hors de l'encodeur) et les opérations privilégiées non autorisées ; sans autorisation, les
+secrets (`metadata.tmdb_api_key`, `metadata.tmdb_bearer_token`) sont masqués par `config.show` / `config.get`
+(`********`, `redacted: true`). `--allow-privileged` revient à autoriser l'exécution de n'importe quel programme
+(ex. `config.set` d'un chemin d'outil) : à réserver à un client local de confiance. **Toute exposition au-delà
 d'un client local de confiance** (réseau, utilisateurs multiples) exige d'isoler le worker par l'OS :
 utilisateur dédié, conteneur, dossiers montés — rôle d'une extension, avec authentification et TLS.
 
