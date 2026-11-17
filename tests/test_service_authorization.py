@@ -118,10 +118,16 @@ def test_api_payload_walk_stays_linear_with_long_keys():
 
     from core.service.models import api_payload
 
-    payload = {"k" * 1_000_000: [0] * 1_000_000 + [1.0]}
+    payload: dict[str, Any] = {"k" * 256: [0] * 1_000_000 + [1.0]}
+    for _ in range(60):  # 60 niveaux de clés de 256 caractères : chemin de 15 000 caractères jamais recopié
+        payload = {"k" * 256: payload}
     started = time.monotonic()
-    assert api_payload(payload)["k" * 1_000_000][-1] == 1
-    assert time.monotonic() - started < 10
+    leaf = api_payload(payload)
+    for _ in range(61):
+        leaf = leaf["k" * 256]
+    assert leaf[-1] == 1 and time.monotonic() - started < 10
+    with pytest.raises(ApiError, match="clé de plus de 256 caractères"):
+        api_payload({"k" * 257: 0})
     with pytest.raises(ApiError) as caught:
         api_payload({"a": [{"b": 10 ** 400}]})
     assert caught.value.message.startswith("a[0].b : nombre hors")
