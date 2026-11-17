@@ -75,7 +75,7 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
                                            else None)
     if given is not None:
         add(given)
-        if not given.suffix:
+        if given.name and not given.suffix:  # « . » sous la racine : aucun nom à suffixer
             add(given.with_suffix(".json"))
 
     if config is not None:
@@ -87,7 +87,7 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
             add(DecisionProfileManager(default_dir).path_for_name(safe_name))
         default_base = Path(raw.name) if raw.is_absolute() else raw
         add(default_dir / default_base)
-        if not default_base.suffix:
+        if default_base.name and not default_base.suffix:
             add(default_dir / default_base.with_suffix(".json"))
 
     return candidates

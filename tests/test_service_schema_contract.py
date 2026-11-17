@@ -347,3 +347,21 @@ def test_a_nul_character_in_a_path_is_refused_not_crashed():
             with pytest.raises(ApiError) as caught:
                 CATALOG.get(operation).request.parse(payload, base_dir=Path("/media"))
             assert caught.value.code is ErrorCode.INVALID_REQUEST, (operation, value)
+
+
+def test_profile_names_count_in_the_budget_and_dot_profiles_never_crash(tmp_path):
+    from core.jobs.profile import _profile_path_candidates
+    from core.json_documents import (
+        MAX_RESOLVED_PATH_CHARS,
+        reference_path_errors,
+        resolution_budget,
+        resolve_profile_reference,
+    )
+
+    with resolution_budget() as budget:
+        budget.used = MAX_RESOLVED_PATH_CHARS - 10
+        problems = reference_path_errors("profile", "README", Path("/" + "b" * 100), name_allowed=True)
+    assert problems and "chemins relatifs trop nombreux" in problems[0][1]
+    for value in (".", "./", "./."):
+        assert resolve_profile_reference(value, Path("/")) == value
+        assert _profile_path_candidates(value, None, base_dir=Path("/")) is not None

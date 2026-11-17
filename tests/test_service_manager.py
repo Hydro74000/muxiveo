@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -732,3 +733,11 @@ def test_an_interrupted_warning_still_publishes_a_consistent_final_state(raised,
         call(_CATALOG, "t.analysis", {"name": "i", "bogus": 1}, ExecutionContext.create(SimpleNamespace(), sink),
              strict=False)
     assert [e.data.get("state") for e in sink.events if e.type is EventType.STATE] == [final]
+
+
+def test_a_nul_in_base_dir_is_refused_at_admission():
+    manager, _ = _manager()
+    with pytest.raises(ApiError) as caught:
+        manager.submit("t.analysis", {"name": "n"}, base_dir=Path("/media\0bad"))
+    assert caught.value.code is ErrorCode.INVALID_REQUEST and manager.list() == ()
+    manager.shutdown()

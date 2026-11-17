@@ -189,8 +189,8 @@ class JobManager:
         """
         spec = self._catalog.get(operation)
         authorize(spec, self._allow_privileged)
-        if base_dir is not None and not Path(base_dir).is_absolute():
-            raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu.")
+        if base_dir is not None and ("\0" in str(base_dir) or not Path(base_dir).is_absolute()):
+            raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu (sans caractère nul).")
         request, _warnings = spec.request.parse(api_payload(payload), strict=True, base_dir=base_dir)
         job = _Job(spec, request, base_dir, self._sink, self._published)
         with self._lock:  # place réservée dès l'admission : file bornée et ordre FIFO tenus pendant l'annonce

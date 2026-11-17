@@ -253,6 +253,9 @@ def reference_path_errors(slot: str, value: Any, base_dir: Path | None, *,
     # Classé tel qu'il sera utilisé : profil sans ses blancs (comme son chargeur), sortie telle quelle.
     text = value.strip() if name_allowed else value
     if name_allowed and path_kind(text) == "relative" and not text.lower().endswith(".json"):
+        # Nom d'un profil enregistré, ou fichier présent sous ce nom : résolu ensuite, donc compté dans le budget.
+        if base_dir is not None and not current_budget().spend(base_dir, text):
+            return [(slot, ResolutionBudget.MESSAGE)]
         return []
     message = _path_problem(text, base_dir, current_budget())  # résolu ensuite : compté dans le budget
     return [(slot, message)] if message else []
@@ -314,7 +317,7 @@ def resolve_profile_reference(value: str, base_dir: Path) -> str:
         return value
     candidate = Path(base_dir) / path
     if (text.lower().endswith(".json") or candidate.is_file()
-            or (not path.suffix and candidate.with_suffix(".json").is_file())):
+            or (candidate.name and not path.suffix and candidate.with_suffix(".json").is_file())):
         return str(candidate)
     return value
 
