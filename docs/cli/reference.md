@@ -2603,6 +2603,28 @@ muxiveo --cli operations
 muxiveo --cli operations --describe media.extract
 ```
 
+### `serve`
+
+JSON-RPC 2.0, un objet JSON par ligne : server.info, job.submit, job.cancel, job.get, job.list, server.shutdown ; notifications job.event et server.exiting. Chemins des requêtes absolus ou relatifs au base_dir de la soumission.
+
+```text
+muxiveo --cli serve [-h] [--allow-privileged] [--max-jobs N] [--max-analyses N]
+```
+
+| Option | Effet |
+|---|---|
+| `--allow-privileged` | Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail). |
+| `--max-jobs` | Traitements de médias simultanés (défaut : 1). |
+| `--max-analyses` | Analyses simultanées (inspection, aperçus…) pendant un traitement (défaut : 2). |
+
+**Exemples**
+
+```bash
+muxiveo --cli serve
+muxiveo --cli serve --max-jobs 2 --max-analyses 2
+muxiveo --cli serve --allow-privileged
+```
+
 ## Opérations de la couche de service
 
 Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schémas : `operations --describe OPÉRATION`.

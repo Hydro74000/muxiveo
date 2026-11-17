@@ -110,7 +110,7 @@ FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Hybrid", ("hybrid",)),
     ("Profils et métadonnées", ("profile", "tmdb")),
     ("Système", ("version", "tools", "config", "workdir", "plugins", "nvencc", "schema", "help")),
-    ("API", ("call", "operations")),
+    ("API", ("call", "operations", "serve")),
 )
 
 #: Description et exemples des commandes (chemin de sous-commandes).
@@ -225,6 +225,9 @@ COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
                ("schema --version 1", "schema --version api")),
     "operations": ("Opérations de la couche de service ; --describe publie leur schéma.",
                    ("operations", "operations --describe media.extract")),
+    "serve": ("Worker JSON-RPC sur stdio : un client local (extension, outil) soumet des jobs, suit leurs événements, "
+              "les annule.",
+              ("serve", "serve --max-jobs 2 --max-analyses 2", "serve --allow-privileged")),
     "help": ("Aide d'une commande, de toutes (--all) ou référence Markdown (--format md).",
              ("help encode", "help profile apply", "help --all", "help --format md > reference.md")),
 }

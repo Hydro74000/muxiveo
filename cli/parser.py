@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from cli.hdr import add_hdr_options
+from cli.hdr import _positive_int, add_hdr_options
 from cli.commands import cmd_batch, cmd_capabilities, cmd_inspect, cmd_preview, cmd_profile, cmd_remux, cmd_run, cmd_schema, cmd_tools, cmd_validate, cmd_version
 from cli.constants import LOG_FORMATS
 from cli.encode_options import add_encode_options
@@ -17,6 +17,7 @@ from cli.library import add_library_parsers, add_profile_management_parsers
 from cli.hdr_patch import add_hdr_patch_parser
 from cli.plugins import add_plugins_parser
 from cli.encode_commands import cmd_encode_preset
+from cli.serve import cmd_serve
 from cli.service_adapter import cmd_call, cmd_operations
 from core.version import APP_EXECUTABLE_NAME, APP_NAME
 
@@ -234,6 +235,22 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, "
                            "nettoyage du dossier de travail).")
     call.set_defaults(func=cmd_call, log_format="events")
+
+    serve = sub.add_parser(
+        "serve",
+        help="Worker JSON-RPC sur stdio pour un client local (extension, outil) : jobs, événements, annulation.",
+        description="JSON-RPC 2.0, un objet JSON par ligne : server.info, job.submit, job.cancel, job.get, job.list, "
+                    "server.shutdown ; notifications job.event et server.exiting. Chemins des requêtes absolus ou "
+                    "relatifs au base_dir de la soumission.",
+    )
+    serve.add_argument("--allow-privileged", action="store_true",
+                       help="Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, "
+                            "nettoyage du dossier de travail).")
+    serve.add_argument("--max-jobs", type=_positive_int, default=1, metavar="N",
+                       help="Traitements de médias simultanés (défaut : 1).")
+    serve.add_argument("--max-analyses", type=_positive_int, default=2, metavar="N",
+                       help="Analyses simultanées (inspection, aperçus…) pendant un traitement (défaut : 2).")
+    serve.set_defaults(func=cmd_serve, log_format="text")
 
     operations = sub.add_parser("operations", help="Lister les opérations de la couche de service.")
     operations.add_argument("--describe", metavar="OPÉRATION",

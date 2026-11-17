@@ -11370,5 +11370,25 @@
   "Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail).": {
     "fra": "Autoriser une opération privilégiée (configuration, extensions, NVEncC, mise à jour, nettoyage du dossier de travail).",
     "eng": "Allow a privileged operation (settings, extensions, NVEncC, update, work folder cleanup)."
+  },
+  "Analyses simultanées (inspection, aperçus…) pendant un traitement (défaut : 2).": {
+    "fra": "Analyses simultanées (inspection, aperçus…) pendant un traitement (défaut : 2).",
+    "eng": "Simultaneous analyses (inspection, previews…) while processing (default: 2)."
+  },
+  "JSON-RPC 2.0, un objet JSON par ligne : server.info, job.submit, job.cancel, job.get, job.list, server.shutdown ; notifications job.event et server.exiting. Chemins des requêtes absolus ou relatifs au base_dir de la soumission.": {
+    "fra": "JSON-RPC 2.0, un objet JSON par ligne : server.info, job.submit, job.cancel, job.get, job.list, server.shutdown ; notifications job.event et server.exiting. Chemins des requêtes absolus ou relatifs au base_dir de la soumission.",
+    "eng": "JSON-RPC 2.0, one JSON object per line: server.info, job.submit, job.cancel, job.get, job.list, server.shutdown; job.event and server.exiting notifications. Request paths are absolute or relative to the submission's base_dir."
+  },
+  "Traitements de médias simultanés (défaut : 1).": {
+    "fra": "Traitements de médias simultanés (défaut : 1).",
+    "eng": "Simultaneous media jobs (default: 1)."
+  },
+  "Worker JSON-RPC sur stdio : un client local (extension, outil) soumet des jobs, suit leurs événements, les annule.": {
+    "fra": "Worker JSON-RPC sur stdio : un client local (extension, outil) soumet des jobs, suit leurs événements, les annule.",
+    "eng": "JSON-RPC worker over stdio: a local client (extension, tool) submits jobs, follows their events, cancels them."
+  },
+  "Worker JSON-RPC sur stdio pour un client local (extension, outil) : jobs, événements, annulation.": {
+    "fra": "Worker JSON-RPC sur stdio pour un client local (extension, outil) : jobs, événements, annulation.",
+    "eng": "JSON-RPC worker over stdio for a local client (extension, tool): jobs, events, cancellation."
   }
 }

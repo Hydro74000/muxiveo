@@ -217,7 +217,9 @@ EVENT_SCHEMA: dict[str, Any] = {
             "windows": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2,
                         "description": "sync_unverified / sync_uncertain : mesures concordantes, sondées."},
             "spread_ms": {"type": "number", "description": "Écart entre mesures ponctuelles (ms)."},
-            "shift_ms": {"type": "number", "description": "sync_uncertain : décalage non appliqué (ms)."}}),
+            "shift_ms": {"type": "number", "description": "sync_uncertain : décalage non appliqué (ms)."},
+            "event_type": {"type": "string", "description": "event_too_large : type de l'événement non transmis."},
+            "size": {"type": "integer", "description": "event_too_large : taille de la trame refusée (octets)."}}),
         _variant(EventType.ARTIFACT, ["kind", "path"], {"kind": {"type": "string"}, "path": {"type": "string"}}),
         _variant(EventType.RESULT, ["result"], {"result": {"type": "object"}}),
         _variant(EventType.ERROR, ["error"], {"error": {
