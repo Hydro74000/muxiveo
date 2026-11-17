@@ -48,7 +48,10 @@ def _make(name: str, **kwargs: Any) -> Any:
 
 
 @operation("t.update", request=_Request, result=_Result, summary="Mise à jour", queue="exclusive")
-def _update(request: _Request, _ctx: ExecutionContext) -> _Result:
+def _update(request: _Request, ctx: ExecutionContext) -> _Result:
+    gate = _GATES.setdefault(request.name, threading.Event())  # libérée par le test : file remplie avant la fin
+    while not gate.wait(0.01):
+        ctx.cancel.raise_if_cancelled()
     return _Result(name=request.name, restart_required=True)
 
 
@@ -275,6 +278,7 @@ def test_restart_required_drains_the_manager():
     manager, sink = _manager(max_jobs=1)
     update = manager.submit("t.update", {"name": "u"})
     waiting = manager.submit("t.job", {"name": "w"})  # derrière l'exclusive : annulé par le drainage
+    _release("u")
     _done(manager, update, waiting)
     assert manager.draining and _state(manager, waiting) is JobState.CANCELLED and "w" not in _STARTED
     with pytest.raises(ApiError) as caught:
@@ -412,7 +416,8 @@ def test_cancellations_beyond_the_history_keep_every_job_known_until_published(m
     holder["m"] = manager
     first = manager.submit("t.update" if ending == "drain" else "t.job", {"name": "r"})
     queued = [manager.submit("t.job", {"name": f"q{index}"}) for index in range(6)]
-    if ending == "drain":  # la mise à jour quitte l'historique : suivie par ses événements
+    if ending == "drain":
+        _release("r")  # mise à jour terminée une fois la file remplie ; suivie ensuite par ses événements
         _until(lambda: any(e.job == first and e.data.get("state") == "succeeded" for e in sink.events))
         _until(lambda: sum(e.type is EventType.STATE and e.data["state"] == "cancelled" for e in sink.events) == 6)
     else:
