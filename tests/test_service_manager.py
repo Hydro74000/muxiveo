@@ -687,3 +687,30 @@ def test_direct_calls_always_try_the_final_state():
         with pytest.raises((ApiError, RuntimeError)):
             call(_CATALOG, name, payload, ExecutionContext.create(SimpleNamespace(), sink))
         assert sink.events[-1].type is EventType.STATE and sink.events[-1].data["state"] == "failed"
+
+
+def test_shutdown_requested_while_announcing_never_waits_for_itself():
+    manager, _ = _manager()
+    answers: list[bool] = []
+    worker = threading.Thread(target=lambda: manager.submit("t.analysis", {"name": "n"},
+                                                            on_admitted=lambda _job: answers.append(manager.shutdown())))
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive() and answers == [False] and "n" not in _STARTED
+    assert manager.shutdown(timeout=5)
+
+
+def test_a_refused_warning_still_publishes_the_final_state():
+    from core.service import call
+
+    class _NoWarnings(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is EventType.WARNING:
+                raise RuntimeError("destination en échec")
+
+    sink = _NoWarnings()
+    with pytest.raises(RuntimeError):
+        call(_CATALOG, "t.analysis", {"name": "w", "bogus": 1}, ExecutionContext.create(SimpleNamespace(), sink),
+             strict=False)
+    assert sink.events[-1].data.get("state") == "failed" and "w" not in _STARTED

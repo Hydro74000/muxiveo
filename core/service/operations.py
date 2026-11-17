@@ -217,12 +217,12 @@ def call(
             payload = api_payload(payload)  # sémantique JSON du schéma publié (1.0 entier, nombres représentables)
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,
                                                allow_relative=allow_relative, strict_documents=strict_documents)
+        for warning in warnings:  # destination en échec : traitée comme les autres échecs d'admission
+            ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
     except Exception as exc:  # refus d'admission (ou défaut imprévu de lecture) : publié avant d'être propagé
         try:
             ctx.events.error(ApiError.from_exception(exc).to_dict())
         finally:  # état final toujours tenté, même si la destination refuse l'erreur
             ctx.events.state(JobState.FAILED, operation=name)
         raise
-    for warning in warnings:
-        ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
     return execute(spec, request, ctx)

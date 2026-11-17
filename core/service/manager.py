@@ -202,7 +202,8 @@ class JobManager:
             self._pending.append(job)
         try:
             if on_admitted is not None:
-                on_admitted(job.id)
+                with _in_callback():  # un arrêt demandé ici ne s'attend pas lui-même
+                    on_admitted(job.id)
         except BaseException:
             with self._lock:  # identifiant jamais annoncé : le job n'a pas existé
                 self._jobs.pop(job.id, None)

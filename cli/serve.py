@@ -345,12 +345,22 @@ def run_server(in_stream: BinaryIO, out_stream: BinaryIO, *, catalog: Catalog = 
     server = Server(out_stream, catalog=catalog, config_factory=config_factory, allow_privileged=allow_privileged,
                     max_jobs=max_jobs, max_analyses=max_analyses, queue_limit=queue_limit)
     previous: dict[signal.Signals, Any] = {}
+    # Un signal ne fait que noter la demande (affectation simple : aucun verrou dans le gestionnaire, qui peut
+    # interrompre le fil principal n'importe où, y compris un premier arrêt) ; le minuteur la traite.
+    requested = [False]
     if handle_signals:
         for number in (signal.SIGINT, signal.SIGTERM):
-            previous[number] = signal.signal(number, lambda *_args: server.stop("shutdown"))
+            previous[number] = signal.signal(number, lambda *_args: requested.__setitem__(0, True))
+
+    def wake() -> None:  # gestionnaires de signaux Python exécutés ; demande d'arrêt et fin surveillées
+        if requested[0]:
+            server.stop("shutdown")
+        if server.stopped.is_set():
+            app.quit()
+
     waker = QTimer()
-    waker.setInterval(_WAKE_MS)  # gestionnaires de signaux Python exécutés ; fin d'arrêt surveillée
-    waker.timeout.connect(lambda: app.quit() if server.stopped.is_set() else None)
+    waker.setInterval(_WAKE_MS)
+    waker.timeout.connect(wake)
     waker.start()
     threading.Thread(target=_read_loop, args=(in_stream, server), name="serve-reader", daemon=True).start()
     try:

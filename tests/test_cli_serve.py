@@ -357,6 +357,7 @@ def test_sigterm_stops_the_worker(session):
     def script(client: _Session) -> None:
         client.reply(client.send("server.info"))
         os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGINT)  # second signal : simple demande notée, aucun verrou repris
         assert client.wait(lambda m: m.get("method") == "server.exiting")["params"] == {"reason": "shutdown"}
 
     previous = signal.getsignal(signal.SIGTERM)
