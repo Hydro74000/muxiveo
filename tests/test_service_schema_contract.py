@@ -385,3 +385,15 @@ def test_relative_preset_names_are_counted_before_resolution(monkeypatch):
         budget.used = MAX_RESOLVED_PATH_CHARS - 10
         problems = document_path_errors({"encode": {"preset": "README"}}, Path("/" + "b" * 100))
     assert problems and "chemins relatifs trop nombreux" in problems[0][1]
+
+
+def test_the_budget_covers_the_final_separator_kept_by_resolution():
+    """« a\\ » sous POSIX : séparateur final conservé à la résolution, compté d'avance (borne exacte)."""
+    from core.json_documents import MAX_RESOLVED_PATH_CHARS, ResolutionBudget, resolve_document_paths
+
+    base = Path("/" + "b" * 1000)
+    values = ["a\\"] * 100
+    budget = ResolutionBudget()
+    assert all(budget.spend(base, value) for value in values)
+    resolved = resolve_document_paths({"sources": values}, base)["sources"]
+    assert sum(len(path) for path in resolved) <= budget.used <= MAX_RESOLVED_PATH_CHARS

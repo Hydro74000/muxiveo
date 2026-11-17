@@ -42,8 +42,8 @@ class ResolutionBudget:
         self.exceeded = False
 
     def spend(self, base_dir: Path, value: str) -> bool:
-        if not self.exceeded:
-            self.used += len(str(base_dir)) + len(value) + 1
+        if not self.exceeded:  # dossier + séparateur + valeur + séparateur final éventuel (« sortie/ »)
+            self.used += len(str(base_dir)) + len(value) + 2
             self.exceeded = self.used > MAX_RESOLVED_PATH_CHARS
         return not self.exceeded
 
