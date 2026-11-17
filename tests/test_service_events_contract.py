@@ -11,17 +11,41 @@ from core.service import ExecutionContext, ListSink, call
 from core.service.events import EVENT_SCHEMA, LOG_LEVELS, Emitter, EventType
 
 
-def check_event(event: dict[str, Any]) -> None:
-    """Vérificateur structurel minimal : variante du type, champs requis, énumérations, bornes."""
+_JSON_TYPES = {"string": str, "number": (int, float), "integer": int, "array": list, "object": dict, "null": type(None)}
+
+
+def _check_value(value: Any, rule: dict[str, Any], where: str) -> None:
+    kinds = rule.get("type")
+    if kinds is not None:
+        allowed = tuple(_JSON_TYPES[kind] for kind in ([kinds] if isinstance(kinds, str) else kinds))
+        assert isinstance(value, allowed) and not isinstance(value, bool), (where, value)
+    if "enum" in rule:
+        assert value in rule["enum"], (where, value)
+    if "minimum" in rule:
+        assert rule["minimum"] <= value <= rule.get("maximum", value), (where, value)
+    if isinstance(value, list) and "items" in rule:
+        for index, item in enumerate(value):
+            _check_value(item, rule["items"], f"{where}[{index}]")
+    if isinstance(value, dict):
+        for key in rule.get("required", ()):
+            assert key in value, (where, key)
+        for key, sub in rule.get("properties", {}).items():
+            if key in value:
+                _check_value(value[key], sub, f"{where}.{key}")
+
+
+def check_event(event: dict[str, Any], *, declared: tuple[str, ...] = ()) -> None:
+    """Vérificateur structurel : variante du type, champs requis, types et énumérations des champs déclarés ;
+    ``declared`` : champs qui doivent figurer dans la variante (données structurées publiées)."""
     variants = {variant["properties"]["type"]["const"]: variant for variant in EVENT_SCHEMA["oneOf"]}
     variant = variants[event["type"]]
     missing = [key for key in variant["required"] if key not in event]
     assert not missing, (event, missing)
+    undeclared = [key for key in declared if key not in variant["properties"]]
+    assert not undeclared, (event["type"], undeclared)
     for key, rule in variant["properties"].items():
-        if key in event and "enum" in rule:
-            assert event[key] in rule["enum"], (event, key)
-        if key in event and "minimum" in rule:
-            assert rule["minimum"] <= event[key] <= rule.get("maximum", event[key]), (event, key)
+        if key in event and key != "type":
+            _check_value(event[key], rule, key)
 
 
 def test_warnings_always_carry_a_code_and_levels_are_normalized():
@@ -96,3 +120,35 @@ def test_hybrid_report_file_keeps_its_historical_entries(tmp_path):
     report = tmp_path / "rapport.json"
     _write_report(SimpleNamespace(report_json=report), [{"episode": "E01", "status": "ok", "job": "abc"}])
     assert json.loads(report.read_text(encoding="utf-8"))["episodes"] == [{"episode": "E01", "status": "ok"}]
+
+
+def test_structured_sync_and_extract_fields_are_declared_and_typed():
+    sink = ListSink()
+    emitter = Emitter(sink)
+    emitter.warning("Synchro cohérente acceptée…", code="sync_unverified", kind="gaps",
+                    zones=[{"start_ms": 1000.0, "end_ms": 2500.5}], windows=[5, 8], spread_ms=12.5)
+    emitter.warning("Synchro incertaine…", code="sync_uncertain", shift_ms=4, windows=[3, 8], spread_ms=2.0)
+    emitter.progress(pct=40.0, stage="video", layer="el", label="Couche EL")
+    emitter.progress(pct=10.0, stage="download", name="mvo-rife")
+    for event in sink.events:
+        data = event.to_dict()
+        check_event(data, declared=tuple(key for key in data if key not in ("v", "job", "parent", "seq", "ts")))
+    with pytest.raises(AssertionError):
+        check_event({**sink.events[0].to_dict(), "zones": [{"start_ms": "1s"}]})  # type et champ requis contrôlés
+
+
+def test_real_coherent_sync_warning_is_fully_declared(monkeypatch):
+    """Champs réellement publiés par l'analyse de synchro → événement conforme et entièrement déclaré."""
+    from pathlib import Path
+
+    from core.workflows.audio_sync import AudioSyncTrack
+    from tests.test_coherent_sync_review import _scanner
+
+    sink = ListSink()
+    emitter = Emitter(sink)
+    _scanner(monkeypatch, accept_coherent=True).scan(
+        AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True,
+        warn=lambda message, **fields: emitter.warning(message, **fields))
+    (event,) = [event.to_dict() for event in sink.events]
+    check_event(event, declared=tuple(key for key in event if key not in ("v", "job", "parent", "seq", "ts")))
+    assert event["code"] == "sync_unverified" and event["zones"]
