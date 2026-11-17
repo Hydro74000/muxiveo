@@ -85,9 +85,27 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
             "title": {"type": "string"},
             "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
             "time_shift_ms": {"type": "integer"},
-            "sync_calibration": {"type": ["object", "null"]},
+            "sync_calibration": {"oneOf": [{"$ref": "#/$defs/calibration"}, {"type": "null"}]},
             "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
             "sync": sync_spec_schema(track_level=True),
+        },
+    }
+
+
+def calibration_schema() -> dict[str, Any]:
+    """Calibration de synchro (contrat ``sync-calibration``) : champs requis ; autres champs libres."""
+    free: dict[str, Any] = {}
+    return {
+        "type": "object",
+        "required": ["segments"],
+        "additionalProperties": free,
+        "properties": {
+            "version": {"const": 1},
+            "kind": {"const": "sync-calibration"},
+            "timebase": {"const": "donor-ms"},
+            "segments": {"type": "array", "items": {
+                "type": "object", "required": ["start_ms", "shift_ms"], "additionalProperties": free,
+                "properties": {"start_ms": {"type": "number"}, "shift_ms": {"type": "number"}}}},
         },
     }
 
@@ -102,13 +120,15 @@ def sync_spec_schema(*, track_level: bool = False) -> dict[str, Any]:
         "mode": {"enum": ["auto", "quick", "deep"], "default": "auto",
                  "description": "Mesure : réglage [sync] quick_audio_check, synchro rapide ou approfondie."},
         "type": {"enum": ["auto", "audio", "subtitle"], "default": "auto"},
-        "calibration": {"oneOf": [{"type": "object"}, {"type": "string"}],
+        "calibration": {"oneOf": [{"$ref": "#/$defs/calibration"}, {"type": "string"}],
                         "description": "Calibration relative donnée (objet ou fichier JSON) : aucune mesure."},
         "offset_ms": {"type": "integer", "description": "Décalage relatif constant donné : aucune mesure."},
     }
     if not track_level:
         properties["track"] = {**selector, "description": "Piste mesurée (défaut : audio dans la langue de la référence)."}
-    return {"type": "object", "additionalProperties": False, "properties": properties}
+    # Calibration et décalage donnés s'excluent (validate_sync_spec).
+    return {"type": "object", "additionalProperties": False, "properties": properties,
+            "not": {"required": ["calibration", "offset_ms"]}}
 
 
 def _variables_schema() -> dict[str, Any]:
@@ -170,7 +190,9 @@ def build_cli_json_schema() -> dict[str, Any]:
             "sync_subtitles": {"enum": list(SYNC_SUBTITLE_MODES), "default": "mirror"},
             "crossfade_ms": {"type": "integer", "minimum": 0, "maximum": 1000},
             "clean_nfo": {"type": "boolean", "default": True},
-            "sync_calibrations": {"type": "object", "additionalProperties": {"type": "object"}},
+            "sync_calibrations": {"type": "object", "propertyNames": {"pattern": "^[0-9]+$"},
+                                  "additionalProperties": {"$ref": "#/$defs/calibration"},
+                                  "description": "Calibration par index de source."},
             "auto_sync": {"type": "boolean"},
             "auto_sync_all": {"type": "boolean"},
             "calibration": {"type": "string"},
@@ -196,6 +218,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "tag_overrides": {"type": "object", "additionalProperties": {"type": "string"}},
         },
         "$defs": {
+            "calibration": calibration_schema(),
             "source": {
                 "oneOf": [
                     {"type": "string"},
@@ -234,6 +257,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                             "mkv_tid": {"type": "integer"},
                             "stream": {"type": "integer"},
                         },
+                        "anyOf": [{"required": [key]} for key in ("selector", "id", "mkv_tid", "stream")],
                     },
                     {
                         "type": "array",
@@ -246,6 +270,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "audio_variant": {
                 "type": "object",
                 "additionalProperties": True,
+                "anyOf": [{"required": ["selector"]}, {"required": ["source_selector"]}],
                 "properties": {
                     "selector": {"$ref": "#/$defs/selector"},
                     "source_selector": {"$ref": "#/$defs/selector"},
@@ -258,7 +283,7 @@ def build_cli_json_schema() -> dict[str, Any]:
                     "title": {"type": "string"},
                     "flags": {"type": "object", "additionalProperties": False, "properties": flag_properties},
                     "time_shift_ms": {"type": "integer"},
-                    "sync_calibration": {"type": ["object", "null"]},
+                    "sync_calibration": {"oneOf": [{"$ref": "#/$defs/calibration"}, {"type": "null"}]},
                     "sync_rewrite_mode": {"type": "string", "enum": list(SYNC_REWRITE_MODES)},
                 },
             },
@@ -275,6 +300,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "chapter": {
                 "type": "object",
                 "additionalProperties": True,
+                "anyOf": [{"required": [key]} for key in ("timestamp", "timecode", "time", "timecode_s")],
                 "properties": {
                     "timestamp": {"oneOf": [{"type": "string"}, {"type": "number"}]},
                     "timecode": {"oneOf": [{"type": "string"}, {"type": "number"}]},

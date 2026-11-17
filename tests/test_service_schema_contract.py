@@ -50,6 +50,9 @@ def _job(**extra: Any) -> dict[str, Any]:
     return {"sources": [_SOURCE], "output": _OUTPUT, **extra}
 
 
+_CALIBRATION = {"segments": [{"start_ms": 0, "shift_ms": 120}], "confidence": 1.0, "samples": []}
+_AUDIO = {"type": "audio", "position": 0}
+
 _ACCEPTED = [
     _job(),
     _job(version=1),
@@ -61,6 +64,12 @@ _ACCEPTED = [
     _job(tag_overrides={"COLLECTION": "Muxiveo"}),
     _job(chapters=False, tmdb=True),
     _job(fallback_profile={"name": "x", "_note": 1}, chapters={"source_index": 0, "_note": 1}),
+    _job(sync_calibrations={"1": _CALIBRATION}, tracks=[{"selector": _AUDIO, "sync_calibration": _CALIBRATION}]),
+    _job(track_order=[[0, 1], [0, 2, "e1"], {"selector": _AUDIO}, {"source": 0, "id": 3}]),
+    _job(chapters={"add": [{"timestamp": "00:01:00", "name": "Début"}, {"timecode_s": 61.5}]}),
+    _job(audio_variants=[{"selector": _AUDIO, "codec": "aac"}, {"source_selector": _AUDIO}]),
+    _job(sources=[{"path": _SOURCE, "sync": {"reference_track": "a:1", "calibration": _CALIBRATION}}]),
+    _job(sources=[{"path": _SOURCE, "attachments": "none"}], tmdb={"enabled": False}),
     _job(encode={"video": {"default": {"codec": "copy"}}}),
 ]
 _REFUSED = [
@@ -77,6 +86,29 @@ _REFUSED = [
     _job(fallback_profile={"name": "x", "bogus": 1}),
     _job(encode={"video": {"default": {"codec": "copy", "bogus": 1}}}),
     _job(encode={"bogus": 1}),
+    _job(audio_variants=[{"source_selector": {}, "selector": {"flags": {"_note": 1}}}]),
+    *(_job(tracks=[{"selector": {"type": "video", **selector}}]) for selector in (
+        {"resolution": {"height": "1080"}}, {"resolution": 42}, {"type": "bogus"}, {"position_order": "bogus"},
+        {"video_flags": []})),
+    _job(audio_variants=[{}]),
+    _job(chapters={"add": [{}]}),
+    _job(track_order=[{}]),
+    _job(track_order=[{"selector": {}, "source": "bad"}]),
+    _job(track_order=[[0, 1, "x", "extra"]]),
+    _job(variables={"aliases": 42}),
+    _job(variables={"codec_names": {"h264": 42}}),
+    _job(sources=[{"path": _SOURCE, "sync": {"reference_track": "bogus"}}]),
+    _job(sources=[{"path": _SOURCE, "sync": {"calibration": "/c.json", "offset_ms": 0}}]),
+    _job(tracks=[{"selector": _AUDIO, "sync_calibration": {}}]),
+    _job(sources=[{"path": _SOURCE, "sync": {"calibration": {}}}]),
+    _job(sync_calibrations={"0": {}}),
+    _job(sync_calibrations={"1": _CALIBRATION, "_note": _CALIBRATION}),
+    _job(encode=None),
+    _job(tmdb=None),
+    _job(tmdb=0),
+    _job(sources=[{"path": _SOURCE, "attachments": None}]),
+    _job(sources=[{"path": _SOURCE, "attachments": 0}]),
+    _job(sources=[{"path": _SOURCE, "sync": {"calibration": None}}]),
 ]
 
 

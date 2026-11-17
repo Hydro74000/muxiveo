@@ -37,8 +37,10 @@ possibles (`progress` pour les opérations qui en publient, `artifact` pour cell
 
 Les documents portés par les requêtes sont décrits une fois (`$defs` : `job`, `encode_block`,
 `decision_profile`) et reliés par `$ref` ; `job` est fermé comme l'admission (clé inconnue refusée,
-clés internes `_…` / `$…` ignorées — sauf dans les objets `sync` et `flags`, qui les refusent —,
-`variables` et tables libres). Les résultats sont typés : fiche
+clés internes `_…` / `$…` ignorées — sauf dans les objets `sync`, `flags` et le bloc `encode`, qui les
+refusent —, noms de `variables` et tables libres) et l'admission d'une requête vérifie le job contre ce
+schéma : le client et le service rendent le même verdict (seul le contenu d'une calibration au-delà de
+ses champs publiés relève de son propre contrat). Les résultats sont typés : fiche
 d'inspection et pistes (`hdr_type` publié par son libellé), sorties d'extraction, entrées de lots,
 réglages, presets, profils, titres Blu-ray, capacités, extensions, verdicts FEL, TMDB. Restent des
 objets décrits (contenu documenté ailleurs) : plans de `media.validate/preview`, rapports HDR, plans
@@ -96,7 +98,7 @@ comportement) :
   `mediainfo` hors contrat : refusées en requête, signalées et sans effet dans un document historique ;
   outils = configuration ou options de l'appel), `tmdb_cover` doit venir de `https://image.tmdb.org/`,
   les clés internes `_…` du premier niveau d'un document sont retirées (plus profondes : ignorées, sauf
-  dans `sync` et `flags`, qui les refusent).
+  dans `sync`, `flags` et le bloc `encode`, qui les refusent).
 - **Paramètres libres de l'encodeur** (`extra_params`, presets compris) : limités aux options de
   l'encodeur — options privées et options d'encodage vidéo pour FFmpeg (sans option de la ligne de
   commande homonyme : `-stats`…), options d'encodage de `--help` pour NVEncC (sans entrées, sorties,

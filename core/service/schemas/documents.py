@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import functools
+import re
 from typing import Any
 
 _PREFIX = "#/$defs/"
@@ -92,6 +93,41 @@ def _definitions() -> dict[str, Any]:
             **_hoisted(build_decision_profile_schema_v1(), "decision_profile")}
 
 
+@functools.lru_cache(maxsize=1)
+def _root() -> dict[str, Any]:
+    return {"$defs": _definitions()}
+
+
+def job_schema_errors(job: dict[str, Any], prefix: str = "job") -> list[tuple[str, str]]:
+    """Écarts d'un job au schéma publié ``job`` (admission d'une requête de l'API : même verdict que le client).
+
+    Bloc ``encode`` objet exclu (lecture stricte propre) ; clés déjà signalées par ``unknown_job_keys`` exclues.
+    """
+    from core.jobs.schema import unknown_job_keys
+    from core.service.schema_check import schema_errors
+
+    document = copy.deepcopy({key: value for key, value in job.items()
+                              if not (key == "encode" and isinstance(value, dict))})
+    for path in unknown_job_keys(job, path=""):  # signalées à part : ni en double, ni masquant leur objet parent
+        _drop(document, path)
+    root = _root()
+    return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
+            for path, message in schema_errors(document, root["$defs"]["job"], root)]
+
+
+def _drop(document: Any, path: str) -> None:
+    """Retire la clé désignée par ``path`` (``.clé`` / ``[rang]`` successifs) si elle existe."""
+    steps = [int(index) if index else key for key, index in re.findall(r"\.([^.\[]+)|\[(\d+)\]", path)]
+    node = document
+    for step in steps[:-1]:
+        try:
+            node = node[step]
+        except (KeyError, IndexError, TypeError):
+            return
+    if steps and isinstance(node, dict):
+        node.pop(steps[-1], None)
+
+
 def _refs(node: Any) -> set[str]:
     if isinstance(node, list):
         return set().union(*(_refs(item) for item in node))
@@ -116,4 +152,4 @@ def used_definitions(*schemas: Any) -> dict[str, Any]:
     return copy.deepcopy(dict(sorted(needed.items())))
 
 
-__all__ = ["DECISION_PROFILE_REF", "ENCODE_BLOCK_REF", "JOB_REF", "used_definitions"]
+__all__ = ["DECISION_PROFILE_REF", "ENCODE_BLOCK_REF", "JOB_REF", "job_schema_errors", "used_definitions"]

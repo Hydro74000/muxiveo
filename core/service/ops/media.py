@@ -209,7 +209,8 @@ class MediaJobRequest(Model):
 
     @classmethod
     def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
-        """Écarts de valeurs du job au contrat v1 (types, énumérations, calibrations), avec leur chemin."""
+        """Écarts de valeurs du job au contrat v1 (types, énumérations, calibrations) et au schéma publié
+        (requête de l'API : verdict identique à celui du client), avec leur chemin."""
         from core.jobs.contract import strict_job_errors, validate_job_contract
         from core.jobs.errors import ContractError
 
@@ -223,7 +224,11 @@ class MediaJobRequest(Model):
             validate_job_contract(job, path="job")
         except ContractError as exc:
             errors += exc.errors
+        from core.service.schemas.documents import job_schema_errors
+
         found = [tuple(error.split(": ", 1)) if ": " in error else ("job", error) for error in errors]
+        seen = {path for path, _message in found}
+        found += [error for error in job_schema_errors(job) if error[0] not in seen]
         return found + encode_block_errors(job.get("encode"), "job.encode")  # type: ignore[return-value]
 
     @classmethod
