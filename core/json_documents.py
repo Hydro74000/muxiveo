@@ -180,8 +180,10 @@ def reference_path_errors(slot: str, value: Any, base_dir: Path | None, *,
                           name_allowed: bool) -> list[tuple[str, str]]:
     """Profil ou sortie désigné par un texte d'une requête de l'API : chemin inutilisable, ou relatif sans dossier
     de référence. ``name_allowed`` : un texte relatif sans suffixe ``.json`` est le nom d'un élément enregistré."""
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value:
         return []
+    if not value.strip():
+        return [(slot, "chemin attendu")]  # blancs seuls : jamais un nom ni un chemin
     # Classé tel qu'il sera utilisé : profil sans ses blancs (comme son chargeur), sortie telle quelle.
     text = value.strip() if name_allowed else value
     if name_allowed and path_kind(text) == "relative" and not text.lower().endswith(".json"):
@@ -247,11 +249,11 @@ def resolve_profile_reference(value: str, base_dir: Path) -> str:
 
 def resolve_output_reference(value: str | None, base_dir: Path) -> str | None:
     """Sortie d'une requête (fichier, ou dossier avec ``/`` final) : relative → depuis ``base_dir``, ``/`` gardé."""
-    text = str(value or "").strip()
-    if not text or path_kind(text) != "relative":  # absolu ou conventions de l'autre OS : inchangé
+    # Classée et résolue telle qu'elle sera utilisée (aucun blanc retiré).
+    if not value or not value.strip() or path_kind(value) != "relative":  # absolu, autre OS, vide : inchangé
         return value
-    resolved = str(Path(base_dir) / Path(text).expanduser())
-    return resolved + "/" if text.endswith(("/", "\\")) else resolved
+    resolved = str(Path(base_dir) / Path(value).expanduser())
+    return resolved + "/" if value.endswith(("/", "\\")) else resolved
 
 
 def preset_is_file(value: str, base_dir: Path | None = None) -> bool:

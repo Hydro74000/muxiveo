@@ -312,3 +312,20 @@ def test_unusable_preset_paths_are_refused_without_probing(preset, tmp_path, mon
     assert "job.encode.preset" in _details(caught.value)
     with pytest.raises(Exception, match="inutilisable"):
         preset_loader(tmp_path / "presets", tmp_path)(preset)
+
+
+@pytest.mark.parametrize("output", [" /media/o.mkv", "   "])
+def test_profile_output_padded_or_blank_is_never_resolved_from_the_cwd(output, tmp_path):
+    from core.json_documents import resolve_output_reference
+    from core.service.ops.profile import ProfilePreviewRequest
+
+    request = {"profile": "Film", "inputs": [str(tmp_path / "a.mkv")], "output": output}
+    with pytest.raises(ApiError):  # sans dossier de référence
+        ProfilePreviewRequest.parse(request)
+    if output.strip():
+        resolved, _ = ProfilePreviewRequest.parse(request, base_dir=tmp_path)
+        assert resolved.output == str(tmp_path / output)  # relatif tel qu'utilisé : sous le dossier de la requête
+        assert resolve_output_reference(output, tmp_path) == str(tmp_path / output)
+    else:
+        with pytest.raises(ApiError):
+            ProfilePreviewRequest.parse(request, base_dir=tmp_path)
