@@ -67,7 +67,7 @@ def _app_config(ctx: ExecutionContext) -> Any:
 
     try:
         return ctx.port("app_config", AppConfig)()
-    except configparser.Error as exc:
+    except (configparser.Error, UnicodeError) as exc:
         if _reveal(ctx):
             raise
         raise JobError(config_syntax_message(exc), EXIT_VALIDATION) from None

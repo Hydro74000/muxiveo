@@ -375,3 +375,13 @@ def test_relative_preset_names_are_counted_before_resolution(monkeypatch):
         budget.used = MAX_RESOLVED_PATH_CHARS - 10
         problems = encode_path_errors({"preset": "README"}, Path("/" + "b" * 100))
     assert problems and "chemins relatifs trop nombreux" in problems[0][1]
+    # Fichier apparu entre deux sondes (absent puis présent) : compté une fois quand même.
+    from core import json_documents
+    from core.json_documents import document_path_errors
+
+    probes = iter([False, True, True, True])
+    monkeypatch.setattr(json_documents, "preset_is_file", lambda _value, _base=None: next(probes))
+    with resolution_budget() as budget:
+        budget.used = MAX_RESOLVED_PATH_CHARS - 10
+        problems = document_path_errors({"encode": {"preset": "README"}}, Path("/" + "b" * 100))
+    assert problems and "chemins relatifs trop nombreux" in problems[0][1]

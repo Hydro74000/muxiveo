@@ -127,16 +127,20 @@ def test_operations_handler_direct_call(capsys):
     assert json.loads(capsys.readouterr().out)["api_version"] == 1
 
 
+@pytest.mark.parametrize("fault", ["syntax", "encoding"])
 @pytest.mark.parametrize("argv, revealed", [(["call", "system.version"], False),
                                             (["serve"], False),
                                             (["call", "system.version", "--allow-privileged"], True)])
-def test_an_unreadable_config_ini_at_startup_is_not_shown_to_api_entries(monkeypatch, capsys, argv, revealed):
-    """config.ini illisible au lancement : `call` / `serve` sans autorisation n'en recopient pas les lignes."""
+def test_an_unreadable_config_ini_at_startup_is_not_shown_to_api_entries(monkeypatch, capsys, argv, revealed, fault):
+    """config.ini illisible au lancement (syntaxe, encodage) : `call` / `serve` sans autorisation n'en recopient
+    pas le contenu."""
     import configparser
 
     from cli import main as cli_main
 
     def broken() -> Any:
+        if fault == "encoding":
+            b"[metadata]\ntmdb_bearer_token = SENTINEL_PRIVATE_TOKEN\xff\n".decode("utf-8")
         configparser.ConfigParser().read_string("[metadata]\ntmdb_bearer_token = a\nSENTINEL_PRIVATE_TOKEN\n")
 
     monkeypatch.setattr(cli_main, "AppConfig", broken)
@@ -144,7 +148,7 @@ def test_an_unreadable_config_ini_at_startup_is_not_shown_to_api_entries(monkeyp
     captured = capsys.readouterr()
     assert ("SENTINEL" in captured.out + captured.err) is revealed
     if not revealed:
-        assert "ligne 3" in captured.err
+        assert ("ligne 3" if fault == "syntax" else "UnicodeDecodeError") in captured.err
 
 
 def test_api_calls_refuse_an_unusable_reference_folder(tmp_path):

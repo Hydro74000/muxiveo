@@ -524,9 +524,11 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     _write_ini_text(path, lines)
 
 
-def config_syntax_message(exc: configparser.Error) -> str:
-    """Erreur de syntaxe de config.ini rendue sans ses lignes (qui peuvent contenir un secret coupé) : nature et
-    numéros de ligne seulement."""
+def config_syntax_message(exc: Exception) -> str:
+    """Erreur de lecture de config.ini rendue sans son contenu (qui peut contenir un secret coupé) : nature et
+    numéros de ligne (syntaxe) ou position de l'octet (encodage) seulement."""
+    if isinstance(exc, UnicodeDecodeError):
+        return f"config.ini illisible : {type(exc).__name__} (octet {exc.start}, encodage {exc.encoding})."
     lineno = getattr(exc, "lineno", None)
     lines = sorted({line for line, _text in getattr(exc, "errors", ())} | ({lineno} if isinstance(lineno, int)
                                                                          else set()))

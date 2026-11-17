@@ -216,7 +216,8 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
     budget = budget or current_budget()
 
     def check(slot: str, value: str) -> str:
-        message = _path_problem(value, base_dir, budget)
+        # Preset : compté une seule fois par _preset_name_errors, qu'il soit un fichier ou un nom.
+        message = _path_problem(value, base_dir, None if slot == "encode.preset" else budget)
         if message:
             errors.append((f"{prefix}.{slot}" if prefix else slot, message))
         return value
@@ -230,11 +231,10 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
 
 def _preset_name_errors(encode: Any, base_dir: Path | None, budget: ResolutionBudget,
                         slot: str) -> list[tuple[str, str]]:
-    """Preset désigné par un nom relatif : compté d'avance dans le budget (un fichier de ce nom apparu avant la
-    résolution serait développé sans avoir été compté)."""
+    """Preset relatif compté une seule fois dans le budget, fichier ou nom (un fichier apparu entre le contrôle et la
+    résolution serait sinon développé sans avoir été compté)."""
     preset = encode.get("preset") if isinstance(encode, dict) else None
-    if (not isinstance(preset, str) or not preset or base_dir is None or path_kind(preset) != "relative"
-            or preset_is_file(preset, base_dir)):  # fichier : déjà compté par le contrôle des chemins
+    if not isinstance(preset, str) or not preset or base_dir is None or path_kind(preset) != "relative":
         return []
     return [] if budget.spend(base_dir, preset) else [(slot, ResolutionBudget.MESSAGE)]
 
@@ -245,7 +245,7 @@ def encode_path_errors(encode: Any, base_dir: Path | None, *, prefix: str = "enc
     budget = current_budget()
 
     def check(slot: str, value: str) -> str:
-        message = _path_problem(value, base_dir, budget)
+        message = _path_problem(value, base_dir, None)  # preset : compté par _preset_name_errors
         if message:
             errors.append((f"{prefix}.{slot}", message))
         return value
