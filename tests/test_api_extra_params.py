@@ -25,6 +25,8 @@ Per-file options (input and output):
 -passlogfile[:<stream_spec>] <prefix>  select two pass log file name prefix
 AVCodecContext AVOptions:
   -b                 <int64>      E..VA...... set bitrate (in bits/s)
+  -flags             <flags>      ED.VAS..... (codec flags)
+  -dump_separator    <string>     ED.VAS..... set information dump field separator
   -g                 <int>        E..V....... set the group of picture (GOP) size
   -ar                <int>        ED...A..... set audio sampling rate (in Hz)
   -flags2            <flags>      .D.V....... (décodage seul)
@@ -35,6 +37,11 @@ _NVENCC_HELP = """Usage: NVEncC.exe [Options] -i <input file> -o <output file>
 -h,-? --help                    print help
 -i,--input <filename>           set input filename
 -o,--output <filename>          set output filename
+-f,--output-format <string>     set output format of output file.
+-m,--mux-option <string1>:<string2>
+   --avsw [<string>]            set input to use avcodec + sw decoder
+   --audio-file [<int>?][<string>:]<string>
+   --audio-filter [<int>?]<string>
    --lookahead <int>            enable lookahead
    --(no-)aq                    enable spatial adaptive quantization
    --audio-source <string>      input extra audio file.
@@ -68,13 +75,15 @@ def _errors(codec: str, params: str) -> list[str]:
 
 def test_ffmpeg_encoder_and_codec_options_pass_masked_ones_do_not():
     assert policy.ffmpeg_encoder_option_names("ffmpeg", "libx264") == frozenset(
-        {"preset", "passlogfile", "rc-lookahead", "x264-params", "b", "g"})  # « stats » masquée, « ar » audio
+        {"preset", "passlogfile", "rc-lookahead", "x264-params", "b", "g", "flags", "dump_separator",
+         "q", "pix_fmt", "force_key_frames"})  # « stats » masquée, « ar » audio ; options standard d'encodage
     assert _errors("libx264", "-rc-lookahead 40 -x264-params aq-mode=3 -passlogfile /tmp/p -g 48 -b:v 5M") == []
+    assert _errors("libx264", "-flags -cgop -q:v 24 -qscale:v 24 -pix_fmt yuv420p") == []  # valeur « -cgop »
 
 
 @pytest.mark.parametrize("params", ["-i http://h/x", "-progress tcp://h:1", "-f matroska", "-stats x.mkv",
                                     "-/x264-params f.txt", "-filter_complex nullsink", "-y", "sortie2.mkv",
-                                    "-g 48 sortie2.mkv extra"])
+                                    "-g 48 sortie2.mkv extra", "-dump_separator -g /absent/extra.mkv", "-g"])
 def test_anything_outside_the_encoder_is_refused(params):
     assert _errors("libx264", params)
 
@@ -91,14 +100,16 @@ def test_unknown_encoder_refuses_free_parameters():
 
 @pytest.mark.parametrize("params", ["--vpp-pad 2,2,2,2", "--vpp-tweak brightness=0.1", "--audio-source a.mka",
                                     "--option-file opts.txt", "--avsdll x.dll", "-i x.mkv", "--log l.txt",
-                                    "--input-option a:b", "--inconnue 1"])
+                                    "--input-option a:b", "--inconnue 1", "--audio-file 1?/tmp/x.mka",
+                                    "--audio-filter volume=0", "-f matroska", "--output-format=matroska", "-m a:b",
+                                    "--mux-option=a:b", "--avsw", "--lookahead 32 sortie.mkv"])
 def test_nvencc_inputs_logs_sources_filters_and_loaders_are_refused(params):
     assert _errors("nvencc_hevc", params)
 
 
 def test_nvencc_encoder_options_pass():
     assert _errors("nvencc_hevc", "--lookahead 32 --aq") == []
-    assert _errors("nvencc_hevc", "--no-aq") == []
+    assert _errors("nvencc_hevc", "--no-aq --lookahead=16") == []
 
 
 def test_effective_settings_are_checked_whatever_their_origin():
@@ -151,3 +162,21 @@ def test_tonemap_algorithm_is_bounded_by_its_engine():
     assert filter_field_errors(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True,
                                                    tonemap_algorithm="hable:desat=0,drawbox"))
     assert filter_field_errors(VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True, tonemap_algorithm="bt2390"))
+
+
+def test_the_workflow_validation_checks_the_effective_filter_fields(tmp_path):
+    """Chemin réel : ``EncodeWorkflow.validate`` sur les réglages effectifs (bloc ``encode``, preset, interface)."""
+    import dataclasses
+
+    from core.workflows.encode import EncodeWorkflow
+    from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings, VideoFilterSettings
+
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"x")
+    filters = dataclasses.replace(VideoFilterSettings(), yadif_enabled=True,
+                                  yadif_deint="all,metadata=mode=print:file=/dev/null")
+    config = EncodeConfig(source=source, output=tmp_path / "out.mkv",
+                          video=VideoEncodeSettings(codec="libx264", filters=filters), audio_tracks=[],
+                          copy_subtitles=False, duration_s=60.0)
+    errors = EncodeWorkflow(ffmpeg_bin="ffmpeg").validate(config)
+    assert any("yadif_deint" in error for error in errors)
