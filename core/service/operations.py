@@ -145,9 +145,9 @@ def result_state(result: Model) -> JobState:
     return _RESULT_STATES.get(status, JobState.SUCCEEDED) if isinstance(status, str) else JobState.SUCCEEDED
 
 
-def authorize(spec: OperationSpec, ctx: ExecutionContext) -> None:
-    """Opération privilégiée sans autorisation explicite du contexte → ``forbidden``."""
-    if spec.privileged and not ctx.allow_privileged:
+def authorize(spec: OperationSpec, allow_privileged: bool) -> None:
+    """Opération privilégiée sans autorisation explicite → ``forbidden`` (``call``, gestionnaire de jobs)."""
+    if spec.privileged and not allow_privileged:
         raise ApiError(ErrorCode.FORBIDDEN, f"Opération privilégiée non autorisée : {spec.name} "
                                             "(autorisation explicite requise, ex. `call --allow-privileged`).")
 
@@ -197,7 +197,7 @@ def call(
         ctx = dataclasses.replace(ctx, base_dir=effective)
     try:
         spec = catalog.get(name)
-        authorize(spec, ctx)
+        authorize(spec, ctx.allow_privileged)
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,
                                                allow_relative=allow_relative, strict_documents=strict_documents)
     except ApiError as error:

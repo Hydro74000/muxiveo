@@ -124,10 +124,13 @@ class ExecutionContext:
         api: bool = True,
         base_dir: Path | None = None,
         allow_privileged: bool = False,
+        emitter: Emitter | None = None,
     ) -> ExecutionContext:
+        """``emitter`` : émetteur déjà créé (gestionnaire de jobs : numérotation continue depuis l'admission) ;
+        ``sink``, ``job`` et ``parent`` sont alors ignorés."""
         return cls(
             config=snapshot_config(config),
-            events=Emitter(sink, job, parent),
+            events=emitter if emitter is not None else Emitter(sink, job, parent),
             cancel=cancel or CancelToken(),
             overrides=overrides or Overrides(),
             ports=dict(ports or {}),

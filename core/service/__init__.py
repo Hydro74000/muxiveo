@@ -18,6 +18,7 @@ from core.service.events import (
     ListSink,
     NullSink,
 )
+from core.service.manager import JobInfo, JobManager, JobSummary
 from core.service.models import Model, field
 from core.service.operations import API_VERSION, Catalog, OperationSpec, call, execute, operation
 
@@ -35,7 +36,10 @@ __all__ = [
     "EventSink",
     "EventType",
     "ExecutionContext",
+    "JobInfo",
+    "JobManager",
     "JobState",
+    "JobSummary",
     "ListSink",
     "Model",
     "NullSink",
