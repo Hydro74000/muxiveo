@@ -233,10 +233,12 @@ muxiveo --cli config set ui.theme light
 # Full (translated) help and JSON API
 muxiveo --cli help encode
 muxiveo --cli call media.inspect --request request.json
+muxiveo --cli serve        # JSON-RPC worker over stdio for a local tool
 ```
 
 Every GUI feature (except Merge DoVi) is available from the CLI, each one being a service-layer operation
-callable in JSON (`call`, `operations`).
+callable in JSON (`call`, `operations`) or by a local tool through the `serve` worker (concurrent jobs,
+live events, cancellation).
 
 > 📖 Full reference: `muxiveo --cli help --all`, [docs/cli/reference.md](docs/cli/reference.md); task guide: [docs/cli/README.md](docs/cli/README.md); API: [docs/cli/api.md](docs/cli/api.md); wiki: [Headless CLI](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
 

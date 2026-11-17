@@ -233,10 +233,12 @@ muxiveo --cli config set ui.theme light
 # Aide complète (traduite) et API JSON
 muxiveo --cli help encode
 muxiveo --cli call media.inspect --request requete.json
+muxiveo --cli serve        # worker JSON-RPC sur stdio pour un outil local
 ```
 
 Toutes les fonctions de l'interface (sauf Merge DoVi) existent en CLI, chacune étant une opération de la
-couche de service appelable en JSON (`call`, `operations`).
+couche de service appelable en JSON (`call`, `operations`) ou par un outil local via le worker `serve`
+(jobs concurrents, événements en direct, annulation).
 
 > 📖 Référence complète : `muxiveo --cli help --all`, [docs/cli/reference.md](docs/cli/reference.md) ; guide par tâche : [docs/cli/README.md](docs/cli/README.md) ; API : [docs/cli/api.md](docs/cli/api.md) ; wiki : [CLI headless](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
 

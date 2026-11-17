@@ -1,8 +1,9 @@
-# API de Muxiveo : couche de service, `call`, événements
+# API de Muxiveo : couche de service, `call`, worker `serve`, événements
 
 Chaque fonction du CLI est une **opération** de la couche de service (`core/service/`) : une
 requête JSON typée, des événements pendant l'exécution, un résultat JSON. Les commandes du CLI
-en sont des adaptateurs ; `call` donne accès au contrat brut, celui d'un futur service (daemon).
+en sont des adaptateurs ; trois entrées donnent accès au contrat brut : `call` (un appel par
+processus), le worker `serve` (JSON-RPC sur stdio, plusieurs jobs) et l'import Python.
 
 ## Catalogue
 
@@ -24,15 +25,31 @@ muxiveo --cli operations --describe media.extract # requête, résultat, erreurs
 muxiveo --cli schema --version api                # catalogue complet en JSON (base OpenAPI / JSON-RPC)
 ```
 
-Chaque description indique `long_running` (progression publiée), `mutating` (écrit des fichiers
-ou la configuration) et `uses_gpu` : un ordonnanceur peut s'en servir.
+Chaque description publie le schéma de la requête et du résultat, les codes d'erreur, les événements
+possibles (`progress` pour les opérations qui en publient, `artifact` pour celles qui écrivent) et :
 
-## Appeler une opération
+- `long_running`, `mutating` (écrit des fichiers ou la configuration), `uses_gpu` ;
+- `privileged` : modifie la configuration, les extensions, NVEncC, l'installation ou nettoie le
+  dossier de travail — refusée sans autorisation explicite (voir plus bas) ;
+- `queue` : classe d'ordonnancement — `job` (produit ou transforme des médias), `analysis` (inspection,
+  aperçus, analyses) ou `exclusive` (opérations privilégiées et lecture de la configuration : exécutées
+  seules).
+
+Les documents portés par les requêtes sont décrits une fois (`$defs` : `job`, `encode_block`,
+`decision_profile`) et reliés par `$ref` ; `job` est fermé comme l'admission (clé inconnue refusée,
+clés internes `_…` / `$…` ignorées, `variables` et tables libres). Les résultats sont typés : fiche
+d'inspection et pistes (`hdr_type` publié par son libellé), sorties d'extraction, entrées de lots,
+réglages, presets, profils, titres Blu-ray, capacités, extensions, verdicts FEL, TMDB. Restent des
+objets décrits (contenu documenté ailleurs) : plans de `media.validate/preview`, rapports HDR, plans
+Hybrid, calibrations. Chaque document publié (catalogue, `--describe`) est autonome : toute `$ref` s'y
+résout.
+
+## Appeler une opération (`call`)
 
 ```bash
 muxiveo --cli call media.extract --request requete.json      # chemins relatifs au dossier du fichier
-echo '{"inputs": ["film.mkv"]}' | muxiveo --cli call media.inspect --request -
-muxiveo --cli call media.run --request job.json --ffmpeg /opt/ffmpeg/bin/ffmpeg
+echo '{"inputs": ["/media/film.mkv"]}' | muxiveo --cli call media.inspect --request -
+muxiveo --cli call config.set --allow-privileged --request reglage.json
 ```
 
 **Requête** : objet JSON **strict**, documents portés compris (`job` d'après le contrat
@@ -40,21 +57,13 @@ muxiveo --cli call media.run --request job.json --ffmpeg /opt/ffmpeg/bin/ffmpeg
 chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
 inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
-absent ou `null` non autorisé. Clés internes préfixées `_` ou `$` ignorées ; `variables` est un objet
-aux noms libres. Ce qui dépend des sources et de la machine (pistes sélectionnées, encodeurs et
-presets disponibles, géométrie Dolby Vision + NVENC, paramètres d'encodeur libres) est refusé à la
-validation (`validation`), comme au lancement. Chemins relatifs résolus depuis
-le dossier du fichier de requête (dossier courant pour stdin). Les documents des commandes
-historiques (`--config`, `--template`, `--batch`, exact-jobs) restent **tolérants** : clé inconnue
-signalée par un avertissement (`warning`, code `unknown_key`) et ignorée ; seuls les objets fermés du
-contrat (`sources[i].sync`, `tracks[i].sync`, `flags`) la refusent, comme avant (`validation`). Un
-fichier désigné par une requête (`template`, `batch` de `media.batch`) est un document : tolérant
-aussi. Chemins relatifs d'une requête, `encode.preset` désignant un fichier compris : depuis son
-dossier ; un job exporté enregistre ce preset en chemin absolu. Exemples de requêtes :
-`docs/cli/examples/`.
+absent ou `null` non autorisé. Ce qui dépend des sources et de la machine (pistes sélectionnées,
+encodeurs et presets disponibles, géométrie Dolby Vision + NVENC) est refusé à la validation
+(`validation`), comme au lancement. Les documents des commandes historiques (`--config`, `--template`,
+`--batch`, exact-jobs) restent **tolérants** : clé inconnue signalée (`warning`, code `unknown_key`)
+et ignorée. Exemples : `docs/cli/examples/`.
 
-**Réponse** (stdout, un objet JSON indenté) ; `status` = état terminal du job (pour un lot : celui de son
-résultat, voir plus bas) :
+**Réponse** (stdout, un objet JSON indenté) ; `status` = état terminal du job :
 
 ```json
 {"api_version": 1, "operation": "media.extract", "job": "…", "status": "succeeded", "result": {"outputs": [ … ]}}
@@ -62,10 +71,49 @@ résultat, voir plus bas) :
  "error": {"code": "validation", "message": "…", "details": []}}
 ```
 
+## Requêtes de l'API : chemins et redirections
+
+Règles communes à `call`, `serve` et l'intégration Python (les commandes historiques gardent leur
+comportement) :
+
+- **Dossier de référence** : une valeur relative (sources, sorties, gabarit de sortie, `work_dir`,
+  calibrations, pièces jointes, chapitres importés, preset ou profil désigné par un fichier) est résolue
+  depuis le dossier du fichier de requête (`call`), le `base_dir` de la soumission (`serve`) ou celui du
+  contexte (Python) ; sans dossier de référence, elle est **refusée** — jamais résolue depuis le dossier
+  courant du processus. Les chemins sont utilisés tels qu'admis (blancs compris ; `~` = dossier
+  personnel).
+- **Chemins inutilisables** refusés : absolus pour un autre OS (`C:/film.mkv` sous Linux) ou ambigus
+  sous Windows (`C:film.mkv`, `\film.mkv`).
+- **Pas de redirection** : un document ne désigne jamais un exécutable (clés de job `ffprobe` /
+  `mediainfo` ignorées : outils de la configuration), `tmdb_cover` doit venir de
+  `https://image.tmdb.org/`, les clés internes `_…` d'un document sont retirées.
+- **Paramètres libres de l'encodeur** (`extra_params`, presets compris) : limités aux options de
+  l'encodeur — options privées et options d'encodage vidéo pour FFmpeg (sans option de la ligne de
+  commande homonyme : `-stats`…), options d'encodage de `--help` pour NVEncC (sans entrées, sorties,
+  journaux, filtres `--vpp-*`, chargeurs `--option-file` / `--avsdll`) — contrôlés tels que la commande
+  les transmettra ; une option réservée au workflow (codec, mapping, filtres déjà posés) est refusée.
+  Chaînes `-x265-params` / `-svtav1-params` : syntaxe seule. Les options d'encodeur qui nomment un
+  fichier (`-passlogfile`, `csv=`) restent permises.
+- **Champs de filtres bornés** (pour tous les appelants, interface comprise) : YADIF, algorithme de
+  tone mapping… limités à leurs valeurs ; une valeur libre ne peut plus ajouter un filtre.
+
+## Opérations privilégiées et files
+
+Les opérations `privileged` (`config.set/unset/reset`, `workdir.clean`, `nvencc.install/remove`,
+`plugins.install/update/remove`, `app.update_install`) sont refusées (`forbidden`, code retour 3) sans
+autorisation explicite : `call --allow-privileged`, `serve --allow-privileged`,
+`ExecutionContext.create(allow_privileged=True)` ; les commandes historiques (`config set`,
+`plugins install`…) restent autorisées. `app.update_install` renvoie `restart_required` (vrai si la
+version est installée ou programmée : le processus doit se terminer).
+
+Le gestionnaire de jobs (`serve`, Python) ordonnance par `queue`, en FIFO par classe : au plus
+`max_jobs` jobs (défaut 1) et `max_analyses` analyses (défaut 2) en parallèle — un client reste réactif
+pendant un long encodage ; une `exclusive` attend que tout soit terminé, s'exécute seule et fait
+barrière (rien de soumis après elle ne démarre avant elle) ; la configuration est relue après elle.
+
 ## Événements
 
-Sur stderr, une ligne JSON par événement (toujours avec `call`, sur demande avec
-`--log-format events` pour les autres commandes, qui publient alors aussi leur réponse sur stdout) :
+Une ligne JSON par événement (stderr avec `call`, notifications `job.event` avec `serve`) :
 
 ```json
 {"v": 1, "job": "j1", "parent": null, "seq": 4, "ts": "2026-11-14T08:00:00.000Z", "type": "progress", "pct": 42.5, "stage": "…"}
@@ -73,59 +121,146 @@ Sur stderr, une ligne JSON par événement (toujours avec `call`, sur demande av
 
 | `type` | Contenu |
 |---|---|
-| `state` | état du job : `running`, puis `succeeded`, `partial`, `failed` ou `cancelled` |
-| `log` | message (`level`, `message`, `origin`) |
-| `progress` | avancement (`pct`, `stage`, `fps`, `eta_s`…) — opérations longues |
-| `warning` | avertissement (`message`, `code`) |
+| `state` | état du job : `queued` (gestionnaire), `running`, puis `succeeded`, `partial`, `failed` ou `cancelled` |
+| `log` | message (`level` : `debug`, `info`, `ok`, `error` ; `message`, `origin`) |
+| `progress` | `pct`, `stage` (identifiant stable : `download`, `assembly`, `metadata`, couches d'extraction, étapes de `hdr.patch`…), `label` (texte), encodage : `fps`, `frame`, `eta_s`, `track` / `track_count`, `pass_index` / `pass_count` |
+| `warning` | `message`, `code` toujours présent (`unknown_key`, `extract_skipped`, `cancel_too_late`, `sync_unverified`, `sync_uncertain`, `nvencc_install`, `hdr_patch_plan`, `event_too_large`, `unspecified`) ; synchro : `kind`, `zones`, `windows`, `spread_ms`, `shift_ms` |
 | `artifact` | fichier produit (`kind` : `output`, `exact-job`, `preview-image`, `calibration`…, `path`) |
 | `result` / `error` | fin du job |
 
-`seq` croît sans trou par job ; `parent` relie les jobs enfants à leur lot.
+`seq` croît sans trou par job (depuis `queued` avec le gestionnaire) ; `parent` relie les jobs enfants
+à leur lot. Le schéma (`event` du catalogue) décrit chaque variante.
 
 ## Lots, jobs enfants, résultats partiels
 
 `media.batch`, `profile.batch`, `hybrid.run` : un job enfant par élément (événements `parent` = lot).
-Le résultat du lot liste chaque enfant (état, sortie, erreur) avec `status`, repris par l'état
-terminal du lot, l'enveloppe de `call` et le code retour :
+Le résultat du lot liste chaque enfant (état, sortie, erreur, `job` = identifiant du job enfant) avec
+`status`, repris par l'état terminal du lot, l'enveloppe de `call` et le code retour :
 
 - `succeeded` : tous réussis (code retour 0) ;
 - `partial` : au moins un réussi et au moins un en échec ou annulé ;
 - `failed` / `cancelled` : aucun réussi.
 
-Lot non entièrement réussi (`partial`, `failed`, `cancelled`, annulation pendant la préparation
-comprise) : code retour 7, comme la commande `batch`. `hybrid.plan` suit la même règle d'après les
-épisodes dont la préparation ou l'encodage (mêmes refus qu'au lancement) a échoué ; un épisode refusé
-n'est pas exporté.
-
-Une sortie publiée reste publiée (et listée) quel que soit le sort des suivants. Toutes les sorties
-sont préparées puis toute collision est refusée **avant** le premier job.
+Lot non entièrement réussi : code retour 7, comme la commande `batch`. Une sortie publiée reste
+publiée quel que soit le sort des suivants. Toutes les sorties sont préparées puis toute collision est
+refusée **avant** le premier job.
 
 ## Annulation
 
-Ctrl+C (CLI) ou annulation du jeton (service) : processus arrêtés, fichier `.partial` et dossier de
-travail supprimés, état terminal `cancelled` émis après le nettoyage complet. Une annulation arrivée
-après la publication de la sortie laisse l'opération réussie avec l'avertissement `cancel_too_late`.
-Dans un lot : le job en cours est annulé puis le lot s'arrête.
+Ctrl+C (CLI), `job.cancel` (`serve`) ou jeton (`CancelToken`, Python) : processus arrêtés, fichier
+`.partial` et dossier de travail supprimés, état terminal `cancelled` émis après le nettoyage complet.
+Un job en file est retiré aussitôt (`error` puis `state: cancelled`). Une annulation arrivée après la
+publication de la sortie laisse l'opération réussie avec l'avertissement `cancel_too_late`. Dans un
+lot : le job en cours est annulé puis le lot s'arrête.
 
 ## Erreurs et codes retour
 
 | `error.code` | Sens | Code retour du CLI |
 |---|---|---:|
 | `invalid_request`, `unknown_operation` | requête mal formée, opération inconnue | 2 |
-| `validation` | requête bien formée refusée par les règles métier | 3 |
+| `validation`, `forbidden` | requête refusée par les règles métier ; opération privilégiée non autorisée | 3 |
 | `tool_missing` | outil absent (FFmpeg, dovi_tool, extension…) | 4 |
 | `output_exists` | sortie existante sans `force` | 5 |
-| `workflow_failed`, `busy`, `cancelled` | échec, ressource occupée, annulation | 6 |
+| `workflow_failed`, `busy`, `cancelled` | échec, ressource occupée (ou file pleine), annulation | 6 |
 | `partial` (ou `status` d'un lot autre que `succeeded`) | lot partiel, en échec ou interrompu | 7 |
 
 Avec `call`, une opération réussie renvoie 0 : son état métier (mise à jour disponible, synchro à
 relire…) est dans `result`.
 
-## Limites (plan du service)
+## Worker `serve`
 
-Hors périmètre actuel, prévu pour le service (daemon) : transport réseau et authentification,
-racines de fichiers autorisées, file d'attente et ordonnancement GPU / disque, persistance des jobs,
-clients multiples. `app.update_install` en mode `scheduled` (installeur, échange de dossiers) attend
-la fin du processus : un service permanent devra s'arrêter pour que l'installation aboutisse.
-Les opérations sans interface n'ouvrent aucune fenêtre ; les choix interactifs de l'interface sont
-des champs explicites des requêtes, refusés par défaut (ex. `accept_dovi_nvenc_crop`, `confirm`).
+```bash
+muxiveo --cli serve [--allow-privileged] [--max-jobs N] [--max-analyses N]
+```
+
+JSON-RPC 2.0 sur stdio, **un objet JSON par ligne** UTF-8 (trame ≤ 16 Mio), pour **un** client :
+
+| Méthode | Paramètres | Résultat |
+|---|---|---|
+| `server.info` | — | `protocol`, `api_version`, `event_version`, `app_version`, `privileged`, `max_jobs`, `max_analyses` |
+| `job.submit` | `operation`, `request` (objet), `base_dir` (absolu, facultatif) | `{"job": "…"}` |
+| `job.cancel` | `job` | `{"cancelled": true \| false}` (faux : déjà terminé) |
+| `job.get` | `job` | état, horodatages, dernière progression, `result` ou `error` |
+| `job.list` | — | `{"jobs": [ … ]}` (en file, en cours, 100 derniers terminés) |
+| `server.shutdown` | — | `{}` puis arrêt |
+
+Notifications du worker : `job.event` (événement tel quel) et `server.exiting` (`reason` : `shutdown`,
+`update`, `client_gone`). Erreurs : codes JSON-RPC standard (`-32700` JSON illisible, `-32600` requête
+invalide ou trame trop volumineuse, `-32601` méthode inconnue, `-32602` paramètres) ; erreur de l'API →
+`-32000`, `data` = erreur publique (`code` : `forbidden`, `invalid_request`, `busy`…). Le catalogue
+s'obtient par `job.submit` de `schema.get` (`{"version": "api"}`).
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"job.submit","params":{"operation":"media.inspect","request":{"inputs":["film.mkv"]},"base_dir":"/media"}}
+{"jsonrpc":"2.0","id":1,"result":{"job":"9f…"}}
+{"jsonrpc":"2.0","method":"job.event","params":{"v":1,"job":"9f…","seq":1,"type":"state","state":"queued",…}}
+```
+
+Garanties : la réponse de `job.submit` précède tout événement du job ; les descripteurs du protocole
+sont protégés (toute impression parasite et les sous-processus écrivent sur stderr, stdin des
+sous-processus = `os.devnull`) ; écrire ne bloque jamais le worker — un client qui ne lit plus (64 Mio
+en attente) ou un pipe fermé est considéré parti : le worker s'arrête. Une réponse trop volumineuse
+devient une erreur `-32000` (`response_too_large`), un événement trop volumineux un avertissement
+`event_too_large`. Arrêt (`server.shutdown`, fin de stdin, SIGTERM, SIGINT, client parti) : jobs en
+file et en cours annulés puis attendus, vidage final borné (5 s). Après une mise à jour installée
+(`restart_required`), le worker annonce `server.exiting` (`update`) et s'arrête : le client le relance.
+
+## Appeler Muxiveo depuis un outil local
+
+| Entrée | Quand la choisir |
+|---|---|
+| `call` | un processus par appel : script de post-traitement, appel ponctuel |
+| `serve` en processus enfant | plusieurs jobs, annulation par identifiant, progression en direct ; un worker = un client |
+| import Python (`core.service`) | outil Python lancé depuis les sources de Muxiveo |
+
+Partager un même worker entre plusieurs outils ou l'appeler par le réseau relève d'une extension.
+Client minimal sans dépendance : [`docs/cli/examples/serve_client.py`](examples/serve_client.py).
+
+### Intégrer en Python
+
+```python
+from pathlib import Path
+
+from core.config import AppConfig
+from core.service import CallbackSink, ExecutionContext, JobManager, call
+from core.service.catalog import CATALOG
+
+# Un appel dans le fil courant (chemins relatifs depuis base_dir).
+ctx = ExecutionContext.create(AppConfig(), CallbackSink(print), base_dir=Path("/media"))
+result = call(CATALOG, "media.inspect", {"inputs": ["film.mkv"]}, ctx)
+
+# Jobs concurrents : admission, files, annulation, suivi.
+manager = JobManager(CATALOG, AppConfig, CallbackSink(lambda event: print(event.to_dict())))
+job = manager.submit("media.inspect", {"inputs": ["/media/film.mkv"]})
+print(manager.get(job).state)
+manager.cancel(job)
+manager.shutdown()
+```
+
+`ExecutionContext.create` : configuration (instantané), destination des événements (`EventSink` :
+`ListSink`, `CallbackSink`…), `cancel`, `overrides` (outils de l'appel), `ports` (services externes
+remplaçables : TMDB, réseau), `base_dir`, `allow_privileged`. Une application Qt doit exister
+(`QCoreApplication`) ; avec `JobManager`, sa boucle tourne dans le fil principal pendant que les jobs
+s'exécutent dans leurs fils (certaines tâches y livrent leur fin), comme dans `serve`.
+
+## Modèle de sécurité
+
+Le cœur ne confine pas les chemins : une requête lit et écrit partout où l'OS le permet au processus
+(comme les sorties du CLI). Il refuse en revanche les redirections (exécutables, réseau, ajouts à la
+commande hors de l'encodeur) et les opérations privilégiées non autorisées. **Toute exposition au-delà
+d'un client local de confiance** (réseau, utilisateurs multiples) exige d'isoler le worker par l'OS :
+utilisateur dédié, conteneur, dossiers montés — rôle d'une extension, avec authentification et TLS.
+
+## Versions et compatibilité
+
+`api_version` (catalogue), `event_version` (événements) et `protocol` (`serve`) : un ajout compatible
+(opération, champ, code d'avertissement ou d'erreur) ne change pas la version ; un retrait ou un
+changement de sens l'incrémente. Les clients ignorent les champs et codes inconnus.
+
+## Limites
+
+Hors périmètre du cœur, prévu pour une extension : transport réseau, authentification, TLS,
+transfert de fichiers, persistance des jobs, clients multiples, OpenAPI généré depuis le catalogue.
+`app.update_install` en mode `scheduled` (installeur, échange de dossiers) attend la fin du processus.
+Les opérations sans interface n'ouvrent aucune fenêtre ; les choix interactifs de l'interface sont des
+champs explicites des requêtes, refusés par défaut (ex. `accept_dovi_nvenc_crop`, `confirm`).

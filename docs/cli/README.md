@@ -15,7 +15,7 @@
 | Hybrider une saison | `hybrid` | [Cas 2](#cas-2--hybrid-le-studio-dhybridation-headless-v4) |
 | Profils, TMDB, Blu-ray | `profile`, `tmdb`, `bluray-titles` | [TMDB, profils, Blu-ray](#tmdb-profils-enregistrés-blu-ray) |
 | Configurer, nettoyer, NVEncC, mettre à jour | `config`, `workdir`, `nvencc`, `version --install` | [Administration](#administration--configuration-dossier-de-travail-nvencc) |
-| Piloter Muxiveo depuis un programme | `call`, `operations`, `--log-format events` | [api.md](api.md) |
+| Piloter Muxiveo depuis un programme | `call`, `serve`, `operations`, `--log-format events` | [api.md](api.md) |
 
 Aide intégrée : `muxiveo --cli help COMMANDE`, `help --all` ; référence complète : [reference.md](reference.md).
 
@@ -68,7 +68,8 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
 | `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
 | `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
-| `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr |
+| `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr ; `--allow-privileged` pour une opération privilégiée |
+| `serve [--allow-privileged] [--max-jobs N] [--max-analyses N]` | worker JSON-RPC sur stdio pour un client local : jobs concurrents, événements, annulation ; voir [api.md](api.md#worker-serve) |
 
 Exemples :
 
@@ -915,12 +916,14 @@ archive source, application macOS : installation confiée à un processus qui at
 (`scheduled`) ; son compte rendu est affiché au prochain `version --install` (et par l'interface).
 Flatpak, Homebrew, dépôt git : gestionnaire externe (`brew upgrade`, `git pull`).
 
-## Couche de service : `call`, `operations`, `--log-format events`
+## Couche de service : `call`, `serve`, `operations`, `--log-format events`
 
-Chaque fonctionnalité du CLI devient progressivement une **opération** de la couche de
-service (`core/service/`) : requête JSON typée → événements → résultat JSON. Les commandes
-historiques gardent leurs sorties ; `call` expose le même contrat que celui d'un futur
-service (daemon), utilisable dès maintenant par un autre programme.
+Chaque fonctionnalité du CLI est une **opération** de la couche de service (`core/service/`) :
+requête JSON typée → événements → résultat JSON. Les commandes historiques gardent leurs sorties ;
+`call` (un appel par processus) et le worker `serve` (JSON-RPC sur stdio, plusieurs jobs, annulation
+par identifiant) exposent ce contrat à un autre programme. Opérations privilégiées (configuration,
+extensions, NVEncC, mise à jour, nettoyage du dossier de travail) : `call --allow-privileged` ou
+`serve --allow-privileged`, sinon refusées (`forbidden`, code retour 3).
 
 Catalogue complet, événements, lots et erreurs : [api.md](api.md). Référence de toutes les commandes et
 options : [reference.md](reference.md) (générée par `help --format md`).
@@ -937,13 +940,17 @@ Muxiveo-cli operations --describe media.inspect      # schémas de requête / r�
 Muxiveo-cli schema --version api                      # catalogue complet (base OpenAPI / JSON-RPC)
 echo '{"inputs": ["film.mkv"]}' | Muxiveo-cli call media.inspect --request -
 Muxiveo-cli call media.inspect --request requete.json  # chemins relatifs au dossier du fichier
+Muxiveo-cli call config.set --allow-privileged --request reglage.json
+Muxiveo-cli serve --max-jobs 1 --max-analyses 2       # worker : voir docs/cli/examples/serve_client.py
 Muxiveo-cli version --check --log-format events
 ```
 
 **Requête** : objet JSON strict — clé inconnue, type incorrect, champ requis absent ou
 `null` non autorisé sont refusés avec le chemin du champ. Chemins relatifs : résolus depuis
-le dossier du fichier de requête (ou le dossier courant pour stdin). Les documents
-historiques (`--config`, `--template`, `--batch`) restent tolérants.
+le dossier du fichier de requête (ou le dossier courant pour stdin ; `base_dir` de la soumission avec
+`serve`, sinon refusés), jamais depuis le dossier courant d'un worker. Paramètres libres de l'encodeur
+limités à ses options ; aucun document ne désigne d'exécutable. Les documents historiques
+(`--config`, `--template`, `--batch`) restent tolérants.
 
 **Réponse** (stdout) :
 
@@ -964,7 +971,7 @@ stdout à la place de sa sortie historique.
 | `error.code` | Code retour |
 |---|---:|
 | `invalid_request`, `unknown_operation` | 2 |
-| `validation` | 3 |
+| `validation`, `forbidden` | 3 |
 | `tool_missing` | 4 |
 | `output_exists` | 5 |
 | `workflow_failed`, `busy`, `cancelled` | 6 |
