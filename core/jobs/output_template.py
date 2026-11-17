@@ -171,8 +171,12 @@ def render_output_template(
 
 def render_output_filename(template: str, context: dict[str, Any]) -> str:
     """Rendu d'un nom relatif au dossier de sortie, commun au plan et à son aperçu."""
+    from core.json_documents import path_kind
+
     name = render_output_template(template, context)
-    if Path(name).is_absolute() or ".." in Path(name).parts:
+    # Absolu, ou inutilisable ici (« \\sortie.mkv » enraciné sous Windows, « C:/… » sous POSIX) : la jointure
+    # au dossier de sortie l'abandonnerait.
+    if path_kind(name) != "relative" or ".." in Path(name).parts:
         raise ValueError("Le template doit rester dans le dossier de sortie.")
     return name
 

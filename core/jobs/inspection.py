@@ -23,7 +23,8 @@ def source_path_items(job: dict[str, Any], cli_inputs: list[str] | None = None) 
         return [{"path": value} for value in cli_inputs]
     raw_sources = job.get("sources")
     if raw_sources is None and job.get("input"):
-        raw_sources = [job["input"]]
+        # Alias ``input`` : une entrée ou une liste d'entrées (jamais la liste prise pour un chemin).
+        raw_sources = list(job["input"]) if isinstance(job["input"], list) else [job["input"]]
     if isinstance(raw_sources, (str, Path)):
         raw_sources = [raw_sources]
     if not isinstance(raw_sources, list) or not raw_sources:

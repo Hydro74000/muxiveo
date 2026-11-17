@@ -67,7 +67,12 @@ def _profile_path_candidates(raw_profile: str | Path, config: AppConfig | None =
         if path not in candidates:
             candidates.append(path)
 
-    given = raw if raw.is_absolute() else (Path(base_dir) / raw if base_dir is not None else None)
+    from core.json_documents import path_kind
+
+    kind = path_kind(raw_text) if raw_text else "relative"
+    # Chemin inutilisable ici (« C:film.json » relatif à un lecteur…) : jamais joint, seuls les noms enregistrés.
+    given = raw if kind == "absolute" else (Path(base_dir) / raw if kind == "relative" and base_dir is not None
+                                           else None)
     if given is not None:
         add(given)
         if not given.suffix:

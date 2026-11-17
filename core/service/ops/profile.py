@@ -37,6 +37,13 @@ class ProfileRequest(Model):
     profile: str = field(description="Profil : chemin JSON ou nom d'un profil enregistré.")
 
     @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : profil désigné par un fichier utilisable ici."""
+        from core.json_documents import reference_path_errors
+
+        return reference_path_errors("profile", values.get("profile"), base_dir, name_allowed=True)
+
+    @classmethod
     def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
         """Profil désigné par un fichier relatif : depuis le dossier de la requête."""
         return _resolve_profile(values, base_dir)

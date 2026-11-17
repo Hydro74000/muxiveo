@@ -182,9 +182,10 @@ def reference_path_errors(slot: str, value: Any, base_dir: Path | None, *,
     de référence. ``name_allowed`` : un texte relatif sans suffixe ``.json`` est le nom d'un élément enregistré."""
     if not isinstance(value, str) or not value.strip():
         return []
-    if name_allowed and path_kind(value) == "relative" and not value.strip().lower().endswith(".json"):
+    text = value.strip()  # comme le chargeur des profils, qui retire les blancs avant de chercher
+    if name_allowed and path_kind(text) == "relative" and not text.lower().endswith(".json"):
         return []
-    message = _path_problem(value, base_dir)
+    message = _path_problem(text, base_dir)
     return [(slot, message)] if message else []
 
 

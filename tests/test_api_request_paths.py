@@ -253,3 +253,35 @@ def test_admission_and_execution_share_one_reference_folder(tmp_path):
     assert (result.source, result.base) == (str(tmp_path / "ctx" / "a.mkv"), str(tmp_path / "ctx"))
     result = call(catalog, "test.base", {"source": "a.mkv"}, ctx, base_dir=tmp_path / "req")
     assert (result.source, result.base) == (str(tmp_path / "req" / "a.mkv"), str(tmp_path / "req"))
+
+
+def test_input_alias_list_keeps_each_entry():
+    from core.jobs.inspection import source_path_items
+
+    assert [item["path"] for item in source_path_items({"input": ["/m/a.mkv", "/m/b.mkv"]})] == ["/m/a.mkv", "/m/b.mkv"]
+    assert [item["path"] for item in source_path_items({"input": "/m/a.mkv"})] == ["/m/a.mkv"]
+
+
+@pytest.mark.parametrize("value", ["C:film.json", " C:film ", "C:/profils/film.json"])
+def test_profile_references_unusable_here_are_refused_everywhere(value, tmp_path):
+    from core.jobs.profile import _profile_path_candidates
+    from core.json_documents import path_kind
+    from core.service.ops.profile import ProfileApplyRequest, ProfileRequest
+
+    if path_kind(value.strip()) != "unusable":
+        pytest.skip("chemin utilisable sur cet OS")
+    with pytest.raises(ApiError):
+        ProfileRequest.parse({"profile": value})
+    with pytest.raises(ApiError):
+        ProfileApplyRequest.parse({"profile": value, "inputs": [str(tmp_path / "a.mkv")]})
+    config = SimpleNamespace(profiles_dir=tmp_path / "profils")
+    candidates = _profile_path_candidates(value, config, base_dir=tmp_path)
+    assert all(str(path).startswith(str(tmp_path / "profils")) for path in candidates)  # noms enregistrés seulement
+
+
+@pytest.mark.parametrize("template", ["\\\\sortie.mkv", "C:/sorties/film.mkv", "../film.mkv"])
+def test_hybrid_rendered_names_stay_in_the_output_folder(template):
+    from core.jobs.output_template import render_output_filename
+
+    with pytest.raises(ValueError, match="dossier de sortie"):
+        render_output_filename(template, {})
