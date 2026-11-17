@@ -110,3 +110,18 @@ def test_refusal_precedes_the_reading_of_the_api_request(monkeypatch):
                  ExecutionContext.create(SimpleNamespace(), sink, allow_privileged=True))
         assert caught.value.code is ErrorCode.INVALID_REQUEST
         assert [e.type for e in sink.events] == [EventType.ERROR, EventType.STATE]
+
+
+def test_api_payload_walk_stays_linear_with_long_keys():
+    """Chemin de diagnostic construit seulement pour un refus : une très longue clé ne se recopie pas par élément."""
+    import time
+
+    from core.service.models import api_payload
+
+    payload = {"k" * 1_000_000: [0] * 1_000_000 + [1.0]}
+    started = time.monotonic()
+    assert api_payload(payload)["k" * 1_000_000][-1] == 1
+    assert time.monotonic() - started < 10
+    with pytest.raises(ApiError) as caught:
+        api_payload({"a": [{"b": 10 ** 400}]})
+    assert caught.value.message.startswith("a[0].b : nombre hors")

@@ -378,27 +378,41 @@ def api_payload(value: Any) -> Any:
 
     Entiers écrits en flottants (``1.0``) rendus entiers ; refus (``invalid_request``) d'une imbrication de plus de
     :data:`MAX_API_DEPTH` niveaux et des nombres non représentables en double précision (RFC 8259 § 6), que les
-    traitements ne pourraient pas convertir.
+    traitements ne pourraient pas convertir. Parcours linéaire : chemin construit seulement pour un refus.
     """
-    def walk(item: Any, path: str, depth: int) -> Any:
-        if depth > MAX_API_DEPTH:
-            raise ApiError(ErrorCode.INVALID_REQUEST,
-                           f"{path or 'requête'} : imbrication de plus de {MAX_API_DEPTH} niveaux.")
+    trail: list[str | int] = []
+
+    def refuse(reason: str) -> ApiError:
+        path = "".join(f"[{step}]" if isinstance(step, int) else f".{step}" for step in trail).lstrip(".")
+        return ApiError(ErrorCode.INVALID_REQUEST, f"{path or 'requête'} : {reason}")
+
+    def walk(item: Any) -> Any:
+        if len(trail) > MAX_API_DEPTH:
+            raise refuse(f"imbrication de plus de {MAX_API_DEPTH} niveaux.")
         if isinstance(item, bool):
             return item
         if (isinstance(item, int) and abs(item) > sys.float_info.max) or (
                 isinstance(item, float) and not math.isfinite(item)):
-            raise ApiError(ErrorCode.INVALID_REQUEST,
-                           f"{path or 'requête'} : nombre hors de la plage des flottants double précision.")
+            raise refuse("nombre hors de la plage des flottants double précision.")
         if isinstance(item, float) and item.is_integer():
             return int(item)
         if isinstance(item, list):
-            return [walk(child, f"{path}[{index}]", depth + 1) for index, child in enumerate(item)]
+            items: list[Any] = []
+            for index, child in enumerate(item):
+                trail.append(index)
+                items.append(walk(child))
+                trail.pop()
+            return items
         if isinstance(item, dict):
-            return {key: walk(child, f"{path}.{key}" if path else str(key), depth + 1) for key, child in item.items()}
+            fields: dict[str, Any] = {}
+            for key, child in item.items():
+                trail.append(key)
+                fields[key] = walk(child)
+                trail.pop()
+            return fields
         return item
 
-    return walk(value, "", 0)
+    return walk(value)
 
 
 def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),

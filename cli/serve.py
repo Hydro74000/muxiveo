@@ -21,6 +21,7 @@ import os
 import signal
 import sys
 import threading
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -52,7 +53,9 @@ PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR, 
 
 
 def _encode(message: dict[str, Any]) -> bytes:
-    return json.dumps(message, ensure_ascii=False, separators=(",", ":"), default=json_default).encode() + b"\n"
+    """Trame UTF-8 ; un substitut isolé (``\\ud800`` reçu du client) reste échappé : JSON valide, jamais d'erreur."""
+    text = json.dumps(message, ensure_ascii=False, separators=(",", ":"), default=json_default)
+    return text.encode("utf-8", "backslashreplace") + b"\n"
 
 
 class _Output:
@@ -322,7 +325,10 @@ def _read_loop(stream: BinaryIO, server: Server) -> None:
                     line = stream.readline(MAX_FRAME)
                 server.fail(None, INVALID_REQUEST, f"Trame trop volumineuse (maximum {MAX_FRAME} octets).")
                 continue
-            server.handle(line.rstrip(b"\r\n"))
+            try:
+                server.handle(line.rstrip(b"\r\n"))
+            except Exception:  # noqa: BLE001 - défaut d'une trame : signalé sur stderr, les suivantes restent lues
+                traceback.print_exc()
     except (OSError, ValueError):
         pass
     finally:

@@ -305,8 +305,11 @@ def test_hostile_frames_never_stop_the_reader(session):
         broken = client.reply(client.send("job.submit", {"operation": "t.broken"}))["error"]
         assert broken["code"] == -32603 and "défaut imprévu" in broken["message"]
         # Erreur répétant une très longue valeur du client (message et data.message) : trame bornée.
-        long_name = client.reply(client.send("job.submit", {"operation": "o" * (MAX_FRAME // 2 - 200)}))
+        long_name = client.reply(client.send("job.submit", {"operation": "o" * (MAX_FRAME // 2 + 100)}))
         assert long_name["error"]["data"]["code"] == "unknown_operation" and _frame_size(long_name) <= MAX_FRAME
+        assert len(long_name["error"]["message"]) < 5000  # deux copies du nom : plus de 16 Mio sans abrègement
+        client.raw(b'{"jsonrpc":"2.0","id":"\\ud800","method":"server.info"}\n')  # substitut isolé
+        assert "result" in client.reply("\ud800")
         assert "result" in client.reply(client.send("server.info"))  # lecteur toujours actif
 
     assert session.run(script) == 0
