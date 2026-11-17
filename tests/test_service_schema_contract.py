@@ -259,3 +259,40 @@ def test_diagnostics_under_a_long_key_stay_bounded():
     with pytest.raises(ApiError) as caught:
         CATALOG.get("media.validate").request.parse(api_payload({"job": _job(variables={"aliases": aliases})}))
     assert len(caught.value.details) <= 101 and time.monotonic() - started < 20
+
+
+def test_relative_paths_against_a_long_reference_folder_are_bounded():
+    """Chaque chemin relatif recopie le dossier de référence : volume résolu borné avant toute construction."""
+    import time
+
+    base = Path("/" + "b" * 200_000)
+    started = time.monotonic()
+    for operation, payload in (("media.validate", {"job": {"sources": ["a.mkv"] * 400, "output": _OUTPUT}}),
+                               ("media.inspect", {"inputs": ["a.mkv"] * 400})):
+        with pytest.raises(ApiError) as caught:
+            CATALOG.get(operation).request.parse(payload, base_dir=base)
+        assert any("chemins relatifs trop nombreux" in detail.message for detail in caught.value.details), operation
+    assert time.monotonic() - started < 10
+    CATALOG.get("media.inspect").request.parse({"inputs": ["a.mkv"] * 400}, base_dir=Path("/media"))
+
+
+def test_every_document_diagnostic_is_bounded_and_truncation_announced():
+    audio = [{"select": {}, "codec": "copy", "unknown": 0}] * 150
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("media.validate").request.parse({"job": _job(encode={"audio": audio})})
+    details = caught.value.details
+    assert len(details) == 101 and details[-1].message == "50 autre(s) écart(s) non détaillé(s)"
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("profile.save").request.parse({"profile": {"name": "p", "tags": [False] * 150}})
+    details = caught.value.details
+    assert len(details) == 100 and details[-1].message == "51 autre(s) écart(s) non détaillé(s)"
+
+
+def test_deeply_nested_criteria_are_refused_not_crashed():
+    rule = {**_RULE, "match": {"field": "type", "expr": "(" * 300 + "audio" + ")" * 300}}
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("profile.save").request.parse({"profile": {"name": "p", "rules": [rule]}})
+    assert "trop imbriquee" in caught.value.details[0].message
+    negated = {**_RULE, "match": {"field": "type", "expr": "!" * 300 + "audio"}}
+    with pytest.raises(ApiError):
+        CATALOG.get("profile.save").request.parse({"profile": {"name": "p", "rules": [negated]}})

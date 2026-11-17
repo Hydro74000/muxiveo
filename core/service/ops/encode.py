@@ -156,7 +156,7 @@ def _type_errors(value: Any, schema: dict[str, Any], prefix: str) -> list[tuple[
     from core.service.schema_check import schema_errors
 
     return [(f"{prefix}.{path}" if path else prefix, message)
-            for path, message in schema_errors(value, schema, {"$defs": {}}, limit=MAX_API_DIAGNOSTICS)]
+            for path, message in schema_errors(value, schema, {"$defs": {}}, limit=MAX_API_DIAGNOSTICS - 1)]
 
 
 def _conforming(manager: ProfileManager, ctx: ExecutionContext) -> tuple[list[EncodePreset], list[dict[str, str]]]:

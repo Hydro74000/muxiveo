@@ -68,7 +68,9 @@ inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
 absent ou `null` non autorisé ; un entier peut s'écrire `1.0` (sémantique JSON) ; nombres limités à la
 plage des flottants double précision (RFC 8259 § 6), imbrication à 64 niveaux, clés de 256 caractères au plus ;
-au plus 100 écarts détaillés par document refusé (un dernier écart donne le nombre des autres). Ce qui dépend des sources et de la machine (pistes sélectionnées,
+au plus 100 écarts détaillés par requête refusée (un dernier écart donne le nombre des autres, ou une borne
+inférieure) ; chemins relatifs résolus contre le dossier de référence limités à 64 Mio de caractères ; expressions
+de critères imbriquées sur 64 niveaux au plus. Ce qui dépend des sources et de la machine (pistes sélectionnées,
 encodeurs et presets disponibles, géométrie Dolby Vision + NVENC) est refusé à la validation
 (`validation`), comme au lancement. Les documents des commandes historiques (`--config`, `--template`,
 `--batch`, exact-jobs) restent **tolérants** : clé inconnue signalée (`warning`, code `unknown_key`)

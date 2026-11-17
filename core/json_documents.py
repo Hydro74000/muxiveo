@@ -22,6 +22,31 @@ from typing import Any, Literal
 
 PathKind = Literal["absolute", "relative", "unusable"]
 
+#: Caractères au plus produits par la résolution des chemins relatifs d'une requête de l'API contre son dossier de
+#: référence (chaque chemin recopie le dossier) : une requête de 16 Mio n'en fait jamais des centaines de Go.
+MAX_RESOLVED_PATH_CHARS = 64 * 1024 * 1024
+
+
+class ResolutionBudget:
+    """Volume des chemins relatifs résolus contre un dossier de référence, borné par
+    :data:`MAX_RESOLVED_PATH_CHARS` ; ``spend`` renvoie faux au premier dépassement (une seule fois)."""
+
+    __slots__ = ("used", "exceeded")
+
+    def __init__(self) -> None:
+        self.used = 0
+        self.exceeded = False
+
+    def spend(self, base_dir: Path, value: str) -> bool:
+        self.used += len(str(base_dir)) + len(value) + 1
+        if self.used <= MAX_RESOLVED_PATH_CHARS or self.exceeded:
+            return True
+        self.exceeded = True
+        return False
+
+    MESSAGE = (f"chemins relatifs trop nombreux pour ce dossier de référence (plus de {MAX_RESOLVED_PATH_CHARS} "
+               "caractères à résoudre) : indiquer des chemins absolus")
+
 
 class JsonDocumentError(ValueError):
     """Document JSON illisible ou non standard."""
@@ -148,13 +173,15 @@ def resolve_document_paths(job: dict[str, Any], base_dir: Path) -> dict[str, Any
     return _map_document_paths(job, lambda _slot, value: _resolve(value, base_dir), preset_base=base_dir)
 
 
-def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job") -> list[tuple[str, str]]:
-    """Chemins d'un document refusés pour une requête de l'API : inutilisables sur cet OS, ou relatifs sans
-    dossier de référence (jamais résolus contre le dossier courant du processus)."""
+def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job",
+                         budget: ResolutionBudget | None = None) -> list[tuple[str, str]]:
+    """Chemins d'un document refusés pour une requête de l'API : inutilisables sur cet OS, relatifs sans
+    dossier de référence (jamais résolus contre le dossier courant du processus), ou trop nombreux à résoudre."""
     errors: list[tuple[str, str]] = []
+    budget = budget or ResolutionBudget()
 
     def check(slot: str, value: str) -> str:
-        message = _path_problem(value, base_dir)
+        message = _path_problem(value, base_dir, budget)
         if message:
             errors.append((f"{prefix}.{slot}" if prefix else slot, message))
         return value
@@ -167,9 +194,10 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
 def encode_path_errors(encode: Any, base_dir: Path | None, *, prefix: str = "encode") -> list[tuple[str, str]]:
     """Comme :func:`document_path_errors` pour un bloc ``encode`` seul (preset désigné par un fichier)."""
     errors: list[tuple[str, str]] = []
+    budget = ResolutionBudget()
 
     def check(slot: str, value: str) -> str:
-        message = _path_problem(value, base_dir)
+        message = _path_problem(value, base_dir, budget)
         if message:
             errors.append((f"{prefix}.{slot}", message))
         return value
@@ -202,7 +230,7 @@ def without_internal_keys(document: Any) -> Any:
     return {key: value for key, value in document.items() if not str(key).startswith("_")}
 
 
-def _path_problem(value: str, base_dir: Path | None) -> str:
+def _path_problem(value: str, base_dir: Path | None, budget: ResolutionBudget | None = None) -> str:
     if not value.strip():
         return "chemin attendu"
     kind = path_kind(value)
@@ -210,6 +238,8 @@ def _path_problem(value: str, base_dir: Path | None) -> str:
         return "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)"
     if kind == "relative" and base_dir is None:
         return "chemin absolu attendu (aucun dossier de référence)"
+    if kind == "relative" and base_dir is not None and budget is not None and not budget.spend(base_dir, value):
+        return ResolutionBudget.MESSAGE
     return ""
 
 

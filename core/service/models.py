@@ -72,6 +72,8 @@ class _Parse:
     warnings: list[ErrorDetail]
     #: Documents portés par la requête (job, template…) : refus (requête API) ou avertissement (CLI).
     strict_documents: bool = True
+    #: Volume des chemins relatifs résolus contre ``base_dir`` (borné, voir ``ResolutionBudget``).
+    resolution: Any = None
 
     def fail(self, path: str, message: str) -> None:
         self.errors.append(ErrorDetail(path, message))
@@ -98,11 +100,13 @@ class Model:
         refusés ou rendus en avertissements (documents historiques du CLI, toujours tolérants).
         Toute erreur lève :class:`ApiError` ``invalid_request`` avec un détail par champ.
         """
+        from core.json_documents import ResolutionBudget
+
         state = _Parse(strict, base_dir, allow_relative, [], [],
-                       strict if strict_documents is None else strict_documents)
+                       strict if strict_documents is None else strict_documents, ResolutionBudget())
         value = _parse_model(cls, data, "", state)
         if state.errors or value is None:
-            raise ApiError(ErrorCode.INVALID_REQUEST, "Requête invalide.", details=state.errors)
+            raise ApiError(ErrorCode.INVALID_REQUEST, "Requête invalide.", details=_bounded(state.errors))
         return typing.cast(M, value), tuple(state.warnings)
 
     @classmethod
@@ -306,6 +310,10 @@ def _parse_path(value: Any, path: str, state: _Parse) -> Any:
         state.fail(path, "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)")
         return candidate
     if state.base_dir is not None:
+        if not state.resolution.spend(state.base_dir, value):
+            from core.json_documents import ResolutionBudget
+
+            state.fail(path, ResolutionBudget.MESSAGE)
         return state.base_dir / candidate
     state.fail(path, "chemin absolu attendu")
     return candidate
@@ -422,11 +430,18 @@ def api_payload(value: Any) -> Any:
     return walk(value)
 
 
-def bounded_diagnostics(errors: list[tuple[str, str]], path: str) -> list[tuple[str, str]]:
-    """Au plus :data:`MAX_API_DIAGNOSTICS` écarts, puis un écart donnant le nombre des autres (sous ``path``)."""
+#: Marque du message d'un écart qui en résume d'autres (borne d'un document ou de la requête).
+UNDETAILED = "écart(s) non détaillé(s)"
+
+
+def _bounded(errors: list[ErrorDetail]) -> list[ErrorDetail]:
+    """Au plus :data:`MAX_API_DIAGNOSTICS` écarts détaillés, puis un dernier donnant le nombre des autres (borne
+    inférieure si un écart masqué en résumait déjà d'autres)."""
     if len(errors) <= MAX_API_DIAGNOSTICS:
         return errors
-    return [*errors[:MAX_API_DIAGNOSTICS], (path, f"{len(errors) - MAX_API_DIAGNOSTICS} autre(s) écart(s) non détaillé(s)")]
+    hidden = errors[MAX_API_DIAGNOSTICS:]
+    bound = "au moins " if any(UNDETAILED in detail.message for detail in hidden) else ""
+    return [*errors[:MAX_API_DIAGNOSTICS], ErrorDetail("", f"{bound}{len(hidden)} autre(s) {UNDETAILED}")]
 
 
 def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),

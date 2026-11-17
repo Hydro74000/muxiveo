@@ -21,6 +21,8 @@ from typing import Any
 _TYPES: dict[str, Any] = {"string": str, "number": (int, float), "integer": int, "boolean": bool, "array": list,
                           "object": dict, "null": type(None)}
 _REF_PREFIX = "#/$defs/"
+#: Marque du message d'un écart qui en résume d'autres (même texte que ``core.service.models.UNDETAILED``).
+UNDETAILED = "écart(s) non détaillé(s)"
 
 
 def _is(value: Any, kind: str) -> bool:
@@ -135,17 +137,25 @@ def schema_errors(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any
 
     Parcours linéaire : chemins construits seulement pour un écart retenu, sous-schémas sans contrainte non
     parcourus, variantes d'un combinateur évaluées jusqu'à leur premier écart. ``limit`` : au plus ``limit``
-    écarts rendus (parcours arrêté après dix fois plus d'écarts collectés). ``distinct`` : un écart par cause —
+    écarts rendus, suivis d'un écart (chemin de départ) donnant le nombre des autres, ou une borne inférieure si
+    le parcours s'est arrêté (après dix fois plus d'écarts collectés). ``distinct`` : un écart par cause —
     les plus profonds d'abord, un écart au même endroit qu'un écart retenu ou au-dessus de lui (forme non
     reconnue, champ requis alternatif) est omis.
     """
     out = _Out(sys.maxsize if limit is None else 10 * limit)
+    interrupted = False
     try:
         _collect(value, schema, root, path, out)
     except _Full:
-        pass
+        interrupted = True
     found = _distinct(out.found) if distinct else out.found
-    return [(_text(at), message) for at, message in found[:limit]]
+    shown = [(_text(at), message) for at, message in found[:limit]]
+    if interrupted:  # total inconnu : borne inférieure annoncée
+        shown.append((path, f"au moins {len(found) - len(shown)} autre(s) {UNDETAILED} "
+                            f"(parcours arrêté après {out.budget} écarts)"))
+    elif limit is not None and len(found) > limit:
+        shown.append((path, f"{len(found) - limit} autre(s) {UNDETAILED}"))
+    return shown
 
 
 def _fails(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any], at: _At | str) -> bool:
