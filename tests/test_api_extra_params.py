@@ -43,6 +43,12 @@ _NVENCC_HELP = """Usage: NVEncC.exe [Options] -i <input file> -o <output file>
    --audio-file [<int>?][<string>:]<string>
    --audio-filter [<int>?]<string>
    --lookahead <int>            enable lookahead
+   --cu-min  <int>              [HEVC] set min CU size
+   --alpha-bitrate-ratio  <int> [HEVC] set ratio for alpha bitrate.
+   --vmaf [<param1>=<value>][,<param2>=<value>][...]
+   --perf-monitor [<string>][,<string>]...
+   --dhdr10-info <string>       apply dynamic HDR10+ metadata from json file.
+   --dhdr10-info copy           Copy dynamic HDR10+ metadata from input file.
    --(no-)aq                    enable spatial adaptive quantization
    --audio-source <string>      input extra audio file.
    --vpp-pad <int>,<int>,<int>,<int>
@@ -75,15 +81,20 @@ def _errors(codec: str, params: str) -> list[str]:
 
 def test_ffmpeg_encoder_and_codec_options_pass_masked_ones_do_not():
     assert policy.ffmpeg_encoder_option_names("ffmpeg", "libx264") == frozenset(
-        {"preset", "passlogfile", "rc-lookahead", "x264-params", "b", "g", "flags", "dump_separator",
-         "q", "pix_fmt", "force_key_frames"})  # « stats » masquée, « ar » audio ; options standard d'encodage
+        {"preset", "passlogfile", "rc-lookahead", "x264-params", "b", "g", "flags", "dump_separator"}
+    ) | policy.FFMPEG_STANDARD_ENCODE_OPTIONS  # « stats » masquée, « ar » audio ; options standard d'encodage
     assert _errors("libx264", "-rc-lookahead 40 -x264-params aq-mode=3 -passlogfile /tmp/p -g 48 -b:v 5M") == []
     assert _errors("libx264", "-flags -cgop -q:v 24 -qscale:v 24 -pix_fmt yuv420p") == []  # valeur « -cgop »
+    assert _errors("libx264", "-enc_time_base 1:25 -rc_override 0,9,20") == []
 
 
 @pytest.mark.parametrize("params", ["-i http://h/x", "-progress tcp://h:1", "-f matroska", "-stats x.mkv",
                                     "-/x264-params f.txt", "-filter_complex nullsink", "-y", "sortie2.mkv",
-                                    "-g 48 sortie2.mkv extra", "-dump_separator -g /absent/extra.mkv", "-g"])
+                                    "-g 48 sortie2.mkv extra", "-dump_separator -g /absent/extra.mkv", "-g",
+                                    "-dump_separator -c:v -g /absent/extra.mkv",
+                                    "-dump_separator -codec:v -g /absent/extra.mkv",
+                                    "-dump_separator -vcodec -g /absent/extra.mkv",
+                                    "-dump_separator -vf -g /absent/extra.mkv"])
 def test_anything_outside_the_encoder_is_refused(params):
     assert _errors("libx264", params)
 
@@ -102,7 +113,8 @@ def test_unknown_encoder_refuses_free_parameters():
                                     "--option-file opts.txt", "--avsdll x.dll", "-i x.mkv", "--log l.txt",
                                     "--input-option a:b", "--inconnue 1", "--audio-file 1?/tmp/x.mka",
                                     "--audio-filter volume=0", "-f matroska", "--output-format=matroska", "-m a:b",
-                                    "--mux-option=a:b", "--avsw", "--lookahead 32 sortie.mkv"])
+                                    "--mux-option=a:b", "--avsw", "--lookahead 32 sortie.mkv", "--perf-monitor",
+                                    "--perf-monitor=all", "--dhdr10-info x.json"])
 def test_nvencc_inputs_logs_sources_filters_and_loaders_are_refused(params):
     assert _errors("nvencc_hevc", params)
 
@@ -110,6 +122,7 @@ def test_nvencc_inputs_logs_sources_filters_and_loaders_are_refused(params):
 def test_nvencc_encoder_options_pass():
     assert _errors("nvencc_hevc", "--lookahead 32 --aq") == []
     assert _errors("nvencc_hevc", "--no-aq --lookahead=16") == []
+    assert _errors("nvencc_hevc", "--cu-min 8 --alpha-bitrate-ratio 10 --vmaf threads=2 --vmaf") == []
 
 
 def test_effective_settings_are_checked_whatever_their_origin():
