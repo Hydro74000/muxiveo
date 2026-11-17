@@ -62,6 +62,8 @@ WARNING_CODES = ("unknown_key", "extract_skipped", "cancel_too_late", "sync_unve
 
 
 class EventSink(Protocol):
+    """Destination des événements d'une opération (appelée depuis le fil du job : thread-safe)."""
+
     def emit(self, event: Event) -> None: ...
 
 
@@ -90,6 +92,8 @@ class ListSink:
 
 
 class CallbackSink:
+    """Destination qui transmet chaque événement à une fonction (intégration Python)."""
+
     def __init__(self, callback: Callable[[Event], None]) -> None:
         self._callback = callback
 

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from core.service.catalog import CATALOG
+from tests._json_schema import errors
 from tests.integration._synth import ffprobe_json
 
 pytestmark = pytest.mark.skipif(
@@ -79,7 +81,10 @@ def test_call_media_extract_streams_artifacts(tmp_path):
                                              {"attachment": "police.ttf", "output": str(tmp_path / "f.ttf")}]}
     result = _cli(tmp_path, "call", "media.extract", "--request", "-", stdin=json.dumps(request))
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["status"] == "succeeded"
+    response = json.loads(result.stdout)
+    assert response["status"] == "succeeded"
+    described = CATALOG.get("media.extract").describe()
+    assert not errors(response["result"], described["result"], described)  # sortie réelle conforme au schéma
     events = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
     assert [e["path"] for e in events if e["type"] == "artifact"] == [str(tmp_path / "sub.srt"),
                                                                       str(tmp_path / "f.ttf")]

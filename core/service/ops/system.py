@@ -8,10 +8,12 @@ from typing import Any, Literal
 
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
-from core.service.models import Model, field
+from core.service.models import Model, dataclass_schema, field
 from core.service.operations import operation
 from core.update_check import UpdateCheckError, normalize_update_channel, query_latest_release
 from core.version import APP_BUILD_VERSION, APP_NAME
+from core.workflows.encode.interpolation import NvofCapability, TrtCapability
+from core.workflows.encode.vulkan import VulkanCapability
 
 
 @dataclass(frozen=True)
@@ -120,14 +122,50 @@ class CapabilitiesRequest(Model):
 
 
 @dataclass(frozen=True)
+class EncodersInfo(Model):
+    """Encodeurs vidéo utilisables (noms FFmpeg, ``nvencc_*`` pour NVEncC)."""
+
+    software: tuple[str, ...]
+    hardware: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GpuInfo(Model):
+    """Accélérations NVIDIA facultatives du moteur vidéo MVO."""
+
+    nvof: dict[str, Any] = field(schema=dataclass_schema(NvofCapability))
+    tensorrt: dict[str, Any] = field(schema=dataclass_schema(TrtCapability))
+
+
+@dataclass(frozen=True)
+class RifeInfo(Model):
+    """Moteur vidéo MVO (muxiveo-rife) configuré."""
+
+    executable: str
+    version: str
+    contract: int = field(description="Version du contrat Muxiveo ↔ moteur.")
+    options: tuple[str, ...] = field()
+    models: tuple[str, ...] | None = field(description="Modèles livrés ; null : binaire sans --capabilities.")
+    restore_models: tuple[str, ...] = field(description="Graphes de débruitage MVO-R2 livrés.")
+    selector_status: str = field(description="« ok », raison d'indisponibilité du sélecteur, ou vide (inconnu).")
+
+
+@dataclass(frozen=True)
 class CapabilitiesResult(Model):
     """Sections demandées ; ``None`` : section non sondée."""
 
-    encoders: dict[str, Any] | None = field(default=None, description="Encodeurs logiciels et matériels utilisables.")
-    presets: dict[str, Any] | None = field(default=None, description="Préréglages acceptés par codec.")
-    vulkan: dict[str, Any] | None = field(default=None, description="Filtres GPU Vulkan (NLMeans 10 bits).")
-    gpu: dict[str, Any] | None = field(default=None, description="Flux optique NVIDIA (NVOF), TensorRT.")
-    rife: dict[str, Any] | None = field(default=None, description="Moteur vidéo MVO (muxiveo-rife) : version, options.")
+    encoders: dict[str, Any] | None = field(default=None, description="Encodeurs logiciels et matériels utilisables.",
+                                            schema=EncodersInfo.json_schema())
+    presets: dict[str, Any] | None = field(default=None, description="Préréglages acceptés par codec.",
+                                           schema={"type": "object",
+                                                   "additionalProperties": {"type": "array",
+                                                                            "items": {"type": "string"}}})
+    vulkan: dict[str, Any] | None = field(default=None, description="Filtres GPU Vulkan (NLMeans 10 bits).",
+                                          schema=dataclass_schema(VulkanCapability))
+    gpu: dict[str, Any] | None = field(default=None, description="Flux optique NVIDIA (NVOF), TensorRT.",
+                                       schema=GpuInfo.json_schema())
+    rife: dict[str, Any] | None = field(default=None, description="Moteur vidéo MVO (muxiveo-rife) : version, options.",
+                                        schema=RifeInfo.json_schema())
 
 
 @operation("system.capabilities", request=CapabilitiesRequest, result=CapabilitiesResult,

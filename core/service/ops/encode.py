@@ -15,7 +15,7 @@ from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.jobs import await_task, raise_for_outcome
-from core.service.models import Model, field
+from core.service.models import Model, dataclass_schema, field, list_of
 from core.service.operations import operation
 from core.service.ops.media import MediaJobRequest, _build_cached, resolve_job_encode
 from core.workflows.encode.models import EncodePreset, EncodePreviewRequest
@@ -39,9 +39,19 @@ class PreviewCaptureRequest(MediaJobRequest):
 
 
 @dataclass(frozen=True)
+class PreviewImage(Model):
+    """Image d'aperçu livrée."""
+
+    path: str
+    scene_time_s: float
+    label: str
+
+
+@dataclass(frozen=True)
 class PreviewCaptureResult(Model):
     mode: str
-    captures: tuple[dict[str, Any], ...] = field(default=(), description="Images : chemin, instant, libellé.")
+    captures: tuple[dict[str, Any], ...] = field(default=(), description="Images : chemin, instant, libellé.",
+                                                 schema=list_of(PreviewImage))
     video: str | None = None
     warning: str = ""
 
@@ -133,9 +143,28 @@ class PresetListRequest(Model):
 
 
 @dataclass(frozen=True)
+class PresetEntry(Model):
+    """Preset d'encodage enregistré (résumé)."""
+
+    name: str
+    description: str
+    codec: str
+    preset: str = field(description="Préréglage de l'encodeur.")
+
+
+@dataclass(frozen=True)
+class LoadError(Model):
+    """Fichier illisible, laissé en place."""
+
+    path: str
+    error: str
+
+
+@dataclass(frozen=True)
 class PresetListResult(Model):
-    presets: tuple[dict[str, Any], ...] = ()
-    load_errors: tuple[dict[str, str], ...] = field(default=(), description="Fichiers illisibles (laissés en place).")
+    presets: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(PresetEntry))
+    load_errors: tuple[dict[str, str], ...] = field(default=(), description="Fichiers illisibles (laissés en place).",
+                                                    schema=list_of(LoadError))
 
 
 @dataclass(frozen=True)
@@ -145,7 +174,7 @@ class PresetNameRequest(Model):
 
 @dataclass(frozen=True)
 class PresetResult(Model):
-    preset: dict[str, Any]
+    preset: dict[str, Any] = field(schema=dataclass_schema(EncodePreset, exclude=("force_8bit", "force_10bit")))
 
 
 @dataclass(frozen=True)

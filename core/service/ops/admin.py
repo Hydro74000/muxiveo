@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from core.jobs.constants import EXIT_ARGS, EXIT_VALIDATION
 from core.jobs.errors import JobError
 from core.service.context import ExecutionContext
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.operations import operation
 
 #: Réglages des extensions, hors des groupes du panneau Paramètres (page Extensions).
@@ -139,8 +139,23 @@ class ConfigShowRequest(Model):
 
 
 @dataclass(frozen=True)
+class ConfigEntry(Model):
+    """Réglage : valeur effective et provenance (clés facultatives absentes quand elles ne s'appliquent pas)."""
+
+    key: str = field(description="Nom `section.clé`.")
+    label: str = field()
+    kind: str = field(description="Nature : bool, int, text, choice, directory, tool, language, stepped_slider…")
+    value: Any = field(description="Valeur effective.")
+    source: Literal["ini", "settings", "default"] = field()
+    ini_value: str = field(default="", description="Valeur de config.ini (absente sans surcharge).")
+    settings_value: str = field(default="", description="Valeur du réglage de l'interface (absente sans réglage).")
+    choices: tuple[Any, ...] = field(default=(), description="Valeurs admises (réglages à choix ou à paliers).")
+    masked: str = field(default="", description="config.ini masque un réglage différent de l'interface.")
+
+
+@dataclass(frozen=True)
 class ConfigEntriesResult(Model):
-    entries: tuple[dict[str, Any], ...] = ()
+    entries: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(ConfigEntry))
     warnings: tuple[str, ...] = ()
 
 
@@ -231,9 +246,17 @@ class WorkdirRequest(Model):
 
 
 @dataclass(frozen=True)
+class WorkdirEntry(Model):
+    """Élément nettoyable du dossier de travail."""
+
+    path: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class WorkdirResult(Model):
     work_dir: str
-    entries: tuple[dict[str, Any], ...] = ()
+    entries: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(WorkdirEntry))
     removed: tuple[str, ...] = ()
     dry_run: bool = False
 

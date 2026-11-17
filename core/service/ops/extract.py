@@ -21,7 +21,7 @@ from core.jobs.extract import (
 )
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.operations import operation
 
 
@@ -53,9 +53,23 @@ class ExtractRequest(Model):
 
 
 @dataclass(frozen=True)
+class ExtractOutput(Model):
+    """Sortie d'un élément extrait (ou prévu, ``dry_run``)."""
+
+    kind: Literal["video", "audio", "subtitle", "attachment"]
+    stream_index: int = field(description="Index ffprobe du flux.")
+    layer: Literal["stream", "el", "bl", "rpu", "hdr10plus"] = field()
+    attachment: int | None = field(description="Rang de la pièce jointe Matroska ; null pour une piste.")
+    format: str = field(description="Format écrit (libellé), type MIME d'une pièce jointe.")
+    name: str = field(description="Nom proposé.")
+    path: str = field()
+
+
+@dataclass(frozen=True)
 class ExtractResult(Model):
     outputs: tuple[dict[str, Any], ...] = field(
-        default=(), description="Une entrée par élément : nature, piste, couche, format, chemin.")
+        default=(), description="Une entrée par élément : nature, piste, couche, format, chemin.",
+        schema=list_of(ExtractOutput))
     dry_run: bool = False
 
 

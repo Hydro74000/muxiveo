@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from core.service.catalog import CATALOG
+from tests._json_schema import errors
 from tests.integration._synth import make_av_container
 
 
@@ -61,6 +63,8 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert inspect.returncode == 0, inspect.stderr
     payload = json.loads(inspect.stdout)
     assert payload["files"][0]["tracks"]
+    described = CATALOG.get("media.inspect").describe()
+    assert not errors(payload, described["result"], described)  # fiche réelle (ffprobe) conforme au schéma
 
     config = tmp_path / "job.json"
     config.write_text(

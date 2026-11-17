@@ -18,6 +18,7 @@ from core.service.catalog import CATALOG
 from core.service.events import JobState
 from core.service.ops import batch as batch_ops
 from core.service.ops import profile as profile_ops
+from tests._json_schema import result_errors
 
 
 def _ctx(cancel: CancelToken | None = None, **config: Any) -> tuple[ExecutionContext, ListSink]:
@@ -90,6 +91,7 @@ def test_batch_partial_when_some_jobs_fail(tmp_path, doubles):
     assert result.status == "partial" and (result.successes, result.failures) == (2, 1)
     assert _parent_states(sink, ctx)[-1] == JobState.PARTIAL.value
     assert [job["status"] for job in result.jobs] == ["success", "failed", "success"]
+    assert not result_errors("media.batch", result)  # entrées conformes au schéma publié (erreur, job enfant)
 
 
 def test_batch_failed_when_every_job_fails(tmp_path, doubles):

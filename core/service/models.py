@@ -365,6 +365,31 @@ def _model_schema(cls: type) -> dict[str, Any]:
     return schema
 
 
+def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),
+                     overrides: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Schéma JSON d'une dataclass existante publiée par ``dataclasses.asdict`` (toutes ses clés présentes).
+
+    ``exclude`` : champs retirés de la représentation publique ; ``overrides`` : schéma d'un champ publié
+    autrement que son type (énumération rendue par son libellé…).
+    """
+    hints = typing.get_type_hints(cls)
+    overrides = overrides or {}
+    properties = {item.name: copy.deepcopy(overrides[item.name]) if item.name in overrides
+                  else _type_schema(hints[item.name])
+                  for item in dataclasses.fields(cls) if item.name not in exclude}
+    schema = {"type": "object", "title": cls.__name__, "properties": properties, "additionalProperties": False,
+              "required": list(properties)}
+    doc = (cls.__doc__ or "").strip().splitlines()
+    if doc and not doc[0].startswith(f"{cls.__name__}("):
+        schema["description"] = doc[0]
+    return schema
+
+
+def list_of(item: type[Model] | dict[str, Any]) -> dict[str, Any]:
+    """Schéma d'une liste d'objets décrits (``Model`` de description ou schéma)."""
+    return {"type": "array", "items": item if isinstance(item, dict) else item.json_schema()}
+
+
 def _declared_schema(declared: dict[str, Any], tp: Any) -> dict[str, Any]:
     """Schéma explicite d'un champ (copie) ; ``null`` ajouté si le type l'admet."""
     schema = copy.deepcopy(declared)
@@ -390,7 +415,7 @@ def _type_schema(tp: Any) -> dict[str, Any]:  # noqa: C901 - table de types
         return {"type": "string", "format": "path"}
     if isinstance(tp, type) and issubclass(tp, Enum):
         return {"enum": [member.value for member in tp]}
-    if origin in (tuple, list):
+    if origin in (tuple, list, frozenset, set):
         args = typing.get_args(tp)
         return {"type": "array", "items": _type_schema(args[0]) if args else {}}
     if origin is dict or tp is dict:
@@ -399,4 +424,6 @@ def _type_schema(tp: Any) -> dict[str, Any]:  # noqa: C901 - table de types
         return {"type": "object", "additionalProperties": extra or True}
     if isinstance(tp, type) and issubclass(tp, Model):
         return _model_schema(tp)
+    if isinstance(tp, type) and dataclasses.is_dataclass(tp):
+        return dataclass_schema(tp)
     raise TypeError(f"Type non pris en charge par les modèles de service : {tp!r}")

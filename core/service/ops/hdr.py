@@ -31,7 +31,7 @@ from core.jobs.logging import JobLogger as Logger
 from core.runner import TaskSignals, ToolRunner
 from core.service.context import CancelToken, ExecutionContext
 from core.service.errors import ErrorCode
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.operations import operation
 from core.workdir import create_process_work_dir
 
@@ -85,13 +85,23 @@ class HdrInspectRequest(Model):
 
 
 @dataclass(frozen=True)
+class FelVerdict(Model):
+    """Verdict du FEL Analyzer pour une source."""
+
+    code: Literal["useful", "useful_if_bitrate", "useful_high_bitrate", "moderate", "useless"] = field(
+        description="Code stable (`fel_analyzer.VERDICTS`).")
+    title: str = field(description="Verdict (texte traduit).")
+    detail: str = field(description="Explication (texte traduit).")
+
+
+@dataclass(frozen=True)
 class HdrInspectResult(Model):
     """Rapport par source (contrat `muxiveo-hdr-report`), comparaison, verdicts FEL et seuils."""
 
     hdr: tuple[dict[str, Any], ...] = ()
     comparison: dict[str, Any] | None = None
     report: str | None = None
-    fel_verdicts: tuple[dict[str, Any], ...] = ()
+    fel_verdicts: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(FelVerdict))
     fel_below_min: bool = False
     fail_on_triggered: bool = False
     fel_moments: tuple[str, ...] = field(default=(), description="PNG des moments FEL écrits.")

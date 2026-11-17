@@ -15,7 +15,7 @@ from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_TOOL, EXIT_WORKFLOW
 from core.jobs.errors import JobError
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.operations import operation
 from core.workflows.encode.interpolation import detect_gpu_acceleration
 
@@ -128,8 +128,42 @@ class PluginsListRequest(Model):
 
 
 @dataclass(frozen=True)
+class PluginStatus(Model):
+    """État d'une extension ; champs propres à une extension absents pour les autres."""
+
+    name: PluginName
+    label: str
+    platform: str | None = field(description="Plate-forme de la machine (null : non prise en charge).")
+    pinned_version: str = field(description="Version plancher exigée par Muxiveo.")
+    available_version: str | None = field(description="Plus récente version compatible publiée.")
+    installed_version: str | None = field()
+    path: str | None = field(description="Dossier de l'extension installée.")
+    update_available: bool = field()
+    compatible: bool = field()
+    status: str = field(description="Raison d'incompatibilité ou état du GPU (TensorRT) ; vide sinon.")
+    executable: str | None = field(default=None, description="mvo-rife : exécutable installé.")
+    library: str | None = field(default=None, description="mvo-fel : bibliothèque installée.")
+    enabled: bool = field(default=False, description="mvo-rife-trt : réglage [plugins] tensorrt_enabled.")
+    ready: bool = field(default=False, description="mvo-rife-trt : extension utilisable sur ce GPU.")
+    device: str = field(default="", description="mvo-rife-trt : GPU sondé.")
+    engine_cache: str = field(default="", description="mvo-rife-trt : cache des moteurs TensorRT.")
+
+
+@dataclass(frozen=True)
+class PluginUpdateItem(Model):
+    """Résultat de la mise à jour d'une extension (``version`` / ``path`` : installée ; ``error`` : échec)."""
+
+    name: str
+    status: Literal["updated", "up_to_date", "failed"]
+    exit_code: int = field(description="Code de sortie du CLI correspondant (0 : succès).")
+    version: str = ""
+    path: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class PluginsListResult(Model):
-    extensions: tuple[dict[str, Any], ...] = ()
+    extensions: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(PluginStatus))
 
 
 @dataclass(frozen=True)
@@ -159,7 +193,7 @@ class PluginUpdateRequest(Model):
 class PluginUpdateResult(Model):
     """Un élément par extension installée : ``updated``, ``up_to_date`` ou ``failed`` (avec son code de sortie)."""
 
-    extensions: tuple[dict[str, Any], ...] = ()
+    extensions: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(PluginUpdateItem))
 
 
 @dataclass(frozen=True)

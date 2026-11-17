@@ -87,3 +87,15 @@ def errors(value: Any, schema: dict[str, Any], root: dict[str, Any], where: str 
             elif isinstance(extra, dict):
                 found += errors(item, extra, root, f"{where}.{key}")
     return found
+
+
+def result_errors(operation: str, result: Any) -> list[str]:
+    """Écarts du résultat réel d'une opération au schéma publié par sa description (autonome)."""
+    import json
+
+    from core.jobs.json_io import json_default
+    from core.service.catalog import CATALOG
+
+    described = CATALOG.get(operation).describe()
+    payload = json.loads(json.dumps(result.to_dict(), default=json_default))
+    return errors(payload, described["result"], described)

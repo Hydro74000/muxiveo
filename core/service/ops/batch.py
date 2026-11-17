@@ -26,7 +26,7 @@ from core.workflows.preparation_cache import PreparationContext
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.events import JobState
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.media import JobOptions
@@ -159,6 +159,19 @@ class ProfileBatchRequest(Model):
 
 
 @dataclass(frozen=True)
+class BatchEntry(Model):
+    """Job lancé par le lot."""
+
+    job_index: int = field(description="Rang du job dans le lot (0 = premier).")
+    input: str = field()
+    output: str = field()
+    status: Literal["success", "failed", "cancelled"] = field()
+    exit_code: int = field(description="Code de sortie du CLI correspondant (0 : succès).")
+    job: str | None = field(description="Identifiant du job enfant (événements) ; null sans job enfant.")
+    error: str = field(default="", description="Erreur levée par la préparation ou l'exécution (absente sinon).")
+
+
+@dataclass(frozen=True)
 class BatchResult(Model):
     """Bilan du lot ; un élément par job lancé (état, entrée, sortie, erreur)."""
 
@@ -166,7 +179,7 @@ class BatchResult(Model):
     total: int
     successes: int
     failures: int
-    jobs: tuple[dict[str, Any], ...] = ()
+    jobs: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(BatchEntry))
 
 
 def _status(outcome: BatchOutcome) -> Literal["succeeded", "partial", "failed", "cancelled"]:

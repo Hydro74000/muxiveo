@@ -15,6 +15,7 @@ from core.service import ApiError, EventType, ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.service.ops import hybrid as hybrid_ops
 from core.workflows.sync_calibration import SyncCalibration
+from tests._json_schema import result_errors
 
 
 def _ctx(config: Any = None, **kwargs: Any) -> tuple[ExecutionContext, ListSink]:
@@ -95,6 +96,7 @@ def test_plugins_update_reports_each_extension(monkeypatch):
     assert by_name["mvo-rife"]["status"] == "up_to_date"
     assert by_name["mvo-fel"]["status"] == "failed" and by_name["mvo-fel"]["exit_code"] == 6
     assert "mvo-rife-trt" not in by_name
+    assert not result_errors("plugins.update", result)
 
 
 # --- Synchro -----------------------------------------------------------------------------

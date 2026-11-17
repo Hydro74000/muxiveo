@@ -12,9 +12,11 @@ from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_TOOL, EXIT_VALIDATI
 from core.jobs.errors import JobError
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
-from core.service.models import Model, field
+from core.media_info_fetcher import MediaDetails, MediaSearchResult
+from core.service.models import Model, dataclass_schema, field, list_of
 from core.service.schemas.documents import DECISION_PROFILE_REF
 from core.service.operations import operation
+from core.service.ops.encode import LoadError
 from core.service.ops.media import MediaJobRequest, _build_cached
 
 # ---------------------------------------------------------------------------
@@ -47,7 +49,7 @@ class TmdbSearchRequest(Model):
 
 @dataclass(frozen=True)
 class TmdbSearchResult(Model):
-    results: tuple[dict[str, Any], ...] = ()
+    results: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(dataclass_schema(MediaSearchResult)))
 
 
 @operation("tmdb.search", request=TmdbSearchRequest, result=TmdbSearchResult,
@@ -78,7 +80,8 @@ class TmdbDetailsRequest(Model):
 
 @dataclass(frozen=True)
 class TmdbDetailsResult(Model):
-    details: dict[str, Any] = field(default_factory=dict, description="Fiche (titre, année, genres, résumé…).")
+    details: dict[str, Any] = field(default_factory=dict, description="Fiche (titre, année, genres, résumé…).",
+                                    schema=dataclass_schema(MediaDetails, exclude=("cover_bytes",)))
     container_title: str = field(default="", description="Titre du conteneur proposé (balise Title).")
     mkv_tags: dict[str, str] = field(default_factory=dict, description="Balises MKV écrites par Muxiveo.")
 
@@ -87,7 +90,7 @@ class TmdbDetailsResult(Model):
            summary="Fiche TMDB complète (titre, année, épisode, résumé, genres, couverture) et balises MKV.",
            errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED))
 def tmdb_details(request: TmdbDetailsRequest, ctx: ExecutionContext) -> TmdbDetailsResult:
-    from core.media_info_fetcher import MediaSearchResult, TmdbError
+    from core.media_info_fetcher import TmdbError
 
     fetcher = _fetcher(ctx, request.api_key, request.language)
     try:
@@ -117,9 +120,19 @@ class ProfileListRequest(Model):
 
 
 @dataclass(frozen=True)
+class ProfileEntry(Model):
+    """Profil décisionnel enregistré (résumé)."""
+
+    name: str
+    description: str
+    rules: int = field(description="Nombre de règles.")
+    path: str = field()
+
+
+@dataclass(frozen=True)
 class ProfileListResult(Model):
-    profiles: tuple[dict[str, Any], ...] = ()
-    load_errors: tuple[dict[str, str], ...] = ()
+    profiles: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(ProfileEntry))
+    load_errors: tuple[dict[str, str], ...] = field(default=(), schema=list_of(LoadError))
 
 
 @operation("profile.list", request=ProfileListRequest, result=ProfileListResult,
@@ -258,9 +271,30 @@ class BlurayTitlesRequest(Model):
 
 
 @dataclass(frozen=True)
+class BlurayStream(Model):
+    """Flux d'un titre Blu-ray."""
+
+    kind: str
+    pid: int
+    language: str
+
+
+@dataclass(frozen=True)
+class BlurayTitle(Model):
+    """Titre (playlist) d'un Blu-ray."""
+
+    playlist: int = field(description="Numéro de la playlist (`00800.mpls` → 800).")
+    path: str = field()
+    duration_s: float = field()
+    size_bytes: int = field()
+    segments: tuple[str, ...] = field(description="Clips enchaînés.")
+    streams: tuple[BlurayStream, ...] = field()
+
+
+@dataclass(frozen=True)
 class BlurayTitlesResult(Model):
     disc_root: str | None = None
-    titles: tuple[dict[str, Any], ...] = ()
+    titles: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(BlurayTitle))
 
 
 @operation("media.bluray_titles", request=BlurayTitlesRequest, result=BlurayTitlesResult,

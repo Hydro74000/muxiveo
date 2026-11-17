@@ -22,6 +22,7 @@ from core.service import ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.service.ops import encode as encode_ops
 from core.service.schemas.encode import EncodeBlock
+from tests._json_schema import result_errors
 
 
 def _ctx(tmp_path: Path) -> ExecutionContext:
@@ -128,6 +129,7 @@ def test_preview_capture_copies_only_its_files(qapp, tmp_path, monkeypatch):
     result: Any = call(CATALOG, "encode.preview_capture", {"job": {}, "output_dir": str(out), "timecode_s": 12},
                        _ctx(tmp_path))
     assert result.captures[0]["path"] == str(out / "film.apercu-12.0s.png")
+    assert not result_errors("encode.preview_capture", result)
     assert (out / "film.apercu-12.0s.png").read_bytes() == b"png"
     assert not (work / "previews" / "scene.png").exists() and (work / "previews" / "autre-job.png").exists()
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from core.inspector import FileInspector
+from core.inspector import AttachmentInfo, AudioTrack, FileInspector, HDRType, SubtitleTrack, VideoTrack
 from core.jobs.encode import ResolvedEncode, resolve_from_job
 from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
 from core.jobs.inspection import config_template_from_info, encode_template_from_info
@@ -20,7 +20,7 @@ from core.jobs.serializers import serialize_file_info, serialize_remux_config
 from core.json_documents import resolve_document_paths
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
-from core.service.models import Model, field
+from core.service.models import Model, dataclass_schema, field, list_of
 from core.service.schemas.documents import JOB_REF
 from core.service.operations import operation
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
@@ -44,11 +44,56 @@ class InspectRequest(Model):
         default=False, description="Modèle de job avec un bloc `encode` (copie, HDR de la source).")
 
 
+#: Type HDR publié par son libellé (``HDRType.label``).
+_HDR_LABEL = {"enum": [kind.label() for kind in HDRType]}
+
+
+def _track_schema(cls: type, kind: str) -> dict[str, Any]:
+    """Piste publiée par ``serialize_file_info`` : champs de la dataclass (sans ``raw``) et ``type``."""
+    schema = dataclass_schema(cls, exclude=("raw",), overrides={"hdr_type": _HDR_LABEL})
+    schema["properties"]["type"] = {"const": kind}
+    schema["required"].append("type")
+    return schema
+
+
+@dataclass(frozen=True)
+class InspectedChapter(Model):
+    """Chapitre d'une source."""
+
+    timecode_s: float
+    timecode: str = field(description="HH:MM:SS.mmm")
+    name: str = field()
+
+
+@dataclass(frozen=True)
+class InspectedFile(Model):
+    """Fiche d'une source (``serialize_file_info``)."""
+
+    path: str
+    format: str
+    duration_s: float | None
+    duration: str = field(description="HH:MM:SS, « ? » si inconnue.")
+    size_bytes: int | None = field()
+    size: str = field(description="Taille lisible, « ? » si inconnue.")
+    bit_rate: int | None = field()
+    title: str = field()
+    hdr_type: str = field(schema=_HDR_LABEL)
+    frame_count: int | None = field(description="Nombre d'images validé par l'inspection, sinon null.")
+    tag_count: int = field()
+    global_tags: dict[str, str] = field()
+    tracks: tuple[dict[str, Any], ...] = field(schema={"type": "array", "items": {"oneOf": [
+        _track_schema(VideoTrack, "video"), _track_schema(AudioTrack, "audio"),
+        _track_schema(SubtitleTrack, "subtitle")]}})
+    attachments: tuple[dict[str, Any], ...] = field(schema=list_of(dataclass_schema(AttachmentInfo)))
+    chapters: tuple[InspectedChapter, ...] = field()
+
+
 @dataclass(frozen=True)
 class InspectResult(Model):
     """Fiches des sources, ou modèle de job."""
 
-    files: tuple[dict[str, Any], ...] = field(default=(), description="Une fiche par source (pistes, HDR, chapitres…).")
+    files: tuple[dict[str, Any], ...] = field(default=(), description="Une fiche par source (pistes, HDR, chapitres…).",
+                                              schema=list_of(InspectedFile))
     template: dict[str, Any] | None = field(default=None, description="Exact-job minimal (config_template).",
                                             schema=JOB_REF)
 
