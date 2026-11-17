@@ -200,8 +200,25 @@ def api_extra_params_errors(video: VideoEncodeSettings, *, ffmpeg: str, nvencc: 
             errors.append(f"option « {token} » hors des options de l'encodeur {codec}")
         if index + 1 >= len(kept):
             errors.append(f"option « {token} » sans valeur")
-        index += 2
+        elif is_option_token(kept[index + 1]) and {ffmpeg_option_name(token),
+                                                   ffmpeg_option_name(kept[index + 1])} & _FFMPEG_REMOVABLE:
+            errors.append(_option_as_value(token, kept[index + 1]))
+            index += 1  # lue ensuite comme option, comme par le constructeur de la commande
+            continue
+        index += 2  # « -flags -cgop » : valeur transmise telle quelle, jamais séparée de son option
     return errors
+
+
+#: Options FFmpeg que le constructeur retire selon le routage (plate-forme, matériel : filtres posés par le
+#: workflow, format de pixels incompatible) ou toujours (mapping, codec).
+_FFMPEG_REMOVABLE = frozenset({"map", "c", "vf", "filter_complex", "lavfi", "pix_fmt"})
+
+
+def _option_as_value(token: str, value: str) -> str:
+    """Valeur qui ressemble à une option retirable : refusée, pour que le découpage de la commande (option +
+    valeur non optionnelle, ``option_items``) reste celui de la lecture par nombre d'arguments, quel que soit le
+    routage — une option retirée seule laisserait sa valeur lue comme option (ou l'inverse)."""
+    return f"option « {token} » sans valeur : « {value} » est une option"
 
 
 def _reserved(codec: str, removed: list[str]) -> list[str]:
@@ -231,9 +248,11 @@ def _nvencc_errors(codec: str, tokens: list[str], options: dict[str, NvenccOptio
         elif option.argument == "optional":
             consumes = following is not None and not is_option_token(following)
         else:
-            consumes = True
+            consumes = following is not None and not is_option_token(following)
             if following is None:
                 errors.append(f"option « {token} » sans valeur")
+            elif not consumes:
+                errors.append(_option_as_value(token, following))
         index += 2 if consumes else 1
     return errors
 

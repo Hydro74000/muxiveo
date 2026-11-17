@@ -43,6 +43,7 @@ _NVENCC_HELP = """Usage: NVEncC.exe [Options] -i <input file> -o <output file>
    --audio-file [<int>?][<string>:]<string>
    --audio-filter [<int>?]<string>
    --lookahead <int>            enable lookahead
+   --video-streamid <int>       set video stream id of input
    --cu-min  <int>              [HEVC] set min CU size
    --alpha-bitrate-ratio  <int> [HEVC] set ratio for alpha bitrate.
    --vmaf [<param1>=<value>][,<param2>=<value>][...]
@@ -114,7 +115,24 @@ def test_the_command_is_checked_as_transmitted():
 
     filtered = dataclasses.replace(VideoFilterSettings(), yadif_enabled=True)
     assert _errors("libx264", "-dump_separator -vf -g /absent/extra.mkv", filters=filtered)
-    assert _errors("libx264", "-dump_separator -vf -g 48") == []  # transmis : dump_separator=-vf, g=48
+    # Option retirable prise pour valeur : refusée quel que soit le routage (AMF sous Windows : -vf posé par le
+    # contexte matériel, puis retiré, laissait « -g » à dump_separator et « pipe:1 » en sortie).
+    for codec in ("libx264", "hevc_amf"):
+        assert _errors(codec, "-dump_separator -vf -g pipe:1") or codec == "hevc_amf" and _no_options()
+    assert _errors("libx264", "-flags -cgop -g 48") == []  # valeur « -cgop » : jamais séparée de son option
+
+
+def _no_options() -> bool:
+    return not policy.ffmpeg_encoder_option_names("ffmpeg", "hevc_amf")
+
+
+@pytest.mark.parametrize("params", ["--video-streamid --perf-monitor", "--video-streamid --option-file --vmaf",
+                                    "--video-streamid --audio-copy", "--lookahead --perf-monitor"])
+def test_nvencc_options_never_take_an_option_as_value(params):
+    """Lecture directe : ``--video-streamid`` posé par le workflow retire la saisie, seule ; l'option qui suivait,
+    prise pour sa valeur, aurait été transmise."""
+    errors = _errors("nvencc_hevc", params)
+    assert any("est une option" in error for error in errors), errors
 
 
 def test_param_string_codecs_and_copy_are_left_to_the_syntax_check():
