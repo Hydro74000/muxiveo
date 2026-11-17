@@ -18,7 +18,7 @@ from typing import Any, Literal
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.events import EVENT_SCHEMA, EVENT_VERSION, JobState
-from core.service.models import Model
+from core.service.models import Model, integral_numbers
 from core.service.schemas.documents import used_definitions
 
 #: Version du catalogue (ajout d'opération ou de champ facultatif : inchangée ;
@@ -195,6 +195,8 @@ def call(
     effective = Path(base_dir) if base_dir is not None else ctx.base_dir
     if not allow_relative and effective != ctx.base_dir:
         ctx = dataclasses.replace(ctx, base_dir=effective)
+    if ctx.api:
+        payload = integral_numbers(payload)  # sémantique JSON des entiers (1.0), comme le schéma publié
     try:
         spec = catalog.get(name)
         authorize(spec, ctx.allow_privileged)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.jobs.constants import (
@@ -10,9 +11,11 @@ from core.jobs.constants import (
     SYNC_MODES,
     SYNC_REWRITE_MODES,
     SYNC_SUBTITLE_MODES,
+    TMDB_IMAGE_URL_PREFIX,
     TMDB_KINDS,
     TRACK_TYPES,
 )
+from core.service.schema_check import portable_pattern
 from core.version import APP_NAME, APP_SCHEMA_BASE_URL
 
 
@@ -95,6 +98,8 @@ def _track_edit_schema(flag_properties: dict[str, Any]) -> dict[str, Any]:
 def calibration_schema() -> dict[str, Any]:
     """Calibration de synchro (contrat ``sync-calibration``) : champs requis ; autres champs libres."""
     free: dict[str, Any] = {}
+    segment: dict[str, Any] = {"type": "object", "required": ["start_ms", "shift_ms"], "additionalProperties": free,
+                               "properties": {"start_ms": {"type": "number"}, "shift_ms": {"type": "number"}}}
     return {
         "type": "object",
         "required": ["segments"],
@@ -103,16 +108,18 @@ def calibration_schema() -> dict[str, Any]:
             "version": {"const": 1},
             "kind": {"const": "sync-calibration"},
             "timebase": {"const": "donor-ms"},
-            "segments": {"type": "array", "items": {
-                "type": "object", "required": ["start_ms", "shift_ms"], "additionalProperties": free,
-                "properties": {"start_ms": {"type": "number"}, "shift_ms": {"type": "number"}}}},
+            "segments": {"type": "array", "minItems": 1, "items": segment,
+                         "prefixItems": [{**segment, "properties": {**segment["properties"], "start_ms": {"const": 0}}}],
+                         "description": "Segments à temps de début strictement croissants, le premier à 0 ms."},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "cadence_pitch_factor": {"type": "number", "exclusiveMinimum": 0},
         },
     }
 
 
 def sync_spec_schema(*, track_level: bool = False) -> dict[str, Any]:
     """``sources[i].sync`` / ``tracks[i].sync`` : synchro face à la piste d'une autre source."""
-    selector = {"oneOf": [{"type": "integer"}, {"type": "string", "pattern": "^[asv]:[0-9]+$"}]}
+    selector = {"oneOf": [{"type": "integer"}, {"type": "string", "pattern": portable_pattern("^[asv]:[0-9]+$")}]}
     properties: dict[str, Any] = {
         "reference": {"type": "integer", "minimum": 0, "default": 0,
                       "description": "Index de la source de référence."},
@@ -190,7 +197,7 @@ def build_cli_json_schema() -> dict[str, Any]:
             "sync_subtitles": {"enum": list(SYNC_SUBTITLE_MODES), "default": "mirror"},
             "crossfade_ms": {"type": "integer", "minimum": 0, "maximum": 1000},
             "clean_nfo": {"type": "boolean", "default": True},
-            "sync_calibrations": {"type": "object", "propertyNames": {"pattern": "^[0-9]+$"},
+            "sync_calibrations": {"type": "object", "propertyNames": {"pattern": portable_pattern("^[0-9]+$")},
                                   "additionalProperties": {"$ref": "#/$defs/calibration"},
                                   "description": "Calibration par index de source."},
             "auto_sync": {"type": "boolean"},
@@ -198,7 +205,9 @@ def build_cli_json_schema() -> dict[str, Any]:
             "calibration": {"type": "string"},
             "detect_cuts": {"type": "boolean"},
             "drift_threshold_ms": {"type": "integer", "minimum": 1},
-            "tmdb_cover": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2},
+            "tmdb_cover": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2,
+                           "prefixItems": [{"type": "string", "pattern": "^" + re.escape(TMDB_IMAGE_URL_PREFIX)}],
+                           "description": "[URL de l'image TMDB, nom du fichier joint]."},
             "mux_backend": {"enum": list(MUX_BACKEND_CHOICES)},
             "file_title": {"type": "string"},
             "name": {"type": "string", "description": "Nom du workflow (exact-job enregistré)."},
@@ -513,10 +522,9 @@ def _resolve(node: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
 def _walk(value: Any, node: dict[str, Any], defs: dict[str, Any], path: str, found: list[str],
           skip: set[str] = frozenset()) -> None:  # type: ignore[assignment]
     node = _resolve(node, defs)
-    variants = node.get("oneOf") or node.get("anyOf")
-    if variants:
+    variants = [_resolve(variant, defs) for variant in node.get("oneOf") or node.get("anyOf") or ()]
+    if any("type" in variant for variant in variants):  # formes possibles ; ``anyOf`` de champs requis : non
         for variant in variants:
-            variant = _resolve(variant, defs)
             if (isinstance(value, dict) and variant.get("type") == "object") or (
                     isinstance(value, list) and variant.get("type") == "array"):
                 _walk(value, variant, defs, path, found)

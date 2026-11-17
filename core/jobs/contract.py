@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 from core.jobs.constants import (
+    TMDB_IMAGE_URL_PREFIX,
     FLAG_NAMES,
     MUX_BACKEND_CHOICES,
     SYNC_MODES,
@@ -16,7 +17,6 @@ from core.jobs.constants import (
 from core.jobs.errors import ContractError
 
 #: Couvertures TMDB acceptées dans un job (``tmdb_cover``) : images du CDN TMDB, seule source de l'interface.
-TMDB_IMAGE_URL_PREFIX = "https://image.tmdb.org/"
 
 
 def _type_name(value: Any) -> str:
@@ -169,11 +169,12 @@ def _validate_audio_variant(errors: list[str], path: str, value: Any) -> None:
     if not isinstance(value, dict):
         errors.append(f"{path}: attendu object, reçu {_type_name(value)}")
         return
-    selector = value.get("source_selector", value.get("selector"))
+    key = "source_selector" if "source_selector" in value else "selector"  # source_selector prime
+    selector = value.get(key)
     if selector is None:
-        errors.append(f"{path}.selector: champ requis")
+        errors.append(f"{path}.{key}: champ requis")
     else:
-        _validate_selector(errors, f"{path}.selector", selector)
+        _validate_selector(errors, f"{path}.{key}", selector)
     for key in ("codec", "target_codec", "language", "title", "entry_id"):
         if key in value:
             _expect(errors, f"{path}.{key}", value[key], "string", _is_string)

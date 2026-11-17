@@ -45,7 +45,7 @@ def field(
     """Champ documenté et contraint (bornes numériques, nombre minimal d'éléments, motif d'un texte).
 
     ``pattern`` : expression complète (ancres comprises), vérifiée par ``re.fullmatch`` sur le texte tel quel
-    et publiée à l'identique dans le schéma JSON. ``schema`` : schéma JSON publié du champ (document décrit
+    et publiée avec une fin de texte stricte en ECMA-262 comme en Python (``portable_pattern``). ``schema`` : schéma JSON publié du champ (document décrit
     ailleurs, ``$ref`` vers une définition partagée), prioritaire sur celui déduit du type ; ``null`` reste
     annoncé si le type l'admet. Publication seule : la lecture suit le type.
     """
@@ -342,7 +342,9 @@ def _model_schema(cls: type) -> dict[str, Any]:
         if meta.get("description"):
             schema["description"] = meta["description"]
         if "pattern" in meta:
-            schema["pattern"] = meta["pattern"]
+            from core.service.schema_check import portable_pattern
+
+            schema["pattern"] = portable_pattern(meta["pattern"])
         if "minimum" in meta:
             schema["minimum"] = meta["minimum"]
         if "maximum" in meta:
@@ -363,6 +365,17 @@ def _model_schema(cls: type) -> dict[str, Any]:
     if required:
         schema["required"] = required
     return schema
+
+
+def integral_numbers(value: Any) -> Any:
+    """Requête de l'API : entiers écrits en flottants (``1.0``) rendus entiers, comme les lit JSON Schema."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [integral_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: integral_numbers(item) for key, item in value.items()}
+    return value
 
 
 def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),

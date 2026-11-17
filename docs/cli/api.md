@@ -39,8 +39,9 @@ Les documents portés par les requêtes sont décrits une fois (`$defs` : `job`,
 `decision_profile`) et reliés par `$ref` ; `job` est fermé comme l'admission (clé inconnue refusée,
 clés internes `_…` / `$…` ignorées — sauf dans les objets `sync`, `flags` et le bloc `encode`, qui les
 refusent —, noms de `variables` et tables libres) et l'admission d'une requête vérifie le job contre ce
-schéma : le client et le service rendent le même verdict (seul le contenu d'une calibration au-delà de
-ses champs publiés relève de son propre contrat). Les résultats sont typés : fiche
+schéma : le client et le service rendent le même verdict (seuls l'ordre croissant des segments d'une
+calibration et ses champs non publiés relèvent de son propre contrat). Les motifs publiés marquent la fin
+du texte de façon portable (`(?![\s\S])`) : même lecture en ECMA-262 et en Python. Les résultats sont typés : fiche
 d'inspection et pistes (`hdr_type` publié par son libellé), sorties d'extraction, entrées de lots,
 réglages, presets, profils, titres Blu-ray, capacités, extensions, verdicts FEL, TMDB. Restent des
 objets décrits (contenu documenté ailleurs) : plans de `media.validate/preview`, rapports HDR, plans
@@ -61,7 +62,7 @@ profils (version, nature, nom, règles), ses autres clés conservées. Refusés 
 chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
 inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
-absent ou `null` non autorisé. Ce qui dépend des sources et de la machine (pistes sélectionnées,
+absent ou `null` non autorisé ; un entier peut s'écrire `1.0` (sémantique JSON). Ce qui dépend des sources et de la machine (pistes sélectionnées,
 encodeurs et presets disponibles, géométrie Dolby Vision + NVENC) est refusé à la validation
 (`validation`), comme au lancement. Les documents des commandes historiques (`--config`, `--template`,
 `--batch`, exact-jobs) restent **tolérants** : clé inconnue signalée (`warning`, code `unknown_key`)

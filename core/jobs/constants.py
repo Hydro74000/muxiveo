@@ -31,3 +31,6 @@ SYNC_SUBTITLE_MODES = ("mirror", "none")
 SYNC_REWRITE_MODES = ("", "offset")
 MUX_BACKEND_CHOICES = ("auto", "native", "ffmpeg")
 TMDB_KINDS = ("all", "movie", "tv")
+
+#: Seule source de couverture acceptée dans un job (celle que produit l'interface).
+TMDB_IMAGE_URL_PREFIX = "https://image.tmdb.org/"

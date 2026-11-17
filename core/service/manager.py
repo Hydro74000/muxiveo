@@ -23,7 +23,7 @@ from typing import Any
 from core.service.context import CancelToken, ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.events import Emitter, Event, EventSink, EventType, JobState
-from core.service.models import Model, field
+from core.service.models import Model, field, integral_numbers
 from core.service.operations import Catalog, OperationSpec, authorize, execute, result_state
 
 #: Jobs en attente au-delà desquels une soumission est refusée (``busy``).
@@ -156,7 +156,7 @@ class JobManager:
         authorize(spec, self._allow_privileged)
         if base_dir is not None and not Path(base_dir).is_absolute():
             raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu.")
-        request, _warnings = spec.request.parse(payload, strict=True, base_dir=base_dir)
+        request, _warnings = spec.request.parse(integral_numbers(payload), strict=True, base_dir=base_dir)
         job = _Job(spec, request, base_dir, self._sink)
         with self._lock:
             if self._closed or self._draining:

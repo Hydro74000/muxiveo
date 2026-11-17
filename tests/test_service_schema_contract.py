@@ -70,6 +70,8 @@ _ACCEPTED = [
     _job(audio_variants=[{"selector": _AUDIO, "codec": "aac"}, {"source_selector": _AUDIO}]),
     _job(sources=[{"path": _SOURCE, "sync": {"reference_track": "a:1", "calibration": _CALIBRATION}}]),
     _job(sources=[{"path": _SOURCE, "attachments": "none"}], tmdb={"enabled": False}),
+    _job(version=1.0, crossfade_ms=1.0),  # entiers au sens JSON (requête de l'API)
+    _job(tmdb_cover=["https://image.tmdb.org/t/p/original/x.jpg", "cover.jpg"]),
     _job(encode={"video": {"default": {"codec": "copy"}}}),
 ]
 _REFUSED = [
@@ -109,12 +111,20 @@ _REFUSED = [
     _job(sources=[{"path": _SOURCE, "attachments": None}]),
     _job(sources=[{"path": _SOURCE, "attachments": 0}]),
     _job(sources=[{"path": _SOURCE, "sync": {"calibration": None}}]),
+    _job(tmdb_cover=["https://example.com/x.jpg", "x.jpg"]),
+    _job(sync_calibrations={"0": {"segments": []}}),
+    _job(sync_calibrations={"0": {"segments": [{"start_ms": 1, "shift_ms": 0}]}}),
+    _job(sync_calibrations={"0\n": _CALIBRATION}),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "confidence": 2}}),
 ]
 
 
 def _admitted(job: dict[str, Any]) -> bool:
+    """Admission d'une requête de l'API (``call`` / ``serve`` : entiers JSON normalisés, lecture stricte)."""
+    from core.service.models import integral_numbers
+
     try:
-        CATALOG.get("media.validate").request.parse({"job": copy.deepcopy(job)})
+        CATALOG.get("media.validate").request.parse(integral_numbers({"job": copy.deepcopy(job)}))
     except ApiError:
         return False
     return True
@@ -138,3 +148,25 @@ def test_inspection_template_satisfies_the_published_job():
     template = config_template_from_info(SimpleNamespace(path=Path(_SOURCE)), output=_OUTPUT)
     assert not schema_check.errors(template, catalog["$defs"]["job"], catalog)
     assert _admitted(template)
+
+
+def test_tolerant_documents_still_report_keys_next_to_required_alternatives():
+    """Combinateurs de champs requis : les propriétés voisines restent parcourues (avertissements historiques)."""
+    from core.jobs.schema import unknown_job_keys
+
+    job = _job(audio_variants=[{"selector": _AUDIO, "bogus": 1}], chapters={"add": [{"timestamp": "0", "bogus": 1}]},
+               track_order=[{"id": 1, "bogus": 1}])
+    assert sorted(unknown_job_keys(job)) == ["job.audio_variants[0].bogus", "job.chapters.add[0].bogus",
+                                             "job.track_order[0].bogus"]
+
+
+def test_one_cause_gives_one_diagnostic():
+    cases = {"audio_variants": [{}], "chapters": {"add": [{}]}, "tmdb_cover": ["https://example.com/x", "x"],
+             "sync_calibrations": {"0": {"segments": []}}}
+    for key, value in cases.items():
+        with pytest.raises(ApiError) as caught:
+            CATALOG.get("media.validate").request.parse({"job": _job(**{key: value})})
+        assert len(caught.value.details) == 1, (key, caught.value.details)
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("media.validate").request.parse({"job": _job(audio_variants=[{"source_selector": False}])})
+    assert [detail.path for detail in caught.value.details] == ["job.audio_variants[0].source_selector"]

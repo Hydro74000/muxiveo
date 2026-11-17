@@ -1176,10 +1176,14 @@ def test_hdr10_text_formats_are_checked_when_the_request_is_read(tmp_path):
 def _ecma_anchors(pattern: str) -> str:
     """Motif publié (ECMA-262, sans drapeau ``m``) lu par ``re`` : ``^`` / ``$`` = début / fin de la chaîne seuls.
 
-    En Python, ``$`` accepte aussi un saut de ligne final : ``\\A`` / ``\\Z`` gardent le sens ECMA.
+    En Python, ``$`` accepte aussi un saut de ligne final : ``\\A`` / ``\\Z`` gardent le sens ECMA. Fin publiée
+    sous forme portable ``(?![\\s\\S])`` (aucun caractère après, dans les deux moteurs) : même traduction.
     """
-    assert pattern.startswith("^") and pattern.endswith("$") and "\\" not in pattern[-2:], pattern
-    return "\\A" + pattern[1:-1] + "\\Z"
+    end = r"(?![\s\S])"
+    assert pattern.startswith("^") and (pattern.endswith(end) or (pattern.endswith("$") and "\\" not in pattern[-2:])), \
+        pattern
+    body = pattern[1:-len(end)] if pattern.endswith(end) else pattern[1:-1]
+    return "\\A" + body + "\\Z"
 
 
 def _schema_errors(value: Any, schema: dict, path: str = "") -> list[str]:
