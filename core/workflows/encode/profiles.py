@@ -57,9 +57,10 @@ class ProfileManager:
         """Fichier du profil ``name`` (existant, sinon nom libre)."""
         return self._store.path_for_name(name)
 
-    def save(self, preset: EncodePreset) -> None:
+    def save(self, preset: EncodePreset, *, replace: bool = True) -> None:
+        """Enregistre ``preset`` ; ``replace=False`` : ``FileExistsError`` si le nom est déjà pris."""
         data = preset.to_json_dict()
-        self._store.write(preset.name, json.dumps(data, indent=2, ensure_ascii=False))
+        self._store.write(preset.name, json.dumps(data, indent=2, ensure_ascii=False), replace=replace)
 
     def load_all(self) -> list[EncodePreset]:
         presets: list[EncodePreset] = []

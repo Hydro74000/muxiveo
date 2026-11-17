@@ -27,12 +27,20 @@ class CriteriaExpressionParser:
         tokens: list[tuple[str, str]] = []
         source = str(text or "")
         current: list[str] = []
+        filled = False  # atome en cours non blanc (évite de rejoindre le préfixe à chaque caractère)
 
         def flush_atom() -> None:
+            nonlocal filled
             atom = "".join(current).strip()
             current.clear()
+            filled = False
             if atom:
                 tokens.append(("ATOM", atom))
+
+        def add(text: str) -> None:
+            nonlocal filled
+            current.append(text)
+            filled = filled or not text.isspace()
 
         cursor = 0
         while cursor < len(source):
@@ -40,11 +48,11 @@ class CriteriaExpressionParser:
             if char == "\\":
                 if cursor + 1 >= len(source):
                     raise CriteriaExpressionError("echappement final")
-                current.append(source[cursor + 1])
+                add(source[cursor + 1])
                 cursor += 2
                 continue
             if (
-                not "".join(current).strip()
+                not filled
                 and source[cursor:cursor + 3].lower() == "not"
                 and cursor + 3 < len(source)
                 and source[cursor + 3] == "("
@@ -84,11 +92,13 @@ class CriteriaExpressionParser:
                     cursor += 1
                 else:
                     raise CriteriaExpressionError("guillemet non ferme")
-                if not "".join(quoted).strip() and not current:
+                text = "".join(quoted)
+                if not text.strip() and not current:
                     raise CriteriaExpressionError("valeur vide")
-                current.extend(quoted)
+                if text:
+                    add(text)
                 continue
-            current.append(char)
+            add(char)
             cursor += 1
         flush_atom()
         if not tokens:

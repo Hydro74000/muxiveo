@@ -371,6 +371,10 @@ def _model_schema(cls: type) -> dict[str, Any]:
 
 #: Imbrication maximale d'une requête de l'API (un job en compte une dizaine).
 MAX_API_DEPTH = 64
+#: Longueur maximale d'une clé d'objet d'une requête de l'API (champs, noms de variables, index…).
+MAX_API_KEY_LENGTH = 256
+#: Écarts détaillés au plus par document refusé (au-delà : un dernier écart en donne le nombre).
+MAX_API_DIAGNOSTICS = 100
 
 
 def api_payload(value: Any) -> Any:
@@ -378,7 +382,8 @@ def api_payload(value: Any) -> Any:
 
     Entiers écrits en flottants (``1.0``) rendus entiers ; refus (``invalid_request``) d'une imbrication de plus de
     :data:`MAX_API_DEPTH` niveaux et des nombres non représentables en double précision (RFC 8259 § 6), que les
-    traitements ne pourraient pas convertir. Parcours linéaire : chemin construit seulement pour un refus.
+    traitements ne pourraient pas convertir, et des clés de plus de :data:`MAX_API_KEY_LENGTH` caractères (chemins
+    de diagnostic bornés). Parcours linéaire : chemin construit seulement pour un refus.
     """
     trail: list[str | int] = []
 
@@ -406,6 +411,8 @@ def api_payload(value: Any) -> Any:
         if isinstance(item, dict):
             fields: dict[str, Any] = {}
             for key, child in item.items():
+                if len(key) > MAX_API_KEY_LENGTH:
+                    raise refuse(f"clé de plus de {MAX_API_KEY_LENGTH} caractères ({key[:32]}…).")
                 trail.append(key)
                 fields[key] = walk(child)
                 trail.pop()
@@ -413,6 +420,13 @@ def api_payload(value: Any) -> Any:
         return item
 
     return walk(value)
+
+
+def bounded_diagnostics(errors: list[tuple[str, str]], path: str) -> list[tuple[str, str]]:
+    """Au plus :data:`MAX_API_DIAGNOSTICS` écarts, puis un écart donnant le nombre des autres (sous ``path``)."""
+    if len(errors) <= MAX_API_DIAGNOSTICS:
+        return errors
+    return [*errors[:MAX_API_DIAGNOSTICS], (path, f"{len(errors) - MAX_API_DIAGNOSTICS} autre(s) écart(s) non détaillé(s)")]
 
 
 def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),

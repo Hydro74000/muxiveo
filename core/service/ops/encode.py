@@ -15,7 +15,7 @@ from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.jobs import await_task, raise_for_outcome
-from core.service.models import Model, dataclass_schema, field, list_of
+from core.service.models import MAX_API_DIAGNOSTICS, Model, dataclass_schema, field, list_of
 from core.service.operations import operation
 from core.service.ops.media import MediaJobRequest, _build_cached, resolve_job_encode
 from core.workflows.encode.models import EncodePreset, EncodePreviewRequest
@@ -156,7 +156,7 @@ def _type_errors(value: Any, schema: dict[str, Any], prefix: str) -> list[tuple[
     from core.service.schema_check import schema_errors
 
     return [(f"{prefix}.{path}" if path else prefix, message)
-            for path, message in schema_errors(value, schema, {"$defs": {}})]
+            for path, message in schema_errors(value, schema, {"$defs": {}}, limit=MAX_API_DIAGNOSTICS)]
 
 
 def _conforming(manager: ProfileManager, ctx: ExecutionContext) -> tuple[list[EncodePreset], list[dict[str, str]]]:
@@ -288,9 +288,13 @@ def _preset_from(raw: Any, name: str | None = None) -> EncodePreset:
 
 def _store(ctx: ExecutionContext, preset: EncodePreset, *, force: bool) -> None:
     manager = _manager(ctx)
+    exists = JobError(f"Preset déjà enregistré : {preset.name} (utiliser force)", EXIT_EXISTS)
     if not force and preset.name in manager.names():
-        raise JobError(f"Preset déjà enregistré : {preset.name} (utiliser force)", EXIT_EXISTS)
-    manager.save(preset)
+        raise exists
+    try:
+        manager.save(preset, replace=force)  # existence revérifiée sous le verrou d'écriture
+    except FileExistsError:
+        raise exists from None
 
 
 @operation("encode_preset.list", request=PresetListRequest, result=PresetListResult,

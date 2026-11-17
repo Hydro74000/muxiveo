@@ -15,6 +15,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import sys
 from typing import Any
 
 _TYPES: dict[str, Any] = {"string": str, "number": (int, float), "integer": int, "boolean": bool, "array": list,
@@ -109,18 +110,52 @@ def _text(at: _At | str) -> str:
     return at
 
 
+class _Full(Exception):
+    """Budget d'écarts épuisé : le parcours s'arrête (verdict déjà acquis)."""
+
+
+class _Out:
+    """Écarts collectés, au plus ``budget`` (au-delà : :class:`_Full`)."""
+
+    __slots__ = ("found", "budget")
+
+    def __init__(self, budget: int) -> None:
+        self.found: list[tuple[_At | str, str]] = []
+        self.budget = budget
+
+    def add(self, at: _At | str, message: str) -> None:
+        if len(self.found) >= self.budget:
+            raise _Full
+        self.found.append((at, message))
+
+
 def schema_errors(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any],
-                  path: str = "", *, distinct: bool = False) -> list[tuple[str, str]]:
+                  path: str = "", *, distinct: bool = False, limit: int | None = None) -> list[tuple[str, str]]:
     """Écarts de ``value`` à ``schema`` : liste de ``(chemin, message)`` ; références résolues dans ``root``.
 
-    Parcours linéaire : chemins construits seulement pour un écart, sous-schémas sans contrainte non parcourus.
-    ``distinct`` : un écart par cause — les plus profonds d'abord, un écart au même endroit qu'un écart retenu ou
-    au-dessus de lui (forme non reconnue, champ requis alternatif) est omis.
+    Parcours linéaire : chemins construits seulement pour un écart retenu, sous-schémas sans contrainte non
+    parcourus, variantes d'un combinateur évaluées jusqu'à leur premier écart. ``limit`` : au plus ``limit``
+    écarts rendus (parcours arrêté après dix fois plus d'écarts collectés). ``distinct`` : un écart par cause —
+    les plus profonds d'abord, un écart au même endroit qu'un écart retenu ou au-dessus de lui (forme non
+    reconnue, champ requis alternatif) est omis.
     """
-    found = _errors(value, schema, root, path)
-    if distinct:
-        found = _distinct(found)
-    return [(_text(at), message) for at, message in found]
+    out = _Out(sys.maxsize if limit is None else 10 * limit)
+    try:
+        _collect(value, schema, root, path, out)
+    except _Full:
+        pass
+    found = _distinct(out.found) if distinct else out.found
+    return [(_text(at), message) for at, message in found[:limit]]
+
+
+def _fails(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any], at: _At | str) -> bool:
+    """Vrai au premier écart (variante d'un combinateur : le détail n'est jamais rendu)."""
+    out = _Out(0)
+    try:
+        _collect(value, schema, root, at, out)
+    except _Full:
+        return True
+    return False
 
 
 def _depth(at: _At | str) -> int:
@@ -149,91 +184,87 @@ def _distinct(found: list[tuple[_At | str, str]]) -> list[tuple[_At | str, str]]
     return kept
 
 
-def _errors(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any],  # noqa: C901 - mots-clés
-            at: _At | str) -> list[tuple[_At | str, str]]:
+def _collect(value: Any, schema: dict[str, Any] | bool, root: dict[str, Any],  # noqa: C901 - mots-clés
+             at: _At | str, out: _Out) -> None:
     if schema is True or (isinstance(schema, dict) and _CONSTRAINTS.isdisjoint(schema)):
-        return []
+        return
     if schema is False:
-        return [(at, "valeur refusée")]
-    found: list[tuple[_At | str, str]] = []
+        out.add(at, "valeur refusée")
+        return
     ref = schema.get("$ref")
     if isinstance(ref, str):
-        found += _errors(value, root["$defs"][ref.removeprefix(_REF_PREFIX)], root, at)
+        _collect(value, root["$defs"][ref.removeprefix(_REF_PREFIX)], root, at, out)
     kinds = schema.get("type")
     if kinds is not None:
         expected = [kinds] if isinstance(kinds, str) else list(kinds)
         if not any(_is(value, kind) for kind in expected):
-            return found + [(at, f"{' ou '.join(expected)} attendu")]
+            out.add(at, f"{' ou '.join(expected)} attendu")
+            return
     if "const" in schema and not _same(value, schema["const"]):
-        found.append((at, f"{schema['const']!r} attendu"))
+        out.add(at, f"{schema['const']!r} attendu")
     if "enum" in schema and not any(_same(value, choice) for choice in schema["enum"]):
-        found.append((at, f"valeur parmi {schema['enum']} attendue"))
+        out.add(at, f"valeur parmi {schema['enum']} attendue")
     if "oneOf" in schema:
-        matching = sum(not _errors(value, variant, root, at) for variant in schema["oneOf"])
+        matching = sum(not _fails(value, variant, root, at) for variant in schema["oneOf"])
         if matching != 1:
-            found.append((at, "aucune forme admise ne correspond" if not matching else "forme ambiguë"))
-    if "anyOf" in schema and all(_errors(value, variant, root, at) for variant in schema["anyOf"]):
-        found.append((at, _any_of_message(schema["anyOf"])))
-    if "not" in schema and not _errors(value, schema["not"], root, at):
-        found.append((at, _not_message(schema["not"])))
+            out.add(at, "aucune forme admise ne correspond" if not matching else "forme ambiguë")
+    if "anyOf" in schema and all(_fails(value, variant, root, at) for variant in schema["anyOf"]):
+        out.add(at, _any_of_message(schema["anyOf"]))
+    if "not" in schema and not _fails(value, schema["not"], root, at):
+        out.add(at, _not_message(schema["not"]))
     if isinstance(value, str) and "pattern" in schema and re.search(portable_pattern(schema["pattern"]),
                                                                     value) is None:
-        found.append((at, f"format attendu : {schema['pattern']}"))
+        out.add(at, f"format attendu : {schema['pattern']}")
     if _is(value, "number"):
         if "minimum" in schema and value < schema["minimum"]:
-            found.append((at, f"au moins {schema['minimum']}"))
+            out.add(at, f"au moins {schema['minimum']}")
         if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
-            found.append((at, f"plus de {schema['exclusiveMinimum']}"))
+            out.add(at, f"plus de {schema['exclusiveMinimum']}")
         if "maximum" in schema and value > schema["maximum"]:
-            found.append((at, f"au plus {schema['maximum']}"))
+            out.add(at, f"au plus {schema['maximum']}")
     if isinstance(value, list):
-        found += _array_errors(value, schema, root, at)
+        _array(value, schema, root, at, out)
     if isinstance(value, dict):
-        found += _object_errors(value, schema, root, at)
-    return found
+        _object(value, schema, root, at, out)
 
 
-def _array_errors(value: list[Any], schema: dict[str, Any], root: dict[str, Any],
-                  at: _At | str) -> list[tuple[_At | str, str]]:
-    found: list[tuple[_At | str, str]] = []
+def _array(value: list[Any], schema: dict[str, Any], root: dict[str, Any], at: _At | str, out: _Out) -> None:
     if len(value) < schema.get("minItems", 0):
-        found.append((at, f"au moins {schema['minItems']} élément(s)"))
+        out.add(at, f"au moins {schema['minItems']} élément(s)")
     if "maxItems" in schema and len(value) > schema["maxItems"]:
-        found.append((at, f"au plus {schema['maxItems']} élément(s)"))
+        out.add(at, f"au plus {schema['maxItems']} élément(s)")
     if schema.get("uniqueItems") and len({_canonical(item) for item in value}) < len(value):
-        found.append((at, "éléments en double"))
+        out.add(at, "éléments en double")
     prefix = schema.get("prefixItems", [])
     for index, item in enumerate(value):
         rule = prefix[index] if index < len(prefix) else schema.get("items", True)
-        found += _errors(item, rule, root, (at, index))
-    return found
+        _collect(item, rule, root, (at, index), out)
 
 
-def _object_errors(value: dict[str, Any], schema: dict[str, Any], root: dict[str, Any],
-                   at: _At | str) -> list[tuple[_At | str, str]]:
-    found: list[tuple[_At | str, str]] = [((at, key), "champ requis") for key in schema.get("required", ())
-                                          if key not in value]
+def _object(value: dict[str, Any], schema: dict[str, Any], root: dict[str, Any], at: _At | str, out: _Out) -> None:
+    for key in schema.get("required", ()):
+        if key not in value:
+            out.add((at, key), "champ requis")
     properties = schema.get("properties", {})
     patterns = schema.get("patternProperties", {})
     extra = schema.get("additionalProperties", True)
     names = schema.get("propertyNames", True)
     for key, item in value.items():
         child = (at, key)
-        if _errors(key, names, root, child):
-            found.append((child, "nom de clé non admis"))
+        if _fails(key, names, root, child):
+            out.add(child, "nom de clé non admis")
             continue
         matched = [rule for pattern, rule in patterns.items() if re.search(portable_pattern(pattern), key)]
         if key in properties:
             matched.insert(0, properties[key])
         for rule in matched:  # propriété déclarée et motifs : tous s'appliquent
-            found += _errors(item, rule, root, child)
+            _collect(item, rule, root, child, out)
         if matched:
             continue
         if extra is False:
-            found.append((child, "clé inconnue"))
+            out.add(child, "clé inconnue")
         else:
-            found += _errors(item, extra, root, child)
-    return found
+            _collect(item, extra, root, child, out)
 
 
 def _any_of_message(variants: list[dict[str, Any] | bool]) -> str:

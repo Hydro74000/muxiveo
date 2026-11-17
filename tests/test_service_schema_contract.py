@@ -240,4 +240,22 @@ def test_admission_of_many_faulty_entries_stays_linear():
     started = time.monotonic()
     with pytest.raises(ApiError) as caught:
         CATALOG.get("media.validate").request.parse({"job": _job(tracks=[{"id": False}] * 50_000)})
-    assert len(caught.value.details) >= 50_000 and time.monotonic() - started < 20
+    details = caught.value.details
+    assert len(details) == 101 and details[-1].message == "49900 autre(s) écart(s) non détaillé(s)"
+    assert time.monotonic() - started < 20
+
+
+def test_diagnostics_under_a_long_key_stay_bounded():
+    """Clés de 256 caractères au plus ; écarts détaillés bornés : chemins jamais recopiés par erreur."""
+    import time
+
+    from core.service.models import api_payload
+
+    with pytest.raises(ApiError) as caught:
+        api_payload({"job": {"variables": {"aliases": {"k" * 8_000_000: {}}}}})
+    assert "clé de plus de 256 caractères" in caught.value.message
+    aliases = {"k" * 256: {str(index): False for index in range(100_000)}}
+    started = time.monotonic()
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("media.validate").request.parse(api_payload({"job": _job(variables={"aliases": aliases})}))
+    assert len(caught.value.details) <= 101 and time.monotonic() - started < 20

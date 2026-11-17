@@ -149,7 +149,8 @@ class DecisionProfileManager:
         """Fichier du profil de nom exact ``name`` (existant, sinon à créer)."""
         return self._store.path_for_name(str(name or "").strip())
 
-    def save(self, profile: Mapping[str, Any]) -> Path:
+    def save(self, profile: Mapping[str, Any], *, replace: bool = True) -> Path:
+        """Enregistre ``profile`` ; ``replace=False`` : ``FileExistsError`` si le nom est déjà pris."""
         data = dict(profile)
         data.pop("sources", None)
         data.pop("output", None)
@@ -162,6 +163,7 @@ class DecisionProfileManager:
         return self._store.write(
             name,
             json.dumps(data, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+            replace=replace,
         )
 
     def load(self, name: str) -> dict[str, Any] | None:

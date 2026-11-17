@@ -13,6 +13,8 @@ import functools
 import re
 from typing import Any
 
+from core.service.models import MAX_API_DIAGNOSTICS
+
 _PREFIX = "#/$defs/"
 
 JOB_REF: dict[str, Any] = {"$ref": f"{_PREFIX}job"}
@@ -126,7 +128,8 @@ def job_schema_errors(job: dict[str, Any], prefix: str = "job") -> list[tuple[st
         _drop(document, path)
     root = _root()
     return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
-            for path, message in schema_errors(document, root["$defs"]["job"], root, distinct=True)]
+            for path, message in schema_errors(document, root["$defs"]["job"], root, distinct=True,
+                                               limit=MAX_API_DIAGNOSTICS)]
 
 
 def decision_profile_input_errors(profile: Any, prefix: str = "profile") -> list[tuple[str, str]]:
@@ -136,7 +139,7 @@ def decision_profile_input_errors(profile: Any, prefix: str = "profile") -> list
     root = _root()
     return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
             for path, message in schema_errors(profile, root["$defs"]["decision_profile_input"], root,
-                                               distinct=True)]
+                                               distinct=True, limit=MAX_API_DIAGNOSTICS)]
 
 
 def _drop(document: Any, path: str) -> None:

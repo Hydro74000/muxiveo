@@ -80,9 +80,12 @@ class ProfileStore:
             candidate, index = f"{stem}-{index}", index + 1
         return self.directory / f"{candidate}.json"
 
-    def write(self, name: str, content: str) -> Path:
-        """Écrit atomiquement le profil ``name`` (même fichier s'il existe)."""
+    def write(self, name: str, content: str, *, replace: bool = True) -> Path:
+        """Écrit atomiquement le profil ``name`` (même fichier s'il existe) ; ``replace=False`` : un profil déjà
+        enregistré sous ce nom lève ``FileExistsError``, vérifié sous le même verrou que l'écriture."""
         with self._mutation():
+            if not replace and self.find(name) is not None:
+                raise FileExistsError(name)
             path = self.path_for_name(name)
             atomic_write_text(path, content)
             return path

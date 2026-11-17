@@ -209,9 +209,13 @@ def _save(ctx: ExecutionContext, profile: dict[str, Any], *, force: bool) -> Pro
     document = _validated(profile)
     manager = _profiles(ctx)
     name = str(document.get("name") or "").strip()
+    exists = JobError(f"Profil déjà enregistré : {name} (utiliser force)", EXIT_EXISTS)
     if manager.load(name) is not None and not force:
-        raise JobError(f"Profil déjà enregistré : {name} (utiliser force)", EXIT_EXISTS)
-    path = manager.save(document)
+        raise exists
+    try:
+        path = manager.save(document, replace=force)  # existence revérifiée sous le verrou d'écriture
+    except FileExistsError:
+        raise exists from None
     ctx.events.artifact("profile", str(path))
     return ProfileDocumentResult(profile=manager.load(name) or document, path=str(path))
 

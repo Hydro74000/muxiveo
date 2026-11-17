@@ -235,3 +235,21 @@ def test_fel_verdict_codes_follow_the_analyzer():
     from core.service.ops.hdr import FelVerdict
 
     assert typing.get_args(typing.get_type_hints(FelVerdict)["code"]) == VERDICTS
+
+
+@pytest.mark.parametrize("operation, payload, lister", [
+    ("encode_preset.save", {"preset": {"name": "Même", "crf": 18}}, ("core.workflows.encode.profiles.ProfileManager",
+                                                                     "names")),
+    ("profile.save", {"profile": {"name": "Même"}}, ("core.profiles.decision.DecisionProfileManager", "load")),
+])
+def test_saving_without_force_never_replaces_a_concurrent_save(tmp_path, monkeypatch, operation, payload, lister):
+    """Deux enregistrements simultanés du même nom : le contrôle préalable passe pour les deux, l'écriture
+    revérifie sous son verrou (le second est refusé, le premier conservé)."""
+    from core.jobs.errors import JobError
+
+    config = SimpleNamespace(app_data_dir=tmp_path / "data", profiles_dir=tmp_path / "profiles")
+    call(CATALOG, operation, payload, _ctx(config))
+    monkeypatch.setattr(f"{lister[0]}.{lister[1]}", lambda *_args, **_kwargs: [] if lister[1] == "names" else None)
+    with pytest.raises(JobError) as caught:
+        call(CATALOG, operation, payload, _ctx(config))
+    assert "déjà enregistré" in str(caught.value)

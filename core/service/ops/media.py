@@ -233,7 +233,9 @@ class MediaJobRequest(Model):
             from core.service.schemas.documents import job_schema_errors
 
             found = job_schema_errors(job)
-        return found + encode_block_errors(job.get("encode"), "job.encode")
+        from core.service.models import bounded_diagnostics
+
+        return bounded_diagnostics(found + encode_block_errors(job.get("encode"), "job.encode"), "job")
 
     @classmethod
     def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
