@@ -5,14 +5,15 @@ catalogue : même verdict pour le client et pour le service) et les tests de con
 charge : ``$ref`` (``#/$defs/…``), ``type``, ``const``, ``enum``, ``oneOf`` (exactement une variante), ``anyOf``,
 ``not``, ``properties``, ``required``, ``additionalProperties`` (booléen ou schéma), ``patternProperties``,
 ``propertyNames``, ``items``, ``prefixItems``, ``minItems`` / ``maxItems``, ``minimum`` / ``maximum``,
-``exclusiveMinimum``, ``pattern`` ; sous-schémas booléens (``true`` / ``false``). Les autres (``description``,
-``default``, ``format``…) n'ont pas d'effet. Sémantique JSON : un entier peut s'écrire ``1.0``, un booléen
+``exclusiveMinimum``, ``uniqueItems``, ``pattern`` ; sous-schémas booléens (``true`` / ``false``). Les autres
+(``description``, ``default``, ``format``…) n'ont pas d'effet. Sémantique JSON : un entier peut s'écrire ``1.0``, un booléen
 n'est jamais un nombre, ``$`` d'un motif marque la fin du texte (ECMA-262, pas « avant un saut de ligne final »).
 """
 
 from __future__ import annotations
 
 import functools
+import json
 import re
 from typing import Any
 
@@ -40,6 +41,21 @@ def _same(value: Any, expected: Any) -> bool:
     if isinstance(value, (list, dict)) or isinstance(expected, (list, dict)):
         return False
     return bool(value == expected)
+
+
+def _canonical(value: Any) -> str:
+    """Forme comparable selon l'égalité JSON (``1`` = ``1.0``, ``true`` ≠ ``1``, ordre des clés indifférent) :
+    doublons détectés en temps linéaire."""
+    def plain(item: Any) -> Any:
+        if isinstance(item, float) and item.is_integer():
+            return int(item)
+        if isinstance(item, list):
+            return [plain(child) for child in item]
+        if isinstance(item, dict):
+            return {key: plain(child) for key, child in item.items()}
+        return item
+
+    return json.dumps(plain(value), sort_keys=True, ensure_ascii=False)
 
 
 @functools.lru_cache(maxsize=256)
@@ -79,8 +95,8 @@ _At = tuple[Any, Any]
 
 #: Mots-clés qui contraignent une valeur ; un schéma sans aucun d'eux accepte tout (aucun parcours).
 _CONSTRAINTS = frozenset({"$ref", "type", "const", "enum", "oneOf", "anyOf", "not", "pattern", "minimum",
-                          "maximum", "exclusiveMinimum", "minItems", "maxItems", "prefixItems", "items", "properties",
-                          "required", "additionalProperties", "patternProperties", "propertyNames"})
+                          "maximum", "exclusiveMinimum", "minItems", "maxItems", "uniqueItems", "prefixItems", "items",
+                          "properties", "required", "additionalProperties", "patternProperties", "propertyNames"})
 
 
 def _text(at: _At | str) -> str:
@@ -184,6 +200,8 @@ def _array_errors(value: list[Any], schema: dict[str, Any], root: dict[str, Any]
         found.append((at, f"au moins {schema['minItems']} élément(s)"))
     if "maxItems" in schema and len(value) > schema["maxItems"]:
         found.append((at, f"au plus {schema['maxItems']} élément(s)"))
+    if schema.get("uniqueItems") and len({_canonical(item) for item in value}) < len(value):
+        found.append((at, "éléments en double"))
     prefix = schema.get("prefixItems", [])
     for index, item in enumerate(value):
         rule = prefix[index] if index < len(prefix) else schema.get("items", True)

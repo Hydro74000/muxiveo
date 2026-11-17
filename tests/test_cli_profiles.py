@@ -13,7 +13,7 @@ import pytest
 from cli.parser import build_parser
 from core.jobs.errors import JobError
 from core.media_info_fetcher import MediaDetails, MediaSearchResult
-from core.service import ExecutionContext, ListSink, call
+from core.service import ApiError, ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.service.ops import library
 from tests.test_bluray import _make_bluray_tree, _write_playlist
@@ -42,9 +42,14 @@ def test_profile_store_lifecycle(tmp_path):
     call(CATALOG, "profile.delete", {"name": "Films"}, _ctx(tmp_path))
     with pytest.raises(JobError):
         call(CATALOG, "profile.show", {"name": "Films"}, _ctx(tmp_path))
-    with pytest.raises(JobError, match="invalide") as caught:
-        call(CATALOG, "profile.save", {"profile": {"name": "", "rules": "x"}}, _ctx(tmp_path))
+    historical = ExecutionContext.create(_ctx(tmp_path).config, ListSink(), api=False)
+    with pytest.raises(JobError, match="invalide") as caught:  # commande historique : refus à l'exécution
+        call(CATALOG, "profile.save", {"profile": {"name": "", "rules": "x"}}, historical, allow_relative=True,
+             strict_documents=False)
     assert caught.value.exit_code == 3
+    with pytest.raises(ApiError) as refused:  # requête de l'API : refus dès la lecture, champs désignés
+        call(CATALOG, "profile.save", {"profile": {"name": "", "rules": "x"}}, _ctx(tmp_path))
+    assert {detail.path for detail in refused.value.details} == {"profile.name", "profile.rules"}
 
 
 def test_profile_capture_uses_a_placeholder_output(tmp_path, monkeypatch):

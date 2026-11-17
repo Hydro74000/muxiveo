@@ -193,6 +193,7 @@ _PROFILE_REFUSED = [
     {"name": "demo", "rules": [{**_RULE, "id": ""}]},
     {"name": "demo", "rules": [{**_RULE, "match": {"value": 1, "expr": "audio"}}]},
     {"name": "demo", "rules": [{**_RULE, "match": {"expr": " "}}]},
+    {"name": "demo", "rules": [{**_RULE, "actions": [{"type": "set_title", "clear": ["title", "title"]}]}]},
 ]
 
 

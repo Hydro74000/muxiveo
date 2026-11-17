@@ -28,6 +28,9 @@ _ROOT: dict = {}
     (1, {"oneOf": [True, True]}),
     (1, {"not": True}),
     (1, {"not": {}}),
+    (["a", "a"], {"uniqueItems": True}),
+    ([1, 1.0], {"uniqueItems": True}),
+    ([{"a": 1, "b": 2}, {"b": 2, "a": 1}], {"uniqueItems": True}),
 ])
 def test_refused(value, schema):
     assert schema_errors(value, schema, _ROOT)
@@ -42,6 +45,8 @@ def test_refused(value, schema):
     (1, {"anyOf": [False, True]}),
     (1, {"oneOf": [False, True]}),
     (1, {"not": False}),
+    ([1, True, "1"], {"uniqueItems": True}),
+    (["a", "a"], {"uniqueItems": False}),
 ])
 def test_accepted(value, schema):
     assert not schema_errors(value, schema, _ROOT)

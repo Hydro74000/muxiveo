@@ -135,9 +135,12 @@ def test_api_presets_keep_their_published_types(tmp_path):
     historical = _ctx(config, api=False)  # CLI : le preset est enregistré comme avant
     call(CATALOG, "encode_preset.import", {"file": str(source)}, historical, allow_relative=True)
     call(CATALOG, "encode_preset.save", {"preset": {"name": "Propre", "crf": 20}}, _ctx(config))
+    _write(tmp_path / "data" / "encode_profiles" / "broken.json", {"name": "broken", "codec": 7, "preset": "safe"})
     listed = call(CATALOG, "encode_preset.list", {}, _ctx(config))
     assert [entry["name"] for entry in listed.presets] == ["Propre"]
-    assert "preset.crf" in listed.load_errors[0]["error"] and not result_errors("encode_preset.list", listed)
+    errors = {Path(entry["path"]).name: entry["error"] for entry in listed.load_errors}
+    assert set(errors) == {"broken.json", "Contrat.json"} and "preset.crf" in errors["Contrat.json"]
+    assert not result_errors("encode_preset.list", listed)
     assert [entry["name"] for entry in call(CATALOG, "encode_preset.list", {}, historical).presets] == [
         "Contrat", "Propre"]
     with pytest.raises(ApiError) as caught:

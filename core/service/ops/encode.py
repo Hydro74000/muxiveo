@@ -160,18 +160,21 @@ def _type_errors(value: Any, schema: dict[str, Any], prefix: str) -> list[tuple[
 
 
 def _conforming(manager: ProfileManager, ctx: ExecutionContext) -> tuple[list[EncodePreset], list[dict[str, str]]]:
-    """Presets enregistrés ; en requête de l'API, un preset aux champs non conformes au schéma publié (fichier
-    écrit à la main) est signalé comme fichier illisible plutôt que publié (commandes historiques : inchangé)."""
+    """Presets enregistrés et fichiers illisibles ; en requête de l'API, un preset aux champs non conformes au
+    schéma publié (fichier écrit à la main) est signalé comme fichier illisible plutôt que publié (commandes
+    historiques : inchangé)."""
+    loaded = manager.load_all()
+    unreadable = [{"path": str(error.path), "error": str(error.reason)} for error in manager.load_errors]
     presets: list[EncodePreset] = []
     refused: list[dict[str, str]] = []
-    for preset in manager.load_all():
+    for preset in loaded:
         errors = _type_errors(preset.to_json_dict(), _PRESET_SCHEMA, "preset") if ctx.api else []
-        if errors:
+        if errors:  # chemin relu après la capture des erreurs de chargement (une relecture les remet à zéro)
             refused.append({"path": str(manager.path_for_name(preset.name)),
                             "error": "; ".join(f"{path} : {message}" for path, message in errors)})
         else:
             presets.append(preset)
-    return presets, refused
+    return presets, unreadable + refused
 
 
 def _find(manager: ProfileManager, name: str, ctx: ExecutionContext | None = None) -> EncodePreset:
@@ -294,11 +297,10 @@ def _store(ctx: ExecutionContext, preset: EncodePreset, *, force: bool) -> None:
            summary="Presets d'encodage enregistrés (communs avec l'interface).")
 def preset_list(_request: PresetListRequest, ctx: ExecutionContext) -> PresetListResult:
     manager = _manager(ctx)
-    loaded, refused = _conforming(manager, ctx)
+    loaded, errors = _conforming(manager, ctx)
     presets = tuple({"name": p.name, "description": p.description, "codec": p.codec, "preset": p.preset}
                     for p in sorted(loaded, key=lambda item: item.name.lower()))
-    errors = tuple({"path": str(error.path), "error": str(error.reason)} for error in manager.load_errors)
-    return PresetListResult(presets=presets, load_errors=errors + tuple(refused))
+    return PresetListResult(presets=presets, load_errors=tuple(errors))
 
 
 @operation("encode_preset.show", request=PresetNameRequest, result=PresetResult,
