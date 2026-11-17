@@ -58,3 +58,35 @@ def test_published_model_patterns_refuse_a_trailing_newline():
 
     published = repr(EncodeBlock.json_schema())
     assert "$'" not in published and "(?![\\\\s\\\\S])" in published
+
+
+def test_walk_stays_linear_and_skips_unconstrained_values():
+    """Chemins construits au seul écart ; une très longue clé et une longue liste libre ne coûtent qu'un parcours."""
+    import time
+
+    value = {"k" * 1_000_000: [0] * 1_000_000, "x": False}
+    schema = {"properties": {"x": {"type": "string"}}, "additionalProperties": {"type": "array"}}
+    started = time.monotonic()
+    assert schema_errors(value, schema, _ROOT) == [("x", "string attendu")]
+    assert schema_errors({"_" + "k" * 1_000_000: [0] * 1_000_000}, {"additionalProperties": {}}, _ROOT) == []
+    assert time.monotonic() - started < 10
+
+
+def test_distinct_keeps_one_diagnostic_per_cause():
+    schema = {"type": "object", "properties": {"a": {"anyOf": [{"required": ["y"]}, {"required": ["z"]}],
+                                                     "properties": {"x": {"type": "string"}}}}}
+    assert len(schema_errors({"a": {"x": 1}}, schema, _ROOT)) == 2
+    assert schema_errors({"a": {"x": 1}}, schema, _ROOT, distinct=True) == [("a.x", "string attendu")]
+
+
+def test_optional_hdr_text_is_refused_in_linear_time():
+    import time
+
+    from core.hdr_formats import MAX_CLL_BODY, optional_text_pattern
+
+    pattern = re.compile(optional_text_pattern(MAX_CLL_BODY))
+    started = time.monotonic()
+    assert pattern.fullmatch(" " * 200_000 + "!") is None
+    assert time.monotonic() - started < 2
+    assert all(pattern.fullmatch(text) for text in ("", "  ", "1000,400", " \t1000,400 ", "1000,400\t"))
+    assert not any(pattern.fullmatch(text) for text in ("1000", " 1000, 400", "1000,400 x"))

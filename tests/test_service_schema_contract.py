@@ -230,3 +230,13 @@ def test_profile_documents_published_as_rendered():
     for profile in ({"name": "main", "rules": None}, {"name": "main", "rules": [{"id": "r", "match": {}}]},
                     {"name": "", "version": 1, "kind": "decision-profile", "rules": []}):
         assert not schema_check.errors({"profile": profile, "path": None}, result, catalog), profile
+
+
+def test_admission_of_many_faulty_entries_stays_linear():
+    """Un écart par entrée (contrat puis schéma) : diagnostics triés en temps linéaire, sans comparaison deux à deux."""
+    import time
+
+    started = time.monotonic()
+    with pytest.raises(ApiError) as caught:
+        CATALOG.get("media.validate").request.parse({"job": _job(tracks=[{"id": False}] * 50_000)})
+    assert len(caught.value.details) >= 50_000 and time.monotonic() - started < 20

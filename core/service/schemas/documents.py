@@ -126,7 +126,7 @@ def job_schema_errors(job: dict[str, Any], prefix: str = "job") -> list[tuple[st
         _drop(document, path)
     root = _root()
     return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
-            for path, message in schema_errors(document, root["$defs"]["job"], root)]
+            for path, message in schema_errors(document, root["$defs"]["job"], root, distinct=True)]
 
 
 def decision_profile_input_errors(profile: Any, prefix: str = "profile") -> list[tuple[str, str]]:
@@ -135,7 +135,8 @@ def decision_profile_input_errors(profile: Any, prefix: str = "profile") -> list
 
     root = _root()
     return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
-            for path, message in schema_errors(profile, root["$defs"]["decision_profile_input"], root)]
+            for path, message in schema_errors(profile, root["$defs"]["decision_profile_input"], root,
+                                               distinct=True)]
 
 
 def _drop(document: Any, path: str) -> None:

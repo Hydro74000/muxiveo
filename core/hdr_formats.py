@@ -16,5 +16,8 @@ MAX_CLL_BODY = r"[0-9]+,[0-9]+"
 
 
 def optional_text_pattern(body: str) -> str:
-    """Motif complet d'un champ facultatif : vide, ou ``body`` entouré d'espaces ou tabulations éventuels."""
-    return rf"^[ \t]*(?:{body})?[ \t]*$"
+    """Motif complet d'un champ facultatif : vide, ou ``body`` entouré d'espaces ou tabulations éventuels.
+
+    Une seule répétition d'espaces possible à chaque endroit (``body`` ne commence ni ne finit par un espace) :
+    refus en temps linéaire, même pour une longue suite d'espaces."""
+    return rf"^[ \t]*(?:{body}[ \t]*)?$"

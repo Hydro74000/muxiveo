@@ -224,20 +224,16 @@ class MediaJobRequest(Model):
             validate_job_contract(job, path="job")
         except ContractError as exc:
             errors += exc.errors
-        from core.service.schemas.documents import job_schema_errors
+        found: list[tuple[str, str]] = [(path, message) for path, _sep, message in
+                                        (error.partition(": ") if ": " in error else ("job", "", error)
+                                         for error in errors)]
+        if not found:
+            # Écarts du schéma publiés seulement en l'absence d'erreur du contrat (même cause, déjà expliquée),
+            # un par cause (le plus précis).
+            from core.service.schemas.documents import job_schema_errors
 
-        found = [tuple(error.split(": ", 1)) if ": " in error else ("job", error) for error in errors]
-        contract = [path for path, _message in found]
-        seen = list(contract)
-        # Écarts du schéma les plus profonds d'abord : un message générique (forme non reconnue, champ requis
-        # alternatif) déjà expliqué par une erreur au même endroit ou plus bas est omis, comme un écart situé
-        # sous une erreur du contrat (même cause).
-        for path, message in sorted(job_schema_errors(job), key=lambda error: -len(error[0])):
-            if any(_within(other, path) for other in seen) or any(_within(path, other) for other in contract):
-                continue
-            found.append((path, message))
-            seen.append(path)
-        return found + encode_block_errors(job.get("encode"), "job.encode")  # type: ignore[return-value]
+            found = job_schema_errors(job)
+        return found + encode_block_errors(job.get("encode"), "job.encode")
 
     @classmethod
     def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
@@ -260,11 +256,6 @@ class MediaJobRequest(Model):
         if isinstance(values.get("job"), dict):
             values = {**values, "job": resolve_document_paths(values["job"], base_dir)}
         return values
-
-
-def _within(path: str, ancestor: str) -> bool:
-    """``path`` est ``ancestor`` ou un champ qu'il contient."""
-    return path == ancestor or path.startswith((f"{ancestor}.", f"{ancestor}["))
 
 
 @dataclass(frozen=True)
