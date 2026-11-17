@@ -140,6 +140,50 @@ def test_interrupt_guard_never_takes_the_token_lock_in_the_signal_handler():
         assert token.cancelled
 
 
+@pytest.mark.skipif(os.name == "nt", reason="signal POSIX envoyé au processus")
+def test_interrupt_guard_survives_a_burst_of_signals_while_the_token_is_locked():
+    """Rafale de Ctrl+C, verrou du jeton tenu : demandes regroupées, le gestionnaire n'écrit jamais en bloquant."""
+    with interrupt_guard(CancelToken()) as token:
+        with token._lock:
+            for _ in range(70_000):  # au-delà de la capacité d'un tube (64 Kio sous Linux)
+                os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.05)
+        deadline = time.monotonic() + 5
+        while not token.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert token.cancelled
+
+
+@pytest.mark.skipif(os.name == "nt", reason="signal POSIX envoyé au processus")
+def test_nested_guards_are_all_cancelled_before_the_inner_one_closes():
+    """Le lot est annulé avant que le job rende la main (sinon le job suivant pouvait démarrer)."""
+    class _SlowToken(CancelToken):
+        def cancel(self) -> None:
+            time.sleep(0.2)  # annulation du lot lente à démarrer
+            super().cancel()
+
+    with interrupt_guard(_SlowToken()) as batch:
+        with interrupt_guard(CancelToken()) as job:
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.01)
+        assert job.cancelled and batch.cancelled
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descripteurs listés par /proc")
+def test_interrupt_guards_leak_neither_descriptors_nor_threads():
+    previous = signal.getsignal(signal.SIGINT)
+    with interrupt_guard(CancelToken()):
+        pass
+    descriptors = len(list(Path("/proc/self/fd").iterdir()))
+    threads = threading.active_count()
+    for _ in range(50):
+        with interrupt_guard(CancelToken()):
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.002)
+    assert len(list(Path("/proc/self/fd").iterdir())) == descriptors and threading.active_count() == threads
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
 # --- run_remux : fin, échec, annulation, course annulation / publication -----------------
 
 class _Logger:
