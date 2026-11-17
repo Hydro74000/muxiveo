@@ -169,6 +169,36 @@ def test_nested_guards_are_all_cancelled_before_the_inner_one_closes():
         assert job.cancelled and batch.cancelled
 
 
+@pytest.mark.skipif(os.name == "nt", reason="signal POSIX envoyé au processus")
+def test_a_second_ctrl_c_while_a_guard_closes_stays_deferred():
+    """Sortie de garde : demandes traitées avant de rétablir le gestionnaire d'origine (un second Ctrl+C pendant
+    l'attente ne lève pas KeyboardInterrupt au milieu de l'annulation)."""
+    finished = threading.Event()
+    with interrupt_guard(CancelToken()) as token:
+        token.on_cancel(lambda: (time.sleep(0.3), finished.set()))
+        os.kill(os.getpid(), signal.SIGINT)
+        threading.Timer(0.1, lambda: os.kill(os.getpid(), signal.SIGINT)).start()  # pendant l'attente de sortie
+    assert finished.is_set() and token.cancelled
+
+
+def test_every_signal_keeps_its_own_targets():
+    """Deux signaux avant que la veille ne lise : le jeton intérieur retiré entre les deux reste annulé."""
+    from cli.interrupts import _Interrupts
+
+    state = _Interrupts()
+    wake = state.write_fd
+    _paused_read, state.write_fd = os.pipe()  # veille suspendue : les octets vont ailleurs
+    outer, inner = CancelToken(), CancelToken()
+    state.tokens = [outer, inner]
+    state.handler(signal.SIGINT, None)
+    state.tokens.remove(inner)
+    state.signalled = False
+    state.handler(signal.SIGINT, None)
+    os.write(wake, b"c")  # reprise de la veille
+    state.settle()
+    assert outer.cancelled and inner.cancelled
+
+
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descripteurs listés par /proc")
 def test_interrupt_guards_leak_neither_descriptors_nor_threads():
     previous = signal.getsignal(signal.SIGINT)

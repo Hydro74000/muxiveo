@@ -18,25 +18,25 @@ class _Interrupts:
     """Gestionnaire SIGINT unique du processus et son fil de veille, partagés par les gardes imbriquées.
 
     Le gestionnaire ne prend aucun verrou et n'écrit au plus qu'un octet en attente (demandes regroupées) : il
-    interrompt le fil principal n'importe où — y compris pendant ``CancelToken.on_cancel`` ou pendant une
-    garde qui s'ouvre ou se ferme — sans jamais pouvoir se bloquer. La veille annule, dans l'ordre, chaque jeton
-    gardé au moment du signal (job puis lot) ; une garde ne se referme qu'une fois toute demande reçue traitée,
-    pour elle comme pour les gardes englobantes.
+    interrompt le fil principal n'importe où — y compris pendant ``CancelToken.on_cancel`` — sans jamais pouvoir
+    se bloquer. Chaque signal ajoute les jetons gardés à ce moment (job puis lot) à une file que la veille annule
+    dans l'ordre, le plus intérieur d'abord ; aucune demande n'en écrase une autre. Une garde ne se referme
+    qu'une fois toute demande reçue traitée, pour elle comme pour les gardes englobantes.
     """
 
     def __init__(self) -> None:
         self.tokens: list[CancelToken] = []  # gardes ouvertes (fil principal seulement)
         self.previous: Any = None
-        self.targets: tuple[CancelToken, ...] = ()
-        self.requested = 0  # écrit par le gestionnaire seul
-        self.handled = 0  # écrit par la veille seule
+        self.queue: list[CancelToken] = []  # ajouts du gestionnaire seul (atomiques), lus par la veille
+        self.requested = 0  # signaux reçus (gestionnaire seul)
+        self.handled = 0  # signaux traités (veille seule)
         self.signalled = False  # un octet attend la veille
         self.done = threading.Condition()
-        self.read_fd, self.write_fd = os.pipe()  # gardés jusqu'à la fin du processus (aucune fuite par garde)
+        self.read_fd, self.write_fd = os.pipe()  # pour toute la vie du processus (aucune ressource par garde)
         threading.Thread(target=self._watch, name="interrupt-guard", daemon=True).start()
 
     def handler(self, signum: int, frame: Any) -> None:
-        self.targets = tuple(self.tokens)
+        self.queue.extend(reversed(self.tokens))  # le plus intérieur d'abord
         self.requested += 1
         if not self.signalled:  # au plus un octet en attente : l'écriture ne bloque jamais
             self.signalled = True
@@ -48,8 +48,15 @@ class _Interrupts:
     def _watch(self) -> None:
         while os.read(self.read_fd, 1):
             self.signalled = False
-            requested, targets = self.requested, self.targets
-            for token in reversed(targets):  # le plus intérieur d'abord : job, puis lot
+            requested = self.requested  # lu avant la file : les jetons de ces signaux y sont déjà
+            count = len(self.queue)  # ajouts ultérieurs laissés pour le tour suivant
+            batch = self.queue[:count]
+            del self.queue[:count]  # opérations atomiques : un ajout concurrent reste en fin de file
+            seen: set[int] = set()
+            for token in batch:
+                if id(token) in seen:
+                    continue
+                seen.add(id(token))
                 try:
                     token.cancel()
                 except Exception:  # noqa: BLE001 - rappel d'annulation en échec : signalé, les autres continuent
@@ -64,7 +71,8 @@ class _Interrupts:
             self.done.wait_for(lambda: self.handled >= self.requested)
 
 
-_STATE: _Interrupts | None = None
+#: Créé à l'import (fil principal) : aucune initialisation qu'un Ctrl+C pourrait interrompre à moitié.
+_STATE = _Interrupts()
 
 
 @contextmanager
@@ -76,25 +84,21 @@ def interrupt_guard(cancel: CancelToken) -> Iterator[CancelToken]:
     un Ctrl+C pendant un job d'un lot annule le job puis le lot, avant la sortie de la garde du job. Hors du
     thread principal (seul autorisé à poser un gestionnaire), le bloc s'exécute sans garde.
     """
-    global _STATE
     if threading.current_thread() is not threading.main_thread():
         yield cancel
         return
-    if _STATE is None:
-        _STATE = _Interrupts()
     state = _STATE
     outermost = not state.tokens
-    state.tokens.append(cancel)
     try:
+        state.tokens.append(cancel)
         if outermost:
             state.previous = signal.signal(signal.SIGINT, state.handler)
         yield cancel
     finally:
-        try:
-            # Restauré seulement s'il a été posé (un Ctrl+C avant la pose interrompt avec le gestionnaire
-            # d'origine) ; une fois posé, plus aucune interruption ne peut survenir dans cette garde.
-            if outermost and signal.getsignal(signal.SIGINT) == state.handler:
-                signal.signal(signal.SIGINT, state.previous)
-        finally:
+        # Jeton retiré puis demandes reçues traitées, gestionnaire encore en place (un second Ctrl+C reste noté) ;
+        # gestionnaire d'origine rétabli en dernier, seulement s'il a été remplacé.
+        if cancel in state.tokens:
             state.tokens.remove(cancel)
-            state.settle()
+        state.settle()
+        if outermost and signal.getsignal(signal.SIGINT) == state.handler:
+            signal.signal(signal.SIGINT, state.previous)
