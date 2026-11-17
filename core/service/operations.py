@@ -213,6 +213,10 @@ def call(
     try:
         spec = catalog.get(name)
         authorize(spec, ctx.allow_privileged)  # avant toute lecture de la requête
+        if ctx.api and not allow_relative and effective is not None and (
+                "\0" in str(effective) or not effective.is_absolute()):
+            # Requête de l'API : dossier de référence absolu, sans caractère nul (jamais le dossier courant).
+            raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu (sans caractère nul).")
         if ctx.api:
             payload = api_payload(payload)  # sémantique JSON du schéma publié (1.0 entier, nombres représentables)
         request, warnings = spec.request.parse(payload, strict=strict, base_dir=None if allow_relative else effective,

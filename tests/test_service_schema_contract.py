@@ -365,3 +365,13 @@ def test_profile_names_count_in_the_budget_and_dot_profiles_never_crash(tmp_path
     for value in (".", "./", "./."):
         assert resolve_profile_reference(value, Path("/")) == value
         assert _profile_path_candidates(value, None, base_dir=Path("/")) is not None
+
+
+def test_relative_preset_names_are_counted_before_resolution(monkeypatch):
+    """Nom de preset relatif compté d'avance : un fichier apparu avant la résolution ne dépasse pas le budget."""
+    from core.json_documents import MAX_RESOLVED_PATH_CHARS, encode_path_errors, resolution_budget
+
+    with resolution_budget() as budget:
+        budget.used = MAX_RESOLVED_PATH_CHARS - 10
+        problems = encode_path_errors({"preset": "README"}, Path("/" + "b" * 100))
+    assert problems and "chemins relatifs trop nombreux" in problems[0][1]

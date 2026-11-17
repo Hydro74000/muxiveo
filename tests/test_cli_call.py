@@ -125,3 +125,36 @@ def test_operations_handler_direct_call(capsys):
     args = build_parser().parse_args(["operations", "--json"])
     assert cmd_operations(args, cast(Any, SimpleNamespace()), Logger()) == EXIT_OK
     assert json.loads(capsys.readouterr().out)["api_version"] == 1
+
+
+@pytest.mark.parametrize("argv, revealed", [(["call", "system.version"], False),
+                                            (["serve"], False),
+                                            (["call", "system.version", "--allow-privileged"], True)])
+def test_an_unreadable_config_ini_at_startup_is_not_shown_to_api_entries(monkeypatch, capsys, argv, revealed):
+    """config.ini illisible au lancement : `call` / `serve` sans autorisation n'en recopient pas les lignes."""
+    import configparser
+
+    from cli import main as cli_main
+
+    def broken() -> Any:
+        configparser.ConfigParser().read_string("[metadata]\ntmdb_bearer_token = a\nSENTINEL_PRIVATE_TOKEN\n")
+
+    monkeypatch.setattr(cli_main, "AppConfig", broken)
+    assert cli_main.main(argv) != 0
+    captured = capsys.readouterr()
+    assert ("SENTINEL" in captured.out + captured.err) is revealed
+    if not revealed:
+        assert "ligne 3" in captured.err
+
+
+def test_api_calls_refuse_an_unusable_reference_folder(tmp_path):
+    from pathlib import Path
+
+    from core.service import ApiError, ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+
+    for base in (Path("/media\0bad"), Path("relatif")):
+        with pytest.raises(ApiError) as caught:
+            call(CATALOG, "media.inspect", {"inputs": ["a.mkv"]}, ExecutionContext.create(SimpleNamespace(), ListSink()),
+                 base_dir=base)
+        assert caught.value.code.value == "invalid_request"

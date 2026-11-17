@@ -63,18 +63,14 @@ def _app_config(ctx: ExecutionContext) -> Any:
     sans les lignes fautives (qui peuvent contenir un secret coupé), avec leurs seuls numéros."""
     import configparser
 
-    from core.config import AppConfig
+    from core.config import AppConfig, config_syntax_message
 
     try:
         return ctx.port("app_config", AppConfig)()
     except configparser.Error as exc:
         if _reveal(ctx):
             raise
-        lineno = getattr(exc, "lineno", None)
-        lines = sorted({line for line, _text in getattr(exc, "errors", ())} | (
-            {lineno} if isinstance(lineno, int) else set()))
-        where = f" (ligne {', '.join(map(str, lines))})" if lines else ""
-        raise JobError(f"config.ini illisible : {type(exc).__name__}{where}.", EXIT_VALIDATION) from None
+        raise JobError(config_syntax_message(exc), EXIT_VALIDATION) from None
 
 
 def describe(config: Any, name: str, spec: dict[str, Any], *, reveal: bool = True) -> dict[str, Any]:

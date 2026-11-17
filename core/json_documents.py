@@ -223,7 +223,20 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
 
     if isinstance(job, dict):
         _map_document_paths(job, check, preset_base=base_dir)
+        errors += _preset_name_errors(job.get("encode"), base_dir, budget, f"{prefix}.encode.preset" if prefix
+                                      else "encode.preset")
     return errors
+
+
+def _preset_name_errors(encode: Any, base_dir: Path | None, budget: ResolutionBudget,
+                        slot: str) -> list[tuple[str, str]]:
+    """Preset désigné par un nom relatif : compté d'avance dans le budget (un fichier de ce nom apparu avant la
+    résolution serait développé sans avoir été compté)."""
+    preset = encode.get("preset") if isinstance(encode, dict) else None
+    if (not isinstance(preset, str) or not preset or base_dir is None or path_kind(preset) != "relative"
+            or preset_is_file(preset, base_dir)):  # fichier : déjà compté par le contrôle des chemins
+        return []
+    return [] if budget.spend(base_dir, preset) else [(slot, ResolutionBudget.MESSAGE)]
 
 
 def encode_path_errors(encode: Any, base_dir: Path | None, *, prefix: str = "encode") -> list[tuple[str, str]]:
@@ -239,6 +252,7 @@ def encode_path_errors(encode: Any, base_dir: Path | None, *, prefix: str = "enc
 
     if isinstance(encode, dict):
         _map_encode_paths(encode, check, preset_base=base_dir)
+        errors += _preset_name_errors(encode, base_dir, budget, f"{prefix}.preset")
     return errors
 
 

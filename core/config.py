@@ -524,6 +524,16 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     _write_ini_text(path, lines)
 
 
+def config_syntax_message(exc: configparser.Error) -> str:
+    """Erreur de syntaxe de config.ini rendue sans ses lignes (qui peuvent contenir un secret coupé) : nature et
+    numéros de ligne seulement."""
+    lineno = getattr(exc, "lineno", None)
+    lines = sorted({line for line, _text in getattr(exc, "errors", ())} | ({lineno} if isinstance(lineno, int)
+                                                                         else set()))
+    where = f" (ligne {', '.join(map(str, lines))})" if lines else ""
+    return f"config.ini illisible : {type(exc).__name__}{where}."
+
+
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     """Écrit des valeurs explicites dans config.ini en conservant les commentaires."""
     text = _INI_PATH.read_text(encoding="utf-8-sig") if _INI_PATH.exists() else ""

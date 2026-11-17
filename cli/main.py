@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import sys
 
 from PySide6.QtCore import QCoreApplication
@@ -66,6 +67,16 @@ def main(argv: list[str] | None = None) -> int:
         return render_api_error(logger, exc)
     except KeyboardInterrupt:
         logger.emit("error", "Interrompu.")
+        return EXIT_WORKFLOW
+    except configparser.Error as exc:
+        # Entrées de l'API sans autorisation (call, serve) : config.ini illisible rendu sans ses lignes, qui
+        # peuvent contenir un secret ; commandes historiques et autorisées : diagnostic d'origine.
+        if args.command in ("call", "serve") and not getattr(args, "allow_privileged", False):
+            from core.config import config_syntax_message
+
+            logger.emit("error", config_syntax_message(exc))
+        else:
+            logger.emit("error", str(exc), exception=repr(exc))
         return EXIT_WORKFLOW
     except Exception as exc:
         logger.emit("error", str(exc), exception=repr(exc))
