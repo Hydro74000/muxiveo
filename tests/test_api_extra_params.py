@@ -50,6 +50,10 @@ _NVENCC_HELP = """Usage: NVEncC.exe [Options] -i <input file> -o <output file>
    --dhdr10-info <string>       apply dynamic HDR10+ metadata from json file.
    --dhdr10-info copy           Copy dynamic HDR10+ metadata from input file.
    --(no-)aq                    enable spatial adaptive quantization
+   --weightp                    enable weighted prediction
+   --audio-copy [<int>[,...]]   copy audio track
+   --sub-copy [<int>[,...]]     copy subtitle track
+-c,--codec <string>             set encode codec
    --audio-source <string>      input extra audio file.
    --vpp-pad <int>,<int>,<int>,<int>
    --vpp-tweak [<param1>=<value>][,<param2>=<value>]...
@@ -75,8 +79,11 @@ def _canned_help(monkeypatch):
     policy._codec_context_and_masked.cache_clear()
 
 
-def _errors(codec: str, params: str) -> list[str]:
-    return policy.api_extra_params_errors(codec, params, ffmpeg="ffmpeg", nvencc="nvencc")
+def _errors(codec: str, params: str, **settings) -> list[str]:
+    from core.workflows.encode.models import VideoEncodeSettings
+
+    video = VideoEncodeSettings(codec=codec, extra_params=params, **settings)
+    return policy.api_extra_params_errors(video, ffmpeg="ffmpeg", nvencc="nvencc")
 
 
 def test_ffmpeg_encoder_and_codec_options_pass_masked_ones_do_not():
@@ -86,6 +93,7 @@ def test_ffmpeg_encoder_and_codec_options_pass_masked_ones_do_not():
     assert _errors("libx264", "-rc-lookahead 40 -x264-params aq-mode=3 -passlogfile /tmp/p -g 48 -b:v 5M") == []
     assert _errors("libx264", "-flags -cgop -q:v 24 -qscale:v 24 -pix_fmt yuv420p") == []  # valeur « -cgop »
     assert _errors("libx264", "-enc_time_base 1:25 -rc_override 0,9,20") == []
+    assert _errors("libx264", "-pass 1 -bits_per_raw_sample 8") == []
 
 
 @pytest.mark.parametrize("params", ["-i http://h/x", "-progress tcp://h:1", "-f matroska", "-stats x.mkv",
@@ -93,10 +101,20 @@ def test_ffmpeg_encoder_and_codec_options_pass_masked_ones_do_not():
                                     "-g 48 sortie2.mkv extra", "-dump_separator -g /absent/extra.mkv", "-g",
                                     "-dump_separator -c:v -g /absent/extra.mkv",
                                     "-dump_separator -codec:v -g /absent/extra.mkv",
-                                    "-dump_separator -vcodec -g /absent/extra.mkv",
-                                    "-dump_separator -vf -g /absent/extra.mkv"])
+                                    "-dump_separator -vcodec -g /absent/extra.mkv", "-vf scale=2:2"])
 def test_anything_outside_the_encoder_is_refused(params):
     assert _errors("libx264", params)
+
+
+def test_the_command_is_checked_as_transmitted():
+    """Tri du constructeur : ``-vf`` retiré quand le workflow filtre (décalage refusé), sinon simple valeur."""
+    import dataclasses
+
+    from core.workflows.encode.models import VideoFilterSettings
+
+    filtered = dataclasses.replace(VideoFilterSettings(), yadif_enabled=True)
+    assert _errors("libx264", "-dump_separator -vf -g /absent/extra.mkv", filters=filtered)
+    assert _errors("libx264", "-dump_separator -vf -g 48") == []  # transmis : dump_separator=-vf, g=48
 
 
 def test_param_string_codecs_and_copy_are_left_to_the_syntax_check():
@@ -114,7 +132,8 @@ def test_unknown_encoder_refuses_free_parameters():
                                     "--input-option a:b", "--inconnue 1", "--audio-file 1?/tmp/x.mka",
                                     "--audio-filter volume=0", "-f matroska", "--output-format=matroska", "-m a:b",
                                     "--mux-option=a:b", "--avsw", "--lookahead 32 sortie.mkv", "--perf-monitor",
-                                    "--perf-monitor=all", "--dhdr10-info x.json"])
+                                    "--perf-monitor=all", "--dhdr10-info x.json", "--codec --perf-monitor",
+                                    "-c --perf-monitor", "--codec --log l.txt", "--audio-copy", "--sub-copy"])
 def test_nvencc_inputs_logs_sources_filters_and_loaders_are_refused(params):
     assert _errors("nvencc_hevc", params)
 
@@ -123,6 +142,8 @@ def test_nvencc_encoder_options_pass():
     assert _errors("nvencc_hevc", "--lookahead 32 --aq") == []
     assert _errors("nvencc_hevc", "--no-aq --lookahead=16") == []
     assert _errors("nvencc_hevc", "--cu-min 8 --alpha-bitrate-ratio 10 --vmaf threads=2 --vmaf") == []
+    assert _errors("nvencc_hevc", "--weightp force --lookahead 8") == []
+    assert _errors("nvencc_hevc", "--weightp --lookahead 8") == []
 
 
 def test_effective_settings_are_checked_whatever_their_origin():
@@ -130,8 +151,10 @@ def test_effective_settings_are_checked_whatever_their_origin():
     from core.jobs.encode import _refuse_foreign_extra_params
     from core.service.errors import ApiError, ErrorCode
 
-    config = SimpleNamespace(video_tracks=[SimpleNamespace(codec="libx264", extra_params="-g 48"),
-                                           SimpleNamespace(codec="libx264", extra_params="-i http://h/x")])
+    from core.workflows.encode.models import VideoEncodeSettings
+
+    config = SimpleNamespace(video_tracks=[VideoEncodeSettings(codec="libx264", extra_params="-g 48"),
+                                           VideoEncodeSettings(codec="libx264", extra_params="-i http://h/x")])
     with pytest.raises(ApiError) as caught:
         _refuse_foreign_extra_params(config, ffmpeg="ffmpeg", nvencc="nvencc")
     assert caught.value.code is ErrorCode.VALIDATION and len(caught.value.details) == 1

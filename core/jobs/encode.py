@@ -585,11 +585,11 @@ def _refuse_foreign_extra_params(encode_config: Any, *, ffmpeg: str, nvencc: str
     """Requête de l'API : paramètres libres effectifs (presets compris) limités aux options de l'encodeur."""
     from core.service.errors import ApiError, ErrorCode, ErrorDetail
     from core.workflows.encode.domain.api_extra_params import api_extra_params_errors
+    from core.workflows.encode.models import VideoEncodeSettings
     from core.workflows.encode.planning.track_settings import routing_video_tracks
 
-    errors = [error for video in routing_video_tracks(encode_config)
-              for error in api_extra_params_errors(getattr(video, "codec", ""), getattr(video, "extra_params", ""),
-                                                   ffmpeg=ffmpeg, nvencc=nvencc)]
+    errors = [error for video in routing_video_tracks(encode_config) if isinstance(video, VideoEncodeSettings)
+              for error in api_extra_params_errors(video, ffmpeg=ffmpeg, nvencc=nvencc)]
     if errors:
         raise ApiError(ErrorCode.VALIDATION, "Paramètres libres refusés :\n" + "\n".join(f"- {e}" for e in errors),
                        details=[ErrorDetail("", error) for error in errors])

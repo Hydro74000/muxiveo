@@ -24,15 +24,8 @@ import shutil
 from dataclasses import dataclass
 
 from core.workflows.encode.catalog import NVENCC_VIDEO_CODECS
-from core.workflows.encode.domain.codecs import (
-    _FFMPEG_FILTER_FLAGS,
-    _PARAM_STRING_CODECS,
-    FFMPEG_WORKFLOW_OWNED_FLAGS,
-    classify_user_args,
-    ffmpeg_option_name,
-    is_option_token,
-)
-from core.workflows.encode.runtime.nvencc import split_nvencc_extra_params
+from core.workflows.encode.domain.codecs import _PARAM_STRING_CODECS, ffmpeg_option_name, is_option_token
+from core.workflows.encode.models import VideoEncodeSettings
 
 _HELP_TIMEOUT_S = 20.0
 _AVOPTION_RE = re.compile(r"^  -(\S+)\s+<[^>]*>\s+([A-Z.]{11})\s")
@@ -57,7 +50,10 @@ NVENCC_API_FORBIDDEN_SUFFIXES = ("-source",)
 #: constante (``-q`` / ``-qscale``), format de pixels, images clés forcées, surcharges de débit, base de temps de
 #: l'encodeur, matrices de quantification.
 FFMPEG_STANDARD_ENCODE_OPTIONS = frozenset({"q", "pix_fmt", "force_key_frames", "rc_override", "enc_time_base",
-                                            "intra_matrix", "inter_matrix", "chroma_intra_matrix"})
+                                            "intra_matrix", "inter_matrix", "chroma_intra_matrix", "pass",
+                                            "bits_per_raw_sample"})
+#: Arités que l'aide de NVEncC n'annonce pas (``--weightp`` accepte « force » en argument facultatif).
+_NVENCC_ARGUMENT_OVERRIDES = {"--weightp": "optional"}
 
 
 @functools.lru_cache(maxsize=64)
@@ -147,6 +143,7 @@ def nvencc_options(nvencc: str) -> dict[str, NvenccOption]:
             arguments.append(words.pop(0))
         argument = _nvencc_argument(arguments)
         canonical = next((name for name in names if name.startswith("--")), names[0] if names else "")
+        argument = _NVENCC_ARGUMENT_OVERRIDES.get(canonical, argument)
         for name in names:
             negatable = _NVENCC_NEGATABLE_RE.fullmatch(name)
             if negatable is not None:
@@ -167,40 +164,41 @@ def _nvencc_forbidden(name: str) -> bool:
             or name.endswith(NVENCC_API_FORBIDDEN_SUFFIXES))
 
 
-def api_extra_params_errors(codec: str, extra_params: str, *, ffmpeg: str, nvencc: str) -> list[str]:
-    """Écarts des paramètres libres d'une requête de l'API à la liste blanche de l'encodeur (vide : acceptés)."""
-    raw = (extra_params or "").strip()
-    codec = str(codec or "").strip().lower()
+def api_extra_params_errors(video: VideoEncodeSettings, *, ffmpeg: str, nvencc: str) -> list[str]:
+    """Écarts des paramètres libres d'une piste (requête de l'API) à la liste blanche de son encodeur (vide :
+    acceptés). Contrôle de la commande telle que le constructeur la transmettra : son propre tri
+    (``ffmpeg_extra_params_report`` / ``nvencc_extra_params_report``) fixe les options retirées — réservées au
+    workflow, refusées — et celles conservées, lues ensuite selon leur nombre d'arguments."""
+    from core.workflows.encode.domain.codecs import ffmpeg_extra_params_report
+    from core.workflows.encode.runtime.nvencc import nvencc_extra_params_report
+
+    raw = (video.extra_params or "").strip()
+    codec = str(video.codec or "").strip().lower()
     if not raw or codec == "copy" or codec in _PARAM_STRING_CODECS:
         return []
     try:
-        tokens = shlex.split(raw)
+        shlex.split(raw)
     except ValueError as exc:
         return [f"paramètres libres illisibles ({exc})"]
-    # Options réservées au workflow (codec, mapping, filtres ; entrées / sorties de NVEncC) : refusées, et contrôle
-    # du reste tel que le constructeur le transmettra — un retrait décalerait sinon la lecture des valeurs
-    # (``-dump_separator -c:v -g sortie.mkv`` deviendrait une sortie).
-    if codec in NVENCC_VIDEO_CODECS:
-        kept_nvencc, removed_nvencc = split_nvencc_extra_params(raw)
-        return _reserved(codec, removed_nvencc) + _nvencc_errors(codec, kept_nvencc, nvencc_options(nvencc))
-    report = classify_user_args(tokens, [], option_name=ffmpeg_option_name,
-                                removed_names=FFMPEG_WORKFLOW_OWNED_FLAGS | _FFMPEG_FILTER_FLAGS)
-    reserved = _reserved(codec, list(report.removed))
-    tokens = list(report.kept)
+    nvencc_codec = codec in NVENCC_VIDEO_CODECS
+    report = nvencc_extra_params_report(video) if nvencc_codec else ffmpeg_extra_params_report(video)
+    errors = _reserved(codec, list(report.removed))
+    kept = list(report.kept)
+    if nvencc_codec:
+        return errors + _nvencc_errors(codec, kept, nvencc_options(nvencc))
     allowed = ffmpeg_encoder_option_names(ffmpeg, codec)
     if not allowed:
-        return [f"options de l'encodeur {codec} illisibles : paramètres libres refusés"]
-    errors: list[str] = reserved
+        return errors + [f"options de l'encodeur {codec} illisibles : paramètres libres refusés"]
     index = 0
-    while index < len(tokens):  # options d'encodeur FFmpeg : chacune consomme sa valeur, même « -cgop »
-        token = tokens[index]
+    while index < len(kept):  # options d'encodeur FFmpeg : chacune consomme sa valeur, même « -cgop »
+        token = kept[index]
         if not is_option_token(token):
             errors.append(f"« {token} » n'est précédé d'aucune option")
             index += 1
             continue
         if token.startswith("-/") or ffmpeg_option_name(token) not in allowed:
             errors.append(f"option « {token} » hors des options de l'encodeur {codec}")
-        if index + 1 >= len(tokens):
+        if index + 1 >= len(kept):
             errors.append(f"option « {token} » sans valeur")
         index += 2
     return errors
