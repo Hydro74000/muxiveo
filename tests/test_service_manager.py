@@ -62,8 +62,28 @@ def _cross(request: _Request, ctx: ExecutionContext) -> _Result:
     return _Result(name=request.name)
 
 
+_SIDE: dict[str, threading.Event] = {}
+
+
+@operation("t.side", request=_Request, result=_Result, summary="Livraison par un autre fil")
+def _side(request: _Request, ctx: ExecutionContext) -> _Result:
+    """Un fil auxiliaire livre une progression (destination bloquée) : la fin du job est livrée par lui, plus tard."""
+    threading.Thread(target=lambda: ctx.events.progress(pct=10.0), daemon=True).start()
+    assert _SIDE["blocked"].wait(5)
+    return _Result(name=request.name)
+
+
+@operation("t.watch", request=_Request, result=_Result, summary="Annulation journalisée")
+def _watch(request: _Request, ctx: ExecutionContext) -> _Result:
+    ctx.cancel.on_cancel(lambda: ctx.events.log("info", f"annulation {request.name}"))
+    _STARTED.append(request.name)
+    ctx.cancel.wait(10)
+    ctx.cancel.raise_if_cancelled()
+    return _Result(name=request.name)
+
+
 _CATALOG = Catalog([_make("t.analysis"), _make("t.job", queue="job"), _make("t.exclusive", queue="exclusive"),
-                    _make("t.secret", queue="exclusive", privileged=True), _update, _cross])
+                    _make("t.secret", queue="exclusive", privileged=True), _update, _cross, _side, _watch])
 
 
 @pytest.fixture(autouse=True)
@@ -382,4 +402,127 @@ def test_cancellations_beyond_the_history_keep_every_job_known_until_published(m
     manager.shutdown(timeout=5)
     cancelled = {e.job for e in sink.events if e.type is EventType.STATE and e.data["state"] == "cancelled"}
     assert set(queued) <= cancelled and len(manager.list()) == 3
+    assert not any(thread.name.startswith("job-t.") and thread.is_alive() for thread in threading.enumerate())
+
+
+def test_a_job_stays_known_until_its_end_is_delivered_by_another_thread(monkeypatch):
+    monkeypatch.setattr(manager_module, "HISTORY_LIMIT", 1)
+    _SIDE["blocked"], _SIDE["open"] = threading.Event(), threading.Event()
+    holder: dict[str, JobManager] = {}
+    failures: list[BaseException] = []
+
+    class _Slow(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is EventType.PROGRESS and event.data.get("pct") == 10.0:
+                _SIDE["blocked"].set()
+                _SIDE["open"].wait(10)
+            try:
+                holder["m"].get(event.job)
+            except ApiError as exc:
+                failures.append(exc)
+
+    manager, sink = _manager(_Slow(), max_analyses=2)
+    holder["m"] = manager
+    slow = manager.submit("t.side", {"name": "s"})
+    _until(lambda: _SIDE["blocked"].is_set())
+    _release("other")
+    other = manager.submit("t.analysis", {"name": "other"})
+    _until(lambda: any(e.job == other and e.data.get("state") == "succeeded" for e in sink.events))
+    stopping = threading.Thread(target=manager.shutdown, kwargs={"timeout": 10})
+    stopping.start()
+    time.sleep(0.2)
+    assert stopping.is_alive()  # l'arrêt attend la livraison de la fin du job lent
+    _SIDE["open"].set()
+    stopping.join(10)
+    assert not stopping.is_alive() and failures == []
+    assert [e.data.get("state") for e in sink.events if e.job == slow and e.type is EventType.STATE][-1] == \
+        "succeeded"
+
+
+def test_a_failed_queued_announcement_leaves_no_reservation():
+    failed = {"done": False}
+
+    class _OnceFailing(ListSink):
+        def emit(self, event: Event) -> None:
+            if event.data.get("state") == "queued" and not failed["done"]:
+                failed["done"] = True
+                raise RuntimeError("destination indisponible")
+            super().emit(event)
+
+    manager, _ = _manager(_OnceFailing(), max_analyses=2)
+    exclusive = manager.submit("t.exclusive", {"name": "x"})  # identifiant rendu : le job existe, en échec
+    assert _state(manager, exclusive) is JobState.FAILED
+    _release("a")
+    _done(manager, manager.submit("t.analysis", {"name": "a"}))  # aucune barrière laissée par l'exclusive
+    manager.shutdown(timeout=5)
+    assert "x" not in _STARTED
+
+
+def test_emitter_keeps_delivering_after_a_failing_sink():
+    from core.service.events import Emitter
+
+    gate, entered = threading.Event(), threading.Event()
+    delivered: list[int] = []
+
+    class _Failing:
+        def emit(self, event: Event) -> None:
+            if event.seq == 1:
+                entered.set()
+                gate.wait(5)
+                raise RuntimeError("destination en échec")
+            delivered.append(event.seq)
+
+    emitter = Emitter(_Failing())
+    first = threading.Thread(target=lambda: pytest.raises(RuntimeError, emitter.log, "info", "un"))
+    first.start()
+    assert entered.wait(5)
+    emitter.state(JobState.SUCCEEDED)  # mis en file : livré par le premier fil malgré son échec
+    gate.set()
+    first.join(5)
+    assert delivered == [2]
+
+
+def test_shutdown_waits_for_an_announcement_in_progress():
+    admitted, resume = threading.Event(), threading.Event()
+    manager, sink = _manager()
+    holder: dict[str, str] = {}
+
+    def announce(job: str) -> None:
+        holder["job"] = job
+        admitted.set()
+        resume.wait(10)
+
+    submitting = threading.Thread(target=lambda: manager.submit("t.analysis", {"name": "late"}, on_admitted=announce))
+    submitting.start()
+    assert admitted.wait(5)
+    stopping = threading.Thread(target=manager.shutdown, kwargs={"timeout": 10})
+    stopping.start()
+    time.sleep(0.2)
+    assert stopping.is_alive()
+    resume.set()
+    submitting.join(5)
+    stopping.join(10)
+    assert not stopping.is_alive() and _state(manager, holder["job"]) is JobState.CANCELLED
+    assert [e.type for e in sink.events if e.job == holder["job"]] == [EventType.STATE, EventType.ERROR,
+                                                                        EventType.STATE]
+    assert "late" not in _STARTED
+
+
+def test_shutdown_cancels_every_job_despite_a_failing_cancel_callback():
+    failed = {"done": False}
+
+    class _FailingLog(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is EventType.LOG and not failed["done"]:
+                failed["done"] = True
+                raise RuntimeError("journal indisponible")
+
+    manager, _ = _manager(_FailingLog(), max_analyses=2)
+    jobs = [manager.submit("t.watch", {"name": name}) for name in ("a", "b")]
+    _until(lambda: sorted(_STARTED) == ["a", "b"])
+    with pytest.raises(RuntimeError, match="journal"):
+        manager.shutdown(timeout=10)
+    assert all(_state(manager, job) is JobState.CANCELLED for job in jobs)
     assert not any(thread.name.startswith("job-t.") and thread.is_alive() for thread in threading.enumerate())

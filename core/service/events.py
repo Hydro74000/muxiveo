@@ -133,18 +133,19 @@ class Emitter:
             if self._delivering:
                 return
             self._delivering = True
+        failure: BaseException | None = None
         while True:
             with self._lock:
                 if not self._queue:
                     self._delivering = False
-                    return
+                    break
                 event = self._queue.popleft()
             try:
                 self.sink.emit(event)
-            except BaseException:  # destination en échec : les suivants restent en file (prochaine émission)
-                with self._lock:
-                    self._delivering = False
-                raise
+            except BaseException as exc:  # noqa: BLE001 - destination en échec : les suivants sont quand même livrés
+                failure = failure or exc
+        if failure is not None:
+            raise failure  # première erreur, une fois la file vidée
 
     def child(self, job: str | None = None) -> Emitter:
         """Émetteur d'un job enfant (même destination, ``parent`` = ce job)."""

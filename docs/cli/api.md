@@ -270,9 +270,12 @@ s'exécutent dans leurs fils (certaines tâches y livrent leur fin), comme dans 
 La destination est appelée depuis le fil qui publie (jamais sous un verrou du cœur) : elle peut rappeler
 `get`, `list` ou `cancel` (y compris d'un autre job). Les événements d'un job lui parviennent dans l'ordre
 de `seq`, un seul à la fois ; un événement publié pendant la livraison d'un autre événement du même job
-est livré juste après, par le fil qui livre. Un job reçu terminé (`state` final, `result`, `error`) est
-déjà terminé pour `get`, résultat ou erreur compris ; il reste consultable au moins jusqu'à la
-publication de ses événements terminaux.
+est livré juste après, par le fil qui livre ; une destination en échec n'interrompt pas la livraison des
+suivants. Un job reçu terminé (`state` final, `result`, `error`) est déjà terminé pour `get`, résultat ou
+erreur compris ; il reste consultable au moins jusqu'à la livraison de son état final. Une destination en
+échec pendant l'annonce (`queued`) laisse le job connu, en échec. `shutdown(timeout)` attend la fin des
+jobs, des annonces en cours et la livraison de chaque état final ; un rappel d'annulation en échec
+n'empêche pas l'annulation des autres jobs (première erreur relancée à la fin).
 
 ## Modèle de sécurité
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import builtins
 import collections
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ QUEUE_LIMIT = 256
 HISTORY_LIMIT = 100
 
 _TERMINAL = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED, JobState.PARTIAL}
+_TERMINAL_VALUES = {state.value for state in _TERMINAL}
 
 
 def _now() -> str:
@@ -71,7 +73,8 @@ class JobInfo(Model):
 class _Job:
     """Job suivi par le gestionnaire (attributs modifiés sous son verrou)."""
 
-    def __init__(self, spec: OperationSpec, request: Model, base_dir: Path | None, sink: EventSink) -> None:
+    def __init__(self, spec: OperationSpec, request: Model, base_dir: Path | None, sink: EventSink,
+                 on_published: Callable[[_Job], None]) -> None:
         self.spec = spec
         self.request = request
         self.base_dir = base_dir
@@ -85,10 +88,10 @@ class _Job:
         self.progress: dict[str, Any] | None = None
         #: Annoncé au client (``on_admitted`` puis ``queued``) : seul un job annoncé peut démarrer.
         self.announced = False
-        #: Événements terminaux publiés : le job peut quitter l'historique (jamais avant).
+        #: État final livré à la destination : le job peut quitter l'historique (jamais avant).
         self.published = False
         self.thread: threading.Thread | None = None
-        self.emitter = Emitter(_ProgressTap(self, sink))
+        self.emitter = Emitter(_ProgressTap(self, sink, on_published))
 
     @property
     def id(self) -> str:
@@ -107,16 +110,23 @@ class _Job:
 
 
 class _ProgressTap:
-    """Destination du job : retient sa dernière progression puis transmet à la destination du gestionnaire."""
+    """Destination du job : retient sa dernière progression, transmet à la destination du gestionnaire et
+    signale la livraison effective de l'état final (quel que soit le fil qui livre)."""
 
-    def __init__(self, job: _Job, sink: EventSink) -> None:
+    def __init__(self, job: _Job, sink: EventSink, on_published: Callable[[_Job], None]) -> None:
         self._job = job
         self._sink = sink
+        self._on_published = on_published
 
     def emit(self, event: Event) -> None:
-        if event.type is EventType.PROGRESS and event.job == self._job.id:
+        own = event.job == self._job.id
+        if event.type is EventType.PROGRESS and own:
             self._job.progress = dict(event.data)  # affectation atomique : lue par get() / list()
-        self._sink.emit(event)
+        try:
+            self._sink.emit(event)
+        finally:  # destination en échec comprise : rien d'autre ne sera livré pour ce job
+            if own and event.type is EventType.STATE and event.data.get("state") in _TERMINAL_VALUES:
+                self._on_published(self._job)
 
 
 class JobManager:
@@ -133,6 +143,8 @@ class JobManager:
         self._limits = {"job": max_jobs, "analysis": max_analyses}
         self._allow_privileged = allow_privileged
         self._lock = threading.Lock()
+        #: Changement d'état attendu par ``shutdown`` (annonce terminée, état final livré, fil terminé).
+        self._changed = threading.Condition(self._lock)
         self._jobs: dict[str, _Job] = {}
         self._pending: collections.deque[_Job] = collections.deque()
         self._running: dict[str, int] = {"job": 0, "analysis": 0, "exclusive": 0}
@@ -162,7 +174,7 @@ class JobManager:
         if base_dir is not None and not Path(base_dir).is_absolute():
             raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu.")
         request, _warnings = spec.request.parse(api_payload(payload), strict=True, base_dir=base_dir)
-        job = _Job(spec, request, base_dir, self._sink)
+        job = _Job(spec, request, base_dir, self._sink, self._published)
         with self._lock:  # place réservée dès l'admission : file bornée et ordre FIFO tenus pendant l'annonce
             if self._closed or self._draining:
                 raise ApiError(ErrorCode.BUSY, "Gestionnaire en cours d'arrêt : aucune nouvelle soumission.")
@@ -178,17 +190,27 @@ class JobManager:
                 self._jobs.pop(job.id, None)
                 self._pending.remove(job)
                 self._schedule()  # il retenait peut-être les jobs suivants
+                self._changed.notify_all()
             raise
-        job.emitter.state(JobState.QUEUED, operation=spec.name)
+        # Identifiant communiqué : le job existe ; toute fin de l'annonce le retire de la file ou l'y laisse annoncé.
+        failure: ApiError | None = None
+        try:
+            job.emitter.state(JobState.QUEUED, operation=spec.name)
+        except BaseException as exc:  # noqa: BLE001 - destination en échec : job enregistré en échec
+            failure = ApiError.from_exception(exc)
         with self._lock:
             job.announced = True
-            refused = job.cancel.cancelled or self._closed or self._draining
-            if refused:  # annulé pendant l'annonce, ou arrêt / drainage (qui laissent les jobs non annoncés)
+            refused = failure is not None or job.cancel.cancelled or self._closed or self._draining
+            if refused:  # échec ou annulation pendant l'annonce, arrêt / drainage (qui laissent les annonces)
                 self._pending.remove(job)
-                self._finish_locked(job, ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
+                self._finish_locked(job, failure or ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
             self._schedule()
+            self._changed.notify_all()
         if refused:
-            self._publish_cancelled([job])
+            try:
+                self._publish_terminal([job])
+            except BaseException:  # noqa: BLE001 - identifiant déjà communiqué : la fin reste consultable (get)
+                pass
         return job.id
 
     # -- Suivi ------------------------------------------------------------------------------------------------
@@ -214,25 +236,43 @@ class JobManager:
                 self._finish_locked(target, ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
                 self._schedule()  # une exclusive retirée ne fait plus barrière
         if queued:
-            self._publish_cancelled([target])
+            self._publish_terminal([target])
         else:
             target.cancel.cancel()  # en cours, ou en cours d'annonce (submit() le retire) : hors du verrou
         return True
 
     def shutdown(self, timeout: float | None = None) -> None:
-        """Refuse les soumissions, annule la file et les jobs en cours, attend la fin de chaque ``execute()``."""
+        """Refuse les soumissions, annule la file et les jobs en cours, puis attend (au plus ``timeout`` s) la fin
+        de chaque ``execute()``, des annonces en cours et la livraison de chaque état final. Une destination ou un
+        rappel d'annulation en échec n'interrompt rien : première erreur relancée à la fin."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
             self._closed = True
             dropped = self._drop_pending_locked("Arrêt du gestionnaire.")
             running = [job for job in self._jobs.values() if job.state is JobState.RUNNING]
             threads = list(self._threads)
+        failure: BaseException | None = None
         try:
-            self._publish_cancelled(dropped)
-        finally:  # destination en échec : les jobs en cours sont quand même annulés et attendus
-            for job in running:
-                job.cancel.cancel()
-            for thread in threads:
-                thread.join(timeout)
+            self._publish_terminal(dropped)
+        except BaseException as exc:  # noqa: BLE001 - relancée après le nettoyage
+            failure = exc
+        for job in running:
+            try:
+                job.cancel.cancel()  # rappels synchrones, qui peuvent émettre
+            except BaseException as exc:  # noqa: BLE001 - relancée après le nettoyage
+                failure = failure or exc
+        for thread in threads:
+            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        with self._changed:
+            self._changed.wait_for(self._settled_locked,
+                                   None if deadline is None else max(0.0, deadline - time.monotonic()))
+        if failure is not None:
+            raise failure
+
+    def _settled_locked(self) -> bool:
+        """Plus rien en file ni en cours, chaque fin livrée (annonces interrompues par l'arrêt comprises)."""
+        return not self._pending and not self._threads and all(
+            job.published for job in self._jobs.values() if job.finished_at is not None)
 
     # -- Ordonnancement (sous le verrou) ----------------------------------------------------------------------
 
@@ -287,6 +327,13 @@ class JobManager:
             self._finish_locked(job, ApiError(ErrorCode.CANCELLED, reason))
         return dropped
 
+    def _published(self, job: _Job) -> None:
+        """État final du job livré à la destination : il peut quitter l'historique."""
+        with self._lock:
+            job.published = True
+            self._trim_locked()
+            self._changed.notify_all()
+
     def _trim_locked(self) -> None:
         """Historique borné : les plus anciens jobs terminés dont les événements sont publiés le quittent."""
         excess = len(self._finished) - HISTORY_LIMIT
@@ -304,21 +351,17 @@ class JobManager:
 
     # -- Exécution --------------------------------------------------------------------------------------------
 
-    def _publish_cancelled(self, jobs: Sequence[_Job]) -> None:
-        """Événements terminaux de jobs retirés de la file (hors verrou), puis historique borné ; une destination
-        en échec n'empêche ni la publication des autres ni le nettoyage (première erreur relancée)."""
+    def _publish_terminal(self, jobs: Sequence[_Job]) -> None:
+        """Événements terminaux (erreur puis état) de jobs terminés sans exécution, hors verrou ; une destination
+        en échec n'empêche pas la publication des autres (première erreur relancée)."""
         failure: BaseException | None = None
         for job in jobs:
             assert job.error is not None
             try:
                 job.emitter.error(job.error.to_dict())
-                job.emitter.state(JobState.CANCELLED, operation=job.spec.name)
+                job.emitter.state(error_state(job.error), operation=job.spec.name)
             except BaseException as exc:  # noqa: BLE001 - relancée après les autres
                 failure = failure or exc
-        with self._lock:
-            for job in jobs:
-                job.published = True
-            self._trim_locked()
         if failure is not None:
             raise failure
 
@@ -328,6 +371,7 @@ class JobManager:
         finally:
             with self._lock:
                 self._threads.discard(threading.current_thread())
+                self._changed.notify_all()
 
     def _run_job(self, job: _Job, config: Any) -> None:
         dropped: builtins.list[_Job] = []
@@ -362,12 +406,10 @@ class JobManager:
         with self._lock:
             if renewed is not None:
                 self._config = renewed
-            job.published = True
             self._running[job.spec.queue] -= 1
             self._schedule()
-            self._trim_locked()
         try:
-            self._publish_cancelled(dropped)
+            self._publish_terminal(dropped)
         except BaseException:  # noqa: BLE001 - destination en échec : les jobs restent enregistrés annulés
             pass
 
