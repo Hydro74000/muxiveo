@@ -9,6 +9,7 @@ Authentification TMDB via :
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import mimetypes
 import os
@@ -495,6 +496,10 @@ class TmdbFetcher:
             raise TmdbError(f"Impossible de contacter TMDB : {exc.reason}") from exc
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, OSError, zlib.error) as exc:
             raise TmdbError(f"Réponse TMDB invalide : {exc}") from exc
+        except (ValueError, http.client.HTTPException) as exc:
+            # En-tête ou adresse refusés avant l'envoi (token contenant un saut de ligne…) : le message d'origine
+            # recopie la valeur, donc le secret ; jamais publié.
+            raise TmdbError("Requête TMDB refusée : clé ou token TMDB contenant des caractères non admis.") from exc
 
     def _decode_http_body(self, body: bytes, content_encoding: str) -> bytes:
         """

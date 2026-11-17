@@ -410,3 +410,19 @@ def test_media_details_subtitle_and_container_title_formats():
 def test_release_year_is_the_last_plausible_year_after_a_title(name, title, year):
     from core.media_info_fetcher import clean_filename_for_search, extract_year_from_filename
     assert (clean_filename_for_search(Path(name)), extract_year_from_filename(Path(name))) == (title, year)
+
+
+def test_a_malformed_token_never_appears_in_api_errors():
+    """Token contenant un saut de ligne : en-tête refusé avant tout envoi, message public sans la valeur."""
+    from types import SimpleNamespace
+
+    from core.service import ApiError, ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+
+    secret = "SENTINEL_PRIVATE_TOKEN"
+    config = SimpleNamespace(tmdb_api_key="", tmdb_bearer_token=f"{secret}\nsecond-line")
+    sink = ListSink()
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "tmdb.search", {"query": "Inception"}, ExecutionContext.create(config, sink))
+    assert secret not in caught.value.message and "caractères non admis" in caught.value.message
+    assert all(secret not in json.dumps(event.to_dict()) for event in sink.events)
