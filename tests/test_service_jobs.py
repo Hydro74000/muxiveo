@@ -186,17 +186,25 @@ def test_every_signal_keeps_its_own_targets():
     from cli.interrupts import _Interrupts
 
     state = _Interrupts()
-    wake = state.write_fd
-    _paused_read, state.write_fd = os.pipe()  # veille suspendue : les octets vont ailleurs
-    outer, inner = CancelToken(), CancelToken()
-    state.tokens = [outer, inner]
-    state.handler(signal.SIGINT, None)
-    state.tokens.remove(inner)
-    state.signalled = False
-    state.handler(signal.SIGINT, None)
-    os.write(wake, b"c")  # reprise de la veille
-    state.settle()
-    assert outer.cancelled and inner.cancelled
+    wake, read = state.write_fd, state.read_fd
+    paused_read, state.write_fd = os.pipe()  # veille suspendue : les octets vont ailleurs
+    try:
+        outer, inner = CancelToken(), CancelToken()
+        state.tokens = [outer, inner]
+        state.handler(signal.SIGINT, None)
+        state.tokens.remove(inner)
+        state.signalled = False
+        state.handler(signal.SIGINT, None)
+        os.write(wake, b"c")  # reprise de la veille
+        with state.done:
+            assert state.done.wait_for(lambda: state.handled >= state.requested, timeout=5)
+        assert outer.cancelled and inner.cancelled
+    finally:  # fin de fichier : la veille de cette instance s'arrête ; tous les descripteurs fermés
+        for descriptor in (wake, paused_read, state.write_fd):
+            os.close(descriptor)
+        state.thread.join(5)
+        assert not state.thread.is_alive()
+        os.close(read)
 
 
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descripteurs listés par /proc")

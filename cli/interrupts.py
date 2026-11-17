@@ -33,7 +33,8 @@ class _Interrupts:
         self.signalled = False  # un octet attend la veille
         self.done = threading.Condition()
         self.read_fd, self.write_fd = os.pipe()  # pour toute la vie du processus (aucune ressource par garde)
-        threading.Thread(target=self._watch, name="interrupt-guard", daemon=True).start()
+        self.thread = threading.Thread(target=self._watch, name="interrupt-guard", daemon=True)
+        self.thread.start()
 
     def handler(self, signum: int, frame: Any) -> None:
         self.queue.extend(reversed(self.tokens))  # le plus intérieur d'abord
