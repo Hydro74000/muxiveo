@@ -7,6 +7,7 @@ par job ; ``parent`` relie un job enfant (épisode, élément de lot) à son par
 
 from __future__ import annotations
 
+import collections
 import itertools
 import threading
 import uuid
@@ -117,13 +118,33 @@ class Emitter:
         self.job = job or new_job_id()
         self.parent = parent
         self._seq = itertools.count(1)
-        # Numérotation et livraison sous le même verrou : un job publié par plusieurs fils livre ses
-        # événements dans l'ordre de ``seq``. Réentrant : une destination peut republier sur ce job.
-        self._lock = threading.RLock()
+        # Événements numérotés et mis en file sous le verrou, livrés hors verrou par un seul fil à la fois :
+        # ordre de ``seq`` garanti, aucune attente d'un autre fil (une destination peut republier sur ce job
+        # ou faire émettre un autre job, ex. annulation croisée, sans interblocage).
+        self._lock = threading.Lock()
+        self._queue: collections.deque[Event] = collections.deque()
+        self._delivering = False
 
     def emit(self, event_type: EventType, /, **data: Any) -> None:
+        """Publie un événement ; livré aussitôt, sauf livraison en cours de ce job (dans ce fil ou un autre) :
+        l'événement suit alors les précédents, livré par le fil qui livre."""
         with self._lock:
-            self.sink.emit(Event(event_type, self.job, next(self._seq), _now(), data, self.parent))
+            self._queue.append(Event(event_type, self.job, next(self._seq), _now(), data, self.parent))
+            if self._delivering:
+                return
+            self._delivering = True
+        while True:
+            with self._lock:
+                if not self._queue:
+                    self._delivering = False
+                    return
+                event = self._queue.popleft()
+            try:
+                self.sink.emit(event)
+            except BaseException:  # destination en échec : les suivants restent en file (prochaine émission)
+                with self._lock:
+                    self._delivering = False
+                raise
 
     def child(self, job: str | None = None) -> Emitter:
         """Émetteur d'un job enfant (même destination, ``parent`` = ce job)."""

@@ -263,6 +263,13 @@ remplaçables : TMDB, réseau), `base_dir`, `allow_privileged`. Une application 
 (`QCoreApplication`) ; avec `JobManager`, sa boucle tourne dans le fil principal pendant que les jobs
 s'exécutent dans leurs fils (certaines tâches y livrent leur fin), comme dans `serve`.
 
+La destination est appelée depuis le fil qui publie (jamais sous un verrou du cœur) : elle peut rappeler
+`get`, `list` ou `cancel` (y compris d'un autre job). Les événements d'un job lui parviennent dans l'ordre
+de `seq`, un seul à la fois ; un événement publié pendant la livraison d'un autre événement du même job
+est livré juste après, par le fil qui livre. Un job reçu terminé (`state` final, `result`, `error`) est
+déjà terminé pour `get`, résultat ou erreur compris ; il reste consultable au moins jusqu'à la
+publication de ses événements terminaux.
+
 ## Modèle de sécurité
 
 Le cœur ne confine pas les chemins : une requête lit et écrit partout où l'OS le permet au processus

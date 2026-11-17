@@ -51,8 +51,19 @@ def _update(request: _Request, _ctx: ExecutionContext) -> _Result:
     return _Result(name=request.name, restart_required=True)
 
 
+@operation("t.cross", request=_Request, result=_Result, summary="Annulation croisée")
+def _cross(request: _Request, ctx: ExecutionContext) -> _Result:
+    ctx.cancel.on_cancel(lambda: ctx.events.log("info", "annulation reçue"))  # rappel qui émet
+    _STARTED.append(request.name)
+    _GATES.setdefault("cross", threading.Event()).wait(5)
+    ctx.events.progress(pct=50.0)  # la destination annule l'autre job pendant cette livraison
+    ctx.cancel.wait(5)
+    ctx.cancel.raise_if_cancelled()
+    return _Result(name=request.name)
+
+
 _CATALOG = Catalog([_make("t.analysis"), _make("t.job", queue="job"), _make("t.exclusive", queue="exclusive"),
-                    _make("t.secret", queue="exclusive", privileged=True), _update])
+                    _make("t.secret", queue="exclusive", privileged=True), _update, _cross])
 
 
 @pytest.fixture(autouse=True)
@@ -264,3 +275,111 @@ def test_shutdown_cancels_and_waits():
 def test_job_states_are_published():
     schema = manager_module.JobInfo.json_schema()
     assert schema["properties"]["state"]["enum"] == [state.value for state in JobState]
+
+
+def test_cross_cancellations_from_sinks_never_deadlock():
+    jobs: list[str] = []
+    meeting = threading.Barrier(2)
+    holder: dict[str, JobManager] = {}
+
+    class _Crossing(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is EventType.PROGRESS:  # les deux livraisons en cours en même temps
+                try:
+                    meeting.wait(5)
+                except threading.BrokenBarrierError:
+                    pass
+                holder["m"].cancel(jobs[1 - jobs.index(event.job)])
+
+    manager, sink = _manager(_Crossing(), max_analyses=2)
+    holder["m"] = manager
+    jobs.extend(manager.submit("t.cross", {"name": name}) for name in ("a", "b"))
+    _until(lambda: sorted(_STARTED) == ["a", "b"])
+    _release("cross")
+    _until(lambda: all(_state(manager, job) is JobState.CANCELLED for job in jobs), timeout=10)
+    _until(lambda: sum(e.type is EventType.LOG for e in sink.events) == 2)
+    manager.shutdown(timeout=5)
+
+
+def test_a_submission_during_an_announcement_respects_the_barrier():
+    manager, _ = _manager(max_analyses=2)
+    inner: dict[str, str] = {}
+    exclusive = manager.submit("t.exclusive", {"name": "x"}, on_admitted=lambda _job: inner.setdefault(
+        "after", manager.submit("t.analysis", {"name": "after"})))
+    _until(lambda: _STARTED == ["x"])
+    assert _state(manager, inner["after"]) is JobState.QUEUED
+    _release("x")
+    _until(lambda: _STARTED == ["x", "after"])
+    _release("after")
+    _done(manager, exclusive, inner["after"])
+    manager.shutdown()
+
+
+def test_queue_limit_counts_jobs_being_announced(monkeypatch):
+    monkeypatch.setattr(manager_module, "QUEUE_LIMIT", 1)
+    manager, _ = _manager(max_jobs=1)
+    manager.submit("t.job", {"name": "a"})
+    _until(lambda: _STARTED == ["a"])
+    codes: list[ErrorCode] = []
+
+    def nested(_job: str) -> None:
+        with pytest.raises(ApiError) as caught:
+            manager.submit("t.job", {"name": "c"})
+        codes.append(caught.value.code)
+
+    manager.submit("t.job", {"name": "b"}, on_admitted=nested)
+    assert codes == [ErrorCode.BUSY] and len(manager.list()) == 2
+    manager.shutdown()
+
+
+def test_terminal_events_follow_the_recorded_end():
+    seen: list[tuple[str, str | None, bool]] = []
+    holder: dict[str, JobManager] = {}
+
+    class _Watching(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type in (EventType.RESULT, EventType.ERROR) or (
+                    event.type is EventType.STATE and event.data["state"] in ("succeeded", "cancelled")):
+                info = holder["m"].get(event.job)
+                seen.append((info.state.value, event.data.get("state"), info.result is not None or
+                             info.error is not None))
+
+    manager, _ = _manager(_Watching(), max_jobs=1)
+    holder["m"] = manager
+    _release("ok")
+    _done(manager, manager.submit("t.job", {"name": "ok"}))
+    cancelled = manager.submit("t.job", {"name": "stop"})
+    _until(lambda: "stop" in _STARTED)
+    manager.cancel(cancelled)
+    _done(manager, cancelled)
+    _until(lambda: len(seen) == 4)
+    assert seen == [("succeeded", None, True), ("succeeded", "succeeded", True), ("cancelled", None, True),
+                    ("cancelled", "cancelled", True)]
+    manager.shutdown()
+
+
+@pytest.mark.parametrize("ending", ["shutdown", "drain"])
+def test_cancellations_beyond_the_history_keep_every_job_known_until_published(monkeypatch, ending):
+    monkeypatch.setattr(manager_module, "HISTORY_LIMIT", 3)
+    holder: dict[str, JobManager] = {}
+
+    class _Asking(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            holder["m"].get(event.job)  # « Job inconnu » si le job a quitté l'historique avant ses événements
+
+    manager, sink = _manager(_Asking(), max_jobs=1)
+    holder["m"] = manager
+    first = manager.submit("t.update" if ending == "drain" else "t.job", {"name": "r"})
+    queued = [manager.submit("t.job", {"name": f"q{index}"}) for index in range(6)]
+    if ending == "drain":  # la mise à jour quitte l'historique : suivie par ses événements
+        _until(lambda: any(e.job == first and e.data.get("state") == "succeeded" for e in sink.events))
+        _until(lambda: sum(e.type is EventType.STATE and e.data["state"] == "cancelled" for e in sink.events) == 6)
+    else:
+        _until(lambda: _STARTED == ["r"])
+    manager.shutdown(timeout=5)
+    cancelled = {e.job for e in sink.events if e.type is EventType.STATE and e.data["state"] == "cancelled"}
+    assert set(queued) <= cancelled and len(manager.list()) == 3
+    assert not any(thread.name.startswith("job-t.") and thread.is_alive() for thread in threading.enumerate())

@@ -12,9 +12,10 @@ Aucun événement n'est émis sous le verrou du gestionnaire : une destination p
 
 from __future__ import annotations
 
+import builtins
 import collections
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ from core.service.context import CancelToken, ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.events import Emitter, Event, EventSink, EventType, JobState
 from core.service.models import Model, api_payload, field
-from core.service.operations import Catalog, OperationSpec, authorize, execute, result_state
+from core.service.operations import Catalog, OperationSpec, authorize, error_state, execute, result_state
 
 #: Jobs en attente au-delà desquels une soumission est refusée (``busy``).
 QUEUE_LIMIT = 256
@@ -84,6 +85,8 @@ class _Job:
         self.progress: dict[str, Any] | None = None
         #: Annoncé au client (``on_admitted`` puis ``queued``) : seul un job annoncé peut démarrer.
         self.announced = False
+        #: Événements terminaux publiés : le job peut quitter l'historique (jamais avant).
+        self.published = False
         self.thread: threading.Thread | None = None
         self.emitter = Emitter(_ProgressTap(self, sink))
 
@@ -134,6 +137,8 @@ class JobManager:
         self._pending: collections.deque[_Job] = collections.deque()
         self._running: dict[str, int] = {"job": 0, "analysis": 0, "exclusive": 0}
         self._finished: collections.deque[str] = collections.deque()
+        #: Fils des jobs démarrés, retirés à leur toute fin (événements publiés, file éventuelle annulée).
+        self._threads: set[threading.Thread] = set()
         self._closed = False
         self._draining = False
 
@@ -158,30 +163,32 @@ class JobManager:
             raise ApiError(ErrorCode.INVALID_REQUEST, "base_dir : chemin absolu attendu.")
         request, _warnings = spec.request.parse(api_payload(payload), strict=True, base_dir=base_dir)
         job = _Job(spec, request, base_dir, self._sink)
-        with self._lock:
+        with self._lock:  # place réservée dès l'admission : file bornée et ordre FIFO tenus pendant l'annonce
             if self._closed or self._draining:
                 raise ApiError(ErrorCode.BUSY, "Gestionnaire en cours d'arrêt : aucune nouvelle soumission.")
             if len(self._pending) >= QUEUE_LIMIT:
                 raise ApiError(ErrorCode.BUSY, f"File pleine ({QUEUE_LIMIT} jobs en attente).")
             self._jobs[job.id] = job
+            self._pending.append(job)
         try:
             if on_admitted is not None:
                 on_admitted(job.id)
         except BaseException:
             with self._lock:  # identifiant jamais annoncé : le job n'a pas existé
                 self._jobs.pop(job.id, None)
+                self._pending.remove(job)
+                self._schedule()  # il retenait peut-être les jobs suivants
             raise
         job.emitter.state(JobState.QUEUED, operation=spec.name)
         with self._lock:
             job.announced = True
             refused = job.cancel.cancelled or self._closed or self._draining
-            if refused:
+            if refused:  # annulé pendant l'annonce, ou arrêt / drainage (qui laissent les jobs non annoncés)
+                self._pending.remove(job)
                 self._finish_locked(job, ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
-            else:
-                self._pending.append(job)
-                self._schedule()
+            self._schedule()
         if refused:
-            self._announce_cancelled(job)
+            self._publish_cancelled([job])
         return job.id
 
     # -- Suivi ------------------------------------------------------------------------------------------------
@@ -207,7 +214,7 @@ class JobManager:
                 self._finish_locked(target, ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
                 self._schedule()  # une exclusive retirée ne fait plus barrière
         if queued:
-            self._announce_cancelled(target)
+            self._publish_cancelled([target])
         else:
             target.cancel.cancel()  # en cours, ou en cours d'annonce (submit() le retire) : hors du verrou
         return True
@@ -216,18 +223,16 @@ class JobManager:
         """Refuse les soumissions, annule la file et les jobs en cours, attend la fin de chaque ``execute()``."""
         with self._lock:
             self._closed = True
-            dropped = list(self._pending)
-            self._pending.clear()
-            for job in dropped:
-                self._finish_locked(job, ApiError(ErrorCode.CANCELLED, "Arrêt du gestionnaire."))
+            dropped = self._drop_pending_locked("Arrêt du gestionnaire.")
             running = [job for job in self._jobs.values() if job.state is JobState.RUNNING]
-        for job in dropped:
-            self._announce_cancelled(job)
-        for job in running:
-            job.cancel.cancel()
-        for job in running:
-            if job.thread is not None:
-                job.thread.join(timeout)
+            threads = list(self._threads)
+        try:
+            self._publish_cancelled(dropped)
+        finally:  # destination en échec : les jobs en cours sont quand même annulés et attendus
+            for job in running:
+                job.cancel.cancel()
+            for thread in threads:
+                thread.join(timeout)
 
     # -- Ordonnancement (sous le verrou) ----------------------------------------------------------------------
 
@@ -242,14 +247,19 @@ class JobManager:
         barrière). Fils démarrés sous le verrou : un job en cours a toujours un fil à attendre."""
         if self._closed or self._draining or self._running["exclusive"]:
             return
+        held: set[str] = set()  # classes dont un job plus ancien attend (FIFO par classe)
         for job in list(self._pending):
             queue = job.spec.queue
             if queue == "exclusive":
-                if not any(self._running.values()):
+                if job.announced and not any(self._running.values()):
                     self._start_locked(job)
-                break  # rien de soumis après elle ne démarre avant elle
-            if self._running[queue] < self._limits[queue]:
+                break  # rien de soumis après elle ne démarre avant elle, même pendant son annonce
+            if queue in held:
+                continue
+            if job.announced and self._running[queue] < self._limits[queue]:
                 self._start_locked(job)
+            else:
+                held.add(queue)
 
     def _start_locked(self, job: _Job) -> None:
         self._pending.remove(job)
@@ -258,34 +268,91 @@ class JobManager:
         job.started_at = _now()
         job.thread = threading.Thread(target=self._run, args=(job, self._config), name=f"job-{job.spec.name}",
                                       daemon=True)
+        self._threads.add(job.thread)
         job.thread.start()
 
-    def _finish_locked(self, job: _Job, error: ApiError | None = None) -> None:
-        if error is not None:
-            job.error = error
-            job.state = JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED
+    def _finish_locked(self, job: _Job, error: ApiError | None = None, result: Model | None = None) -> None:
+        """Fin enregistrée (avant ses événements terminaux) ; le job reste connu jusqu'à leur publication."""
+        job.result = result
+        job.error = error
+        job.state = result_state(result) if result is not None else error_state(error) if error else job.state
         job.finished_at = _now()
         self._finished.append(job.id)
-        while len(self._finished) > HISTORY_LIMIT:
-            self._jobs.pop(self._finished.popleft(), None)
+
+    def _drop_pending_locked(self, reason: str) -> Sequence[_Job]:
+        """Retire de la file les jobs annoncés (les autres finissent leur annonce puis sont refusés)."""
+        dropped = [job for job in self._pending if job.announced]
+        for job in dropped:
+            self._pending.remove(job)
+            self._finish_locked(job, ApiError(ErrorCode.CANCELLED, reason))
+        return dropped
+
+    def _trim_locked(self) -> None:
+        """Historique borné : les plus anciens jobs terminés dont les événements sont publiés le quittent."""
+        excess = len(self._finished) - HISTORY_LIMIT
+        if excess <= 0:
+            return
+        kept: collections.deque[str] = collections.deque()
+        for job_id in self._finished:
+            job = self._jobs.get(job_id)
+            if excess > 0 and (job is None or job.published):
+                self._jobs.pop(job_id, None)
+                excess -= 1
+            else:
+                kept.append(job_id)
+        self._finished = kept
 
     # -- Exécution --------------------------------------------------------------------------------------------
 
-    @staticmethod
-    def _announce_cancelled(job: _Job) -> None:
-        assert job.error is not None
-        job.emitter.error(job.error.to_dict())
-        job.emitter.state(JobState.CANCELLED, operation=job.spec.name)
+    def _publish_cancelled(self, jobs: Sequence[_Job]) -> None:
+        """Événements terminaux de jobs retirés de la file (hors verrou), puis historique borné ; une destination
+        en échec n'empêche ni la publication des autres ni le nettoyage (première erreur relancée)."""
+        failure: BaseException | None = None
+        for job in jobs:
+            assert job.error is not None
+            try:
+                job.emitter.error(job.error.to_dict())
+                job.emitter.state(JobState.CANCELLED, operation=job.spec.name)
+            except BaseException as exc:  # noqa: BLE001 - relancée après les autres
+                failure = failure or exc
+        with self._lock:
+            for job in jobs:
+                job.published = True
+            self._trim_locked()
+        if failure is not None:
+            raise failure
 
     def _run(self, job: _Job, config: Any) -> None:
-        ctx = ExecutionContext.create(config, self._sink, cancel=job.cancel, base_dir=job.base_dir,
-                                      allow_privileged=self._allow_privileged, emitter=job.emitter)
-        result: Model | None = None
-        error: ApiError | None = None
         try:
-            result = execute(job.spec, job.request, ctx)
-        except BaseException as exc:  # noqa: BLE001 - toute fin de job est enregistrée (événements déjà émis)
-            error = ApiError.from_exception(exc)
+            self._run_job(job, config)
+        finally:
+            with self._lock:
+                self._threads.discard(threading.current_thread())
+
+    def _run_job(self, job: _Job, config: Any) -> None:
+        dropped: builtins.list[_Job] = []
+
+        def record(result: Model | None, error: ApiError | None) -> None:
+            # Avant les événements terminaux : une destination qui consulte le job le voit terminé.
+            with self._lock:
+                self._finish_locked(job, error, result)
+                if result is not None and getattr(result, "restart_required", False):
+                    self._draining = True  # plus d'admission ; la file est annulée
+                    dropped.extend(self._drop_pending_locked("Mise à jour installée : arrêt."))
+
+        try:
+            ctx = ExecutionContext.create(config, self._sink, cancel=job.cancel, base_dir=job.base_dir,
+                                          allow_privileged=self._allow_privileged, emitter=job.emitter)
+            execute(job.spec, job.request, ctx, before_terminal=record)
+        except BaseException as exc:  # noqa: BLE001 - toute fin de job est enregistrée
+            if job.finished_at is None:  # échec avant l'exécution : fin enregistrée et publiée ici
+                error = ApiError.from_exception(exc)
+                record(None, error)
+                try:
+                    job.emitter.error(error.to_dict())
+                    job.emitter.state(error_state(error), operation=job.spec.name)
+                except BaseException:  # noqa: BLE001 - destination en échec : la fin reste enregistrée
+                    pass
         renewed = None
         if job.spec.queue == "exclusive":  # exclusivité encore tenue : rien d'autre ne tourne pendant la relecture
             try:
@@ -295,21 +362,14 @@ class JobManager:
         with self._lock:
             if renewed is not None:
                 self._config = renewed
-            job.result = result
-            if result is not None:
-                job.state = result_state(result)
-            self._finish_locked(job, error)
+            job.published = True
             self._running[job.spec.queue] -= 1
-            dropped: list[_Job] = []
-            if result is not None and getattr(result, "restart_required", False):
-                self._draining = True
-                dropped = list(self._pending)
-                self._pending.clear()
-                for item in dropped:
-                    self._finish_locked(item, ApiError(ErrorCode.CANCELLED, "Mise à jour installée : arrêt."))
             self._schedule()
-        for item in dropped:
-            self._announce_cancelled(item)
+            self._trim_locked()
+        try:
+            self._publish_cancelled(dropped)
+        except BaseException:  # noqa: BLE001 - destination en échec : les jobs restent enregistrés annulés
+            pass
 
 
 __all__ = ["HISTORY_LIMIT", "QUEUE_LIMIT", "JobInfo", "JobManager", "JobSummary"]

@@ -152,11 +152,14 @@ def authorize(spec: OperationSpec, allow_privileged: bool) -> None:
                                             "(autorisation explicite requise, ex. `call --allow-privileged`).")
 
 
-def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext) -> Model:
+def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext, *,
+            before_terminal: Callable[[Model | None, ApiError | None], None] | None = None) -> Model:
     """Exécute une requête déjà validée ; émet l'état, le résultat ou l'erreur.
 
     Les exceptions sont propagées telles quelles (l'appelant choisit leur rendu) après
-    l'émission d'un événement ``error`` portant le code public.
+    l'émission d'un événement ``error`` portant le code public. ``before_terminal(result, error)`` est
+    appelé avant les événements terminaux (un gestionnaire y enregistre la fin du job : une destination qui
+    le consulte en recevant ces événements la voit déjà).
     """
     ctx.events.state(JobState.RUNNING, operation=spec.name)
     try:
@@ -166,13 +169,21 @@ def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext) -> Model
             raise TypeError(f"{spec.name} : résultat {type(result).__name__} au lieu de {spec.result.__name__}")
     except BaseException as exc:
         error = ApiError.from_exception(exc)
+        if before_terminal is not None:
+            before_terminal(None, error)
         ctx.events.error(error.to_dict())
-        final = JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED
-        ctx.events.state(final, operation=spec.name)
+        ctx.events.state(error_state(error), operation=spec.name)
         raise
+    if before_terminal is not None:
+        before_terminal(result, None)
     ctx.events.result(result.to_dict())
     ctx.events.state(result_state(result), operation=spec.name)
     return result
+
+
+def error_state(error: ApiError) -> JobState:
+    """État final d'un job en erreur : annulé ou en échec."""
+    return JobState.CANCELLED if error.code is ErrorCode.CANCELLED else JobState.FAILED
 
 
 def call(
