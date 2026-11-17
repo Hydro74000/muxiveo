@@ -106,8 +106,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest pytest-qt
 
+      # FFmpeg et MediaInfo réels : worker serve en sous-processus (tests/integration/test_serve.py).
+      - name: Install FFmpeg and MediaInfo
+        shell: pwsh
+        run: choco install ffmpeg mediainfo-cli -y --no-progress
+
       # Qt réel (pas le bootstrap simulé) : verrous msvcrt, aperçus cmd.exe
-      # réellement exécutés, propriété des fichiers et chemins Windows.
+      # réellement exécutés, propriété des fichiers et chemins Windows,
+      # descripteurs du protocole et arrêt du worker serve.
       - name: Run Windows platform tests
         shell: pwsh
         env:
@@ -133,6 +139,8 @@ jobs:
           tests/test_python_requirements.py
           tests/test_qt_binding_sanity.py
           tests/test_shutdown_cleanup.py::test_sync_studio_cancels_audio_and_keeps_resources_until_worker_finishes
+          tests/test_cli_serve.py
+          tests/integration/test_serve.py
           --junitxml=pytest-windows.xml
 
       - name: Upload test report

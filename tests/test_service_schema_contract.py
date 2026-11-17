@@ -65,6 +65,8 @@ _ACCEPTED = [
     _job(chapters=False, tmdb=True),
     _job(fallback_profile={"name": "x", "_note": 1}, chapters={"source_index": 0, "_note": 1}),
     _job(sync_calibrations={"1": _CALIBRATION}, tracks=[{"selector": _AUDIO, "sync_calibration": _CALIBRATION}]),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "cadence_mismatch": {
+        "cadence_type": "pal_to_film_23976", "source_fps": 25, "target_fps": 23.976, "speed_factor": 0.959}}}),
     _job(track_order=[[0, 1], [0, 2, "e1"], {"selector": _AUDIO}, {"source": 0, "id": 3}]),
     _job(chapters={"add": [{"timestamp": "00:01:00", "name": "Début"}, {"timecode_s": 61.5}]}),
     _job(audio_variants=[{"selector": _AUDIO, "codec": "aac"}, {"source_selector": _AUDIO}]),
@@ -115,16 +117,20 @@ _REFUSED = [
     _job(sync_calibrations={"0": {"segments": []}}),
     _job(sync_calibrations={"0": {"segments": [{"start_ms": 1, "shift_ms": 0}]}}),
     _job(sync_calibrations={"0\n": _CALIBRATION}),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "samples": 1}}),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "cadence_mismatch": True}}),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "cadence_mismatch": {"cadence_type": "bogus"}}}),
+    _job(sync_calibrations={"0": {**_CALIBRATION, "cadence_mismatch": {"speed_factor": [1]}}}),
     _job(sync_calibrations={"0": {**_CALIBRATION, "confidence": 2}}),
 ]
 
 
 def _admitted(job: dict[str, Any]) -> bool:
     """Admission d'une requête de l'API (``call`` / ``serve`` : entiers JSON normalisés, lecture stricte)."""
-    from core.service.models import integral_numbers
+    from core.service.models import api_payload
 
     try:
-        CATALOG.get("media.validate").request.parse(integral_numbers({"job": copy.deepcopy(job)}))
+        CATALOG.get("media.validate").request.parse(api_payload({"job": copy.deepcopy(job)}))
     except ApiError:
         return False
     return True

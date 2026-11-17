@@ -81,7 +81,21 @@ def _qt(_request: _Request, ctx: ExecutionContext) -> _Result:
     return _Result()
 
 
-_CATALOG = Catalog([_echo, _block, _secret, _update, _qt])
+@dataclass(frozen=True)
+class _Broken(Model):
+    """Requête dont la lecture échoue de façon imprévue (défaut d'un validateur)."""
+
+    @classmethod
+    def parse(cls, *_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("défaut imprévu")
+
+
+@operation("t.broken", request=_Broken, result=_Result, summary="Lecture défaillante")
+def _broken(_request: _Broken, _ctx: ExecutionContext) -> _Result:
+    return _Result()
+
+
+_CATALOG = Catalog([_echo, _block, _secret, _update, _qt, _broken])
 
 
 class _Session:
@@ -270,6 +284,34 @@ def test_frame_limits_in_and_out(session):
     session.run(script)
 
 
+def _frame_size(message: dict[str, Any]) -> int:
+    return len(json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()) + 1
+
+
+def test_hostile_frames_never_stop_the_reader(session):
+    def script(client: _Session) -> None:
+        client.raw(b"[" * 100_000 + b"]" * 100_000 + b"\n")  # imbrication au-delà de la pile de Python
+        assert "imbriqué" in client.wait(lambda m: m.get("error", {}).get("code") == -32700)["error"]["message"]
+        client.raw(b'{"jsonrpc":"2.0","id":2001,"method":"server.info","params":{"x":NaN}}\n')
+        assert client.wait(lambda m: "NaN" in m.get("error", {}).get("message", ""))["error"]["code"] == -32700
+        client.raw(json.dumps({"jsonrpc": "2.0", "id": "i" * 257, "method": "server.info"}).encode() + b"\n")
+        assert client.wait(lambda m: "id :" in m.get("error", {}).get("message", ""))["id"] is None
+        deep: dict[str, Any] = {}
+        for _ in range(100):
+            deep = {"x": deep}
+        for request in ({"text": deep}, {"repeat": 10 ** 400}):
+            error = client.reply(client.send("job.submit", {"operation": "t.echo", "request": request}))["error"]
+            assert error.get("data", {}).get("code") == "invalid_request", error
+        broken = client.reply(client.send("job.submit", {"operation": "t.broken"}))["error"]
+        assert broken["code"] == -32603 and "défaut imprévu" in broken["message"]
+        # Erreur répétant une très longue valeur du client (message et data.message) : trame bornée.
+        long_name = client.reply(client.send("job.submit", {"operation": "o" * (MAX_FRAME // 2 - 200)}))
+        assert long_name["error"]["data"]["code"] == "unknown_operation" and _frame_size(long_name) <= MAX_FRAME
+        assert "result" in client.reply(client.send("server.info"))  # lecteur toujours actif
+
+    assert session.run(script) == 0
+
+
 def test_a_client_that_stops_reading_is_considered_gone(session):
     def script(client: _Session) -> None:
         for _ in range(4000):  # aucune lecture : la file d'écriture déborde
@@ -307,6 +349,7 @@ def test_end_of_input_cancels_jobs_while_the_qt_loop_still_runs(session):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="signal POSIX")
+@pytest.mark.skipif(os.name == "nt", reason="SIGTERM termine le processus sous Windows (TerminateProcess)")
 def test_sigterm_stops_the_worker(session):
     def script(client: _Session) -> None:
         client.reply(client.send("server.info"))

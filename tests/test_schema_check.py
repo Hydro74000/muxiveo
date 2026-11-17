@@ -23,6 +23,11 @@ _ROOT: dict = {}
     ({"0\n": 1}, {"propertyNames": {"pattern": "^[0-9]+$"}}),
     (0, {"exclusiveMinimum": 0}),
     (1, False),
+    (1, {"anyOf": [False]}),
+    (1, {"anyOf": []}),
+    (1, {"oneOf": [True, True]}),
+    (1, {"not": True}),
+    (1, {"not": {}}),
 ])
 def test_refused(value, schema):
     assert schema_errors(value, schema, _ROOT)
@@ -34,6 +39,9 @@ def test_refused(value, schema):
     ("0", {"pattern": "^[0-9]+$"}),
     ({"_x": 1}, {"properties": {}, "patternProperties": {"^[_$]": {}}, "additionalProperties": False}),
     (1, True),
+    (1, {"anyOf": [False, True]}),
+    (1, {"oneOf": [False, True]}),
+    (1, {"not": False}),
 ])
 def test_accepted(value, schema):
     assert not schema_errors(value, schema, _ROOT)

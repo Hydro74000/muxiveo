@@ -16,7 +16,9 @@ from __future__ import annotations
 import copy
 import dataclasses
 import functools
+import math
 import re
+import sys
 import types
 import typing
 from dataclasses import dataclass
@@ -367,15 +369,36 @@ def _model_schema(cls: type) -> dict[str, Any]:
     return schema
 
 
-def integral_numbers(value: Any) -> Any:
-    """Requête de l'API : entiers écrits en flottants (``1.0``) rendus entiers, comme les lit JSON Schema."""
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if isinstance(value, list):
-        return [integral_numbers(item) for item in value]
-    if isinstance(value, dict):
-        return {key: integral_numbers(item) for key, item in value.items()}
-    return value
+#: Imbrication maximale d'une requête de l'API (un job en compte une dizaine).
+MAX_API_DEPTH = 64
+
+
+def api_payload(value: Any) -> Any:
+    """Requête de l'API normalisée selon la sémantique JSON du schéma publié.
+
+    Entiers écrits en flottants (``1.0``) rendus entiers ; refus (``invalid_request``) d'une imbrication de plus de
+    :data:`MAX_API_DEPTH` niveaux et des nombres non représentables en double précision (RFC 8259 § 6), que les
+    traitements ne pourraient pas convertir.
+    """
+    def walk(item: Any, path: str, depth: int) -> Any:
+        if depth > MAX_API_DEPTH:
+            raise ApiError(ErrorCode.INVALID_REQUEST,
+                           f"{path or 'requête'} : imbrication de plus de {MAX_API_DEPTH} niveaux.")
+        if isinstance(item, bool):
+            return item
+        if (isinstance(item, int) and abs(item) > sys.float_info.max) or (
+                isinstance(item, float) and not math.isfinite(item)):
+            raise ApiError(ErrorCode.INVALID_REQUEST,
+                           f"{path or 'requête'} : nombre hors de la plage des flottants double précision.")
+        if isinstance(item, float) and item.is_integer():
+            return int(item)
+        if isinstance(item, list):
+            return [walk(child, f"{path}[{index}]", depth + 1) for index, child in enumerate(item)]
+        if isinstance(item, dict):
+            return {key: walk(child, f"{path}.{key}" if path else str(key), depth + 1) for key, child in item.items()}
+        return item
+
+    return walk(value, "", 0)
 
 
 def dataclass_schema(cls: type, *, exclude: tuple[str, ...] = (),

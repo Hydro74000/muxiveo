@@ -84,4 +84,29 @@ def test_call_command_refuses_without_allow_privileged(monkeypatch, capsys):
 
     assert run() == 3
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "forbidden" and ran == []
+    # Refus avant toute lecture : ni fichier absent signalé, ni stdin attendu.
+    assert run("--request", "/fichier/absent.json") == 3
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "forbidden"
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(read=lambda: pytest.fail("stdin lu avant le refus")))
+    assert run("--request", "-") == 3
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "forbidden"
     assert run("--allow-privileged") == 0 and ran == ["secret"]
+
+
+def test_refusal_precedes_the_reading_of_the_api_request(monkeypatch):
+    """Requête jamais parcourue pour une opération refusée ; refus d'imbrication et de nombre hors plage."""
+    monkeypatch.setattr("core.service.operations.api_payload", lambda _payload: pytest.fail("requête parcourue"))
+    deep: dict[str, Any] = {}
+    for _ in range(5000):
+        deep = {"x": deep}
+    with pytest.raises(ApiError) as caught:
+        call(_catalog([]), "test.secret", deep, ExecutionContext.create(SimpleNamespace(), ListSink()))
+    assert caught.value.code is ErrorCode.FORBIDDEN
+    monkeypatch.undo()
+    for payload in (deep, {"x": 10 ** 400}, {"x": float("inf")}):
+        sink = ListSink()
+        with pytest.raises(ApiError) as caught:
+            call(_catalog([]), "test.secret", payload,
+                 ExecutionContext.create(SimpleNamespace(), sink, allow_privileged=True))
+        assert caught.value.code is ErrorCode.INVALID_REQUEST
+        assert [e.type for e in sink.events] == [EventType.ERROR, EventType.STATE]

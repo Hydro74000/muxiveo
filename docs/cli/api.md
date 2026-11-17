@@ -62,7 +62,8 @@ profils (version, nature, nom, règles), ses autres clés conservées. Refusés 
 chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
 inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
-absent ou `null` non autorisé ; un entier peut s'écrire `1.0` (sémantique JSON). Ce qui dépend des sources et de la machine (pistes sélectionnées,
+absent ou `null` non autorisé ; un entier peut s'écrire `1.0` (sémantique JSON) ; nombres limités à la
+plage des flottants double précision (RFC 8259 § 6) et imbrication à 64 niveaux. Ce qui dépend des sources et de la machine (pistes sélectionnées,
 encodeurs et presets disponibles, géométrie Dolby Vision + NVENC) est refusé à la validation
 (`validation`), comme au lancement. Les documents des commandes historiques (`--config`, `--template`,
 `--batch`, exact-jobs) restent **tolérants** : clé inconnue signalée (`warning`, code `unknown_key`)
@@ -190,7 +191,8 @@ relire…) est dans `result`.
 muxiveo --cli serve [--allow-privileged] [--max-jobs N] [--max-analyses N]
 ```
 
-JSON-RPC 2.0 sur stdio, **un objet JSON par ligne** UTF-8 (trame ≤ 16 Mio), pour **un** client :
+JSON-RPC 2.0 sur stdio, **un objet JSON par ligne** UTF-8 (trame ≤ 16 Mio, JSON standard : `NaN` et
+`Infinity` refusés ; `id` : texte d'au plus 256 caractères, entier 64 bits ou `null`), pour **un** client :
 
 | Méthode | Paramètres | Résultat |
 |---|---|---|
@@ -203,7 +205,8 @@ JSON-RPC 2.0 sur stdio, **un objet JSON par ligne** UTF-8 (trame ≤ 16 Mio), po
 
 Notifications du worker : `job.event` (événement tel quel) et `server.exiting` (`reason` : `shutdown`,
 `update`, `client_gone`). Erreurs : codes JSON-RPC standard (`-32700` JSON illisible, `-32600` requête
-invalide ou trame trop volumineuse, `-32601` méthode inconnue, `-32602` paramètres) ; erreur de l'API →
+invalide ou trame trop volumineuse, `-32601` méthode inconnue, `-32602` paramètres, `-32603` défaut
+interne : le worker continue) ; erreur de l'API →
 `-32000`, `data` = erreur publique (`code` : `forbidden`, `invalid_request`, `busy`…). Le catalogue
 s'obtient par `job.submit` de `schema.get` (`{"version": "api"}`).
 
@@ -216,9 +219,9 @@ s'obtient par `job.submit` de `schema.get` (`{"version": "api"}`).
 Garanties : la réponse de `job.submit` précède tout événement du job ; les descripteurs du protocole
 sont protégés (toute impression parasite et les sous-processus écrivent sur stderr, stdin des
 sous-processus = `os.devnull`) ; écrire ne bloque jamais le worker — un client qui ne lit plus (64 Mio
-en attente) ou un pipe fermé est considéré parti : le worker s'arrête. Une réponse trop volumineuse
-devient une erreur `-32000` (`response_too_large`), un événement trop volumineux un avertissement
-`event_too_large`. Arrêt (`server.shutdown`, fin de stdin, SIGTERM, SIGINT, client parti) : jobs en
+en attente) ou un pipe fermé est considéré parti : le worker s'arrête. Aucune trame sortante ne dépasse 16 Mio : une réponse trop volumineuse
+devient une erreur `-32000` (`response_too_large`), une erreur répétant une très longue valeur du client
+est abrégée (même code), un événement trop volumineux devient un avertissement `event_too_large`. Arrêt (`server.shutdown`, fin de stdin, SIGTERM, SIGINT, client parti) : jobs en
 file et en cours annulés puis attendus, vidage final borné (5 s). Après une mise à jour installée
 (`restart_required`), le worker annonce `server.exiting` (`update`) et s'arrête : le client le relance.
 

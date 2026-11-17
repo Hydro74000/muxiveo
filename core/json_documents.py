@@ -39,7 +39,10 @@ def parse_json_text(text: str) -> Any:
             raise JsonDocumentError(f"nombre JSON non fini interdit : {value}")
         return number
 
-    return json.loads(text, parse_constant=_reject_constant, parse_float=finite_float)
+    try:
+        return json.loads(text, parse_constant=_reject_constant, parse_float=finite_float)
+    except RecursionError as exc:
+        raise JsonDocumentError("document JSON trop imbriqué") from exc
 
 
 def read_json_document(path: Path) -> Any:

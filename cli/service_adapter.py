@@ -15,13 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from core.jobs.json_io import json_default
-from core.json_documents import JsonDocumentError, parse_json_text, read_json_document
+from core.json_documents import parse_json_text, read_json_document
 from core.service.catalog import CATALOG
 from core.service.context import CancelToken, ExecutionContext, Overrides
 from core.service.errors import ApiError, ErrorCode
 from core.service.events import Event, EventType, JobState
 from core.service.models import Model
-from core.service.operations import API_VERSION, call, result_state
+from core.service.operations import API_VERSION, authorize, call, result_state
 
 from cli.constants import (
     EXIT_ARGS,
@@ -145,12 +145,12 @@ def _read_request(source: str | None) -> tuple[Any, Path]:
     if source == "-":
         try:
             return parse_json_text(sys.stdin.read()), Path.cwd()
-        except JsonDocumentError as exc:
+        except ValueError as exc:  # syntaxe, constante non finie, imbrication
             raise ApiError(ErrorCode.INVALID_REQUEST, f"Requête JSON illisible : {exc}") from exc
     path = Path(source).expanduser()
     try:
         return read_json_document(path), path.resolve().parent
-    except (OSError, JsonDocumentError) as exc:
+    except (OSError, ValueError) as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, f"Requête JSON illisible ({path}) : {exc}") from exc
 
 
@@ -162,6 +162,7 @@ def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides_from_args(args),
                                   allow_privileged=bool(getattr(args, "allow_privileged", False)))
     try:
+        authorize(CATALOG.get(name), ctx.allow_privileged)  # refus avant toute lecture du fichier ou de stdin
         payload, base_dir = _read_request(args.request)
         with interrupt_guard(ctx.cancel):  # Ctrl+C : annulation propre, réponse « cancelled »
             result = call(CATALOG, name, payload, ctx, strict=True, base_dir=base_dir)

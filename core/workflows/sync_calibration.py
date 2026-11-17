@@ -132,6 +132,9 @@ class SyncCalibration:
             raise ValueError("Format de calibration non pris en charge.")
         try:
             cadence_payload = payload.get("cadence_mismatch")
+            samples = payload.get("samples", ())
+            if not isinstance(cadence_payload, (dict, type(None))) or not isinstance(samples, (list, tuple)):
+                raise TypeError("cadence_mismatch : objet ; samples : liste")
             cadence_mismatch = CadenceMismatch.from_dict(cadence_payload) if cadence_payload else None
             cadence_method = str(payload.get("cadence_audio_method", "atempo"))
             pitch_payload = payload.get("cadence_pitch_analysis")
@@ -146,14 +149,14 @@ class SyncCalibration:
                 tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
                       for s in payload["segments"]),
                 float(payload.get("confidence", 1)),
-                tuple(payload.get("samples", ())),
+                tuple(samples),
                 cadence_mismatch=cadence_mismatch,
                 cadence_audio_method=cadence_method,
                 cadence_pitch_analysis=pitch_analysis,
                 cadence_method_auto=payload.get("cadence_method_auto") is True,
                 cadence_pitch_factor=float(payload.get("cadence_pitch_factor", 1.0)),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Calibration invalide.") from exc
 
     def with_start_offset(self, offset_ms: float) -> SyncCalibration:

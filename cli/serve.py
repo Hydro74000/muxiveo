@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from core.jobs.json_io import json_default
+from core.json_documents import parse_json_text
 from core.service.catalog import CATALOG
 from core.service.errors import ApiError
 from core.service.events import EVENT_VERSION, Event, EventType
@@ -41,8 +42,13 @@ MAX_QUEUED = 64 * 1024 * 1024
 #: Délai accordé au vidage final de la file d'écriture.
 FLUSH_TIMEOUT_S = 5.0
 _WAKE_MS = 100
+#: Longueur maximale d'un ``id`` texte (entiers : 64 bits signés) : toute réponse d'erreur reste sous :data:`MAX_FRAME`.
+MAX_ID_LENGTH = 256
+#: Longueur des textes conservés dans une réponse d'erreur remplacée faute de place.
+_SHORT_TEXT = 4096
 
-PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, API_ERROR = -32700, -32600, -32601, -32602, -32000
+PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR, API_ERROR = (
+    -32700, -32600, -32601, -32602, -32603, -32000)
 
 
 def _encode(message: dict[str, Any]) -> bytes:
@@ -135,9 +141,12 @@ class Server:
     # -- Sortie -----------------------------------------------------------------------------------------------
 
     def _send(self, message: dict[str, Any], *, too_large: Callable[[int], dict[str, Any]]) -> None:
+        """Toute trame sortante ≤ :data:`MAX_FRAME` : sinon remplacée (``too_large``), remplacement compris."""
         frame = _encode(message)
         if len(frame) > MAX_FRAME:
             frame = _encode(too_large(len(frame)))
+        if len(frame) > MAX_FRAME:  # filet : remplacements bornés par construction (id borné, textes coupés)
+            frame = _encode(_error_message(None, INTERNAL_ERROR, "Trame trop volumineuse."))
         self._out.send(frame)
 
     def respond(self, request_id: Any, result: Any) -> None:
@@ -148,7 +157,13 @@ class Server:
              "size": size}))
 
     def fail(self, request_id: Any, code: int, message: str, data: Any = None) -> None:
-        self._out.send(_encode(_error_message(request_id, code, message, data)))
+        def shorter(_size: int) -> dict[str, Any]:  # erreur répétant une très longue valeur du client
+            text = _shorten(message)
+            api_code = data.get("code") if isinstance(data, dict) else None
+            return _error_message(request_id, code, text,
+                                  {"code": api_code, "message": text} if isinstance(api_code, str) else None)
+
+        self._send(_error_message(request_id, code, message, data), too_large=shorter)
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params},
@@ -174,10 +189,10 @@ class Server:
         """Une trame du client (sans sa fin de ligne)."""
         if not line.strip():
             return
-        try:
-            message = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            self.fail(None, PARSE_ERROR, f"JSON illisible : {exc}")
+        try:  # JSON standard : NaN / Infinity refusés, imbrication excessive refusée
+            message = parse_json_text(line.decode("utf-8"))
+        except ValueError as exc:  # UnicodeDecodeError compris
+            self.fail(None, PARSE_ERROR, f"JSON illisible : {_shorten(str(exc))}")
             return
         try:
             method, params, request_id, notification = _request_parts(message)
@@ -192,6 +207,9 @@ class Server:
         except ApiError as error:
             if not notification:
                 self.fail(request_id, API_ERROR, error.message, error.to_dict())
+        except Exception as exc:  # noqa: BLE001 - défaut imprévu : réponse d'erreur, le lecteur continue
+            if not notification:
+                self.fail(request_id, INTERNAL_ERROR, f"Erreur interne : {type(exc).__name__}: {exc}")
 
     def _dispatch(self, method: str, params: Any, request_id: Any, notification: bool) -> None:
         if not isinstance(params, dict):
@@ -266,10 +284,19 @@ def _error_message(request_id: Any, code: int, message: str, data: Any = None) -
     return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
+def _shorten(text: str) -> str:
+    return text if len(text) <= _SHORT_TEXT else text[:_SHORT_TEXT] + "…"
+
+
 def _valid_id(message: Any) -> Any:
-    """``id`` utilisable dans une réponse (texte, entier ou null), sinon null."""
+    """``id`` utilisable dans une réponse (texte d'au plus :data:`MAX_ID_LENGTH` caractères, entier 64 bits ou
+    null), sinon null."""
     request_id = message.get("id") if isinstance(message, dict) else None
-    return request_id if isinstance(request_id, (str, int)) and not isinstance(request_id, bool) else None
+    if isinstance(request_id, str):
+        return request_id if len(request_id) <= MAX_ID_LENGTH else None
+    if isinstance(request_id, int) and not isinstance(request_id, bool):
+        return request_id if -2 ** 63 <= request_id < 2 ** 63 else None
+    return None
 
 
 def _request_parts(message: Any) -> tuple[str, Any, Any, bool]:
@@ -277,12 +304,14 @@ def _request_parts(message: Any) -> tuple[str, Any, Any, bool]:
     if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
         raise _ProtocolError(INVALID_REQUEST, "Requête JSON-RPC 2.0 attendue (objet, jsonrpc, method).")
     if "id" in message and message["id"] is not None and _valid_id(message) is None:
-        raise _ProtocolError(INVALID_REQUEST, "id : texte, entier ou null attendu.")
+        raise _ProtocolError(INVALID_REQUEST, f"id : texte (au plus {MAX_ID_LENGTH} caractères), entier 64 bits "
+                                              "ou null attendu.")
     return message["method"], message.get("params", {}), message.get("id"), "id" not in message
 
 
 def _read_loop(stream: BinaryIO, server: Server) -> None:
-    """Fil lecteur : une trame par ligne ; trame trop grande ignorée (erreur -32600) ; fin de stdin → arrêt."""
+    """Fil lecteur : une trame par ligne ; trame trop grande ignorée (erreur -32600) ; fin de stdin (ou fin
+    imprévue du lecteur) → arrêt : le worker ne reste jamais sans lecteur."""
     try:
         while True:
             line = stream.readline(MAX_FRAME + 1)
@@ -296,7 +325,8 @@ def _read_loop(stream: BinaryIO, server: Server) -> None:
             server.handle(line.rstrip(b"\r\n"))
     except (OSError, ValueError):
         pass
-    server.stop("client_gone")
+    finally:
+        server.stop("client_gone")
 
 
 def run_server(in_stream: BinaryIO, out_stream: BinaryIO, *, catalog: Catalog = CATALOG,

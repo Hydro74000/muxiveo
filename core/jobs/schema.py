@@ -17,6 +17,7 @@ from core.jobs.constants import (
 )
 from core.service.schema_check import portable_pattern
 from core.version import APP_NAME, APP_SCHEMA_BASE_URL
+from core.workflows.cadence import CadenceType
 
 
 def _flag_properties() -> dict[str, dict[str, str]]:
@@ -113,6 +114,11 @@ def calibration_schema() -> dict[str, Any]:
                          "description": "Segments à temps de début strictement croissants, le premier à 0 ms."},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "cadence_pitch_factor": {"type": "number", "exclusiveMinimum": 0},
+            "samples": {"type": "array", "description": "Mesures ponctuelles (informatif)."},
+            "cadence_mismatch": {"type": ["object", "null"], "additionalProperties": free, "properties": {
+                "cadence_type": {"enum": [kind.value for kind in CadenceType]},
+                **{name: {"type": "number"} for name in ("source_fps", "target_fps", "speed_factor", "confidence")},
+            }},
         },
     }
 

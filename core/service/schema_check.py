@@ -156,15 +156,15 @@ def _object_errors(value: dict[str, Any], schema: dict[str, Any], root: dict[str
     return found
 
 
-def _any_of_message(variants: list[dict[str, Any]]) -> str:
-    required = [variant["required"] for variant in variants if set(variant) == {"required"}]
-    if len(required) == len(variants):
+def _any_of_message(variants: list[dict[str, Any] | bool]) -> str:
+    required = [variant["required"] for variant in variants if isinstance(variant, dict) and set(variant) == {"required"}]
+    if variants and len(required) == len(variants):
         return "l'un de ces champs est requis : " + ", ".join(" + ".join(keys) for keys in required)
     return "aucune forme admise ne correspond"
 
 
-def _not_message(rule: dict[str, Any]) -> str:
-    if set(rule) == {"required"}:
+def _not_message(rule: dict[str, Any] | bool) -> str:
+    if isinstance(rule, dict) and set(rule) == {"required"}:
         return "champs exclusifs : " + ", ".join(rule["required"])
     return "forme refusée"
 
