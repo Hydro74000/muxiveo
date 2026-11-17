@@ -578,3 +578,26 @@ def test_batch_result_links_each_entry_to_its_child_job_but_not_the_summary(tmp_
                 and e.data["state"] == "running"]
     assert [entry["job"] for entry in result.jobs] == children and len(children) == 2
     assert all("job" not in entry for entry in json.loads(summary.read_text(encoding="utf-8"))["jobs"])
+
+
+def test_api_batch_output_dir_bases_inherited_templates(tmp_path, monkeypatch):
+    """Requête de l'API : `output_dir` sert de base au gabarit venu du template (blancs conservés) ;
+    commande historique inchangée (gabarit du template sans dossier de lot)."""
+    seen: list[dict[str, Any]] = []
+
+    def build(job, _config, _options, _logger, **_kwargs):
+        seen.append(dict(job))
+        return SimpleNamespace(output=tmp_path / "x.mkv", allow_missing_output_dir=False)
+
+    monkeypatch.setattr(batch_ops, "build_remux_config", build)
+    template = tmp_path / "template.json"
+    template.write_text(json.dumps({"version": 1, "output_template": "r.mkv"}), encoding="utf-8")
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"jobs": [{"sources": [str(tmp_path / "a.mkv")]}]}), encoding="utf-8")
+    request = {"template": str(template), "batch": str(batch), "output_dir": str(tmp_path / "exports "),
+               "dry_run": True}
+    ctx, _sink = _ctx()
+    call(CATALOG, "media.batch", request, ctx)
+    historical = ExecutionContext.create(SimpleNamespace(), ListSink(), api=False)
+    call(CATALOG, "media.batch", request, historical, allow_relative=True, strict_documents=False)
+    assert [job.get("_batch_output_dir") for job in seen] == [str(tmp_path / "exports "), None]

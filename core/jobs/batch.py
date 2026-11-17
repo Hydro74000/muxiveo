@@ -505,6 +505,11 @@ def run_batch(
             job["_batch_generated_output"] = True
         elif output_all:
             job["output_all"] = True
+        if (output_dir and getattr(options, "api", False) and job.get("output_template")
+                and "_batch_output_dir" not in job):
+            # Requête de l'API : le dossier de sortie sert de base au gabarit hérité (template, élément du lot)
+            # comme au gabarit des options, plutôt que le dossier de référence.
+            job["_batch_output_dir"] = str(Path(output_dir).expanduser())
         entry = PlannedBatchJob(job_index, job_primary_input(job), str(job.get("output") or ""))
         planned.append(entry)
         try:
