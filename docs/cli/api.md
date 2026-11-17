@@ -37,7 +37,8 @@ possibles (`progress` pour les opérations qui en publient, `artifact` pour cell
 
 Les documents portés par les requêtes sont décrits une fois (`$defs` : `job`, `encode_block`,
 `decision_profile`) et reliés par `$ref` ; `job` est fermé comme l'admission (clé inconnue refusée,
-clés internes `_…` / `$…` ignorées, `variables` et tables libres). Les résultats sont typés : fiche
+clés internes `_…` / `$…` ignorées — sauf dans les objets `sync` et `flags`, qui les refusent —,
+`variables` et tables libres). Les résultats sont typés : fiche
 d'inspection et pistes (`hdr_type` publié par son libellé), sorties d'extraction, entrées de lots,
 réglages, presets, profils, titres Blu-ray, capacités, extensions, verdicts FEL, TMDB. Restent des
 objets décrits (contenu documenté ailleurs) : plans de `media.validate/preview`, rapports HDR, plans
@@ -52,8 +53,9 @@ echo '{"inputs": ["/media/film.mkv"]}' | muxiveo --cli call media.inspect --requ
 muxiveo --cli call config.set --allow-privileged --request reglage.json
 ```
 
-**Requête** : objet JSON **strict**, documents portés compris (`job` d'après le contrat
-`schema --version 1` / exact-job, blocs `encode`). Refusés dès la lecture (`invalid_request`, avec le
+**Requête** : objet JSON **strict**, documents `job` (contrat `schema --version 1` / exact-job) et
+blocs `encode` compris ; un profil décisionnel porté par `profile.save` est contrôlé par les règles des
+profils (version, nature, nom, règles), ses autres clés conservées. Refusés dès la lecture (`invalid_request`, avec le
 chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
 inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis
@@ -93,7 +95,8 @@ comportement) :
 - **Pas de redirection** : un document ne désigne jamais un exécutable (clés de job `ffprobe` /
   `mediainfo` hors contrat : refusées en requête, signalées et sans effet dans un document historique ;
   outils = configuration ou options de l'appel), `tmdb_cover` doit venir de `https://image.tmdb.org/`,
-  les clés internes `_…` d'un document sont retirées.
+  les clés internes `_…` du premier niveau d'un document sont retirées (plus profondes : ignorées, sauf
+  dans `sync` et `flags`, qui les refusent).
 - **Paramètres libres de l'encodeur** (`extra_params`, presets compris) : limités aux options de
   l'encodeur — options privées et options d'encodage vidéo pour FFmpeg (sans option de la ligne de
   commande homonyme : `-stats`…), options d'encodage de `--help` pour NVEncC (sans entrées, sorties,
@@ -158,9 +161,11 @@ refusée **avant** le premier job.
 
 Ctrl+C (CLI), `job.cancel` (`serve`) ou jeton (`CancelToken`, Python) : processus arrêtés, fichier
 `.partial` et dossier de travail supprimés, état terminal `cancelled` émis après le nettoyage complet.
-Un job en file est retiré aussitôt (`error` puis `state: cancelled`). Une annulation arrivée après la
-publication de la sortie laisse l'opération réussie avec l'avertissement `cancel_too_late`. Dans un
-lot : le job en cours est annulé puis le lot s'arrête.
+Un job en file est retiré aussitôt (`error` puis `state: cancelled`). Remux et encodage : une annulation
+arrivée après la publication de la sortie laisse l'opération réussie avec l'avertissement
+`cancel_too_late`. Extraction de plusieurs éléments : les sorties déjà publiées restent (événements
+`artifact`), l'opération se termine `cancelled`. Dans un lot : le job en cours est annulé puis le lot
+s'arrête.
 
 ## Erreurs et codes retour
 

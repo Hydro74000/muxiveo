@@ -60,6 +60,7 @@ _ACCEPTED = [
     _job(tracks=[{"selector": {"type": "audio", "position": 0}, "_note": "interne"}]),
     _job(tag_overrides={"COLLECTION": "Muxiveo"}),
     _job(chapters=False, tmdb=True),
+    _job(fallback_profile={"name": "x", "_note": 1}, chapters={"source_index": 0, "_note": 1}),
     _job(encode={"video": {"default": {"codec": "copy"}}}),
 ]
 _REFUSED = [
@@ -69,6 +70,9 @@ _REFUSED = [
     _job(tracks=[{"selector": {"type": "audio", "index": 0}}]),
     _job(sources=[{"path": _SOURCE, "sync": {"calibration": "/c.json", "bogus": 1}}]),
     _job(chapters={"source_index": 0, "bogus": 1}),
+    _job(sources=[{"path": _SOURCE, "sync": {"offset_ms": 0, "_note": 1}}]),  # objets fermés : clés internes aussi
+    _job(tracks=[{"selector": {"type": "audio", "position": 0}, "flags": {"default": True, "$note": 1}}]),
+    _job(tracks=[{"selector": {"type": "audio", "flags": {"default": True, "_note": 1}}}]),
     _job(tmdb={"enabled": True, "bogus": 1}),
     _job(fallback_profile={"name": "x", "bogus": 1}),
     _job(encode={"video": {"default": {"codec": "copy", "bogus": 1}}}),

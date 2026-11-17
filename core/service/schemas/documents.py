@@ -20,6 +20,8 @@ DECISION_PROFILE_REF: dict[str, Any] = {"$ref": f"{_PREFIX}decision_profile"}
 
 #: Clés ignorées par l'admission (internes ``_…``, ``$…``) : admises par les objets fermés.
 _IGNORED_KEYS = "^[_$]"
+#: Objets fermés par leur propre validateur (``validate_sync_spec``, ``_validate_flags``) : clés internes refusées.
+_STRICT_OBJECTS = frozenset({"sync", "flags"})
 
 
 def _rewrite_refs(node: Any, name: str, internal: set[str]) -> Any:
@@ -44,17 +46,20 @@ def _hoisted(schema: dict[str, Any], name: str) -> dict[str, Any]:
     return definitions
 
 
-def _closed(node: Any) -> Any:
-    """Objets à propriétés déclarées fermés comme l'admission (clés ``_…`` / ``$…`` ignorées) ; tables
-    (``additionalProperties`` = schéma de valeur) inchangées."""
+def _closed(node: Any, *, strict: bool = False) -> Any:
+    """Objets à propriétés déclarées fermés comme l'admission (clés ``_…`` / ``$…`` ignorées, sauf dans
+    ``sync`` et ``flags`` qui les refusent) ; tables (``additionalProperties`` = schéma de valeur) inchangées."""
     if isinstance(node, list):
         return [_closed(item) for item in node]
     if not isinstance(node, dict):
         return node
-    closed = {key: _closed(value) for key, value in node.items()}
+    closed = {key: ({name: _closed(sub, strict=name in _STRICT_OBJECTS) for name, sub in value.items()}
+                    if key == "properties" and isinstance(value, dict) else _closed(value))
+              for key, value in node.items()}
     if "properties" in closed and not isinstance(closed.get("additionalProperties", True), dict):
         closed["additionalProperties"] = False
-        closed["patternProperties"] = {_IGNORED_KEYS: {}}
+        if not strict:
+            closed["patternProperties"] = {_IGNORED_KEYS: {}}
     return closed
 
 
