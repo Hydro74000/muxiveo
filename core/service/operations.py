@@ -219,10 +219,11 @@ def call(
                                                allow_relative=allow_relative, strict_documents=strict_documents)
         for warning in warnings:  # destination en échec : traitée comme les autres échecs d'admission
             ctx.events.warning(f"{warning.message} : {warning.path}", code="unknown_key", path=warning.path)
-    except Exception as exc:  # refus d'admission (ou défaut imprévu de lecture) : publié avant d'être propagé
+    except BaseException as exc:  # refus d'admission, défaut imprévu, interruption : publié avant d'être propagé
+        error = ApiError.from_exception(exc)
         try:
-            ctx.events.error(ApiError.from_exception(exc).to_dict())
-        finally:  # état final toujours tenté, même si la destination refuse l'erreur
-            ctx.events.state(JobState.FAILED, operation=name)
+            ctx.events.error(error.to_dict())
+        finally:  # état final toujours tenté (annulé ou en échec), même si la destination refuse l'erreur
+            ctx.events.state(error_state(error), operation=name)
         raise
     return execute(spec, request, ctx)

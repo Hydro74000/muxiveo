@@ -125,6 +125,21 @@ def test_interrupt_guard_turns_sigint_into_cancellation():
     assert signal.getsignal(signal.SIGINT) is previous
 
 
+@pytest.mark.skipif(os.name == "nt", reason="signal POSIX envoyé au processus")
+def test_interrupt_guard_never_takes_the_token_lock_in_the_signal_handler():
+    """Ctrl+C pendant que le fil principal tient le verrou du jeton (``on_cancel``) : le gestionnaire ne fait que
+    noter la demande, l'annulation suit dès la libération (sinon le fil principal s'attendait lui-même)."""
+    with interrupt_guard(CancelToken()) as token:
+        with token._lock:
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.05)  # gestionnaire exécuté ici, verrou tenu
+            assert not token.cancelled
+        deadline = time.monotonic() + 5
+        while not token.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert token.cancelled
+
+
 # --- run_remux : fin, échec, annulation, course annulation / publication -----------------
 
 class _Logger:

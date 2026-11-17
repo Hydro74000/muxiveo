@@ -714,3 +714,21 @@ def test_a_refused_warning_still_publishes_the_final_state():
         call(_CATALOG, "t.analysis", {"name": "w", "bogus": 1}, ExecutionContext.create(SimpleNamespace(), sink),
              strict=False)
     assert sink.events[-1].data.get("state") == "failed" and "w" not in _STARTED
+
+
+@pytest.mark.parametrize("raised, final", [(KeyboardInterrupt, "cancelled"),
+                                           (lambda: ApiError(ErrorCode.CANCELLED, "annulé"), "cancelled")])
+def test_an_interrupted_warning_still_publishes_a_consistent_final_state(raised, final):
+    from core.service import call
+
+    class _Interrupting(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is EventType.WARNING:
+                raise raised()
+
+    sink = _Interrupting()
+    with pytest.raises((KeyboardInterrupt, ApiError)):
+        call(_CATALOG, "t.analysis", {"name": "i", "bogus": 1}, ExecutionContext.create(SimpleNamespace(), sink),
+             strict=False)
+    assert [e.data.get("state") for e in sink.events if e.type is EventType.STATE] == [final]
