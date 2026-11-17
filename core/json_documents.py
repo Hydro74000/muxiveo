@@ -13,23 +13,27 @@ Règles communes GUI/CLI :
 
 from __future__ import annotations
 
+import contextvars
 import json
 import math
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
 PathKind = Literal["absolute", "relative", "unusable"]
 
 #: Caractères au plus produits par la résolution des chemins relatifs d'une requête de l'API contre son dossier de
-#: référence (chaque chemin recopie le dossier) : une requête de 16 Mio n'en fait jamais des centaines de Go.
-MAX_RESOLVED_PATH_CHARS = 64 * 1024 * 1024
+#: référence (chaque chemin recopie le dossier, environ quatre octets par caractère une fois découpé) : une requête
+#: de 16 Mio n'en fait jamais des centaines de Go.
+MAX_RESOLVED_PATH_CHARS = 16 * 1024 * 1024
 
 
 class ResolutionBudget:
     """Volume des chemins relatifs résolus contre un dossier de référence, borné par
-    :data:`MAX_RESOLVED_PATH_CHARS` ; ``spend`` renvoie faux au premier dépassement (une seule fois)."""
+    :data:`MAX_RESOLVED_PATH_CHARS` ; ``spend`` renvoie faux dès le dépassement, et ensuite toujours (rien n'est
+    plus résolu). Un seul budget par lecture de requête (:func:`resolution_budget`), hooks des documents compris."""
 
     __slots__ = ("used", "exceeded")
 
@@ -38,14 +42,41 @@ class ResolutionBudget:
         self.exceeded = False
 
     def spend(self, base_dir: Path, value: str) -> bool:
-        self.used += len(str(base_dir)) + len(value) + 1
-        if self.used <= MAX_RESOLVED_PATH_CHARS or self.exceeded:
-            return True
-        self.exceeded = True
-        return False
+        if not self.exceeded:
+            self.used += len(str(base_dir)) + len(value) + 1
+            self.exceeded = self.used > MAX_RESOLVED_PATH_CHARS
+        return not self.exceeded
 
     MESSAGE = (f"chemins relatifs trop nombreux pour ce dossier de référence (plus de {MAX_RESOLVED_PATH_CHARS} "
                "caractères à résoudre) : indiquer des chemins absolus")
+
+
+_BUDGET: contextvars.ContextVar[ResolutionBudget | None] = contextvars.ContextVar("resolution_budget", default=None)
+
+
+@contextmanager
+def resolution_budget() -> Iterator[ResolutionBudget]:
+    """Budget partagé par tous les chemins résolus pendant la lecture d'une requête (champs et documents)."""
+    budget = ResolutionBudget()
+    token = _BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _BUDGET.reset(token)
+
+
+def current_budget() -> ResolutionBudget:
+    """Budget de la lecture en cours, sinon un budget propre à l'appel."""
+    return _BUDGET.get() or ResolutionBudget()
+
+
+def home_unknown(value: str) -> bool:
+    """``~utilisateur`` dont le dossier personnel est introuvable : chemin jamais résolu."""
+    try:
+        Path(value).expanduser()
+    except RuntimeError:
+        return True
+    return False
 
 
 class JsonDocumentError(ValueError):
@@ -87,6 +118,8 @@ def path_kind(value: str) -> PathKind:
     (``C:film.mkv`` relatif au lecteur, ``\\film.mkv`` enraciné sans lecteur) — jamais rattaché à un dossier.
     """
     # Valeur classée telle qu'elle sera utilisée (aucun blanc retiré : « /m » précédé d'un espace est relatif).
+    if home_unknown(value):  # « ~inconnu/a » : jamais rattaché à un dossier
+        return "unusable"
     if Path(value).expanduser().is_absolute():
         return "absolute"
     windows = PureWindowsPath(value)
@@ -178,7 +211,7 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
     """Chemins d'un document refusés pour une requête de l'API : inutilisables sur cet OS, relatifs sans
     dossier de référence (jamais résolus contre le dossier courant du processus), ou trop nombreux à résoudre."""
     errors: list[tuple[str, str]] = []
-    budget = budget or ResolutionBudget()
+    budget = budget or current_budget()
 
     def check(slot: str, value: str) -> str:
         message = _path_problem(value, base_dir, budget)
@@ -194,7 +227,7 @@ def document_path_errors(job: Any, base_dir: Path | None, *, prefix: str = "job"
 def encode_path_errors(encode: Any, base_dir: Path | None, *, prefix: str = "encode") -> list[tuple[str, str]]:
     """Comme :func:`document_path_errors` pour un bloc ``encode`` seul (preset désigné par un fichier)."""
     errors: list[tuple[str, str]] = []
-    budget = ResolutionBudget()
+    budget = current_budget()
 
     def check(slot: str, value: str) -> str:
         message = _path_problem(value, base_dir, budget)
@@ -234,6 +267,8 @@ def _path_problem(value: str, base_dir: Path | None, budget: ResolutionBudget | 
     if not value.strip():
         return "chemin attendu"
     kind = path_kind(value)
+    if home_unknown(value):
+        return "dossier personnel inconnu (~utilisateur)"
     if kind == "unusable":
         return "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)"
     if kind == "relative" and base_dir is None:

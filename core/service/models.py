@@ -100,13 +100,17 @@ class Model:
         refusés ou rendus en avertissements (documents historiques du CLI, toujours tolérants).
         Toute erreur lève :class:`ApiError` ``invalid_request`` avec un détail par champ.
         """
-        from core.json_documents import ResolutionBudget
+        from core.json_documents import resolution_budget
 
-        state = _Parse(strict, base_dir, allow_relative, [], [],
-                       strict if strict_documents is None else strict_documents, ResolutionBudget())
-        value = _parse_model(cls, data, "", state)
+        with resolution_budget() as budget:  # partagé par les champs chemins et les hooks des documents
+            state = _Parse(strict, base_dir, allow_relative, [], [],
+                           strict if strict_documents is None else strict_documents, budget)
+            value = _parse_model(cls, data, "", state)
         if state.errors or value is None:
-            raise ApiError(ErrorCode.INVALID_REQUEST, "Requête invalide.", details=_bounded(state.errors))
+            # Requête de l'API (chemins relatifs jamais admis tels quels) : écarts détaillés bornés ; documents et
+            # commandes historiques : tous les écarts, comme avant.
+            details = state.errors if allow_relative or not strict else _bounded(state.errors)
+            raise ApiError(ErrorCode.INVALID_REQUEST, "Requête invalide.", details=details)
         return typing.cast(M, value), tuple(state.warnings)
 
     @classmethod
@@ -301,7 +305,11 @@ def _parse_path(value: Any, path: str, state: _Parse) -> Any:
     if not isinstance(value, str) or not value.strip():
         state.fail(path, "chemin attendu")
         return value
-    candidate = Path(value).expanduser()
+    try:
+        candidate = Path(value).expanduser()
+    except RuntimeError:  # « ~inconnu/… » : dossier personnel introuvable
+        state.fail(path, "dossier personnel inconnu (~utilisateur)")
+        return value
     if candidate.is_absolute() or state.allow_relative:
         return candidate
     from core.json_documents import path_kind
@@ -310,10 +318,11 @@ def _parse_path(value: Any, path: str, state: _Parse) -> Any:
         state.fail(path, "chemin inutilisable sur ce système (absolu pour un autre OS ou ambigu)")
         return candidate
     if state.base_dir is not None:
-        if not state.resolution.spend(state.base_dir, value):
+        if not state.resolution.spend(state.base_dir, value):  # budget épuisé : plus aucune jointure
             from core.json_documents import ResolutionBudget
 
             state.fail(path, ResolutionBudget.MESSAGE)
+            return candidate
         return state.base_dir / candidate
     state.fail(path, "chemin absolu attendu")
     return candidate

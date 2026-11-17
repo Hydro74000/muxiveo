@@ -276,6 +276,39 @@ def test_relative_paths_against_a_long_reference_folder_are_bounded():
     CATALOG.get("media.inspect").request.parse({"inputs": ["a.mkv"] * 400}, base_dir=Path("/media"))
 
 
+def test_path_resolution_stops_at_the_budget():
+    """Budget épuisé : plus aucune jointure (mémoire bornée même avec un dossier de nombreux composants)."""
+    import tracemalloc
+
+    base = Path("/", *(["b"] * 40_000))
+    tracemalloc.start()
+    try:
+        with pytest.raises(ApiError):
+            CATALOG.get("media.inspect").request.parse({"inputs": ["a.mkv"] * 900}, base_dir=base)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 150 * 1024 * 1024
+
+
+def test_an_unknown_home_folder_is_refused_not_crashed():
+    unknown = "~muxiveo_no_such_user_7708/a.mkv"
+    for operation, payload in (("media.inspect", {"inputs": [unknown]}),
+                               ("media.validate", {"job": {"sources": [unknown], "output": _OUTPUT}})):
+        with pytest.raises(ApiError) as caught:
+            CATALOG.get(operation).request.parse(payload, base_dir=Path("/media"))
+        assert any("dossier personnel inconnu" in detail.message for detail in caught.value.details), operation
+
+
+def test_historical_documents_keep_every_diagnostic():
+    """Lecture tolérante (bloc encode du CLI historique) : tous les écarts, sans borne de l'API."""
+    from core.service.schemas.encode import EncodeBlock
+
+    with pytest.raises(ApiError) as caught:
+        EncodeBlock.parse({"audio": [{"select": {}, "codec": False}] * 150}, strict=False)
+    assert len(caught.value.details) == 150 and caught.value.details[-1].path == "audio[149].codec"
+
+
 def test_every_document_diagnostic_is_bounded_and_truncation_announced():
     audio = [{"select": {}, "codec": "copy", "unknown": 0}] * 150
     with pytest.raises(ApiError) as caught:
