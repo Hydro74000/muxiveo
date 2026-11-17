@@ -329,3 +329,50 @@ def test_profile_output_padded_or_blank_is_never_resolved_from_the_cwd(output, t
     else:
         with pytest.raises(ApiError):
             ProfilePreviewRequest.parse(request, base_dir=tmp_path)
+
+
+def test_document_calibration_with_tilde_is_read_from_home_never_the_cwd(tmp_path, monkeypatch):
+    """« ~/cal.json » est absolu pour l'admission : la lecture développe ``~`` (jamais ``<cwd>/~/cal.json``)."""
+    import json
+    from unittest.mock import MagicMock
+
+    from cli.logging import Logger
+    from core.config import AppConfig
+    from core.jobs.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+    from core.workflows.remux_models import SourceInput, TrackEntry
+
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    for folder, shift in ((home, 320.0), (cwd / "~", 999.0)):
+        folder.mkdir(parents=True)
+        (folder / "cal.json").write_text(json.dumps({"segments": [{"start_ms": 0.0, "shift_ms": shift}],
+                                                     "confidence": 1.0}))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(cwd)
+    donor = TrackEntry(0, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="src1")
+    sources = [SourceInput(path=tmp_path / "ref.mkv", file_index=0,
+                           tracks=[TrackEntry(0, "audio", "FLAC", "2.0", "eng", "VO", file_id="src0")]),
+               SourceInput(path=tmp_path / "donor.mkv", file_index=1, tracks=[donor])]
+    monkeypatch.setattr("core.jobs.remux_config.inspect_sources", lambda *_a, **_k: (
+        sources, [MagicMock(), MagicMock()], [track for source in sources for track in source.tracks]))
+    job = {"sources": [str(tmp_path / "ref.mkv"), str(tmp_path / "donor.mkv")], "output": str(tmp_path / "o.mkv"),
+           "calibration": "~/cal.json", "sync_mode": "container"}
+    build_remux_config(job, AppConfig(), CommonOptions(api=True, base_dir=None), Logger(fmt="text"))
+    assert donor.time_shift_ms == 320
+
+
+def test_api_output_folders_are_used_as_admitted(tmp_path):
+    """Requête de l'API : dossier de sortie blancs compris ; CLI et GUI : blancs retirés (historique)."""
+    from core.jobs.remux_config import resolve_final_output
+
+    padded = tmp_path / "exports "
+    padded.mkdir()
+    (tmp_path / "exports").mkdir()
+    source = SimpleNamespace(path=tmp_path / "Film.mkv")
+    for job in ({"output_template": "r.mkv", "_batch_output_dir": str(padded)},
+                {"output_template": "r.mkv", "output": str(padded)}):
+        assert resolve_final_output(cli_output=None, job=job, sources=[source], details=None, base_dir=None,
+                                    exact=True) == padded / "r.mkv"
+        assert resolve_final_output(cli_output=None, job=job, sources=[source], details=None,
+                                    base_dir=tmp_path) == tmp_path / "exports" / "r.mkv"

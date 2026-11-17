@@ -197,7 +197,7 @@ def prepare_pair(pair: HybridPair, options: HybridOptions, config: AppConfig, lo
 
     calibration: SyncCalibration
     if common.calibration:
-        calibration = SyncCalibration.from_dict(json.loads(Path(common.calibration).read_text(encoding="utf-8-sig")))
+        calibration = SyncCalibration.from_dict(json.loads(Path(common.calibration).expanduser().read_text(encoding="utf-8-sig")))
     elif sync_audio is not None and ref_audio is not None:
         calibration = steps.audio_scanner().scan(
             AudioSyncTrack(pair.reference, ref_audio.mkv_tid),

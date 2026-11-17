@@ -251,6 +251,7 @@ def build_profile_remux_config(
         preview=preview,
         variables=_output_variables(profile, metadata),
         base_dir=options.base_dir,
+        exact=bool(getattr(options, "api", False)),
     )
     tmdb_wins = auto_tmdb_metadata_enabled(metadata)
     tag_overrides = merge_tmdb_tag_overrides(
@@ -273,7 +274,7 @@ def build_profile_remux_config(
     calib = None
     if options.calibration:
         sync_calibrations = {}
-        calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).read_text(encoding="utf-8-sig")))
+        calib = SyncCalibration.from_dict(json.loads(Path(options.calibration).expanduser().read_text(encoding="utf-8-sig")))
     elif (options.auto_sync or profile.get("auto_sync") or profile.get("sync")) and len(sources) >= 2:
         from core.jobs.dynamic_sync import perform_dynamic_sync
         sync_calibrations = {}

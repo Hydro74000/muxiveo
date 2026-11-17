@@ -345,12 +345,14 @@ def resolve_final_output(
     preview: bool = False,
     variables: dict[str, Any] | None = None,
     base_dir: Path | None = Path(),
+    exact: bool = False,
 ) -> Path:
     """Calcule le chemin de sortie final, en rendant le template si présent.
 
     Priorité : ``cli_output`` > ``job.output_template`` > ``job.output`` >
     fallback preview > erreur. Gabarit rendu relatif sans dossier de sortie : sous ``base_dir`` (dossier de
-    référence ; ``None`` : refusé, jamais le dossier courant d'un service).
+    référence ; ``None`` : refusé, jamais le dossier courant d'un service). ``exact`` (requête de l'API) :
+    dossiers de sortie utilisés tels qu'admis, blancs compris (CLI et GUI : blancs retirés, historique).
     """
     if cli_output:
         return Path(str(cli_output)).expanduser()
@@ -374,11 +376,15 @@ def resolve_final_output(
         rendered_path = Path(rendered).expanduser()
         if kind == "absolute":
             return rendered_path
-        batch_dir = str(job.get("_batch_output_dir") or "").strip()
+        def admitted(value: Any) -> str:
+            text = str(value or "")
+            return text if exact else text.strip()
+
+        batch_dir = admitted(job.get("_batch_output_dir"))
         if batch_dir:
             return Path(batch_dir).expanduser() / rendered_path
         # `-o dossier` + template relatif : le dossier sert de base (sinon le dossier de référence).
-        raw_output = str(job.get("output") or "").strip()
+        raw_output = admitted(job.get("output"))
         if raw_output and (raw_output.endswith(("/", "\\")) or Path(raw_output).expanduser().is_dir()):
             return Path(raw_output).expanduser() / rendered_path
         if base_dir is None:
@@ -515,7 +521,7 @@ def build_remux_config(
         pass  # source 1 : lien de synchro du job (ci-dessous)
     elif calib_file and not job.get("sync_calibrations"):
         import json
-        calib = SyncCalibration.from_dict(json.loads(Path(calib_file).read_text(encoding="utf-8-sig")))
+        calib = SyncCalibration.from_dict(json.loads(Path(calib_file).expanduser().read_text(encoding="utf-8-sig")))
     elif (job.get("auto_sync") or getattr(options, "auto_sync", False)) and not job.get("sync_calibrations") and len(sources) >= 2:
         from core.jobs.dynamic_sync import perform_dynamic_sync
         calib = perform_dynamic_sync(sources, tracks, config, options, logger, **context.cancel_kwargs())
@@ -578,6 +584,7 @@ def build_remux_config(
         final_track_order=final_track_order,
         variables=job.get("variables") if isinstance(job.get("variables"), dict) else None,
         base_dir=options.base_dir,
+        exact=bool(getattr(options, "api", False)),
     )
 
     tmdb_wins = auto_tmdb_metadata_enabled(job)
