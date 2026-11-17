@@ -408,13 +408,13 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
     signals = TaskSignals()
     ctx.cancel.on_cancel(signals.cancel)
     runner = ToolRunner(max_workers=1)
-    span, last_pct = [0.0, 1.0], [-1]
+    span, last_pct, stage = [0.0, 1.0], [-1], ["extract_video"]
 
     def on_step(label: str, start: float, part: float) -> None:
         span[:] = [start, part]
         last_pct[0] = -1
         logger.emit("info", label)
-        ctx.events.progress(pct=round(start * 100, 1), stage=label)
+        ctx.events.progress(pct=round(start * 100, 1), stage=stage[0], label=label)
 
     def on_pct(pct: int) -> None:
         pct = max(0, min(100, pct))
@@ -432,6 +432,7 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
         patcher = MetadataPatcher(
             ffmpeg_bin=ctx.tool("ffmpeg"), dovi_tool_bin=str(config.tool_dovi_tool),
             hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path, on_step=on_step,
+            on_stage=lambda code: stage.__setitem__(0, code),
             cancelled=ctx.cancel.event.is_set, progress=lambda fraction: ctx.events.progress(pct=round(fraction * 100, 1)))
         return patcher.run(plan)
     except PatchCancelled as exc:
@@ -467,7 +468,7 @@ def hdr_patch(request: HdrPatchRequest, ctx: ExecutionContext) -> HdrPatchResult
     peak = float(request.display_peak or getattr(ctx.config, "display_peak_nits", 1000) or 1000)
     plan, warnings = resolve_plan(request, report, measurement, display_peak=peak)
     for message in warnings:
-        ctx.events.warning(message)
+        ctx.events.warning(message, code="hdr_patch_plan")
     changes = describe_plan(plan)
     if request.dry_run:
         return HdrPatchResult(dry_run=True, changes=changes, warnings=tuple(warnings))

@@ -149,7 +149,7 @@ def _measure_pair(reference: SourceInput, reference_track: TrackEntry, target: S
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda msg: logger.emit("info", msg),
-            warn=lambda msg: logger.emit("warning", msg),
+            warn=lambda msg, **fields: logger.emit("warning", msg, **fields),
         )
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
 

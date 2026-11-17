@@ -176,11 +176,14 @@ def _status(outcome: BatchOutcome) -> Literal["succeeded", "partial", "failed", 
     return "partial" if successes else "failed"
 
 
-def _result(outcome: BatchOutcome) -> BatchResult:
+def _result(outcome: BatchOutcome, children: _Children) -> BatchResult:
+    """Résultat du lot ; chaque entrée reçoit ``job`` (identifiant du job enfant, ``null`` sans enfant) dans le
+    résultat de service seulement — le résumé écrit sur disque reste inchangé."""
     summary = outcome.summary
+    jobs = tuple({**entry, "job": children.job_ids.get(entry.get("job_index"))} for entry in summary.get("jobs", ()))
     return BatchResult(status=_status(outcome), total=int(summary.get("total", 0)),
                        successes=int(summary.get("successes", 0)), failures=int(summary.get("failures", 0)),
-                       jobs=tuple(summary.get("jobs", ())))
+                       jobs=jobs)
 
 
 class _Children:
@@ -192,6 +195,8 @@ class _Children:
         # Inspections partagées par la préparation, la résolution de l'encodage et sa progression (clé : chemin,
         # taille, date) ; Hybrid fournit celui de sa préparation.
         self._cache = cache if cache is not None else PreparationCache()
+        #: Identifiant du job enfant de chaque élément (rang → job), pour relier résultat et événements.
+        self.job_ids: dict[int, str] = {}
 
     def context(self) -> PreparationContext:
         """Contexte de préparation des jobs du lot : cache partagé, annulation."""
@@ -199,6 +204,7 @@ class _Children:
 
     def logger(self, index: int) -> EmitterLogger:
         child = self.ctx.events.child()
+        self.job_ids[index] = child.job
         child.state(JobState.RUNNING, index=index)
         return EmitterLogger(child)
 
@@ -362,7 +368,7 @@ def media_batch(request: BatchRequest, ctx: ExecutionContext) -> BatchResult:
         cancel=ctx.cancel,
         job_logger=children.logger,
     )
-    return _result(outcome)
+    return _result(outcome, children)
 
 
 @operation(
@@ -411,4 +417,4 @@ def profile_batch(request: ProfileBatchRequest, ctx: ExecutionContext) -> BatchR
         cancel=ctx.cancel,
         job_logger=children.logger,
     )
-    return _result(outcome)
+    return _result(outcome, children)

@@ -52,6 +52,15 @@ class Event:
                 "ts": self.ts, "type": self.type.value, **self.data}
 
 
+#: Niveaux publiés des événements ``log`` (``warn`` / ``warning`` : événement ``warning``).
+LOG_LEVELS: dict[str, str] = {"debug": "debug", "info": "info", "ok": "ok", "success": "ok", "error": "error",
+                              "critical": "error"}
+
+#: Codes d'avertissement publiés ; un client tolère un code inconnu.
+WARNING_CODES = ("unknown_key", "extract_skipped", "cancel_too_late", "sync_unverified", "sync_uncertain",
+                 "nvencc_install", "hdr_patch_plan", "event_too_large", "unspecified")
+
+
 class EventSink(Protocol):
     def emit(self, event: Event) -> None: ...
 
@@ -120,17 +129,22 @@ class Emitter:
         self.emit(EventType.STATE, state=state.value, **data)
 
     def log(self, level: str, message: str, *, origin: str | None = None, **fields: Any) -> None:
-        payload: dict[str, Any] = {"level": str(level).lower(), "message": message}
+        """Journal ; un niveau ``warn`` / ``warning`` (toute casse) devient un événement ``warning``."""
+        normalized = str(level).strip().lower()
+        if normalized in ("warn", "warning"):
+            self.warning(message, origin=origin, **fields)
+            return
+        payload: dict[str, Any] = {"level": LOG_LEVELS.get(normalized, "info"), "message": message}
         if origin:
             payload["origin"] = origin
         self.emit(EventType.LOG, **payload, **fields)
 
-    def warning(self, message: str, *, code: str | None = None, path: str | None = None) -> None:
-        payload: dict[str, Any] = {"message": message}
-        if code:
-            payload["code"] = code
+    def warning(self, message: str, *, code: str | None = None, path: str | None = None, **fields: Any) -> None:
+        """Avertissement : ``code`` toujours présent (``unspecified`` sans signification machine)."""
+        payload: dict[str, Any] = {"message": message, "code": code or "unspecified"}
         if path is not None:
             payload["path"] = path
+        payload.update({key: value for key, value in fields.items() if value is not None})
         self.emit(EventType.WARNING, **payload)
 
     def progress(self, *, pct: float | None = None, stage: str | None = None, **fields: Any) -> None:
@@ -148,28 +162,53 @@ class Emitter:
         self.emit(EventType.ERROR, error=dict(error))
 
 
-#: Schéma JSON d'un événement (catalogue ``schema --version api``).
+_ENVELOPE: dict[str, Any] = {
+    "v": {"const": EVENT_VERSION},
+    "job": {"type": "string"},
+    "parent": {"type": ["string", "null"]},
+    "seq": {"type": "integer", "minimum": 1},
+    "ts": {"type": "string", "format": "date-time"},
+}
+
+
+def _variant(event_type: EventType, required: list[str], properties: dict[str, Any]) -> dict[str, Any]:
+    """Variante d'un type d'événement : enveloppe commune + champs propres (champs supplémentaires tolérés)."""
+    return {
+        "type": "object",
+        "title": f"Event.{event_type.value}",
+        "required": ["v", "job", "parent", "seq", "ts", "type", *required],
+        "properties": {**_ENVELOPE, "type": {"const": event_type.value}, **properties},
+    }
+
+
+#: Schéma JSON d'un événement (catalogue ``schema --version api``) : une variante par ``type``. Compatibilité
+#: (``EVENT_VERSION`` inchangée) : champs, codes et étapes peuvent s'ajouter ; un client ignore ce qu'il ne connaît pas.
 EVENT_SCHEMA: dict[str, Any] = {
-    "type": "object",
     "title": "Event",
-    "required": ["v", "job", "parent", "seq", "ts", "type"],
-    "properties": {
-        "v": {"const": EVENT_VERSION},
-        "job": {"type": "string"},
-        "parent": {"type": ["string", "null"]},
-        "seq": {"type": "integer", "minimum": 1},
-        "ts": {"type": "string", "format": "date-time"},
-        "type": {"enum": [item.value for item in EventType]},
-        "state": {"enum": [item.value for item in JobState]},
-        "level": {"type": "string"},
-        "message": {"type": "string"},
-        "origin": {"type": "string"},
-        "code": {"type": "string"},
-        "pct": {"type": "number"},
-        "stage": {"type": "string"},
-        "kind": {"type": "string"},
-        "path": {"type": "string"},
-        "result": {"type": "object"},
-        "error": {"type": "object"},
-    },
+    "oneOf": [
+        _variant(EventType.STATE, ["state"], {"state": {"enum": [item.value for item in JobState]},
+                                               "operation": {"type": "string"}}),
+        _variant(EventType.LOG, ["level", "message"], {"level": {"enum": sorted(set(LOG_LEVELS.values()))},
+                                                         "message": {"type": "string"}, "origin": {"type": "string"}}),
+        _variant(EventType.PROGRESS, [], {
+            "pct": {"type": "number", "minimum": 0, "maximum": 100},
+            "stage": {"type": "string", "description": "Étape (identifiant stable : download, assembly, metadata, "
+                                                       "extract_video, edit_rpu, edit_hdr10plus, static_hdr, write…)."},
+            "label": {"type": "string", "description": "Texte de l'étape pour l'humain (langue de l'application)."},
+            "fps": {"type": "number"}, "frame": {"type": "integer"}, "eta_s": {"type": "number"},
+            "track": {"type": "integer"}, "track_count": {"type": "integer"}, "pass_index": {"type": "integer"},
+            "pass_count": {"type": "integer"}}),
+        _variant(EventType.WARNING, ["message", "code"], {
+            "message": {"type": "string"},
+            "code": {"type": "string", "description": "Codes connus : " + ", ".join(WARNING_CODES) + "."},
+            "path": {"type": "string"}}),
+        _variant(EventType.ARTIFACT, ["kind", "path"], {"kind": {"type": "string"}, "path": {"type": "string"}}),
+        _variant(EventType.RESULT, ["result"], {"result": {"type": "object"}}),
+        _variant(EventType.ERROR, ["error"], {"error": {
+            "type": "object", "required": ["code", "message"],
+            "properties": {"code": {"type": "string"}, "message": {"type": "string"},
+                           "details": {"type": "array", "items": {
+                               "type": "object", "required": ["path", "message"],
+                               "properties": {"path": {"type": "string"}, "message": {"type": "string"}}}}}}}),
+    ],
 }

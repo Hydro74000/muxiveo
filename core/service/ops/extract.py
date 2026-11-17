@@ -108,7 +108,7 @@ def media_extract(request: ExtractRequest, ctx: ExecutionContext) -> ExtractResu
     total = len(targets)
     for position, (plan, target) in enumerate(targets):
         ctx.cancel.raise_if_cancelled()
-        ctx.events.progress(pct=100.0 * position / total, stage=plan.label or plan.kind)
+        ctx.events.progress(pct=100.0 * position / total, stage=plan.kind, layer=plan.layer, label=plan.label or None)
         ctx.events.log("info", f"Extraction {position + 1}/{total} : {plan.label or plan.kind} → {target}")
 
         def stage_pct(pct: int, done: int = position) -> None:

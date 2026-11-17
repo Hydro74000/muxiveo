@@ -354,11 +354,12 @@ def nvencc_install(request: NvenccInstallRequest, ctx: ExecutionContext) -> Nven
 
     def progress(done: int, total: int) -> None:
         if total > 0:
-            ctx.events.progress(pct=round(done * 100 / total, 1), stage="Téléchargement de NVEncC")
+            ctx.events.progress(pct=round(done * 100 / total, 1), stage="download", label="Téléchargement de NVEncC")
 
     try:
         path = nv.install(request.method, progress=progress, cancel=ctx.cancel.event,
-                          log=lambda level, message: (ctx.events.warning(message) if level.upper().startswith("WARN")
+                          log=lambda level, message: (ctx.events.warning(message, code="nvencc_install")
+                                                       if level.upper().startswith("WARN")
                                                       else ctx.events.log(level.lower(), message)),
                           interactive=request.interactive, elevate=request.elevate)
     except nv.NvenccCancelled as exc:

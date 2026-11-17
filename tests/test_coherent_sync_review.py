@@ -70,7 +70,7 @@ def _scanner(monkeypatch, *, accept_coherent, downmix_pair=None):
 
 def _scan(scanner, warnings=None):
     return scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2),
-                        detect_cuts=True, warn=None if warnings is None else warnings.append)
+                        detect_cuts=True, warn=None if warnings is None else (lambda message, **_fields: warnings.append(message)))
 
 
 def test_scanner_proposes_coherent_sync_for_review(monkeypatch):
@@ -353,3 +353,23 @@ def test_review_validated_with_an_undecided_auto_method_is_analysed(qt_app, tmp_
         assert panel.cadence_resolution_pending() and len(submitted) == 1
 
 
+
+
+def test_accepted_coherent_sync_publishes_its_zones(monkeypatch):
+    """Avertissement structuré : code, nature et zones à relire sur l'axe de sortie."""
+    received: list[tuple[str, dict]] = []
+    scanner = _scanner(monkeypatch, accept_coherent=True)
+    scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True,
+                 warn=lambda message, **fields: received.append((message, fields)))
+    assert len(received) == 1
+    fields = received[0][1]
+    assert fields["code"] == "sync_unverified" and fields["kind"] == "gaps"
+    assert fields["zones"] and all(set(zone) == {"start_ms", "end_ms"} for zone in fields["zones"])
+
+
+def test_scanner_without_warn_keeps_the_plain_log(monkeypatch):
+    logged: list[str] = []
+    scanner = _scanner(monkeypatch, accept_coherent=True)
+    scanner.scan(AudioSyncTrack(Path("ref.mkv"), 1), AudioSyncTrack(Path("don.mkv"), 2), detect_cuts=True,
+                 log=logged.append, warn=None)
+    assert any("Synchro cohérente acceptée" in line for line in logged)

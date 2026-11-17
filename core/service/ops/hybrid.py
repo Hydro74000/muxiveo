@@ -344,6 +344,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 entry["status"] = "exported"
             else:
                 child = children.logger(index)
+                entry["job"] = child.events.job  # job enfant (événements de l'épisode), résultat de service seulement
                 encode_config = (children.encode({"encode": request.encode}, remux_config, ctx.config, spec.common,
                                                  child) if request.encode is not None else None)
                 accept = bool((request.encode or {}).get("accept_dovi_nvenc_crop"))
@@ -397,7 +398,8 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 logger.emit("error", f"Rapport des épisodes non écrit : {report_error}")
             raise
     _write_report(request, entries)
-    return HybridResult(status=_status(entries, cancelled), episodes=tuple(entries))
+    return HybridResult(status=_status(entries, cancelled),
+                        episodes=tuple({**entry, "job": entry.get("job")} for entry in entries))
 
 
 def _write_report(request: HybridRequest, entries: list[dict[str, Any]]) -> None:
@@ -406,5 +408,6 @@ def _write_report(request: HybridRequest, entries: list[dict[str, Any]]) -> None
         return
     from core.atomic_io import atomic_write_text
 
-    atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": entries},
+    episodes = [{key: value for key, value in entry.items() if key != "job"} for entry in entries]  # rapport inchangé
+    atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": episodes},
                                                              ensure_ascii=False, indent=2, allow_nan=False) + "\n")

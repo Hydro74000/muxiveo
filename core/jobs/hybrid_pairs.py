@@ -207,7 +207,7 @@ def prepare_pair(pair: HybridPair, options: HybridOptions, config: AppConfig, lo
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda text: logger.emit("info", text),
-            warn=lambda text: logger.emit("warning", text),
+            warn=lambda text, **fields: logger.emit("warning", text, **fields),
         )
     elif target_sub is not None:
         from core.workflows.subtitle_sync_scan import SubtitleSyncScanner

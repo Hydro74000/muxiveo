@@ -162,7 +162,7 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
             cadence_mismatch=cadence_mismatch,
             cadence_audio_method=cadence_method,
             log=lambda message: log("info", message),
-            warn=lambda message: log("warning", message),
+            warn=lambda message, **fields: log("warning", message, **fields),
         ))
     calibration = result.to_dict()
     if request.output_json is not None:

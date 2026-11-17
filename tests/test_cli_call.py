@@ -117,7 +117,7 @@ def test_legacy_logger_events_format_wraps_messages(capsys):
     stream = io.StringIO()
     Logger(fmt="events", stream=stream).emit("warning", "attention", code="x")
     event = json.loads(stream.getvalue())
-    assert event["type"] == "log" and event["level"] == "warning" and event["message"] == "attention"
+    assert event["type"] == "warning" and event["message"] == "attention"  # avertissement : événement warning
     assert event["code"] == "x" and event["seq"] == 1
 
 

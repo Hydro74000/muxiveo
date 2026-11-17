@@ -168,7 +168,7 @@ def test_hybrid_run_applies_hybrid_defaults(monkeypatch, tmp_path):
             seen["cache"] = cache
 
         def logger(self, index):
-            return SimpleNamespace(emit=lambda *a, **k: None)
+            return SimpleNamespace(emit=lambda *a, **k: None, events=SimpleNamespace(job=f"enfant-{index}"))
 
         def run(self, config, common, logger, remux_config, *, force):
             seen["ran"] = remux_config

@@ -1772,7 +1772,7 @@ def test_single_job_after_the_token_is_cancelled_or_kept_succeeded(qapp, monkeyp
     assert finals == ["cancelled" if ending == "failed" else "succeeded"]  # un seul état terminal
     logs = [e.data.get("message", "") for e in sink.events if e.type is EventType.LOG and e.data.get("level") == "error"]
     assert logs.count("outil interrompu") == (1 if ending == "failed" else 0)  # pas de doublon au journal
-    codes = [e.data.get("code") for e in sink.events if e.type is EventType.LOG and e.data.get("level") == "warning"]
+    codes = [e.data.get("code") for e in sink.events if e.type is EventType.WARNING]  # avertissement à code
     assert ("cancel_too_late" in codes) is (ending == "finished")
 
 

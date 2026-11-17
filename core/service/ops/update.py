@@ -76,7 +76,8 @@ def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> 
 
     def progress(done: int, total: int) -> None:
         if total > 0:
-            ctx.events.progress(pct=round(done * 100 / total, 1), stage=f"Téléchargement de {info.version}")
+            ctx.events.progress(pct=round(done * 100 / total, 1), stage="download",
+                                label=f"Téléchargement de {info.version}")
 
     try:
         downloaded = ctx.port("download_update", up.download_update)(

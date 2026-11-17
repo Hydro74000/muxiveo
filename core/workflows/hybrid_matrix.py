@@ -1154,7 +1154,7 @@ def prepare_matrix_episode(
                     cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
                     cadence_audio_method=cadence_audio_method,
                     log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
-                    warn=lambda msg: logger.emit("warning", f"[{episode.display_name}] {msg}"),
+                    warn=lambda msg, **fields: logger.emit("warning", f"[{episode.display_name}] {msg}", **fields),
                 )
         elif target_sub and sub_scanner is not None:
             logger.emit("info", f"[{episode.display_name}] Synchronisation sous-titre donneur #{donor_idx}…")

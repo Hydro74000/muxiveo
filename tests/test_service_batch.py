@@ -565,3 +565,14 @@ def test_profile_batch_failure_after_the_token_is_cancelled_for_the_child(tmp_pa
     finals = [e.data["state"] for e in sink.events if e.parent == ctx.events.job and e.type is EventType.STATE
               and e.data["state"] != JobState.RUNNING.value]
     assert sorted(finals) == [JobState.CANCELLED.value, JobState.SUCCEEDED.value]
+
+
+def test_batch_result_links_each_entry_to_its_child_job_but_not_the_summary(tmp_path, doubles):
+    ctx, sink = _ctx()
+    summary = tmp_path / "resume.json"
+    result = call(CATALOG, "media.batch", {**_template(tmp_path, _items(tmp_path, "a", "b")),
+                                           "summary": str(summary)}, ctx)
+    children = [e.job for e in sink.events if e.parent == ctx.events.job and e.type is EventType.STATE
+                and e.data["state"] == "running"]
+    assert [entry["job"] for entry in result.jobs] == children and len(children) == 2
+    assert all("job" not in entry for entry in json.loads(summary.read_text(encoding="utf-8"))["jobs"])
