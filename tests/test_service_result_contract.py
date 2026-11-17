@@ -273,3 +273,25 @@ def test_saving_without_force_never_replaces_a_concurrent_save(tmp_path, monkeyp
     with pytest.raises(JobError) as caught:
         call(CATALOG, operation, payload, _ctx(config))
     assert "déjà enregistré" in str(caught.value)
+
+
+def test_an_unreadable_config_ini_never_shows_its_lines_without_privilege():
+    """Ligne fautive de config.ini (secret coupé) : numéro seul pour une requête de l'API non autorisée."""
+    import configparser
+
+    from core.jobs.errors import JobError
+
+    def broken() -> Any:
+        parser = configparser.ConfigParser()
+        parser.read_string("[metadata]\ntmdb_bearer_token = first-line\nSENTINEL_PRIVATE_TOKEN\n")
+
+    sink = ListSink()
+    with pytest.raises(JobError) as caught:
+        call(CATALOG, "config.get", {"key": "ui.language"},
+             ExecutionContext.create(SimpleNamespace(), sink, ports={"app_config": broken}))
+    assert "SENTINEL" not in str(caught.value) and "ligne 3" in str(caught.value)
+    assert all("SENTINEL" not in str(event.to_dict()) for event in sink.events)
+    with pytest.raises(configparser.Error, match="SENTINEL"):  # autorisée : erreur d'origine
+        call(CATALOG, "config.get", {"key": "ui.language"},
+             ExecutionContext.create(SimpleNamespace(), ListSink(), ports={"app_config": broken},
+                                     allow_privileged=True))

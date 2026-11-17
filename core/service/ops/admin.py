@@ -58,6 +58,25 @@ def _reveal(ctx: ExecutionContext) -> bool:
     return not ctx.api or ctx.allow_privileged
 
 
+def _app_config(ctx: ExecutionContext) -> Any:
+    """Configuration relue ; requête de l'API sans autorisation : une erreur de syntaxe de config.ini est rendue
+    sans les lignes fautives (qui peuvent contenir un secret coupé), avec leurs seuls numéros."""
+    import configparser
+
+    from core.config import AppConfig
+
+    try:
+        return ctx.port("app_config", AppConfig)()
+    except configparser.Error as exc:
+        if _reveal(ctx):
+            raise
+        lineno = getattr(exc, "lineno", None)
+        lines = sorted({line for line, _text in getattr(exc, "errors", ())} | (
+            {lineno} if isinstance(lineno, int) else set()))
+        where = f" (ligne {', '.join(map(str, lines))})" if lines else ""
+        raise JobError(f"config.ini illisible : {type(exc).__name__}{where}.", EXIT_VALIDATION) from None
+
+
 def describe(config: Any, name: str, spec: dict[str, Any], *, reveal: bool = True) -> dict[str, Any]:
     source, ini_value, settings_value = config.value_source(spec["section"], spec["key"])
     entry: dict[str, Any] = {"key": name, "label": spec.get("label", ""), "kind": spec["kind"],
@@ -140,9 +159,9 @@ class ConfigPathResult(Model):
 @operation("config.path", queue="exclusive", request=ConfigPathRequest, result=ConfigPathResult,
            summary="Emplacements de config.ini (surcharges) et du fichier de réglages de l'interface.")
 def config_path(_request: ConfigPathRequest, ctx: ExecutionContext) -> ConfigPathResult:
-    from core.config import AppConfig, config_ini_path
+    from core.config import config_ini_path
 
-    config = ctx.port("app_config", AppConfig)()
+    config = _app_config(ctx)
     settings = config.settings_file()
     return ConfigPathResult(config_ini=str(config_ini_path()), settings=str(settings) if settings else None,
                             config_dir=str(getattr(config, "config_dir", "") or "") or None)
@@ -179,9 +198,7 @@ class ConfigEntriesResult(Model):
 @operation("config.show", queue="exclusive", request=ConfigShowRequest, result=ConfigEntriesResult,
            summary="Réglages : valeur effective et provenance (config.ini, réglage de l'interface, défaut).")
 def config_show(request: ConfigShowRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
-    from core.config import AppConfig
-
-    config = ctx.port("app_config", AppConfig)()
+    config = _app_config(ctx)
     entries = [describe(config, name, spec, reveal=_reveal(ctx)) for name, spec in config_fields().items()
                if request.section is None or spec["section"] == request.section]
     if request.section is not None and not entries:
@@ -197,11 +214,8 @@ class ConfigKeyRequest(Model):
 @operation("config.get", queue="exclusive", request=ConfigKeyRequest, result=ConfigEntriesResult,
            summary="Un réglage : valeur effective et provenance.")
 def config_get(request: ConfigKeyRequest, ctx: ExecutionContext) -> ConfigEntriesResult:
-    from core.config import AppConfig
-
     spec = _spec(request.key)
-    return ConfigEntriesResult(entries=(describe(ctx.port("app_config", AppConfig)(), request.key, spec,
-                                                 reveal=_reveal(ctx)),))
+    return ConfigEntriesResult(entries=(describe(_app_config(ctx), request.key, spec, reveal=_reveal(ctx)),))
 
 
 @dataclass(frozen=True)
