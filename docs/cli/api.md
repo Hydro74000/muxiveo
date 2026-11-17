@@ -61,7 +61,10 @@ absent ou `null` non autorisé. Ce qui dépend des sources et de la machine (pis
 encodeurs et presets disponibles, géométrie Dolby Vision + NVENC) est refusé à la validation
 (`validation`), comme au lancement. Les documents des commandes historiques (`--config`, `--template`,
 `--batch`, exact-jobs) restent **tolérants** : clé inconnue signalée (`warning`, code `unknown_key`)
-et ignorée. Exemples : `docs/cli/examples/`.
+et ignorée — sauf dans les objets fermés du contrat (`sources[i].sync`, `tracks[i].sync`, `flags`), qui la
+refusent (`invalid_request`, code retour 2). Un fichier désigné par une requête (`template`, `batch` de
+`media.batch`) est un document : tolérant aussi, ses chemins contrôlés comme ceux de la requête.
+Exemples : `docs/cli/examples/`.
 
 **Réponse** (stdout, un objet JSON indenté) ; `status` = état terminal du job :
 
@@ -76,17 +79,21 @@ et ignorée. Exemples : `docs/cli/examples/`.
 Règles communes à `call`, `serve` et l'intégration Python (les commandes historiques gardent leur
 comportement) :
 
-- **Dossier de référence** : une valeur relative (sources, sorties, gabarit de sortie, `work_dir`,
-  calibrations, pièces jointes, chapitres importés, preset ou profil désigné par un fichier) est résolue
-  depuis le dossier du fichier de requête (`call`), le `base_dir` de la soumission (`serve`) ou celui du
-  contexte (Python) ; sans dossier de référence, elle est **refusée** — jamais résolue depuis le dossier
-  courant du processus. Les chemins sont utilisés tels qu'admis (blancs compris ; `~` = dossier
-  personnel).
+- **Dossier de référence** : une valeur relative (sources, sorties, `work_dir`, calibrations, pièces
+  jointes, chapitres importés, preset ou profil désigné par un fichier) est résolue depuis le dossier du
+  fichier de requête (`call --request fichier.json` ; avec `--request -`, le dossier courant), le
+  `base_dir` de la soumission (`serve`) ou celui du contexte (Python) ; sans dossier de référence, elle
+  est **refusée** — jamais résolue depuis le dossier courant d'un worker. Un gabarit de sortie rendu
+  relatif se place d'abord dans le dossier de sortie (`output` terminé par `/`, `output_dir` d'un lot),
+  sinon dans le dossier de référence, sinon il est refusé. Chemins de documents et sorties utilisés tels
+  qu'admis (blancs compris ; `~` = dossier personnel) ; une référence de profil (nom ou fichier) est
+  lue sans ses blancs de début et de fin.
 - **Chemins inutilisables** refusés : absolus pour un autre OS (`C:/film.mkv` sous Linux) ou ambigus
   sous Windows (`C:film.mkv`, `\film.mkv`).
 - **Pas de redirection** : un document ne désigne jamais un exécutable (clés de job `ffprobe` /
-  `mediainfo` ignorées : outils de la configuration), `tmdb_cover` doit venir de
-  `https://image.tmdb.org/`, les clés internes `_…` d'un document sont retirées.
+  `mediainfo` hors contrat : refusées en requête, signalées et sans effet dans un document historique ;
+  outils = configuration ou options de l'appel), `tmdb_cover` doit venir de `https://image.tmdb.org/`,
+  les clés internes `_…` d'un document sont retirées.
 - **Paramètres libres de l'encodeur** (`extra_params`, presets compris) : limités aux options de
   l'encodeur — options privées et options d'encodage vidéo pour FFmpeg (sans option de la ligne de
   commande homonyme : `-stats`…), options d'encodage de `--help` pour NVEncC (sans entrées, sorties,
@@ -134,8 +141,10 @@ Une ligne JSON par événement (stderr avec `call`, notifications `job.event` av
 ## Lots, jobs enfants, résultats partiels
 
 `media.batch`, `profile.batch`, `hybrid.run` : un job enfant par élément (événements `parent` = lot).
-Le résultat du lot liste chaque enfant (état, sortie, erreur, `job` = identifiant du job enfant) avec
-`status`, repris par l'état terminal du lot, l'enveloppe de `call` et le code retour :
+Le résultat du lot liste chaque élément (état, sortie, erreur, `job` = identifiant de son job enfant,
+`null` quand l'élément n'en a pas, ex. épisode Hybrid seulement exporté : aucun événement enfant) avec
+`status`, repris par l'état terminal du lot, l'enveloppe de `call` et le code retour ; `job` n'existe que
+dans le résultat de service (résumé de lot et rapport Hybrid écrits sur disque inchangés) :
 
 - `succeeded` : tous réussis (code retour 0) ;
 - `partial` : au moins un réussi et au moins un en échec ou annulé ;

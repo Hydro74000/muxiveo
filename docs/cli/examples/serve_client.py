@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any
 
 
@@ -48,26 +48,48 @@ def main() -> int:
         return 2
     source = Path(sys.argv[1]).resolve()
     worker = Worker(sys.argv[2:] or ["muxiveo", "--cli", "serve"])
-    submit = worker.send("job.submit", {"operation": "media.inspect", "request": {"inputs": [source.name]},
-                                        "base_dir": str(source.parent)})
-    job = None
-    while True:
-        message = worker.messages.get(timeout=120)
-        if message.get("id") == submit:  # la réponse précède tout événement du job
-            if "error" in message:
-                print("refusé :", message["error"])
+    status = 1
+    try:
+        submit = worker.send("job.submit", {"operation": "media.inspect", "request": {"inputs": [source.name]},
+                                            "base_dir": str(source.parent)})
+        job = None
+        while True:
+            try:
+                message = worker.messages.get(timeout=120)
+            except Empty:
+                print("délai dépassé : aucune réponse du worker")
                 break
-            job = message["result"]["job"]
-        elif message.get("method") == "job.event" and message["params"]["job"] == job:
-            event = message["params"]
-            print(event["seq"], event["type"], event.get("state") or event.get("message") or "")
-            if event["type"] == "result":
-                files = event["result"]["files"]
-                print("pistes :", [track["type"] for track in files[0]["tracks"]])
-            if event["type"] == "state" and event["state"] in ("succeeded", "failed", "cancelled"):
+            if message.get("method") == "eof":
+                print("le worker s'est arrêté")
                 break
-    worker.send("server.shutdown")
-    return worker.process.wait(60)
+            if message.get("id") == submit:  # la réponse précède tout événement du job
+                if "error" in message:
+                    print("refusé :", message["error"].get("data") or message["error"]["message"])
+                    break
+                job = message["result"]["job"]
+            elif message.get("method") == "job.event" and message["params"]["job"] == job:
+                event = message["params"]
+                detail = event.get("state") or event.get("message") or event.get("error", {}).get("message", "")
+                print(event["seq"], event["type"], detail)
+                if event["type"] == "result":
+                    print("pistes :", [track["type"] for track in event["result"]["files"][0]["tracks"]])
+                if event["type"] == "state" and event["state"] in ("succeeded", "failed", "cancelled"):
+                    status = 0 if event["state"] == "succeeded" else 1
+                    break
+    finally:
+        assert worker.process.stdin is not None
+        # Demande d'arrêt puis fin de stdin (arrêt même si la demande n'est pas lue) ; worker déjà arrêté : ignoré.
+        for step in (lambda: worker.send("server.shutdown"), worker.process.stdin.close):
+            try:
+                step()
+            except OSError:
+                pass
+        try:
+            worker.process.wait(60)
+        except subprocess.TimeoutExpired:
+            worker.process.kill()
+            worker.process.wait()
+    return status
 
 
 if __name__ == "__main__":
