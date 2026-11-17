@@ -17,6 +17,7 @@ from core.workflows.preparation_cache import PreparationCache, PreparationContex
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
+from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.media import JobOptions, MediaRunResult, encode_plan_payload
 
@@ -68,7 +69,8 @@ class ProfileJobRequest(Model):
     options: JobOptions = field(default_factory=JobOptions)
     metadata: dict[str, Any] = field(default_factory=dict,
                                      description="Métadonnées du job (tmdb, output_template, mux_backend…).")
-    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` (voir le schéma des jobs).")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` (voir le schéma des jobs).",
+                                          schema=ENCODE_BLOCK_REF)
 
     @classmethod
     def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:

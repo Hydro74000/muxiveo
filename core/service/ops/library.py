@@ -13,6 +13,7 @@ from core.jobs.errors import JobError
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
+from core.service.schemas.documents import DECISION_PROFILE_REF
 from core.service.operations import operation
 from core.service.ops.media import MediaJobRequest, _build_cached
 
@@ -140,7 +141,7 @@ class ProfileNameRequest(Model):
 
 @dataclass(frozen=True)
 class ProfileDocumentResult(Model):
-    profile: dict[str, Any] = field(default_factory=dict)
+    profile: dict[str, Any] = field(default_factory=dict, schema=DECISION_PROFILE_REF)
     path: str | None = None
 
 
@@ -158,7 +159,8 @@ def profile_show(request: ProfileNameRequest, ctx: ExecutionContext) -> ProfileD
 class ProfileSaveRequest(Model):
     """Profil décisionnel enregistré d'après son document (éditeur de profils de l'interface)."""
 
-    profile: dict[str, Any] = field(description="Document decision-profile v1 (`name` requis).")
+    profile: dict[str, Any] = field(description="Document decision-profile v1 (`name` requis).",
+                                    schema=DECISION_PROFILE_REF)
     force: bool = field(default=False, description="Remplacer un profil du même nom.")
 
 

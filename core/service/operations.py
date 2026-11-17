@@ -19,6 +19,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.events import EVENT_SCHEMA, EVENT_VERSION, JobState
 from core.service.models import Model
+from core.service.schemas.documents import used_definitions
 
 #: Version du catalogue (ajout d'opération ou de champ facultatif : inchangée ;
 #: retrait ou changement incompatible : incrémentée).
@@ -41,8 +42,10 @@ class OperationSpec:
     #: Publie des événements ``progress`` (pourcentage, vitesse…) : annoncé par ``describe()``.
     progress: bool = False
 
-    def describe(self) -> dict[str, Any]:
-        return {
+    def describe(self, *, definitions: bool = True) -> dict[str, Any]:
+        """Description publiée ; ``definitions`` : document autonome (``$defs`` partagées qu'il utilise jointes),
+        faux quand le catalogue les joint une fois pour toutes."""
+        described = {
             "summary": self.summary,
             "long_running": self.long_running,
             "mutating": self.mutating,
@@ -54,6 +57,8 @@ class OperationSpec:
             "request": self.request.json_schema(),
             "result": self.result.json_schema(),
         }
+        used = used_definitions(described["request"], described["result"]) if definitions else {}
+        return {**described, "$defs": used} if used else described
 
 
 def operation(
@@ -105,12 +110,14 @@ class Catalog:
 
     def describe(self) -> dict[str, Any]:
         """Catalogue publié (``schema --version api``) : base d'un futur contrat OpenAPI / JSON-RPC."""
+        operations = {spec.name: spec.describe(definitions=False) for spec in self}
         return {
             "api_version": API_VERSION,
             "event_version": EVENT_VERSION,
-            "operations": {spec.name: spec.describe() for spec in self},
+            "operations": operations,
             "event": EVENT_SCHEMA,
             "errors": [code.value for code in ErrorCode],
+            "$defs": used_definitions(operations),
         }
 
 

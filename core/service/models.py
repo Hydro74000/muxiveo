@@ -13,9 +13,10 @@ sous-classes de :class:`Model` (imbriquées).
 
 from __future__ import annotations
 
+import copy
 import dataclasses
-import re
 import functools
+import re
 import types
 import typing
 from dataclasses import dataclass
@@ -39,16 +40,20 @@ def field(
     maximum: float | None = None,
     min_items: int | None = None,
     pattern: str | None = None,
+    schema: dict[str, Any] | None = None,
 ) -> Any:
     """Champ documenté et contraint (bornes numériques, nombre minimal d'éléments, motif d'un texte).
 
     ``pattern`` : expression complète (ancres comprises), vérifiée par ``re.fullmatch`` sur le texte tel quel
-    et publiée à l'identique dans le schéma JSON.
+    et publiée à l'identique dans le schéma JSON. ``schema`` : schéma JSON publié du champ (document décrit
+    ailleurs, ``$ref`` vers une définition partagée), prioritaire sur celui déduit du type ; ``null`` reste
+    annoncé si le type l'admet. Publication seule : la lecture suit le type.
     """
     metadata = {
         key: value
         for key, value in (("description", description), ("minimum", minimum),
-                           ("maximum", maximum), ("min_items", min_items), ("pattern", pattern))
+                           ("maximum", maximum), ("min_items", min_items), ("pattern", pattern),
+                           ("schema", schema))
         if value not in (None, "")
     }
     if default_factory is not dataclasses.MISSING:
@@ -331,8 +336,9 @@ def _model_schema(cls: type) -> dict[str, Any]:
     for item in dataclasses.fields(cls):
         if not item.init:
             continue
-        schema = _type_schema(hints[item.name])
         meta = item.metadata
+        schema = _declared_schema(meta["schema"], hints[item.name]) if "schema" in meta \
+            else _type_schema(hints[item.name])
         if meta.get("description"):
             schema["description"] = meta["description"]
         if "pattern" in meta:
@@ -352,10 +358,18 @@ def _model_schema(cls: type) -> dict[str, Any]:
         properties[item.name] = schema
     schema = {"type": "object", "title": cls.__name__, "properties": properties, "additionalProperties": False}
     doc = (cls.__doc__ or "").strip().splitlines()
-    if doc:
+    if doc and not doc[0].startswith(f"{cls.__name__}("):  # signature générée par ``dataclass`` : pas une description
         schema["description"] = doc[0]
     if required:
         schema["required"] = required
+    return schema
+
+
+def _declared_schema(declared: dict[str, Any], tp: Any) -> dict[str, Any]:
+    """Schéma explicite d'un champ (copie) ; ``null`` ajouté si le type l'admet."""
+    schema = copy.deepcopy(declared)
+    if _is_union(tp) and _NONE_TYPE in typing.get_args(tp):
+        return {"anyOf": [schema, {"type": "null"}]}
     return schema
 
 

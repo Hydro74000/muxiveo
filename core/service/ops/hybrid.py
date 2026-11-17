@@ -35,6 +35,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
 from core.workflows.preparation_cache import PreparationCache
 from core.service.models import Model, field
+from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.batch import _Children
 from core.service.ops.media import JobOptions
@@ -85,7 +86,8 @@ class HybridRequest(Model):
     output_all: bool = False
     options: JobOptions = field(default_factory=JobOptions,
                                 description="Synchro et pistes ; défauts hybrides : physical, mirror, fondu 80 ms.")
-    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque épisode.")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque épisode.",
+                                          schema=ENCODE_BLOCK_REF)
     export_workflow: Path | None = field(default=None, description="Enregistrer les exact-jobs au lieu d'exécuter.")
     dry_run: bool = field(default=False, description="Plan d'exécution de chaque épisode, sans écriture.")
     force: bool = False

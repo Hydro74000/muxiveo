@@ -27,6 +27,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
 from core.service.events import JobState
 from core.service.models import Model, field
+from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.media import JobOptions
 
@@ -66,7 +67,8 @@ class BatchRequest(Model):
     metadata: BatchMetadata = field(default_factory=BatchMetadata)
     mux_backend: Literal["auto", "native", "ffmpeg"] | None = None
     options: JobOptions = field(default_factory=JobOptions)
-    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` fusionné dans chaque job (prime).")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` fusionné dans chaque job (prime).",
+                                          schema=ENCODE_BLOCK_REF)
     dry_run: bool = field(default=False, description="Aperçu de chaque job, sans écriture.")
     force: bool = field(default=False, description="Remplacer les sorties existantes.")
     continue_on_error: bool = field(default=False, description="Poursuivre après un job en échec.")
@@ -115,7 +117,8 @@ class ProfileBatchRequest(Model):
     sources: BatchSelection = field(default_factory=BatchSelection)
     metadata: BatchMetadata = field(default_factory=BatchMetadata)
     options: JobOptions = field(default_factory=JobOptions)
-    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque job.")
+    encode: dict[str, Any] | None = field(default=None, description="Bloc `encode` appliqué à chaque job.",
+                                          schema=ENCODE_BLOCK_REF)
     dry_run: bool = False
     force: bool = False
     continue_on_error: bool = False

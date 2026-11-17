@@ -21,6 +21,7 @@ from core.json_documents import resolve_document_paths
 from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.service.models import Model, field
+from core.service.schemas.documents import JOB_REF
 from core.service.operations import operation
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig
@@ -48,7 +49,8 @@ class InspectResult(Model):
     """Fiches des sources, ou modèle de job."""
 
     files: tuple[dict[str, Any], ...] = field(default=(), description="Une fiche par source (pistes, HDR, chapitres…).")
-    template: dict[str, Any] | None = field(default=None, description="Exact-job minimal (config_template).")
+    template: dict[str, Any] | None = field(default=None, description="Exact-job minimal (config_template).",
+                                            schema=JOB_REF)
 
 
 @operation(
@@ -146,7 +148,8 @@ _NULLABLE = {"nfo", "remove_closed_captions", "sync_mode", "sync_subtitles", "cl
 class MediaJobRequest(Model):
     """Job de remux : document (contrat v1 / exact-job) et options."""
 
-    job: dict[str, Any] = field(description="Document de job (sources, pistes, sortie…), contrat `schema --version 1`.")
+    job: dict[str, Any] = field(description="Document de job (sources, pistes, sortie…), contrat `schema --version 1`.",
+                                schema=JOB_REF)
     options: JobOptions = field(default_factory=JobOptions, description="Options du job.")
 
     @classmethod
