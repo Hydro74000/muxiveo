@@ -15,7 +15,6 @@ from __future__ import annotations
 import builtins
 import collections
 import threading
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -153,6 +152,10 @@ class JobManager:
         self._threads: set[threading.Thread] = set()
         self._closed = False
         self._draining = False
+        #: Annulations dont les rappels (qui peuvent émettre) sont en cours.
+        self._cancelling = 0
+        self._stopper: threading.Thread | None = None
+        self._stop_failure: BaseException | None = None
 
     @property
     def draining(self) -> bool:
@@ -237,20 +240,42 @@ class JobManager:
                 self._schedule()  # une exclusive retirée ne fait plus barrière
         if queued:
             self._publish_terminal([target])
-        else:
+            return True
+        with self._lock:
+            self._cancelling += 1  # rappels suivis : l'arrêt attend leurs émissions
+        try:
             target.cancel.cancel()  # en cours, ou en cours d'annonce (submit() le retire) : hors du verrou
+        finally:
+            with self._lock:
+                self._cancelling -= 1
+                self._changed.notify_all()
         return True
 
-    def shutdown(self, timeout: float | None = None) -> None:
-        """Refuse les soumissions, annule la file et les jobs en cours, puis attend (au plus ``timeout`` s) la fin
-        de chaque ``execute()``, des annonces en cours et la livraison de chaque état final. Une destination ou un
-        rappel d'annulation en échec n'interrompt rien : première erreur relancée à la fin."""
-        deadline = None if timeout is None else time.monotonic() + timeout
+    def shutdown(self, timeout: float | None = None) -> bool:
+        """Refuse les soumissions ; un coordinateur annule la file et les jobs en cours, puis attend la fin de
+        chaque ``execute()``, des annonces et annulations en cours et la livraison de chaque état final.
+
+        Attend le coordinateur au plus ``timeout`` s (destination ou rappel bloqué : il poursuit seul) et renvoie
+        vrai s'il a fini ; une destination ou un rappel en échec n'interrompt rien (première erreur relancée).
+        """
         with self._lock:
             self._closed = True
+            if self._stopper is None:
+                self._stopper = threading.Thread(target=self._stop, name="job-manager-shutdown", daemon=True)
+                self._stopper.start()
+            stopper = self._stopper
+        stopper.join(timeout)
+        if stopper.is_alive():
+            return False
+        if self._stop_failure is not None:
+            raise self._stop_failure
+        return True
+
+    def _stop(self) -> None:
+        with self._lock:
             dropped = self._drop_pending_locked("Arrêt du gestionnaire.")
             running = [job for job in self._jobs.values() if job.state is JobState.RUNNING]
-            threads = list(self._threads)
+            threads = list(self._threads)  # aucun fil ne démarre après la fermeture
         failure: BaseException | None = None
         try:
             self._publish_terminal(dropped)
@@ -261,17 +286,15 @@ class JobManager:
                 job.cancel.cancel()  # rappels synchrones, qui peuvent émettre
             except BaseException as exc:  # noqa: BLE001 - relancée après le nettoyage
                 failure = failure or exc
-        for thread in threads:
-            thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
         with self._changed:
-            self._changed.wait_for(self._settled_locked,
-                                   None if deadline is None else max(0.0, deadline - time.monotonic()))
-        if failure is not None:
-            raise failure
+            self._changed.wait_for(self._settled_locked)
+        for thread in threads:  # retirés du suivi juste avant leur fin : attendus jusqu'au bout
+            thread.join()
+        self._stop_failure = failure
 
     def _settled_locked(self) -> bool:
-        """Plus rien en file ni en cours, chaque fin livrée (annonces interrompues par l'arrêt comprises)."""
-        return not self._pending and not self._threads and all(
+        """Plus rien en file, en cours ni en annulation, chaque fin livrée (annonces interrompues comprises)."""
+        return not self._pending and not self._threads and not self._cancelling and all(
             job.published for job in self._jobs.values() if job.finished_at is not None)
 
     # -- Ordonnancement (sous le verrou) ----------------------------------------------------------------------
@@ -358,8 +381,10 @@ class JobManager:
         for job in jobs:
             assert job.error is not None
             try:
-                job.emitter.error(job.error.to_dict())
-                job.emitter.state(error_state(job.error), operation=job.spec.name)
+                try:
+                    job.emitter.error(job.error.to_dict())
+                finally:  # état final toujours tenté : il libère l'historique et l'arrêt
+                    job.emitter.state(error_state(job.error), operation=job.spec.name)
             except BaseException as exc:  # noqa: BLE001 - relancée après les autres
                 failure = failure or exc
         if failure is not None:
@@ -390,11 +415,9 @@ class JobManager:
             execute(job.spec, job.request, ctx, before_terminal=record)
         except BaseException as exc:  # noqa: BLE001 - toute fin de job est enregistrée
             if job.finished_at is None:  # échec avant l'exécution : fin enregistrée et publiée ici
-                error = ApiError.from_exception(exc)
-                record(None, error)
+                record(None, ApiError.from_exception(exc))
                 try:
-                    job.emitter.error(error.to_dict())
-                    job.emitter.state(error_state(error), operation=job.spec.name)
+                    self._publish_terminal([job])
                 except BaseException:  # noqa: BLE001 - destination en échec : la fin reste enregistrée
                     pass
         renewed = None

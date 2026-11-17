@@ -171,13 +171,17 @@ def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext, *,
         error = ApiError.from_exception(exc)
         if before_terminal is not None:
             before_terminal(None, error)
-        ctx.events.error(error.to_dict())
-        ctx.events.state(error_state(error), operation=spec.name)
+        try:
+            ctx.events.error(error.to_dict())
+        finally:  # état final toujours publié, même si la destination refuse l'erreur
+            ctx.events.state(error_state(error), operation=spec.name)
         raise
     if before_terminal is not None:
         before_terminal(result, None)
-    ctx.events.result(result.to_dict())
-    ctx.events.state(result_state(result), operation=spec.name)
+    try:
+        ctx.events.result(result.to_dict())
+    finally:  # état final toujours publié, même si la destination refuse le résultat
+        ctx.events.state(result_state(result), operation=spec.name)
     return result
 
 

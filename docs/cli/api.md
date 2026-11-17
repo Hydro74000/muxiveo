@@ -274,9 +274,12 @@ de `seq`, un seul à la fois ; un événement publié pendant la livraison d'un 
 est livré juste après, par le fil qui livre ; une destination en échec n'interrompt pas la livraison des
 suivants. Un job reçu terminé (`state` final, `result`, `error`) est déjà terminé pour `get`, résultat ou
 erreur compris ; il reste consultable au moins jusqu'à la livraison de son état final. Une destination en
-échec pendant l'annonce (`queued`) laisse le job connu, en échec. `shutdown(timeout)` attend la fin des
-jobs, des annonces en cours et la livraison de chaque état final ; un rappel d'annulation en échec
-n'empêche pas l'annulation des autres jobs (première erreur relancée à la fin).
+échec pendant l'annonce (`queued`) laisse le job connu, en échec ; l'état final est publié même si la
+destination refuse l'événement `result` ou `error` qui le précède. `shutdown(timeout)` confie l'arrêt à un
+coordinateur (fin des jobs, des annonces et des annulations en cours, livraison de chaque état final) et
+l'attend au plus `timeout` s : vrai s'il a fini, faux s'il poursuit seul (destination bloquée) ; un rappel
+d'annulation en échec n'empêche ni les autres rappels ni l'annulation des autres jobs (première erreur
+relancée à la fin).
 
 ## Modèle de sécurité
 

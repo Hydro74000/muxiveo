@@ -37,13 +37,21 @@ class CancelToken:
         return self._event
 
     def cancel(self) -> None:
+        """Lève l'annulation puis exécute chaque rappel ; un rappel en échec n'empêche pas les suivants (première
+        erreur relancée à la fin)."""
         with self._lock:
             if self._event.is_set():
                 return
             self._event.set()
             callbacks = list(self._callbacks)
+        failure: BaseException | None = None
         for callback in callbacks:
-            callback()
+            try:
+                callback()
+            except BaseException as exc:  # noqa: BLE001 - relancée après les autres rappels
+                failure = failure or exc
+        if failure is not None:
+            raise failure
 
     def on_cancel(self, callback: Callable[[], None]) -> None:
         """Appelle ``callback`` à l'annulation (immédiatement si elle a déjà eu lieu)."""

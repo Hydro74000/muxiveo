@@ -82,8 +82,25 @@ def _watch(request: _Request, ctx: ExecutionContext) -> _Result:
     return _Result(name=request.name)
 
 
+_HELD: dict[str, threading.Event] = {}
+
+
+@operation("t.held", request=_Request, result=_Result, summary="Rappel d'annulation suspendu avant d'émettre")
+def _held(request: _Request, ctx: ExecutionContext) -> _Result:
+    def callback() -> None:
+        _HELD["inside"].set()
+        _HELD["resume"].wait(10)
+        ctx.events.log("info", "rappel tardif")
+
+    ctx.cancel.on_cancel(callback)
+    _STARTED.append(request.name)
+    ctx.cancel.wait(10)
+    ctx.cancel.raise_if_cancelled()
+    return _Result(name=request.name)
+
+
 _CATALOG = Catalog([_make("t.analysis"), _make("t.job", queue="job"), _make("t.exclusive", queue="exclusive"),
-                    _make("t.secret", queue="exclusive", privileged=True), _update, _cross, _side, _watch])
+                    _make("t.secret", queue="exclusive", privileged=True), _update, _cross, _side, _watch, _held])
 
 
 @pytest.fixture(autouse=True)
@@ -526,3 +543,72 @@ def test_shutdown_cancels_every_job_despite_a_failing_cancel_callback():
         manager.shutdown(timeout=10)
     assert all(_state(manager, job) is JobState.CANCELLED for job in jobs)
     assert not any(thread.name.startswith("job-t.") and thread.is_alive() for thread in threading.enumerate())
+
+
+@pytest.mark.parametrize("refused", [EventType.ERROR, EventType.RESULT])
+def test_the_final_state_is_delivered_even_when_the_previous_event_fails(refused):
+    class _Refusing(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.type is refused:
+                raise RuntimeError("destination en échec")
+
+    manager, sink = _manager(_Refusing(), max_jobs=1)
+    _release("ok")
+    first = manager.submit("t.job", {"name": "ok"})  # résultat refusé
+    blocked = manager.submit("t.job", {"name": "blocked"})
+    queued = manager.submit("t.job", {"name": "queued"})  # annulé à l'arrêt : erreur refusée
+    _until(lambda: "blocked" in _STARTED)
+    try:
+        assert manager.shutdown(timeout=5)
+    except RuntimeError:
+        pass
+    finals = {e.job: e.data["state"] for e in sink.events if e.type is EventType.STATE
+              and e.data["state"] not in ("queued", "running")}
+    assert set(finals) == {first, blocked, queued}
+
+
+def test_shutdown_waits_for_cancel_callbacks_still_to_emit():
+    _HELD["inside"], _HELD["resume"] = threading.Event(), threading.Event()
+    manager, sink = _manager()
+    job = manager.submit("t.held", {"name": "h"})
+    _until(lambda: _STARTED == ["h"])
+    canceller = threading.Thread(target=manager.cancel, args=(job,))
+    canceller.start()
+    assert _HELD["inside"].wait(5)  # rappel suspendu avant son émission ; le job, réveillé, se termine
+    _until(lambda: any(e.job == job and e.data.get("state") == "cancelled" for e in sink.events))
+    assert not manager.shutdown(timeout=0.2)  # l'arrêt attend le rappel
+    _HELD["resume"].set()
+    assert manager.shutdown(timeout=5)
+    canceller.join(5)
+    assert sink.events[-1].data.get("message") == "rappel tardif"
+
+
+def test_every_cancel_callback_runs_despite_a_failing_one():
+    from core.service.context import CancelToken
+
+    token, released = CancelToken(), threading.Event()
+    token.on_cancel(lambda: (_ for _ in ()).throw(RuntimeError("rappel en échec")))
+    token.on_cancel(released.set)
+    with pytest.raises(RuntimeError, match="rappel"):
+        token.cancel()
+    assert released.is_set() and token.cancelled
+
+
+def test_shutdown_timeout_is_kept_with_a_blocked_sink():
+    gate = threading.Event()
+
+    class _Blocking(ListSink):
+        def emit(self, event: Event) -> None:
+            super().emit(event)
+            if event.data.get("state") == "cancelled":
+                gate.wait(10)
+
+    manager, _ = _manager(_Blocking(), max_jobs=1)
+    manager.submit("t.job", {"name": "r"})
+    manager.submit("t.job", {"name": "q"})
+    _until(lambda: _STARTED == ["r"])
+    started = time.monotonic()
+    assert manager.shutdown(timeout=0.2) is False and time.monotonic() - started < 2
+    gate.set()
+    assert manager.shutdown(timeout=10)
