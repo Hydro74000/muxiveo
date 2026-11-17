@@ -53,10 +53,19 @@ def test_preset_lifecycle(tmp_path):
 
 
 def test_preset_fields_are_checked(tmp_path):
+    from core.service import ApiError
+
+    historical = ExecutionContext.create(SimpleNamespace(app_data_dir=tmp_path / "data"), ListSink(), api=False)
     with pytest.raises(JobError, match="inconnu"):
-        call(CATALOG, "encode_preset.save", {"preset": {"name": "x", "speed": 1}}, _ctx(tmp_path))
+        call(CATALOG, "encode_preset.save", {"preset": {"name": "x", "speed": 1}}, historical, allow_relative=True,
+             strict_documents=False)
     with pytest.raises(JobError, match="name"):
-        call(CATALOG, "encode_preset.save", {"preset": {"codec": "libx265"}}, _ctx(tmp_path))
+        call(CATALOG, "encode_preset.save", {"preset": {"codec": "libx265"}}, historical, allow_relative=True,
+             strict_documents=False)
+    for preset, path in (({"name": "x", "speed": 1}, "preset.speed"), ({"codec": "libx265"}, "preset.name")):
+        with pytest.raises(ApiError) as caught:  # requête de l'API : refus dès la lecture, champ désigné
+            call(CATALOG, "encode_preset.save", {"preset": preset}, _ctx(tmp_path))
+        assert [detail.path for detail in caught.value.details] == [path]
 
 
 def _args(*argv: str) -> argparse.Namespace:

@@ -130,9 +130,57 @@ def _manager(ctx: ExecutionContext) -> ProfileManager:
     return ProfileManager(Path(ctx.config.app_data_dir) / "encode_profiles")
 
 
-def _find(manager: ProfileManager, name: str) -> EncodePreset:
+#: Preset tel que rendu (``show``) : tous ses champs, typés.
+_PRESET_SCHEMA = dataclass_schema(EncodePreset, exclude=("force_8bit", "force_10bit"))
+
+
+def _input_schema(node: Any, *, root: bool = True) -> Any:
+    """Preset à enregistrer : seul ``name`` (non vide) requis, champs absents complétés par leurs défauts ;
+    anciens champs ``force_8bit`` / ``force_10bit`` admis."""
+    if isinstance(node, list):
+        return [_input_schema(item, root=False) for item in node]
+    if not isinstance(node, dict):
+        return node
+    schema = {key: _input_schema(value, root=False) for key, value in node.items() if key != "required"}
+    if root:
+        schema["required"] = ["name"]
+        schema["properties"] = {**schema["properties"], "name": {"type": "string", "pattern": "\\S"},
+                                "force_8bit": {"type": "boolean"}, "force_10bit": {"type": "boolean"}}
+    return schema
+
+
+_PRESET_INPUT_SCHEMA = _input_schema(_PRESET_SCHEMA)
+
+
+def _type_errors(value: Any, schema: dict[str, Any], prefix: str) -> list[tuple[str, str]]:
+    from core.service.schema_check import schema_errors
+
+    return [(f"{prefix}.{path}" if path else prefix, message)
+            for path, message in schema_errors(value, schema, {"$defs": {}})]
+
+
+def _conforming(manager: ProfileManager, ctx: ExecutionContext) -> tuple[list[EncodePreset], list[dict[str, str]]]:
+    """Presets enregistrés ; en requête de l'API, un preset aux champs non conformes au schéma publié (fichier
+    écrit à la main) est signalé comme fichier illisible plutôt que publié (commandes historiques : inchangé)."""
+    presets: list[EncodePreset] = []
+    refused: list[dict[str, str]] = []
+    for preset in manager.load_all():
+        errors = _type_errors(preset.to_json_dict(), _PRESET_SCHEMA, "preset") if ctx.api else []
+        if errors:
+            refused.append({"path": str(manager.path_for_name(preset.name)),
+                            "error": "; ".join(f"{path} : {message}" for path, message in errors)})
+        else:
+            presets.append(preset)
+    return presets, refused
+
+
+def _find(manager: ProfileManager, name: str, ctx: ExecutionContext | None = None) -> EncodePreset:
     for preset in manager.load_all():
         if preset.name == name:
+            errors = _type_errors(preset.to_json_dict(), _PRESET_SCHEMA, "preset") if ctx and ctx.api else []
+            if errors:
+                raise JobError("Preset enregistré non conforme : "
+                               + "; ".join(f"{path} : {message}" for path, message in errors), EXIT_VALIDATION)
             return preset
     raise JobError(f"Preset d'encodage introuvable : {name}", EXIT_ARGS)
 
@@ -174,7 +222,7 @@ class PresetNameRequest(Model):
 
 @dataclass(frozen=True)
 class PresetResult(Model):
-    preset: dict[str, Any] = field(schema=dataclass_schema(EncodePreset, exclude=("force_8bit", "force_10bit")))
+    preset: dict[str, Any] = field(schema=_PRESET_SCHEMA)
 
 
 @dataclass(frozen=True)
@@ -190,8 +238,20 @@ class PresetImportRequest(Model):
 class PresetSaveRequest(Model):
     """Preset enregistré d'après ses champs (format des presets de l'interface)."""
 
-    preset: dict[str, Any] = field(description="Champs du preset (`name` requis).")
+    preset: dict[str, Any] = field(description="Champs du preset (`name` requis ; absents : valeurs par défaut).",
+                                   schema=_PRESET_INPUT_SCHEMA)
     force: bool = False
+
+    @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Requête de l'API : champs du preset vérifiés contre le schéma publié, puis par sa construction."""
+        errors = _type_errors(values.get("preset"), _PRESET_INPUT_SCHEMA, "preset")
+        if not errors:
+            try:
+                _preset_from(values.get("preset"))
+            except JobError as exc:
+                errors = [("preset", str(exc))]
+        return errors
 
 
 @dataclass(frozen=True)
@@ -234,16 +294,17 @@ def _store(ctx: ExecutionContext, preset: EncodePreset, *, force: bool) -> None:
            summary="Presets d'encodage enregistrés (communs avec l'interface).")
 def preset_list(_request: PresetListRequest, ctx: ExecutionContext) -> PresetListResult:
     manager = _manager(ctx)
+    loaded, refused = _conforming(manager, ctx)
     presets = tuple({"name": p.name, "description": p.description, "codec": p.codec, "preset": p.preset}
-                    for p in sorted(manager.load_all(), key=lambda item: item.name.lower()))
+                    for p in sorted(loaded, key=lambda item: item.name.lower()))
     errors = tuple({"path": str(error.path), "error": str(error.reason)} for error in manager.load_errors)
-    return PresetListResult(presets=presets, load_errors=errors)
+    return PresetListResult(presets=presets, load_errors=errors + tuple(refused))
 
 
 @operation("encode_preset.show", request=PresetNameRequest, result=PresetResult,
            summary="Contenu d'un preset d'encodage.")
 def preset_show(request: PresetNameRequest, ctx: ExecutionContext) -> PresetResult:
-    return PresetResult(preset=_find(_manager(ctx), request.name).to_json_dict())
+    return PresetResult(preset=_find(_manager(ctx), request.name, ctx).to_json_dict())
 
 
 @operation("encode_preset.save", request=PresetSaveRequest, result=PresetFileResult,
@@ -261,6 +322,11 @@ def preset_import(request: PresetImportRequest, ctx: ExecutionContext) -> Preset
         raw = read_json_document(request.file)
     except (OSError, ValueError) as exc:
         raise JobError(f"Preset illisible ({request.file}) : {exc}", EXIT_ARGS) from exc
+    named = {**raw, "name": request.name} if isinstance(raw, dict) and request.name else raw
+    errors = _type_errors(named, _PRESET_INPUT_SCHEMA, "preset") if ctx.api else []
+    if errors:  # requête de l'API : mêmes types qu'un preset enregistré par encode_preset.save
+        raise JobError("Preset non conforme : " + "; ".join(f"{path} : {message}" for path, message in errors),
+                       EXIT_VALIDATION)
     preset = _preset_from(raw, request.name)
     _store(ctx, preset, force=request.force)
     return PresetFileResult(name=preset.name, file=str(request.file))

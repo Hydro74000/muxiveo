@@ -18,6 +18,10 @@ _PREFIX = "#/$defs/"
 JOB_REF: dict[str, Any] = {"$ref": f"{_PREFIX}job"}
 ENCODE_BLOCK_REF: dict[str, Any] = {"$ref": f"{_PREFIX}encode_block"}
 DECISION_PROFILE_REF: dict[str, Any] = {"$ref": f"{_PREFIX}decision_profile"}
+#: Profil à enregistrer (``profile.save``) : ``version`` et ``kind`` complétés par l'opération.
+DECISION_PROFILE_INPUT_REF: dict[str, Any] = {"$ref": f"{_PREFIX}decision_profile_input"}
+#: Profil rendu tel quel par les opérations de profils (enregistré, supprimé, capturé).
+PROFILE_DOCUMENT_REF: dict[str, Any] = {"$ref": f"{_PREFIX}profile_document"}
 
 #: Clés ignorées par l'admission (internes ``_…``, ``$…``) : admises par les objets fermés.
 _IGNORED_KEYS = "^[_$]"
@@ -89,8 +93,18 @@ def _definitions() -> dict[str, Any]:
     from core.jobs.schema import build_decision_profile_schema_v1
     from core.service.schemas.encode import EncodeBlock
 
-    return {**_job_definitions(), "encode_block": EncodeBlock.json_schema(),
-            **_hoisted(build_decision_profile_schema_v1(), "decision_profile")}
+    profile = _hoisted(build_decision_profile_schema_v1(), "decision_profile")
+    profile_input = {**copy.deepcopy(profile["decision_profile"]), "required": ["name"],
+                     "description": "Profil décisionnel v1 à enregistrer : `version` et `kind` facultatifs (complétés). "
+                                    "Vérifiés aussi à l'admission, hors schéma : identifiants de règles uniques, "
+                                    "syntaxe des expressions `expr`, `field` requis pour une expression de valeurs "
+                                    "littérales."}
+    document = {"type": "object", "required": ["name"], "additionalProperties": True,
+                "description": "Profil rendu tel quel : document decision-profile v1 (`$defs/decision_profile`, "
+                               "`schema --version decision-profile`) ; fichier enregistré écrit à la main rendu sans "
+                               "contrôle, profil capturé sans enregistrement au nom éventuellement vide."}
+    return {**_job_definitions(), "encode_block": EncodeBlock.json_schema(), **profile,
+            "decision_profile_input": profile_input, "profile_document": document}
 
 
 @functools.lru_cache(maxsize=1)
@@ -113,6 +127,15 @@ def job_schema_errors(job: dict[str, Any], prefix: str = "job") -> list[tuple[st
     root = _root()
     return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
             for path, message in schema_errors(document, root["$defs"]["job"], root)]
+
+
+def decision_profile_input_errors(profile: Any, prefix: str = "profile") -> list[tuple[str, str]]:
+    """Écarts d'un profil à enregistrer au schéma publié ``decision_profile_input`` (requête de l'API)."""
+    from core.service.schema_check import schema_errors
+
+    root = _root()
+    return [(f"{prefix}{'' if not path or path.startswith('[') else '.'}{path}", message)
+            for path, message in schema_errors(profile, root["$defs"]["decision_profile_input"], root)]
 
 
 def _drop(document: Any, path: str) -> None:
@@ -152,4 +175,5 @@ def used_definitions(*schemas: Any) -> dict[str, Any]:
     return copy.deepcopy(dict(sorted(needed.items())))
 
 
-__all__ = ["DECISION_PROFILE_REF", "ENCODE_BLOCK_REF", "JOB_REF", "job_schema_errors", "used_definitions"]
+__all__ = ["DECISION_PROFILE_INPUT_REF", "DECISION_PROFILE_REF", "ENCODE_BLOCK_REF", "JOB_REF", "PROFILE_DOCUMENT_REF",
+           "decision_profile_input_errors", "job_schema_errors", "used_definitions"]

@@ -37,10 +37,10 @@ def test_documents_are_linked_to_their_shared_definitions():
         encode = catalog["operations"][name]["request"]["properties"]["encode"]
         assert {"$ref": "#/$defs/encode_block"} in encode["anyOf"], name
     assert catalog["operations"]["profile.save"]["request"]["properties"]["profile"]["$ref"] == \
-        "#/$defs/decision_profile"
+        "#/$defs/decision_profile_input"
     for name in ("profile.show", "profile.save", "profile.capture"):
         assert catalog["operations"][name]["result"]["properties"]["profile"]["$ref"] == \
-            "#/$defs/decision_profile", name
+            "#/$defs/profile_document", name
     template = catalog["operations"]["media.inspect"]["result"]["properties"]["template"]
     assert {"$ref": "#/$defs/job"} in template["anyOf"]
     assert "description" not in catalog["operations"]["profile.show"]["result"]  # signature générée : omise
@@ -176,3 +176,57 @@ def test_one_cause_gives_one_diagnostic():
     with pytest.raises(ApiError) as caught:
         CATALOG.get("media.validate").request.parse({"job": _job(audio_variants=[{"source_selector": False}])})
     assert [detail.path for detail in caught.value.details] == ["job.audio_variants[0].source_selector"]
+
+
+_RULE = {"id": "r", "match": {"field": "type", "op": "eq", "value": "audio"}, "actions": []}
+_PROFILE_ACCEPTED = [
+    {"name": "demo"},
+    {"name": "demo", "version": 1, "kind": "decision-profile", "rules": [_RULE], "extra": {"libre": True}},
+    {"name": "demo", "rules": [{**_RULE, "match": {"field": "language", "expr": "fre | eng"}}]},
+]
+_PROFILE_REFUSED = [
+    {},
+    {"name": " "},
+    {"name": "demo", "version": 2},
+    {"name": "demo", "rules": None},
+    {"name": "demo", "rules": [{"id": "r", "match": {}}]},
+    {"name": "demo", "rules": [{**_RULE, "id": ""}]},
+    {"name": "demo", "rules": [{**_RULE, "match": {"value": 1, "expr": "audio"}}]},
+    {"name": "demo", "rules": [{**_RULE, "match": {"expr": " "}}]},
+]
+
+
+def _profile_admitted(profile: dict[str, Any]) -> bool:
+    try:
+        CATALOG.get("profile.save").request.parse({"profile": copy.deepcopy(profile)})
+    except ApiError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("profile", _PROFILE_ACCEPTED + _PROFILE_REFUSED)
+def test_published_profile_schema_and_admission_agree(profile):
+    """``version`` / ``kind`` facultatifs (complétés par l'opération) ; règles des profils publiées."""
+    catalog = CATALOG.describe()
+    request = catalog["operations"]["profile.save"]["request"]
+    verdict = schema_check.errors({"profile": profile}, request, catalog)
+    assert (not verdict) is _profile_admitted(profile), verdict
+    assert (profile in _PROFILE_ACCEPTED) is _profile_admitted(profile)
+
+
+def test_profile_rules_checked_beyond_the_schema_are_refused_at_admission():
+    """Limites documentées : identifiants uniques, syntaxe des expressions et `field` d'une expression de valeurs
+    littérales, vérifiés hors schéma."""
+    for profile in ({"name": "demo", "rules": [_RULE, _RULE]},
+                    {"name": "demo", "rules": [{**_RULE, "match": {"field": "language", "expr": "((("}}]},
+                    {"name": "demo", "rules": [{**_RULE, "match": {"expr": "fre"}}]}):
+        assert not _profile_admitted(profile)
+
+
+def test_profile_documents_published_as_rendered():
+    """Profils rendus tels quels (fichier écrit à la main, capture sans nom) conformes au résultat publié."""
+    catalog = CATALOG.describe()
+    result = catalog["operations"]["profile.show"]["result"]
+    for profile in ({"name": "main", "rules": None}, {"name": "main", "rules": [{"id": "r", "match": {}}]},
+                    {"name": "", "version": 1, "kind": "decision-profile", "rules": []}):
+        assert not schema_check.errors({"profile": profile, "path": None}, result, catalog), profile

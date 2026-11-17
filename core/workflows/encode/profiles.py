@@ -53,6 +53,10 @@ class ProfileManager:
     def load_errors(self) -> list[ProfileLoadError]:
         return list(self._store.load_errors)
 
+    def path_for_name(self, name: str) -> Path:
+        """Fichier du profil ``name`` (existant, sinon nom libre)."""
+        return self._store.path_for_name(name)
+
     def save(self, preset: EncodePreset) -> None:
         data = preset.to_json_dict()
         self._store.write(preset.name, json.dumps(data, indent=2, ensure_ascii=False))

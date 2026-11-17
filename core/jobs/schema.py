@@ -389,10 +389,12 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "field": {"type": "string"},
             "op": {"type": "string"},
             "value": {},
-            "expr": {"type": "string"},
+            "expr": {"type": "string", "pattern": "\\S", "description": "Expression de critères (syntaxe vérifiée "
+                     "à l'enregistrement ; `field` requis si ses termes sont des valeurs littérales)."},
             "required": {"type": "boolean"},
             "weight": {"type": "integer"},
         },
+        "not": {"required": ["value", "expr"]},  # value et expr s'excluent (validate_decision_profile)
     }
     action_schema: dict[str, Any] = {
         "type": "object",
@@ -435,7 +437,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
         "additionalProperties": True,
         "required": ["id", "match", "actions"],
         "properties": {
-            "id": {"type": "string"},
+            "id": {"type": "string", "pattern": "\\S", "description": "Identifiant unique dans le profil."},
             "label": {"type": "string"},
             "group_id": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
@@ -459,7 +461,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
         "properties": {
             "version": {"const": 1},
             "kind": {"const": "decision-profile"},
-            "name": {"type": "string"},
+            "name": {"type": "string", "pattern": "\\S"},
             "description": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
             "auto_sync": {"type": "boolean"},

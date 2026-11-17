@@ -113,6 +113,48 @@ def test_encode_presets_and_decision_profiles(tmp_path):
     assert listed.profiles and not result_errors("profile.list", listed)
 
 
+def test_api_presets_keep_their_published_types(tmp_path):
+    """Requête de l'API : types vérifiés à l'enregistrement et à l'import ; preset stocké non conforme signalé,
+    jamais publié ; commandes historiques inchangées."""
+    import json
+
+    from core.service import ApiError
+
+    config = SimpleNamespace(app_data_dir=tmp_path / "data")
+    loose = {"name": "Contrat", "description": None, "crf": 18.5, "resize": {"enabled": 1}}
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "encode_preset.save", {"preset": loose}, _ctx(config))
+    assert caught.value.code.value == "invalid_request"
+    assert {detail.path for detail in caught.value.details} == {"preset.description", "preset.crf",
+                                                                "preset.resize.enabled"}
+    source = tmp_path / "loose.json"
+    source.write_text(json.dumps(loose), encoding="utf-8")
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "encode_preset.import", {"file": str(source)}, _ctx(config))
+    assert caught.value.code.value == "validation"
+    historical = _ctx(config, api=False)  # CLI : le preset est enregistré comme avant
+    call(CATALOG, "encode_preset.import", {"file": str(source)}, historical, allow_relative=True)
+    call(CATALOG, "encode_preset.save", {"preset": {"name": "Propre", "crf": 20}}, _ctx(config))
+    listed = call(CATALOG, "encode_preset.list", {}, _ctx(config))
+    assert [entry["name"] for entry in listed.presets] == ["Propre"]
+    assert "preset.crf" in listed.load_errors[0]["error"] and not result_errors("encode_preset.list", listed)
+    assert [entry["name"] for entry in call(CATALOG, "encode_preset.list", {}, historical).presets] == [
+        "Contrat", "Propre"]
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "encode_preset.show", {"name": "Contrat"}, _ctx(config))
+    assert caught.value.code.value == "validation"
+    named = call(CATALOG, "encode_preset.import", {"file": str(_write(tmp_path / "anonyme.json", {"crf": 22})),
+                                                   "name": "Nommé"}, _ctx(config))
+    assert named.name == "Nommé"
+
+
+def _write(path: Path, data: Any) -> Path:
+    import json
+
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
 def test_bluray_titles(monkeypatch, tmp_path):
     stream = SimpleNamespace(kind="video", pid=4113, language="")
     title = SimpleNamespace(playlist_id=800, playlist_path=tmp_path / "00800.mpls", duration_s=5400.1234,

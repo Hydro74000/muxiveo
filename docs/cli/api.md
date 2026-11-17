@@ -57,8 +57,12 @@ muxiveo --cli call config.set --allow-privileged --request reglage.json
 ```
 
 **Requête** : objet JSON **strict**, documents `job` (contrat `schema --version 1` / exact-job) et
-blocs `encode` compris ; un profil décisionnel porté par `profile.save` est contrôlé par les règles des
-profils (version, nature, nom, règles), ses autres clés conservées. Refusés dès la lecture (`invalid_request`, avec le
+blocs `encode` compris ; un profil décisionnel porté par `profile.save` est vérifié contre
+`$defs/decision_profile_input` (`version` et `kind` complétés) puis par les règles des profils (identifiants de
+règles uniques, syntaxe des expressions), ses autres clés conservées ; un preset d'encodage
+(`encode_preset.save`, `encode_preset.import`) contre le schéma publié du preset. Les profils sont rendus tels
+qu'enregistrés (`$defs/profile_document`) ; un preset enregistré aux champs non conformes (fichier écrit à la
+main) est signalé dans `load_errors` (`encode_preset.show` : `validation`), jamais publié. Refusés dès la lecture (`invalid_request`, avec le
 chemin de chaque champ en cause, ex. `job.sources[0].sycn`, `job.encode.video.default.crf`) : clé
 inconnue, type incorrect, valeur hors bornes ou hors énumération, format HDR10 statique invalide
 (`static_hdr.master_display`, `static_hdr.max_cll` ; texte vide = valeurs de la source), champ requis

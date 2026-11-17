@@ -14,7 +14,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ErrorCode
 from core.media_info_fetcher import MediaDetails, MediaSearchResult
 from core.service.models import Model, dataclass_schema, field, list_of
-from core.service.schemas.documents import DECISION_PROFILE_REF
+from core.service.schemas.documents import DECISION_PROFILE_INPUT_REF, PROFILE_DOCUMENT_REF
 from core.service.operations import operation
 from core.service.ops.encode import LoadError
 from core.service.ops.media import MediaJobRequest, _build_cached
@@ -154,7 +154,7 @@ class ProfileNameRequest(Model):
 
 @dataclass(frozen=True)
 class ProfileDocumentResult(Model):
-    profile: dict[str, Any] = field(default_factory=dict, schema=DECISION_PROFILE_REF)
+    profile: dict[str, Any] = field(default_factory=dict, schema=PROFILE_DOCUMENT_REF)
     path: str | None = None
 
 
@@ -172,24 +172,41 @@ def profile_show(request: ProfileNameRequest, ctx: ExecutionContext) -> ProfileD
 class ProfileSaveRequest(Model):
     """Profil décisionnel enregistré d'après son document (éditeur de profils de l'interface)."""
 
-    profile: dict[str, Any] = field(description="Document decision-profile v1 (`name` requis).",
-                                    schema=DECISION_PROFILE_REF)
+    profile: dict[str, Any] = field(description="Document decision-profile v1 (`name` requis ; `version` et `kind` "
+                                                "complétés).", schema=DECISION_PROFILE_INPUT_REF)
     force: bool = field(default=False, description="Remplacer un profil du même nom.")
 
+    @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Requête de l'API : profil vérifié contre le schéma publié, puis par les règles des profils (identifiants
+        uniques, expressions), comme à l'enregistrement."""
+        from core.service.schemas.documents import decision_profile_input_errors
 
-def _save(ctx: ExecutionContext, profile: dict[str, Any], *, force: bool) -> ProfileDocumentResult:
-    from core.profiles.decision import (
-        DECISION_PROFILE_KIND,
-        DECISION_PROFILE_VERSION,
-        DecisionProfileError,
-        validate_decision_profile,
-    )
+        profile = values.get("profile")
+        errors = decision_profile_input_errors(profile)
+        if errors or not isinstance(profile, dict):
+            return errors
+        try:
+            _validated(profile)
+        except JobError as exc:
+            return [("profile", str(exc))]
+        return []
+
+
+def _validated(profile: dict[str, Any]) -> dict[str, Any]:
+    """Document complet (``version`` / ``kind`` complétés) validé par les règles des profils."""
+    from core.profiles.decision import DECISION_PROFILE_KIND, DECISION_PROFILE_VERSION, validate_decision_profile
 
     document = {"version": DECISION_PROFILE_VERSION, "kind": DECISION_PROFILE_KIND, **profile}
     try:
         validate_decision_profile(document)
-    except DecisionProfileError as exc:
+    except (TypeError, ValueError) as exc:  # DecisionProfileError, version illisible
         raise JobError(f"Profil invalide : {exc}", EXIT_VALIDATION) from exc
+    return document
+
+
+def _save(ctx: ExecutionContext, profile: dict[str, Any], *, force: bool) -> ProfileDocumentResult:
+    document = _validated(profile)
     manager = _profiles(ctx)
     name = str(document.get("name") or "").strip()
     if manager.load(name) is not None and not force:
