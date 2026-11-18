@@ -42,6 +42,11 @@ def test_real_widgets_and_queued_signals(qt_app, qtbot):
 """,
         encoding="utf-8",
     )
+    # Racine du pytest lancé = dossier du test. Sans fichier de configuration, sous Windows, la racine
+    # reste le dépôt (autre lecteur que le dossier temporaire) : pytest parcourt alors chaque parent du
+    # test, dont %TEMP%, où d'autres processus créent et suppriment des entrées pendant la collecte
+    # (FileNotFoundError sur une entrée disparue entre la liste et son lstat).
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     # Reproduit le chargement automatique de pytest-qt dans le gate Linux,
     # même si l'environnement qui exécute ce test désactive les plugins.
     env = os.environ.copy()
