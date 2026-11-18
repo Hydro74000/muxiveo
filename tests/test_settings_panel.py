@@ -666,3 +666,118 @@ def test_settings_panel_refresh_field_is_not_a_pending_change(tmp_path, qt_app):
         assert not panel.has_unsaved_changes()
     finally:
         _stop(patches)
+
+
+def test_settings_panel_keeps_values_the_fields_cannot_show(tmp_path, qt_app):
+    """Échelle hors palier, débit hors palier, option inconnue : conservés tant qu'on n'y touche pas."""
+    panel, cfg, ini_path, patches = _panel_with_ini(
+        tmp_path,
+        "[ui]\nui_scale_percent = 105\n"
+        "[audio_encoding]\naac_bitrate_per_channel_kbps = 100\n",
+    )
+    try:
+        assert not panel.has_unsaved_changes()
+        scale = _field_widget(panel, "ui", "ui_scale_percent")
+        assert scale.value() == 110
+        assert panel._slider_value_labels[("ui", "ui_scale_percent")].text() == "105%"
+        aac = _field_widget(panel, "audio_encoding", "aac_bitrate_per_channel_kbps")
+        assert panel._slider_value_labels[("audio_encoding", "aac_bitrate_per_channel_kbps")].text() == "100 kbps"
+        channel_field = next(f for f in panel._group_by_section["ui"]["fields"] if f["key"] == "update_channel")
+        panel._apply_value("ui", channel_field, "nightly")
+        assert _field_widget(panel, "ui", "update_channel").currentIndex() == -1
+        assert panel._field_value("ui", channel_field) == "nightly"
+        panel._load_field("ui", channel_field)
+
+        # Autre champ de la section enregistré : les valeurs non affichables restent intactes.
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        panel._on_save_clicked()
+        text = ini_path.read_text(encoding="utf-8")
+        assert "ui_scale_percent = 105" in text
+        assert not panel.has_unsaved_changes()
+
+        # Curseur déplacé puis ramené sur 96 : 96 devient la valeur, à enregistrer.
+        steps = aac.property("steps")
+        aac.setValue(steps.index(112))
+        aac.setValue(steps.index(96))
+        assert panel.dirty_sections() == ["audio_encoding"]
+        panel._on_save_clicked()
+        assert "aac_bitrate_per_channel_kbps = 96" in ini_path.read_text(encoding="utf-8")
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_discard_restores_value_the_field_cannot_show(tmp_path, qt_app):
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[audio_encoding]\naac_bitrate_per_channel_kbps = 100\n")
+    try:
+        aac = _field_widget(panel, "audio_encoding", "aac_bitrate_per_channel_kbps")
+        aac.setValue(aac.property("steps").index(128))
+        assert panel.dirty_sections() == ["audio_encoding"]
+        panel._discard_sections(["audio_encoding"])
+        assert not panel.has_unsaved_changes()
+        assert panel._section_values("audio_encoding")["aac_bitrate_per_channel_kbps"] == "100"
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_write_error_keeps_tab_and_state(tmp_path, qt_app):
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="save"), \
+             patch("ui.panels.settings_panel.write_ini_settings", side_effect=PermissionError("lecture seule")), \
+             patch("ui.panels.settings_panel.QMessageBox.warning") as warning:
+            panel._tabs.setCurrentIndex(1)
+        warning.assert_called_once()
+        assert panel._tabs.currentIndex() == 0 == panel._current_tab
+        assert panel.dirty_sections() == ["ui"]
+        assert "lecture seule" in panel._status_label.text()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_question_is_not_reentrant(tmp_path, qt_app):
+    """Fermeture ou navigation demandée pendant la question : refusée sans seconde question."""
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        nested: list[bool] = []
+
+        def ask(sections):
+            nested.append(panel.confirm_leave())
+            return "discard"
+
+        with patch.object(panel, "_ask_pending_changes", side_effect=ask) as asked:
+            assert panel.confirm_leave()
+        assert nested == [False]
+        asked.assert_called_once()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_status_survives_translation_pass(tmp_path, qt_app):
+    from core.i18n import apply_translations
+
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        panel._on_save_clicked()
+        apply_translations(panel)
+        _field_widget(panel, "metadata", "generate_nfo").setChecked(not _field_widget(panel, "metadata", "generate_nfo").isChecked())
+        panel._on_save_clicked()
+        apply_translations(panel)
+        assert translate_text("Métadonnées") in panel._status_label.text()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_rerun_setup_asks_about_pending_changes_first(tmp_path, qt_app):
+    panel, cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="cancel"), \
+             patch.object(cfg, "rerun_setup") as rerun:
+            panel._on_rerun_setup_clicked()
+        rerun.assert_not_called()
+        assert panel.has_unsaved_changes()
+    finally:
+        _stop(patches)

@@ -711,3 +711,26 @@ def test_leaving_settings_with_unsaved_changes_asks_first(window, qt_app, monkey
     assert window._stack.currentIndex() == 0
     assert asked == [["ui"], ["ui"]]
     assert not panel.has_unsaved_changes()
+
+
+def test_operation_launched_from_settings_waits_for_pending_changes(window, tmp_path, qt_app, monkeypatch):
+    """Barre d'exécution depuis Paramètres modifiés : « Annuler » ne lance rien, « Ignorer » lance."""
+    ready_hybrid(window, tmp_path)
+    panel = window._settings_panel
+    settings_index = window._stack.indexOf(panel)
+    window._stack.setCurrentIndex(settings_index)
+    checkbox = panel.widget_for("ui", "startup_menu_compact")
+    checkbox.setChecked(not checkbox.isChecked())
+    answers = iter(["cancel", "discard"])
+    monkeypatch.setattr(panel, "_ask_pending_changes", lambda sections: next(answers))
+    run = Mock()
+    monkeypatch.setattr(window._hybrid_panel, "run", run)
+
+    window._launch_operation("hybrid")
+    run.assert_not_called()
+    assert window._stack.currentIndex() == settings_index
+
+    window._launch_operation("hybrid")
+    run.assert_called_once_with()
+    assert window._stack.currentIndex() == 4
+    window._running = False

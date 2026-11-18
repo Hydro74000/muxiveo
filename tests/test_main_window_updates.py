@@ -467,3 +467,18 @@ def test_startup_cleanup_is_detached_from_gui_process(window, tmp_path):
         window._report_previous_updates()
     cleanup.assert_called_once_with([old])
     thread.assert_not_called()
+
+
+def test_install_refused_by_pending_settings_downloads_nothing(window, qt_app):
+    """Réglages non enregistrés + « Annuler » : ni téléchargement, ni installation, ni fermeture."""
+    window._settings_panel = SimpleNamespace(confirm_leave=Mock(return_value=False))
+    with patch("ui.main_window.download_update") as download, \
+         patch("ui.main_window.apply_update") as apply, \
+         patch("ui.main_window.QApplication.quit") as quit_app:
+        window._start_update_install(UpdateInfo("99.0.0", "https://example/"), InstallKind.APPIMAGE)
+        qt_app.processEvents()
+    window._settings_panel.confirm_leave.assert_called_once_with()
+    download.assert_not_called()
+    apply.assert_not_called()
+    quit_app.assert_not_called()
+    assert window._update_download_cancel is None

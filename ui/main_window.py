@@ -1416,7 +1416,6 @@ class _PageStack(QStackedWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._leave_guards: dict[QWidget, Callable[[], bool]] = {}
-        self._guarding = False
 
     def set_leave_guard(self, page: QWidget, guard: Callable[[], bool]) -> None:
         self._leave_guards[page] = guard
@@ -1424,17 +1423,9 @@ class _PageStack(QStackedWidget):
     def setCurrentIndex(self, index: int) -> None:
         current = self.currentWidget()
         guard = self._leave_guards.get(current) if current is not None else None
-        if index != self.currentIndex() and guard is not None:
-            if self._guarding:
-                return
-            self._guarding = True
-            try:
-                allowed = guard()
-            finally:
-                self._guarding = False
-            if not allowed:
-                self.leave_refused.emit()
-                return
+        if index != self.currentIndex() and guard is not None and not guard():
+            self.leave_refused.emit()
+            return
         super().setCurrentIndex(index)
 
 
@@ -1810,9 +1801,7 @@ class MainWindow(QMainWindow):
 
     def _apply_startup_panel(self) -> None:
         startup_panel = getattr(self._config, "startup_panel", "dashboard")
-        page_index = self.startup_page_index(startup_panel)
-        self._stack.setCurrentIndex(page_index)
-        self._sidebar.select_page(page_index)
+        self._show_page(self.startup_page_index(startup_panel))
 
     def _apply_startup_log_panel_state(self) -> None:
         logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
@@ -1823,38 +1812,51 @@ class MainWindow(QMainWindow):
             return
         self._vsplit.setSizes([768, 32])
 
-    def _open_container_panel(self) -> None:
-        container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
-        self._stack.setCurrentIndex(container_index)
-        self._sidebar.select_page(container_index)
+    def _show_page(self, index: int) -> bool:
+        """Affiche la page ``index`` ; faux si la page courante retient l'utilisateur.
 
-    def _open_hdr_studio(self, path: Path, stream_index: int) -> None:
-        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
-        index = self._PAGE_INDEX_BY_PANEL_KEY["hdr"]
-        self._sidebar.select_page(index)
+        Refus = réglages non enregistrés et « Annuler » : l'appelant abandonne son action.
+        Le menu latéral suit toujours la page réellement affichée.
+        """
         self._stack.setCurrentIndex(index)
+        current = self._stack.currentIndex()
+        self._sidebar.select_page(current)
+        return current == index
+
+    def _settings_allow_leave(self) -> bool:
+        """Vrai si aucun réglage n'attend (ou s'il vient d'être enregistré ou ignoré)."""
+        settings_panel = getattr(self, "_settings_panel", None)
+        return settings_panel is None or settings_panel.confirm_leave()
+
+    def _open_container_panel(self) -> bool:
+        return MainWindow._show_page(self, self._PAGE_INDEX_BY_PANEL_KEY["container"])
+
+    def _open_hdr_studio(self, path: Path, stream_index: int) -> bool:
+        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
+        if not self._show_page(self._PAGE_INDEX_BY_PANEL_KEY["hdr"]):
+            return False
         self._hdr_panel.load_source(Path(path), int(stream_index))
+        return True
 
     def _open_fel_analyzer(self, path: Path, stream_index: int) -> None:
         """HDR Studio sur l'onglet FEL de la piste (bouton du panneau Encodage)."""
-        self._open_hdr_studio(path, stream_index)
-        self._hdr_panel.show_fel_tab()
+        if self._open_hdr_studio(path, stream_index):
+            self._hdr_panel.show_fel_tab()
 
     def _apply_hdr_levels_to_encode(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> None:
         """MaxCLL/MaxFALL choisis dans HDR Studio, appliqués à la piste du panneau Encodage."""
         if self._encode_panel.apply_static_light_levels(Path(path), int(stream_index), max_cll, max_fall):
             self.log_requested.emit("OK", "[HDR] " + translate_text(
                 "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.", cll=max_cll, fall=max_fall))
-            index = self._PAGE_INDEX_BY_PANEL_KEY["encoding"]
-            self._sidebar.select_page(index)
-            self._stack.setCurrentIndex(index)
+            self._show_page(self._PAGE_INDEX_BY_PANEL_KEY["encoding"])
             return
         self.log_requested.emit("WARN", "[HDR] " + translate_text(
             "Piste absente du panneau Encodage (ajouter la source dans Conteneur) "
             "ou codec sans métadonnées HDR10 modifiables."))
 
     def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
-        self._open_container_panel()
+        if not self._open_container_panel():
+            return
         if hasattr(config_or_sources, "sources"):
             paths = [s.path for s in config_or_sources.sources]
             self._remux_panel.add_sources(paths)
@@ -1875,7 +1877,8 @@ class MainWindow(QMainWindow):
         if not normalized:
             return
 
-        MainWindow._open_container_panel(self)
+        if not MainWindow._open_container_panel(self):
+            return
         self._remux_panel.add_sources(normalized)
 
     def _install_source_drop_targets(self, root: QWidget) -> None:
@@ -1929,8 +1932,10 @@ class MainWindow(QMainWindow):
         sources = MainWindow._collect_drop_source_paths(paths)
         if not sources:
             return False
-        self._remux_panel.add_sources(sources)
-        MainWindow._open_container_panel(self)
+        # Page quittée d'abord : refusée (réglages non enregistrés, « Annuler »), le dépôt
+        # est consommé sans rien ajouter.
+        if MainWindow._open_container_panel(self):
+            self._remux_panel.add_sources(sources)
         return True
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -2185,9 +2190,7 @@ class MainWindow(QMainWindow):
 
     def show_extensions_page(self) -> None:
         """Ouvre la page Extensions (badges du tableau de bord, liens des fonctions)."""
-        index = self._PAGE_INDEX_BY_PANEL_KEY["extensions"]
-        self._stack.setCurrentIndex(index)
-        self._sidebar.select_page(index)
+        MainWindow._show_page(self, self._PAGE_INDEX_BY_PANEL_KEY["extensions"])
 
     def _open_trt_install_dialog(self) -> None:
         from ui.dialogs.plugin_install_dialog import PluginInstallDialog
@@ -2327,7 +2330,14 @@ class MainWindow(QMainWindow):
             self._refresh_operation_bar()
             return
         if not (key == "media" and self._stack.currentIndex() in (2, 3)):
-            self._stack.setCurrentIndex(operation.page)
+            if not self._show_page(operation.page):
+                self._refresh_operation_bar()
+                return
+            # Réglages éventuellement enregistrés depuis la popup : état relu avant de lancer.
+            operation = next((op for op in self._operation_states() if op.key == key), None)
+            if self._running or operation is None or not operation.ready:
+                self._refresh_operation_bar()
+                return
         self._last_operation_result = None
         self._expand_log_panel()
         if key == "hybrid":
@@ -3101,6 +3111,8 @@ class MainWindow(QMainWindow):
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
+        if getattr(self, "_leaving_app", False):
+            return      # fermeture en cours : la nouvelle échelle vaudra au prochain lancement
         reply = QMessageBox.question(
             self,
             translate_text("Redémarrage recommandé"),
@@ -3112,6 +3124,9 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Nouvelle instance lancée avant la fermeture : réglages tranchés avant.
+        if not MainWindow._settings_allow_leave(self):
             return
 
         restarted = self._config.restart_application()
@@ -3297,8 +3312,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
-            settings_panel = getattr(self, "_settings_panel", None)
-            if settings_panel is not None and not settings_panel.confirm_leave():
+            # Enregistrement depuis la popup pendant la fermeture : pas de proposition de redémarrage.
+            self._leaving_app = True
+            try:
+                allowed = self._settings_allow_leave()
+            finally:
+                self._leaving_app = False
+            if not allowed:
                 event.ignore()
                 return
             if self._running and not confirm_close_while_running(
@@ -3557,6 +3577,9 @@ class MainWindow(QMainWindow):
                 translate_text("Mise à jour"),
                 translate_text("Une opération est en cours : attendez sa fin avant d'installer la mise à jour."),
             )
+            return
+        # L'installation engagée ferme l'application : réglages tranchés avant le téléchargement.
+        if not self._settings_allow_leave():
             return
         dialog = QProgressDialog(
             translate_text("Téléchargement de Muxiveo v{version}…", version=info.version),

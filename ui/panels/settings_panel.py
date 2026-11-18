@@ -106,8 +106,13 @@ class SettingsPanel(QWidget):
         self._groups = sorted(INI_FIELD_GROUPS, key=lambda group: _SECTION_ORDER.get(group["section"], len(_SECTION_ORDER)))
         self._group_by_section = {group["section"]: group for group in self._groups}
         self._tab_sections = [group["section"] for group in self._groups]
-        # Valeurs enregistrées affichées par section : référence des modifications en cours.
+        # Valeurs enregistrées par section : référence des modifications en cours.
         self._baseline: dict[str, dict[str, str]] = {}
+        # Valeur enregistrée qu'un champ ne sait pas afficher (curseur à paliers, option
+        # inconnue, borne) : conservée telle quelle tant que l'utilisateur n'y touche pas.
+        self._raw_values: dict[tuple[str, str], str] = {}
+        self._applying = False
+        self._resolving = False
         self._current_tab = 0
         self._dirty_icon = _dirty_icon()
         self._build_ui()
@@ -167,6 +172,8 @@ class SettingsPanel(QWidget):
         self._save_btn.clicked.connect(self._on_save_clicked)
 
         self._status_label = QLabel("")
+        # Messages déjà traduits à l'affichage : la traduction automatique réafficherait le premier.
+        self._status_label.setProperty("_i18n_skip", True)
         self._status_label.setWordWrap(True)
         self._status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._status_label.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(11)}px;background:transparent;")
@@ -177,8 +184,8 @@ class SettingsPanel(QWidget):
         actions.addWidget(self._save_btn)
         root.addLayout(actions)
 
-        for widget in self._field_widgets.values():
-            self._watch_field(widget)
+        for key, widget in self._field_widgets.items():
+            self._watch_field(key, widget)
 
     def _build_tab_page(self, group: dict[str, Any]) -> QScrollArea:
         """Page d'un onglet : les champs de la section dans une carte, défilante."""
@@ -390,6 +397,11 @@ class SettingsPanel(QWidget):
         raise ValueError(f"Unsupported settings field kind: {kind}")
 
     def _field_value(self, section: str, field: dict[str, Any]) -> str:
+        """Valeur du champ : celle affichée, ou la valeur enregistrée que le champ ne sait pas afficher."""
+        raw = self._raw_values.get((section, field["key"]))
+        return raw if raw is not None else self._widget_value(section, field)
+
+    def _widget_value(self, section: str, field: dict[str, Any]) -> str:
         widget = self._field_widgets[(section, field["key"])]
         if isinstance(widget, QLineEdit):
             return widget.text().strip()
@@ -432,7 +444,24 @@ class SettingsPanel(QWidget):
         self._apply_value(section, field, getattr(self._config, field["attr"]))
 
     def _apply_value(self, section: str, field: dict[str, Any], value: Any) -> None:
-        """Affiche ``value`` (valeur de la config ou chaîne relevée par ``_field_value``)."""
+        """Affiche ``value`` (valeur de la config ou chaîne relevée par ``_field_value``), sans perte."""
+        key = (section, field["key"])
+        self._applying = True
+        try:
+            self._show_value(section, field, value)
+        finally:
+            self._applying = False
+        raw = "true" if value is True else "false" if value is False else str(value).strip()
+        if self._widget_value(section, field) == raw:
+            self._raw_values.pop(key, None)
+            return
+        self._raw_values[key] = raw
+        label = self._slider_value_labels.get(key)
+        widget = self._field_widgets[key]
+        if label is not None and isinstance(widget, QSlider):
+            label.setText(f"{raw} kbps" if widget.property("steps") else f"{raw}%")
+
+    def _show_value(self, section: str, field: dict[str, Any], value: Any) -> None:
         widget = self._field_widgets[(section, field["key"])]
 
         if isinstance(widget, QLineEdit):
@@ -459,8 +488,8 @@ class SettingsPanel(QWidget):
                 canonical = Rfc5646LanguageTags.to_iso639_2(ietf) if ietf else None
                 if canonical:
                     index = widget.findData(canonical)
-            if index >= 0:
-                widget.setCurrentIndex(index)
+            # Option inconnue : aucune sélection plutôt qu'une option qui n'est pas la valeur.
+            widget.setCurrentIndex(index)
 
     def refresh_field(self, section: str, key: str) -> None:
         """Recharge un seul champ depuis la config (réglage modifié hors du panneau), sans toucher aux autres saisies."""
@@ -480,17 +509,23 @@ class SettingsPanel(QWidget):
     # Modifications en cours
     # ------------------------------------------------------------------
 
-    def _watch_field(self, widget: QWidget) -> None:
-        if isinstance(widget, QLineEdit):
-            widget.textChanged.connect(self._on_field_edited)
-        elif isinstance(widget, QCheckBox):
-            widget.toggled.connect(self._on_field_edited)
-        elif isinstance(widget, (QSlider, QSpinBox)):
-            widget.valueChanged.connect(self._on_field_edited)
-        elif isinstance(widget, QComboBox):
-            widget.currentIndexChanged.connect(self._on_field_edited)
+    def _watch_field(self, key: tuple[str, str], widget: QWidget) -> None:
+        def edited(*_args: object) -> None:
+            self._on_field_edited(key)
 
-    def _on_field_edited(self, *_args: object) -> None:
+        if isinstance(widget, QLineEdit):
+            widget.textChanged.connect(edited)
+        elif isinstance(widget, QCheckBox):
+            widget.toggled.connect(edited)
+        elif isinstance(widget, (QSlider, QSpinBox)):
+            widget.valueChanged.connect(edited)
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(edited)
+
+    def _on_field_edited(self, key: tuple[str, str]) -> None:
+        if not self._applying:
+            # Champ modifié par l'utilisateur : sa valeur affichée devient la valeur.
+            self._raw_values.pop(key, None)
         self._refresh_dirty_state()
 
     def _section_values(self, section: str) -> dict[str, str]:
@@ -524,13 +559,17 @@ class SettingsPanel(QWidget):
         previous = self._current_tab
         if index == previous:
             return
-        if self._resolve_pending([self._tab_sections[previous]]):
-            self._current_tab = index
-            return
-        # Annulé (ou enregistrement refusé) : on reste sur l'onglet modifié.
-        self._tabs.blockSignals(True)
-        self._tabs.setCurrentIndex(previous)
-        self._tabs.blockSignals(False)
+        allowed = False
+        try:
+            allowed = self._resolve_pending([self._tab_sections[previous]])
+        finally:
+            if allowed:
+                self._current_tab = index
+            else:
+                # Annulé, enregistrement refusé ou en échec : on reste sur l'onglet modifié.
+                self._tabs.blockSignals(True)
+                self._tabs.setCurrentIndex(previous)
+                self._tabs.blockSignals(False)
 
     def confirm_leave(self) -> bool:
         """Vrai si la page peut être quittée : rien à enregistrer, enregistré ou ignoré."""
@@ -540,13 +579,20 @@ class SettingsPanel(QWidget):
         dirty = [section for section in sections if self._section_dirty(section)]
         if not dirty:
             return True
-        choice = self._ask_pending_changes(dirty)
-        if choice == "save":
-            return self._save_sections(dirty)
-        if choice == "discard":
-            self._discard_sections(dirty)
-            return True
-        return False
+        if self._resolving:
+            # Question déjà posée (onglet, navigation ou fermeture) : toute autre demande attend.
+            return False
+        self._resolving = True
+        try:
+            choice = self._ask_pending_changes(dirty)
+            if choice == "save":
+                return self._save_sections(dirty)
+            if choice == "discard":
+                self._discard_sections(dirty)
+                return True
+            return False
+        finally:
+            self._resolving = False
 
     def _ask_pending_changes(self, sections: list[str]) -> str:
         """Popup Enregistrer / Ignorer / Annuler ; renvoie ``save``, ``discard`` ou ``cancel``."""
@@ -633,28 +679,44 @@ class SettingsPanel(QWidget):
         self._save_sections(self.dirty_sections())
 
     def _save_sections(self, sections: list[str]) -> bool:
-        """Écrit les sections dans config.ini ; faux si la validation refuse."""
+        """Écrit les sections dans config.ini ; faux si la validation refuse ou si l'écriture échoue."""
         if not sections:
             return True
         values = {section: self._section_values(section) for section in sections}
         if not self._validate_values(values):
             return False
-        write_ini_settings(values)
+        try:
+            write_ini_settings(values)
+        except OSError as exc:
+            message = translate_text("Impossible d'enregistrer les paramètres : {error}", error=str(exc))
+            if self._status_label is not None:
+                self._status_label.setText(message)
+            QMessageBox.warning(self, translate_text("Erreur"), message)
+            return False
         self._config.reload()
         self._config.save()
-        self._baseline.update(values)
+        # Valeurs relues depuis la config : normalisations visibles, référence exacte.
+        for section in sections:
+            for field in self._group_by_section[section]["fields"]:
+                self._load_field(section, field)
+            self._baseline[section] = self._section_values(section)
+        self._sync_dependent_field_states()
         self._refresh_dirty_state()
+        self.settings_saved.emit()
         if self._status_label is not None:
+            # Après l'application des réglages : message dans la langue choisie.
             titles = ", ".join(translate_text(self._group_by_section[section]["title"]) for section in sections)
             self._status_label.setText(
                 translate_text("Section « {title} » enregistrée dans config.ini.", title=titles)
                 if len(sections) == 1 else
                 translate_text("Sections « {titles} » enregistrées dans config.ini.", titles=titles)
             )
-        self.settings_saved.emit()
         return True
 
     def _on_rerun_setup_clicked(self) -> None:
+        # Le setup réécrit config.ini et peut redémarrer l'application : saisies tranchées avant.
+        if not self.confirm_leave():
+            return
         try:
             self._config.rerun_setup()
         except Exception as exc:
@@ -669,13 +731,15 @@ class SettingsPanel(QWidget):
             )
             return
 
+        self._config.reload()
+        self._load_from_config()
+        self.settings_saved.emit()
         if self._status_label is not None:
             self._status_label.setText(
                 translate_text(
                     "Setup relancé avec succès. Un redémarrage de l'application est recommandé."
                 )
             )
-        self.settings_saved.emit()
 
         reply = QMessageBox.question(
             self,
