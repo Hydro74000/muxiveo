@@ -495,3 +495,18 @@ def test_requested_update_dialog_waits_for_modal_dialogs(window, qt_app):
     with patch("ui.main_window.QApplication.activeModalWidget", return_value=None):
         window._show_requested_update_dialog()
     window._show_update_dialog.assert_called_once_with(window._update_info)
+
+
+def test_requested_update_dialog_shown_once(window, qt_app):
+    """Fenêtre présentée par un autre chemin (badge) pendant l'attente : le rappel ne la rouvre pas."""
+    window._update_info = UpdateInfo("99.0.0", "https://example/")
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=object()), \
+         patch("ui.main_window.QTimer.singleShot") as later:
+        window._show_requested_update_dialog()
+    retry = later.call_args.args[-1]
+    dialog = Mock(choice=None, popup_enabled=window._config.update_popup)
+    with patch("ui.main_window.UpdateDialog", return_value=dialog):
+        MainWindow._show_update_dialog(window, window._update_info)   # clic sur le badge
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=None):
+        retry()
+    window._show_update_dialog.assert_not_called()

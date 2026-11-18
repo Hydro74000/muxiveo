@@ -95,6 +95,7 @@ class SettingsPanel(QWidget):
     """
 
     settings_saved = Signal()
+    restart_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -760,10 +761,5 @@ class SettingsPanel(QWidget):
             QMessageBox.StandardButton.Yes,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            restarted = self._config.restart_application()
-            if not restarted:
-                QMessageBox.warning(
-                    self,
-                    translate_text("Erreur"),
-                    translate_text("Impossible de redémarrer automatiquement l'application."),
-                )
+            # Fermeture de cette instance comprise : MainWindow._request_restart.
+            self.restart_requested.emit()

@@ -501,13 +501,17 @@ def test_settings_panel_rerun_setup_restarts_app_on_confirmation(tmp_path, qt_ap
         cfg = AppConfig()
 
     panel = SettingsPanel(cfg)
+    restarts: list[bool] = []
+    panel.restart_requested.connect(lambda: restarts.append(True))
     with patch.object(cfg, "rerun_setup") as mock_rerun, \
          patch.object(cfg, "restart_application", return_value=True) as mock_restart, \
          patch("ui.panels.settings_panel.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
         panel._on_rerun_setup_clicked()
 
     mock_rerun.assert_called_once_with()
-    mock_restart.assert_called_once_with()
+    # Redémarrage confié à la fenêtre (accord de fermeture, puis fermeture de cette instance).
+    assert restarts == [True]
+    mock_restart.assert_not_called()
     assert panel._status_label is not None
     assert panel._status_label.text() == translate_text(
         "Setup relancé avec succès. Un redémarrage de l'application est recommandé."

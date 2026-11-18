@@ -374,3 +374,25 @@ def test_settings_leave_refused_once_shutdown_started(qt_app) -> None:
     )
     assert MainWindow._settings_allow_leave(cast(Any, fake_window)) is False
     assert MainWindow._settings_allow_leave(cast(Any, SimpleNamespace())) is True
+
+
+def test_restart_launches_new_instance_only_after_close_is_accepted(qt_app) -> None:
+    """Opération en cours : refus → aucune instance lancée ; accord → lancement, fermeture sans seconde question."""
+    fake_window = SimpleNamespace(
+        _running=True,
+        _config=SimpleNamespace(restart_application=MagicMock(return_value=True)),
+    )
+    window = cast(Any, fake_window)
+    fake_app = SimpleNamespace(quit=MagicMock())
+    with patch("ui.main_window.confirm_close_while_running", return_value=False), \
+         patch("ui.main_window.QApplication.instance", return_value=fake_app):
+        MainWindow._request_restart(window)
+    fake_window._config.restart_application.assert_not_called()
+    fake_app.quit.assert_not_called()
+
+    with patch("ui.main_window.confirm_close_while_running", return_value=True), \
+         patch("ui.main_window.QApplication.instance", return_value=fake_app):
+        MainWindow._request_restart(window)
+    fake_window._config.restart_application.assert_called_once_with()
+    fake_app.quit.assert_called_once_with()
+    assert fake_window._restart_confirmed is True

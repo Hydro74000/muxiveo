@@ -183,13 +183,15 @@ AUDIO_BITRATE_STEPS: list[int] = [
     128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
 ]
 
-_REMOVED_INI_KEYS: dict[str, set[str]] = {
+# Clé historique → clés qui la remplacent : retirée seulement quand une écriture les fournit
+# toutes (sinon une écriture partielle de la section perdrait le réglage sans le migrer).
+_REMOVED_INI_KEYS: dict[str, dict[str, frozenset[str]]] = {
     "audio_encoding": {
-        "default_bitrate_per_channel_kbps",
-        "bitrate_step_per_channel_kbps",
+        "default_bitrate_per_channel_kbps": frozenset(),
+        "bitrate_step_per_channel_kbps": frozenset(),
     },
     "ui": {
-        "verbose_file_logging",
+        "verbose_file_logging": frozenset({"enable_file_logging", "file_logging_level"}),
     },
 }
 
@@ -543,11 +545,12 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
-    removed_keys = {
-        section: _REMOVED_INI_KEYS[section]
-        for section in section_values
-        if section in _REMOVED_INI_KEYS
-    }
+    removed_keys: dict[str, set[str]] = {}
+    for section, values in section_values.items():
+        written = {key.lower() for key in values}
+        obsolete = {key for key, replacements in _REMOVED_INI_KEYS.get(section, {}).items() if replacements <= written}
+        if obsolete:
+            removed_keys[section] = obsolete
     if removed_keys:
         lines = _remove_ini_keys(lines, removed_keys)
 

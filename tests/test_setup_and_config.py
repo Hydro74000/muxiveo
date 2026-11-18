@@ -567,6 +567,34 @@ class TestAppConfigRamBuffer:
         assert cfg.enable_file_logging is True
         assert cfg.file_logging_level == "verbose"
 
+    def test_legacy_verbose_file_logging_kept_by_partial_ui_save(self, tmp_path):
+        """Écriture partielle de [ui] (journal au démarrage, popup) : clé historique gardée tant
+        que ses remplaçantes ne sont pas écrites, retirée quand elles le sont."""
+        import core.config as cfg_mod
+        from core.config import AppConfig, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nverbose_file_logging = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                write_ini_settings({"ui": {"startup_logs_expanded": "true"}})
+                cfg = AppConfig()
+                assert "verbose_file_logging = true" in ini_path.read_text(encoding="utf-8")
+                assert cfg.enable_file_logging is True
+                assert cfg.file_logging_level == "verbose"
+
+                write_ini_settings({"ui": {"enable_file_logging": "true", "file_logging_level": "verbose"}})
+                assert "verbose_file_logging" not in ini_path.read_text(encoding="utf-8")
+                cfg = AppConfig()
+
+        assert cfg.enable_file_logging is True
+        assert cfg.file_logging_level == "verbose"
+
     def test_default_file_logging_level_is_standard(self, tmp_path):
         """Sans clé explicite, le niveau de logging fichier est standard."""
         from core.config import AppConfig

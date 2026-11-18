@@ -2066,6 +2066,7 @@ class MainWindow(QMainWindow):
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
+        self._settings_panel.restart_requested.connect(self._request_restart)
 
     def _wire_extensions(self) -> None:
         """Extensions : sonde → contrôleurs → badges, page Extensions, encodages ; flux des versions lu en tâche de fond."""
@@ -3130,8 +3131,16 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        # Nouvelle instance lancée avant la fermeture : réglages tranchés avant.
+        MainWindow._request_restart(self)
+
+    def _request_restart(self) -> None:
+        """Redémarrage (échelle, setup) : la nouvelle instance n'est lancée qu'une fois la fermeture
+        de celle-ci acceptée (réglages non enregistrés, opération en cours), puis celle-ci se ferme."""
         if not MainWindow._settings_allow_leave(self):
+            return
+        if getattr(self, "_running", False) and not confirm_close_while_running(
+            self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
+        ):
             return
 
         restarted = self._config.restart_application()
@@ -3143,6 +3152,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._restart_confirmed = True      # fermeture déjà acceptée : closeEvent ne redemande pas
         app = cast(QApplication | None, QApplication.instance())
         if app is not None:
             app.quit()
@@ -3320,7 +3330,7 @@ class MainWindow(QMainWindow):
             if not self._settings_allow_leave():
                 event.ignore()
                 return
-            if self._running and not confirm_close_while_running(
+            if self._running and not getattr(self, "_restart_confirmed", False) and not confirm_close_while_running(
                 self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
             ):
                 event.ignore()
@@ -3497,16 +3507,24 @@ class MainWindow(QMainWindow):
         else:
             self._maybe_popup_update()
 
-    def _show_requested_update_dialog(self) -> None:
+    def _show_requested_update_dialog(self, *, retry: bool = False) -> None:
         """Réponse d'une vérification demandée : jamais par-dessus un autre dialogue modal
-        (question des paramètres…), affichée ensuite avec l'état connu à ce moment."""
+        (question des paramètres…), affichée ensuite avec l'état connu à ce moment.
+
+        Une seule demande en attente ; toute présentation de la fenêtre (badge, popup) la consomme.
+        """
+        if not retry:
+            self._update_dialog_requested = True
+        elif not getattr(self, "_update_dialog_requested", False):
+            return
         if hasattr(self, "_shutdown"):
             return
         if QApplication.activeModalWidget() is not None:
-            QTimer.singleShot(500, self, self._show_requested_update_dialog)
+            QTimer.singleShot(500, self, lambda: self._show_requested_update_dialog(retry=True))
             return
         if self._update_info is not None:
             self._show_update_dialog(self._update_info)
+        self._update_dialog_requested = False
 
     def _maybe_popup_update(self) -> None:
         """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
@@ -3536,6 +3554,7 @@ class MainWindow(QMainWindow):
         self._show_update_dialog(info)
 
     def _show_update_dialog(self, info: UpdateInfo) -> None:
+        self._update_dialog_requested = False
         self._update_popup_version = info.version
         kind = detect_install_kind()
         remarks: list[str] = []
