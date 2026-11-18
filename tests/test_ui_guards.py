@@ -144,17 +144,22 @@ def test_encode_panel_blocks_preview_during_operation(qt_app) -> None:
         _preview_signals=None,
         _preview_status=MagicMock(),
         _current_preview_config=MagicMock(),
+        _apply_deferred_runtime_settings=MagicMock(),
     )
     set_running = MethodType(EncodePanel.set_operation_running, panel)
     generate = MethodType(EncodePanel._on_generate_preview, panel)
 
-    set_running(True)
-    panel._preview_generate_btn.setEnabled.assert_called_with(False)
-    generate()
-    panel._current_preview_config.assert_not_called()
+    with patch("ui.panels.encode_panel.panel.QTimer") as timer:
+        set_running(True)
+        panel._preview_generate_btn.setEnabled.assert_called_with(False)
+        timer.singleShot.assert_not_called()
+        generate()
+        panel._current_preview_config.assert_not_called()
 
-    set_running(False)
-    panel._preview_generate_btn.setEnabled.assert_called_with(True)
+        set_running(False)
+        panel._preview_generate_btn.setEnabled.assert_called_with(True)
+        # Fin de l'opération : réglages et détection matérielle différés appliqués après coup.
+        timer.singleShot.assert_called_once_with(0, panel, panel._apply_deferred_runtime_settings)
 
 
 # ---------------------------------------------------------------------------
