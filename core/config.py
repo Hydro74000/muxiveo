@@ -301,13 +301,43 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return unique
 
 
+_INI_INLINE_COMMENT_RE = re.compile(r"\s#")
+_INI_SECTION_RE = re.compile(r"\[(?P<header>.+)\]")
+_INI_OPTION_RE = re.compile(r"(?P<option>.*?)\s*[=:]")
+
+
+def _ini_line_content(line: str) -> str:
+    """Ligne sans commentaire, comme le lit le chargeur (commentaire en ligne « # » après un blanc)."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", ";")):
+        return ""
+    match = _INI_INLINE_COMMENT_RE.search(stripped)
+    return (stripped[:match.start()] if match else stripped).strip()
+
+
+def _ini_section_name(line: str) -> str | None:
+    """Nom (minuscules) de la section ouverte par ``line``, ``[tools] # commentaire`` compris."""
+    match = _INI_SECTION_RE.match(_ini_line_content(line))
+    return match.group("header").strip().lower() if match else None
+
+
+def _ini_option_name(line: str) -> str | None:
+    """Clé (minuscules) définie par ``line`` (délimiteur « = » ou « : »), sinon None."""
+    content = _ini_line_content(line)
+    if not content or _INI_SECTION_RE.match(content):
+        return None
+    match = _INI_OPTION_RE.match(content)
+    option = match.group("option").strip().lower() if match else ""
+    return option or None
+
+
 def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
     start = -1
     end = len(lines)
-    target = f"[{section.lower()}]"
+    target = section.lower()
 
     for index, line in enumerate(lines):
-        if line.strip().lower() == target:
+        if _ini_section_name(line) == target:
             start = index
             break
 
@@ -315,8 +345,7 @@ def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
         return -1, len(lines)
 
     for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
+        if _ini_section_name(lines[index]) is not None:
             end = index
             break
 
@@ -479,12 +508,10 @@ def _upsert_ini_section(
         rendered = _normalize_ini_value(section, value)
         updated = False
         for index in range(start + 1, end):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            if _ini_option_name(lines[index]) != key.lower():
                 continue
-            lhs, rhs = stripped.split("=", 1)
-            if lhs.strip().lower() != key.lower():
-                continue
+            content = _ini_line_content(lines[index])
+            rhs = _INI_OPTION_RE.sub("", content, count=1)
             if (not replace_blank_only) or (not rhs.strip()):
                 lines[index] = f"{key} = {rendered}"
             updated = True
@@ -505,14 +532,7 @@ def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str
         if start == -1:
             continue
         lowered_keys = {key.lower() for key in keys}
-        kept_lines: list[str] = []
-        for line in updated[start + 1:end]:
-            stripped = line.strip()
-            if stripped and not stripped.startswith(("#", ";")) and "=" in stripped:
-                lhs, _rhs = stripped.split("=", 1)
-                if lhs.strip().lower() in lowered_keys:
-                    continue
-            kept_lines.append(line)
+        kept_lines = [line for line in updated[start + 1:end] if _ini_option_name(line) not in lowered_keys]
         updated = updated[:start + 1] + kept_lines + updated[end:]
     return _sanitize_windows_ini_lines(updated)
 
@@ -585,7 +605,8 @@ def _purge_obsolete_ini_keys(path: Path) -> None:
         for section, entries in _REMOVED_INI_KEYS.items()
     }
     try:
-        parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",), strict=False)
+        # Lecture du chargeur (stricte : doublons refusés) ; un fichier qu'il refuse n'est jamais réécrit.
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",), default_section="DEFAULT")
         parser.read_string(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return
@@ -1646,7 +1667,15 @@ class AppConfig:
         s.setValue("plugins/tensorrt_hint_shown", "true" if self.trt_hint_shown else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
-        _purge_obsolete_ini_keys(_INI_PATH)
+        try:
+            _purge_obsolete_ini_keys(_INI_PATH)
+        except OSError:
+            pass        # entretien : config.ini non inscriptible, réglages de l'interface déjà enregistrés
+
+    def remember_display_peak(self, nits: int) -> None:
+        """Pic de l'écran choisi dans HDR Studio : retenu aussitôt (un rechargement ne le perd pas)."""
+        self.display_peak_nits = normalize_display_peak_nits(int(nits))
+        self._settings.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())

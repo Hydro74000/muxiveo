@@ -6394,3 +6394,13 @@ def test_merge_dovi_set_tool_bins_updates_known_tools_only():
     assert wf._bins["dovi_tool"] == "/opt/dovi_tool"
     assert wf._bins["hdr10plus_tool"] == "/opt/hdr10plus_tool"
     assert "unknown" not in wf._bins
+
+
+def test_tool_change_forgets_dovi_detection_and_threshold_follows_settings():
+    wf = _make_workflow()
+    wf.__dict__["_dovi_sub_profile_cache"] = {("a", 0, 1, 1): object()}
+    wf.__dict__["_dovi_tool_fallback_done"] = {("a", 0, 1, 1)}
+    wf.set_metadata_tools("/opt/dovi_tool", "/opt/hdr10plus_tool")
+    assert "_dovi_sub_profile_cache" not in wf.__dict__ and "_dovi_tool_fallback_done" not in wf.__dict__
+    wf.set_ram_buffer_threshold_pct(30)
+    assert wf._video_preparation_policy_service()._cb.ram_buffer_threshold_pct == 30

@@ -734,3 +734,26 @@ def test_operation_launched_from_settings_waits_for_pending_changes(window, tmp_
     run.assert_called_once_with()
     assert window._stack.currentIndex() == 4
     window._running = False
+
+
+def test_settings_saved_during_an_operation_apply_when_it_ends(window, qt_app, monkeypatch):
+    """Outils et options enregistrés pendant une opération : le traitement en cours garde les siens."""
+    encode, remux = Mock(), Mock()
+    monkeypatch.setattr(window._encode_panel, "refresh_runtime_settings", encode)
+    monkeypatch.setattr(window._remux_panel, "refresh_runtime_settings", remux)
+    window._running = True
+    window._refresh_panels_runtime_settings()
+    encode.assert_not_called()
+    remux.assert_not_called()
+    window._running = False
+    _wait_until(qt_app, lambda: encode.call_count == 1)
+    remux.assert_called_once_with()
+
+
+def test_stale_hardware_detection_is_ignored(window, qt_app):
+    panel = window._encode_panel
+    panel._detection_tools = ("/opt/new-ffmpeg", None)
+    before = set(panel._hw_encoders)
+    panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, "/opt/old-ffmpeg", {}, frozenset(), {}, {},
+                          ("/opt/old-ffmpeg", None))
+    assert set(panel._hw_encoders) == before

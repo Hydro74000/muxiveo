@@ -554,9 +554,16 @@ class EncodeWorkflow(QObject):
             )
         )
 
+    def _forget_dovi_detection(self) -> None:
+        """Sous-profils DV et replis dovi_tool déjà tentés : à refaire avec les nouveaux outils."""
+        self.__dict__.pop("_dovi_sub_profile_cache", None)
+        self.__dict__.pop("_dovi_tool_fallback_done", None)
+
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
         previous_ffprobe = self._ffprobe_path()
+        if ffmpeg_bin != self._ffmpeg:
+            self._forget_dovi_detection()
         self._ffmpeg = ffmpeg_bin
         self._bins["ffprobe"] = self._ffprobe_path()
         self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
@@ -580,6 +587,10 @@ class EncodeWorkflow(QObject):
         """Met à jour le nombre d'images encodées en parallèle par libx265 (0 = automatique)."""
         self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
 
+    def set_ram_buffer_threshold_pct(self, threshold_pct: int) -> None:
+        """Réserve de RAM libre (%) exigée pour lancer un encodage vidéo de plus en parallèle."""
+        self._ram_buffer_threshold_pct = max(0, min(int(threshold_pct), 90))
+
     def set_max_parallel_video_encodes(self, max_parallel_video_encodes: int | None) -> None:
         """Met à jour le niveau max de parallélisme pour la préparation multi-pistes vidéo."""
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
@@ -589,6 +600,7 @@ class EncodeWorkflow(QObject):
         self._bins["mediainfo"] = mediainfo_bin
         if previous != mediainfo_bin:
             self._hdr_metadata_service.clear_probe_caches()
+            self._forget_dovi_detection()
 
     def set_ffprobe_bin(self, ffprobe_bin: str | None) -> None:
         """Applique le FFprobe configuré et oublie les sondes de l'ancien outil."""
@@ -598,6 +610,7 @@ class EncodeWorkflow(QObject):
         self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
         if previous != self._bins["ffprobe"]:
             self._hdr_metadata_service.clear_probe_caches()
+            self._forget_dovi_detection()
 
     def set_metadata_tools(self, dovi_tool_bin: str, hdr10plus_bin: str) -> None:
         """Applique dovi_tool / hdr10plus_tool configurés (réglages enregistrés) au prochain traitement."""
@@ -606,6 +619,7 @@ class EncodeWorkflow(QObject):
         self._bins["dovi_tool"] = dovi_tool_bin
         self._bins["hdr10plus_tool"] = hdr10plus_bin
         self._hdr_metadata_service.clear_probe_caches()
+        self._forget_dovi_detection()
         self._static_hdr_estimator = _StaticHdrEstimateService(
             ffmpeg_bin=self._ffmpeg,
             dovi_tool_bin=dovi_tool_bin,

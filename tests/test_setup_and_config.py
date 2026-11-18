@@ -1797,3 +1797,83 @@ def test_tools_writers_prune_removed_tools(tmp_path):
     cfg_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"})
     text = ini_path.read_text(encoding="utf-8")
     assert "eac3to" not in text and "ffmpeg = /opt/ffmpeg" in text
+
+
+class TestIniSyntaxAndPeakMemory:
+    """Règles du chargeur respectées par les réécritures de config.ini ; pic de l'écran retenu."""
+
+    @staticmethod
+    def _cfg(tmp_path, ini_path, settings=None):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        store = dict(settings or {})
+        inst = MagicMock()
+        inst.value.side_effect = lambda key, default=None: store.get(key, default)
+        inst.setValue.side_effect = lambda key, value: store.__setitem__(key, value)
+        patches = (patch("core.config.QSettings", return_value=inst),
+                   patch("core.config._app_data_dir", return_value=tmp_path),
+                   patch.object(cfg_mod, "_INI_PATH", ini_path))
+        for item in patches:
+            item.start()
+        return AppConfig(), store, patches
+
+    def test_purge_follows_loader_syntax_and_section_limits(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[tools] # outils\neac3to: ancien\nffmpeg = ffmpeg\n\n"
+            "[paths] # chemins\neac3to = garde\n",
+            encoding="utf-8",
+        )
+        cfg, _store, patches = self._cfg(tmp_path, ini_path)
+        try:
+            cfg.save()
+        finally:
+            for item in patches:
+                item.stop()
+        text = ini_path.read_text(encoding="utf-8")
+        assert "eac3to: ancien" not in text
+        assert "eac3to = garde" in text and "ffmpeg = ffmpeg" in text and "[paths] # chemins" in text
+
+    def test_purge_never_rewrites_a_file_the_loader_refuses(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        original = "[tools]\neac3to = a\neac3to = b\n"
+        ini_path.write_text(original, encoding="utf-8")
+        cfg_mod._purge_obsolete_ini_keys(ini_path)
+        assert ini_path.read_text(encoding="utf-8") == original
+
+    def test_purge_write_failure_does_not_break_save(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\neac3to = eac3to\n", encoding="utf-8")
+        cfg, _store, patches = self._cfg(tmp_path, ini_path)
+        try:
+            with patch("core.config._write_ini_text", side_effect=PermissionError("lecture seule")):
+                cfg.save()
+        finally:
+            for item in patches:
+                item.stop()
+
+    def test_upsert_updates_colon_delimited_key_in_place(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui] # interface\nlog_max_lines: 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"ui": {"log_max_lines": "300"}})
+        text = ini_path.read_text(encoding="utf-8")
+        assert text.count("log_max_lines") == 1 and "log_max_lines = 300" in text
+
+    def test_display_peak_chosen_in_hdr_studio_survives_reload(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        cfg, store, patches = self._cfg(tmp_path, ini_path, {"hdr/display_peak_nits": 1000})
+        try:
+            cfg.remember_display_peak(600)
+            assert store["hdr/display_peak_nits"] == 600
+            cfg.reload()
+            assert cfg.display_peak_nits == 600
+        finally:
+            for item in patches:
+                item.stop()

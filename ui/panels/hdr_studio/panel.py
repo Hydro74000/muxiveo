@@ -1082,8 +1082,8 @@ class HdrStudio(QWidget):
         self._tabs.setCurrentIndex(self._tabs.count() - 1)
 
     def _display_peak_changed(self, value: int) -> None:
-        # Enregistré avec la configuration (fermeture de l'application ou page Paramètres).
-        self._config.display_peak_nits = int(value)
+        # Retenu aussitôt dans les réglages de l'interface (aucun rechargement ne le perd).
+        self._config.remember_display_peak(int(value))
         self._editor.set_realignment(self._realignment(self._report))
 
     def _apply_to_encode(self, max_cll: int, max_fall: int) -> None:

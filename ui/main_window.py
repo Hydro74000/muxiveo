@@ -1468,6 +1468,9 @@ class MainWindow(QMainWindow):
         set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
         if callable(set_operation_running):
             set_operation_running(self._running_flag)
+        if not self._running_flag and getattr(self, "_runtime_refresh_pending", False):
+            # Réglages enregistrés pendant l'opération : appliqués maintenant qu'elle est finie.
+            QTimer.singleShot(0, self, self._refresh_panels_runtime_settings)
         timer = getattr(self, "_operation_refresh_timer", None)
         if timer is not None:
             timer.start()
@@ -3072,8 +3075,7 @@ class MainWindow(QMainWindow):
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
         self._log_panel.set_startup_expanded(self._config.startup_logs_expanded)
-        self._encode_panel.refresh_runtime_settings()
-        self._remux_panel.refresh_runtime_settings()
+        self._refresh_panels_runtime_settings()
         self._sidebar.set_compact(self._config.startup_menu_compact)
         self._apply_locale()
         if new_theme != previous_theme:
@@ -3112,6 +3114,16 @@ class MainWindow(QMainWindow):
                 ),
             )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
+
+    def _refresh_panels_runtime_settings(self) -> None:
+        """Réglages enregistrés appliqués aux workflows (outils, fils, options) ; pendant une opération,
+        différés à sa fin : le traitement en cours garde les outils avec lesquels il a été validé."""
+        if self._running:
+            self._runtime_refresh_pending = True
+            return
+        self._runtime_refresh_pending = False
+        self._encode_panel.refresh_runtime_settings()
+        self._remux_panel.refresh_runtime_settings()
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
         settings_panel = getattr(self, "_settings_panel", None)

@@ -232,7 +232,7 @@ class EncodePanel(QWidget):
     rife_install_requested   = Signal()       # lien « Installer » du moteur vidéo MVO (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
-    _hw_detected             = Signal(object, object, object, object, object, object, object)
+    _hw_detected             = Signal(object, object, object, object, object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -2661,7 +2661,7 @@ class EncodePanel(QWidget):
         # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
         self._hw_detected.emit(
             hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc),
-            detector.detect_presets(hw_ffmpeg, set(hw)), dict(detector.vaapi_drivers),
+            detector.detect_presets(hw_ffmpeg, set(hw)), dict(detector.vaapi_drivers), (ffmpeg, nvencc),
         )
 
     def _on_hw_detected(
@@ -2673,7 +2673,10 @@ class EncodePanel(QWidget):
         ten_bit_codecs: frozenset[str] | None = None,
         presets: dict[str, frozenset[str]] | None = None,
         vaapi_drivers: dict[str, str] | None = None,
+        tools: tuple[str, str | None] | None = None,
     ) -> None:
+        if tools is not None and tools != getattr(self, "_detection_tools", tools):
+            return      # détection d'outils remplacés depuis (Paramètres) : la suivante fait foi
         self._hw_encoders = hw
         self._hw_presets = dict(presets or {})
         self._vaapi_drivers = dict(vaapi_drivers or {})
@@ -6012,6 +6015,7 @@ class EncodePanel(QWidget):
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
         self._workflow.set_x265_frame_threads(getattr(self._config, "x265_frame_threads", 0))
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
+        self._workflow.set_ram_buffer_threshold_pct(self._config.ram_buffer_threshold_pct)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
         self._workflow.set_metadata_tools(self._config.tool_dovi_tool, self._config.tool_hdr10plus)
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
