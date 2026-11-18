@@ -401,6 +401,10 @@ def test_settings_panel_does_not_expose_legacy_audio_encoding_settings(tmp_path,
         panel = SettingsPanel(cfg)
         assert ("audio_encoding", "default_bitrate_per_channel_kbps") not in panel._field_widgets
         assert ("audio_encoding", "bitrate_step_per_channel_kbps") not in panel._field_widgets
+        # Section enregistrée seulement si modifiée : l'écriture purge les clés historiques.
+        slider = _field_widget(panel, "audio_encoding", "aac_bitrate_per_channel_kbps")
+        slider.setValue(0 if slider.value() else 1)
+        assert panel.dirty_sections() == ["audio_encoding"]
         panel._on_save_clicked()
 
         ini_text = ini_path.read_text(encoding="utf-8")
@@ -532,3 +536,133 @@ def test_settings_panel_rerun_setup_shows_error_message(tmp_path, qt_app):
     mock_warning.assert_called_once()
     assert panel._status_label is not None
     assert "boom" in panel._status_label.text()
+
+
+def _panel_with_ini(tmp_path, content: str):
+    import core.config as cfg_mod
+    from core.config import AppConfig
+    from ui.panels.settings_panel import SettingsPanel
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text(content, encoding="utf-8")
+    patches = (
+        patch("core.config.QSettings", return_value=_mock_qsettings()),
+        patch("core.config._app_data_dir", return_value=tmp_path),
+        patch.object(cfg_mod, "_INI_PATH", ini_path),
+    )
+    for item in patches:
+        item.start()
+    cfg = AppConfig()
+    panel = SettingsPanel(cfg)
+    return panel, cfg, ini_path, patches
+
+
+def _stop(patches) -> None:
+    for item in patches:
+        item.stop()
+
+
+def test_settings_panel_one_tab_per_section(tmp_path, qt_app):
+    from core.config import INI_FIELD_GROUPS
+
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nlanguage = fra\n")
+    try:
+        tabs = panel._tabs
+        assert tabs.count() == len(INI_FIELD_GROUPS)
+        assert panel._tab_sections[0] == "ui"
+        assert sorted(panel._tab_sections) == sorted(group["section"] for group in INI_FIELD_GROUPS)
+        assert not panel.has_unsaved_changes()
+        assert panel._save_btn is not None and not panel._save_btn.isEnabled()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_edit_marks_tab_and_reverting_clears_it(tmp_path, qt_app):
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        checkbox = _field_widget(panel, "ui", "startup_menu_compact")
+        checkbox.setChecked(True)
+        assert panel.dirty_sections() == ["ui"]
+        assert panel._save_btn.isEnabled()
+        assert not panel._tabs.tabIcon(0).isNull()
+        checkbox.setChecked(False)
+        assert not panel.has_unsaved_changes()
+        assert panel._tabs.tabIcon(0).isNull()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_tab_change_save_writes_section(tmp_path, qt_app):
+    panel, cfg, ini_path, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="save") as ask:
+            panel._tabs.setCurrentIndex(1)
+        ask.assert_called_once_with(["ui"])
+        assert panel._tabs.currentIndex() == 1
+        assert "startup_menu_compact = true" in ini_path.read_text(encoding="utf-8")
+        assert cfg.startup_menu_compact is True
+        assert not panel.has_unsaved_changes()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_tab_change_discard_restores_values(tmp_path, qt_app):
+    panel, _cfg, ini_path, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        checkbox = _field_widget(panel, "ui", "startup_menu_compact")
+        checkbox.setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="discard"):
+            panel._tabs.setCurrentIndex(2)
+        assert panel._tabs.currentIndex() == 2
+        assert not checkbox.isChecked()
+        assert not panel.has_unsaved_changes()
+        assert "startup_menu_compact = true" not in ini_path.read_text(encoding="utf-8")
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_tab_change_cancel_stays_on_tab(tmp_path, qt_app):
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        checkbox = _field_widget(panel, "ui", "startup_menu_compact")
+        checkbox.setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="cancel"):
+            panel._tabs.setCurrentIndex(1)
+            assert panel._tabs.currentIndex() == 0
+            assert checkbox.isChecked()
+            assert not panel.confirm_leave()
+        # Onglet suivant sans modification : aucune question.
+        checkbox.setChecked(False)
+        with patch.object(panel, "_ask_pending_changes") as ask:
+            panel._tabs.setCurrentIndex(1)
+            assert panel.confirm_leave()
+        ask.assert_not_called()
+        assert panel._tabs.currentIndex() == 1
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_save_refused_by_validation_keeps_tab(tmp_path, qt_app):
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nenable_file_logging = false\n")
+    try:
+        _field_widget(panel, "ui", "enable_file_logging").setChecked(True)
+        _field_widget(panel, "ui", "verbose_log_dir").setText("")
+        with patch.object(panel, "_ask_pending_changes", return_value="save"), \
+             patch("ui.panels.settings_panel.QMessageBox.warning"):
+            panel._tabs.setCurrentIndex(1)
+        assert panel._tabs.currentIndex() == 0
+        assert panel.has_unsaved_changes()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_refresh_field_is_not_a_pending_change(tmp_path, qt_app):
+    panel, cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nupdate_popup = true\n")
+    try:
+        cfg.update_popup = False
+        panel.refresh_field("ui", "update_popup")
+        assert not _field_widget(panel, "ui", "update_popup").isChecked()
+        assert not panel.has_unsaved_changes()
+    finally:
+        _stop(patches)

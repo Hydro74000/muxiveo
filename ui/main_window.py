@@ -1408,6 +1408,36 @@ class _Sidebar(QWidget):
 # MainWindow
 # ---------------------------------------------------------------------------
 
+class _PageStack(QStackedWidget):
+    """Pile des pages : une page peut retenir l'utilisateur (réglages non enregistrés)."""
+
+    leave_refused = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._leave_guards: dict[QWidget, Callable[[], bool]] = {}
+        self._guarding = False
+
+    def set_leave_guard(self, page: QWidget, guard: Callable[[], bool]) -> None:
+        self._leave_guards[page] = guard
+
+    def setCurrentIndex(self, index: int) -> None:
+        current = self.currentWidget()
+        guard = self._leave_guards.get(current) if current is not None else None
+        if index != self.currentIndex() and guard is not None:
+            if self._guarding:
+                return
+            self._guarding = True
+            try:
+                allowed = guard()
+            finally:
+                self._guarding = False
+            if not allowed:
+                self.leave_refused.emit()
+                return
+        super().setCurrentIndex(index)
+
+
 class MainWindow(QMainWindow):
     """
     Fenêtre principale de l'application.
@@ -1606,7 +1636,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self._sidebar)
 
         # Stack de pages
-        self._stack = QStackedWidget()
+        self._stack = _PageStack()
         self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         self._stack.setMinimumSize(0, 0)
         self._stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -1651,6 +1681,7 @@ class MainWindow(QMainWindow):
         # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
+        self._stack.set_leave_guard(self._settings_panel, self._settings_panel.confirm_leave)
 
         # Page 6 — Extensions (installation, mise à jour, suppression)
         self._extensions_panel = ExtensionsPanel(self._config)
@@ -1934,6 +1965,7 @@ class MainWindow(QMainWindow):
         self._dovi_panel.set_operation_start_guard(self._can_start_operation)
         self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
+        self._stack.leave_refused.connect(lambda: self._sidebar.select_page(self._stack.currentIndex()))
         self._stack.currentChanged.connect(self._on_active_page_changed)
         self._hybrid_panel.set_operation_start_guard(self._can_start_operation)
         self._hybrid_panel.use_global_controls()
@@ -3116,9 +3148,7 @@ class MainWindow(QMainWindow):
             return
         self._config.startup_logs_expanded = expanded
         self._log_panel.set_startup_expanded(expanded)
-        checkbox = self._settings_panel.widget_for("ui", "startup_logs_expanded")
-        if isinstance(checkbox, QCheckBox):
-            checkbox.setChecked(expanded)
+        self._settings_panel.refresh_field("ui", "startup_logs_expanded")
 
     # ------------------------------------------------------------------
     # Logging
@@ -3267,6 +3297,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
+            settings_panel = getattr(self, "_settings_panel", None)
+            if settings_panel is not None and not settings_panel.confirm_leave():
+                event.ignore()
+                return
             if self._running and not confirm_close_while_running(
                 self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
             ):

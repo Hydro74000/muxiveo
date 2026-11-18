@@ -5403,10 +5403,6 @@
     "fra": "Recadrage haut de la piste vidéo active.",
     "eng": "Top crop of the active video track."
   },
-  "Sauvegarder toute la configuration": {
-    "fra": "Sauvegarder toute la configuration",
-    "eng": "Save the whole configuration"
-  },
   "Éditer profil": {
     "fra": "Éditer profil",
     "eng": "Edit profile"
@@ -11390,5 +11386,33 @@
   "Worker JSON-RPC sur stdio pour un client local (extension, outil) : jobs, événements, annulation.": {
     "fra": "Worker JSON-RPC sur stdio pour un client local (extension, outil) : jobs, événements, annulation.",
     "eng": "JSON-RPC worker over stdio for a local client (extension, tool): jobs, events, cancellation."
+  },
+  "Modifications non enregistrées": {
+    "fra": "Modifications non enregistrées",
+    "eng": "Unsaved changes"
+  },
+  "L'onglet « {tabs} » contient des modifications non enregistrées.": {
+    "fra": "L'onglet « {tabs} » contient des modifications non enregistrées.",
+    "eng": "The \"{tabs}\" tab has unsaved changes."
+  },
+  "Les onglets « {tabs} » contiennent des modifications non enregistrées.": {
+    "fra": "Les onglets « {tabs} » contiennent des modifications non enregistrées.",
+    "eng": "The \"{tabs}\" tabs have unsaved changes."
+  },
+  "Enregistrer les modifications ou les ignorer ?": {
+    "fra": "Enregistrer les modifications ou les ignorer ?",
+    "eng": "Save the changes or discard them?"
+  },
+  "Ignorer": {
+    "fra": "Ignorer",
+    "eng": "Discard"
+  },
+  "Modifications ignorées.": {
+    "fra": "Modifications ignorées.",
+    "eng": "Changes discarded."
+  },
+  "Sections « {titles} » enregistrées dans config.ini.": {
+    "fra": "Sections « {titles} » enregistrées dans config.ini.",
+    "eng": "Sections \"{titles}\" saved to config.ini."
   }
 }

@@ -1,5 +1,5 @@
 """
-ui/panels/settings_panel.py — Éditeur complet de config.ini.
+ui/panels/settings_panel.py — Éditeur complet de config.ini, une section par onglet.
 """
 
 from __future__ import annotations
@@ -7,7 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,10 +19,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QLayout,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QSlider,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -37,7 +40,6 @@ from ui.panels.encode_panel.theme import (
     _input_style,
     _primary_button,
     _secondary_button,
-    _section_label,
     _separator,
 )
 from ui.design_system import font_px as _font_px, scale as _scale
@@ -66,8 +68,32 @@ _DEPENDENT_FIELDS: dict[tuple[str, str], tuple[str, str]] = {
     ("paths", "release_group_tag_enabled"): ("paths", "release_group_tag"),
 }
 
+# Ordre des onglets ; sections absentes : après, dans l'ordre de INI_FIELD_GROUPS.
+_SECTION_ORDER = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3}
+
+
+def _dirty_icon() -> QIcon:
+    """Pastille des onglets modifiés non enregistrés."""
+    size = _scale(8)
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2.0)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(_C.WARN))
+    painter.drawEllipse(0, 0, size, size)
+    painter.end()
+    return QIcon(pixmap)
+
 
 class SettingsPanel(QWidget):
+    """Réglages de config.ini, une section par onglet.
+
+    Chaque onglet s'enregistre à part ; quitter un onglet (ou la page) avec des
+    modifications non enregistrées propose de les enregistrer ou de les ignorer.
+    """
+
     settings_saved = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
@@ -76,11 +102,18 @@ class SettingsPanel(QWidget):
         self._field_widgets: dict[tuple[str, str], QWidget] = {}
         self._slider_value_labels: dict[tuple[str, str], QLabel] = {}
         self._status_label: QLabel | None = None
-        self._scroll: QScrollArea | None = None
+        self._save_btn: QPushButton | None = None
+        self._groups = sorted(INI_FIELD_GROUPS, key=lambda group: _SECTION_ORDER.get(group["section"], len(_SECTION_ORDER)))
+        self._group_by_section = {group["section"]: group for group in self._groups}
+        self._tab_sections = [group["section"] for group in self._groups]
+        # Valeurs enregistrées affichées par section : référence des modifications en cours.
+        self._baseline: dict[str, dict[str, str]] = {}
+        self._current_tab = 0
+        self._dirty_icon = _dirty_icon()
         self._build_ui()
         self._load_from_config()
-        self._sync_dependent_field_states()
         apply_translations(self)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
     def widget_for(self, section: str, key: str) -> QWidget:
         return self._field_widgets[(section, key)]
@@ -88,27 +121,8 @@ class SettingsPanel(QWidget):
     def _build_ui(self) -> None:
         self.setStyleSheet(f"background:{_C.BG_DEEP};")
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        scroll = QScrollArea()
-        self._scroll = scroll
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(
-            f"QScrollArea{{background:{_C.BG_DEEP};border:none;}}"
-            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:{_scale(6)}px;border:none;}}"
-            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:{_scale(3)}px;min-height:{_scale(24)}px;}}"
-            f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
-        )
-
-        content = QWidget()
-        content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        content.setStyleSheet(f"background:{_C.BG_DEEP};")
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(24))
-        layout.setSpacing(_scale(20))
-        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        root.setContentsMargins(_scale(28), _scale(24), _scale(28), _scale(20))
+        root.setSpacing(_scale(12))
 
         title = QLabel("Réglages")
         title.setStyleSheet(
@@ -122,15 +136,25 @@ class SettingsPanel(QWidget):
         )
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color:{_C.TEXT_SEC};font-size:{_font_px(12)}px;background:transparent;")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-        layout.addWidget(_separator())
+        root.addWidget(title)
+        root.addWidget(subtitle)
 
-        _section_order = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3, "paths": 4}
-        groups = sorted(INI_FIELD_GROUPS, key=lambda group: _section_order.get(group["section"], 4))
-        for group in groups:
-            layout.addWidget(_section_label(group["title"].upper()))
-            layout.addWidget(self._build_group_card(group))
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
+        self._tabs.setUsesScrollButtons(True)
+        self._tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self._tabs.setIconSize(QSize(_scale(8), _scale(8)))
+        self._tabs.tabBar().setDrawBase(False)
+        self._tabs.setStyleSheet(
+            f"QTabWidget::pane{{border:none;background:transparent;}}"
+            f"QTabBar::tab{{background:transparent;color:{_C.TEXT_SEC};padding:{_scale(6)}px {_scale(12)}px;"
+            f"border:none;border-bottom:2px solid transparent;font-size:{_font_px(11)}px;}}"
+            f"QTabBar::tab:selected{{color:{_C.TEXT_PRI};border-bottom:2px solid {_C.ACCENT};}}"
+            f"QTabBar::tab:hover{{color:{_C.TEXT_PRI};}}"
+        )
+        for group in self._groups:
+            self._tabs.addTab(self._build_tab_page(group), group["title"])
+        root.addWidget(self._tabs, stretch=1)
 
         actions = QHBoxLayout()
         actions.setSpacing(_scale(12))
@@ -138,8 +162,9 @@ class SettingsPanel(QWidget):
         reload_btn.clicked.connect(self._on_reload_clicked)
         rerun_setup_btn = _secondary_button("Relancer le setup")
         rerun_setup_btn.clicked.connect(self._on_rerun_setup_clicked)
-        save_btn = _primary_button("Sauvegarder toute la configuration")
-        save_btn.clicked.connect(self._on_save_clicked)
+        self._save_btn = _primary_button("Enregistrer")
+        self._save_btn.setEnabled(False)
+        self._save_btn.clicked.connect(self._on_save_clicked)
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
@@ -149,38 +174,45 @@ class SettingsPanel(QWidget):
         actions.addWidget(self._status_label, stretch=1)
         actions.addWidget(reload_btn)
         actions.addWidget(rerun_setup_btn)
-        actions.addWidget(save_btn)
-        layout.addLayout(actions)
+        actions.addWidget(self._save_btn)
+        root.addLayout(actions)
+
+        for widget in self._field_widgets.values():
+            self._watch_field(widget)
+
+    def _build_tab_page(self, group: dict[str, Any]) -> QScrollArea:
+        """Page d'un onglet : les champs de la section dans une carte, défilante."""
+        section = group["section"]
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            f"QScrollArea{{background:{_C.BG_DEEP};border:none;}}"
+            f"QScrollBar:vertical{{background:{_C.BG_DEEP};width:{_scale(6)}px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{_C.BORDER_LT};border-radius:{_scale(3)}px;min-height:{_scale(24)}px;}}"
+            f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
+        )
+
+        content = QWidget()
+        content.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        content.setStyleSheet(f"background:{_C.BG_DEEP};")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, _scale(12), _scale(8), _scale(4))
+        layout.setSpacing(0)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+
+        card = _card()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
+        card_layout.setSpacing(_scale(14))
+        for index, field in enumerate(group["fields"]):
+            card_layout.addWidget(self._build_field_widget(section, field))
+            if index < len(group["fields"]) - 1:
+                card_layout.addWidget(_separator())
+        layout.addWidget(card)
 
         scroll.setWidget(content)
-        root.addWidget(scroll, stretch=1)
-
-    def _build_group_card(self, group: dict[str, Any]) -> QWidget:
-        section = group["section"]
-        section_title = group["title"]
-        card = _card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
-        layout.setSpacing(_scale(14))
-
-        for index, field in enumerate(group["fields"]):
-            layout.addWidget(self._build_field_widget(section, field))
-            if index < len(group["fields"]) - 1:
-                layout.addWidget(_separator())
-
-        layout.addWidget(_separator())
-        save_row = QHBoxLayout()
-        save_row.setContentsMargins(0, 0, 0, 0)
-        save_row.setSpacing(_scale(8))
-        save_row.addStretch()
-        save_btn = _secondary_button("Enregistrer")
-        save_btn.clicked.connect(
-            lambda _=False, sec=section, title=section_title: self._on_save_section(sec, title)
-        )
-        save_row.addWidget(save_btn)
-        layout.addLayout(save_row)
-
-        return card
+        return scroll
 
     def _build_field_widget(self, section: str, field: dict[str, Any]) -> QWidget:
         container = QWidget()
@@ -385,23 +417,28 @@ class SettingsPanel(QWidget):
                 dependent.setEnabled(checkbox.isChecked())
 
     def _load_from_config(self) -> None:
-        for group in INI_FIELD_GROUPS:
+        for group in self._groups:
             section = group["section"]
             for field in group["fields"]:
                 self._load_field(section, field)
+            self._baseline[section] = self._section_values(section)
 
         self._sync_dependent_field_states()
+        self._refresh_dirty_state()
         if self._status_label is not None:
             self._status_label.clear()
 
     def _load_field(self, section: str, field: dict[str, Any]) -> None:
+        self._apply_value(section, field, getattr(self._config, field["attr"]))
+
+    def _apply_value(self, section: str, field: dict[str, Any], value: Any) -> None:
+        """Affiche ``value`` (valeur de la config ou chaîne relevée par ``_field_value``)."""
         widget = self._field_widgets[(section, field["key"])]
-        value = getattr(self._config, field["attr"])
 
         if isinstance(widget, QLineEdit):
             widget.setText(str(value))
         elif isinstance(widget, QCheckBox):
-            widget.setChecked(bool(value))
+            widget.setChecked(value if isinstance(value, bool) else str(value).strip().lower() == "true")
         elif isinstance(widget, QSlider):
             steps = widget.property("steps")
             if steps:
@@ -427,35 +464,130 @@ class SettingsPanel(QWidget):
 
     def refresh_field(self, section: str, key: str) -> None:
         """Recharge un seul champ depuis la config (réglage modifié hors du panneau), sans toucher aux autres saisies."""
-        for group in INI_FIELD_GROUPS:
-            if group["section"] != section:
-                continue
-            for field in group["fields"]:
-                if field["key"] == key:
-                    self._load_field(section, field)
-                    self._sync_dependent_field_states()
-                    return
+        group = self._group_by_section.get(section)
+        if group is None:
+            return
+        for field in group["fields"]:
+            if field["key"] == key:
+                self._load_field(section, field)
+                if section in self._baseline:
+                    self._baseline[section][key] = self._field_value(section, field)
+                self._sync_dependent_field_states()
+                self._refresh_dirty_state()
+                return
 
-    def _collect_values(self) -> dict[str, dict[str, str]]:
-        values: dict[str, dict[str, str]] = {}
-        for group in INI_FIELD_GROUPS:
-            section = group["section"]
-            values[section] = {}
-            for field in group["fields"]:
-                values[section][field["key"]] = self._field_value(section, field)
-        return values
+    # ------------------------------------------------------------------
+    # Modifications en cours
+    # ------------------------------------------------------------------
 
-    def _collect_section_values(self, section: str) -> dict[str, dict[str, str]]:
-        for group in INI_FIELD_GROUPS:
-            if group["section"] != section:
-                continue
-            return {
-                section: {
-                    field["key"]: self._field_value(section, field)
-                    for field in group["fields"]
-                }
-            }
-        return {section: {}}
+    def _watch_field(self, widget: QWidget) -> None:
+        if isinstance(widget, QLineEdit):
+            widget.textChanged.connect(self._on_field_edited)
+        elif isinstance(widget, QCheckBox):
+            widget.toggled.connect(self._on_field_edited)
+        elif isinstance(widget, (QSlider, QSpinBox)):
+            widget.valueChanged.connect(self._on_field_edited)
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(self._on_field_edited)
+
+    def _on_field_edited(self, *_args: object) -> None:
+        self._refresh_dirty_state()
+
+    def _section_values(self, section: str) -> dict[str, str]:
+        group = self._group_by_section.get(section)
+        if group is None:
+            return {}
+        return {field["key"]: self._field_value(section, field) for field in group["fields"]}
+
+    def _section_dirty(self, section: str) -> bool:
+        baseline = self._baseline.get(section)
+        return baseline is not None and self._section_values(section) != baseline
+
+    def dirty_sections(self) -> list[str]:
+        """Sections dont les valeurs affichées diffèrent des valeurs enregistrées."""
+        return [section for section in self._tab_sections if self._section_dirty(section)]
+
+    def has_unsaved_changes(self) -> bool:
+        return bool(self.dirty_sections())
+
+    def _refresh_dirty_state(self) -> None:
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return
+        dirty = set(self.dirty_sections())
+        for index, section in enumerate(self._tab_sections):
+            tabs.setTabIcon(index, self._dirty_icon if section in dirty else QIcon())
+        if self._save_btn is not None:
+            self._save_btn.setEnabled(bool(dirty))
+
+    def _on_tab_changed(self, index: int) -> None:
+        previous = self._current_tab
+        if index == previous:
+            return
+        if self._resolve_pending([self._tab_sections[previous]]):
+            self._current_tab = index
+            return
+        # Annulé (ou enregistrement refusé) : on reste sur l'onglet modifié.
+        self._tabs.blockSignals(True)
+        self._tabs.setCurrentIndex(previous)
+        self._tabs.blockSignals(False)
+
+    def confirm_leave(self) -> bool:
+        """Vrai si la page peut être quittée : rien à enregistrer, enregistré ou ignoré."""
+        return self._resolve_pending(self._tab_sections)
+
+    def _resolve_pending(self, sections: list[str]) -> bool:
+        dirty = [section for section in sections if self._section_dirty(section)]
+        if not dirty:
+            return True
+        choice = self._ask_pending_changes(dirty)
+        if choice == "save":
+            return self._save_sections(dirty)
+        if choice == "discard":
+            self._discard_sections(dirty)
+            return True
+        return False
+
+    def _ask_pending_changes(self, sections: list[str]) -> str:
+        """Popup Enregistrer / Ignorer / Annuler ; renvoie ``save``, ``discard`` ou ``cancel``."""
+        titles = ", ".join(translate_text(self._group_by_section[section]["title"]) for section in sections)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(translate_text("Modifications non enregistrées"))
+        box.setText(
+            translate_text("L'onglet « {tabs} » contient des modifications non enregistrées.", tabs=titles)
+            if len(sections) == 1 else
+            translate_text("Les onglets « {tabs} » contiennent des modifications non enregistrées.", tabs=titles)
+        )
+        box.setInformativeText(translate_text("Enregistrer les modifications ou les ignorer ?"))
+        save_btn = box.addButton(translate_text("Enregistrer"), QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton(translate_text("Ignorer"), QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_btn)
+        box.setEscapeButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_btn:
+            return "save"
+        if clicked is discard_btn:
+            return "discard"
+        return "cancel"
+
+    def _discard_sections(self, sections: list[str]) -> None:
+        for section in sections:
+            baseline = self._baseline.get(section, {})
+            for field in self._group_by_section[section]["fields"]:
+                if field["key"] in baseline:
+                    self._apply_value(section, field, baseline[field["key"]])
+            self._baseline[section] = self._section_values(section)
+        self._sync_dependent_field_states()
+        self._refresh_dirty_state()
+        if self._status_label is not None:
+            self._status_label.setText(translate_text("Modifications ignorées."))
+
+    # ------------------------------------------------------------------
+    # Enregistrement
+    # ------------------------------------------------------------------
 
     def _validate_values(self, values: dict[str, dict[str, str]]) -> bool:
         ui_values = values.get("ui", {})
@@ -498,35 +630,29 @@ class SettingsPanel(QWidget):
             self._status_label.setText(translate_text("Configuration rechargée depuis config.ini."))
 
     def _on_save_clicked(self) -> None:
-        values = self._collect_values()
-        if not self._validate_values(values):
-            return
-        write_ini_settings(values)
-        self._config.reload()
-        self._config.save()
-        if self._status_label is not None:
-            self._status_label.setText(
-                translate_text(
-                    "Configuration enregistrée dans config.ini. Certains changements peuvent nécessiter de rouvrir les panneaux ou l'application."
-                )
-            )
-        self.settings_saved.emit()
+        self._save_sections(self.dirty_sections())
 
-    def _on_save_section(self, section: str, section_title: str) -> None:
-        values = self._collect_section_values(section)
+    def _save_sections(self, sections: list[str]) -> bool:
+        """Écrit les sections dans config.ini ; faux si la validation refuse."""
+        if not sections:
+            return True
+        values = {section: self._section_values(section) for section in sections}
         if not self._validate_values(values):
-            return
+            return False
         write_ini_settings(values)
         self._config.reload()
         self._config.save()
+        self._baseline.update(values)
+        self._refresh_dirty_state()
         if self._status_label is not None:
+            titles = ", ".join(translate_text(self._group_by_section[section]["title"]) for section in sections)
             self._status_label.setText(
-                translate_text(
-                    "Section « {title} » enregistrée dans config.ini.",
-                    title=section_title,
-                )
+                translate_text("Section « {title} » enregistrée dans config.ini.", title=titles)
+                if len(sections) == 1 else
+                translate_text("Sections « {titles} » enregistrées dans config.ini.", titles=titles)
             )
         self.settings_saved.emit()
+        return True
 
     def _on_rerun_setup_clicked(self) -> None:
         try:

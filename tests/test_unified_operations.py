@@ -690,3 +690,24 @@ def test_pages_have_one_scroll_owner_and_keep_global_controls_visible(window, qt
         bottom = scroll.widget().mapTo(scroll.viewport(), QPoint(0, scroll.widget().height())).y()
         assert bottom <= scroll.viewport().height() + 1, type(panel).__name__
         assert window.rect().contains(window._run_btn.mapTo(window, window._run_btn.rect().center()))
+
+
+def test_leaving_settings_with_unsaved_changes_asks_first(window, qt_app, monkeypatch):
+    panel = window._settings_panel
+    settings_index = window._stack.indexOf(panel)
+    window._sidebar.select_page(settings_index)
+    window._stack.setCurrentIndex(settings_index)
+    checkbox = panel.widget_for("ui", "startup_menu_compact")
+    checkbox.setChecked(not checkbox.isChecked())
+    answers = iter(["cancel", "discard"])
+    asked = []
+    monkeypatch.setattr(panel, "_ask_pending_changes", lambda sections: asked.append(sections) or next(answers))
+
+    window._sidebar.page_changed.emit(0)
+    assert window._stack.currentIndex() == settings_index
+    assert [btn.page_index for btn in window._sidebar._buttons if btn._checked] == [settings_index]
+
+    window._sidebar.page_changed.emit(0)
+    assert window._stack.currentIndex() == 0
+    assert asked == [["ui"], ["ui"]]
+    assert not panel.has_unsaved_changes()
