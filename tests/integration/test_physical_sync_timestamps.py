@@ -260,7 +260,7 @@ def test_mixed_audio_sync_keeps_common_origin(qt_app, tmp_path, monkeypatch, bac
     )
     if operation == "encode":
         workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffprobe_bin=_FFPROBE, generate_nfo=False,
-                                  ram_buffer_enabled=False, sync_rewrite_enabled=True)
+                                  sync_rewrite_enabled=True)
     else:
         video = TrackEntry(0, "video", "FFV1", "", "und", "")
         audio = [TrackEntry(1, "audio", "ac3", "", "fra", "", time_shift_ms=125),

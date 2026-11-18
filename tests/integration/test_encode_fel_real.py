@@ -75,7 +75,7 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
         pytest.skip("NVEncC requis")
     engine = FelEngine(Path(_LIBRARY))
     monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
-    workflow = EncodeWorkflow(ffmpeg_threads=12, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_threads=12, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     master, light = workflow._extract_static_hdr_metadata(source, 0) if mode == "x265_hdr10" else ("", "")
     codec = "hevc_nvenc" if mode.startswith("ffmpeg_nvenc") else "nvencc_hevc" if mode.startswith("nvencc") else "libx265"

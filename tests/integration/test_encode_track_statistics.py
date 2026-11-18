@@ -46,7 +46,6 @@ def _workflow() -> EncodeWorkflow:
         dovi_tool_bin="dovi_tool",
         hdr10plus_bin="hdr10plus_tool",
         mediainfo_bin="mediainfo",
-        ram_buffer_enabled=False,
         ffmpeg_threads=1,
         generate_nfo=False,
     )

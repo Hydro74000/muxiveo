@@ -202,7 +202,7 @@ COMMANDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "config path": ("Emplacements de config.ini et des réglages de l'interface.", ("config path",)),
     "config show": ("Réglages, valeur effective et provenance (ini, settings, default).", ("config show tools",)),
     "config get": ("Un réglage.", ("config get ffmpeg.threads",)),
-    "config set": ("Écrire un réglage dans config.ini (valeur validée).", ("config set hdr.display_peak_nits 800",)),
+    "config set": ("Écrire un réglage dans config.ini (valeur validée).", ("config set ui.log_max_lines 5000",)),
     "config unset": ("Retirer la surcharge config.ini d'un réglage.", ("config unset ui.theme",)),
     "config reset": ("Revenir à la valeur par défaut.", ("config reset ui.theme",)),
     "workdir": ("Dossier de travail : éléments abandonnés, nettoyage.", ("workdir list", "workdir clean --dry-run")),

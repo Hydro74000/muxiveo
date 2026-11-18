@@ -166,6 +166,9 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "hdr10plus_tool",
 )
 
+# Outils retirés de Muxiveo (lus par aucun traitement) : leurs lignes [tools] sont élaguées.
+REMOVED_CONFIG_TOOLS: frozenset[str] = frozenset({"eac3to"})
+
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
 WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
     "ffmpeg",
@@ -692,7 +695,8 @@ def _update_ini_tools_section(
     if not tool_values and not prune_keys:
         return
     replace_keys = {key.lower() for key in (replace_keys or set())}
-    prune_keys = {key.lower() for key in (prune_keys or set())}
+    # Toute écriture de [tools] élague aussi les outils retirés de Muxiveo.
+    prune_keys = {key.lower() for key in (prune_keys or set())} | REMOVED_CONFIG_TOOLS
 
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = _sanitize_windows_tools_lines(text.splitlines())

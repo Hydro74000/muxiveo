@@ -85,7 +85,7 @@ def add_hdr_patch_parser(sub: Any) -> None:
     measure.add_argument("--measure", choices=("cached", "fast", "full"), default="cached",
                          help="Mesure de l'image : en cache seulement (défaut), rapide (images clés) ou complète.")
     measure.add_argument("--display-peak", type=float, metavar="NITS",
-                         help="Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits).")
+                         help="Écran simulé du réalignement (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).")
     parser.add_argument("--force", action="store_true", help="Remplacer la sortie si elle existe.")
     parser.add_argument("--dry-run", action="store_true", help="Afficher le plan résolu sans écrire.")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Résultat JSON sur stdout.")

@@ -1,23 +1,19 @@
 """
-core/workflows/encode/runtime/ram_buffer.py — Helpers RAM/SHM cross-platform.
+core/workflows/encode/runtime/ram_buffer.py — Mesure de la RAM, multiplateforme.
 
-Fonctions publiques :
+Fonctions publiques (réserve de RAM des encodages vidéo parallèles) :
     total_ram_bytes()      — RAM physique totale (Linux/macOS/Windows)
     available_ram_bytes()  — RAM disponible
     macos_available_ram()  — détail macOS via vm_stat
-    ram_buffer_dir()       — répertoire RAM-backed (/dev/shm) ou None
-    shm_path()             — résout un chemin RAM ou disque selon seuils
 
 Conventions :
     - Toutes les fonctions sont pures et thread-safe.
-    - Aucun état partagé : `shm_path` reçoit explicitement les paramètres de configuration.
     - `Exception` capturée au niveau de l'appel OS pour ne jamais lever depuis ces helpers.
 """
 
 from __future__ import annotations
 
 import ctypes
-import os
 import re
 import subprocess
 import sys
@@ -105,57 +101,8 @@ def _win_mem_status():
     return stat
 
 
-def ram_buffer_dir() -> Path | None:
-    """
-    Répertoire RAM-backed disponible, ou None.
-
-    · Linux  : /dev/shm (tmpfs kernel)
-    · macOS  : /dev/shm (writable sur macOS ≥ 10.15)
-    · Windows: aucun équivalent standard → None
-    """
-    if sys.platform in ("linux", "darwin"):
-        shm = Path("/dev/shm")
-        if shm.is_dir() and os.access(shm, os.W_OK):
-            return shm
-    return None
-
-
-def shm_path(
-    tmp: Path,
-    name: str,
-    file_size: int,
-    *,
-    enabled: bool,
-    threshold_pct: int,
-) -> Path:
-    """
-    Résout un chemin RAM si les conditions sont réunies, sinon un chemin dans `tmp`.
-
-    Conditions cumulatives :
-      1. `enabled` True
-      2. Un répertoire RAM existe (ram_buffer_dir())
-      3. RAM disponible après chargement ≥ threshold_pct % de la RAM totale
-         formule : available - file_size ≥ total × threshold_pct / 100
-    """
-    if not enabled:
-        return tmp / name
-    ram_dir = ram_buffer_dir()
-    if ram_dir is None:
-        return tmp / name
-    total = total_ram_bytes()
-    available = available_ram_bytes()
-    if total <= 0 or available <= 0:
-        return tmp / name
-    min_free_after = int(total * threshold_pct / 100)
-    if available - file_size >= min_free_after:
-        return ram_dir / name
-    return tmp / name
-
-
 __all__ = [
     "total_ram_bytes",
     "available_ram_bytes",
     "macos_available_ram",
-    "ram_buffer_dir",
-    "shm_path",
 ]

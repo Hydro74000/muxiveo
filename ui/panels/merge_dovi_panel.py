@@ -1019,6 +1019,12 @@ class MergeDoviPanel(QWidget):
         )
 
         assert self._workflow is not None
+        # Outils relus à chaque lancement : un chemin enregistré dans Paramètres vaut sans redémarrage.
+        self._workflow.set_tool_bins(
+            mediainfo=self._config.tool_mediainfo, ffmpeg=self._config.tool_ffmpeg,
+            ffprobe=self._config.tool_ffprobe, dovi_tool=self._config.tool_dovi_tool,
+            hdr10plus_tool=self._config.tool_hdr10plus,
+        )
         try:
             self._workflow.start(
                 film1        = film1,

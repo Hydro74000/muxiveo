@@ -79,7 +79,7 @@ class HdrInspectRequest(Model):
     advice: bool = field(default=False, description="Recommandations : valeurs proposées, simulation TV, "
                                                      "réalignement d'après la mesure (clé `advice`).")
     display_peak: float | None = field(default=None, minimum=100, maximum=10000,
-                                       description="Écran simulé (nits ; défaut : [hdr] display_peak_nits).")
+                                       description="Écran simulé (nits ; défaut : dernier pic choisi dans HDR Studio, sinon 1000).")
     tv_model: Literal["maxcll", "mdcv", "dynamic"] = field(
         default="maxcll", description="Modèle de TV simulé : suit la MaxCLL, le MDCV seul, ou dynamique.")
 

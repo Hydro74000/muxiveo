@@ -194,11 +194,14 @@ _REMOVED_INI_KEYS: dict[str, dict[str, frozenset[str]]] = {
     },
     # Options retirées, lues par aucun workflow.
     "tools": {"eac3to": frozenset()},
-    "hdr": {"dovi_profile": frozenset(), "dovi_compat_id": frozenset()},
+    "hdr": {"dovi_profile": frozenset(), "dovi_compat_id": frozenset(), "display_peak_nits": frozenset()},
+    "encoding": {"ram_buffer_enabled": frozenset()},
 }
 
 # Réglages de l'interface (QSettings) des options retirées : effacés à l'enregistrement.
-_REMOVED_SETTINGS_KEYS: tuple[str, ...] = ("tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id")
+_REMOVED_SETTINGS_KEYS: tuple[str, ...] = (
+    "tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id", "encoding/ram_buffer_enabled",
+)
 
 
 def _load_ini() -> configparser.ConfigParser:
@@ -528,7 +531,19 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
     text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     lines = text.splitlines()
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
-    _write_ini_text(path, lines)
+    _write_ini_text(path, _purge_removed_keys(lines, {"tools": tool_values}))
+
+
+def _purge_removed_keys(lines: list[str], section_values: dict[str, dict[str, str]]) -> list[str]:
+    """Retire les clés historiques des sections écrites (``_REMOVED_INI_KEYS``), une clé remplacée
+    seulement quand toutes ses remplaçantes sont écrites."""
+    removed_keys: dict[str, set[str]] = {}
+    for section, values in section_values.items():
+        written = {key.lower() for key in values}
+        obsolete = {key for key, replacements in _REMOVED_INI_KEYS.get(section, {}).items() if replacements <= written}
+        if obsolete:
+            removed_keys[section] = obsolete
+    return _remove_ini_keys(lines, removed_keys) if removed_keys else lines
 
 
 def config_syntax_message(exc: Exception) -> str:
@@ -550,16 +565,7 @@ def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
-    removed_keys: dict[str, set[str]] = {}
-    for section, values in section_values.items():
-        written = {key.lower() for key in values}
-        obsolete = {key for key, replacements in _REMOVED_INI_KEYS.get(section, {}).items() if replacements <= written}
-        if obsolete:
-            removed_keys[section] = obsolete
-    if removed_keys:
-        lines = _remove_ini_keys(lines, removed_keys)
-
-    _write_ini_text(_INI_PATH, lines)
+    _write_ini_text(_INI_PATH, _purge_removed_keys(lines, section_values))
 
 
 def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
@@ -569,6 +575,31 @@ def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
     lines = _INI_PATH.read_text(encoding="utf-8-sig").splitlines()
     lines = _remove_ini_keys(lines, {section: {key.lower() for key in keys} for section, keys in section_keys.items()})
     _write_ini_text(_INI_PATH, lines)
+
+
+def _purge_obsolete_ini_keys(path: Path) -> None:
+    """Options retirées sans remplaçante (``_REMOVED_INI_KEYS``) : lignes retirées de config.ini à
+    l'enregistrement, fichier réécrit seulement s'il en contient."""
+    obsolete = {
+        section: {key for key, replacements in entries.items() if not replacements}
+        for section, entries in _REMOVED_INI_KEYS.items()
+    }
+    try:
+        parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",), strict=False)
+        parser.read_string(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return      # illisible : signalé au chargement, jamais réécrit ici
+    present = {
+        section: {key for key in keys if parser.has_option(section, key)}
+        for section, keys in obsolete.items() if parser.has_section(section)
+    }
+    present = {section: keys for section, keys in present.items() if keys}
+    if not present:
+        return
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    _write_ini_text(path, _remove_ini_keys(lines, present))
 
 
 def config_ini_path() -> Path:
@@ -972,21 +1003,10 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "section": "hdr",
-        "title": "HDR",
-        "fields": (
-            # V42 : réglages historiques, lus par aucun workflow (Merge DoVi : liste de son
-            # panneau ; encodage : décision par piste). Conservés tant que leur retrait
-            # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
-            {"key": "display_peak_nits", "attr": "display_peak_nits", "kind": "int", "label": "Luminosité maximale de mon écran (nits)", "description": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis."},
-        ),
-    },
-    {
         "section": "encoding",
         "title": "Encodage",
         "fields": (
-            {"key": "ram_buffer_enabled", "attr": "ram_buffer_enabled", "kind": "bool", "label": "Buffer RAM activé", "description": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet."},
-            {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Seuil buffer RAM (%)", "description": "Pourcentage minimal de RAM libre à conserver."},
+            {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Réserve de RAM libre (%)", "description": "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve."},
             {"key": "max_parallel_video_encodes", "attr": "max_parallel_video_encodes", "kind": "int", "label": "Encodages vidéo parallèles max", "description": "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut)."},
         ),
     },
@@ -1362,10 +1382,14 @@ class AppConfig:
         self.x265_frame_threads = _normalize_x265_frame_threads(
             self._resolve_int("ffmpeg", "x265_frame_threads", "ffmpeg/x265_frame_threads", 0)
         )
-        self.display_peak_nits = normalize_display_peak_nits(
-            self._resolve_int("hdr", "display_peak_nits", "hdr/display_peak_nits", 1000))
+        # Pic de l'écran simulé : choisi dans HDR Studio (onglet Luminance), retenu par l'interface
+        # seulement ; une ancienne clé [hdr] de config.ini est ignorée (elle masquait le choix du studio).
+        try:
+            stored_peak: int | None = int(str(self._settings.value("hdr/display_peak_nits", 1000)).strip())
+        except (TypeError, ValueError):
+            stored_peak = None
+        self.display_peak_nits = normalize_display_peak_nits(stored_peak)
 
-        self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
         self.max_parallel_video_encodes = _normalize_max_parallel_video_encodes(
             self._resolve_int("encoding", "max_parallel_video_encodes", "encoding/max_parallel_video_encodes", 1)
@@ -1569,7 +1593,6 @@ class AppConfig:
 
         s.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
-        s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
         s.setValue("encoding/max_parallel_video_encodes", self.max_parallel_video_encodes)
 
@@ -1623,6 +1646,7 @@ class AppConfig:
         s.setValue("plugins/tensorrt_hint_shown", "true" if self.trt_hint_shown else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
+        _purge_obsolete_ini_keys(_INI_PATH)
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
@@ -1806,7 +1830,6 @@ class AppConfig:
                 "display_peak_nits": self.display_peak_nits,
             },
             "encoding": {
-                "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
                 "max_parallel_video_encodes": self.max_parallel_video_encodes,
             },

@@ -148,7 +148,7 @@ class HdrPatchRequest(Model):
     measurement: Literal["cached", "fast", "full"] = field(
         default="cached", description="Mesure de l'image : en cache seulement, ou lancée (rapide / complète).")
     display_peak: float | None = field(default=None, minimum=100, maximum=10000,
-                                       description="Écran simulé du réalignement (défaut : [hdr] display_peak_nits).")
+                                       description="Écran simulé du réalignement (défaut : dernier pic choisi dans HDR Studio, sinon 1000).")
     sync_mastering: bool = field(
         default=True, description="Dolby Vision : MDCV, mastering du L6 et écran du RPU gardés identiques.")
     force: bool = field(default=False, description="Remplacer la sortie si elle existe.")

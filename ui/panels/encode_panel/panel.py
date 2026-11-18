@@ -258,7 +258,6 @@ class EncodePanel(QWidget):
             dovi_tool_bin=config.tool_dovi_tool,
             hdr10plus_bin=config.tool_hdr10plus,
             mediainfo_bin=config.tool_mediainfo,
-            ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
             max_parallel_video_encodes=config.max_parallel_video_encodes,
@@ -395,6 +394,7 @@ class EncodePanel(QWidget):
         self._build_ui()
         self._initial_video_state = self._current_video_state()
         apply_translations(self)
+        self._detection_tools = (config.tool_ffmpeg, getattr(config, "tool_nvencc", None) or None)
         self._executor.submit(self._detect_hw_encoders)
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
@@ -2780,6 +2780,7 @@ class EncodePanel(QWidget):
     def refresh_nvencc_tool(self) -> None:
         """NVEncC installé ou supprimé (page Extensions) : workflow et nouvelle détection des encodeurs."""
         self._workflow.set_nvencc_bin(getattr(self._config, "tool_nvencc", None) or None)
+        self._detection_tools = (self._config.tool_ffmpeg, getattr(self._config, "tool_nvencc", None) or None)
         self._executor.submit(self._detect_hw_encoders)
 
     def refresh_rife_tool(self) -> None:
@@ -6012,8 +6013,16 @@ class EncodePanel(QWidget):
         self._workflow.set_x265_frame_threads(getattr(self._config, "x265_frame_threads", 0))
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
+        self._workflow.set_metadata_tools(self._config.tool_dovi_tool, self._config.tool_hdr10plus)
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
         self._sync_interpolation_availability()
+        # FFmpeg ou NVEncC changés : encodeurs disponibles (et FFmpeg matériel) détectés à nouveau.
+        detection_tools = (self._config.tool_ffmpeg, getattr(self._config, "tool_nvencc", None) or None)
+        if detection_tools != getattr(self, "_detection_tools", detection_tools):
+            self._workflow.set_ffmpeg(self._config.tool_ffmpeg)
+            self._workflow.set_nvencc_bin(detection_tools[1])
+            self._executor.submit(self._detect_hw_encoders)
+        self._detection_tools = detection_tools
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_regenerate_statistics(getattr(self._config, "matroska_regenerate_statistics", True))
         self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)

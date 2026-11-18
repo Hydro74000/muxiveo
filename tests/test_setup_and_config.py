@@ -131,10 +131,10 @@ class TestAppConfigSyncRewrite:
 
 
 class TestAppConfigRamBuffer:
-    """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
+    """Réserve de RAM des encodages parallèles (ram_buffer_threshold_pct)."""
 
-    def test_defaults_enabled_true_threshold_15(self, tmp_path):
-        """Valeurs par défaut : enabled=True, threshold=15."""
+    def test_default_threshold_15(self, tmp_path):
+        """Valeur par défaut : 15 %."""
         from core.config import AppConfig
 
         with patch("core.config.QSettings") as mock_qs:
@@ -145,26 +145,7 @@ class TestAppConfigRamBuffer:
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
-        assert cfg.ram_buffer_enabled is True
         assert cfg.ram_buffer_threshold_pct == 15
-
-    def test_ini_disables_ram_buffer(self, tmp_path):
-        """config.ini ram_buffer_enabled=false désactive le buffer."""
-        import core.config as cfg_mod
-        from core.config import AppConfig
-
-        ini_path = tmp_path / "config.ini"
-        ini_path.write_text("[encoding]\nram_buffer_enabled = false\n")
-
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.object(cfg_mod, "_INI_PATH", ini_path):
-                cfg = AppConfig()
-
-        assert cfg.ram_buffer_enabled is False
 
     def test_ini_sets_threshold(self, tmp_path):
         """config.ini ram_buffer_threshold_pct=25 fixe le seuil à 25."""
@@ -1714,7 +1695,8 @@ class TestRemovedOptions:
         from core.config import INI_FIELD_GROUPS, AppConfig
 
         keys = {(group["section"], field["key"]) for group in INI_FIELD_GROUPS for field in group["fields"]}
-        assert not keys & {("tools", "eac3to"), ("hdr", "dovi_profile"), ("hdr", "dovi_compat_id")}
+        assert not keys & {("tools", "eac3to"), ("hdr", "dovi_profile"), ("hdr", "dovi_compat_id"),
+                           ("encoding", "ram_buffer_enabled")}
         with patch("core.config.QSettings") as mock_qs:
             inst = MagicMock()
             inst.value.side_effect = lambda key, default=None: default
@@ -1723,7 +1705,7 @@ class TestRemovedOptions:
                 cfg = AppConfig()
         assert "eac3to" not in cfg.tool_commands()
         assert "eac3to" not in cfg.all_tools_available()
-        for attr in ("tool_eac3to", "dovi_profile", "dovi_compat_id", "remux_mux_backend"):
+        for attr in ("tool_eac3to", "dovi_profile", "dovi_compat_id", "remux_mux_backend", "ram_buffer_enabled"):
             assert not hasattr(cfg, attr)
 
     def test_saving_a_section_purges_its_removed_keys(self, tmp_path):
@@ -1733,17 +1715,56 @@ class TestRemovedOptions:
         ini_path = tmp_path / "config.ini"
         ini_path.write_text(
             "[tools]\neac3to = C:\\\\eac3to\\\\eac3to.exe\nffmpeg = ffmpeg\n\n"
-            "[hdr]\ndovi_profile = 8\ndovi_compat_id = 1\ndisplay_peak_nits = 1000\n",
+            "[hdr]\ndovi_profile = 8\n",
             encoding="utf-8",
         )
         with patch.object(cfg_mod, "_INI_PATH", ini_path):
             write_ini_settings({"tools": {"ffmpeg": "ffmpeg"}})
-            text = ini_path.read_text(encoding="utf-8")
-            assert "eac3to" not in text and "dovi_profile = 8" in text
-            write_ini_settings({"hdr": {"display_peak_nits": "1000"}})
         text = ini_path.read_text(encoding="utf-8")
-        assert "dovi_profile" not in text and "dovi_compat_id" not in text
-        assert "display_peak_nits = 1000" in text and "ffmpeg = ffmpeg" in text
+        assert "eac3to" not in text and "dovi_profile = 8" in text and "ffmpeg = ffmpeg" in text
+
+    def test_config_save_purges_removed_keys_once(self, tmp_path):
+        """Enregistrement de la configuration : lignes des options retirées effacées de config.ini,
+        clés historiques à remplaçantes (verbose_file_logging) gardées, fichier intact sinon."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "# commentaire\n[tools]\neac3to = eac3to\nffmpeg = ffmpeg\n\n"
+            "[hdr]\ndovi_profile = 8\ndovi_compat_id = 1\ndisplay_peak_nits = 600\n\n"
+            "[encoding]\nram_buffer_enabled = false\nram_buffer_threshold_pct = 20\n\n"
+            "[ui]\nverbose_file_logging = true\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+                assert cfg.display_peak_nits == 1000          # clé [hdr] de config.ini ignorée
+                cfg.save()
+                text = ini_path.read_text(encoding="utf-8")
+                for gone in ("eac3to", "dovi_profile", "dovi_compat_id", "display_peak_nits", "ram_buffer_enabled"):
+                    assert gone not in text
+                assert "# commentaire" in text and "ffmpeg = ffmpeg" in text
+                assert "ram_buffer_threshold_pct = 20" in text and "verbose_file_logging = true" in text
+                mtime = ini_path.stat().st_mtime_ns
+                cfg.save()
+                assert ini_path.stat().st_mtime_ns == mtime     # rien à retirer : non réécrit
+
+    def test_display_peak_comes_from_hdr_studio_memory(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: 600 if key == "hdr/display_peak_nits" else default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+        assert cfg.display_peak_nits == 600
 
     def test_save_forgets_removed_interface_settings(self, tmp_path):
         from core.config import AppConfig
@@ -1756,6 +1777,23 @@ class TestRemovedOptions:
                 cfg = AppConfig()
                 cfg.save()
         removed = {call.args[0] for call in inst.remove.call_args_list}
-        assert {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id"} <= removed
+        assert {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id", "encoding/ram_buffer_enabled"} <= removed
         written = {call.args[0] for call in inst.setValue.call_args_list}
         assert not written & {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id"}
+
+
+def test_tools_writers_prune_removed_tools(tmp_path):
+    """Setup (toute écriture de [tools]) et autodétection d'AppConfig élaguent eac3to."""
+    import core.config as cfg_mod
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[tools]\neac3to = C:\\\\eac3to\\\\eac3to.exe\nffmpeg = ffmpeg\n", encoding="utf-8")
+    setup_mod._update_ini_tools_section(ini_path, {"dovi_tool": "/opt/dovi_tool"}, dry_run=False)
+    text = ini_path.read_text(encoding="utf-8")
+    assert "eac3to" not in text and "dovi_tool = /opt/dovi_tool" in text and "ffmpeg = ffmpeg" in text
+
+    ini_path.write_text("[tools]\neac3to = eac3to\n", encoding="utf-8")
+    cfg_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"})
+    text = ini_path.read_text(encoding="utf-8")
+    assert "eac3to" not in text and "ffmpeg = /opt/ffmpeg" in text

@@ -17,8 +17,10 @@ from core.service.ops.admin import coerce, config_fields
 
 def test_catalog_covers_settings_panel_and_extensions():
     fields = config_fields()
-    assert {"paths.work_dir", "tools.ffmpeg", "ui.theme", "hdr.display_peak_nits", "plugins.tensorrt_enabled",
-            "plugins.auto_update"} <= set(fields)
+    assert {"paths.work_dir", "tools.ffmpeg", "ui.theme", "encoding.ram_buffer_threshold_pct",
+            "plugins.tensorrt_enabled", "plugins.auto_update"} <= set(fields)
+    # Pic de l'écran simulé : réglé dans HDR Studio, pas une option de config.ini.
+    assert not any(name.startswith("hdr.") for name in fields)
     assert all(spec["section"] == name.split(".")[0] for name, spec in fields.items())
 
 

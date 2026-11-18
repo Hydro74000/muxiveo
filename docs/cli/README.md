@@ -1265,7 +1265,7 @@ Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "
 | `--hdr-fast` | avec `measure` : mesure rapide (images clés, mvo-fel ≥ 0.5.0) ; estimation, MaxFALL souvent sous-estimée |
 | `--hdr-no-cache` | relit les fichiers au lieu des résultats en cache |
 | `--hdr-advice` | ajoute la clé `advice` (et la section « Recommandations » du rapport) : MaxCLL/MaxFALL et écran de mastering proposés, simulation du tone mapping d'une TV sur les valeurs du fichier puis proposées, réalignement d'après la mesure |
-| `--hdr-display-peak NITS` | avec `--hdr-advice` : pic de l'écran simulé (défaut : réglage `[hdr] display_peak_nits`) |
+| `--hdr-display-peak NITS` | avec `--hdr-advice` : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits) |
 | `--hdr-tv-model maxcll\|mdcv\|dynamic` | avec `--hdr-advice` : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence) |
 | `--hdr-fel-moments DOSSIER` | avec `--hdr-fel` : moments les plus marqués en PNG pleine définition (`<nom>.fel-HHhMMmSSs.sans-fel.png`, `.avec-fel.png`, `.ecart.png`) |
 | `--hdr-fel-exposure EV` | exposition des PNG des moments (−6 à 6) |

@@ -45,7 +45,6 @@ def encode_workflow(config: Any, options: CommonOptions) -> EncodeWorkflow:
         dovi_tool_bin=config.tool_dovi_tool,
         hdr10plus_bin=config.tool_hdr10plus,
         mediainfo_bin=str(options.mediainfo or config.tool_mediainfo),
-        ram_buffer_enabled=config.ram_buffer_enabled,
         ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
         ffmpeg_threads=options.threads if options.threads is not None else config.ffmpeg_threads,
         max_parallel_video_encodes=config.max_parallel_video_encodes,

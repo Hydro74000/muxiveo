@@ -98,7 +98,7 @@ def _encode(tmp_path: Path, src: Path, name: str, **video) -> tuple[Path, dict]:
         keep_chapters=False,
         duration_s=DURATION,
     )
-    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False,
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffmpeg_threads=2, generate_nfo=False,
                         rife_bin=RIFE_BIN)
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=300.0)
@@ -207,7 +207,7 @@ def test_restoration_hdr10_measures_light_levels(tmp_path: Path, codec: str, dec
         copy_subtitles=False, keep_chapters=False, duration_s=DURATION, work_dir=tmp_path / "work",
     )
     wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"), rife_bin=RIFE_BIN,
-                        ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False)
+                        ffmpeg_threads=2, generate_nfo=False)
     logs: list[str] = []
     wf.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))
     assert wf.validate(cfg) == []
@@ -302,7 +302,7 @@ def test_restoration_keeps_dolby_vision_and_hdr10plus(tmp_path: Path, dynamic_hd
         copy_subtitles=False, keep_chapters=False, duration_s=2.002, work_dir=tmp_path / "work",
     )
     wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"), rife_bin=RIFE_BIN,
-                        ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False)
+                        ffmpeg_threads=2, generate_nfo=False)
     logs: list[str] = []
     wf.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))
     assert wf.validate(cfg) == []

@@ -453,7 +453,6 @@ class EncodeWorkflow(QObject):
         dovi_tool_bin:             str  = "dovi_tool",
         hdr10plus_bin:             str  = "hdr10plus_tool",
         mediainfo_bin:             str  = "mediainfo",
-        ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
         max_parallel_video_encodes: int | None = 1,
@@ -515,7 +514,6 @@ class EncodeWorkflow(QObject):
             "eac3": int(eac3_bitrate_per_channel_kbps or 96),
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
-        self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
@@ -600,6 +598,18 @@ class EncodeWorkflow(QObject):
         self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
         if previous != self._bins["ffprobe"]:
             self._hdr_metadata_service.clear_probe_caches()
+
+    def set_metadata_tools(self, dovi_tool_bin: str, hdr10plus_bin: str) -> None:
+        """Applique dovi_tool / hdr10plus_tool configurés (réglages enregistrés) au prochain traitement."""
+        if (self._bins.get("dovi_tool"), self._bins.get("hdr10plus_tool")) == (dovi_tool_bin, hdr10plus_bin):
+            return
+        self._bins["dovi_tool"] = dovi_tool_bin
+        self._bins["hdr10plus_tool"] = hdr10plus_bin
+        self._hdr_metadata_service.clear_probe_caches()
+        self._static_hdr_estimator = _StaticHdrEstimateService(
+            ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=dovi_tool_bin,
+        )
 
     def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
@@ -1401,8 +1411,6 @@ class EncodeWorkflow(QObject):
                 log=self.log_message.emit,
                 build_encode_plan=self._build_encode_plan,
                 decide_strict_interleave_with_prescan=self._postprocess_service.decide_strict_interleave_with_prescan,
-                ram_buffer_enabled=self._ram_buffer_enabled,
-                ram_buffer_dir=EncodeWorkflow._ram_buffer_dir,
                 syncer_factory=FfmpegTimelineSync,
                 fallback_helper_factory=TimelineSyncFallbackHelper,
             )
@@ -2218,17 +2226,6 @@ class EncodeWorkflow(QObject):
     _total_ram_bytes      = staticmethod(_ram_buffer_module.total_ram_bytes)
     _available_ram_bytes  = staticmethod(_ram_buffer_module.available_ram_bytes)
     _macos_available_ram  = staticmethod(_ram_buffer_module.macos_available_ram)
-    _ram_buffer_dir       = staticmethod(_ram_buffer_module.ram_buffer_dir)
-
-    def _shm_path(self, tmp: Path, name: str, file_size: int) -> Path:
-        """Wrapper de `runtime.ram_buffer.shm_path` lié à la config de l'instance."""
-        return _ram_buffer_module.shm_path(
-            tmp,
-            name,
-            file_size,
-            enabled=self._ram_buffer_enabled,
-            threshold_pct=self._ram_buffer_threshold_pct,
-        )
 
     # ------------------------------------------------------------------
     # Aperçu lisible
@@ -4677,8 +4674,6 @@ class EncodeWorkflow(QObject):
             config,
             estimate_requirements=self._estimate_inject_storage_requirements,
             log_info=lambda message: self.log_message.emit("INFO", message),
-            ram_buffer_enabled=self._ram_buffer_enabled,
-            ram_buffer_dir=EncodeWorkflow._ram_buffer_dir,
             disk_usage=shutil.disk_usage,
             stat=os.stat,
             temp_dir=tempfile.gettempdir,

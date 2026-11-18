@@ -133,7 +133,7 @@ def test_final_output_is_the_reconstruction(qt_app, excerpt, tmp_path, monkeypat
     path, stream = excerpt
     engine = FelEngine(Path(_LIBRARY))
     monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
-    workflow = EncodeWorkflow(ram_buffer_enabled=False, generate_nfo=False)
+    workflow = EncodeWorkflow(generate_nfo=False)
     video = VideoEncodeSettings(
         source_path=path, codec="libx265", preset="ultrafast", quality_mode=QualityMode.CRF, crf=8,
         bake_dovi_fel=True, dovi_source_profile="p7_fel", copy_dv=True, bit_depth="auto", source_bit_depth=10,

@@ -78,7 +78,7 @@ muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles 
 | `--hdr-fel-moments` | Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart). |
 | `--hdr-fel-exposure` | Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0). |
 | `--hdr-advice` | Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone mapping d'une TV, réalignement d'après la mesure de l'image. |
-| `--hdr-display-peak` | Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits). |
+| `--hdr-display-peak` | Avec --hdr-advice : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits). |
 | `--hdr-tv-model` | Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence). — `maxcll`, `mdcv`, `dynamic` |
 
 **Exemples**
@@ -1041,7 +1041,7 @@ muxiveo --cli hdr-patch [-h] -i FICHIER -o SORTIE [--hdr-track N] [--max-cll NIT
 | `--hdr10plus-recompute` | Recalculer le HDR10+ depuis la mesure complète de l'image (profil A). |
 | `--realign` | Retenir les propositions de réalignement d'après la mesure (valeurs explicites prioritaires). |
 | `--measure` | Mesure de l'image : en cache seulement (défaut), rapide (images clés) ou complète. — `cached`, `fast`, `full` |
-| `--display-peak` | Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits). |
+| `--display-peak` | Écran simulé du réalignement (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits). |
 | `--force` | Remplacer la sortie si elle existe. |
 | `--dry-run` | Afficher le plan résolu sans écrire. |
 | `--json` | Résultat JSON sur stdout. |
@@ -2205,7 +2205,7 @@ muxiveo --cli config set [-h] [--json] [--log-format {text,jsonl,events}] [--ver
 **Exemples**
 
 ```bash
-muxiveo --cli config set hdr.display_peak_nits 800
+muxiveo --cli config set ui.log_max_lines 5000
 ```
 
 ### `config unset`

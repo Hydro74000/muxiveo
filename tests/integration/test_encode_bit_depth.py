@@ -35,7 +35,7 @@ def _encode_and_check(qt_app, tmp_path, depth_source, codec, choice):
     output = tmp_path / "out.mkv"
     workflow = EncodeWorkflow(
         ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"),
-        ram_buffer_enabled=False, ffmpeg_threads=2, generate_nfo=False,
+        ffmpeg_threads=2, generate_nfo=False,
     )
     video = VideoEncodeSettings(codec=codec, bit_depth=choice, preset=default_preset_for_codec(codec))
     config = EncodeConfig(source=source, output=output, video=video, copy_subtitles=False, keep_chapters=False, mux_backend="ffmpeg")

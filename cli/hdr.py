@@ -78,7 +78,7 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone "
                             "mapping d'une TV, réalignement d'après la mesure de l'image.")
     group.add_argument("--hdr-display-peak", type=float, default=None, metavar="NITS",
-                       help="Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).")
+                       help="Avec --hdr-advice : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).")
     group.add_argument("--hdr-tv-model", choices=("maxcll", "mdcv", "dynamic"), default="maxcll",
                        help="Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence).")
 

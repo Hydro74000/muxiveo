@@ -68,8 +68,36 @@ _DEPENDENT_FIELDS: dict[tuple[str, str], tuple[str, str]] = {
     ("paths", "release_group_tag_enabled"): ("paths", "release_group_tag"),
 }
 
+# Largeur des champs (min, max en px à 100 %) : selon le contenu attendu, jamais toute la carte.
+# Nombres et listes : leur taille naturelle (_fit_editor_width).
+_EDITOR_WIDTHS: dict[str, tuple[int, int]] = {
+    "directory": (420, 720),
+    "tool": (420, 720),
+    "text": (320, 520),
+    "stepped_slider": (260, 420),
+    "slider": (260, 420),
+}
+# Carte des champs : largeur bornée, les descriptions s'y replient.
+_CARD_MAX_WIDTH = 980
+
 # Ordre des onglets ; sections absentes : après, dans l'ordre de INI_FIELD_GROUPS.
 _SECTION_ORDER = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3}
+
+
+def _fit_editor_width(widget: QWidget, kind: str) -> None:
+    """Champ à la largeur de son contenu : chemins et textes bornés, nombres et listes à leur taille."""
+    if isinstance(widget, (QSpinBox, QComboBox)):
+        if isinstance(widget, QComboBox):
+            widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        widget.setMinimumWidth(_scale(120))
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        return
+    bounds = _EDITOR_WIDTHS.get("slider" if widget.findChild(QSlider) is not None else kind)
+    if bounds is None:
+        return
+    widget.setMinimumWidth(_scale(bounds[0]))
+    widget.setMaximumWidth(_scale(bounds[1]))
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 
 def _dirty_icon() -> QIcon:
@@ -211,6 +239,8 @@ class SettingsPanel(QWidget):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         card = _card()
+        card.setMaximumWidth(_scale(_CARD_MAX_WIDTH))
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
         card_layout.setSpacing(_scale(14))
@@ -218,13 +248,20 @@ class SettingsPanel(QWidget):
             card_layout.addWidget(self._build_field_widget(section, field))
             if index < len(group["fields"]) - 1:
                 card_layout.addWidget(_separator())
-        layout.addWidget(card)
+        # Carte à la hauteur de ses champs (espace restant en dessous), à gauche, largeur bornée.
+        card_row = QHBoxLayout()
+        card_row.setContentsMargins(0, 0, 0, 0)
+        card_row.addWidget(card, 1)
+        card_row.addStretch(0)
+        layout.addLayout(card_row)
+        layout.addStretch(1)
 
         scroll.setWidget(content)
         return scroll
 
     def _build_field_widget(self, section: str, field: dict[str, Any]) -> QWidget:
         container = QWidget()
+        container.setStyleSheet("background:transparent;")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(_scale(8))
@@ -256,13 +293,15 @@ class SettingsPanel(QWidget):
             widget = self._make_editor(section, field)
             if tooltip:
                 widget.setToolTip(tooltip)
-            row.addWidget(widget, stretch=1)
+            _fit_editor_width(widget, kind)
+            row.addWidget(widget)
             if kind in {"directory", "tool"}:
                 browse_btn = _secondary_button("Parcourir…")
                 browse_btn.clicked.connect(lambda _=False, s=section, f=field: self._browse_for_field(s, f))
                 if tooltip:
                     browse_btn.setToolTip(tooltip)
                 row.addWidget(browse_btn)
+            row.addStretch(1)
             layout.addLayout(row)
 
         desc = QLabel(field["description"])
@@ -682,8 +721,12 @@ class SettingsPanel(QWidget):
             widget.setText(selected)
 
     def _on_reload_clicked(self) -> None:
+        # Saisies en cours tranchées avant (enregistrer, ignorer ou annuler le rechargement).
+        if not self.confirm_leave():
+            return
         self._config.reload()
         self._load_from_config()
+        self.settings_saved.emit()      # réglages relus appliqués comme après un enregistrement
         if self._status_label is not None:
             self._status_label.setText(translate_text("Configuration rechargée depuis config.ini."))
 
@@ -697,8 +740,14 @@ class SettingsPanel(QWidget):
         values = {section: self._section_values(section) for section in sections}
         if not self._validate_values(values):
             return False
+        # Seules les clés modifiées sont écrites : les autres gardent leur valeur et leur
+        # provenance (config.ini tel quel, réglage de l'interface ou défaut).
+        changed = {
+            section: {key: value for key, value in fields.items() if self._baseline.get(section, {}).get(key) != value}
+            for section, fields in values.items()
+        }
         try:
-            write_ini_settings(values)
+            write_ini_settings({section: fields for section, fields in changed.items() if fields})
         except OSError as exc:
             message = translate_text("Impossible d'enregistrer les paramètres : {error}", error=str(exc))
             if self._status_label is not None:

@@ -455,22 +455,6 @@
     "fra": "Compatibility ID Dolby Vision appliqué lors de l'injection.",
     "eng": "Dolby Vision compatibility ID applied during injection."
   },
-  "Buffer RAM activé": {
-    "fra": "Buffer RAM activé",
-    "eng": "RAM buffer enabled"
-  },
-  "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet.": {
-    "fra": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet.",
-    "eng": "Enable RAM buffering for intermediate HEVC files when the threshold allows it."
-  },
-  "Seuil buffer RAM (%)": {
-    "fra": "Seuil buffer RAM (%)",
-    "eng": "RAM buffer threshold (%)"
-  },
-  "Pourcentage minimal de RAM libre à conserver.": {
-    "fra": "Pourcentage minimal de RAM libre à conserver.",
-    "eng": "Minimum percentage of free RAM to keep available."
-  },
   "Langue de l'interface": {
     "fra": "Langue de l'interface",
     "eng": "Interface language"
@@ -8007,14 +7991,6 @@
     "fra": "Point blanc",
     "eng": "White point"
   },
-  "Luminosité maximale de mon écran (nits)": {
-    "fra": "Luminosité maximale de mon écran (nits)",
-    "eng": "Peak brightness of my display (nits)"
-  },
-  "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.": {
-    "fra": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis.",
-    "eng": "Peak luminance of the HDR TV or monitor: HDR Studio simulates its tone mapping (clipping, highlight compression) for the chosen MaxCLL/MaxFALL."
-  },
   "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)": {
     "fra": "MaxCLL déclarée ({cll}) sous la valeur mesurée ({measured} nits)",
     "eng": "Declared MaxCLL ({cll}) below the measured value ({measured} nits)"
@@ -9883,10 +9859,6 @@
     "fra": "Avec --hdr-advice : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence).",
     "eng": "With --hdr-advice: TV following MaxCLL (default), the MDCV only, or dynamic (reference)."
   },
-  "Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).": {
-    "fra": "Avec --hdr-advice : pic de l'écran simulé (défaut : réglage [hdr] display_peak_nits).",
-    "eng": "With --hdr-advice: peak of the simulated display (default: [hdr] display_peak_nits setting)."
-  },
   "Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).": {
     "fra": "Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).",
     "eng": "With --hdr-fel: exit code 3 if the verdict is lower (moderate, useful)."
@@ -11267,10 +11239,6 @@
     "fra": "Écran de mastering du RPU (nits).",
     "eng": "RPU mastering display (nits)."
   },
-  "Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits).": {
-    "fra": "Écran simulé du réalignement (défaut : réglage [hdr] display_peak_nits).",
-    "eng": "Simulated display of the realignment (default: [hdr] display_peak_nits setting)."
-  },
   "Écrire la recette effective (JSON).": {
     "fra": "Écrire la recette effective (JSON).",
     "eng": "Write the effective recipe (JSON)."
@@ -11390,5 +11358,21 @@
   "Sections « {titles} » enregistrées dans config.ini.": {
     "fra": "Sections « {titles} » enregistrées dans config.ini.",
     "eng": "Sections \"{titles}\" saved to config.ini."
+  },
+  "Avec --hdr-advice : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).": {
+    "fra": "Avec --hdr-advice : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).",
+    "eng": "With --hdr-advice: peak of the simulated display (default: last peak chosen in HDR Studio, otherwise 1000 nits)."
+  },
+  "Écran simulé du réalignement (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).": {
+    "fra": "Écran simulé du réalignement (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits).",
+    "eng": "Simulated display of the realignment (default: last peak chosen in HDR Studio, otherwise 1000 nits)."
+  },
+  "Réserve de RAM libre (%)": {
+    "fra": "Réserve de RAM libre (%)",
+    "eng": "Free RAM reserve (%)"
+  },
+  "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve.": {
+    "fra": "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve.",
+    "eng": "Share of total RAM that must stay free to start one more parallel video encode (multi-track pipeline). 0 = no reserve."
   }
 }

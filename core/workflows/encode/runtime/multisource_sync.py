@@ -31,8 +31,6 @@ class EncodeMultisourceSyncCallbacks:
     log: Callable[[str, str], None]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
     decide_strict_interleave_with_prescan: Callable[..., bool]
-    ram_buffer_enabled: bool
-    ram_buffer_dir: Callable[[], Path | None]
     syncer_factory: Callable[..., FfmpegTimelineSync] = FfmpegTimelineSync
     fallback_helper_factory: Callable[..., TimelineSyncFallbackHelper] = TimelineSyncFallbackHelper
 

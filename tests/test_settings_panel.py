@@ -827,3 +827,41 @@ def test_settings_panel_is_leaving_only_during_confirm_leave(tmp_path, qt_app):
         assert not panel.is_leaving()
     finally:
         _stop(patches)
+
+
+def test_settings_panel_save_writes_only_changed_keys(tmp_path, qt_app):
+    """Clé normalisée au chargement (250 → 200) et clés sans valeur dans config.ini : non réécrites."""
+    panel, cfg, ini_path, patches = _panel_with_ini(tmp_path, "[ui]\nui_scale_percent = 250\n")
+    try:
+        assert cfg.ui_scale_percent == 200
+        _field_widget(panel, "ui", "startup_menu_compact").setChecked(True)
+        panel._on_save_clicked()
+        text = ini_path.read_text(encoding="utf-8")
+        assert "ui_scale_percent = 250" in text
+        assert "startup_menu_compact = true" in text
+        assert "theme" not in text and "language" not in text
+        assert not panel.has_unsaved_changes()
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_reload_asks_about_pending_changes_and_applies(tmp_path, qt_app):
+    panel, _cfg, ini_path, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        saved: list[bool] = []
+        panel.settings_saved.connect(lambda: saved.append(True))
+        checkbox = _field_widget(panel, "ui", "startup_menu_compact")
+        checkbox.setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", return_value="cancel"):
+            panel._on_reload_clicked()
+        assert checkbox.isChecked() and saved == []
+
+        ini_path.write_text("[ui]\nstartup_menu_compact = false\nlog_max_lines = 1234\n", encoding="utf-8")
+        with patch.object(panel, "_ask_pending_changes", return_value="discard"):
+            panel._on_reload_clicked()
+        assert not checkbox.isChecked()
+        assert _field_widget(panel, "ui", "log_max_lines").value() == 1234
+        assert saved == [True]
+        assert not panel.has_unsaved_changes()
+    finally:
+        _stop(patches)

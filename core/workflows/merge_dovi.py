@@ -714,6 +714,10 @@ class MergeDoviWorkflow(QObject):
     def set_validation_override(self, callback: ValidationOverride | None) -> None:
         self._validation_override = callback
 
+    def set_tool_bins(self, **bins: str) -> None:
+        """Outils configurés (réglages enregistrés) : appliqués au lancement suivant, jamais en cours de traitement."""
+        self._bins.update({name: path for name, path in bins.items() if name in self._bins})
+
     def _run_probe(self, command: list[str], **kwargs):
         return run_cancellable_capture(
             command, cancel_cb=lambda: self._cancelled,
