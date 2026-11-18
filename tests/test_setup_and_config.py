@@ -2043,3 +2043,36 @@ class TestIniUnwritableValuesAndIndentedSections:
         ini_path = tmp_path / "config.ini"
         ini_path.write_bytes("\ufeff[tools]\nffmpeg = C:/ffmpeg.exe\n".encode("utf-8"))
         assert setup_mod._existing_ini_tool_values(ini_path) == {"ffmpeg": "C:/ffmpeg.exe"}
+
+
+class TestValuesReadBackAsComments:
+    def test_unwritable_reason_rereads_the_written_line(self):
+        from core.ini_syntax import unwritable_reason
+
+        assert unwritable_reason("#Team") and unwritable_reason("/media/Films #1")
+        assert unwritable_reason("/media/Films#1") is None
+        assert unwritable_reason("/media/Films 100%") is None
+        assert unwritable_reason("Team") is None
+
+    def test_cli_refuses_tag_starting_with_hash(self):
+        from core.jobs.errors import JobError
+        from core.service.ops.admin import coerce, config_fields
+
+        with pytest.raises(JobError):
+            coerce(config_fields()["paths.release_group_tag"], "#Team")
+
+    def test_autodetected_path_never_blocks_startup(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        cfg_mod._update_ini_tools_section(ini_path, {"ffmpeg": "C:/Tools #1/ffmpeg.exe",
+                                                     "ffprobe": "C:/Tools/ffprobe.exe"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert "ffprobe = C:/Tools/ffprobe.exe" in text and "ffmpeg" not in text.replace("ffprobe", "")
+
+        cfg = object.__new__(AppConfig)
+        cfg._detected_ini_tools = {"ffmpeg": "C:/Tools/ffmpeg.exe"}
+        with patch("core.config._is_windows", return_value=True), \
+             patch("core.config._update_ini_tools_section", side_effect=cfg_mod.ConfigIniWriteRefused("refus")):
+            cfg._persist_detected_windows_tools()

@@ -492,7 +492,12 @@ def _write_ini_text(path: Path, lines: list[str]) -> None:
 
 
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
-    """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
+    """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite.
+
+    Un chemin que config.ini relirait autrement (« # » d'un nom de dossier) n'est pas écrit :
+    il reste utilisé pour la session, l'autodétection le retrouve au lancement suivant.
+    """
+    tool_values = {key: value for key, value in tool_values.items() if ini_syntax.unwritable_reason(value) is None}
     if not tool_values:
         return
 
@@ -1143,7 +1148,10 @@ class AppConfig:
 
     def _persist_detected_windows_tools(self) -> None:
         if _is_windows() and self._detected_ini_tools:
-            _update_ini_tools_section(_INI_PATH, self._detected_ini_tools)
+            try:
+                _update_ini_tools_section(_INI_PATH, self._detected_ini_tools)
+            except OSError:
+                return      # persistance facultative : chemins détectés gardés pour la session
             self._ini = _load_ini()
 
     # ------------------------------------------------------------------

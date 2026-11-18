@@ -125,12 +125,21 @@ def option_line(lines: list[str], section: str, key: str, value: str, option: In
 
 
 def unwritable_reason(value: str) -> str | None:
-    """Pourquoi ``value`` ne serait pas relue à l'identique par le chargeur (None si elle le serait)."""
+    """Pourquoi ``value`` ne serait pas relue à l'identique par le chargeur (None si elle le serait) :
+    la ligne réellement écrite est relue (blancs de bord exceptés, ignorés par le chargeur)."""
     if "\n" in value or "\r" in value:
         return "retour à la ligne"
-    if _INLINE_COMMENT_RE.search(value):
-        return "« # » précédé d'un espace (lu comme un commentaire)"
-    return None
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#",), default_section="DEFAULT")
+    try:
+        parser.read_string(f"[s]\nk = {escape_value(value)}\n")
+        read = parser.get("s", "k")
+    except (configparser.Error, ValueError):
+        return "syntaxe refusée par config.ini"
+    if read == value.strip():
+        return None
+    if "#" in value:
+        return "« # » lu comme un commentaire"
+    return "valeur relue différemment"
 
 
 def escape_value(value: str) -> str:

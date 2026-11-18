@@ -879,3 +879,16 @@ def test_settings_panel_refuses_value_config_ini_cannot_store(tmp_path, qt_app):
         assert "Films" not in ini_path.read_text(encoding="utf-8")
     finally:
         _stop(patches)
+
+
+def test_settings_panel_refuses_tag_read_back_as_comment(tmp_path, qt_app):
+    panel, _cfg, ini_path, patches = _panel_with_ini(tmp_path, "[paths]\nrelease_group_tag_enabled = true\n")
+    try:
+        _field_widget(panel, "paths", "release_group_tag").setText("#Team")
+        with patch("ui.panels.settings_panel.QMessageBox.warning") as warning:
+            panel._on_save_clicked()
+        warning.assert_called_once()
+        assert panel.dirty_sections() == ["paths"]
+        assert "Team" not in ini_path.read_text(encoding="utf-8")
+    finally:
+        _stop(patches)
