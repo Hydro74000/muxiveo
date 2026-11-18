@@ -344,8 +344,12 @@ def test_refused_navigation_keeps_sidebar_and_drops_nothing(tmp_path, qt_app) ->
     assert {call.args[0] for call in fake_window._sidebar.select_page.call_args_list} == {5}
 
 
-def test_scale_change_prompt_skipped_while_closing(qt_app) -> None:
-    fake_window = SimpleNamespace(_leaving_app=True, _config=SimpleNamespace(restart_application=MagicMock()))
+def test_scale_change_prompt_skipped_while_another_action_waits(qt_app) -> None:
+    """Enregistré depuis la question posée avant une navigation, une fermeture ou une mise à jour."""
+    fake_window = SimpleNamespace(
+        _settings_panel=SimpleNamespace(is_leaving=lambda: True, confirm_leave=MagicMock()),
+        _config=SimpleNamespace(restart_application=MagicMock()),
+    )
     with patch("ui.main_window.QMessageBox.question") as question:
         MainWindow._prompt_restart_for_scale_change(cast(Any, fake_window), 125)
     question.assert_not_called()
@@ -355,9 +359,18 @@ def test_scale_change_prompt_skipped_while_closing(qt_app) -> None:
 def test_scale_change_restart_waits_for_pending_settings(qt_app) -> None:
     fake_window = SimpleNamespace(
         _config=SimpleNamespace(restart_application=MagicMock()),
-        _settings_panel=SimpleNamespace(confirm_leave=MagicMock(return_value=False)),
+        _settings_panel=SimpleNamespace(is_leaving=lambda: False, confirm_leave=MagicMock(return_value=False)),
     )
     with patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
         MainWindow._prompt_restart_for_scale_change(cast(Any, fake_window), 125)
     fake_window._settings_panel.confirm_leave.assert_called_once_with()
     fake_window._config.restart_application.assert_not_called()
+
+
+def test_settings_leave_refused_once_shutdown_started(qt_app) -> None:
+    fake_window = SimpleNamespace(
+        _settings_panel=SimpleNamespace(confirm_leave=MagicMock(return_value=True)),
+        _shutdown=object(),
+    )
+    assert MainWindow._settings_allow_leave(cast(Any, fake_window)) is False
+    assert MainWindow._settings_allow_leave(cast(Any, SimpleNamespace())) is True

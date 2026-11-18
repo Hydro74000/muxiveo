@@ -113,6 +113,7 @@ class SettingsPanel(QWidget):
         self._raw_values: dict[tuple[str, str], str] = {}
         self._applying = False
         self._resolving = False
+        self._leaving = False
         self._current_tab = 0
         self._dirty_icon = _dirty_icon()
         self._build_ui()
@@ -454,12 +455,14 @@ class SettingsPanel(QWidget):
         raw = "true" if value is True else "false" if value is False else str(value).strip()
         if self._widget_value(section, field) == raw:
             self._raw_values.pop(key, None)
-            return
-        self._raw_values[key] = raw
+        else:
+            self._raw_values[key] = raw
+        # Libellé toujours réécrit : la position peut rester la même pour une autre valeur.
         label = self._slider_value_labels.get(key)
         widget = self._field_widgets[key]
         if label is not None and isinstance(widget, QSlider):
-            label.setText(f"{raw} kbps" if widget.property("steps") else f"{raw}%")
+            shown = self._field_value(section, field)
+            label.setText(f"{shown} kbps" if widget.property("steps") else f"{shown}%")
 
     def _show_value(self, section: str, field: dict[str, Any], value: Any) -> None:
         widget = self._field_widgets[(section, field["key"])]
@@ -573,7 +576,15 @@ class SettingsPanel(QWidget):
 
     def confirm_leave(self) -> bool:
         """Vrai si la page peut être quittée : rien à enregistrer, enregistré ou ignoré."""
-        return self._resolve_pending(self._tab_sections)
+        previous, self._leaving = self._leaving, True
+        try:
+            return self._resolve_pending(self._tab_sections)
+        finally:
+            self._leaving = previous
+
+    def is_leaving(self) -> bool:
+        """Vrai pendant la question posée avant une autre action (navigation, fermeture, mise à jour, setup)."""
+        return self._leaving
 
     def _resolve_pending(self, sections: list[str]) -> bool:
         dirty = [section for section in sections if self._section_dirty(section)]

@@ -1672,7 +1672,7 @@ class MainWindow(QMainWindow):
         # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
-        self._stack.set_leave_guard(self._settings_panel, self._settings_panel.confirm_leave)
+        self._stack.set_leave_guard(self._settings_panel, self._settings_allow_leave)
 
         # Page 6 — Extensions (installation, mise à jour, suppression)
         self._extensions_panel = ExtensionsPanel(self._config)
@@ -1824,9 +1824,11 @@ class MainWindow(QMainWindow):
         return current == index
 
     def _settings_allow_leave(self) -> bool:
-        """Vrai si aucun réglage n'attend (ou s'il vient d'être enregistré ou ignoré)."""
+        """Vrai si aucun réglage n'attend (ou s'il vient d'être enregistré ou ignoré) et que
+        l'application ne se ferme pas : sinon l'appelant abandonne son action."""
         settings_panel = getattr(self, "_settings_panel", None)
-        return settings_panel is None or settings_panel.confirm_leave()
+        allowed = settings_panel is None or settings_panel.confirm_leave()
+        return allowed and not hasattr(self, "_shutdown")
 
     def _open_container_panel(self) -> bool:
         return MainWindow._show_page(self, self._PAGE_INDEX_BY_PANEL_KEY["container"])
@@ -3111,8 +3113,11 @@ class MainWindow(QMainWindow):
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
-        if getattr(self, "_leaving_app", False):
-            return      # fermeture en cours : la nouvelle échelle vaudra au prochain lancement
+        settings_panel = getattr(self, "_settings_panel", None)
+        if settings_panel is not None and settings_panel.is_leaving():
+            # Enregistré depuis la question posée avant une autre action (navigation, fermeture,
+            # mise à jour, setup) : cette action continue, la nouvelle échelle vaudra au prochain lancement.
+            return
         reply = QMessageBox.question(
             self,
             translate_text("Redémarrage recommandé"),
@@ -3312,13 +3317,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
-            # Enregistrement depuis la popup pendant la fermeture : pas de proposition de redémarrage.
-            self._leaving_app = True
-            try:
-                allowed = self._settings_allow_leave()
-            finally:
-                self._leaving_app = False
-            if not allowed:
+            if not self._settings_allow_leave():
                 event.ignore()
                 return
             if self._running and not confirm_close_while_running(
@@ -3470,8 +3469,7 @@ class MainWindow(QMainWindow):
         if prompt:
             self._update_refresh_pending = False
             # Hors ligne, la page de la release déjà connue reste accessible.
-            if self._update_info is not None:
-                self._show_update_dialog(self._update_info)
+            self._show_requested_update_dialog()
 
     def _update_channel(self) -> str:
         return normalize_update_channel(getattr(self._config, "update_channel", None))
@@ -3495,9 +3493,20 @@ class MainWindow(QMainWindow):
             translate_text("Nouvelle version disponible : v{version} — {url}", version=info.version, url=info.url)
         )
         if prompt:
-            self._show_update_dialog(info)
+            self._show_requested_update_dialog()
         else:
             self._maybe_popup_update()
+
+    def _show_requested_update_dialog(self) -> None:
+        """Réponse d'une vérification demandée : jamais par-dessus un autre dialogue modal
+        (question des paramètres…), affichée ensuite avec l'état connu à ce moment."""
+        if hasattr(self, "_shutdown"):
+            return
+        if QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(500, self, self._show_requested_update_dialog)
+            return
+        if self._update_info is not None:
+            self._show_update_dialog(self._update_info)
 
     def _maybe_popup_update(self) -> None:
         """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
@@ -3580,6 +3589,7 @@ class MainWindow(QMainWindow):
             return
         # L'installation engagée ferme l'application : réglages tranchés avant le téléchargement.
         if not self._settings_allow_leave():
+            self.log_info(translate_text("Mise à jour annulée."))
             return
         dialog = QProgressDialog(
             translate_text("Téléchargement de Muxiveo v{version}…", version=info.version),

@@ -781,3 +781,45 @@ def test_settings_panel_rerun_setup_asks_about_pending_changes_first(tmp_path, q
         assert panel.has_unsaved_changes()
     finally:
         _stop(patches)
+
+
+def test_settings_panel_slider_label_follows_reloaded_value(tmp_path, qt_app):
+    """Même position de curseur pour une autre valeur : le libellé suit la valeur rechargée."""
+    panel, _cfg, _ini, patches = _panel_with_ini(
+        tmp_path, "[ui]\nui_scale_percent = 105\n[audio_encoding]\naac_bitrate_per_channel_kbps = 100\n",
+    )
+    try:
+        aac_field = panel._group_by_section["audio_encoding"]["fields"][0]
+        scale_field = next(f for f in panel._group_by_section["ui"]["fields"] if f["key"] == "ui_scale_percent")
+        aac_label = panel._slider_value_labels[("audio_encoding", aac_field["key"])]
+        scale_label = panel._slider_value_labels[("ui", "ui_scale_percent")]
+        assert (aac_label.text(), scale_label.text()) == ("100 kbps", "105%")
+        panel._apply_value("audio_encoding", aac_field, 96)
+        panel._apply_value("ui", scale_field, 110)
+        assert (aac_label.text(), scale_label.text()) == ("96 kbps", "110%")
+        assert panel._field_value("audio_encoding", aac_field) == "96"
+    finally:
+        _stop(patches)
+
+
+def test_settings_panel_is_leaving_only_during_confirm_leave(tmp_path, qt_app):
+    """Question posée avant une autre action : MainWindow n'y propose pas de redémarrage."""
+    panel, _cfg, _ini, patches = _panel_with_ini(tmp_path, "[ui]\nstartup_menu_compact = false\n")
+    try:
+        checkbox = _field_widget(panel, "ui", "startup_menu_compact")
+        seen: list[bool] = []
+
+        def ask(sections):
+            panel.confirm_leave()          # demande imbriquée : refusée, état extérieur intact
+            seen.append(panel.is_leaving())
+            return "discard"
+
+        checkbox.setChecked(True)
+        with patch.object(panel, "_ask_pending_changes", side_effect=ask):
+            assert panel.confirm_leave()
+            checkbox.setChecked(True)
+            panel._tabs.setCurrentIndex(1)  # changement d'onglet : pas une sortie de page
+        assert seen == [True, False]
+        assert not panel.is_leaving()
+    finally:
+        _stop(patches)

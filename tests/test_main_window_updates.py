@@ -482,3 +482,16 @@ def test_install_refused_by_pending_settings_downloads_nothing(window, qt_app):
     apply.assert_not_called()
     quit_app.assert_not_called()
     assert window._update_download_cancel is None
+
+
+def test_requested_update_dialog_waits_for_modal_dialogs(window, qt_app):
+    """Réponse d'une vérification demandée pendant la question des paramètres : affichée après."""
+    window._update_info = UpdateInfo("99.0.0", "https://example/")
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=object()), \
+         patch("ui.main_window.QTimer.singleShot") as later:
+        window._show_requested_update_dialog()
+    window._show_update_dialog.assert_not_called()
+    later.assert_called_once()
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=None):
+        window._show_requested_update_dialog()
+    window._show_update_dialog.assert_called_once_with(window._update_info)
