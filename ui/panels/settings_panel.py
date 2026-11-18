@@ -77,9 +77,6 @@ _EDITOR_WIDTHS: dict[str, tuple[int, int]] = {
     "stepped_slider": (260, 420),
     "slider": (260, 420),
 }
-# Carte des champs : largeur bornée, les descriptions s'y replient.
-_CARD_MAX_WIDTH = 980
-
 # Ordre des onglets ; sections absentes : après, dans l'ordre de INI_FIELD_GROUPS.
 _SECTION_ORDER = {"ui": 0, "audio_encoding": 1, "sync": 2, "metadata": 3}
 
@@ -239,7 +236,6 @@ class SettingsPanel(QWidget):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
 
         card = _card()
-        card.setMaximumWidth(_scale(_CARD_MAX_WIDTH))
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(_scale(16), _scale(16), _scale(16), _scale(16))
@@ -248,12 +244,8 @@ class SettingsPanel(QWidget):
             card_layout.addWidget(self._build_field_widget(section, field))
             if index < len(group["fields"]) - 1:
                 card_layout.addWidget(_separator())
-        # Carte à la hauteur de ses champs (espace restant en dessous), à gauche, largeur bornée.
-        card_row = QHBoxLayout()
-        card_row.setContentsMargins(0, 0, 0, 0)
-        card_row.addWidget(card, 1)
-        card_row.addStretch(0)
-        layout.addLayout(card_row)
+        # Carte sur toute la largeur, à la hauteur de ses champs (espace restant en dessous).
+        layout.addWidget(card)
         layout.addStretch(1)
 
         scroll.setWidget(content)
