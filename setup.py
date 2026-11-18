@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from core import ini_syntax
 from core.atomic_io import atomic_rewrite_text
 from core.ui_language import system_ui_language
 from core import nvencc_install
@@ -588,46 +589,11 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 
 
 def _tools_section_bounds(lines: list[str]) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-
-    for index, line in enumerate(lines):
-        if line.strip().lower() == "[tools]":
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, "tools")
 
 
 def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-    target = f"[{section.lower()}]"
-
-    for index, line in enumerate(lines):
-        if line.strip().lower() == target:
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, section)
 
 
 def _normalize_windows_backslashes(value: str) -> str:
@@ -658,13 +624,13 @@ def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
         return lines
 
     for index in range(start + 1, end):
-        stripped = lines[index].strip()
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+        key = ini_syntax.option_name(lines[index])
+        if key is None:
             continue
-        lhs, rhs = stripped.split("=", 1)
-        normalized = _normalize_windows_backslashes(rhs.strip())
-        if normalized != rhs.strip():
-            lines[index] = f"{lhs.strip()} = {normalized}"
+        value = ini_syntax.option_value(lines[index])
+        normalized = _normalize_windows_backslashes(value)
+        if normalized != value:
+            lines[index] = f"{key} = {normalized}"
     return lines
 
 
@@ -710,29 +676,25 @@ def _update_ini_tools_section(
         end = len(lines)
 
     if prune_keys:
-        for index in range(end - 1, start, -1):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-                continue
-            lhs, _rhs = stripped.split("=", 1)
-            if lhs.strip().lower() not in prune_keys:
-                continue
-            del lines[index]
-            end -= 1
+        lines = ini_syntax.remove_options(lines, "tools", prune_keys)
+        start, end = _tools_section_bounds(lines)
 
     insert_at = _section_insert_index(lines, start, end)
     for key, value in tool_values.items():
         rendered = _normalize_windows_backslashes(value)
         updated = False
         for index in range(start + 1, end):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            if ini_syntax.option_name(lines[index]) != key.lower():
                 continue
-            lhs, rhs = stripped.split("=", 1)
-            if lhs.strip().lower() != key.lower():
-                continue
-            if not rhs.strip() or key.lower() in replace_keys:
-                lines[index] = f"{key} = {rendered}"
+            option_end = ini_syntax.option_end(lines, index, end)
+            blank = not ini_syntax.option_value(lines[index]) and option_end == index + 1
+            if blank or key.lower() in replace_keys:
+                # Valeur remplacée avec ses lignes de continuation (sinon orphelines).
+                lines[index:option_end] = [f"{key} = {rendered}"]
+                removed = option_end - index - 1
+                end -= removed
+                if insert_at > index:
+                    insert_at -= removed
             updated = True
             break
 
@@ -799,13 +761,9 @@ def initialize_config_ini_language(
 
     updated = False
     for index in range(start + 1, end):
-        stripped = lines[index].strip()
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+        if ini_syntax.option_name(lines[index]) != "language":
             continue
-        lhs, _rhs = stripped.split("=", 1)
-        if lhs.strip().lower() != "language":
-            continue
-        lines[index] = f"language = {detected}"
+        lines[index:ini_syntax.option_end(lines, index, end)] = [f"language = {detected}"]
         updated = True
         break
 

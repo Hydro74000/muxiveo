@@ -2677,6 +2677,11 @@ class EncodePanel(QWidget):
     ) -> None:
         if tools is not None and tools != getattr(self, "_detection_tools", tools):
             return      # détection d'outils remplacés depuis (Paramètres) : la suivante fait foi
+        if self._runtime_busy():
+            # Traitement ou aperçu en cours : il garde son FFmpeg ; résultat appliqué à sa fin.
+            self._pending_hw_result = (hw, sw, hw_ffmpeg, rate_controls, ten_bit_codecs, presets,
+                                       vaapi_drivers, tools)
+            return
         self._hw_encoders = hw
         self._hw_presets = dict(presets or {})
         self._vaapi_drivers = dict(vaapi_drivers or {})
@@ -4054,6 +4059,7 @@ class EncodePanel(QWidget):
             self._preview_signals = None
             self._preview_progress.setVisible(False)
             self._preview_progress.setValue(0)
+            QTimer.singleShot(0, self, self._apply_deferred_runtime_settings)
 
     def _open_preview_video(self) -> None:
         if self._preview_video_path is None:
@@ -4359,6 +4365,8 @@ class EncodePanel(QWidget):
         self._preview_generate_btn.setEnabled(
             not self._operation_running and self._preview_signals is None
         )
+        if not self._operation_running:
+            QTimer.singleShot(0, self, self._apply_deferred_runtime_settings)
 
     def is_preview_running(self) -> bool:
         """Vrai tant qu'une preview est en cours de génération."""
@@ -6009,7 +6017,28 @@ class EncodePanel(QWidget):
         entry = track_tuple[3] if len(track_tuple) > 3 else None
         return not bool(getattr(entry, "is_new", False))
 
+    def _runtime_busy(self) -> bool:
+        """Opération globale ou aperçu en cours : le workflow garde ses outils et réglages."""
+        return bool(getattr(self, "_operation_running", False)) or self.is_preview_running()
+
+    def _apply_deferred_runtime_settings(self) -> None:
+        """Fin d'une opération ou d'un aperçu : réglages enregistrés et détection matérielle en attente."""
+        if getattr(self, "_closing", False) or self._runtime_busy():
+            return
+        if getattr(self, "_runtime_refresh_pending", False):
+            self.refresh_runtime_settings()
+        pending_hw = self.__dict__.pop("_pending_hw_result", None)
+        if pending_hw is not None:
+            self._on_hw_detected(*pending_hw)
+
     def refresh_runtime_settings(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if self._runtime_busy():
+            # Le traitement ou l'aperçu en cours garde ses outils : réglages appliqués à sa fin.
+            self._runtime_refresh_pending = True
+            return
+        self._runtime_refresh_pending = False
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffprobe_bin(getattr(self._config, "tool_ffprobe", None) or None)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)

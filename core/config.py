@@ -25,7 +25,7 @@ from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
-from core import plugins
+from core import ini_syntax, plugins
 from core.atomic_io import atomic_rewrite_text
 from core.lang_tags import Rfc5646LanguageTags
 from core.nvencc_install import user_binary as nvencc_user_binary
@@ -301,55 +301,8 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return unique
 
 
-_INI_INLINE_COMMENT_RE = re.compile(r"\s#")
-_INI_SECTION_RE = re.compile(r"\[(?P<header>.+)\]")
-_INI_OPTION_RE = re.compile(r"(?P<option>.*?)\s*[=:]")
-
-
-def _ini_line_content(line: str) -> str:
-    """Ligne sans commentaire, comme le lit le chargeur (commentaire en ligne « # » après un blanc)."""
-    stripped = line.strip()
-    if not stripped or stripped.startswith(("#", ";")):
-        return ""
-    match = _INI_INLINE_COMMENT_RE.search(stripped)
-    return (stripped[:match.start()] if match else stripped).strip()
-
-
-def _ini_section_name(line: str) -> str | None:
-    """Nom (minuscules) de la section ouverte par ``line``, ``[tools] # commentaire`` compris."""
-    match = _INI_SECTION_RE.match(_ini_line_content(line))
-    return match.group("header").strip().lower() if match else None
-
-
-def _ini_option_name(line: str) -> str | None:
-    """Clé (minuscules) définie par ``line`` (délimiteur « = » ou « : »), sinon None."""
-    content = _ini_line_content(line)
-    if not content or _INI_SECTION_RE.match(content):
-        return None
-    match = _INI_OPTION_RE.match(content)
-    option = match.group("option").strip().lower() if match else ""
-    return option or None
-
-
 def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-    target = section.lower()
-
-    for index, line in enumerate(lines):
-        if _ini_section_name(line) == target:
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        if _ini_section_name(lines[index]) is not None:
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, section)
 
 
 def _normalize_windows_backslashes(value: str) -> str:
@@ -383,18 +336,17 @@ def _sanitize_windows_ini_lines(lines: list[str]) -> list[str]:
 
     current_section = ""
     for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = stripped[1:-1].strip().lower()
+        header = ini_syntax.section_name(line)
+        if header is not None:
+            current_section = header
             continue
-        if current_section not in {"paths", "tools"}:
+        key = ini_syntax.option_name(line)
+        if current_section not in {"paths", "tools"} or key is None:
             continue
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-            continue
-        lhs, rhs = stripped.split("=", 1)
-        normalized = _normalize_ini_value(current_section, rhs.strip())
-        if normalized != rhs.strip():
-            lines[index] = f"{lhs.strip()} = {normalized}"
+        value = ini_syntax.option_value(line)
+        normalized = _normalize_ini_value(current_section, value)
+        if normalized != value:
+            lines[index] = f"{key} = {normalized}"
     return lines
 
 
@@ -508,12 +460,16 @@ def _upsert_ini_section(
         rendered = _normalize_ini_value(section, value)
         updated = False
         for index in range(start + 1, end):
-            if _ini_option_name(lines[index]) != key.lower():
+            if ini_syntax.option_name(lines[index]) != key.lower():
                 continue
-            content = _ini_line_content(lines[index])
-            rhs = _INI_OPTION_RE.sub("", content, count=1)
-            if (not replace_blank_only) or (not rhs.strip()):
-                lines[index] = f"{key} = {rendered}"
+            option_end = ini_syntax.option_end(lines, index, end)
+            blank = not ini_syntax.option_value(lines[index]) and option_end == index + 1
+            if (not replace_blank_only) or blank:
+                # Valeur remplacée avec ses lignes de continuation (sinon orphelines).
+                lines[index:option_end] = [f"{key} = {rendered}"]
+                removed = option_end - index - 1
+                end -= removed
+                insert_at -= removed
             updated = True
             break
 
@@ -528,19 +484,31 @@ def _upsert_ini_section(
 def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str]:
     updated = lines
     for section, keys in removed.items():
-        start, end = _section_bounds(updated, section)
-        if start == -1:
-            continue
-        lowered_keys = {key.lower() for key in keys}
-        kept_lines = [line for line in updated[start + 1:end] if _ini_option_name(line) not in lowered_keys]
-        updated = updated[:start + 1] + kept_lines + updated[end:]
+        updated = ini_syntax.remove_options(updated, section, keys)
     return _sanitize_windows_ini_lines(updated)
 
 
 
+class ConfigIniWriteRefused(OSError):
+    """Réécriture de config.ini refusée : le chargeur ne pourrait plus lire le résultat."""
+
+
 def _write_ini_text(path: Path, lines: list[str]) -> None:
-    """Écrit ``config.ini`` atomiquement (jamais lu à moitié par un autre processus), droits existants conservés."""
-    atomic_rewrite_text(path, "\n".join(lines).rstrip() + "\n")
+    """Écrit ``config.ini`` atomiquement (jamais lu à moitié par un autre processus), droits existants conservés.
+
+    Un fichier que le chargeur lisait n'est jamais remplacé par un contenu qu'il refuserait.
+    """
+    text = "\n".join(lines).rstrip() + "\n"
+    if not ini_syntax.is_loadable(text):
+        try:
+            original_loadable = ini_syntax.is_loadable(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            original_loadable = True
+        except (OSError, UnicodeDecodeError):
+            original_loadable = False
+        if original_loadable:
+            raise ConfigIniWriteRefused(f"config.ini non réécrit : le résultat serait illisible ({path}).")
+    atomic_rewrite_text(path, text)
 
 
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:

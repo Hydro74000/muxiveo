@@ -1468,7 +1468,8 @@ class MainWindow(QMainWindow):
         set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
         if callable(set_operation_running):
             set_operation_running(self._running_flag)
-        if not self._running_flag and getattr(self, "_runtime_refresh_pending", False):
+        if (not self._running_flag and getattr(self, "_runtime_refresh_pending", False)
+                and not hasattr(self, "_shutdown")):
             # Réglages enregistrés pendant l'opération : appliqués maintenant qu'elle est finie.
             QTimer.singleShot(0, self, self._refresh_panels_runtime_settings)
         timer = getattr(self, "_operation_refresh_timer", None)
@@ -3117,12 +3118,16 @@ class MainWindow(QMainWindow):
 
     def _refresh_panels_runtime_settings(self) -> None:
         """Réglages enregistrés appliqués aux workflows (outils, fils, options) ; pendant une opération,
-        différés à sa fin : le traitement en cours garde les outils avec lesquels il a été validé."""
+        différés à sa fin : le traitement en cours garde les outils avec lesquels il a été validé ;
+        jamais pendant l'arrêt de l'application."""
+        if hasattr(self, "_shutdown"):
+            return
+        # Encodage : différé par le panneau lui-même (opération ou aperçu en cours).
+        self._encode_panel.refresh_runtime_settings()
         if self._running:
             self._runtime_refresh_pending = True
             return
         self._runtime_refresh_pending = False
-        self._encode_panel.refresh_runtime_settings()
         self._remux_panel.refresh_runtime_settings()
 
     def _prompt_restart_for_scale_change(self, percent: int) -> None:

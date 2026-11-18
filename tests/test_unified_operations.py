@@ -743,11 +743,38 @@ def test_settings_saved_during_an_operation_apply_when_it_ends(window, qt_app, m
     monkeypatch.setattr(window._remux_panel, "refresh_runtime_settings", remux)
     window._running = True
     window._refresh_panels_runtime_settings()
-    encode.assert_not_called()
-    remux.assert_not_called()
+    remux.assert_not_called()           # Encodage : différé par le panneau lui-même
     window._running = False
-    _wait_until(qt_app, lambda: encode.call_count == 1)
-    remux.assert_called_once_with()
+    _wait_until(qt_app, lambda: remux.call_count == 1)
+    assert encode.call_count == 2
+
+
+def test_encode_panel_keeps_its_tools_during_operation_and_preview(window, qt_app, monkeypatch):
+    panel = window._encode_panel
+    applied = Mock()
+    monkeypatch.setattr(panel._workflow, "set_metadata_tools", applied)
+    panel._preview_signals = object()                  # aperçu en cours
+    panel.refresh_runtime_settings()
+    applied.assert_not_called()
+    panel._set_preview_running(False)
+    _wait_until(qt_app, lambda: applied.call_count == 1)
+
+    before = set(panel._hw_encoders)
+    panel.set_operation_running(True)
+    panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, str(window._config.tool_ffmpeg), {}, frozenset(),
+                          {}, {}, panel._detection_tools)
+    assert set(panel._hw_encoders) == before          # résultat différé
+    panel.set_operation_running(False)
+    _wait_until(qt_app, lambda: "hevc_nvenc" in panel._hw_encoders)
+
+
+def test_no_settings_refresh_once_shutdown_started(qt_app):
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(_shutdown=object(), _running=False, _encode_panel=Mock(), _remux_panel=Mock())
+    MainWindow._refresh_panels_runtime_settings(stub)
+    stub._encode_panel.refresh_runtime_settings.assert_not_called()
+    stub._remux_panel.refresh_runtime_settings.assert_not_called()
 
 
 def test_stale_hardware_detection_is_ignored(window, qt_app):

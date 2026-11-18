@@ -1877,3 +1877,65 @@ class TestIniSyntaxAndPeakMemory:
         finally:
             for item in patches:
                 item.stop()
+
+
+class TestIniRewritesKeepLoaderSyntax:
+    """Continuations, noms de section exacts, setup : aucune réécriture ne rend config.ini illisible."""
+
+    def test_purge_removes_continuation_lines(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\neac3to =\n    /opt/eac3to\nffmpeg = ffmpeg\n", encoding="utf-8")
+        cfg_mod._purge_obsolete_ini_keys(ini_path)
+        text = ini_path.read_text(encoding="utf-8")
+        assert "eac3to" not in text and "ffmpeg = ffmpeg" in text and ini_syntax.is_loadable(text)
+
+    def test_upsert_replaces_continuation_lines(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = /old\n    suite\nffprobe = ffprobe\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/new"}})
+        assert ini_path.read_text(encoding="utf-8") == "[tools]\nffmpeg = /new\nffprobe = ffprobe\n"
+
+    def test_section_names_compared_like_the_loader(self, tmp_path):
+        import configparser
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui ]\nlog_max_lines = 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"ui": {"log_max_lines": "300"}})
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
+        parser.read(ini_path, encoding="utf-8")
+        assert parser.get("ui", "log_max_lines") == "300"
+        assert parser.get("ui ", "log_max_lines") == "100"
+
+    def test_write_refused_when_it_would_break_a_readable_file(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = ffmpeg\n", encoding="utf-8")
+        with pytest.raises(cfg_mod.ConfigIniWriteRefused):
+            cfg_mod._write_ini_text(ini_path, ["[tools]", "ffmpeg = a", "ffmpeg = b"])
+        assert ini_path.read_text(encoding="utf-8") == "[tools]\nffmpeg = ffmpeg\n"
+
+    def test_setup_follows_loader_syntax(self, tmp_path):
+        import setup as setup_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools] # outils\nffmpeg: ffmpeg\neac3to: ancien\n", encoding="utf-8")
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg", "dovi_tool": "/opt/dovi_tool"},
+                                            dry_run=False, replace_keys={"ffmpeg"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert ini_syntax.is_loadable(text)
+        lines = text.splitlines()
+        assert sum(line.startswith("[tools]") for line in lines) == 1
+        assert sum(line.startswith("ffmpeg") for line in lines) == 1 and "eac3to" not in text
+        assert "ffmpeg = /opt/ffmpeg" in text and "dovi_tool = /opt/dovi_tool" in text
