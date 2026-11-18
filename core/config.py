@@ -447,6 +447,9 @@ def _upsert_ini_section(
 
     for key, value in values.items():
         normalized = _normalize_ini_value(section, value)
+        reason = ini_syntax.unwritable_reason(normalized)
+        if reason is not None:
+            raise ConfigIniWriteRefused(f"{section}.{key} : valeur impossible à écrire dans config.ini ({reason}).")
         option = ini_syntax.find_option(lines, section, key)
         if option is None:
             lines.insert(_section_bounds(lines, section)[1], ini_syntax.option_line(lines, section, key, normalized))
@@ -476,15 +479,15 @@ def _write_ini_text(path: Path, lines: list[str]) -> None:
     Un fichier que le chargeur lisait n'est jamais remplacé par un contenu qu'il refuserait.
     """
     text = "\n".join(lines).rstrip() + "\n"
-    if not ini_syntax.is_loadable(text):
-        try:
-            original_loadable = ini_syntax.is_loadable(path.read_text(encoding="utf-8-sig"))
-        except FileNotFoundError:
-            original_loadable = True
-        except (OSError, UnicodeDecodeError):
-            original_loadable = False
-        if original_loadable:
-            raise ConfigIniWriteRefused(f"config.ini non réécrit : le résultat serait illisible ({path}).")
+    try:
+        original: str | None = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        original = None
+    except (OSError, UnicodeDecodeError):
+        original = ""       # illisible : rien à préserver
+    reason = ini_syntax.rewrite_refusal(original, text) if original != "" else None
+    if reason is not None:
+        raise ConfigIniWriteRefused(f"config.ini non réécrit : {reason} ({path}).")
     atomic_rewrite_text(path, text)
 
 

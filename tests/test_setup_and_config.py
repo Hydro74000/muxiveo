@@ -1996,3 +1996,50 @@ class TestIniIndentBomAndPercent:
                 assert "output_dir = /media/Films 100%%" in ini_path.read_text(encoding="utf-8")
                 assert str(AppConfig().output_dir) == "/media/Films 100%"
         assert not ini_syntax.is_loadable("[paths]\noutput_dir = /media/Films 100%\n")
+
+
+class TestIniUnwritableValuesAndIndentedSections:
+    def test_value_read_back_as_comment_is_refused(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import ConfigIniWriteRefused, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[paths]\noutput_dir = /media\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path), pytest.raises(ConfigIniWriteRefused, match="commentaire"):
+            write_ini_settings({"paths": {"output_dir": "/media/Films #1"}})
+        assert ini_path.read_text(encoding="utf-8") == "[paths]\noutput_dir = /media\n"
+
+    def test_cli_config_set_refuses_it_before_writing(self):
+        from core.jobs.constants import EXIT_VALIDATION
+        from core.jobs.errors import JobError
+        from core.service.ops.admin import coerce, config_fields
+
+        with pytest.raises(JobError) as caught:
+            coerce(config_fields()["paths.output_dir"], "/media/Films #1")
+        assert caught.value.exit_code == EXIT_VALIDATION
+
+    def test_option_added_to_empty_indented_section_keeps_next_section(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("    [tools]\n    [ui]\n    log_max_lines = 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/opt/ffmpeg"}})
+        assert ini_syntax.loaded_sections(ini_path.read_text(encoding="utf-8")) == {"tools", "ui"}
+
+    def test_rewrite_losing_a_section_is_refused(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = ffmpeg\n[ui]\nlog_max_lines = 1\n", encoding="utf-8")
+        with pytest.raises(cfg_mod.ConfigIniWriteRefused, match="sections perdues"):
+            cfg_mod._write_ini_text(ini_path, ["[tools]", "ffmpeg = ffmpeg"])
+
+    def test_setup_reads_existing_tools_with_bom(self, tmp_path):
+        import setup as setup_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_bytes("\ufeff[tools]\nffmpeg = C:/ffmpeg.exe\n".encode("utf-8"))
+        assert setup_mod._existing_ini_tool_values(ini_path) == {"ffmpeg": "C:/ffmpeg.exe"}

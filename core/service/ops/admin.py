@@ -136,7 +136,12 @@ def coerce(spec: dict[str, Any], raw: str) -> str:
             raise JobError(f"{spec['key']} : langue de l'interface parmi {', '.join(supported)}.", EXIT_VALIDATION)
         return code
     if kind in ("directory", "tool"):
-        return str(Path(value).expanduser()) if value else ""
+        value = str(Path(value).expanduser()) if value else ""
+    from core.ini_syntax import unwritable_reason
+
+    reason = unwritable_reason(value)
+    if reason is not None:
+        raise JobError(f"{spec['key']} : valeur impossible à écrire dans config.ini ({reason}).", EXIT_VALIDATION)
     return value
 
 

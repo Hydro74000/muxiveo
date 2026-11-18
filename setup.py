@@ -673,6 +673,10 @@ def _update_ini_tools_section(
 
     for key, value in tool_values.items():
         rendered = _normalize_windows_backslashes(value)
+        reason = ini_syntax.unwritable_reason(rendered)
+        if reason is not None:
+            warn(f"{key}: path not written to config.ini ({reason}): {rendered}")
+            continue
         option = ini_syntax.find_option(lines, "tools", key)
         if option is None:
             start, end = _tools_section_bounds(lines)
@@ -693,8 +697,9 @@ def _update_ini_tools_section(
 def _write_config_ini(path: Path, lines: list[str], *, original: str) -> bool:
     """Remplace config.ini, sauf si le chargeur de Muxiveo lisait l'original et ne lirait plus le résultat."""
     rendered = "\n".join(lines).rstrip() + "\n"
-    if not ini_syntax.is_loadable(rendered) and ini_syntax.is_loadable(original):
-        warn(f"config.ini not rewritten: the result would be unreadable ({path})")
+    reason = ini_syntax.rewrite_refusal(original if path.exists() else None, rendered)
+    if reason is not None:
+        warn(f"config.ini not rewritten ({reason}): {path}")
         return False
     atomic_rewrite_text(path, rendered)
     return True
@@ -901,7 +906,7 @@ def _existing_ini_tool_values(path: Path) -> dict[str, str]:
         default_section="DEFAULT",
     )
     if path.exists():
-        parser.read(path, encoding="utf-8")
+        parser.read(path, encoding="utf-8-sig")
     if not parser.has_section("tools"):
         return {}
     return {

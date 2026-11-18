@@ -865,3 +865,17 @@ def test_settings_panel_reload_asks_about_pending_changes_and_applies(tmp_path, 
         assert not panel.has_unsaved_changes()
     finally:
         _stop(patches)
+
+
+def test_settings_panel_refuses_value_config_ini_cannot_store(tmp_path, qt_app):
+    """Dossier « Films #1 » : relu tronqué par config.ini → refus explicite, saisie conservée."""
+    panel, _cfg, ini_path, patches = _panel_with_ini(tmp_path, "[paths]\n")
+    try:
+        _field_widget(panel, "paths", "output_dir").setText(str(tmp_path / "Films #1"))
+        with patch("ui.panels.settings_panel.QMessageBox.warning") as warning:
+            panel._on_save_clicked()
+        warning.assert_called_once()
+        assert panel.dirty_sections() == ["paths"]
+        assert "Films" not in ini_path.read_text(encoding="utf-8")
+    finally:
+        _stop(patches)

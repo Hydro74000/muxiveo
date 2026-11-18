@@ -117,11 +117,20 @@ def option_line(lines: list[str], section: str, key: str, value: str, option: In
     """Ligne ``clé = valeur`` à l'indentation de l'option remplacée, sinon de la dernière option de la
     section : les lignes qui suivent gardent leur rôle (option ou continuation) pour le chargeur."""
     reference = option or next(reversed(options(lines, section)), None)
-    indent = ""
-    if reference is not None:
-        line = lines[reference.start]
-        indent = line[:len(line) - len(line.lstrip())]
+    # Sans option : indentation de l'en-tête (une ligne moins indentée ferait de la section
+    # suivante, si elle est indentée, la continuation de cette valeur).
+    line = lines[reference.start] if reference is not None else lines[max(section_bounds(lines, section)[0], 0)]
+    indent = line[:len(line) - len(line.lstrip())] if lines else ""
     return f"{indent}{key} = {escape_value(value)}"
+
+
+def unwritable_reason(value: str) -> str | None:
+    """Pourquoi ``value`` ne serait pas relue à l'identique par le chargeur (None si elle le serait)."""
+    if "\n" in value or "\r" in value:
+        return "retour à la ligne"
+    if _INLINE_COMMENT_RE.search(value):
+        return "« # » précédé d'un espace (lu comme un commentaire)"
+    return None
 
 
 def escape_value(value: str) -> str:
@@ -129,13 +138,32 @@ def escape_value(value: str) -> str:
     return value.replace("%", "%%")
 
 
-def is_loadable(text: str) -> bool:
-    """Vrai si le chargeur lit ``text`` et chacune de ses valeurs (même configuration, lecture stricte)."""
+def loaded_sections(text: str) -> set[str] | None:
+    """Sections lues par le chargeur dans ``text`` (même configuration, lecture stricte, valeurs
+    interpolées comme au chargement), None s'il le refuse."""
     parser = configparser.ConfigParser(inline_comment_prefixes=("#",), default_section="DEFAULT")
     try:
         parser.read_string(text)
         for section in parser.sections():
             parser.items(section)       # interpolation : « % » isolé refusé comme au chargement
     except (configparser.Error, ValueError):
-        return False
-    return True
+        return None
+    return set(parser.sections())
+
+
+def is_loadable(text: str) -> bool:
+    return loaded_sections(text) is not None
+
+
+def rewrite_refusal(original: str | None, rewritten: str) -> str | None:
+    """Raison de ne pas remplacer ``original`` (None : fichier absent) par ``rewritten`` : le chargeur
+    lisait l'original et refuserait le résultat, ou une de ses sections disparaîtrait. Un original
+    déjà illisible n'est pas protégé (rien à préserver)."""
+    before = set() if original is None else loaded_sections(original)
+    if before is None:
+        return None
+    after = loaded_sections(rewritten)
+    if after is None:
+        return "le résultat serait illisible"
+    missing = before - after
+    return f"sections perdues : {', '.join(sorted(missing))}" if missing else None
