@@ -302,7 +302,6 @@ class TestMatroskaMuxSetting:
     def test_default_is_ffmpeg_without_configuration(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path)
         assert config.matroska_mux_backend == "ffmpeg"
-        assert config.remux_mux_backend == "ffmpeg"  # alias de compatibilité
         assert config.load_warnings == []
 
     def test_reads_new_ini_section(self, tmp_path: Path) -> None:

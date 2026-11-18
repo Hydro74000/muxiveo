@@ -961,7 +961,6 @@ def test_app_config_all_tools_available_accepts_configured_absolute_path(tmp_pat
     cfg.tool_mediainfo = str(mediainfo)
     cfg.tool_dovi_tool = "missing-dovi"
     cfg.tool_hdr10plus = "missing-hdr10plus"
-    cfg.tool_eac3to = "missing-eac3to"
 
     with patch("core.config.shutil.which", return_value=None):
         availability = cfg.all_tools_available()
@@ -1706,3 +1705,57 @@ def test_setup_tools_keys_inserted_before_next_section_comment_header(tmp_path):
     lines = ini.read_text(encoding="utf-8").splitlines()
     assert lines[:5] == ["[tools]", "", "# ffmpeg = ffmpeg", "ffmpeg = /opt/ffmpeg", "mediainfo = /opt/mediainfo"]
     assert lines.index("# [hdr] — Doc") > lines.index("mediainfo = /opt/mediainfo")
+
+
+class TestRemovedOptions:
+    """Options lues par aucun workflow (eac3to, profil / compatibility ID DoVi) : retirées et purgées."""
+
+    def test_not_exposed_anymore(self, tmp_path):
+        from core.config import INI_FIELD_GROUPS, AppConfig
+
+        keys = {(group["section"], field["key"]) for group in INI_FIELD_GROUPS for field in group["fields"]}
+        assert not keys & {("tools", "eac3to"), ("hdr", "dovi_profile"), ("hdr", "dovi_compat_id")}
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+        assert "eac3to" not in cfg.tool_commands()
+        assert "eac3to" not in cfg.all_tools_available()
+        for attr in ("tool_eac3to", "dovi_profile", "dovi_compat_id", "remux_mux_backend"):
+            assert not hasattr(cfg, attr)
+
+    def test_saving_a_section_purges_its_removed_keys(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[tools]\neac3to = C:\\\\eac3to\\\\eac3to.exe\nffmpeg = ffmpeg\n\n"
+            "[hdr]\ndovi_profile = 8\ndovi_compat_id = 1\ndisplay_peak_nits = 1000\n",
+            encoding="utf-8",
+        )
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "ffmpeg"}})
+            text = ini_path.read_text(encoding="utf-8")
+            assert "eac3to" not in text and "dovi_profile = 8" in text
+            write_ini_settings({"hdr": {"display_peak_nits": "1000"}})
+        text = ini_path.read_text(encoding="utf-8")
+        assert "dovi_profile" not in text and "dovi_compat_id" not in text
+        assert "display_peak_nits = 1000" in text and "ffmpeg = ffmpeg" in text
+
+    def test_save_forgets_removed_interface_settings(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+                cfg.save()
+        removed = {call.args[0] for call in inst.remove.call_args_list}
+        assert {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id"} <= removed
+        written = {call.args[0] for call in inst.setValue.call_args_list}
+        assert not written & {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id"}

@@ -148,7 +148,6 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
-    "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
 }
@@ -165,7 +164,6 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
-    "eac3to",
 )
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
@@ -174,8 +172,7 @@ WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
 )
 
 # Dépendances nécessaires aux fonctions principales de Muxiveo sous Windows.
-# eac3to reste volontairement facultatif. NVEncC n'est requis que lorsqu'un
-# matériel NVIDIA compatible est disponible.
+# NVEncC n'est requis que lorsqu'un matériel NVIDIA compatible est disponible.
 WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
     "ffmpeg",
     "ffprobe",
@@ -344,15 +341,6 @@ GITHUB_TOOLS: dict[str, dict] = {
                 "fmt": "zip",
             },
         },
-    },
-}
-
-# Tools with no automated install path (optional)
-MANUAL_TOOLS: dict[str, dict] = {
-    "eac3to": {
-        "desc": "Advanced audio conversion (Windows only, optional)",
-        "note": "Download from: https://forum.doom9.org/showthread.php?t=125966",
-        "platforms": ["Windows"],
     },
 }
 
@@ -899,9 +887,6 @@ def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / exe_name)
-        elif tool_name == "eac3to":
-            for exe_name in exe_names:
-                candidates.append(base_dir / "eac3to" / exe_name)
 
     return _dedupe_paths(candidates)
 
@@ -2275,7 +2260,7 @@ def _detect_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
 def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
     """Report the health of Muxiveo's required Windows dependencies.
 
-    This deliberately excludes optional eac3to and all setup-only helpers.
+    This deliberately excludes setup-only helpers.
     """
     required = windows_required_tool_names()
     found: dict[str, str] = {}

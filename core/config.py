@@ -165,7 +165,6 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
-    "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
 }
@@ -193,7 +192,13 @@ _REMOVED_INI_KEYS: dict[str, dict[str, frozenset[str]]] = {
     "ui": {
         "verbose_file_logging": frozenset({"enable_file_logging", "file_logging_level"}),
     },
+    # Options retirées, lues par aucun workflow.
+    "tools": {"eac3to": frozenset()},
+    "hdr": {"dovi_profile": frozenset(), "dovi_compat_id": frozenset()},
 }
+
+# Réglages de l'interface (QSettings) des options retirées : effacés à l'enregistrement.
+_REMOVED_SETTINGS_KEYS: tuple[str, ...] = ("tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id")
 
 
 def _load_ini() -> configparser.ConfigParser:
@@ -634,9 +639,6 @@ def _windows_default_tool_candidates(tool_name: str) -> list[Path]:
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / exe_name)
-        elif tool_name == "eac3to":
-            for exe_name in exe_names:
-                candidates.append(base_dir / "eac3to" / exe_name)
 
     winget_root = _windows_winget_root()
     if winget_root.exists():
@@ -943,7 +945,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "mediainfo", "attr": "tool_mediainfo", "kind": "tool", "label": "MediaInfo", "description": "Binaire MediaInfo utilisé pour enrichir l'inspection."},
             {"key": "dovi_tool", "attr": "tool_dovi_tool", "kind": "tool", "label": "dovi_tool", "description": "Outil Dolby Vision utilisé pour les workflows DoVi."},
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
-            {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
             {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire."},
         ),
@@ -977,8 +978,6 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             # V42 : réglages historiques, lus par aucun workflow (Merge DoVi : liste de son
             # panneau ; encodage : décision par piste). Conservés tant que leur retrait
             # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
-            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
-            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
             {"key": "display_peak_nits", "attr": "display_peak_nits", "kind": "int", "label": "Luminosité maximale de mon écran (nits)", "description": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis."},
         ),
     },
@@ -1348,7 +1347,6 @@ class AppConfig:
         self.tool_mediainfo = self._resolve_tool_value("mediainfo", "tools/mediainfo", "mediainfo")
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
-        self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
         # NVEncC: nom du binaire varie selon plateforme et packaging :
         #   • Windows : NVEncC64.exe (rigaya release .7z)
         #   • Linux .deb (Debian/Ubuntu) : NVEncC (PascalCase, /usr/bin/NVEncC)
@@ -1364,8 +1362,6 @@ class AppConfig:
         self.x265_frame_threads = _normalize_x265_frame_threads(
             self._resolve_int("ffmpeg", "x265_frame_threads", "ffmpeg/x265_frame_threads", 0)
         )
-        self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
-        self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
         self.display_peak_nits = normalize_display_peak_nits(
             self._resolve_int("hdr", "display_peak_nits", "hdr/display_peak_nits", 1000))
 
@@ -1439,8 +1435,6 @@ class AppConfig:
             "matroska/regenerate_statistics",
             True,
         )
-        # Alias interne de compatibilité (à supprimer une fois les usages migrés).
-        self.remux_mux_backend = self.matroska_mux_backend
 
         self.language = _normalize_language_code(
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
@@ -1557,6 +1551,8 @@ class AppConfig:
         """Persiste la configuration dans QSettings pour les fallbacks runtime."""
         s = self._settings
 
+        for key in _REMOVED_SETTINGS_KEYS:
+            s.remove(key)
         s.setValue("paths/work_dir", str(self.work_dir))
         s.setValue("paths/output_dir", str(self.output_dir))
         s.setValue("paths/release_group_tag_enabled", "true" if self.release_group_tag_enabled else "false")
@@ -1567,13 +1563,10 @@ class AppConfig:
         s.setValue("tools/mediainfo", self.tool_mediainfo)
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
-        s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
         s.setValue("ffmpeg/x265_frame_threads", self.x265_frame_threads)
 
-        s.setValue("hdr/dovi_profile", self.dovi_profile)
-        s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
         s.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
         s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
@@ -1668,7 +1661,6 @@ class AppConfig:
             "mediainfo": self.tool_mediainfo,
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
-            "eac3to": self.tool_eac3to,
             "muxiveo-rife": getattr(self, "tool_muxiveo_rife", "muxiveo-rife"),
         }
 
@@ -1797,7 +1789,6 @@ class AppConfig:
                 "mediainfo": self.tool_mediainfo,
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
-                "eac3to": self.tool_eac3to,
                 "muxiveo_rife": getattr(self, "tool_muxiveo_rife", ""),
             },
             "tool_versions": {
@@ -1812,8 +1803,6 @@ class AppConfig:
                 "x265_frame_threads": self.x265_frame_threads,
             },
             "hdr": {
-                "dovi_profile": self.dovi_profile,
-                "dovi_compat_id": self.dovi_compat_id,
                 "display_peak_nits": self.display_peak_nits,
             },
             "encoding": {

@@ -48,7 +48,7 @@ Acces eventuel aux releases GitHub lorsque vous telechargez manuellement un pack
 Ces communications peuvent exposer a ces services tiers des donnees techniques usuelles telles que l'adresse IP, l'user-agent, l'heure de requete et les ressources demandees. Muxiveo ne controle pas les journaux ou pratiques de ces services tiers.
 
 7. Outils externes executes localement
-L'application orchestre des outils locaux tels que `ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool`, `nvidia-smi` et, optionnellement, `eac3to`. Ces outils peuvent lire les fichiers que vous selectionnez et ecrire des fichiers temporaires ou de sortie dans les dossiers configures. Leur execution se fait sur votre machine.
+L'application orchestre des outils locaux tels que `ffmpeg`, `ffprobe`, `mediainfo`, `dovi_tool`, `hdr10plus_tool` et `nvidia-smi`. Ces outils peuvent lire les fichiers que vous selectionnez et ecrire des fichiers temporaires ou de sortie dans les dossiers configures. Leur execution se fait sur votre machine.
 
 8. Fichiers temporaires et retention
 Les workflows peuvent creer des fichiers temporaires dans le dossier de travail configure, dans le dossier temporaire du systeme ou dans `/dev/shm` lorsque le buffer RAM est active et disponible. Muxiveo nettoie les dossiers temporaires de process en fin de workflow quand cela est possible. Les fichiers de sortie, fichiers `.nfo`, configurations locales et logs conserves par l'interface restent sur votre machine jusqu'a suppression par vous ou par votre systeme.

@@ -295,7 +295,7 @@ class TestCheckNvencAvailable:
 
 
 class TestWindowsRequiredTools:
-    def test_excludes_eac3to_and_includes_nvencc_only_with_nvidia(self, setup_mod):
+    def test_includes_nvencc_only_with_nvidia(self, setup_mod):
         with patch.object(setup_mod, "_check_nvenc_available", return_value=False):
             assert setup_mod.windows_required_tool_names() == setup_mod.WINDOWS_REQUIRED_TOOLS
         with patch.object(setup_mod, "_check_nvenc_available", return_value=True):
@@ -304,14 +304,14 @@ class TestWindowsRequiredTools:
             )
 
     def test_report_returns_only_required_missing_tools(self, setup_mod, tmp_path):
-        paths = {"ffmpeg": r"C:\\ffmpeg.exe", "eac3to": r"C:\\eac3to.exe"}
+        paths = {"ffmpeg": r"C:\\ffmpeg.exe", "nvencc": r"C:\\NVEncC64.exe"}
         with patch.object(setup_mod, "_check_nvenc_available", return_value=False), \
              patch.object(setup_mod, "_detect_tool_path", side_effect=lambda name, _prefix: paths.get(name)):
             report = setup_mod.check_windows_required_tools(tmp_path)
 
         assert report.found == {"ffmpeg": r"C:\\ffmpeg.exe"}
         assert report.missing == ("ffprobe", "mediainfo", "dovi_tool", "hdr10plus_tool")
-        assert "eac3to" not in report.required
+        assert "nvencc" not in report.required
 
     def test_report_honors_explicit_windows_tool_path(self, setup_mod, tmp_path):
         ffmpeg = tmp_path / "ffmpeg.exe"
