@@ -334,19 +334,13 @@ def _sanitize_windows_ini_lines(lines: list[str]) -> list[str]:
     if not _is_windows():
         return lines
 
-    current_section = ""
-    for index, line in enumerate(lines):
-        header = ini_syntax.section_name(line)
-        if header is not None:
-            current_section = header
+    for option in ini_syntax.scan(lines)[1]:
+        if option.section not in {"paths", "tools"} or option.multiline:
             continue
-        key = ini_syntax.option_name(line)
-        if current_section not in {"paths", "tools"} or key is None:
-            continue
-        value = ini_syntax.option_value(line)
-        normalized = _normalize_ini_value(current_section, value)
-        if normalized != value:
-            lines[index] = f"{key} = {normalized}"
+        normalized = _normalize_ini_value(option.section, option.value)
+        if normalized != option.value:
+            line = lines[option.start]
+            lines[option.start] = f"{line[:len(line) - len(line.lstrip())]}{option.key} = {normalized}"
     return lines
 
 
@@ -446,37 +440,20 @@ def _upsert_ini_section(
     *,
     replace_blank_only: bool = False,
 ) -> list[str]:
-    start, end = _section_bounds(lines, section)
-
-    if start == -1:
+    if _section_bounds(lines, section)[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend([f"[{section}]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append(f"[{section}]")
 
-    insert_at = end
     for key, value in values.items():
-        rendered = _normalize_ini_value(section, value)
-        updated = False
-        for index in range(start + 1, end):
-            if ini_syntax.option_name(lines[index]) != key.lower():
-                continue
-            option_end = ini_syntax.option_end(lines, index, end)
-            blank = not ini_syntax.option_value(lines[index]) and option_end == index + 1
-            if (not replace_blank_only) or blank:
-                # Valeur remplacée avec ses lignes de continuation (sinon orphelines).
-                lines[index:option_end] = [f"{key} = {rendered}"]
-                removed = option_end - index - 1
-                end -= removed
-                insert_at -= removed
-            updated = True
-            break
-
-        if not updated:
-            lines.insert(insert_at, f"{key} = {rendered}")
-            insert_at += 1
-            end += 1
+        normalized = _normalize_ini_value(section, value)
+        option = ini_syntax.find_option(lines, section, key)
+        if option is None:
+            lines.insert(_section_bounds(lines, section)[1], ini_syntax.option_line(lines, section, key, normalized))
+            continue
+        if not replace_blank_only or (not option.value and not option.multiline):
+            # Valeur remplacée avec ses lignes de continuation (sinon orphelines), même indentation.
+            lines[option.start:option.end] = [ini_syntax.option_line(lines, section, key, normalized, option)]
 
     return _sanitize_windows_ini_lines(lines)
 

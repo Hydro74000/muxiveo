@@ -1939,3 +1939,60 @@ class TestIniRewritesKeepLoaderSyntax:
         assert sum(line.startswith("[tools]") for line in lines) == 1
         assert sum(line.startswith("ffmpeg") for line in lines) == 1 and "eac3to" not in text
         assert "ffmpeg = /opt/ffmpeg" in text and "dovi_tool = /opt/dovi_tool" in text
+
+
+class TestIniIndentBomAndPercent:
+    """Options indentées (indentation relative comme le chargeur), BOM, « % » littéral."""
+
+    def test_indented_options_are_options_not_continuations(self, tmp_path):
+        import configparser
+        import core.config as cfg_mod
+        import setup as setup_mod
+        from core import ini_syntax
+        from core.config import write_ini_settings
+
+        lines = ["[tools]", "    ffmpeg = /old", "    eac3to = x", "        suite", "    ffprobe = p"]
+        assert [(o.key, o.start, o.end) for o in ini_syntax.options(lines, "tools")] == [
+            ("ffmpeg", 1, 2), ("eac3to", 2, 4), ("ffprobe", 4, 5)]
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/new"}})
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
+        parser.read(ini_path, encoding="utf-8")
+        assert parser.get("tools", "ffmpeg") == "/new" and not parser.has_option("tools", "eac3to")
+
+        ini_path.write_text("[tools]\n    ffmpeg = /old\n", encoding="utf-8")
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"}, dry_run=False, replace_keys={"ffmpeg"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert ini_syntax.is_loadable(text) and "ffmpeg = /opt/ffmpeg" in text and "/old" not in text
+
+    def test_setup_reads_bom_files(self, tmp_path):
+        import setup as setup_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_bytes("﻿[tools]\nffmpeg = ffmpeg\n".encode("utf-8"))
+        setup_mod._update_ini_tools_section(ini_path, {"dovi_tool": "/opt/dovi_tool"}, dry_run=False)
+        text = ini_path.read_text(encoding="utf-8-sig")
+        assert ini_syntax.is_loadable(text) and text.count("[tools]") == 1
+        assert "dovi_tool = /opt/dovi_tool" in text
+
+    def test_percent_written_escaped_and_read_back(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+        from core.config import AppConfig, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[paths]\n", encoding="utf-8")
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                write_ini_settings({"paths": {"output_dir": "/media/Films 100%"}})
+                assert "output_dir = /media/Films 100%%" in ini_path.read_text(encoding="utf-8")
+                assert str(AppConfig().output_dir) == "/media/Films 100%"
+        assert not ini_syntax.is_loadable("[paths]\noutput_dir = /media/Films 100%\n")

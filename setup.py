@@ -619,18 +619,14 @@ def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
     if OS != "Windows":
         return lines
 
-    start, end = _tools_section_bounds(lines)
-    if start == -1:
-        return lines
-
-    for index in range(start + 1, end):
-        key = ini_syntax.option_name(lines[index])
-        if key is None:
+    for option in ini_syntax.options(lines, "tools"):
+        if option.multiline:
             continue
-        value = ini_syntax.option_value(lines[index])
+        index, key, value = option.start, option.key, option.value
         normalized = _normalize_windows_backslashes(value)
         if normalized != value:
-            lines[index] = f"{key} = {normalized}"
+            line = lines[index]
+            lines[index] = f"{line[:len(line) - len(line.lstrip())]}{key} = {normalized}"
     return lines
 
 
@@ -664,51 +660,44 @@ def _update_ini_tools_section(
     # Toute écriture de [tools] élague aussi les outils retirés de Muxiveo.
     prune_keys = {key.lower() for key in (prune_keys or set())} | REMOVED_CONFIG_TOOLS
 
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     lines = _sanitize_windows_tools_lines(text.splitlines())
-    start, end = _tools_section_bounds(lines)
 
-    if start == -1:
+    if _tools_section_bounds(lines)[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend(["[tools]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append("[tools]")
 
     if prune_keys:
         lines = ini_syntax.remove_options(lines, "tools", prune_keys)
-        start, end = _tools_section_bounds(lines)
 
-    insert_at = _section_insert_index(lines, start, end)
     for key, value in tool_values.items():
         rendered = _normalize_windows_backslashes(value)
-        updated = False
-        for index in range(start + 1, end):
-            if ini_syntax.option_name(lines[index]) != key.lower():
-                continue
-            option_end = ini_syntax.option_end(lines, index, end)
-            blank = not ini_syntax.option_value(lines[index]) and option_end == index + 1
-            if blank or key.lower() in replace_keys:
-                # Valeur remplacée avec ses lignes de continuation (sinon orphelines).
-                lines[index:option_end] = [f"{key} = {rendered}"]
-                removed = option_end - index - 1
-                end -= removed
-                if insert_at > index:
-                    insert_at -= removed
-            updated = True
-            break
-
-        if not updated:
-            lines.insert(insert_at, f"{key} = {rendered}")
-            insert_at += 1
-            end += 1
+        option = ini_syntax.find_option(lines, "tools", key)
+        if option is None:
+            start, end = _tools_section_bounds(lines)
+            lines.insert(_section_insert_index(lines, start, end),
+                         ini_syntax.option_line(lines, "tools", key, rendered))
+        elif (not option.value and not option.multiline) or key.lower() in replace_keys:
+            # Valeur remplacée avec ses lignes de continuation (sinon orphelines), même indentation.
+            lines[option.start:option.end] = [ini_syntax.option_line(lines, "tools", key, rendered, option)]
 
     lines = _sanitize_windows_tools_lines(lines)
 
     if dry_run:
         return
 
-    atomic_rewrite_text(path, "\n".join(lines).rstrip() + "\n")
+    _write_config_ini(path, lines, original=text)
+
+
+def _write_config_ini(path: Path, lines: list[str], *, original: str) -> bool:
+    """Remplace config.ini, sauf si le chargeur de Muxiveo lisait l'original et ne lirait plus le résultat."""
+    rendered = "\n".join(lines).rstrip() + "\n"
+    if not ini_syntax.is_loadable(rendered) and ini_syntax.is_loadable(original):
+        warn(f"config.ini not rewritten: the result would be unreadable ({path})")
+        return False
+    atomic_rewrite_text(path, rendered)
+    return True
 
 
 def _system_language_code() -> str:
@@ -750,32 +739,23 @@ def initialize_config_ini_language(
 
     text = ini_path.read_text(encoding="utf-8-sig") if ini_path.exists() else ""
     lines = text.splitlines()
-    start, end = _section_bounds(lines, "ui")
-
-    if start == -1:
+    if _section_bounds(lines, "ui")[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend(["[ui]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append("[ui]")
 
-    updated = False
-    for index in range(start + 1, end):
-        if ini_syntax.option_name(lines[index]) != "language":
-            continue
-        lines[index:ini_syntax.option_end(lines, index, end)] = [f"language = {detected}"]
-        updated = True
-        break
-
-    if not updated:
-        lines.insert(end, f"language = {detected}")
+    option = ini_syntax.find_option(lines, "ui", "language")
+    if option is None:
+        lines.insert(_section_bounds(lines, "ui")[1], ini_syntax.option_line(lines, "ui", "language", detected))
+    else:
+        lines[option.start:option.end] = [ini_syntax.option_line(lines, "ui", "language", detected, option)]
 
     if dry_run:
         ok(f"[dry-run] config.ini UI language would be set to {detected}")
         return
 
-    atomic_rewrite_text(ini_path, "\n".join(lines).rstrip() + "\n")
-    ok(f"config.ini UI language set to {detected}")
+    if _write_config_ini(ini_path, lines, original=text):
+        ok(f"config.ini UI language set to {detected}")
 
 
 def _windows_winget_root() -> Path:
