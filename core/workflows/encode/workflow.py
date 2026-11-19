@@ -2659,12 +2659,17 @@ class EncodeWorkflow(QObject):
         immédiatement), le choix est alors exact quelle que soit la cadence (basse, VFR). Image clé suivante absente
         jusqu'à la fin de la source : None.
         """
-        start = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time",
-                                     "-of", "csv=p=0", *ffprobe_input_args(source)], signals, timeout=30.0)
+        fields = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries",
+                                      "format=start_time,duration", "-of", "csv=p=0", *ffprobe_input_args(source)],
+                                     signals, timeout=30.0).strip().split(",")
         try:
-            origin = Fraction(start.strip().split(",", 1)[0] or "0")
+            origin = Fraction(fields[0] or "0")
         except (ValueError, ZeroDivisionError):
             origin = Fraction(0)
+        try:
+            duration: Fraction | None = Fraction(fields[1]) if len(fields) > 1 else None
+        except (ValueError, ZeroDivisionError):
+            duration = None  # durée inconnue (flux brut) : élargissement jusqu'à la dernière fenêtre
         limit = Fraction(time_s).limit_denominator(10**6)
         tolerance = Fraction(1, 10**6)
         low = max(Fraction(0), limit - 30)
@@ -2693,7 +2698,9 @@ class EncodeWorkflow(QObject):
             reach = target if target is not None else limit
             following = [time for time in keys if time > reach + tolerance]
             result = (max(Fraction(0), max(before)), target, min(following) if following else None)
-            if following:
+            # Fenêtre au-delà de la fin de la source (durée du conteneur, marge d'une seconde) : une fenêtre plus
+            # large relirait les mêmes paquets.
+            if following or (duration is not None and limit + span >= duration + 1):
                 return result
         return result
 

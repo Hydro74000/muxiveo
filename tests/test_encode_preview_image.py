@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 import threading
@@ -58,3 +59,43 @@ def test_preview_resolves_animation_before_cut(qt_app, tmp_path, monkeypatch, an
     preview = wf._preview_encode_config(_config(tmp_path, animation, tags), source_segment=tmp_path / "seg.mkv",
                                         output=tmp_path / "clip.mkv", clip_duration_s=2.0)
     assert preview.video is not None and preview.video.restoration.animation == expected
+
+
+def _fake_probe(format_csv: str, times: list[float], keys: set[float]):
+    """Sonde factice : ``format`` en CSV, paquets (base 1/1000) compris dans la fenêtre demandée."""
+    calls: list[str] = []
+
+    def probe(cmd, _signals, timeout=0.0):
+        if "-read_intervals" not in cmd:
+            return format_csv
+        interval = cmd[cmd.index("-read_intervals") + 1]
+        calls.append(interval)
+        low, high = (float(value) for value in interval.split("%"))
+        packets = [{"pts": str(round(time * 1000)), "flags": "K__" if time in keys else "___"}
+                   for time in times if low - 1e-9 <= time <= high]
+        return json.dumps({"streams": [{"time_base": "1/1000"}], "packets": packets})
+
+    return probe, calls
+
+
+@pytest.mark.parametrize("format_csv, expected_reads", [
+    ("0.000000,12.000000", 1),   # fin de la source dans la première fenêtre : une seule lecture
+    ("0.000000,N/A", 5),         # durée inconnue : élargissement jusqu'à la dernière fenêtre
+])
+def test_probe_stops_widening_at_end_of_source(qt_app, tmp_path, monkeypatch, format_csv, expected_reads):
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    probe, calls = _fake_probe(format_csv, [float(second) for second in range(12)], {0.0, 6.0})
+    monkeypatch.setattr(wf, "_preview_probe", probe)
+    keyframe, target, following = wf._preview_cut_points(tmp_path / "film.mkv", 0, 10.1, None)
+    assert (keyframe, target, following) == (6, 11, None)
+    assert len(calls) == expected_reads
+
+
+def test_probe_widens_until_the_next_keyframe(qt_app, tmp_path, monkeypatch):
+    """Images espacées de 20 s, image clé suivante à 120 s : seconde fenêtre (120 s), pas au-delà."""
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    probe, calls = _fake_probe("0.000000,240.000000", [0, 80, 40, 20, 60, 100, 120, 200, 160, 140, 180, 220],
+                               {0, 120})
+    monkeypatch.setattr(wf, "_preview_probe", probe)
+    assert wf._preview_cut_points(tmp_path / "film.mkv", 0, 0.1, None) == (0, 20, 120)
+    assert len(calls) == 2
