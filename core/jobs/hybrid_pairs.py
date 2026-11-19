@@ -1,8 +1,8 @@
-"""Hybridation par paires (référence + donneur) : préparation, refus des collisions, exécution.
+"""Hybridation par paires (référence + donneur) : appariement et préparation d'une paire.
 
-Moteur historique de la commande ``hybrid`` (le Hybrid Studio utilise ``core.workflows.hybrid_matrix``).
-Les étapes (construction du job, profil, analyse de synchro, exécution) sont injectées
-(:class:`HybridSteps`) : le CLI y branche ses fonctions, la couche de service les siennes.
+Restes de l'ancien moteur par paires de la commande ``hybrid`` (qui utilise désormais le moteur du Hybrid
+Studio, ``core.jobs.hybrid_studio``) : :func:`pairs_for` et :func:`prepare_pair`, employés par ``cli.hybrid`` et
+les tests oracle. Les étapes (construction du job, profil, analyse de synchro) sont injectées (:class:`HybridSteps`).
 """
 
 from __future__ import annotations
@@ -14,18 +14,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.config import AppConfig
-from core.jobs.batch import PlannedBatchJob, assert_unique_batch_outputs
-from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL
+from core.jobs.constants import EXIT_ARGS
 from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger as Logger
 from core.jobs.options import CommonOptions
-from core.profiles.selectors import remux_config_to_exact_job
-from core.service.context import CancelToken
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.hybrid import HybridPair, episode_key, pair_directories
 from core.workflows.remux_models import RemuxConfig
 from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.workflow_store import atomic_write_text, save_workflow
 
 
 @dataclass(frozen=True)
@@ -58,13 +54,6 @@ class HybridSteps:
     audio_scanner: Callable[[], Any]
     run: Callable[..., int]  # (config, options, logger, remux_config, *, force) -> code de sortie
     preview: Callable[[AppConfig, CommonOptions, RemuxConfig], dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class HybridOutcome:
-    exit_code: int
-    episodes: list[dict[str, Any]] = field(default_factory=list)
-    cancelled: bool = False
 
 
 # Valeurs par défaut d'une hybridation (option absente) : réécriture physique, sous-titres en miroir, fondu 80 ms.
@@ -260,74 +249,3 @@ def prepare_pair(pair: HybridPair, options: HybridOptions, config: AppConfig, lo
         except ValueError as exc:
             raise JobError(str(exc), EXIT_ARGS) from exc
     return result, calibration
-
-
-def run_hybrid(pairs: list[HybridPair], options: HybridOptions, config: AppConfig, logger: Logger,
-               steps: HybridSteps, *, prepare: Callable[[HybridPair], tuple[RemuxConfig, SyncCalibration]] | None = None,
-               cancel: CancelToken | None = None) -> HybridOutcome:
-    """Prépare toutes les paires (collisions refusées d'avance), puis exporte, planifie ou exécute dans l'ordre."""
-    common = options.common
-    if common.forced_threshold <= 0 or common.drift_threshold_ms <= 0 or not 0 <= (common.crossfade_ms or 0) <= 1000:
-        raise JobError("Seuils hybrides invalides.", EXIT_ARGS)
-    prepare_one = prepare or (lambda pair: prepare_pair(pair, options, config, logger, steps))
-    report: list[dict[str, Any]] = []
-    prepared: list[tuple[Any, Any, Any, Exception | None]] = []
-    for pair in pairs:
-        if cancel is not None and cancel.cancelled:
-            break
-        try:
-            result, calibration = prepare_one(pair)
-        except Exception as exc:
-            prepared.append((pair, None, None, exc))
-            if not options.continue_on_error:
-                break
-            continue
-        prepared.append((pair, result, calibration, None))
-    assert_unique_batch_outputs([
-        PlannedBatchJob(index, str(pair.reference), str(result.output), remux_config=result,
-                        template=options.output_template)
-        for index, (pair, result, _calibration, _error) in enumerate(prepared)
-        if result is not None
-    ])
-    cancelled = False
-    for pair, result, calibration, error in prepared:
-        if cancel is not None and cancel.cancelled:
-            cancelled = True
-            break
-        try:
-            if error is not None:
-                raise error
-            entry = {"reference": str(pair.reference), "donor": str(pair.donor),
-                     "output": str(result.output), "calibration": calibration.to_dict()}
-            if options.export_workflow:
-                destination = Path(options.export_workflow)
-                if len(pairs) > 1:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    destination /= f"S{pair.season:02d}E{pair.episode:02d}.exact-job.json"
-                save_workflow(destination, remux_config_to_exact_job(result))
-                entry["status"] = "exported"
-            elif options.dry_run:
-                entry["plan"] = steps.preview(config, common, result)
-                entry["status"] = "planned"
-            else:
-                result.output.parent.mkdir(parents=True, exist_ok=True)
-                result.allow_missing_output_dir = False
-                code = steps.run(config, common, logger, result, force=options.force)
-                entry["status"] = "ok" if code == EXIT_OK else "failed"
-                if code != EXIT_OK and cancel is not None and cancel.cancelled:
-                    entry["status"] = "cancelled"
-            report.append(entry)
-            if entry["status"] == "cancelled":
-                cancelled = True
-                break
-        except Exception as exc:
-            report.append({"reference": str(pair.reference), "status": "failed", "error": str(exc)})
-            logger.emit("error", str(exc))
-            if not options.continue_on_error:
-                break
-    if options.report_json:
-        atomic_write_text(Path(options.report_json),
-                          json.dumps({"version": 1, "episodes": report}, ensure_ascii=False, indent=2,
-                                     allow_nan=False) + "\n")
-    failed = any(entry["status"] in ("failed", "cancelled") for entry in report)
-    return HybridOutcome(EXIT_PARTIAL if failed else EXIT_OK, report, cancelled)
