@@ -746,3 +746,58 @@ def test_a_nul_in_base_dir_is_refused_at_admission():
         manager.submit("t.analysis", {"name": "n"}, base_dir=Path("/media\0bad"))
     assert caught.value.code is ErrorCode.INVALID_REQUEST and manager.list() == ()
     manager.shutdown()
+
+
+# --- Branches d'erreur restées sans exécution (couverture résiduelle de l'audit 4effdd1) -----------------------
+
+
+def test_failing_admission_callback_leaves_no_job_and_frees_the_queue():
+    manager, _ = _manager(max_jobs=1)
+    running = manager.submit("t.job", {"name": "r"})
+
+    def refuse(_job: str) -> None:
+        raise RuntimeError("client parti")
+
+    with pytest.raises(RuntimeError):
+        manager.submit("t.job", {"name": "never"}, on_admitted=refuse)
+    assert len(manager.list()) == 1  # l'identifiant jamais annoncé n'a pas existé
+    after = manager.submit("t.job", {"name": "n"})
+    _release("r")
+    _release("n")
+    _done(manager, running, after)
+    assert _state(manager, after) is JobState.SUCCEEDED and "never" not in _STARTED
+    manager.shutdown()
+
+
+def test_failure_before_execution_is_recorded_and_published(monkeypatch):
+    manager, sink = _manager()
+
+    def broken(*_args: Any, **_kwargs: Any) -> ExecutionContext:
+        raise RuntimeError("contexte impossible")
+
+    monkeypatch.setattr(manager_module.ExecutionContext, "create", broken)
+    job = manager.submit("t.analysis", {"name": "f"})
+    _done(manager, job)
+    assert _state(manager, job) is JobState.FAILED
+    _until(lambda: any(event.type is EventType.STATE and event.data.get("state") == "failed"
+                       for event in sink.events if event.job == job))
+    manager.shutdown()
+
+
+def test_unreadable_configuration_after_exclusive_keeps_the_previous_one():
+    calls = iter([SimpleNamespace(marker="c1")])
+
+    def factory() -> Any:
+        try:
+            return next(calls)
+        except StopIteration:
+            raise ValueError("config.ini illisible") from None
+
+    manager = JobManager(_CATALOG, factory, ListSink())
+    for name in ("x", "b"):
+        _release(name)
+    _done(manager, manager.submit("t.exclusive", {"name": "x"}))
+    after = manager.submit("t.analysis", {"name": "b"})
+    _done(manager, after)
+    assert manager.get(after).result["config"] == "c1"  # type: ignore[index]
+    manager.shutdown()

@@ -601,3 +601,87 @@ def test_api_batch_output_dir_bases_inherited_templates(tmp_path, monkeypatch):
     historical = ExecutionContext.create(SimpleNamespace(), ListSink(), api=False)
     call(CATALOG, "media.batch", request, historical, allow_relative=True, strict_documents=False)
     assert [job.get("_batch_output_dir") for job in seen] == [str(tmp_path / "exports "), None]
+
+
+# --- run_profile_batch : branches restées sans exécution (couverture résiduelle de l'audit 4effdd1) ------------
+
+
+def _profile_batch(tmp_path, steps, **kwargs):
+    from core.jobs.options import CommonOptions
+    from core.jobs.profile import run_profile_batch
+
+    params = dict(cli_inputs=[], input_dirs=None, recursive=False, include_patterns=None, exclude_patterns=None,
+                  output_dir=str(tmp_path), dry_run=False, force=False, continue_on_error=False, summary_path=None,
+                  config=SimpleNamespace(), options=CommonOptions(), logger=SimpleNamespace(emit=lambda *a, **k: None),
+                  steps=steps)
+    params.update(kwargs)
+    return run_profile_batch("P", **params)
+
+
+def _profile_steps(tmp_path, jobs, **overrides):
+    from core.jobs.batch import BatchDiscovery
+    from core.jobs.profile import ProfileBatchSteps
+
+    values = dict(load=lambda path, config: {},
+                  discover=lambda **k: BatchDiscovery(jobs=jobs, scanned=len(jobs), selected=len(jobs),
+                                                      explicit_inputs=0, roots=[]),
+                  build=lambda profile, **k: (SimpleNamespace(output=Path(k["cli_output"])), {}),
+                  preview=lambda *a: 0, run=lambda *a, **k: 0)
+    values.update(overrides)
+    return ProfileBatchSteps(**values)
+
+
+def test_profile_batch_requires_an_output_dir_and_jobs(tmp_path):
+    from core.jobs.errors import JobError
+
+    with pytest.raises(JobError):
+        _profile_batch(tmp_path, _profile_steps(tmp_path, []), output_dir=None)
+    with pytest.raises(JobError):
+        _profile_batch(tmp_path, _profile_steps(tmp_path, []))
+
+
+@pytest.mark.parametrize("template", ["", "{title}"])
+def test_profile_batch_output_all_reaches_the_build_metadata(tmp_path, template):
+    seen: list[dict] = []
+    jobs = [{"sources": [str(tmp_path / "a.mkv")], "output": str(tmp_path / "out" / "a.mkv")}]
+
+    def build(profile, **k):
+        seen.append(dict(k["metadata_job"]))
+        return SimpleNamespace(output=Path(k["cli_output"])), {}
+
+    outcome = _profile_batch(tmp_path, _profile_steps(tmp_path, jobs, build=build), output_all=True,
+                             output_template=template)
+    assert outcome.exit_code == 0 and seen[0]["output_all"] is True
+    assert ("_batch_output_dir" in seen[0]) == bool(template)
+    assert (tmp_path / "out").is_dir()  # dossier de sortie créé avant l'exécution
+
+
+def test_profile_batch_preparation_error_stops_without_continue_on_error(tmp_path):
+    built: list[str] = []
+    jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv")} for n in "ab"]
+
+    def build(profile, **k):
+        built.append(k["cli_output"])
+        raise ValueError("profil inapplicable")
+
+    outcome = _profile_batch(tmp_path, _profile_steps(tmp_path, jobs, build=build))
+    assert len(built) == 1 and outcome.exit_code == 7
+    assert [job["status"] for job in outcome.summary["jobs"]] == ["failed"]
+
+
+def test_profile_batch_cancelled_between_jobs(tmp_path):
+    from core.service.context import CancelToken
+
+    cancel = CancelToken()
+    ran: list[str] = []
+    jobs = [{"sources": [str(tmp_path / f"{n}.mkv")], "output": str(tmp_path / f"{n}.mkv")} for n in "ab"]
+
+    def run(_config, _options, _logger, remux_config, *, force=False):
+        ran.append(remux_config.output.name)
+        cancel.cancel()  # Ctrl+C reçu pendant le premier job, qui finit en échec
+        return 6
+
+    outcome = _profile_batch(tmp_path, _profile_steps(tmp_path, jobs, run=run), cancel=cancel,
+                             continue_on_error=True)
+    assert ran == ["a.mkv"] and outcome.cancelled
+    assert [job["status"] for job in outcome.summary["jobs"]] == ["cancelled"]
