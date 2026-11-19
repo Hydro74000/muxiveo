@@ -126,12 +126,20 @@ def test_low_frame_rate_reaches_the_next_frame(tmp_path):
     assert _rgb_digest(image) == _source_frame_digest(source, 1, tmp_path / "ref.png")
 
 
+def _pict_types(source: Path) -> str:
+    frames = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                        "frame=pict_type", "-of", "json", str(source)], check=True,
+                                       capture_output=True, text=True).stdout)["frames"]
+    return "".join(str(frame.get("pict_type", "?")) for frame in frames)
+
+
 @pytest.mark.parametrize("instant, expected", [(0.1, 1), (2.5, 3), (4.0, 4)])
 def test_low_frame_rate_with_b_frames(tmp_path, instant, expected):
     """1 image/s avec images B (ordre de décodage ≠ affichage) : sonde et découpe atteignent l'image cible."""
     source = tmp_path / "source.mkv"
     _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=1:duration=12", "-c:v", "libx264", "-bf", "3", "-g", "6",
-            "-crf", "0", "-pix_fmt", "yuv420p", str(source))
+            "-x264-params", "b-adapt=0:scenecut=0", "-crf", "18", "-pix_fmt", "yuv420p", str(source))
+    assert "B" in _pict_types(source)  # images B réellement présentes (x264 sans perte les désactive)
     previews = tmp_path / "apercus"
     done = _cli(tmp_path, "encode", "-i", str(source), "-o", str(tmp_path / "sortie.mkv"), "--video-codec",
                 "libx264", "--crf", "0", "--bit-depth", "8", "--preview-image", str(instant),
@@ -140,3 +148,21 @@ def test_low_frame_rate_with_b_frames(tmp_path, instant, expected):
     image = _png(tmp_path, previews)
     assert f".apercu-{float(expected):.1f}s." in image.name
     assert _rgb_digest(image) == _source_frame_digest(source, expected, tmp_path / "ref.png")
+
+
+def test_sparse_vfr_with_b_frames_beyond_probe_window(tmp_path):
+    """Images espacées de 20 s, images B : l'image P de 60 s est décodée avant celles de 20 s et 40 s. Demande à
+    0,1 s → image de 20 s (première ≥ instant), même hors de la première fenêtre de sonde de 30 s."""
+    source = tmp_path / "source.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=1:duration=12", "-vf", "settb=1/1000,setpts=N*20000",
+            "-fps_mode", "passthrough", "-c:v", "libx264", "-bf", "3", "-g", "6", "-x264-params",
+            "b-adapt=0:scenecut=0", "-crf", "18", "-pix_fmt", "yuv420p", str(source))
+    assert "B" in _pict_types(source)
+    previews = tmp_path / "apercus"
+    done = _cli(tmp_path, "encode", "-i", str(source), "-o", str(tmp_path / "sortie.mkv"), "--video-codec",
+                "libx264", "--crf", "0", "--bit-depth", "8", "--preview-image", "0.1",
+                "--preview-dir", str(previews))
+    assert done.returncode == 0, done.stderr
+    image = _png(tmp_path, previews)
+    assert ".apercu-20.0s." in image.name
+    assert _rgb_digest(image) == _source_frame_digest(source, 1, tmp_path / "ref.png")

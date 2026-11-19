@@ -2653,10 +2653,11 @@ class EncodeWorkflow(QObject):
         """(image clé de découpe ≤ ``time_s``, première image ≥ ``time_s``, image clé suivante), instants relatifs au
         début de la source, dans la base de temps du flux.
 
-        Fenêtre de lecture large (± 30 s) : FFprobe lit les paquets dans l'ordre de décodage et s'arrête au premier
-        au-delà de la fin ; avec des images B à basse cadence, une fenêtre courte s'arrêterait avant l'image cible.
-        L'image clé suivante borne l'extrait : tout le GOP de la cible (et les RASL d'une CRA suivante) y entre.
-        None : rien au-delà dans la fenêtre (fin de la source).
+        FFprobe lit les paquets dans l'ordre de décodage et s'arrête au premier au-delà de la fin de la fenêtre : une
+        image B proche de la cible peut rester non lue. La fenêtre s'étend donc jusqu'à contenir l'image clé qui suit
+        la cible : toute image affichée avant une image clé est décodée avant elle (ses images de tête la suivent
+        immédiatement), le choix est alors exact quelle que soit la cadence (basse, VFR). Image clé suivante absente
+        jusqu'à la fin de la source : None.
         """
         start = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time",
                                      "-of", "csv=p=0", *ffprobe_input_args(source)], signals, timeout=30.0)
@@ -2666,29 +2667,35 @@ class EncodeWorkflow(QObject):
             origin = Fraction(0)
         limit = Fraction(time_s).limit_denominator(10**6)
         tolerance = Fraction(1, 10**6)
-        for low in (max(Fraction(0), limit - 30), Fraction(0)):
-            interval = f"{float(origin + low):.6f}%{float(origin + limit + 30):.6f}"
+        low = max(Fraction(0), limit - 30)
+        result: tuple[Fraction, Fraction | None, Fraction | None] = (Fraction(0), None, None)
+        for span in (30, 120, 600, 3600, 10**7):  # dernière fenêtre : jusqu'à la fin de la source
+            interval = f"{float(origin + low):.6f}%{float(origin + limit + span):.6f}"
             payload = json.loads(self._preview_probe(
                 [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
                  interval, "-show_entries", "packet=pts,flags:stream=time_base", "-of", "json",
-                 *ffprobe_input_args(source)], signals, timeout=300.0) or "{}")
+                 *ffprobe_input_args(source)], signals, timeout=600.0) or "{}")
             try:
                 base = Fraction(str((payload.get("streams") or [{}])[0].get("time_base") or "1/1000"))
             except (ValueError, ZeroDivisionError):
                 base = Fraction(1, 1000)
             packets = [(Fraction(int(packet["pts"])) * base - origin, "K" in str(packet.get("flags") or ""))
                        for packet in payload.get("packets") or [] if str(packet.get("pts", "")).lstrip("-").isdigit()]
-            after = [time for time, _key in packets if time >= limit - tolerance]
-            target = max(Fraction(0), min(after)) if after else None
             keys = [time for time, key in packets if key]
             before = [time for time in keys if time <= limit + tolerance]
-            if not before and low == 0 and keys:
-                before = [min(keys)]
-            if before:
-                reach = target if target is not None else limit
-                following = [time for time in keys if time > reach + tolerance]
-                return max(Fraction(0), max(before)), target, (min(following) if following else None)
-        return Fraction(0), None, None
+            if not before and low > 0:
+                low = Fraction(0)  # aucune image clé dans les 30 s précédentes : depuis le début de la source
+                continue
+            if not before:
+                before = [min(keys)] if keys else [Fraction(0)]
+            after = [time for time, _key in packets if time >= limit - tolerance]
+            target = max(Fraction(0), min(after)) if after else None
+            reach = target if target is not None else limit
+            following = [time for time in keys if time > reach + tolerance]
+            result = (max(Fraction(0), max(before)), target, min(following) if following else None)
+            if following:
+                return result
+        return result
 
     @staticmethod
     def _seek_arg_at_or_after(seconds: Fraction) -> str:
