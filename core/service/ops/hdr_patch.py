@@ -20,6 +20,8 @@ from core.hdr_inspection.patch import (
     Hdr10PlusEdit,
     MasteringEdit,
     MetadataPatcher,
+    analyze_rpu_gaps,
+    rpu_completion_warning,
     PatchCancelled,
     PatchError,
     PatchPlan,
@@ -404,7 +406,8 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
     return report, measurement
 
 
-def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> Path:
+def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger,
+             warnings: list[str] | None = None) -> Path:
     from core.runner import CommandError, TaskSignals, ToolRunner
 
     config = ctx.config
@@ -436,7 +439,8 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
             ffmpeg_bin=ctx.tool("ffmpeg"), dovi_tool_bin=str(config.tool_dovi_tool),
             hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path, on_step=on_step,
             on_stage=lambda code: stage.__setitem__(0, code),
-            cancelled=ctx.cancel.event.is_set, progress=lambda fraction: ctx.events.progress(pct=round(fraction * 100, 1)))
+            cancelled=ctx.cancel.event.is_set, progress=lambda fraction: ctx.events.progress(pct=round(fraction * 100, 1)),
+            warn=lambda code, message, fields: _warn(ctx, warnings, code, message, fields))
         return patcher.run(plan)
     except PatchCancelled as exc:
         raise ApiError(ErrorCode.CANCELLED, "Correction annulée.") from exc
@@ -448,6 +452,13 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
         raise JobError(f"Correction impossible : {exc}", EXIT_WORKFLOW) from exc
     finally:
         owned.remove()
+
+
+def _warn(ctx: ExecutionContext, collected: list[str] | None, code: str, message: str, fields: dict) -> None:
+    """Avertissement de l'exécution : événement ``warning`` (code stable) et rappel dans le résultat."""
+    ctx.events.warning(message, code=code, **fields)
+    if collected is not None:
+        collected.append(message)
 
 
 @operation(
@@ -473,11 +484,21 @@ def hdr_patch(request: HdrPatchRequest, ctx: ExecutionContext) -> HdrPatchResult
     plan = dataclasses.replace(plan, existing=ExistingPolicy.from_force(request.force))
     for message in warnings:
         ctx.events.warning(message, code="hdr_patch_plan")
+    try:  # images sans RPU : relevées une fois, annoncées par le dry-run, complétées par l'exécution
+        gaps = analyze_rpu_gaps(plan, report, cancelled=ctx.cancel.event.is_set)
+    except PatchCancelled as exc:
+        raise ApiError(ErrorCode.CANCELLED, "Correction annulée.") from exc
+    plan = dataclasses.replace(plan, rpu_gaps=gaps, rpu_gaps_checked=True)
     changes = describe_plan(plan)
     if request.dry_run:
         ctx.cancel.raise_if_cancelled()  # dry-run annulé : jamais rendu comme réussi
+        if gaps is not None and gaps.missing:
+            message, fields = rpu_completion_warning(gaps)
+            ctx.events.warning(message, code="dovi_rpu_completed", **fields)
+            warnings = [*warnings, message]
         return HdrPatchResult(dry_run=True, changes=changes, warnings=tuple(warnings))
     logger.emit("info", f"Correction des métadonnées : {plan.source.name} → {plan.output.name}")
-    published = _execute(plan, ctx, logger)
+    executed: list[str] = []
+    published = _execute(plan, ctx, logger, executed)
     ctx.events.artifact("output", str(published))
-    return HdrPatchResult(output=str(published), changes=changes, warnings=tuple(warnings))
+    return HdrPatchResult(output=str(published), changes=changes, warnings=(*warnings, *executed))

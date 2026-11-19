@@ -88,6 +88,38 @@ def scan_rpu_gaps(path: Path, track_index: int, *, cancelled: Callable[[], bool]
     )
 
 
+def _gaps_from(order_keys: list[object], missing_decode: list[tuple[int, bool]]) -> RpuGaps:
+    """Rangs d'affichage des images sans RPU d'après les clés d'affichage en ordre de décodage."""
+    order = sorted(range(len(order_keys)), key=lambda index: (order_keys[index], index))
+    rank = {decode: display for display, decode in enumerate(order)}
+    decode_missing = sorted(index for index, _el in missing_decode)
+    trailing = bool(decode_missing) and decode_missing == list(range(len(order_keys) - len(decode_missing),
+                                                                      len(order_keys)))
+    return RpuGaps(
+        frames=len(order_keys),
+        missing=tuple(sorted(rank[index] for index, _el in missing_decode)),
+        with_el=tuple(sorted(rank[index] for index, el in missing_decode if el)),
+        trailing=trailing,
+    )
+
+
+def scan_annexb_rpu_gaps(path: Path, *, cancelled: Callable[[], bool] | None = None,
+                         progress: Callable[[int], None] | None = None) -> RpuGaps:
+    """Comme :func:`scan_rpu_gaps` pour un HEVC brut (Annex B) : rang d'affichage déduit du POC.
+
+    Annulation : ``HevcStreamCancelled`` ; flux illisible : ``core.matroska.hevc.poc.PocError``.
+    """
+    from core.matroska.hevc.poc import iter_pictures
+
+    keys: list[object] = []
+    missing: list[tuple[int, bool]] = []
+    for key, kinds in iter_pictures(Path(path), cancelled=cancelled, progress=progress):
+        if _RPU_NAL not in kinds:
+            missing.append((len(keys), _EL_NAL in kinds))
+        keys.append(key)
+    return _gaps_from(keys, missing)
+
+
 def gap_refusal(gaps: RpuGaps, *, fel: bool) -> str:
     """Motif de refus du complément ; chaîne vide si la règle s'applique."""
     if not gaps.missing:

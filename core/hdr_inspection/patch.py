@@ -27,10 +27,15 @@ from core.runner import TaskCancelledError
 if TYPE_CHECKING:
     from core.hdr_inspection.inspector import InspectionReport
     from core.hdr_inspection.measure import ImageMeasurement
+    from core.workflows.encode.runtime.dovi_rpu_gaps import RpuGaps
 
 #: Lance une commande (liste), lève en cas d'échec ou d'annulation.
 RunCommand = Callable[[list[str]], object]
 StepCallback = Callable[[str, float, float], None]
+#: Avertissement d'exécution : (code stable, message, champs structurés).
+WarnCallback = Callable[[str, str, dict], None]
+#: Avertissement des outils quand le RPU ou le JSON HDR10+ n'a pas le nombre d'images du flux.
+_LENGTH_MISMATCH_RE = re.compile(r"mismatched lengths?[^\n]*", re.IGNORECASE)
 _VERSION_RE = re.compile(r'"Version"\s*:\s*"([^"]*)"')
 #: Valeurs L11 (Dolby Vision) : type de contenu.
 L11_CONTENT_TYPES = (0, 1, 2, 3, 4)
@@ -218,6 +223,10 @@ class PatchPlan:
     notes: tuple[str, ...] = field(default=())
     #: Sort d'une sortie déjà présente, décidé sous la réservation (None : remplacement admis).
     existing: ExistingPolicy | None = field(default=None, compare=False)
+    #: Images de la source sans RPU (rangs d'affichage), relevées par :func:`analyze_rpu_gaps` ;
+    #: ``rpu_gaps_checked`` faux : relevé fait par le patcher lui-même avant la réinjection du RPU.
+    rpu_gaps: "RpuGaps | None" = field(default=None, compare=False)
+    rpu_gaps_checked: bool = field(default=False, compare=False)
 
     def is_empty(self) -> bool:
         return ((self.static is None or self.static.is_empty()) and (self.rpu is None or self.rpu.is_empty())
@@ -284,6 +293,45 @@ def _same_volume(first: Path, second: Path) -> bool:
         return False
 
 
+def analyze_rpu_gaps(plan: PatchPlan, report: "InspectionReport | None" = None, *,
+                     cancelled: Callable[[], bool] | None = None) -> "RpuGaps | None":
+    """Images de la source sans RPU, à compléter avant la réinjection du RPU édité (None : rien à réinjecter, ou
+    rangs non localisables dans ce flux).
+
+    Sans lecture quand le rapport dynamique compte autant de RPU que d'images (compte exact) ; sinon lecture
+    complète de la piste (MKV : blocs et horodatages ; HEVC brut : POC). Annulation → :class:`PatchCancelled`.
+    """
+    if plan.rpu is None or plan.rpu.is_empty():
+        return None
+    from core.workflows.encode.runtime.dovi_rpu_gaps import RpuGaps, scan_annexb_rpu_gaps, scan_rpu_gaps
+
+    snapshot = getattr(report, "snapshot", None)
+    dovi = getattr(report, "dovi", None)
+    if snapshot is not None and dovi is not None and snapshot.frames_exact and snapshot.frames == dovi.frames:
+        return RpuGaps(frames=int(dovi.frames), missing=(), with_el=(), trailing=False)
+    source = Path(plan.source)
+    try:
+        if source.suffix.lower() == ".mkv":
+            return scan_rpu_gaps(source, plan.stream_index, cancelled=cancelled)
+        return scan_annexb_rpu_gaps(source, cancelled=cancelled)
+    except InterruptedError as exc:
+        raise PatchCancelled() from exc
+    except Exception as exc:  # noqa: BLE001 — flux non localisable : comportement des outils, avertissement relevé
+        from core.matroska.hevc.access_units import HevcStreamCancelled
+
+        if isinstance(exc, HevcStreamCancelled):
+            raise PatchCancelled() from exc
+        return None
+
+
+def rpu_completion_warning(gaps: "RpuGaps") -> tuple[str, dict]:
+    """Avertissement ``dovi_rpu_completed`` : message et champs structurés (rangs, images)."""
+    ranks = ", ".join(str(rank) for rank in gaps.missing[:8]) + ("…" if len(gaps.missing) > 8 else "")
+    message = translate_text("{count} image(s) de la source sans RPU Dolby Vision (rangs d'affichage {ranks}) : RPU "
+                             "de l'image précédente répété à leur rang.", count=len(gaps.missing), ranks=ranks)
+    return message, {"ranks": list(gaps.missing), "frames": gaps.frames}
+
+
 class MetadataPatcher:
     """Exécute un :class:`PatchPlan` dans ``work_dir`` (dossier process jetable).
 
@@ -296,8 +344,10 @@ class MetadataPatcher:
                  work_dir: Path, on_step: StepCallback | None = None,
                  on_stage: Callable[[str], None] | None = None,
                  cancelled: Callable[[], bool] | None = None,
-                 progress: Callable[[float], None] | None = None) -> None:
+                 progress: Callable[[float], None] | None = None,
+                 warn: WarnCallback | None = None) -> None:
         self._ffmpeg, self._dovi, self._hdr10plus = ffmpeg_bin, dovi_tool_bin, hdr10plus_bin
+        self._warn = warn
         self._run = run_cmd
         self._work = Path(work_dir)
         self._on_step = on_step
@@ -320,6 +370,34 @@ class MetadataPatcher:
             raise PatchCancelled
         if self._progress is not None:
             self._progress(fraction)
+
+    def _emit_warning(self, code: str, message: str, **fields: object) -> None:
+        if self._warn is not None:
+            self._warn(code, message, dict(fields))
+
+    def _tool(self, cmd: list[str]) -> object:
+        """Lance un outil ; ses avertissements de longueur (RPU / HDR10+ ≠ images) sont restitués, jamais tus."""
+        output = self._run(cmd)
+        if isinstance(output, str):
+            for match in _LENGTH_MISMATCH_RE.finditer(output):
+                self._emit_warning("tool_length_mismatch",
+                                   f"{Path(cmd[0]).name} : {match.group(0).strip()} (métadonnées complétées "
+                                   "ou tronquées par l'outil).")
+        return output
+
+    def _complete_rpu(self, plan: PatchPlan, edited: Path) -> Path:
+        """RPU édité complété aux rangs d'affichage des images de la source qui n'en ont pas (RPU précédent)."""
+        gaps = plan.rpu_gaps if plan.rpu_gaps_checked else analyze_rpu_gaps(plan, cancelled=self._cancelled)
+        if gaps is None or not gaps.missing:
+            return edited
+        from core.workflows.encode.runtime.dovi_rpu_gaps import fill_rpu_gaps
+
+        completed = self._work / "rpu_edit_complete.bin"
+        fill_rpu_gaps(dovi_tool_bin=self._dovi, rpu_input=edited, output_rpu=completed, positions=gaps.missing,
+                      run_cmd=self._run)
+        message, fields = rpu_completion_warning(gaps)
+        self._emit_warning("dovi_rpu_completed", message, **fields)
+        return completed
 
     def _check_space(self, plan: PatchPlan) -> None:
         size = plan.source.stat().st_size
@@ -393,9 +471,12 @@ class MetadataPatcher:
                     self._run([self._dovi, "extract-rpu", "-i", str(current), "-o", str(rpu)])
                     self._step(label, position + window, window, "edit_rpu")
                     self._run([self._dovi, "editor", "-i", str(rpu), "-j", str(config), "-o", str(edited)])
+                    completed = self._complete_rpu(plan, edited)
+                    if completed != edited:
+                        temporaries.append(completed)
                     target = self._work / "video_rpu.hevc"
                     self._step(label, position + window, window, "edit_rpu")
-                    self._run([self._dovi, "inject-rpu", "-i", str(current), "-r", str(edited), "-o", str(target)])
+                    self._tool([self._dovi, "inject-rpu", "-i", str(current), "-r", str(completed), "-o", str(target)])
                     advance(target)
                     position += span
                 if "hdr10plus" in steps:
@@ -428,8 +509,8 @@ class MetadataPatcher:
                     if not plan.hdr10plus.remove:
                         target = self._work / "video_hdr10plus.hevc"
                         self._step(label, sub + window, window, "edit_hdr10plus")
-                        self._run([self._hdr10plus, "inject", "-i", str(current), "-j", str(edited_json),
-                                   "-o", str(target)])
+                        self._tool([self._hdr10plus, "inject", "-i", str(current), "-j", str(edited_json),
+                                    "-o", str(target)])
                         advance(target)
                     position += span
                 if "static" in steps:

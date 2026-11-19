@@ -254,3 +254,36 @@ def test_fel_moments_are_written_as_png(tmp_path, monkeypatch):
                                 logger=logger)  # type: ignore[arg-type]
     assert [p.name for p in written] == [f"film.fel-01h02m05s.{s}.png" for s in ("sans-fel", "avec-fel", "ecart")]
     assert all(p.read_bytes().startswith(b"\x89PNG") for p in written)
+
+
+def test_operation_announces_and_returns_rpu_completion(tmp_path, monkeypatch):
+    """Audit D01 : images sans RPU complétées — annoncées par le dry-run, l'exécution, ses événements et son résultat."""
+    from core.workflows.encode.runtime.dovi_rpu_gaps import RpuGaps
+
+    gaps = RpuGaps(frames=10, missing=(8, 9), with_el=(), trailing=False)
+    monkeypatch.setattr(ops, "analyze_rpu_gaps", lambda plan, report=None, cancelled=None: gaps)
+    payload = {"source": str(tmp_path / "film.mkv"), "output": str(tmp_path / "fix.mkv"),
+               "rpu": {"l11": {"content_type": 1}}}
+    sink = ListSink()
+    result: Any = call(CATALOG, "hdr.patch", {**payload, "dry_run": True}, _ctx(tmp_path, sink))
+    warning_events = [event for event in sink.events if event.type.value == "warning"
+                      and event.data.get("code") == "dovi_rpu_completed"]
+    assert len(warning_events) == 1 and warning_events[0].data["ranks"] == [8, 9]
+    assert any("8, 9" in message for message in result.warnings)
+
+    class FakePatcher:
+        def __init__(self, **kwargs: Any) -> None:
+            self.warn = kwargs["warn"]
+
+        def run(self, plan):
+            assert plan.rpu_gaps == gaps and plan.rpu_gaps_checked
+            self.warn("dovi_rpu_completed", "2 image(s) complétée(s)", {"ranks": [8, 9], "frames": 10})
+            plan.output.write_bytes(b"mkv")
+            return plan.output
+
+    monkeypatch.setattr(ops, "MetadataPatcher", FakePatcher)
+    sink = ListSink()
+    result = call(CATALOG, "hdr.patch", payload, _ctx(tmp_path, sink))
+    assert "2 image(s) complétée(s)" in result.warnings
+    assert [event.data.get("code") for event in sink.events if event.type.value == "warning"].count(
+        "dovi_rpu_completed") == 1

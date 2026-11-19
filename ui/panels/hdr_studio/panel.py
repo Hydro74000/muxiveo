@@ -45,7 +45,7 @@ from core.hdr_inspection.compare import Side
 from core.hdr_inspection.realign import Realignment, realign
 from core.hdr_inspection.fel_analyzer import CaptureLayer
 from core.hdr_inspection.measure import ImageMeasurement, read_measurement
-from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
+from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan, analyze_rpu_gaps
 from core.hdr_inspection.report import write_report
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import translate_text
@@ -174,6 +174,7 @@ class HdrStudio(QWidget):
     _analyzed = Signal(int, object, str)
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
+    _patch_warning = Signal(str)
     _fel_done = Signal(int, object, str)
     _fel_partial = Signal(int, object)
     _moment_ready = Signal(int, object, str)
@@ -209,6 +210,7 @@ class HdrStudio(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._worker_finished.connect(self._on_worker_finished, Qt.ConnectionType.QueuedConnection)
+        self._patch_warning.connect(lambda text: self._notify("WARN", text), Qt.ConnectionType.QueuedConnection)
         self._inspected.connect(self._on_inspected, Qt.ConnectionType.QueuedConnection)
         self._cache_ready.connect(self._on_cache_ready, Qt.ConnectionType.QueuedConnection)
         self._progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
@@ -1154,16 +1156,22 @@ class HdrStudio(QWidget):
             return runner._run_cmd(cmd, label="hdr-patch", progress_cb=self._tool_line(cmd), progress_pct_cb=on_pct,
                                    signals=signals)
 
+        report = self._report
+
         def task() -> None:
             owned = None
             try:
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-correction")
+                # Images de la source sans RPU : complétées à leur rang, annoncées (WARN), jamais en silence.
+                checked = dataclasses.replace(plan, rpu_gaps=analyze_rpu_gaps(plan, report, cancelled=cancel.is_set),
+                                              rpu_gaps_checked=True)
                 patcher = MetadataPatcher(
                     ffmpeg_bin=str(config.tool_ffmpeg), dovi_tool_bin=str(config.tool_dovi_tool),
                     hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
                     on_step=on_step, cancelled=cancel.is_set,
-                    progress=lambda fraction: self._progress.emit(token, "", int(fraction * 100)))
-                self._patched.emit(token, patcher.run(plan), "")
+                    progress=lambda fraction: self._progress.emit(token, "", int(fraction * 100)),
+                    warn=lambda _code, message, _fields: self._patch_warning.emit(message))
+                self._patched.emit(token, patcher.run(checked), "")
             except PatchCancelled:
                 self._patched.emit(token, None, "")
             except Exception as exc:

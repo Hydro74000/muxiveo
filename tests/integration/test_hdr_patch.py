@@ -156,3 +156,42 @@ def test_cli_hdr_patch_writes_and_reports(tmp_path):
     assert cli("--max-cll", "500", "--max-fall", "100").returncode == 5
     refused = cli("--hdr10plus-remove", "--dry-run")
     assert refused.returncode == 3 and "HDR10+" in refused.stderr
+
+
+def test_real_rpu_edit_completes_missing_rpu_and_warns(tmp_path):
+    """Audit D01, média réel : 2 878 images, RPU absents aux rangs 2875–2876 → complétés par le RPU précédent,
+    avertissement structuré, 2 878 RPU en sortie."""
+    from types import SimpleNamespace
+
+    from core.service import ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+
+    source = Path(__file__).resolve().parents[2] / "samples" / "BL_EL.mkv"
+    if not source.is_file() or shutil.which("dovi_tool") is None:
+        pytest.skip("samples/BL_EL.mkv et dovi_tool requis")
+    work = Path.home() / ".cache" / "muxiveo-tests"  # média de 160 Mo : sur disque, pas en mémoire
+    work.mkdir(parents=True, exist_ok=True)
+    output = work / f"{tmp_path.name}.fix.mkv"
+    config = SimpleNamespace(app_data_dir=tmp_path / "data", display_peak_nits=1000, tool_ffmpeg="ffmpeg",
+                             tool_ffprobe="ffprobe", tool_mediainfo="mediainfo", tool_dovi_tool="dovi_tool",
+                             tool_hdr10plus="hdr10plus_tool", ffmpeg_threads=4, ensure_work_dir=lambda: work)
+    sink = ListSink()
+    try:
+        result = call(CATALOG, "hdr.patch", {"source": str(source), "output": str(output), "measurement": "cached",
+                                             "rpu": {"active_area": {"top": 4, "bottom": 4}}},
+                      ExecutionContext.create(config, sink))
+        completed = [event.data for event in sink.events
+                     if event.type.value == "warning" and event.data.get("code") == "dovi_rpu_completed"]
+        assert [item["ranks"] for item in completed] == [[2875, 2876]]
+        assert any("2875, 2876" in message for message in result.warnings)
+        assert not [event for event in sink.events if event.data.get("code") == "tool_length_mismatch"]
+        rpu, export = tmp_path / "rpu.bin", tmp_path / "rpu.json"
+        subprocess.run(["dovi_tool", "extract-rpu", "-i", str(output), "-o", str(rpu)], check=True,
+                       capture_output=True)
+        subprocess.run(["dovi_tool", "export", "-i", str(rpu), "-d", f"all={export}"], check=True,
+                       capture_output=True)
+        frames = json.loads(export.read_text(encoding="utf-8"))
+        assert len(frames) == 2878
+        assert frames[2875] == frames[2874] and frames[2876] == frames[2874]
+    finally:
+        output.unlink(missing_ok=True)

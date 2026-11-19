@@ -11406,5 +11406,9 @@
   "Analyse impossible : une extension est en cours d'installation, de mise à jour ou de suppression.": {
     "fra": "Analyse impossible : une extension est en cours d'installation, de mise à jour ou de suppression.",
     "eng": "Analysis unavailable: an extension is being installed, updated or removed."
+  },
+  "{count} image(s) de la source sans RPU Dolby Vision (rangs d'affichage {ranks}) : RPU de l'image précédente répété à leur rang.": {
+    "fra": "{count} image(s) de la source sans RPU Dolby Vision (rangs d'affichage {ranks}) : RPU de l'image précédente répété à leur rang.",
+    "eng": "{count} source frame(s) without a Dolby Vision RPU (display ranks {ranks}): the previous frame's RPU is repeated at their position."
   }
 }

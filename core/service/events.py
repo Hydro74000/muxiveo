@@ -59,7 +59,8 @@ LOG_LEVELS: dict[str, str] = {"debug": "debug", "info": "info", "ok": "ok", "suc
 
 #: Codes d'avertissement publiés ; un client tolère un code inconnu.
 WARNING_CODES = ("unknown_key", "extract_skipped", "cancel_too_late", "sync_unverified", "sync_uncertain",
-                 "nvencc_install", "hdr_patch_plan", "event_too_large", "unspecified")
+                 "nvencc_install", "hdr_patch_plan", "dovi_rpu_completed", "tool_length_mismatch", "event_too_large",
+                 "unspecified")
 
 
 class EventSink(Protocol):

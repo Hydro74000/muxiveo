@@ -145,7 +145,7 @@ Une ligne JSON par événement (stderr avec `call`, notifications `job.event` av
 | `state` | état du job : `queued` (gestionnaire), `running`, puis `succeeded`, `partial`, `failed` ou `cancelled` |
 | `log` | message (`level` : `debug`, `info`, `ok`, `error` ; `message`, `origin`) |
 | `progress` | `pct`, `stage` (identifiant stable : `download`, `assembly`, `metadata`, couches d'extraction, étapes de `hdr.patch`…), `label` (texte), encodage : `fps`, `frame`, `eta_s`, `track` / `track_count`, `pass_index` / `pass_count` |
-| `warning` | `message`, `code` toujours présent (`unknown_key`, `extract_skipped`, `cancel_too_late`, `sync_unverified`, `sync_uncertain`, `nvencc_install`, `hdr_patch_plan`, `event_too_large`, `unspecified`) ; synchro : `kind`, `zones`, `windows`, `spread_ms`, `shift_ms` |
+| `warning` | `message`, `code` toujours présent (`unknown_key`, `extract_skipped`, `cancel_too_late`, `sync_unverified`, `sync_uncertain`, `nvencc_install`, `hdr_patch_plan`, `dovi_rpu_completed` (`ranks`, `frames`), `tool_length_mismatch`, `event_too_large`, `unspecified`) ; synchro : `kind`, `zones`, `windows`, `spread_ms`, `shift_ms` |
 | `artifact` | fichier produit (`kind` : `output`, `exact-job`, `preview-image`, `calibration`…, `path`) |
 | `result` / `error` | fin du job |
 
