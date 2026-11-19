@@ -16,7 +16,7 @@ from core.jobs.extract import (
     plan_attachment,
     plan_track,
     required_tools,
-    skipped_tracks,
+    skip_reasons,
     tool_runner,
 )
 from core.service.context import ExecutionContext
@@ -108,8 +108,8 @@ def media_extract(request: ExtractRequest, ctx: ExecutionContext) -> ExtractResu
                          cancel_event=ctx.cancel.event).inspect(request.source)
     planned = _plans(request, info)
     if request.all:
-        for track in skipped_tracks(info, [plan for plan, _out in planned]):
-            ctx.events.warning(f"Piste {track} non extractible sans OCR : ignorée.", code="extract_skipped")
+        for track, reason in skip_reasons(info, [plan for plan, _out in planned]):
+            ctx.events.warning(f"Piste {track} ignorée : {reason}", code="extract_skipped")
     output_dir = Path(request.output_dir or Path(request.source).parent)
     targets = [(plan, out if out is not None else output_dir / plan.default_name) for plan, out in planned]
     check_outputs([target for _plan, target in targets], source=Path(request.source), force=request.force)

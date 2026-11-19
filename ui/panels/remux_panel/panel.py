@@ -3373,12 +3373,15 @@ class RemuxPanel(QWidget):
             return
         try:
             plan = plan_track(source.info, entry.mkv_tid, layer=layer)
-            container = (plan_track(source.info, entry.mkv_tid, container=True)
-                         if layer == "stream" and plan.plan is not None
-                         and plan.plan.extension not in (".mkv", ".mka", ".mks") else None)
         except JobError as exc:
             QMessageBox.warning(self, translate_text("Extraction impossible"), translate_text(exc.message))
             return
+        container = None
+        if layer == "stream" and plan.plan is not None and plan.plan.extension not in (".mkv", ".mka", ".mks"):
+            try:  # alternative Matroska seulement si elle reçoit la piste telle quelle (PCM flottant gros-boutiste : non)
+                container = plan_track(source.info, entry.mkv_tid, container=True)
+            except JobError:
+                container = None
         suffix = Path(plan.default_name).suffix
         filters = [plan.plan.file_filter if plan.plan is not None
                    else f"{translate_text(plan.label)} (*{suffix})"]

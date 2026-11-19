@@ -236,3 +236,20 @@ def test_cli_layers_follow_their_track():
             build_request(_args(*argv))
     with pytest.raises(SystemExit):
         _args("--layer", "rpu")
+
+
+def test_pcm_plans_follow_exact_codec_and_skip_reasons(tmp_path):
+    from dataclasses import replace
+
+    info = _info(tmp_path / "f.mkv")
+    info = replace(info, audio_tracks=[AudioTrack(1, "pcm_f32be", "PCM", 2, "stereo", 48000, None, "fra", None),
+                                       AudioTrack(2, "pcm_u24le", "PCM", 2, "stereo", 48000, None, "eng", None)])
+    assert ex.plan_track(info, "1").plan.output_format == "aiff"
+    with pytest.raises(JobError) as caught:
+        ex.plan_track(info, "1", container=True)
+    assert caught.value.exit_code == 3 and "Matroska" in caught.value.message
+    with pytest.raises(JobError):
+        ex.plan_track(info, "2")
+    reasons = dict(ex.skip_reasons(info, ex.plan_all(info)))
+    assert "sans conversion" in reasons["#2 (pcm_u24le)"]
+    assert "OCR" in reasons["#4 (dvb_subtitle)"]

@@ -101,3 +101,23 @@ def test_confirmed_replacement_of_unchanged_file(qt_app, tmp_path, monkeypatch, 
         assert outcome.get("path") == output and output.read_bytes() == FONT
     else:
         assert outcome == {} and output.read_bytes() == b"ancienne"
+
+
+def test_float_big_endian_pcm_offers_aiff_without_matroska(qt_app, tmp_path, monkeypatch):
+    from core.inspector import AudioTrack, FileInfo, HDRType
+
+    info = FileInfo(path=tmp_path / "f.mkv", format="matroska", duration_s=1.0, size_bytes=1, bit_rate=1,
+                    video_tracks=[], subtitle_tracks=[], attachments=[], hdr_type=HDRType.NONE,
+                    audio_tracks=[AudioTrack(1, "pcm_f32be", "PCM", 2, "stereo", 48000, None, "fra", None)])
+    source = SimpleNamespace(path=info.path, info=info)
+    filters: list[str] = []
+
+    def dialog(_parent, _title, _start, file_filter, **_kwargs):
+        filters.extend(file_filter.split(";;"))
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", dialog)
+    fake = SimpleNamespace(_find_source=lambda _id: source, _can_start_auxiliary_operation=lambda: True,
+                           log_message=SimpleNamespace(emit=lambda *_a: None))
+    RemuxPanel._on_extract_track(fake, SimpleNamespace(file_id="src", mkv_tid=1))
+    assert filters == ["AIFF (*.aiff *.aif)"]

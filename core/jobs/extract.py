@@ -128,7 +128,10 @@ def plan_track(info: FileInfo, selector: str | int, *, layer: str = "stream",
         if container and plan.extension != ".mks":
             plan = ExtractPlan("copy", ".mks", f"{codec} (Matroska)", "Matroska (*.mks)")
     elif kind == "audio":
-        plan = TrackExtractor.plan_audio(codec, container=container)
+        try:
+            plan = TrackExtractor.plan_audio(codec, container=container)
+        except ValueError as exc:  # PCM sans conteneur qui le reçoive tel quel : jamais de conversion implicite
+            raise JobError(str(exc), EXIT_VALIDATION) from exc
     else:
         plan = TrackExtractor.plan_video(codec, container=container)
     language = str(getattr(track, "language", "") or "und")
@@ -184,9 +187,25 @@ def check_outputs(outputs: Sequence[Path], *, source: Path, force: bool) -> None
 
 
 def skipped_tracks(info: FileInfo, plans: Sequence[ExtractionPlan]) -> list[str]:
-    """Pistes que ``plan_all`` a écartées (sous-titres à OCR), pour le journal."""
+    """Pistes que ``plan_all`` a écartées, pour le journal."""
     kept = {plan.stream_index for plan in plans if plan.kind != "attachment"}
     return [f"#{track.index} ({track.codec})" for _kind, track in _tracks(info) if track.index not in kept]
+
+
+def skip_reasons(info: FileInfo, plans: Sequence[ExtractionPlan]) -> list[tuple[str, str]]:
+    """Pistes écartées par ``plan_all`` et leur motif (sous-titre à OCR, PCM sans conteneur sans conversion…)."""
+    kept = {plan.stream_index for plan in plans if plan.kind != "attachment"}
+    reasons: list[tuple[str, str]] = []
+    for _kind, track in _tracks(info):
+        if track.index in kept:
+            continue
+        try:
+            plan_track(info, track.index)
+            reason = "non extractible"
+        except JobError as exc:
+            reason = exc.message
+        reasons.append((f"#{track.index} ({track.codec})", reason))
+    return reasons
 
 
 # ---------------------------------------------------------------------------

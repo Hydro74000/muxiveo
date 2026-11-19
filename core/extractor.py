@@ -35,7 +35,7 @@ class ExtractPlan:
 MUXER_BY_EXTENSION: dict[str, str] = {
     ".srt": "srt", ".ass": "ass", ".ssa": "ass", ".vtt": "webvtt", ".sup": "sup", ".mks": "matroska",
     ".mka": "matroska", ".mkv": "matroska", ".thd": "truehd", ".eac3": "eac3", ".ac3": "ac3", ".dts": "dts",
-    ".m4a": "ipod", ".flac": "flac", ".opus": "opus", ".ogg": "ogg", ".mp3": "mp3", ".wav": "wav",
+    ".m4a": "ipod", ".flac": "flac", ".opus": "opus", ".ogg": "ogg", ".mp3": "mp3", ".wav": "wav", ".aiff": "aiff",
     ".hevc": "hevc", ".h264": "h264", ".obu": "obu", ".ivf": "ivf", ".m2v": "mpeg2video",
 }
 
@@ -95,12 +95,33 @@ class TrackExtractor:
         "vp8": (".ivf", "VP8 (IVF)", ()),
     }
 
+    # Conteneurs qui reçoivent chaque PCM sans conversion (copie relue identique par FFprobe, FFmpeg 8.1) :
+    # WAV = PCM petit-boutiste et 8 bits non signé, AIFF = PCM gros-boutiste et 8 bits signé.
+    _PCM_WAV = frozenset({"pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_s64le", "pcm_f32le", "pcm_f64le",
+                          "pcm_alaw", "pcm_mulaw"})
+    _PCM_AIFF = frozenset({"pcm_s8", "pcm_s16be", "pcm_s24be", "pcm_s32be", "pcm_f32be", "pcm_f64be"})
+    _PCM_MATROSKA = frozenset({"pcm_u8", "pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be",
+                               "pcm_s64le", "pcm_f32le", "pcm_f64le", "pcm_alaw", "pcm_mulaw"})
+
     @classmethod
     def plan_audio(cls, codec: str, *, container: bool = False) -> ExtractPlan:
-        """Flux audio copié dans son format élémentaire (Matroska audio sinon, ou si ``container``)."""
+        """Flux audio copié dans son format élémentaire (Matroska audio sinon, ou si ``container``).
+
+        PCM : conteneur choisi selon le codec exact (WAV, AIFF, Matroska), jamais de conversion ;
+        ``ValueError`` si aucun conteneur ne le reçoit tel quel (ou si Matroska est demandé et le refuse).
+        """
         c = (codec or "").lower().strip()
-        if not container and c.startswith("pcm_"):
-            return ExtractPlan("copy", ".wav", "PCM (WAV)", "WAV (*.wav)")
+        if c.startswith("pcm_"):
+            if container:
+                if c not in cls._PCM_MATROSKA:
+                    raise ValueError(f"PCM {codec} : Matroska ne le transporte pas sans conversion "
+                                     "(extraire sans conteneur Matroska).")
+                return ExtractPlan("copy", ".mka", f"{codec} (Matroska)", "Matroska audio (*.mka)")
+            if c in cls._PCM_WAV:
+                return ExtractPlan("copy", ".wav", "PCM (WAV)", "WAV (*.wav)")
+            if c in cls._PCM_AIFF:
+                return ExtractPlan("copy", ".aiff", "PCM (AIFF)", "AIFF (*.aiff *.aif)")
+            raise ValueError(f"PCM {codec} : aucun conteneur ne le reçoit sans conversion.")
         if not container and c in cls._AUDIO_PLANS:
             extension, label = cls._AUDIO_PLANS[c]
             return ExtractPlan("copy", extension, label, f"{label} (*{extension})")
