@@ -82,3 +82,95 @@ def test_job_contract_and_specs():
         validate_job_contract({"version": 1, "sources": [{"path": "a", "sync": {"mode": "?"}}]})
     assert sync_specs(job) == {1: {"reference": 0, "mode": "deep"}}
     assert sync_specs(job, auto_sync_all=True) == {1: {"reference": 0, "mode": "deep"}, 2: {"reference": 0}}
+
+
+# ---------------------------------------------------------------------------
+# Chaînes longues sans récursion (audit A03)
+# ---------------------------------------------------------------------------
+
+def _recursive_order(links):
+    """Oracle : ancien parcours récursif (ordre historique)."""
+    from core.workflows.sync_links import SyncLoopError
+
+    order, state = [], {}
+
+    def visit(file_id, chain):
+        if state.get(file_id) == 2:
+            return
+        if state.get(file_id) == 1:
+            raise SyncLoopError("Synchro en boucle : " + " → ".join(chain[chain.index(file_id):] + [file_id]))
+        state[file_id] = 1
+        link = links.get(file_id)
+        if link is not None:
+            if link.reference_file_id == file_id:
+                raise SyncLoopError(f"Synchro en boucle : {file_id} → {file_id}")
+            visit(link.reference_file_id, [*chain, file_id])
+        state[file_id] = 2
+        if link is not None:
+            order.append(file_id)
+
+    for file_id in links:
+        visit(file_id, [])
+    return order
+
+
+def _chain_link(reference: str):
+    from core.workflows.sync_calibration import SyncCalibration
+    from core.workflows.sync_links import SyncLink
+
+    return SyncLink(reference, "", SyncCalibration.linear(0))
+
+
+def test_long_chain_is_ordered_without_recursion():
+    import time
+
+    from core.workflows.sync_links import dependency_order
+
+    count = 5000
+    links = {f"s{i}": _chain_link(f"s{i + 1}") for i in range(count)}
+    started = time.monotonic()
+    order = dependency_order(links)
+    assert time.monotonic() - started < 1.0
+    assert order == [f"s{i}" for i in reversed(range(count))]
+
+
+def test_long_cycle_is_reported():
+    from core.workflows.sync_links import SyncLoopError, dependency_order
+
+    count = 5000
+    links = {f"s{i}": _chain_link(f"s{(i + 1) % count}") for i in range(count)}
+    with pytest.raises(SyncLoopError) as caught:
+        dependency_order(links)
+    assert str(caught.value).startswith("Synchro en boucle : s0 → s1 → ") and str(caught.value).endswith("→ s0")
+
+
+def test_order_matches_historic_recursive_order():
+    import random
+
+    from core.workflows.sync_links import SyncLoopError, dependency_order
+
+    rng = random.Random(4)
+    for _ in range(300):
+        nodes = [f"n{i}" for i in range(rng.randint(1, 12))]
+        links = {}
+        for node in rng.sample(nodes, rng.randint(0, len(nodes))):
+            links[node] = _chain_link(rng.choice(nodes + ["racine"]))
+        try:
+            expected = _recursive_order(links)
+        except SyncLoopError as exc:
+            with pytest.raises(SyncLoopError) as caught:
+                dependency_order(links)
+            assert str(caught.value) == str(exc)
+            continue
+        assert dependency_order(links) == expected
+
+
+def test_admitted_long_job_chain_is_sorted():
+    import sys
+
+    from core.jobs.source_sync import _SyncNode, sync_order
+
+    count = sys.getrecursionlimit() + 50
+    nodes = {f"s{i}": _SyncNode(f"s{i}", f"sources[{i}].sync", {}, i, i + 1, object()) for i in range(count - 1)}
+    order = sync_order(nodes)
+    assert len(order) == count - 1 and order[0] == f"s{count - 2}" and order[-1] == "s0"

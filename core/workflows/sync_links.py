@@ -63,28 +63,32 @@ def follows_track(links: Mapping[str, SyncLink], file_id: str, entry_id: str) ->
 
 
 def dependency_order(links: Mapping[str, SyncLink]) -> list[str]:
-    """Sources liées dans l'ordre de résolution (chaque référence avant ses cibles) ; boucle → ``SyncLoopError``."""
-    order: list[str] = []
-    state: dict[str, int] = {}  # 1 : en cours, 2 : résolue
+    """Sources liées dans l'ordre de résolution (chaque référence avant ses cibles) ; boucle → ``SyncLoopError``.
 
-    def visit(file_id: str, chain: list[str]) -> None:
-        if state.get(file_id) == 2:
-            return
-        if state.get(file_id) == 1:
-            loop = chain[chain.index(file_id):] + [file_id]
-            raise SyncLoopError("Synchro en boucle : " + " → ".join(loop))
-        state[file_id] = 1
-        link = links.get(file_id)
-        if link is not None:
+    Parcours itératif (une seule référence par source : on suit la chaîne puis on la résout à rebours), en temps
+    linéaire, indépendant de la limite de récursion de Python, quelle que soit la longueur de la chaîne.
+    """
+    order: list[str] = []
+    state: dict[str, int] = {}  # 1 : sur la chaîne en cours, 2 : résolue
+    for start in links:
+        path: list[str] = []
+        file_id = start
+        while state.get(file_id) != 2:
+            if state.get(file_id) == 1:
+                loop = path[path.index(file_id):] + [file_id]
+                raise SyncLoopError("Synchro en boucle : " + " → ".join(loop))
+            state[file_id] = 1
+            path.append(file_id)
+            link = links.get(file_id)
+            if link is None:
+                break
             if link.reference_file_id == file_id:
                 raise SyncLoopError(f"Synchro en boucle : {file_id} → {file_id}")
-            visit(link.reference_file_id, [*chain, file_id])
-        state[file_id] = 2
-        if link is not None:
-            order.append(file_id)
-
-    for file_id in links:
-        visit(file_id, [])
+            file_id = link.reference_file_id
+        for resolved in reversed(path):  # la référence la plus profonde d'abord
+            state[resolved] = 2
+            if resolved in links:
+                order.append(resolved)
     return order
 
 
