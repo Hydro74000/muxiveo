@@ -354,7 +354,7 @@ class TestEncodePreviewWorkflow:
 
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
         monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
-        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a: Fraction(40))
+        monkeypatch.setattr(wf, "_preview_cut_points", lambda *_a, **_k: (Fraction(40), Fraction(4104, 100)))
         monkeypatch.setattr(wf, "_preview_probe", fake_probe)
         monkeypatch.setattr(wf._hdr_metadata_service, "source_hdr_transfer", lambda *args, **kwargs: "")
 
@@ -409,7 +409,7 @@ class TestEncodePreviewWorkflow:
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
         monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
         from fractions import Fraction
-        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a: Fraction(42))
+        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a, **_k: Fraction(42))
         monkeypatch.setattr(wf, "_preview_probe",
                             lambda *_a, **_k: '{"packets": [{"pts_time": "0.000000", "flags": "K__"}]}')
         monkeypatch.setattr(

@@ -144,3 +144,16 @@ def test_tool_changes_applied_after_operation(window, qt_app):
     panel.set_operation_running(False)
     _until(qt_app, lambda: workflow._nvencc_bin == "/audit/new/NVEncC")
     assert panel._trt_plugin_dir == "/audit/trt"
+
+
+def test_hdr_studio_write_refused_while_extension_changes(window, no_dialogs, tmp_path, monkeypatch):
+    from core.hdr_inspection.patch import PatchPlan, StaticEdit
+
+    asked = Mock()
+    monkeypatch.setattr("ui.panels.hdr_studio.panel.confirm_output", asked)
+    assert window._tool_admission.acquire_mutation("mvo-fel")
+    window._hdr_panel.write_patch(PatchPlan(tmp_path / "film.mkv", 0, tmp_path / "out.mkv",
+                                            static=StaticEdit(1000, 400)))
+    asked.assert_not_called()  # refusé avant toute question ni écriture
+    assert not window._hdr_panel.is_busy()
+    window._tool_admission.release_mutation("mvo-fel")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from core.workflows.encode import EncodeWorkflow
 from core.workflows.encode.models import EncodeConfig, RestoreSettings, VideoEncodeSettings
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="sonde factice : script /bin/sh (POSIX)")
 def test_preview_probe_is_killed_by_cancellation(qt_app, tmp_path):
     started = tmp_path / "started"
     probe = tmp_path / "ffprobe"

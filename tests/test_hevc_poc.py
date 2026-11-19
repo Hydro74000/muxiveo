@@ -89,3 +89,27 @@ def test_corpus_annexb_matches_matroska_scan(tmp_path):
                     "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(raw)], check=True, capture_output=True)
     assert scan_annexb_rpu_gaps(raw) == scan_rpu_gaps(source, 0)
     assert scan_rpu_gaps(source, 0).missing == (2875, 2876)
+
+
+def test_end_of_sequence_starts_a_new_coded_video_sequence(tmp_path):
+    """Fin de séquence (EOS, suffixe de la dernière image) puis CRA : la CRA ouvre une nouvelle séquence codée,
+    ses images suivent toutes celles de la séquence précédente (audit du code, revue Codex)."""
+    # Séquence précédente à un seul GOP fermé (POC 0 à 19) ; la CRA suivante a le POC 12 : sans la fin de séquence,
+    # elle serait rangée au milieu des images précédentes.
+    first_mkv, first_raw = _encode(tmp_path, "keyint=40:min-keyint=40:scenecut=0:bframes=3:open-gop=0", frames=20)
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    second_mkv, _ = _encode(second_dir, GOPS["b_frames_open_gop"], frames=60)
+    segment = second_dir / "segment.mkv"  # commence par la CRA de 0,48 s, RASL de tête retirées
+    subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-ss", "0.48", "-i", str(second_mkv), "-map", "0:v:0",
+                    "-c", "copy", "-bsf:v", "noise=drop=lt(pts\\,0)", str(segment)], check=True, capture_output=True)
+    segment_raw = second_dir / "segment.hevc"
+    subprocess.run(["ffmpeg", "-hide_banner", "-v", "error", "-y", "-i", str(segment), "-map", "0:v:0", "-c", "copy",
+                    "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(segment_raw)], check=True, capture_output=True)
+    first_kinds = [kinds for _key, kinds in iter_pictures(segment_raw)]
+    assert 21 in first_kinds[0]  # le second flux commence bien par une CRA
+    joined = tmp_path / "joined.hevc"
+    joined.write_bytes(first_raw.read_bytes() + b"\x00\x00\x00\x01" + bytes([36 << 1, 1]) + segment_raw.read_bytes())
+    head = _display_ranks_from_timestamps(first_mkv)
+    tail = _display_ranks_from_timestamps(segment)
+    assert _display_ranks_from_poc(joined) == head + [len(head) + rank for rank in tail]

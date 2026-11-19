@@ -156,6 +156,10 @@ class _Snapshot:
     mtime_ns: int
     entry_ino: int
     resolved: str
+    #: Changement d'état (POSIX : toute écriture ou modification des droits, non réglable par ``utime``) et droits :
+    #: une réécriture de même taille au mtime restauré reste détectée.
+    ctime_ns: int = 0
+    mode: int = 0
 
 
 def _snapshot(path: Path) -> _Snapshot | None:
@@ -164,7 +168,8 @@ def _snapshot(path: Path) -> _Snapshot | None:
         entry = os.lstat(path)
     except FileNotFoundError:
         return None
-    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path))
+    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path),
+                     st.st_ctime_ns, st.st_mode)
 
 
 @dataclass(frozen=True)

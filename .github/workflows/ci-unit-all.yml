@@ -123,6 +123,7 @@ jobs:
           -W error::pytest.PytestUnhandledThreadExceptionWarning
           tests/test_encode_preview_quoting.py
           tests/test_output_commit.py
+          tests/test_output_commit_policy.py
           tests/test_workdir_ownership.py
           tests/test_cli_batch_collisions.py
           tests/test_profile_store.py

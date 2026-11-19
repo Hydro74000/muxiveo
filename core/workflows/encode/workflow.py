@@ -2398,7 +2398,10 @@ class EncodeWorkflow(QObject):
         if duration and t_req > duration:
             warning = f"Instant {self._seconds_label(t_req)} au-delà de la durée de la source : dernière image livrée."
             t_req = duration
-        keyframe = self._preview_keyframe_at_or_before(source_path, source_stream, t_req, signals)
+        # Image clé de découpe et première image réelle ≥ t_req : l'extrait va jusqu'à elle, quelle que soit la
+        # cadence (1 i/s, VFR).
+        keyframe, target_frame = self._preview_cut_points(source_path, source_stream, t_req, signals)
+        reach = float(target_frame) if target_frame is not None else t_req
         signals.progress.emit(
             f"Aperçu image à {self._seconds_label(t_req)} (image clé à {self._seconds_label(float(keyframe))})…")
         token = self._preview_token(config)
@@ -2409,11 +2412,11 @@ class EncodeWorkflow(QObject):
         try:
             segment_start = self._cut_preview_segment(
                 source_path, source_segment, stream_index=source_stream, keyframe_s=keyframe,
-                duration_s=(t_req - float(keyframe)) + margin, signals=signals,
+                duration_s=(reach - float(keyframe)) + margin, signals=signals,
             )
             signals.progress_pct.emit(15)
             self._encode_preview_segment(config, source_segment, encoded_clip,
-                                         max(_PREVIEW_IMAGE_MARGIN_S, (t_req - segment_start) + margin),
+                                         max(_PREVIEW_IMAGE_MARGIN_S, (reach - segment_start) + margin),
                                          signals, active_inner=active_inner)
             signals.progress_pct.emit(80)
             frames = self._preview_clip_frame_times(encoded_clip, signals)
@@ -2640,6 +2643,13 @@ class EncodeWorkflow(QObject):
     def _preview_keyframe_at_or_before(self, source: Path, stream_index: int, time_s: float,
                                        signals: TaskSignals | None) -> Fraction:
         """Instant exact (relatif au début de la source, base de temps du flux) de l'image clé ≤ ``time_s``."""
+        return self._preview_cut_points(source, stream_index, time_s, signals)[0]
+
+    def _preview_cut_points(self, source: Path, stream_index: int, time_s: float,
+                            signals: TaskSignals | None) -> tuple[Fraction, Fraction | None]:
+        """(image clé de découpe ≤ ``time_s``, instant de la première image ≥ ``time_s``), relatifs au début de la
+        source, dans la base de temps du flux ; la seconde valeur fixe la fin de l'extrait quelle que soit la cadence
+        (1 i/s, VFR). None : aucune image après ``time_s`` (fin de la source)."""
         start = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time",
                                      "-of", "csv=p=0", *ffprobe_input_args(source)], signals, timeout=30.0)
         try:
@@ -2647,24 +2657,28 @@ class EncodeWorkflow(QObject):
         except (ValueError, ZeroDivisionError):
             origin = Fraction(0)
         limit = Fraction(time_s).limit_denominator(10**6)
-        for low in (max(Fraction(0), limit - 30), Fraction(0)):
-            interval = f"{float(origin + low):.6f}%{float(origin + limit + 1):.6f}"
+        tolerance = Fraction(1, 10**6)
+        for low, high in ((max(Fraction(0), limit - 30), limit + 2), (Fraction(0), limit + 30)):
+            interval = f"{float(origin + low):.6f}%{float(origin + high):.6f}"
             payload = json.loads(self._preview_probe(
                 [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
                  interval, "-show_entries", "packet=pts,flags:stream=time_base", "-of", "json",
-                 *ffprobe_input_args(source)], signals) or "{}")
+                 *ffprobe_input_args(source)], signals, timeout=300.0) or "{}")
             try:
                 base = Fraction(str((payload.get("streams") or [{}])[0].get("time_base") or "1/1000"))
             except (ValueError, ZeroDivisionError):
                 base = Fraction(1, 1000)
-            keys = [Fraction(int(packet["pts"])) * base - origin for packet in payload.get("packets") or []
-                    if "K" in str(packet.get("flags") or "") and str(packet.get("pts", "")).lstrip("-").isdigit()]
-            before = [key for key in keys if key <= limit + Fraction(1, 10**6)]
+            packets = [(Fraction(int(packet["pts"])) * base - origin, "K" in str(packet.get("flags") or ""))
+                       for packet in payload.get("packets") or [] if str(packet.get("pts", "")).lstrip("-").isdigit()]
+            after = [time for time, _key in packets if time >= limit - tolerance]
+            target = max(Fraction(0), min(after)) if after else None
+            keys = [time for time, key in packets if key]
+            before = [time for time in keys if time <= limit + tolerance]
             if before:
-                return max(Fraction(0), max(before))
+                return max(Fraction(0), max(before)), target
             if low == 0 and keys:
-                return max(Fraction(0), min(keys))
-        return Fraction(0)
+                return max(Fraction(0), min(keys)), target
+        return Fraction(0), None
 
     @staticmethod
     def _seek_arg_at_or_after(seconds: Fraction) -> str:

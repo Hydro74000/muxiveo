@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,13 @@ from core.output_commit import (
 
 def _partials(directory: Path) -> list[Path]:
     return sorted(directory.glob("*.partial"))
+
+
+def _link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError):
+        pytest.skip("liens symboliques indisponibles")
 
 
 def test_refuse_existing_destination_without_candidate(tmp_path: Path) -> None:
@@ -74,7 +83,7 @@ def test_expect_symlink_unchanged_then_retargeted(tmp_path: Path) -> None:
     first.write_bytes(b"A")
     second.write_bytes(b"B")
     link = tmp_path / "sortie.mkv"
-    link.symlink_to(first)
+    _link(link, first)
     policy = ExistingPolicy.expect(capture_state(link))
     OutputReservation.acquire(first, existing=policy).release()  # sortie résolue par le workflow : acceptée
     link.unlink()
@@ -89,7 +98,7 @@ def test_expect_symlink_retargeted_during_processing_keeps_candidate(tmp_path: P
     first.write_bytes(b"A")
     second.write_bytes(b"B")
     link = tmp_path / "sortie.mkv"
-    link.symlink_to(first)
+    _link(link, first)
     policy = ExistingPolicy.expect(capture_state(link))
     with OutputReservation.acquire(first, existing=policy) as reservation:
         candidate = reserve_candidate(first)
@@ -107,7 +116,7 @@ def test_expect_link_round_trip_resolved_elsewhere_is_refused(tmp_path: Path) ->
     first.write_bytes(b"A")
     second.write_bytes(b"B")
     link = tmp_path / "sortie.mkv"
-    link.symlink_to(first)
+    _link(link, first)
     policy = ExistingPolicy.expect(capture_state(link))
     # Le workflow a résolu la sortie pendant que le lien visait B ; le lien est revenu sur A depuis.
     with pytest.raises(OutputStateChangedError):
@@ -121,7 +130,7 @@ def test_expect_directory_link_round_trip_with_absent_file(tmp_path: Path) -> No
     dir_b.mkdir()
     (dir_b / "sortie.mkv").write_bytes(b"B")
     link = tmp_path / "dossier"
-    link.symlink_to(dir_a)
+    _link(link, dir_a)
     policy = ExistingPolicy.expect(capture_state(link / "sortie.mkv"))  # absent dans A
     with pytest.raises(OutputStateChangedError):
         OutputReservation.acquire(dir_b / "sortie.mkv", existing=policy)
@@ -223,6 +232,7 @@ def test_publish_unique_concurrent_deliveries_get_distinct_names(tmp_path: Path,
     assert all(source.exists() for source in sources)  # la source reste à l'appelant
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="droits POSIX")
 def test_publish_document_default_mode_is_private(tmp_path: Path) -> None:
     target = tmp_path / "prive.json"
     publish_document(target, b"{}", force=False)
@@ -230,3 +240,27 @@ def test_publish_document_default_mode_is_private(tmp_path: Path) -> None:
     shared = tmp_path / "partage.json"
     publish_document(shared, b"{}", force=False, mode=0o644)
     assert (os.stat(shared).st_mode & 0o777) == 0o644
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ctime POSIX (changement d'état)")
+def test_expect_detects_same_size_rewrite_with_restored_mtime(tmp_path: Path) -> None:
+    target = tmp_path / "out.m4a"
+    target.write_bytes(b"version A")
+    before = os.stat(target)
+    policy = ExistingPolicy.expect(capture_state(target))
+    time.sleep(0.01)
+    target.write_bytes(b"version B")  # même taille
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))  # mtime restauré
+    with pytest.raises(OutputStateChangedError):
+        OutputReservation.acquire(target, existing=policy)
+    assert target.read_bytes() == b"version B"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="droits POSIX")
+def test_expect_detects_permission_change(tmp_path: Path) -> None:
+    target = tmp_path / "out.m4a"
+    target.write_bytes(b"x")
+    policy = ExistingPolicy.expect(capture_state(target))
+    target.chmod(0o600)
+    with pytest.raises(OutputStateChangedError):
+        OutputReservation.acquire(target, existing=policy)

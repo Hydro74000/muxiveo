@@ -11414,5 +11414,9 @@
   "Instant aléatoire prêt.": {
     "fra": "Instant aléatoire prêt.",
     "eng": "Random instant ready."
+  },
+  "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).": {
+    "fra": "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).",
+    "eng": "{tool}: {detail} (metadata completed or truncated by the tool)."
   }
 }

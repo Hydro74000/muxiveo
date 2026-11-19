@@ -1122,7 +1122,7 @@ class HdrStudio(QWidget):
     def write_patch(self, plan: PatchPlan) -> None:
         """Écrit le fichier corrigé (thread de travail, annulable) ; remplacement d'un fichier existant confirmé,
         état exigé jusqu'à la publication."""
-        if self._busy:
+        if self._busy or not self._extensions_admitted():  # aucune écriture pendant une modification d'extension
             return
         existing = confirm_output(self, plan.output)
         if existing is None:

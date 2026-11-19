@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -16,6 +17,8 @@ from core.service import ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.service.context import Overrides
 from core.service.errors import ErrorCode, error_code
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="sonde factice : script /bin/sh (POSIX)")
 
 
 def _slow_probe(tmp_path: Path) -> tuple[Path, Path]:

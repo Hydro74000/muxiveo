@@ -380,9 +380,9 @@ class MetadataPatcher:
         output = self._run(cmd)
         if isinstance(output, str):
             for match in _LENGTH_MISMATCH_RE.finditer(output):
-                self._emit_warning("tool_length_mismatch",
-                                   f"{Path(cmd[0]).name} : {match.group(0).strip()} (métadonnées complétées "
-                                   "ou tronquées par l'outil).")
+                self._emit_warning("tool_length_mismatch", translate_text(
+                    "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).",
+                    tool=Path(cmd[0]).name, detail=match.group(0).strip()))
         return output
 
     def _complete_rpu(self, plan: PatchPlan, edited: Path) -> Path:

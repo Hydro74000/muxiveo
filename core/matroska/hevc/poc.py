@@ -146,6 +146,7 @@ def iter_pictures(path: Path, *, cancelled: Callable[[], bool] | None = None,
     for unit in iter_hevc_access_units(Path(path), cancel_cb=cancelled, progress_cb=progress):
         kinds: set[int] = set()
         first_slice = None
+        ends_sequence = False                   # EOS : suffixe de cette unité, vaut pour l'image suivante
         for nal in unit.nal_units:
             kinds.add(nal.nal_type)
             if nal.nal_type == _SPS:
@@ -157,8 +158,9 @@ def iter_pictures(path: Path, *, cancelled: Callable[[], bool] | None = None,
             elif nal.nal_type < 32 and nal.first_slice_in_pic and first_slice is None:
                 first_slice = nal
             elif nal.nal_type == _EOS:
-                after_eos = True
+                ends_sequence = True
         if first_slice is None:
+            after_eos = after_eos or ends_sequence
             continue                            # unité sans image (paramètres seuls)
         nal_type = first_slice.nal_type
         temporal_id = (first_slice.payload[1] & 0x07) - 1
@@ -177,7 +179,7 @@ def iter_pictures(path: Path, *, cancelled: Callable[[], bool] | None = None,
             else:
                 msb = prev_msb
             poc = msb + lsb
-        after_eos = False
+        after_eos = ends_sequence
         sub_layer_non_reference = nal_type <= 14 and nal_type % 2 == 0
         if temporal_id == 0 and not (_RADL_N <= nal_type <= _RASL_R) and not sub_layer_non_reference:
             prev_tid0_poc = poc

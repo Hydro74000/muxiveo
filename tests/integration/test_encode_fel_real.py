@@ -181,9 +181,11 @@ def test_real_fel_image_preview_reconstructs_and_keeps_rpu_alignment(qt_app, tmp
     """Audit C01/C03 : aperçu image encodé depuis la source complète, reconstruction FEL effective, RPU de l'image
     livrée = RPU source de l'image demandée.
 
-    Instant par défaut 0,5 s : sur ``samples/BL_EL.mkv``, toute découpe en milieu de fichier fait échouer le plugin
-    (« Envoi couche au décodeur : Invalid data found », repli BL annoncé), comme l'ancien aperçu par positionnement
-    du plugin et les captures du FEL Analyzer (échec préexistant, investigation séparée).
+    Instant par défaut 0,5 s : sur ``samples/BL_EL.mkv``, toute découpe en milieu de fichier fait retomber le plugin
+    sur le BL (annoncé), comme l'ancien aperçu par positionnement du plugin et les captures du FEL Analyzer. Cause
+    relevée : images clés EL décalées de celles du BL (BL tous les 24, EL à 0, 19, 40, 53, 72…) et, même sur une
+    image clé commune, CRA de l'EL suivie d'images EL RASL appariées à des images BL ordinaires : l'EL ne les décode
+    pas, le plugin refuse alors le flux (nombre d'images EL ≠ BL). Correctif à apporter dans mvo-fel.
     ``MUXIVEO_TEST_FEL_PREVIEW_AT`` choisit un autre instant sur un corpus dont l'EL suit les images clés de la BL."""
     from fractions import Fraction
 

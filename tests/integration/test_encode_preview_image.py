@@ -109,3 +109,18 @@ def test_keyframe_off_millisecond_grid_is_kept(tmp_path):
     assert done.returncode == 0, done.stderr
     expected = next(index for index in range(200) if index * 1001 / 30000 >= instant - 0.0005)
     assert _rgb_digest(_png(tmp_path, previews)) == _source_frame_digest(source, expected, tmp_path / "ref.png")
+
+
+def test_low_frame_rate_reaches_the_next_frame(tmp_path):
+    """1 image/s, instant 0,1 s : l'image livrée est celle de 1 s (première ≥ instant), jamais celle de 0 s."""
+    source = tmp_path / "source.nut"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=1:duration=5", "-c:v", "ffv1", "-g", "5",
+            "-pix_fmt", "yuv420p", str(source))
+    previews = tmp_path / "apercus"
+    done = _cli(tmp_path, "encode", "-i", str(source), "-o", str(tmp_path / "sortie.mkv"), "--video-codec",
+                "libx264", "--crf", "0", "--bit-depth", "8", "--preview-image", "0.1",
+                "--preview-dir", str(previews))
+    assert done.returncode == 0, done.stderr
+    image = _png(tmp_path, previews)
+    assert ".apercu-1.0s." in image.name
+    assert _rgb_digest(image) == _source_frame_digest(source, 1, tmp_path / "ref.png")
