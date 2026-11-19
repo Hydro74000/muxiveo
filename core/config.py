@@ -116,7 +116,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
     if not _is_windows() or not path.exists():
         return []
     text = path.read_text(encoding="utf-8-sig")
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
     legacy = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))
     legacy.read_string(text)
     # Ces clés étaient écrites uniquement par QSettings, jamais par setup.py
@@ -349,7 +349,7 @@ def _sanitize_windows_ini_file(path: Path) -> None:
         return
 
     original = path.read_text(encoding="utf-8-sig")
-    lines = original.splitlines()
+    lines = ini_syntax.ini_lines(original)
     sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
     if sanitized != original:
@@ -502,7 +502,7 @@ def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
         return
 
     text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
     _write_ini_text(path, _purge_removed_keys(lines, {"tools": tool_values}))
 
@@ -534,7 +534,7 @@ def config_syntax_message(exc: Exception) -> str:
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     """Écrit des valeurs explicites dans config.ini en conservant les commentaires."""
     text = _INI_PATH.read_text(encoding="utf-8-sig") if _INI_PATH.exists() else ""
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
@@ -545,7 +545,7 @@ def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
     """Retire des clés de config.ini (commentaires conservés) : le réglage revient à QSettings, sinon au défaut."""
     if not _INI_PATH.exists():
         return
-    lines = _INI_PATH.read_text(encoding="utf-8-sig").splitlines()
+    lines = ini_syntax.ini_lines(_INI_PATH.read_text(encoding="utf-8-sig"))
     lines = _remove_ini_keys(lines, {section: {key.lower() for key in keys} for section, keys in section_keys.items()})
     _write_ini_text(_INI_PATH, lines)
 
@@ -572,7 +572,7 @@ def _purge_obsolete_ini_keys(path: Path) -> None:
     present = {section: keys for section, keys in present.items() if keys}
     if not present:
         return
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    lines = ini_syntax.ini_lines(path.read_text(encoding="utf-8-sig"))
     _write_ini_text(path, _remove_ini_keys(lines, present))
 
 

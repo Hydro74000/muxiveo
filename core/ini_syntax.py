@@ -15,6 +15,11 @@ import re
 from dataclasses import dataclass
 
 _INLINE_COMMENT_RE = re.compile(r"\s#")
+# Fins de ligne du chargeur (lecture en texte : \r\n et \r ramenés à \n).
+_LOADER_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+#: Caractères que ``str.splitlines()`` prend pour des fins de ligne : refusés dans une valeur (une réécriture
+#: découpée autrement que par le chargeur en ferait de nouvelles lignes, donc de nouvelles options).
+INI_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 # Identiques à configparser.RawConfigParser.SECTCRE / OPTCRE (délimiteurs par défaut).
 _SECTION_RE = re.compile(r"\[(?P<header>.+)\]")
 _OPTION_RE = re.compile(r"(?P<option>.*?)\s*[=:]\s*(?P<value>.*)$")
@@ -33,6 +38,15 @@ class IniOption:
     @property
     def multiline(self) -> bool:
         return self.end > self.start + 1
+
+
+def ini_lines(text: str) -> list[str]:
+    """Lignes de ``text`` découpées comme le chargeur (``\n``, ``\r\n``, ``\r`` seulement), jamais sur les
+    autres séparateurs Unicode que reconnaît ``str.splitlines()`` (U+2028, U+0085, \v…)."""
+    lines = _LOADER_LINE_BREAK_RE.split(text)
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 def line_content(line: str) -> str:
@@ -129,6 +143,8 @@ def unwritable_reason(value: str) -> str | None:
     la ligne réellement écrite est relue (blancs de bord exceptés, ignorés par le chargeur)."""
     if "\n" in value or "\r" in value:
         return "retour à la ligne"
+    if any(char in INI_LINE_BREAKS for char in value):
+        return "séparateur de ligne"
     parser = configparser.ConfigParser(inline_comment_prefixes=("#",), default_section="DEFAULT")
     try:
         parser.read_string(f"[s]\nk = {escape_value(value)}\n")

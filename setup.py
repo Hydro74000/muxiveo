@@ -661,7 +661,7 @@ def _update_ini_tools_section(
     prune_keys = {key.lower() for key in (prune_keys or set())} | REMOVED_CONFIG_TOOLS
 
     text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
-    lines = _sanitize_windows_tools_lines(text.splitlines())
+    lines = _sanitize_windows_tools_lines(ini_syntax.ini_lines(text))
 
     if _tools_section_bounds(lines)[0] == -1:
         if lines and lines[-1].strip():
@@ -743,7 +743,7 @@ def initialize_config_ini_language(
     info(f"UI language: {detected}")
 
     text = ini_path.read_text(encoding="utf-8-sig") if ini_path.exists() else ""
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
     if _section_bounds(lines, "ui")[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
