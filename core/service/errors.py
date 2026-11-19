@@ -81,7 +81,7 @@ def error_code(exc: object) -> ErrorCode:
     Les workflows enveloppent les refus de destination et les annulations dans leurs propres
     erreurs (``RemuxError``, ``EncodeError``) : la cause d'origine fixe le code.
     """
-    from core.output_commit import OutputBusyError
+    from core.output_commit import OutputBusyError, OutputRefusedError
     from core.runner import ToolNotFoundError
 
     cancelled = _cancellation_types()
@@ -95,6 +95,8 @@ def error_code(exc: object) -> ErrorCode:
             return ErrorCode.TOOL_MISSING
         if isinstance(current, OutputBusyError):
             return ErrorCode.BUSY
+        if isinstance(current, OutputRefusedError):  # sortie apparue ou changée depuis le contrôle / la confirmation
+            return ErrorCode.OUTPUT_EXISTS
         if isinstance(current, cancelled):
             return ErrorCode.CANCELLED
         current = current.__cause__

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -326,3 +327,85 @@ def test_appconfig_falls_back_to_user_install(monkeypatch, tmp_path):
     system.write_bytes(b"x")
     found = SimpleNamespace(_resolve_tool_value=lambda *args: str(system))
     assert config_mod.AppConfig._resolve_nvencc_tool(found) == str(system)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Annulation de l'installation utilisateur (audit A02)
+# ---------------------------------------------------------------------------
+
+def _windows_zip(path: Path, size: int = 64) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("exe_files/NVEncC/x64/NVEncC64.exe", b"MZ" + b"\0" * size)
+        zf.writestr("exe_files/NVEncC/x64/nvrtc64.dll", b"DLL")
+    return path
+
+
+def _previous_install() -> Path:
+    root = nv.user_root()
+    root.mkdir(parents=True)
+    (root / "NVEncC64.exe").write_bytes(b"ancienne")
+    return root
+
+
+class _CancelAfter(threading.Event):
+    """Jeton levé à partir du n-ième contrôle (annulation reçue au milieu d'une étape)."""
+
+    def __init__(self, checks: int) -> None:
+        super().__init__()
+        self.remaining = checks
+
+    def is_set(self) -> bool:
+        self.remaining -= 1
+        return self.remaining < 0 or super().is_set()
+
+
+@pytest.mark.parametrize("position", ["before", "zip_open", "during_copy", "before_exchange"])
+def test_windows_zip_cancel_keeps_previous_install(monkeypatch, user_dir, tmp_path, position):
+    monkeypatch.setattr(nv.sys, "platform", "win32")
+    archive = _windows_zip(tmp_path / "nvenc.zip", size=4 * nv._COPY_CHUNK)
+    counter = _CancelAfter(10**6)
+    nv._user_install(archive, None, counter, tmp_path / "count")  # nombre de contrôles d'une installation entière
+    total = 10**6 - counter.remaining
+    shutil.rmtree(nv.user_root())
+    root = _previous_install()
+    checks = {"before": 0, "zip_open": 1, "during_copy": 4, "before_exchange": total - 1}[position]
+    with pytest.raises(nv.NvenccCancelled):
+        nv._user_install(archive, None, _CancelAfter(checks), tmp_path)
+    assert (root / "NVEncC64.exe").read_bytes() == b"ancienne"
+    assert sorted(p.name for p in root.parent.iterdir()) == [root.name]  # staging supprimé
+
+
+def test_windows_zip_cancel_after_exchange_keeps_new_install(monkeypatch, user_dir, tmp_path):
+    monkeypatch.setattr(nv.sys, "platform", "win32")
+    archive = _windows_zip(tmp_path / "nvenc.zip")
+    root = _previous_install()
+    cancel = threading.Event()
+    original = nv._replace_user_root
+
+    def replace(staging):
+        original(staging)
+        cancel.set()  # annulation arrivée après l'échange : installation acquise
+
+    monkeypatch.setattr(nv, "_replace_user_root", replace)
+    installed = nv._user_install(archive, None, cancel, tmp_path)
+    assert installed == root / "NVEncC64.exe" and installed.read_bytes().startswith(b"MZ")
+
+
+def test_deb_cancel_before_exchange_keeps_previous_install(monkeypatch, user_dir, tmp_path):
+    monkeypatch.setattr(nv.sys, "platform", "linux")
+    deb = _deb(tmp_path / "nvencc.deb", {"./usr/bin/nvencc": b"\x7fELF"})
+    root = nv.user_root()
+    root.mkdir(parents=True)
+    (root / "nvencc").write_bytes(b"ancienne")
+    cancel = threading.Event()
+    original = nv.extract_deb_binary
+
+    def extract(archive, dest, cancel_=None):
+        result = original(archive, dest, cancel_)
+        cancel.set()
+        return result
+
+    monkeypatch.setattr(nv, "extract_deb_binary", extract)
+    with pytest.raises(nv.NvenccCancelled):
+        nv._user_install(deb, None, cancel, tmp_path)
+    assert (root / "nvencc").read_bytes() == b"ancienne"

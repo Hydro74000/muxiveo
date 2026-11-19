@@ -377,8 +377,9 @@ def describe_plan(plan: PatchPlan) -> dict[str, Any]:
 def _load(request: HdrPatchRequest, ctx: ExecutionContext,
           logger: EmitterLogger) -> tuple[InspectionReport, ImageMeasurement | None]:
     config = ctx.config
-    info = ctx.port("file_inspector", FileInspector)(ffprobe_bin=ctx.tool("ffprobe"),
-                                                    mediainfo_bin=ctx.tool("mediainfo")).inspect(request.source)
+    info = ctx.port("file_inspector", FileInspector)(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"),
+                                                    cancel_event=ctx.cancel.event).inspect(request.source)
+    ctx.cancel.raise_if_cancelled()  # sonde terminée malgré une annulation : ni plan ni écriture
     if not info.video_tracks:
         raise JobError(f"Aucune piste vidéo : {request.source}", EXIT_ARGS)
     report = snapshot_report(info, request.track)
@@ -391,12 +392,14 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
                                                            ctx.tool("ffmpeg"), work_root, logger, token=ctx.cancel)
         for message in report.errors:
             logger.emit("warning", message)
+        ctx.cancel.raise_if_cancelled()
     measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index)
     wanted = request.measurement
     if wanted != "cached" and (measurement is None or (measurement.is_estimate and wanted == "full")):
         threads = max(2, int(ctx.overrides.threads or getattr(config, "ffmpeg_threads", 8) or 8))
         measurement = ctx.port("measure_image", measure_image)(config, report, threads, work_root, logger,
                                                               fast=wanted == "fast", cancel=ctx.cancel.event)
+        ctx.cancel.raise_if_cancelled()
         cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
     return report, measurement
 
@@ -472,6 +475,7 @@ def hdr_patch(request: HdrPatchRequest, ctx: ExecutionContext) -> HdrPatchResult
         ctx.events.warning(message, code="hdr_patch_plan")
     changes = describe_plan(plan)
     if request.dry_run:
+        ctx.cancel.raise_if_cancelled()  # dry-run annulé : jamais rendu comme réussi
         return HdrPatchResult(dry_run=True, changes=changes, warnings=tuple(warnings))
     logger.emit("info", f"Correction des métadonnées : {plan.source.name} → {plan.output.name}")
     published = _execute(plan, ctx, logger)

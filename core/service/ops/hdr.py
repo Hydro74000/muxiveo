@@ -355,7 +355,8 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
     config, logger = ctx.config, EmitterLogger(ctx.events)
     ffmpeg = ctx.tool("ffmpeg")
     inspector = ctx.port("file_inspector", FileInspector)(ffprobe_bin=ctx.tool("ffprobe"),
-                                                         mediainfo_bin=ctx.tool("mediainfo"))
+                                                         mediainfo_bin=ctx.tool("mediainfo"),
+                                                         cancel_event=ctx.cancel.event)  # sondes tuées par le jeton
     dynamic = ctx.port("dynamic_report", dynamic_report)
     cache = InspectionCache(Path(config.app_data_dir) / "hdr_inspection")
     work_root = ctx.overrides.work_dir or config.ensure_work_dir()
@@ -369,6 +370,7 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
     for path in inputs:
         ctx.cancel.raise_if_cancelled()
         info = inspector.inspect(path)
+        ctx.cancel.raise_if_cancelled()  # sonde terminée malgré une annulation : rien n'est publié
         if not info.video_tracks:
             raise JobError(f"Aucune piste vidéo : {path}", EXIT_ARGS)
         report = snapshot_report(info, request.track)
@@ -380,9 +382,11 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
                              token=ctx.cancel)
             for message in report.errors:
                 logger.emit("warning", message)
+            ctx.cancel.raise_if_cancelled()
         if level == "measure" and (measurement is None or (measurement.is_estimate and not request.fast)):
             measurement = measure_image(config, report, threads, work_root, logger, fast=request.fast,
                                         cancel=ctx.cancel.event)
+            ctx.cancel.raise_if_cancelled()
             cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
         if measurement is not None:
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,
@@ -399,6 +403,7 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
                     ctx.events.artifact("fel-moment", str(path))
                 moments += written
         sides.append(Side(report, measurement))
+    ctx.cancel.raise_if_cancelled()
     comparison = compare(sides[0], sides[1], request.offset) if request.compare else None
     fels: list[FelReport | None] = list(fel_reports) if fel_reports else [None] * len(sides)
     advices: list[Advice | None] = [None] * len(sides)

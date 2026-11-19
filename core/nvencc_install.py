@@ -331,8 +331,17 @@ def extract_deb_binary(archive: Path, dest: Path, cancel: threading.Event | None
     raise NvenccInstallError("binaire nvencc absent du paquet .deb")
 
 
-def extract_windows_zip(archive: Path, dest_dir: Path) -> Path:
-    """Copie la distribution x64 (``NVEncC64.exe`` et ses DLL) de l'archive officielle vers ``dest_dir``."""
+def _check_cancel(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise NvenccCancelled("installation annulée")
+
+
+def extract_windows_zip(archive: Path, dest_dir: Path, cancel: threading.Event | None = None) -> Path:
+    """Copie la distribution x64 (``NVEncC64.exe`` et ses DLL) de l'archive officielle vers ``dest_dir``.
+
+    ``cancel`` contrôlé avant l'ouverture, à chaque fichier et à chaque bloc copié (:class:`NvenccCancelled`).
+    """
+    _check_cancel(cancel)
     try:
         with zipfile.ZipFile(archive) as zf:
             names = [n for n in zf.namelist() if Path(n).name.lower() == WINDOWS_BINARY.lower()]
@@ -346,8 +355,11 @@ def extract_windows_zip(archive: Path, dest_dir: Path) -> Path:
                 relative = info.filename[len(folder):]
                 if not relative or "/" in relative or "\\" in relative or relative in (".", ".."):
                     continue  # fichiers du dossier x64 seulement, jamais de chemin
+                _check_cancel(cancel)
                 with zf.open(info) as source, (dest_dir / relative).open("wb") as out:
-                    shutil.copyfileobj(source, out, _COPY_CHUNK)
+                    while chunk := source.read(_COPY_CHUNK):
+                        _check_cancel(cancel)
+                        out.write(chunk)
     except (zipfile.BadZipFile, OSError) as exc:
         raise NvenccInstallError(f"archive NVEnc illisible ({exc})") from exc
     return dest_dir / WINDOWS_BINARY
@@ -382,10 +394,13 @@ def _user_install(
     root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".nvencc-", dir=root.parent))
     try:
+        _check_cancel(cancel)
         if windows:
-            extract_windows_zip(archive, staging)
+            extract_windows_zip(archive, staging, cancel)
         else:
             extract_deb_binary(archive, staging / LINUX_BINARY, cancel)
+        # Dernier point d'annulation : ensuite l'échange commence et l'installation est acquise.
+        _check_cancel(cancel)
         _replace_user_root(staging)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

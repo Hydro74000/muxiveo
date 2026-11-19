@@ -176,7 +176,8 @@ Un job en file est retiré aussitôt (`error` puis `state: cancelled`). Remux et
 arrivée après la publication de la sortie laisse l'opération réussie avec l'avertissement
 `cancel_too_late`. Extraction de plusieurs éléments : les sorties déjà publiées restent (événements
 `artifact`), l'opération se termine `cancelled`. Dans un lot : le job en cours est annulé puis le lot
-s'arrête.
+s'arrête. `nvencc.install` : annulée avant la mise en place, l'installation précédente reste intacte ;
+une annulation reçue après la mise en place laisse l'opération réussie (installation acquise).
 
 ## Erreurs et codes retour
 
