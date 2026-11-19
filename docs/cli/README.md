@@ -819,7 +819,9 @@ CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-
 prochain « Nettoyer » de l'interface ; option `keep_failed_work_dir` des requêtes).
 
 **Aperçus** (au lieu d'encoder, comme les boutons Aperçu du panneau) : `encode … --preview-image
-SECONDES` (répétable ; images encodées des scènes autour de l'instant), `--preview-video
+SECONDES` (répétable ; une image de la sortie par instant : extrait court encodé avec tous les réglages du
+job — filtres, redimensionnement, HDR, FEL, MVO-R2, interpolation —, première image d'instant ≥ SECONDES),
+`--preview-video
 SECONDES:DURÉE` (extrait encodé, 5–30 s), `--random-scene`, `--preview-dir DOSSIER` (défaut : dossier de
 la sortie). Opération : `encode.preview_capture`.
 

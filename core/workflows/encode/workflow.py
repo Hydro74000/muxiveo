@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -310,7 +311,7 @@ from core.workflows.encode.planning.validation import (
 from core.output_commit import ExistingPolicy, OutputBusyError, OutputReservation
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
-    PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
+    PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S,
     PREVIEW_VIDEO_THUMBNAIL_COUNT, QualityMode,
     VideoEncodeSettings,
 )
@@ -323,6 +324,11 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+
+#: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
+_PREVIEW_IMAGE_MARGIN_S = 0.5
+#: Tolérance d'arrondi des horodatages (Matroska : milliseconde) entre l'instant demandé et celui d'une image.
+_PREVIEW_PTS_TOLERANCE_S = 0.0005
 
 # Points d'injection historiques utilisés par les tests et extensions internes.
 _VideoTrackPreparationOrchestrator = _runtime_helpers.VideoTrackPreparationOrchestrator
@@ -2347,7 +2353,7 @@ class EncodeWorkflow(QObject):
         active_inner: dict[str, TaskSignals | None] | None = None,
     ) -> EncodePreviewResult:
         if request.normalized_mode() == EncodePreviewMode.IMAGE:
-            return self._run_image_preview_sync(config, request, signals)
+            return self._run_image_preview_sync(config, request, signals, active_inner=active_inner)
         return self._run_video_preview_sync(
             config,
             request,
@@ -2365,185 +2371,81 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         request: EncodePreviewRequest,
         signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
     ) -> EncodePreviewResult:
-        from core.fel.preparation import requested
-        resolved = self.resolve_dovi_sources(config)
-        if not requested(self._primary_video_settings(resolved)):
-            return self._run_image_preview_prepared(config, request, signals)
-        directory = self._preview_output_dir(config)
-        directory.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="fel_preview_", dir=directory) as work:
-            prepared = self.prepare_dovi_sources(resolved, work_dir=Path(work), signals=signals, complete_rpu=False)
-            return self._run_image_preview_prepared(prepared, request, signals)
+        """Image de la sortie : court extrait encodé avec les réglages du job, image livrée à l'instant demandé.
 
-    def _run_image_preview_prepared(
-        self,
-        config: EncodeConfig,
-        request: EncodePreviewRequest,
-        signals: TaskSignals,
-    ) -> EncodePreviewResult:
+        ``t_req`` est relatif au début de la source (sémantique de ``-ss``), tiré au hasard sur demande. Le segment
+        est copié depuis l'image clé décodable ≤ ``t_req`` (préambule RASL retiré avec ses RPU / EL), encodé comme
+        la sortie (filtres, redimensionnement, DV / HDR10+, FEL, MVO-R2, interpolation) ; l'image livrée est la
+        première du clip dont l'instant réel est ≥ ``t_req`` (PTS mesurés, jamais un rang déduit d'une cadence).
+        """
         preview_dir = self._preview_output_dir(config)
         preview_dir.mkdir(parents=True, exist_ok=True)
-
         source_video = self._primary_video_settings(config)
         source_path = self._video_source_from_settings(config, source_video)
         source_stream = self._video_stream_from_settings(source_video)
-        prefer_dv, prefer_hdr10plus = self._preview_dynamic_hdr_preferences(
-            source_path,
-            source_video,
-        )
+        duration = max(0.0, float(config.duration_s or 0.0))
         signals.progress_pct.emit(0)
-        scenes = self._hdr_metadata_service.select_preview_scenes_random(
-            source_path,
-            count=PREVIEW_IMAGE_CAPTURE_COUNT,
-            stream_index=source_stream,
-            source_duration_s=config.duration_s,
-            skip_lead_s=PREVIEW_FRAME_MIN_OFFSET_S,
-            skip_tail_s=PREVIEW_FRAME_TAIL_OFFSET_S,
-            prefer_dovi=prefer_dv,
-            prefer_hdr10plus=prefer_hdr10plus,
-            progress_cb=lambda line: signals.progress.emit(line),
-            progress_pct_cb=lambda pct: signals.progress_pct.emit(self._scale_pct(0, 25, pct)),
-        )
-        if not scenes:
-            raise EncodeError(
-                "Impossible de sélectionner des scènes preview : aucune I-frame exploitable."
-            )
-        signals.progress_pct.emit(25)
-
-        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
-        token = self._preview_token(config)
-        captures: list[EncodePreviewCapture] = []
+        if request.random_scene:
+            low = min(PREVIEW_FRAME_MIN_OFFSET_S, duration / 2) if duration else 0.0
+            high = max(low, duration - PREVIEW_FRAME_TAIL_OFFSET_S) if duration else low
+            t_req = random.uniform(low, high)
+        else:
+            t_req = max(0.0, float(request.timecode_s or 0.0))
         warning = ""
-        n = len(scenes)
-
-        for idx, scene in enumerate(scenes, start=1):
-            self._check_cancelled(signals)
-            image_path = preview_dir / f"{token}_{idx:02d}.png"
-            signals.progress.emit(
-                f"Capture {idx}/{n} à {self._seconds_label(scene.scene_time_s)}"
-                f"{' (' + scene.reason + ')' if scene.reason else ''}…"
-            )
-            extract_cmd = self._build_preview_image_extract_from_source_cmd(
-                source_path,
-                image_path,
-                scene_time_s=scene.scene_time_s,
-                stream_index=source_stream,
-                hdr_kind=hdr_kind,
-            )
-            from core.fel.pipeline import with_fel_input
-            from core.fel.engine import FelError
-            command = with_fel_input(extract_cmd, source_video)
-            try:
-                if not self._render_fel_preview_image(source_video, source_path, source_stream, scene.scene_time_s,
-                                                      image_path, hdr_kind, signals):
-                    self._runner._run_cmd(command, cwd=preview_dir, label=f"ffmpeg-preview-image-{idx:02d}",
-                        progress_cb=signals.progress.emit, progress_pct_cb=lambda _pct: None, signals=signals)
-            except FelError as exc:
-                warning = f"Reconstruction FEL indisponible ({exc}) : aperçu BL."
-                signals.progress.emit(f"[WARN] {warning}")
-                self._runner._run_cmd(extract_cmd, cwd=preview_dir, label="ffmpeg-preview-bl", signals=signals)
-            self._check_cancelled(signals)
-            if image_path.exists():
-                captures.append(EncodePreviewCapture(
-                    image_path=image_path,
-                    scene_time_s=scene.scene_time_s,
-                    label=scene.reason or "",
-                ))
-            if scene.warning and not warning:
-                warning = scene.warning
-            signals.progress_pct.emit(self._scale_pct(25, 100, int(idx * 100 / n)))
-
-        if not captures:
-            raise EncodeError("Aucune image preview n'a pu être générée.")
-
-        signals.progress_pct.emit(100)
-        return EncodePreviewResult(
-            mode=EncodePreviewMode.IMAGE.value,
-            captures=tuple(captures),
-            warning=warning,
-        )
-
-    def _render_fel_preview_image(
-        self, video: VideoEncodeSettings, source: Path, stream: int, time_s: float, output: Path, hdr_kind: str,
-        signals: TaskSignals,
-    ) -> bool:
-        """Image FEL rendue comme la lecture de la sortie : image reconstruite + métadonnées de la sortie.
-
-        Sans métadonnées, libplacebo tone-mappe l'image du plugin à l'aveugle (plus claire que la sortie lue
-        en Dolby Vision). L'image (finale, tramée comme à l'encodage) est encodée sans perte en HEVC avec le
-        HDR10 statique de la sortie et, copie DV active, le RPU P8.1 de cette image ; le rendu est alors celui
-        de l'aperçu sans FEL. False : non applicable (pas de FEL, sortie SDR, aperçu sans tone mapping).
-        """
-        from core.fel.pipeline import with_fel_input
-
-        context = video.fel_context
-        tonemap = self._preview_image_tonemap_filter(hdr_kind)
-        if context is None or video.tonemap_to_sdr or not tonemap:
-            return False
-        base = output.with_suffix("")
-        frame = base.with_name(base.name + ".hevc")
-        frame_dv = base.with_name(base.name + ".dv.hevc")
-        single = base.with_name(base.name + ".rpu.bin")
-        edit = base.with_name(base.name + ".rpu.json")
-        params = ["lossless=1", "log-level=error", "colorprim=bt2020", "transfer=smpte2084", "colormatrix=bt2020nc",
-                  "range=limited"]
-        if video.master_display.strip():
-            params.append(f"master-display={video.master_display.strip()}")
-        if re.fullmatch(r"\d+,\d+", video.max_cll.strip()):
-            params.append(f"max-cll={video.max_cll.strip()}")
-        cmd = [self._ffmpeg, "-hide_banner", "-y", "-ss", self._seconds_arg(time_s)]
-        append_ffmpeg_input_args(cmd, source)
-        cmd.extend(["-map", f"0:{int(stream)}", "-frames:v", "1", "-an", "-sn", "-dn", "-c:v", "libx265",
-                    "-preset", "ultrafast", "-x265-params", ":".join(params), "-f", "hevc", str(frame)])
+        if duration and t_req > duration:
+            warning = f"Instant {self._seconds_label(t_req)} au-delà de la durée de la source : dernière image livrée."
+            t_req = duration
+        keyframe = self._preview_keyframe_at_or_before(source_path, source_stream, t_req, signals)
+        signals.progress.emit(
+            f"Aperçu image à {self._seconds_label(t_req)} (image clé à {self._seconds_label(float(keyframe))})…")
+        token = self._preview_token(config)
+        source_segment = preview_dir / f"{token}_source.mkv"
+        encoded_clip = preview_dir / f"{token}.mkv"
+        image_path = preview_dir / f"{token}_01.png"
+        margin = _PREVIEW_IMAGE_MARGIN_S
         try:
-            self._runner._run_cmd(with_fel_input(cmd, video), cwd=output.parent, label="ffmpeg-preview-fel-frame",
-                                  signals=signals)
-            rendered = frame
-            dovi = self._bins.get("dovi_tool") or "dovi_tool"
-            index = self._preview_frame_index(source, stream, time_s)
-            total = self._preview_rpu_frames(context.original_rpu)
-            if video.copy_dv and index is not None and total and 0 <= index < total:
-                removed = [f"0-{index - 1}"] if index > 0 else []
-                removed += [f"{index + 1}-{total - 1}"] if index < total - 1 else []
-                edit.write_text(json.dumps({"mode": 2, "remove": removed}), encoding="utf-8")
-                self._runner._run_cmd([dovi, "editor", "-i", str(context.original_rpu), "-j", str(edit), "-o",
-                                       str(single)], cwd=output.parent, label="dovi-preview-rpu", signals=signals)
-                self._runner._run_cmd([dovi, "inject-rpu", "-i", str(frame), "--rpu-in", str(single), "-o",
-                                       str(frame_dv)], cwd=output.parent, label="dovi-preview-inject", signals=signals)
-                rendered = frame_dv
-            self._runner._run_cmd([self._ffmpeg, "-hide_banner", "-y", "-i", str(rendered), "-frames:v", "1",
-                                   "-update", "1", "-vf", tonemap, str(output)], cwd=output.parent,
-                                  label="ffmpeg-preview-fel-render", signals=signals)
-        except CommandError as exc:
-            # Outil absent ou refus (libx265, dovi_tool) : rendu direct de l'image du plugin.
-            signals.progress.emit(f"[WARN] Rendu de l'aperçu FEL avec les métadonnées de la sortie impossible ({exc}).")
-            output.unlink(missing_ok=True)
-            return False
+            segment_start = self._cut_preview_segment(
+                source_path, source_segment, stream_index=source_stream, keyframe_s=keyframe,
+                duration_s=(t_req - float(keyframe)) + margin, signals=signals,
+            )
+            signals.progress_pct.emit(15)
+            self._encode_preview_segment(config, source_segment, encoded_clip,
+                                         max(_PREVIEW_IMAGE_MARGIN_S, (t_req - segment_start) + margin),
+                                         signals, active_inner=active_inner)
+            signals.progress_pct.emit(80)
+            frames = self._preview_clip_frame_times(encoded_clip, signals)
+            if not frames:
+                raise EncodeError("Aperçu : aucune image dans l'extrait encodé.")
+            target = t_req - segment_start
+            rank = next((index for index, time_s in enumerate(frames) if time_s >= target - _PREVIEW_PTS_TOLERANCE_S),
+                        None)
+            if rank is None:
+                rank = len(frames) - 1
+                warning = warning or "Instant au-delà de la dernière image de l'extrait encodé : dernière image livrée."
+            hdr_kind = self._encoded_preview_hdr_kind(encoded_clip, source_video, source_path, source_stream)
+            self._check_cancelled(signals)
+            self._runner._run_cmd(
+                self._build_preview_frame_by_rank_cmd(encoded_clip, image_path, rank, hdr_kind),
+                cwd=preview_dir, label="ffmpeg-preview-image", progress_cb=lambda line: signals.progress.emit(line),
+                progress_pct_cb=lambda _pct: None, signals=signals,
+            )
+            self._check_cancelled(signals)
+            if not image_path.exists():
+                raise EncodeError("Aucune image preview n'a pu être générée.")
+        except BaseException:
+            self._remove_preview_temp(image_path)
+            raise
         finally:
-            for path in (frame, frame_dv, single, edit):
-                path.unlink(missing_ok=True)
-        return output.is_file()
-
-    def _preview_frame_index(self, source: Path, stream: int, time_s: float) -> int | None:
-        """Rang d'affichage de l'image à ``time_s`` (cadence et départ du flux) ; None si cadence illisible."""
-        info = self._stream_info(Path(source), int(stream))
-        try:
-            rate = Fraction(str(info.get("r_frame_rate") or info.get("avg_frame_rate") or "0"))
-            start = float(str(info.get("start_time") or 0) or 0)
-        except (ValueError, ZeroDivisionError):
-            return None
-        if rate <= 0:
-            return None
-        return max(0, round((time_s - start) * float(rate)))
-
-    def _preview_rpu_frames(self, rpu: Path) -> int | None:
-        """Trames du RPU d'origine (mémorisé par fichier pour les captures d'un même aperçu)."""
-        cache = self.__dict__.setdefault("_preview_rpu_frame_cache", {})
-        key = (str(rpu), rpu.stat().st_mtime_ns if rpu.is_file() else 0)
-        if key not in cache:
-            cache[key] = self._frame_count_guard().rpu_frame_count(rpu)
-        return cache[key]
+            self._remove_preview_temp(source_segment)
+            self._remove_preview_temp(encoded_clip)
+        signals.progress_pct.emit(100)
+        scene_time_s = segment_start + frames[rank]
+        capture = EncodePreviewCapture(image_path=image_path, scene_time_s=scene_time_s,
+                                       label=self._seconds_label(scene_time_s))
+        return EncodePreviewResult(mode=EncodePreviewMode.IMAGE.value, captures=(capture,), warning=warning)
 
     def _run_video_preview_sync(
         self,
@@ -2592,41 +2494,84 @@ class EncodeWorkflow(QObject):
         token = self._preview_token(config)
         source_segment = preview_dir / f"{token}_source.mkv"
         encoded_clip = preview_dir / f"{token}.mkv"
-        trim_cmd = self._build_preview_source_segment_cmd(
-            source_path,
-            source_segment,
-            stream_index=source_stream,
-            start_s=scene.scene_time_s,
-            duration_s=clip_duration,
-        )
-        # Copie de flux : le segment commence au point de recherche du conteneur (Cue), parfois une image
-        # clé plus tôt que l'instant choisi. Les vignettes sont datées depuis ce début réel.
-        segment_start = self._preview_segment_start(source_path, source_stream, scene.scene_time_s)
-        if segment_start is None:
-            segment_start = scene.scene_time_s
-        elif abs(segment_start - scene.scene_time_s) > 0.0005:
+        # Segment copié depuis l'image clé décodable ≤ scène (son instant exact est le début réel du segment,
+        # vignettes datées depuis lui) ; préambule RASL retiré avec ses métadonnées.
+        keyframe = self._preview_keyframe_at_or_before(source_path, source_stream, scene.scene_time_s, signals)
+        if abs(float(keyframe) - scene.scene_time_s) > 0.0005:
             signals.progress.emit(
-                f"Début réel du segment preview : {self._seconds_label(segment_start)} "
-                f"(point de recherche du conteneur avant {self._seconds_label(scene.scene_time_s)})"
+                f"Début réel du segment preview : {self._seconds_label(float(keyframe))} "
+                f"(image clé avant {self._seconds_label(scene.scene_time_s)})"
             )
-        self._check_cancelled(signals)
         signals.progress.emit("Préparation du segment source preview…")
-        self._runner._run_cmd(
-            trim_cmd,
-            cwd=preview_dir,
-            label="ffmpeg-preview-source",
-            progress_cb=lambda line: signals.progress.emit(line),
-            progress_pct_cb=lambda _pct: None,
-            signals=signals,
-        )
-        self._check_cancelled(signals)
-        signals.progress_pct.emit(15)
+        try:
+            segment_start = self._cut_preview_segment(source_path, source_segment, stream_index=source_stream,
+                                                      keyframe_s=keyframe, duration_s=clip_duration, signals=signals)
+            signals.progress_pct.emit(15)
+            self._encode_preview_segment(config, source_segment, encoded_clip, clip_duration, signals,
+                                         active_inner=active_inner)
+        except BaseException:
+            self._remove_preview_temp(encoded_clip)
+            raise
+        finally:
+            self._remove_preview_temp(source_segment)
 
+        signals.progress_pct.emit(80)
+        encoded_hdr_kind = self._encoded_preview_hdr_kind(encoded_clip, source_video, source_path, source_stream)
+        thumbnails: list[EncodePreviewCapture] = []
+        thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
+        for idx in range(thumb_count):
+            self._check_cancelled(signals)
+            thumb_time = clip_duration * (idx + 0.5) / thumb_count
+            thumb_path = preview_dir / f"{token}_thumb_{idx + 1:02d}.png"
+            signals.progress.emit(f"Vignette {idx + 1}/{thumb_count} à +{thumb_time:.2f}s…")
+            extract_cmd = self._build_preview_image_extract_from_source_cmd(
+                encoded_clip,
+                thumb_path,
+                scene_time_s=thumb_time,
+                stream_index=0,
+                hdr_kind=encoded_hdr_kind,
+            )
+            self._runner._run_cmd(
+                extract_cmd,
+                cwd=preview_dir,
+                label=f"ffmpeg-preview-thumb-{idx + 1:02d}",
+                progress_cb=lambda line: signals.progress.emit(line),
+                progress_pct_cb=lambda _pct: None,
+                signals=signals,
+            )
+            if thumb_path.exists():
+                thumbnails.append(EncodePreviewCapture(
+                    image_path=thumb_path,
+                    scene_time_s=segment_start + thumb_time,
+                    label=f"+{thumb_time:.1f}s",
+                ))
+            signals.progress_pct.emit(self._scale_pct(80, 100, int((idx + 1) * 100 / thumb_count)))
+
+        signals.progress_pct.emit(100)
+
+        return EncodePreviewResult(
+            mode=EncodePreviewMode.VIDEO.value,
+            captures=tuple(thumbnails),
+            video_path=encoded_clip,
+            warning=scene.warning,
+        )
+
+    def _encode_preview_segment(
+        self,
+        config: EncodeConfig,
+        source_segment: Path,
+        encoded_clip: Path,
+        clip_duration_s: float,
+        signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
+    ) -> None:
+        """Encode le segment source avec les réglages du job (aperçus image et vidéo) ; annulable via ``active_inner``."""
         preview_config = self._preview_encode_config(
             config,
             source_segment=source_segment,
             output=encoded_clip,
-            clip_duration_s=clip_duration,
+            clip_duration_s=clip_duration_s,
         )
         errors = self.validate(preview_config)
         if errors:
@@ -2668,51 +2613,118 @@ class EncodeWorkflow(QObject):
         if not encoded_clip.exists():
             raise EncodeError("La génération du segment preview a échoué.")
 
-        signals.progress_pct.emit(80)
-        encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(encoded_clip)
-        if not encoded_hdr_kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
+    def _encoded_preview_hdr_kind(self, encoded_clip: Path, source_video: VideoEncodeSettings, source_path: Path,
+                                  source_stream: int) -> str:
+        """Transfert HDR du clip encodé (tone mapping de l'affichage), sinon celui de la source s'il est conservé."""
+        kind = self._hdr_metadata_service.source_hdr_transfer(encoded_clip)
+        if not kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
             # Probe may miss the bitstream metadata when container lacks it; fall back
             # to the source's HDR signature since the encoder preserved the dynamic range.
-            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
-        thumbnails: list[EncodePreviewCapture] = []
-        thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
-        for idx in range(thumb_count):
-            self._check_cancelled(signals)
-            thumb_time = clip_duration * (idx + 0.5) / thumb_count
-            thumb_path = preview_dir / f"{token}_thumb_{idx + 1:02d}.png"
-            signals.progress.emit(f"Vignette {idx + 1}/{thumb_count} à +{thumb_time:.2f}s…")
-            extract_cmd = self._build_preview_image_extract_from_source_cmd(
-                encoded_clip,
-                thumb_path,
-                scene_time_s=thumb_time,
-                stream_index=0,
-                hdr_kind=encoded_hdr_kind,
-            )
-            self._runner._run_cmd(
-                extract_cmd,
-                cwd=preview_dir,
-                label=f"ffmpeg-preview-thumb-{idx + 1:02d}",
-                progress_cb=lambda line: signals.progress.emit(line),
-                progress_pct_cb=lambda _pct: None,
-                signals=signals,
-            )
-            if thumb_path.exists():
-                thumbnails.append(EncodePreviewCapture(
-                    image_path=thumb_path,
-                    scene_time_s=segment_start + thumb_time,
-                    label=f"+{thumb_time:.1f}s",
-                ))
-            signals.progress_pct.emit(self._scale_pct(80, 100, int((idx + 1) * 100 / thumb_count)))
+            kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
+        return kind
 
-        self._remove_preview_temp(source_segment)
-        signals.progress_pct.emit(100)
+    def _preview_probe(self, cmd: list[str], signals: TaskSignals | None, *, timeout: float = 120.0) -> str:
+        """Sonde de l'aperçu, bornée et tuée par l'annulation de l'aperçu."""
+        from core.subprocess_utils import ProbeCancelledError, run_probe
 
-        return EncodePreviewResult(
-            mode=EncodePreviewMode.VIDEO.value,
-            captures=tuple(thumbnails),
-            video_path=encoded_clip,
-            warning=scene.warning,
-        )
+        try:
+            result = run_probe(cmd, timeout=timeout, cancel_event=getattr(signals, "_cancel_event", None))
+        except ProbeCancelledError:
+            raise TaskCancelledError() from None
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EncodeError(f"Sonde de l'aperçu impossible : {exc}") from exc
+        if result.returncode != 0:
+            raise EncodeError(f"Sonde de l'aperçu en échec : {(result.stderr or '').strip()[-300:]}")
+        return result.stdout or ""
+
+    def _preview_keyframe_at_or_before(self, source: Path, stream_index: int, time_s: float,
+                                       signals: TaskSignals | None) -> Fraction:
+        """Instant exact (relatif au début de la source, base de temps du flux) de l'image clé ≤ ``time_s``."""
+        start = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time",
+                                     "-of", "csv=p=0", *ffprobe_input_args(source)], signals, timeout=30.0)
+        try:
+            origin = Fraction(start.strip().split(",", 1)[0] or "0")
+        except (ValueError, ZeroDivisionError):
+            origin = Fraction(0)
+        limit = Fraction(time_s).limit_denominator(10**6)
+        for low in (max(Fraction(0), limit - 30), Fraction(0)):
+            interval = f"{float(origin + low):.6f}%{float(origin + limit + 1):.6f}"
+            payload = json.loads(self._preview_probe(
+                [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
+                 interval, "-show_entries", "packet=pts,flags:stream=time_base", "-of", "json",
+                 *ffprobe_input_args(source)], signals) or "{}")
+            try:
+                base = Fraction(str((payload.get("streams") or [{}])[0].get("time_base") or "1/1000"))
+            except (ValueError, ZeroDivisionError):
+                base = Fraction(1, 1000)
+            keys = [Fraction(int(packet["pts"])) * base - origin for packet in payload.get("packets") or []
+                    if "K" in str(packet.get("flags") or "") and str(packet.get("pts", "")).lstrip("-").isdigit()]
+            before = [key for key in keys if key <= limit + Fraction(1, 10**6)]
+            if before:
+                return max(Fraction(0), max(before))
+            if low == 0 and keys:
+                return max(Fraction(0), min(keys))
+        return Fraction(0)
+
+    @staticmethod
+    def _seek_arg_at_or_after(seconds: Fraction) -> str:
+        """``-ss`` au microseconde supérieur (FFmpeg lit ``-ss`` en µs) : jamais avant l'image clé visée, sinon la
+        recherche reculerait jusqu'à l'image clé précédente ; jamais plus d'1 µs après."""
+        micros = max(0, -((-seconds.numerator * 1_000_000) // seconds.denominator))
+        return f"{micros // 1_000_000}.{micros % 1_000_000:06d}"
+
+    def _cut_preview_segment(self, source: Path, output: Path, *, stream_index: int, keyframe_s: Fraction,
+                             duration_s: float, signals: TaskSignals) -> float:
+        """Segment source copié depuis l'image clé ``keyframe_s`` ; renvoie son instant source (début réel).
+
+        Les images de tête non décodables (RASL d'un GOP ouvert, PTS négatifs après la découpe) sont retirées avec
+        leurs RPU / EL ; la première image du segment est vérifiée : l'image clé visée, à l'instant 0.
+        """
+        self._check_cancelled(signals)
+        cmd = self._build_preview_source_segment_cmd(source, output, stream_index=stream_index, start_s=keyframe_s,
+                                                     duration_s=max(0.5, duration_s))
+        self._runner._run_cmd(cmd, cwd=output.parent, label="ffmpeg-preview-source",
+                              progress_cb=lambda line: signals.progress.emit(line),
+                              progress_pct_cb=lambda _pct: None, signals=signals)
+        self._check_cancelled(signals)
+        payload = json.loads(self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
+             "-show_entries", "packet=pts_time,flags", "-of", "json", *ffprobe_input_args(output)], signals) or "{}")
+        first = (payload.get("packets") or [{}])[0]
+        try:
+            first_time = float(first.get("pts_time"))
+        except (TypeError, ValueError):
+            first_time = None
+        if "K" not in str(first.get("flags") or "") or first_time is None or abs(first_time) > 0.0005:
+            raise EncodeError("Aperçu : le segment source ne commence pas par l'image clé attendue "
+                              f"({self._seconds_label(float(keyframe_s))}).")
+        return float(keyframe_s)
+
+    def _preview_clip_frame_times(self, clip: Path, signals: TaskSignals) -> list[float]:
+        """Instants des images décodées du clip (ordre d'affichage), relatifs à sa première image."""
+        output = self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "frame=best_effort_timestamp_time", "-of", "csv=p=0", *ffprobe_input_args(clip)], signals, timeout=300.0)
+        times = []
+        for line in output.splitlines():
+            value = line.strip().split(",", 1)[0]
+            try:
+                times.append(float(value))
+            except ValueError:
+                continue
+        return [time_s - times[0] for time_s in times] if times else []
+
+    def _build_preview_frame_by_rank_cmd(self, clip: Path, output: Path, rank: int, hdr_kind: str) -> list[str]:
+        """Extraction de l'image de rang ``rank`` (ordre d'affichage) du clip, tone-mappée pour l'affichage."""
+        cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        append_ffmpeg_input_args(cmd, clip)
+        chain = f"select=eq(n\\,{int(rank)})"
+        tonemap = self._preview_image_tonemap_filter(hdr_kind)
+        if tonemap:
+            chain += "," + tonemap
+        cmd.extend(["-map", "0:v:0", "-vf", chain, "-frames:v", "1", "-fps_mode", "passthrough", "-update", "1",
+                    "-an", "-sn", "-dn", str(output)])
+        return cmd
 
     @staticmethod
     def _remove_preview_temp(path: Path) -> None:
@@ -2787,64 +2799,29 @@ class EncodeWorkflow(QObject):
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}.{millis:03d}"
 
-    def _preview_segment_start(self, source: Path, stream_index: int, start_s: float) -> float | None:
-        """Instant source du premier paquet que copiera ``-ss start_s`` (même recherche que la découpe).
-
-        ``-copyts`` garde l'horodatage d'origine ; ``framecrc`` donne le PTS du premier paquet. None si illisible.
-        """
-        cmd = [self._ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-copyts", "-ss", self._seconds_arg(start_s)]
-        append_ffmpeg_input_args(cmd, source)
-        cmd.extend(["-map", f"0:{int(stream_index)}", "-c", "copy", "-frames:v", "1", "-f", "framecrc", "-"])
-        probe = [self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time", "-of", "csv=p=0"]
-        probe.extend(ffprobe_input_args(source))
-        try:
-            # Outils configurés, arguments séparés, sans shell.
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            packets = subprocess.run(cmd, capture_output=True, check=False, timeout=60,  # nosec B603
-                                     **subprocess_text_kwargs())
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            start = subprocess.run(probe, capture_output=True, check=False, timeout=30,  # nosec B603
-                                   **subprocess_text_kwargs())
-        except (OSError, subprocess.SubprocessError):
-            return None
-        timebase: Fraction | None = None
-        for line in (packets.stdout or "").splitlines():
-            if line.startswith("#tb 0:"):
-                try:
-                    timebase = Fraction(line.split(":", 1)[1].strip())
-                except (ValueError, ZeroDivisionError):
-                    return None
-            elif line and not line.startswith("#") and timebase is not None:
-                fields = [field.strip() for field in line.split(",")]
-                if len(fields) < 3 or not fields[2].lstrip("-").isdigit():
-                    return None
-                try:
-                    origin = float((start.stdout or "0").strip().split(",", 1)[0] or 0)
-                except ValueError:
-                    origin = 0.0
-                return max(0.0, float(int(fields[2]) * timebase) - origin)
-        return None
-
     def _build_preview_source_segment_cmd(
         self,
         source: Path,
         output: Path,
         *,
         stream_index: int,
-        start_s: float,
+        start_s: Fraction | float,
         duration_s: float,
     ) -> list[str]:
+        """Copie du segment depuis l'image clé ``start_s`` (instant exact) : ``-ss`` au µs supérieur, images de tête
+        de PTS négatif (RASL d'un GOP ouvert, non décodables) retirées avec leurs RPU / EL."""
         cmd = [
             self._ffmpeg,
             "-hide_banner",
             "-y",
-            "-ss", self._seconds_arg(start_s),
+            "-ss", self._seek_arg_at_or_after(Fraction(start_s)),
             "-t", self._seconds_arg(duration_s),
         ]
         append_ffmpeg_input_args(cmd, source)
         cmd.extend([
             "-map", f"0:{int(stream_index)}",
             "-c:v", "copy",
+            "-bsf:v", "noise=drop=lt(pts\\,0)",
             "-an",
             "-sn",
             "-dn",
@@ -2962,6 +2939,11 @@ class EncodeWorkflow(QObject):
         clip_duration_s: float,
     ) -> EncodeConfig:
         original_video = self._primary_video_settings(config)
+        if original_video.restores() and original_video.restoration.animation == "auto":
+            # Genre lu sur la configuration d'origine (balise de sortie, sinon source) : le segment n'en porte plus.
+            animated = self._is_animation(config, original_video)
+            original_video = replace(original_video, restoration=replace(original_video.restoration,
+                                                                         animation="on" if animated else "off"))
         video = replace(
             original_video,
             source_path=source_segment,

@@ -241,16 +241,22 @@ class TestEncodePreviewWorkflow:
         src = tmp_path / "source.mkv"
         out = tmp_path / "preview.mkv"
 
+        from fractions import Fraction
+
+        # Image clé à 90 004 / 90 000 s (hors grille milliseconde) : -ss au µs supérieur, jamais avant elle.
         cmd = wf._build_preview_source_segment_cmd(
             src,
             out,
             stream_index=2,
-            start_s=12.3456,
+            start_s=Fraction(90004, 90000),
             duration_s=8.0,
         )
 
         assert cmd[:4] == ["ffmpeg", "-hide_banner", "-y", "-ss"]
-        assert cmd[cmd.index("-ss") + 1] == "12.346"
+        assert cmd[cmd.index("-ss") + 1] == "1.000045"
+        assert cmd[cmd.index("-bsf:v") + 1] == "noise=drop=lt(pts\\,0)"
+        assert wf._build_preview_source_segment_cmd(src, out, stream_index=2, start_s=Fraction(1001, 1000),
+                                                    duration_s=8.0)[4] == "1.001000"
         assert cmd[cmd.index("-t") + 1] == "8.000"
         assert cmd[cmd.index("-map") + 1] == "0:2"
         assert cmd[-1] == str(out)
@@ -317,62 +323,51 @@ class TestEncodePreviewWorkflow:
         assert EncodePreviewRequest(mode="video", duration_s=99).normalized_duration_s() == 30.0
         assert EncodePreviewRequest(mode="image", duration_s=99).normalized_duration_s() == 5.0
 
-    def test_run_preview_sync_image_mode_generates_seven_captures(self, tmp_path, monkeypatch):
-        from core.workflows.encode import PREVIEW_IMAGE_CAPTURE_COUNT
-        from core.workflows.encode.runtime.hdr_metadata import DynamicHdrPreviewSceneSelection
+    def test_run_preview_sync_image_mode_encodes_and_picks_requested_instant(self, tmp_path, monkeypatch):
+        """Aperçu image : extrait encodé depuis l'image clé ≤ instant, image choisie par son instant réel (audit C03)."""
+        from fractions import Fraction
 
         src = tmp_path / "source.mkv"
         src.touch()
         wf = _make_workflow()
-        cfg = _make_config(
-            src,
-            tmp_path / "out.mkv",
-            work_dir=tmp_path,
-            duration_s=600.0,
-        )
-        created_images: list[Path] = []
+        cfg = _make_config(src, tmp_path / "out.mkv", work_dir=tmp_path, duration_s=600.0)
+        commands: dict[str, list[str]] = {}
 
         def fake_run_cmd(cmd, *, cwd=None, env=None, label="", progress_cb=None, progress_pct_cb=None, signals=None):
             _ = (cwd, env, progress_cb, progress_pct_cb, signals)
+            commands[label] = list(cmd)
             output = Path(cmd[-1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"\x89PNG\r\n\x1a\n")
-            if label.startswith("ffmpeg-preview-image-"):
-                created_images.append(output)
             return ""
 
-        fake_scenes = tuple(
-            DynamicHdrPreviewSceneSelection(
-                requested_time_s=float(i) * 60.0,
-                scene_time_s=float(i) * 60.0 + 1.0,
-                reason="I-frame DoVi metadata",
-            )
-            for i in range(PREVIEW_IMAGE_CAPTURE_COUNT)
-        )
+        def fake_run_with_preparation(config, *, validate, prep_signals=None):
+            config.output.write_bytes(b"encoded")
+            commands["clip_duration"] = [str(config.duration_s)]
+            prep_signals.finished.emit("ok")
+            return prep_signals
+
+        def fake_probe(cmd, _signals, **_kwargs):
+            if "frame=best_effort_timestamp_time" in cmd:
+                return "".join(f"{100 + index * 0.04:.6f}\n" for index in range(60))  # 25 i/s, PTS non nuls
+            return '{"packets": [{"pts_time": "0.000000", "flags": "K__"}]}'
 
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
-        monkeypatch.setattr(
-            wf._hdr_metadata_service,
-            "select_preview_scenes_random",
-            lambda *args, **kwargs: fake_scenes,
-        )
-        monkeypatch.setattr(
-            wf._hdr_metadata_service,
-            "source_hdr_transfer",
-            lambda *args, **kwargs: "pq",
-        )
+        monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
+        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a: Fraction(40))
+        monkeypatch.setattr(wf, "_preview_probe", fake_probe)
+        monkeypatch.setattr(wf._hdr_metadata_service, "source_hdr_transfer", lambda *args, **kwargs: "")
 
-        result = wf._run_preview_sync(
-            cfg,
-            EncodePreviewRequest(mode="image"),
-            TaskSignals(),
-        )
+        result = wf._run_preview_sync(cfg, EncodePreviewRequest(mode="image", timecode_s=41.01), TaskSignals())
 
-        assert result.mode == "image"
-        assert result.video_path is None
-        assert len(result.captures) == PREVIEW_IMAGE_CAPTURE_COUNT
-        assert len(created_images) == PREVIEW_IMAGE_CAPTURE_COUNT
-        assert all(capture.image_path.exists() for capture in result.captures)
+        assert result.mode == "image" and result.video_path is None
+        assert len(result.captures) == 1 and result.captures[0].image_path.exists()
+        # Première image d'instant ≥ 41,01 s : rang 26 (40 + 26 × 0,04 = 41,04).
+        assert result.captures[0].scene_time_s == pytest.approx(41.04)
+        assert "select=eq(n\\,26)" in commands["ffmpeg-preview-image"]
+        segment = commands["ffmpeg-preview-source"]
+        assert segment[segment.index("-ss") + 1] == "40.000000" and "noise=drop=lt(pts\\,0)" in segment
+        assert not list(tmp_path.glob("previews/*_source.mkv")) and not list(tmp_path.glob("previews/*[0-9a-f].mkv"))
 
     def test_run_preview_sync_video_mode_generates_thumbnails(self, tmp_path, monkeypatch):
         from core.workflows.encode import PREVIEW_VIDEO_THUMBNAIL_COUNT
@@ -413,6 +408,10 @@ class TestEncodePreviewWorkflow:
 
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
         monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
+        from fractions import Fraction
+        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a: Fraction(42))
+        monkeypatch.setattr(wf, "_preview_probe",
+                            lambda *_a, **_k: '{"packets": [{"pts_time": "0.000000", "flags": "K__"}]}')
         monkeypatch.setattr(
             wf._hdr_metadata_service,
             "select_preview_scene",
@@ -470,52 +469,6 @@ class TestDynamicHdrPreviewSceneProbe:
         assert selection.scene_time_s == 21.0
         assert selection.reason == "I-frame HDR10+"
         assert selection.snapped is True
-
-    def test_select_preview_scenes_random_skips_probe_for_sdr(self, tmp_path, monkeypatch):
-        source = tmp_path / "sdr.mkv"
-        source.touch()
-        service = self._service()
-        probe_calls: list[int] = []
-        monkeypatch.setattr(
-            service,
-            "preview_keyframe_times",
-            lambda *_args, **_kwargs: probe_calls.append(1) or (),
-        )
-
-        scenes = service.select_preview_scenes_random(
-            source,
-            count=7,
-            source_duration_s=600.0,
-            prefer_dovi=False,
-            prefer_hdr10plus=False,
-        )
-
-        assert len(scenes) == 7
-        assert probe_calls == []
-        assert all(1.0 <= s.scene_time_s <= 595.0 for s in scenes)
-
-    def test_select_preview_scenes_random_uses_keyframes_for_hdr(self, tmp_path, monkeypatch):
-        source = tmp_path / "dv.mkv"
-        source.touch()
-        service = self._service()
-        keyframes = tuple(float(i) * 2.0 for i in range(300))  # 0, 2, 4, ..., 598
-        monkeypatch.setattr(
-            service,
-            "preview_keyframe_times",
-            lambda *_args, **_kwargs: keyframes,
-        )
-
-        scenes = service.select_preview_scenes_random(
-            source,
-            count=7,
-            source_duration_s=600.0,
-            prefer_dovi=True,
-        )
-
-        assert len(scenes) == 7
-        for s in scenes:
-            assert s.scene_time_s in keyframes
-            assert "I-frame" in s.reason
 
 
 # ===========================================================================

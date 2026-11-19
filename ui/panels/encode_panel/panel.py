@@ -3786,8 +3786,9 @@ class EncodePanel(QWidget):
             return
         is_video = self._preview_mode_combo.currentData() == "video"
         self._preview_duration_spin.setEnabled(is_video)
-        self._preview_time_edit.setEnabled(is_video)
-        self._preview_random_btn.setEnabled(is_video)
+        # Image comme vidéo : instant choisi ou tiré au hasard (image de la sortie encodée à cet instant).
+        self._preview_time_edit.setEnabled(True)
+        self._preview_random_btn.setEnabled(True)
         self._preview_video_result_row.setVisible(is_video)
 
     def _on_preview_time_edited(self, _text: str) -> None:
@@ -3807,7 +3808,10 @@ class EncodePanel(QWidget):
         self._preview_time_edit.blockSignals(True)
         self._preview_time_edit.setText(self._format_preview_timecode(seconds))
         self._preview_time_edit.blockSignals(False)
-        self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
+        if self._preview_mode_combo.currentData() == "video":
+            self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
+        else:  # image : l'instant affiché est exactement celui de l'image livrée (ou la suivante)
+            self._preview_scene_status.setText(translate_text("Instant aléatoire prêt."))
 
     def _on_generate_preview(self) -> None:
         if getattr(self, "_operation_running", False):
@@ -3837,7 +3841,8 @@ class EncodePanel(QWidget):
             mode=mode,
             timecode_s=timecode_s,
             duration_s=duration_s,
-            random_scene=self._preview_random_scene,
+            # Image : l'instant tiré est déjà affiché et utilisé tel quel ; vidéo : recalage HDR du workflow.
+            random_scene=self._preview_random_scene and mode == "video",
         )
         self._preview_random_scene = False
         self._set_preview_running(True)
@@ -4080,10 +4085,9 @@ class EncodePanel(QWidget):
         self._preview_cancel_btn.setEnabled(running)
         self._preview_mode_combo.setEnabled(not running)
         is_video = self._preview_mode_combo.currentData() == "video"
-        active = (not running) and is_video
-        self._preview_time_edit.setEnabled(active)
-        self._preview_random_btn.setEnabled(active)
-        self._preview_duration_spin.setEnabled(active)
+        self._preview_time_edit.setEnabled(not running)
+        self._preview_random_btn.setEnabled(not running)
+        self._preview_duration_spin.setEnabled((not running) and is_video)
         if not running:
             self._preview_signals = None
             self._preview_progress.setVisible(False)

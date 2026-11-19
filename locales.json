@@ -11410,5 +11410,9 @@
   "{count} image(s) de la source sans RPU Dolby Vision (rangs d'affichage {ranks}) : RPU de l'image précédente répété à leur rang.": {
     "fra": "{count} image(s) de la source sans RPU Dolby Vision (rangs d'affichage {ranks}) : RPU de l'image précédente répété à leur rang.",
     "eng": "{count} source frame(s) without a Dolby Vision RPU (display ranks {ranks}): the previous frame's RPU is repeated at their position."
+  },
+  "Instant aléatoire prêt.": {
+    "fra": "Instant aléatoire prêt.",
+    "eng": "Random instant ready."
   }
 }

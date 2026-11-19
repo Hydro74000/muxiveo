@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -224,66 +223,3 @@ def test_fel_fallback_restores_source_master_display(tmp_path):
                                 fel_context=context, bake_dovi_fel=True)
     restored = fallback_video(video)
     assert restored.master_display == _P3_1000 and restored.max_cll == "1000,400" and restored.fel_context is None
-
-
-def test_preview_segment_start_reads_first_copied_packet(monkeypatch, tmp_path):
-    from core.workflows.encode import workflow as module
-
-    outputs = iter([
-        "#tb 0: 1/1000\n#media_type 0: video\n0,    3645225,    3645350,       41,   528286, 0xc0eb0d70\n",
-        "0.000000\n",
-    ])
-    calls: list[list[str]] = []
-
-    def run(cmd, **_kw):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout=next(outputs), stderr="")
-
-    monkeypatch.setattr(module.subprocess, "run", run)
-    wf = EncodeWorkflow()
-    assert wf._preview_segment_start(tmp_path / "film.mkv", 0, 3646.351) == pytest.approx(3645.35)
-    assert calls[0][calls[0].index("-ss") + 1] == "3646.351" and "-copyts" in calls[0]
-
-
-def test_fel_image_preview_renders_with_output_metadata(monkeypatch, tmp_path):
-    """Image du plugin encodée sans perte avec le HDR10 statique et le RPU P8.1 de l'image, puis rendue."""
-    from core.fel import pipeline
-
-    rpu = tmp_path / "fel_original_1.bin"
-    rpu.write_bytes(b"RPU")
-    video = VideoEncodeSettings(codec="libx265", copy_dv=True, inject_hdr_meta=True, master_display=_P3_1000,
-                                max_cll="997,19", fel_context=SimpleNamespace(original_rpu=rpu))
-    wf = EncodeWorkflow()
-    monkeypatch.setattr(pipeline, "with_fel_input", lambda cmd, _video: ["FEL", *cmd])
-    monkeypatch.setattr(wf, "_preview_image_tonemap_filter", lambda _kind: "libplacebo=x")
-    monkeypatch.setattr(wf, "_preview_frame_index", lambda *_a: 87425)
-    monkeypatch.setattr(wf, "_preview_rpu_frames", lambda _rpu: 198635)
-    commands: list[list[str]] = []
-    edits: list[dict] = []
-
-    def run(cmd, **_kw):
-        commands.append(list(cmd))
-        if "editor" in cmd:
-            edits.append(json.loads(Path(cmd[cmd.index("-j") + 1]).read_text()))
-        Path(cmd[-1]).write_bytes(b"x")
-
-    monkeypatch.setattr(wf._runner, "_run_cmd", run)
-    output = tmp_path / "capture_01.png"
-    assert wf._render_fel_preview_image(video, tmp_path / "film.mkv", 0, 3646.351, output, "pq", Mock())
-    frame, editor, inject, render = commands
-    params = frame[frame.index("-x265-params") + 1]
-    assert frame[0] == "FEL" and "lossless=1" in params and "master-display=" + _P3_1000 in params
-    assert "max-cll=997,19" in params
-    assert edits == [{"mode": 2, "remove": ["0-87424", "87426-198634"]}]
-    assert inject[1] == "inject-rpu" and render[render.index("-vf") + 1] == "libplacebo=x"
-    assert render[render.index("-i") + 1] == inject[inject.index("-o") + 1]
-    assert output.is_file() and sorted(p.name for p in tmp_path.iterdir()) == ["capture_01.png", "fel_original_1.bin"]
-
-
-def test_fel_image_preview_not_applicable_without_fel_or_for_sdr(tmp_path):
-    wf = EncodeWorkflow()
-    signals = Mock()
-    assert not wf._render_fel_preview_image(VideoEncodeSettings(codec="libx265"), tmp_path / "f.mkv", 0, 1.0,
-                                            tmp_path / "o.png", "pq", signals)
-    sdr = VideoEncodeSettings(codec="libx265", tonemap_to_sdr=True, fel_context=SimpleNamespace(original_rpu=tmp_path))
-    assert not wf._render_fel_preview_image(sdr, tmp_path / "f.mkv", 0, 1.0, tmp_path / "o.png", "pq", signals)

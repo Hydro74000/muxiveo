@@ -156,3 +156,78 @@ def test_real_fel_encode(qt_app, tmp_path, monkeypatch, real_excerpt, mode):
     # Le fallback HDR10 se décode sans lecteur Dolby Vision, sur toutes les images.
     subprocess.run(["ffmpeg", "-v", "error", "-i", str(output), "-map", "0:v:0", "-f", "null", "-"],
         check=True, capture_output=True)
+
+
+def _l1_sequence(path: Path, work: Path) -> list[tuple]:
+    """L1 (min, max, moyenne) de chaque image du RPU présent dans ``path`` (ordre d'affichage)."""
+    rpu, export = work / f"{path.stem}-l1.bin", work / f"{path.stem}-l1.json"
+    subprocess.run(["dovi_tool", "-m", "0", "extract-rpu", "-i", str(path), "-o", str(rpu)], check=True,
+                   capture_output=True)
+    subprocess.run(["dovi_tool", "export", "-i", str(rpu), "-d", f"all={export}"], check=True, capture_output=True)
+
+    def level1(node):
+        if isinstance(node, dict):
+            if "Level1" in node:
+                return tuple(sorted(node["Level1"].items()))
+            return next((found for value in node.values() if (found := level1(value)) is not None), None)
+        if isinstance(node, list):
+            return next((found for value in node if (found := level1(value)) is not None), None)
+        return None
+
+    return [level1(frame) for frame in json.loads(export.read_text(encoding="utf-8"))]
+
+
+def test_real_fel_image_preview_reconstructs_and_keeps_rpu_alignment(qt_app, tmp_path, monkeypatch):
+    """Audit C01/C03 : aperçu image encodé depuis la source complète, reconstruction FEL effective, RPU de l'image
+    livrée = RPU source de l'image demandée.
+
+    Instant par défaut 0,5 s : sur ``samples/BL_EL.mkv``, toute découpe en milieu de fichier fait échouer le plugin
+    (« Envoi couche au décodeur : Invalid data found », repli BL annoncé), comme l'ancien aperçu par positionnement
+    du plugin et les captures du FEL Analyzer (échec préexistant, investigation séparée).
+    ``MUXIVEO_TEST_FEL_PREVIEW_AT`` choisit un autre instant sur un corpus dont l'EL suit les images clés de la BL."""
+    from fractions import Fraction
+
+    from core.workflows.encode import EncodePreviewRequest
+
+    source = Path(_SOURCE)
+    engine = FelEngine(Path(_LIBRARY))
+    monkeypatch.setattr(FelEngine, "installed", classmethod(lambda cls: engine))
+    workflow = EncodeWorkflow(ffmpeg_threads=12, generate_nfo=False)
+    stream = _probe(source, "-show_streams")["streams"][0]
+    video = VideoEncodeSettings(codec="libx265", source_path=source, preset="ultrafast", bake_dovi_fel=True,
+                                dovi_source_profile="p7_fel", copy_dv=True, bit_depth="10", source_bit_depth=10,
+                                source_color_transfer="smpte2084", input_frame_rate=stream["avg_frame_rate"], crf=24)
+    config = EncodeConfig(source=source, output=tmp_path / "out.mkv", video=video, audio_tracks=[],
+                          copy_subtitles=False, keep_chapters=False, duration_s=float(stream.get("duration") or 0)
+                          or 120.0, work_dir=tmp_path)
+    kept: list[Path] = []
+    original_remove = workflow._remove_preview_temp
+
+    def keep_clip(path: Path) -> None:
+        if path.suffix == ".mkv" and not path.name.endswith("_source.mkv"):
+            kept.append(path)  # clip encodé conservé pour relire son RPU
+            return
+        original_remove(path)
+
+    monkeypatch.setattr(workflow, "_remove_preview_temp", keep_clip)
+    messages: list[tuple[str, str]] = []
+    workflow.log_message.connect(lambda level, message: messages.append((level, message)))
+    instant = float(os.environ.get("MUXIVEO_TEST_FEL_PREVIEW_AT", "0.5"))
+    state = wait_task(workflow.run_preview(config, EncodePreviewRequest(mode="image", timecode_s=instant)),
+                      timeout=300)
+    assert state["failed"] is None, state["failed"]
+    everything = [m for _, m in messages] + state["progress"]
+    # Preuves positives : FEL classé et confirmé, aucun repli sur le BL (préparation, pipeline, multi-pistes).
+    assert any("FEL confirmé" in m for m in everything), everything
+    fallback = [m for m in everything if "repli BL" in m or "sur le BL" in m or "sans effet" in m]
+    assert not fallback, fallback
+    result = json.loads(state["finished"])
+    capture = result["captures"][0]
+    assert Path(capture["image_path"]).is_file()
+    rate = Fraction(stream["avg_frame_rate"])
+    expected = next(i for i in range(10**6) if Fraction(i) / rate >= Fraction(instant) - Fraction(1, 2000))
+    clip_l1, source_l1 = _l1_sequence(kept[0], tmp_path), _l1_sequence(source, tmp_path)
+    offsets = [o for o in range(len(source_l1) - len(clip_l1) + 1) if source_l1[o:o + len(clip_l1)] == clip_l1]
+    assert len(offsets) == 1, "le RPU du clip doit être une tranche unique et contiguë de celui de la source"
+    rank = round((float(capture["scene_time_s"]) - offsets[0] / float(rate)) * float(rate))
+    assert offsets[0] + rank == expected

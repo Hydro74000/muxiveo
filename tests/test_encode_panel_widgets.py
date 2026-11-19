@@ -1437,8 +1437,9 @@ class TestEncodePanelDynamicHdrDefaults:
         panel._preview_mode_combo.setCurrentIndex(0)
 
         assert panel._preview_duration_spin.isEnabled() is False
-        assert panel._preview_time_edit.isEnabled() is False
-        assert panel._preview_random_btn.isEnabled() is False
+        # Image encodée à l'instant choisi (audit C03) : instant et tirage aléatoire disponibles.
+        assert panel._preview_time_edit.isEnabled() is True
+        assert panel._preview_random_btn.isEnabled() is True
         assert panel._preview_video_result_row.isHidden() is True
         panel.close()
 
