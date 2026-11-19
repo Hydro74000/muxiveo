@@ -2673,13 +2673,18 @@ class EncodeWorkflow(QObject):
         limit = Fraction(time_s).limit_denominator(10**6)
         tolerance = Fraction(1, 10**6)
         low = max(Fraction(0), limit - 30)
-        result: tuple[Fraction, Fraction | None, Fraction | None] = (Fraction(0), None, None)
-        for span in (30, 120, 600, 3600, 10**7):  # dernière fenêtre : jusqu'à la fin de la source
-            interval = f"{float(origin + low):.6f}%{float(origin + limit + span):.6f}"
+        spans: tuple[int | None, ...] = (30, 120, 600, 3600, None)  # None : jusqu'à la fin réelle de la source
+        index = 0
+        while True:
+            span = spans[index]
+            # Durée du conteneur atteinte (marge d'une seconde) : lecture finale sans borne de fin, jusqu'à la fin
+            # réelle (une durée sous-estimée n'arrête pas la recherche ; une durée juste : une seule lecture).
+            final = span is None or (duration is not None and limit + span >= duration + 1)
+            end_s = "" if final or span is None else f"{float(origin + limit + span):.6f}"
             payload = json.loads(self._preview_probe(
                 [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
-                 interval, "-show_entries", "packet=pts,flags:stream=time_base", "-of", "json",
-                 *ffprobe_input_args(source)], signals, timeout=600.0) or "{}")
+                 f"{float(origin + low):.6f}%{end_s}", "-show_entries", "packet=pts,flags:stream=time_base",
+                 "-of", "json", *ffprobe_input_args(source)], signals, timeout=600.0) or "{}")
             try:
                 base = Fraction(str((payload.get("streams") or [{}])[0].get("time_base") or "1/1000"))
             except (ValueError, ZeroDivisionError):
@@ -2689,7 +2694,7 @@ class EncodeWorkflow(QObject):
             keys = [time for time, key in packets if key]
             before = [time for time in keys if time <= limit + tolerance]
             if not before and low > 0:
-                low = Fraction(0)  # aucune image clé dans les 30 s précédentes : depuis le début de la source
+                low = Fraction(0)  # aucune image clé dans les 30 s précédentes : même fenêtre depuis le début
                 continue
             if not before:
                 before = [min(keys)] if keys else [Fraction(0)]
@@ -2697,12 +2702,9 @@ class EncodeWorkflow(QObject):
             target = max(Fraction(0), min(after)) if after else None
             reach = target if target is not None else limit
             following = [time for time in keys if time > reach + tolerance]
-            result = (max(Fraction(0), max(before)), target, min(following) if following else None)
-            # Fenêtre au-delà de la fin de la source (durée du conteneur, marge d'une seconde) : une fenêtre plus
-            # large relirait les mêmes paquets.
-            if following or (duration is not None and limit + span >= duration + 1):
-                return result
-        return result
+            if following or final:
+                return max(Fraction(0), max(before)), target, min(following) if following else None
+            index += 1
 
     @staticmethod
     def _seek_arg_at_or_after(seconds: Fraction) -> str:

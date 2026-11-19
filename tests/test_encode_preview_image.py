@@ -70,7 +70,8 @@ def _fake_probe(format_csv: str, times: list[float], keys: set[float]):
             return format_csv
         interval = cmd[cmd.index("-read_intervals") + 1]
         calls.append(interval)
-        low, high = (float(value) for value in interval.split("%"))
+        low_s, high_s = interval.split("%")
+        low, high = float(low_s), float(high_s or "inf")  # borne de fin absente : jusqu'à la fin
         packets = [{"pts": str(round(time * 1000)), "flags": "K__" if time in keys else "___"}
                    for time in times if low - 1e-9 <= time <= high]
         return json.dumps({"streams": [{"time_base": "1/1000"}], "packets": packets})
@@ -99,3 +100,24 @@ def test_probe_widens_until_the_next_keyframe(qt_app, tmp_path, monkeypatch):
     monkeypatch.setattr(wf, "_preview_probe", probe)
     assert wf._preview_cut_points(tmp_path / "film.mkv", 0, 0.1, None) == (0, 20, 120)
     assert len(calls) == 2
+
+
+def test_underestimated_duration_reads_to_the_real_end(qt_app, tmp_path, monkeypatch):
+    """Durée du conteneur sous-estimée (29 s, dernière image à 220 s) : lecture finale sans borne de fin, image de
+    20 s atteinte (revue Codex)."""
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    probe, calls = _fake_probe("0.000000,29.000000", [0, 80, 40, 20, 60, 100, 120, 200, 160, 140, 180, 220],
+                               {0, 120})
+    monkeypatch.setattr(wf, "_preview_probe", probe)
+    assert wf._preview_cut_points(tmp_path / "film.mkv", 0, 0.1, None) == (0, 20, 120)
+    assert calls == ["0.000000%"]
+
+
+def test_keyframe_search_from_start_keeps_the_window(qt_app, tmp_path, monkeypatch):
+    """Aucune image clé dans les 30 s précédant la cible : même fenêtre relue depuis le début, sans en consommer
+    une plus large."""
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    probe, calls = _fake_probe("0.000000,N/A", [float(second) for second in range(0, 80, 2)], {0.0, 70.0})
+    monkeypatch.setattr(wf, "_preview_probe", probe)
+    assert wf._preview_cut_points(tmp_path / "film.mkv", 0, 40.5, None) == (0, 42, 70)
+    assert calls == ["10.500000%70.500000", "0.000000%70.500000"]
