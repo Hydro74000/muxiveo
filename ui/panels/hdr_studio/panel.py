@@ -156,6 +156,10 @@ class HdrStudio(QWidget):
 
     log_message = Signal(str, str)
     busy_changed = Signal(bool)
+    #: Tâches de fond en vol (outils, extension mvo-fel) : vrai jusqu'à la fin réelle de la dernière, annulée
+    #: comprise — protège les extensions contre une suppression ou une mise à jour (page Extensions).
+    tools_in_use_changed = Signal(bool)
+    _worker_finished = Signal()
     # Barre d'exécution globale (écriture du fichier corrigé) : mêmes signaux que les autres studios.
     op_state_changed = Signal(str, str)
     op_progress_pct = Signal(int)
@@ -204,6 +208,7 @@ class HdrStudio(QWidget):
         self._engine_factory = FelEngine.installed
         self.setAcceptDrops(True)
         self._build_ui()
+        self._worker_finished.connect(self._on_worker_finished, Qt.ConnectionType.QueuedConnection)
         self._inspected.connect(self._on_inspected, Qt.ConnectionType.QueuedConnection)
         self._cache_ready.connect(self._on_cache_ready, Qt.ConnectionType.QueuedConnection)
         self._progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
@@ -415,7 +420,7 @@ class HdrStudio(QWidget):
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
         if token != self._token:
@@ -456,7 +461,7 @@ class HdrStudio(QWidget):
         def task() -> None:
             self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index))
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_cache_ready(self, token: int, cached: object) -> None:
         if token == self._token and self._info is not None:
@@ -543,7 +548,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Lecture des métadonnées dynamiques : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_progress(self, token: int, label: str, pct: int) -> None:
         if token != self._token:
@@ -600,7 +605,7 @@ class HdrStudio(QWidget):
 
         ``fast`` : images clés seulement (plugin ≥ 0.5.0), estimation en moins d'une minute pour un film.
         """
-        if self._info is None or self._busy:
+        if self._info is None or self._busy or not self._extensions_admitted():
             return
         info, stream = self._info, self._current_stream()
         snapshot = build_snapshot(info, stream)
@@ -668,7 +673,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Mesure de l'image : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_measured(self, token: int, measurement: ImageMeasurement | None, error: str) -> None:
         if token != self._token:
@@ -738,7 +743,7 @@ class HdrStudio(QWidget):
 
     def analyse_fel(self, interval_s: int) -> None:
         """Relevé des couches puis comparaison image reconstruite / couche mapped aux instants échantillonnés."""
-        if self._info is None or self._busy or self._report is None:
+        if self._info is None or self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot, report = self._report.snapshot, self._report
         dovi = report.dovi
@@ -793,7 +798,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("FEL Analyzer : {name}", name=Path(snapshot.path).name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _fel_area(self) -> Callable[[float], tuple[int, int, int, int] | None]:
         """Zone active L5 (gauche, droite, haut, bas) en vigueur à un instant, None sans L5."""
@@ -806,7 +811,7 @@ class HdrStudio(QWidget):
     def test_fel_survival(self, encoder: str, bitrate_kbps: int) -> None:
         """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée."""
         fel = self._fel_tab.fel_report()
-        if fel is None or not fel.samples or self._busy or self._report is None:
+        if fel is None or not fel.samples or self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot = self._report.snapshot
         engine = self._fel_engine()
@@ -842,7 +847,7 @@ class HdrStudio(QWidget):
         self._set_busy(True, translate_text("Test de survie à l'encodage…"))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_fel_partial(self, token: int, fel: object) -> None:
         """Verdict provisoire après une passe grossière (60 s, 30 s) : affiché, l'analyse continue."""
@@ -867,7 +872,7 @@ class HdrStudio(QWidget):
 
     def open_fel_moment(self, time_s: float) -> None:
         """Capture pleine définition des couches sans / avec FEL à un instant, puis comparateur avant / après."""
-        if self._busy or self._report is None:
+        if self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot = self._report.snapshot
         engine = self._fel_engine()
@@ -904,7 +909,7 @@ class HdrStudio(QWidget):
                                             time=format_time(time_s)))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_moment_ready(self, token: int, images: object, error: str) -> None:
         if token != self._token:
@@ -959,7 +964,7 @@ class HdrStudio(QWidget):
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._compare_inspected.emit(token, None, 0, None, str(exc))
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def compare_track_changed(self, stream_index: int) -> None:
         info = self._compare_info
@@ -971,7 +976,7 @@ class HdrStudio(QWidget):
         def task() -> None:
             self._compare_inspected.emit(token, info, stream_index, self._cached(Path(info.path), stream_index), "")
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_compare_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
         if token != self._compare_token:
@@ -1023,7 +1028,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Lecture des métadonnées dynamiques : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_compare_analyzed(self, token: int, report: InspectionReport | None, error: str) -> None:
         if token != self._token:
@@ -1177,7 +1182,7 @@ class HdrStudio(QWidget):
         self.log_message.emit("INFO", translate_text("Correction des métadonnées : {source} → {output}",
                                                      source=plan.source.name, output=plan.output.name))
         self.op_state_changed.emit("started", translate_text("Correction de {name}…", name=plan.source.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_patched(self, token: int, output: Path | None, error: str) -> None:
         if token != self._token:
@@ -1214,6 +1219,41 @@ class HdrStudio(QWidget):
 
     def is_busy(self) -> bool:
         return self._busy
+
+    def set_extensions_guard(self, guard) -> None:
+        """Garde des analyses qui utilisent l'extension mvo-fel (fenêtre : aucune modification d'extension)."""
+        self._extensions_guard = guard
+
+    def _extensions_admitted(self) -> bool:
+        guard = getattr(self, "_extensions_guard", None)
+        if guard is None or guard():
+            return True
+        self._notify("WARN", translate_text("Analyse impossible : une extension est en cours d'installation, de mise "
+                                            "à jour ou de suppression."))
+        return False
+
+    def tools_in_use(self) -> bool:
+        """Vrai tant qu'une tâche de fond tourne encore (y compris annulée et pas encore terminée)."""
+        return getattr(self, "_inflight", 0) > 0
+
+    def _submit(self, task) -> None:
+        """Soumet ``task`` au fil de travail en comptant les tâches en vol jusqu'à leur fin réelle."""
+        self._inflight = getattr(self, "_inflight", 0) + 1
+        if self._inflight == 1:
+            self.tools_in_use_changed.emit(True)
+
+        def tracked() -> None:
+            try:
+                task()
+            finally:
+                self._worker_finished.emit()
+
+        self._executor.submit(tracked)
+
+    def _on_worker_finished(self) -> None:
+        self._inflight = max(0, getattr(self, "_inflight", 0) - 1)
+        if self._inflight == 0:
+            self.tools_in_use_changed.emit(False)
 
     # ── État ────────────────────────────────────────────────────────────
     def _set_busy(self, busy: bool, status: str = "") -> None:

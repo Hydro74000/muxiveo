@@ -92,14 +92,26 @@ class _ExtensionCard(QFrame):
         self.message.setVisible(bool(text))
 
     def sync_buttons(self, state: object, *, offer_install: bool, install_enabled: bool) -> None:
+        self._last_sync = (state, offer_install, install_enabled)
         installed = getattr(state, "installed", None)
         busy = str(getattr(state, "busy", "") or "")
+        blocked = getattr(self, "blocked", "")
         self.install_btn.setVisible(offer_install and installed is None)
-        self.install_btn.setEnabled(not busy and install_enabled)
+        self.install_btn.setEnabled(not busy and not blocked and install_enabled)
         self.update_btn.setVisible(bool(getattr(state, "update_available", False)))
-        self.update_btn.setEnabled(not busy)
+        self.update_btn.setEnabled(not busy and not blocked)
         self.remove_btn.setVisible(installed is not None)
-        self.remove_btn.setEnabled(not busy)
+        self.remove_btn.setEnabled(not busy and not blocked)
+        for button in (self.install_btn, self.update_btn, self.remove_btn):
+            button.setToolTip(blocked)
+
+    def set_blocked(self, reason: str) -> None:
+        """Actions suspendues (``reason`` affiché en info-bulle) ; "" les rétablit selon le dernier état."""
+        self.blocked = reason
+        last = getattr(self, "_last_sync", None)
+        if last is not None:
+            state, offer_install, install_enabled = last
+            self.sync_buttons(state, offer_install=offer_install, install_enabled=install_enabled)
 
 
 def _busy_status(state: object) -> str:
@@ -271,6 +283,11 @@ class ExtensionsPanel(QWidget):
         )
 
     # ------------------------------------------------------------------ états
+
+    def set_actions_blocked(self, reason: str) -> None:
+        """Installer / mettre à jour / supprimer suspendus pendant un traitement ou une autre modification."""
+        for card in (self._rife_card, self._trt_card, self._fel_card, self._nvencc_card):
+            card.set_blocked(reason)
 
     def set_rife_state(self, state: object) -> None:
         """Carte Interpolation selon l'état de l'extension (RifeState)."""

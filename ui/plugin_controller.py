@@ -89,6 +89,8 @@ class PluginController(QObject):
     log_message = Signal(str, str)        # (niveau, message)
     probe_requested = Signal()            # nouvelle sonde du GPU (moteur ou extension changé)
     workflow_changed = Signal()           # outil ou dossier de l'extension à transmettre aux encodages
+    mutation_finished = Signal()          # installation / mise à jour / suppression terminée (toute issue)
+    auto_update_ready = Signal()          # mise à jour automatique à admettre par la fenêtre (fil Qt)
 
     spec: plugins.PluginSpec
     label = ""                            # nom affiché (traduit à l'affichage)
@@ -102,6 +104,12 @@ class PluginController(QObject):
         self._auto_update_done = False
         self._auto_update_settled = False     # mise à jour automatique de ce lancement décidée (faite ou non)
         self._feed_known = False
+        self._update_gated = False            # vrai : la fenêtre admet la mise à jour automatique (auto_update_ready)
+
+    def set_update_gate(self, gated: bool) -> None:
+        """Mise à jour automatique confiée à la fenêtre (``auto_update_ready``) au lieu d'être lancée ici :
+        elle attend la fin des traitements qui utilisent les extensions."""
+        self._update_gated = bool(gated)
 
     # ------------------------------------------------------------------ état
 
@@ -149,7 +157,10 @@ class PluginController(QObject):
                 "{label} : mise à jour automatique vers la version {version}.",
                 label=translate_text(self.label), version=self._state.target,
             ))
-            self.update()
+            if self._update_gated:
+                self.auto_update_ready.emit()
+            else:
+                self.update()
         # Après le lancement éventuel (état « occupé » déjà posé) : pas de point vert fugitif.
         self._auto_update_settled = True
 
@@ -159,21 +170,36 @@ class PluginController(QObject):
 
     # ------------------------------------------------------------ opérations
 
-    def install(self) -> None:
-        self._start("install")
+    def install(self) -> bool:
+        """Lance l'installation ; faux si rien n'a démarré (opération déjà en cours, version inconnue)."""
+        return self._start("install")
 
-    def update(self) -> None:
-        self._start("update")
+    def update(self) -> bool:
+        return self._start("update")
 
     def cancel(self) -> None:
         self._cancel.set()
 
-    def _start(self, op: str) -> None:
+    def _start(self, op: str) -> bool:
         if self._state.busy:
-            return
+            return False
         self._cancel.clear()
         self._set_state(busy=op, progress=0, message="")
-        self._executor.submit(self._install_job, op)
+        self._executor.submit(self._guarded_job, self._install_job, op)
+        return True
+
+    def _guarded_job(self, job, *args: object) -> None:
+        """Tâche de mutation : « occupé » toujours levé et ``mutation_finished`` toujours émis, même sur une
+        exception imprévue (suppression d'un fichier refusée, contrôle en échec)."""
+        try:
+            job(*args)
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=translate_text(self.label),
+                                        reason=str(exc) or exc.__class__.__name__), level="ERROR")
+        finally:
+            if self._state.busy:
+                self._set_state(busy="", progress=-1)
+            self.mutation_finished.emit()
 
     def _progress(self, done: int, total: int) -> None:
         percent = int(done * 100 / total) if total > 0 else -1
@@ -211,11 +237,13 @@ class PluginController(QObject):
         """Contrôle de bon fonctionnement après installation ; message d'avertissement, "" si correct."""
         return ""
 
-    def remove(self) -> None:
+    def remove(self) -> bool:
+        """Lance la suppression ; faux si rien n'a démarré."""
         if self._state.busy:
-            return
+            return False
         self._set_state(busy="remove", progress=-1, message="")
-        self._executor.submit(self._remove_job)
+        self._executor.submit(self._guarded_job, self._remove_job)
+        return True
 
     def _remove_job(self) -> None:
         label = translate_text(self.label)
@@ -253,11 +281,11 @@ class FelPluginController(PluginController):
         super().__init__(config, PluginState(installed=plugins.installed_plugin(self.spec),
                                             target=""), parent)
 
-    def _start(self, op: str) -> None:
+    def _start(self, op: str) -> bool:
         if not self._state.target:
             self._set_state(message=translate_text("Version publiée indisponible."))
-            return
-        super()._start(op)
+            return False
+        return super()._start(op)
 
     def _verify(self, installed: plugins.InstalledPlugin) -> str:
         from core.fel.engine import FelEngine, FelError
@@ -397,6 +425,7 @@ class NvenccController(QObject):
     state_changed = Signal(object)        # NvenccState
     log_message = Signal(str, str)        # (niveau, message)
     tool_changed = Signal()
+    mutation_finished = Signal()          # installation / mise à jour / suppression terminée (toute issue)
 
     plugin_id = "nvencc"
     label = "NVEncC (encodeur NVIDIA)"
@@ -436,21 +465,36 @@ class NvenccController(QObject):
         if fetch_target and supported:
             self._set_state(target=nvencc_install.latest_version())
 
-    def install(self) -> None:
-        self._start("install")
+    def install(self) -> bool:
+        """Lance l'installation ; faux si rien n'a démarré (opération déjà en cours, version inconnue)."""
+        return self._start("install")
 
-    def update(self) -> None:
-        self._start("update")
+    def update(self) -> bool:
+        return self._start("update")
 
     def cancel(self) -> None:
         self._cancel.set()
 
-    def _start(self, op: str) -> None:
+    def _start(self, op: str) -> bool:
         if self._state.busy:
-            return
+            return False
         self._cancel.clear()
         self._set_state(busy=op, progress=0, message="")
-        self._executor.submit(self._install_job, op)
+        self._executor.submit(self._guarded_job, self._install_job, op)
+        return True
+
+    def _guarded_job(self, job, *args: object) -> None:
+        """Tâche de mutation : « occupé » toujours levé et ``mutation_finished`` toujours émis, même sur une
+        exception imprévue (suppression d'un fichier refusée, contrôle en échec)."""
+        try:
+            job(*args)
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=translate_text(self.label),
+                                        reason=str(exc) or exc.__class__.__name__), level="ERROR")
+        finally:
+            if self._state.busy:
+                self._set_state(busy="", progress=-1)
+            self.mutation_finished.emit()
 
     def _progress(self, done: int, total: int) -> None:
         percent = int(done * 100 / total) if total > 0 else -1
@@ -479,11 +523,13 @@ class NvenccController(QObject):
             "{label} {done} : {path}.", label=label, done=translate_text(done), path=str(installed),
         ), level="OK")
 
-    def remove(self) -> None:
+    def remove(self) -> bool:
+        """Lance la suppression de la copie utilisateur ; faux si rien n'a démarré."""
         if self._state.busy or not self._state.managed:
-            return
+            return False
         self._set_state(busy="remove", progress=-1, message="")
-        self._executor.submit(self._remove_job)
+        self._executor.submit(self._guarded_job, self._remove_job)
+        return True
 
     def _remove_job(self) -> None:
         label = translate_text(self.label)

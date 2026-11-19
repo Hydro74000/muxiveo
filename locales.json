@@ -11374,5 +11374,37 @@
   "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve.": {
     "fra": "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve.",
     "eng": "Share of total RAM that must stay free to start one more parallel video encode (multi-track pipeline). 0 = no reserve."
+  },
+  "La destination {name} a changé depuis la confirmation : rien n'a été écrit. Relancez pour confirmer à nouveau.": {
+    "fra": "La destination {name} a changé depuis la confirmation : rien n'a été écrit. Relancez pour confirmer à nouveau.",
+    "eng": "{name} changed since it was confirmed: nothing was written. Run again to confirm."
+  },
+  "Indisponible pendant un traitement, un aperçu ou une analyse en cours.": {
+    "fra": "Indisponible pendant un traitement, un aperçu ou une analyse en cours.",
+    "eng": "Unavailable while a job, preview or analysis is running."
+  },
+  "Extension non modifiée : un traitement, un aperçu ou une analyse utilise les outils. Réessayez à sa fin.": {
+    "fra": "Extension non modifiée : un traitement, un aperçu ou une analyse utilise les outils. Réessayez à sa fin.",
+    "eng": "Extension not changed: a job, preview or analysis is using the tools. Try again once it ends."
+  },
+  "Une autre extension est en cours d'installation, de mise à jour ou de suppression.": {
+    "fra": "Une autre extension est en cours d'installation, de mise à jour ou de suppression.",
+    "eng": "Another extension is being installed, updated or removed."
+  },
+  "Extension non modifiée : une autre extension est en cours d'installation, de mise à jour ou de suppression.": {
+    "fra": "Extension non modifiée : une autre extension est en cours d'installation, de mise à jour ou de suppression.",
+    "eng": "Extension not changed: another extension is being installed, updated or removed."
+  },
+  "Une extension est en cours d'installation, de mise à jour ou de suppression : attendez sa fin.": {
+    "fra": "Une extension est en cours d'installation, de mise à jour ou de suppression : attendez sa fin.",
+    "eng": "An extension is being installed, updated or removed: wait for it to finish."
+  },
+  "Preview indisponible : une extension est en cours d'installation, de mise à jour ou de suppression.": {
+    "fra": "Preview indisponible : une extension est en cours d'installation, de mise à jour ou de suppression.",
+    "eng": "Preview unavailable: an extension is being installed, updated or removed."
+  },
+  "Analyse impossible : une extension est en cours d'installation, de mise à jour ou de suppression.": {
+    "fra": "Analyse impossible : une extension est en cours d'installation, de mise à jour ou de suppression.",
+    "eng": "Analysis unavailable: an extension is being installed, updated or removed."
   }
 }

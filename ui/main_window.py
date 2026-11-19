@@ -46,6 +46,7 @@ import time
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from functools import partial
 from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, QTimer, QUrl
@@ -127,6 +128,7 @@ from ui.plugin_controller import (
     TrtPluginController,
 )
 from ui.operation_bar import OperationBar, OperationState
+from ui.tool_admission import ToolAdmission
 from ui.styles import workflow_icon
 from ui.widgets.log_panel import LogPanel, split_log_source
 from ui.desktop import open_external
@@ -1476,6 +1478,9 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_operation_refresh_timer", None)
         if timer is not None:
             timer.start()
+        admission = getattr(self, "_tool_admission", None)
+        if admission is not None:
+            admission.usage_changed()  # fin d'usage : mises à jour d'extensions en attente relancées
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -1642,6 +1647,14 @@ class MainWindow(QMainWindow):
         self._fel_controller = FelPluginController(self._config, self)
         self._trt_controller = TrtPluginController(self._config, self)
         self._nvencc_controller = NvenccController(self._config, self)
+        # Modifications d'extensions et usages des outils : exclusion réciproque, dans le fil Qt.
+        self._tool_admission = ToolAdmission(self._tools_in_use, self)
+        for plugin_id, ctrl in (
+            (self._rife_controller.spec.id, self._rife_controller), (self._fel_controller.spec.id, self._fel_controller),
+            (self._trt_controller.spec.id, self._trt_controller), (NvenccController.plugin_id, self._nvencc_controller),
+        ):
+            ctrl.mutation_finished.connect(partial(self._tool_admission.release_mutation, plugin_id),
+                                           Qt.ConnectionType.QueuedConnection)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
@@ -1974,6 +1987,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
+        self._encode_panel.set_preview_guard(self._extensions_idle)
+        self._hdr_panel.set_extensions_guard(self._extensions_idle)
+        self._encode_panel.preview_running_changed.connect(self._on_tools_usage_changed)
+        self._hdr_panel.tools_in_use_changed.connect(self._on_tools_usage_changed)
+        self._tool_admission.changed.connect(self._sync_extension_actions)
         self._dovi_panel.set_operation_start_guard(self._can_start_operation)
         self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
@@ -2094,7 +2112,8 @@ class MainWindow(QMainWindow):
         trt.state_changed.connect(self._on_trt_state_changed)
         trt.workflow_changed.connect(self._apply_trt_plugin_to_encode)
         panel.install_requested.connect(self._on_extension_install_requested)
-        panel.update_requested.connect(lambda plugin_id: self._extension_controller(plugin_id).update())
+        panel.update_requested.connect(
+            lambda plugin_id: self._mutate_extension(plugin_id, self._extension_controller(plugin_id).update))
         panel.remove_requested.connect(self._on_extension_remove_requested)
         panel.trt_enabled_toggled.connect(trt.set_enabled)
         panel.auto_update_toggled.connect(trt.set_auto_update)
@@ -2106,13 +2125,17 @@ class MainWindow(QMainWindow):
         panel.set_trt_state(trt.state())
         self._dashboard.set_rife_state(rife.state())
         self._refresh_extensions_update_dot()
-        self._encode_panel.rife_install_requested.connect(rife.install)
+        self._encode_panel.rife_install_requested.connect(lambda: self._mutate_extension(rife.spec.id, rife.install))
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
         self._apply_trt_plugin_to_encode()
         for ctrl in (rife, trt, fel):
+            # Mise à jour automatique admise par la fenêtre : jamais pendant un traitement ou une autre modification.
+            ctrl.set_update_gate(True)
+            ctrl.auto_update_ready.connect(partial(self._defer_auto_update, ctrl), Qt.ConnectionType.QueuedConnection)
             ctrl.cleanup()
             ctrl.refresh_feed()
+        self._sync_extension_actions()
         self._wire_nvencc_extension()
 
     def _wire_nvencc_extension(self) -> None:
@@ -2147,41 +2170,102 @@ class MainWindow(QMainWindow):
             return self._nvencc_controller
         return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
 
+    # ------------------------------------------------------------------
+    # Extensions : modifications admises seulement quand aucun outil n'est utilisé
+    # ------------------------------------------------------------------
+
+    def _tools_in_use(self) -> bool:
+        """Traitement, aperçu d'encodage ou analyse HDR Studio en cours (outils et extensions utilisés)."""
+        encode = getattr(self, "_encode_panel", None)
+        hdr = getattr(self, "_hdr_panel", None)
+        return bool(self._running or (encode is not None and encode.is_preview_running())
+                    or (hdr is not None and hdr.tools_in_use()))
+
+    def _extensions_idle(self) -> bool:
+        """Vrai si aucune extension n'est en cours de modification (garde des traitements et analyses)."""
+        admission = getattr(self, "_tool_admission", None)
+        return admission is None or not admission.mutation_active()
+
+    def _on_tools_usage_changed(self, *_args: object) -> None:
+        self._tool_admission.usage_changed()
+
+    def _sync_extension_actions(self) -> None:
+        """Boutons de la page Extensions grisés pendant un usage des outils ou une autre modification."""
+        admission = self._tool_admission
+        if admission.tools_in_use():
+            reason = translate_text("Indisponible pendant un traitement, un aperçu ou une analyse en cours.")
+        elif admission.mutation_active():
+            reason = translate_text("Une autre extension est en cours d'installation, de mise à jour ou de suppression.")
+        else:
+            reason = ""
+        self._extensions_panel.set_actions_blocked(reason)
+
+    def _extension_mutation_refused(self) -> bool:
+        """Vrai (avec message) si une modification d'extension ne peut pas être admise maintenant."""
+        admission = self._tool_admission
+        if admission.tools_in_use():
+            message = translate_text("Extension non modifiée : un traitement, un aperçu ou une analyse utilise les "
+                                     "outils. Réessayez à sa fin.")
+        elif admission.mutation_active():
+            message = translate_text("Extension non modifiée : une autre extension est en cours d'installation, de "
+                                     "mise à jour ou de suppression.")
+        else:
+            return False
+        self.log_requested.emit("WARN", message)
+        QMessageBox.information(self, translate_text("Extensions"), message)
+        return True
+
+    def _mutate_extension(self, plugin_id: str, start: Callable[[], bool],
+                          confirm: Callable[[], bool] | None = None) -> bool:
+        """Installe / met à jour / supprime une extension : admission vérifiée avant la question de confirmation
+        et de nouveau après (un traitement a pu démarrer pendant la question)."""
+        if self._extension_mutation_refused():
+            return False
+        if confirm is not None and not confirm():
+            return False
+        if self._extension_mutation_refused():
+            return False
+        return self._tool_admission.start_mutation(plugin_id, start)
+
+    def _defer_auto_update(self, ctrl: PluginController) -> None:
+        """Mise à jour automatique d'une extension : lancée dès qu'aucun outil ni aucune modification n'est actif."""
+        self._tool_admission.defer(ctrl.spec.id, ctrl.update)
+
     def _on_extension_install_requested(self, plugin_id: str) -> None:
         if plugin_id == self._trt_controller.spec.id:
             self._open_trt_install_dialog()
         else:
-            self._extension_controller(plugin_id).install()
+            self._mutate_extension(plugin_id, self._extension_controller(plugin_id).install)
+
+    @staticmethod
+    def _confirm_question(parent: QWidget, title: str, text: str) -> Callable[[], bool]:
+        return lambda: QMessageBox.question(parent, title, text) == QMessageBox.StandardButton.Yes
 
     def _on_extension_remove_requested(self, plugin_id: str) -> None:
         if plugin_id == NvenccController.plugin_id:
-            answer = QMessageBox.question(
+            self._mutate_extension(plugin_id, self._nvencc_controller.remove, self._confirm_question(
                 self,
                 translate_text("NVEncC (encodeur NVIDIA)"),
                 translate_text(
                     "Supprimer NVEncC du dossier utilisateur ? Les encodeurs NVEncC ne seront plus proposés ; "
                     "il peut être réinstallé à tout moment depuis la page Extensions."
                 ),
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self._nvencc_controller.remove()
+            ))
             return
         if plugin_id == self._fel_controller.spec.id:
-            self._fel_controller.remove()
+            self._mutate_extension(plugin_id, self._fel_controller.remove)
             return
         if plugin_id == self._trt_controller.spec.id:
             self._on_trt_remove_requested()
             return
-        answer = QMessageBox.question(
+        self._mutate_extension(plugin_id, self._rife_controller.remove, self._confirm_question(
             self,
             translate_text("Moteur vidéo MVO (débruitage, interpolation)"),
             translate_text(
                 "Supprimer le moteur vidéo MVO ? Le débruitage MVO-R2 et l'interpolation ne seront plus proposés "
                 "à l'encodage ; l'extension peut être réinstallée à tout moment."
             ),
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._rife_controller.remove()
+        ))
 
     def _apply_trt_plugin_to_encode(self) -> None:
         self._encode_panel.set_trt_plugin(self._trt_controller.plugin_dir())
@@ -2207,20 +2291,20 @@ class MainWindow(QMainWindow):
         if state.busy or state.installed is not None:
             return
         device = str(getattr(state.capability, "device", "") or "")
-        if PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted:
-            self._trt_controller.install()
+        self._mutate_extension(
+            self._trt_controller.spec.id, self._trt_controller.install,
+            lambda: PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted,
+        )
 
     def _on_trt_remove_requested(self) -> None:
-        answer = QMessageBox.question(
+        self._mutate_extension(self._trt_controller.spec.id, self._trt_controller.remove, self._confirm_question(
             self,
             translate_text("Accélération NVIDIA (TensorRT)"),
             translate_text(
                 "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU "
                 "(Vulkan) ; l'extension peut être réinstallée à tout moment."
             ),
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._trt_controller.remove()
+        ))
 
     def _apply_locale(self) -> None:
         set_current_language(self._config.language)
@@ -2446,6 +2530,13 @@ class MainWindow(QMainWindow):
 
     def _can_start_operation(self) -> bool:
         if self._running:
+            return False
+        admission = getattr(self, "_tool_admission", None)
+        if admission is not None and admission.mutation_active():
+            self._report_blocking_errors([
+                translate_text("Une extension est en cours d'installation, de mise à jour ou de suppression : "
+                               "attendez sa fin."),
+            ])
             return False
         if self._encode_panel.is_preview_running():
             self._report_blocking_errors([

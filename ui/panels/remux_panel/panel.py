@@ -3327,7 +3327,7 @@ class RemuxPanel(QWidget):
 
     def run_operation(self, config: RemuxConfig, *, existing: ExistingPolicy | None = None) -> TaskSignals:
         """Lance le remuxage ; ``existing`` : état de la sortie confirmé par l'utilisateur."""
-        return self._workflow.run(config, existing=existing)
+        return self._workflow.run(config, **({"existing": existing} if existing is not None else {}))
 
     def validate_config(self, config: RemuxConfig) -> list[str]:
         return self._workflow.validate(config)

@@ -219,6 +219,7 @@ class EncodePanel(QWidget):
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
     operation_changed = Signal()
+    preview_running_changed = Signal(bool)  # aperçu en cours ou terminé (outils en usage)
     audio_track_meta_changed = Signal(int, object, str, str, object)  # (stream_index, source_path, lang, title, entry_id)
     audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
@@ -2772,10 +2773,19 @@ class EncodePanel(QWidget):
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
 
+    def _defer_tool_refresh(self, kind: str, value: object = None) -> bool:
+        """Traitement ou aperçu en cours : il garde ses outils, le changement est rejoué à sa fin (vrai si différé)."""
+        if not self._runtime_busy():
+            return False
+        self.__dict__.setdefault("_pending_tool_refresh", {})[kind] = value
+        return True
+
     def set_trt_plugin(self, plugin_dir: str) -> None:
         """Dossier de l'accélération NVIDIA (TensorRT) à passer à MVO-RIFE ("" : Vulkan seul)."""
         from core.plugins import trt_engine_cache_dir
 
+        if self._defer_tool_refresh("trt", plugin_dir):
+            return
         self._trt_plugin_dir = plugin_dir or ""
         self._workflow.set_rife_trt_plugin(self._trt_plugin_dir or None, trt_engine_cache_dir())
         self._refresh_video_source_rows()
@@ -2788,12 +2798,16 @@ class EncodePanel(QWidget):
 
     def refresh_nvencc_tool(self) -> None:
         """NVEncC installé ou supprimé (page Extensions) : workflow et nouvelle détection des encodeurs."""
+        if self._defer_tool_refresh("nvencc"):
+            return
         self._workflow.set_nvencc_bin(getattr(self._config, "tool_nvencc", None) or None)
         self._detection_tools = (self._config.tool_ffmpeg, getattr(self._config, "tool_nvencc", None) or None)
         self._executor.submit(self._detect_hw_encoders)
 
     def refresh_rife_tool(self) -> None:
         """Moteur muxiveo-rife changé (extension installée ou supprimée) : workflow, disponibilité, aperçu."""
+        if self._defer_tool_refresh("rife"):
+            return
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
         self._sync_interpolation_availability()
         self._refresh_video_source_rows()
@@ -3801,6 +3815,13 @@ class EncodePanel(QWidget):
                 translate_text("Preview indisponible pendant une opération en cours.")
             )
             return
+        guard = getattr(self, "_preview_guard", None)
+        if guard is not None and not guard():
+            self._preview_status.setText(
+                translate_text("Preview indisponible : une extension est en cours d'installation, de mise à jour "
+                               "ou de suppression.")
+            )
+            return
         config = self._current_preview_config()
         if config is None:
             self._preview_status.setText("Sélectionnez une piste vidéo source pour générer une preview.")
@@ -4047,7 +4068,14 @@ class EncodePanel(QWidget):
         self._preview_status.setText("Preview annulée.")
         self._set_preview_running(False)
 
+    def set_preview_guard(self, guard) -> None:
+        """Garde de lancement d'un aperçu (fenêtre principale : aucune extension en cours de modification)."""
+        self._preview_guard = guard
+
     def _set_preview_running(self, running: bool) -> None:
+        if bool(running) != bool(getattr(self, "_preview_running_flag", False)):
+            self._preview_running_flag = bool(running)
+            QTimer.singleShot(0, self, lambda: self.preview_running_changed.emit(self.is_preview_running()))
         self._preview_generate_btn.setEnabled(not running and not getattr(self, "_operation_running", False))
         self._preview_cancel_btn.setEnabled(running)
         self._preview_mode_combo.setEnabled(not running)
@@ -4382,7 +4410,8 @@ class EncodePanel(QWidget):
         """
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
         # dans le thread UI au moment de démarrer l'encodage.
-        return self._workflow.run(config, validate=False, retain_failed_work_dir=True, existing=existing)
+        policy = {"existing": existing} if existing is not None else {}
+        return self._workflow.run(config, validate=False, retain_failed_work_dir=True, **policy)
 
     def validate_config(self, config: "EncodeConfig") -> list[str]:
         """Retourne la liste des erreurs de validation (vide = OK)."""
@@ -6029,6 +6058,13 @@ class EncodePanel(QWidget):
             return
         if getattr(self, "_runtime_refresh_pending", False):
             self.refresh_runtime_settings()
+        pending_tools = self.__dict__.pop("_pending_tool_refresh", {})
+        if "nvencc" in pending_tools:
+            self.refresh_nvencc_tool()
+        if "rife" in pending_tools:
+            self.refresh_rife_tool()
+        if "trt" in pending_tools:
+            self.set_trt_plugin(str(pending_tools["trt"] or ""))
         pending_hw = self.__dict__.pop("_pending_hw_result", None)
         if pending_hw is not None:
             self._on_hw_detected(*pending_hw)
