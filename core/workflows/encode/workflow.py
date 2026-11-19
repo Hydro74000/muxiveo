@@ -2400,7 +2400,7 @@ class EncodeWorkflow(QObject):
             t_req = duration
         # Image clé de découpe et première image réelle ≥ t_req : l'extrait va jusqu'à elle, quelle que soit la
         # cadence (1 i/s, VFR).
-        keyframe, target_frame = self._preview_cut_points(source_path, source_stream, t_req, signals)
+        keyframe, target_frame, next_key = self._preview_cut_points(source_path, source_stream, t_req, signals)
         reach = float(target_frame) if target_frame is not None else t_req
         signals.progress.emit(
             f"Aperçu image à {self._seconds_label(t_req)} (image clé à {self._seconds_label(float(keyframe))})…")
@@ -2410,9 +2410,12 @@ class EncodeWorkflow(QObject):
         image_path = preview_dir / f"{token}_01.png"
         margin = _PREVIEW_IMAGE_MARGIN_S
         try:
+            # Jusqu'à l'image clé suivante (incluse, ses RASL éventuelles avec elle) : toutes les images du GOP de la
+            # cible, quel que soit l'ordre de décodage ; sinon (fin de la source) marge après la cible.
+            span = (float(next_key) - float(keyframe)) + margin if next_key is not None else (reach - float(keyframe)) + margin
             segment_start = self._cut_preview_segment(
                 source_path, source_segment, stream_index=source_stream, keyframe_s=keyframe,
-                duration_s=(reach - float(keyframe)) + margin, signals=signals,
+                duration_s=span, signals=signals,
             )
             signals.progress_pct.emit(15)
             self._encode_preview_segment(config, source_segment, encoded_clip,
@@ -2646,10 +2649,15 @@ class EncodeWorkflow(QObject):
         return self._preview_cut_points(source, stream_index, time_s, signals)[0]
 
     def _preview_cut_points(self, source: Path, stream_index: int, time_s: float,
-                            signals: TaskSignals | None) -> tuple[Fraction, Fraction | None]:
-        """(image clé de découpe ≤ ``time_s``, instant de la première image ≥ ``time_s``), relatifs au début de la
-        source, dans la base de temps du flux ; la seconde valeur fixe la fin de l'extrait quelle que soit la cadence
-        (1 i/s, VFR). None : aucune image après ``time_s`` (fin de la source)."""
+                            signals: TaskSignals | None) -> tuple[Fraction, Fraction | None, Fraction | None]:
+        """(image clé de découpe ≤ ``time_s``, première image ≥ ``time_s``, image clé suivante), instants relatifs au
+        début de la source, dans la base de temps du flux.
+
+        Fenêtre de lecture large (± 30 s) : FFprobe lit les paquets dans l'ordre de décodage et s'arrête au premier
+        au-delà de la fin ; avec des images B à basse cadence, une fenêtre courte s'arrêterait avant l'image cible.
+        L'image clé suivante borne l'extrait : tout le GOP de la cible (et les RASL d'une CRA suivante) y entre.
+        None : rien au-delà dans la fenêtre (fin de la source).
+        """
         start = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries", "format=start_time",
                                      "-of", "csv=p=0", *ffprobe_input_args(source)], signals, timeout=30.0)
         try:
@@ -2658,8 +2666,8 @@ class EncodeWorkflow(QObject):
             origin = Fraction(0)
         limit = Fraction(time_s).limit_denominator(10**6)
         tolerance = Fraction(1, 10**6)
-        for low, high in ((max(Fraction(0), limit - 30), limit + 2), (Fraction(0), limit + 30)):
-            interval = f"{float(origin + low):.6f}%{float(origin + high):.6f}"
+        for low in (max(Fraction(0), limit - 30), Fraction(0)):
+            interval = f"{float(origin + low):.6f}%{float(origin + limit + 30):.6f}"
             payload = json.loads(self._preview_probe(
                 [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
                  interval, "-show_entries", "packet=pts,flags:stream=time_base", "-of", "json",
@@ -2674,11 +2682,13 @@ class EncodeWorkflow(QObject):
             target = max(Fraction(0), min(after)) if after else None
             keys = [time for time, key in packets if key]
             before = [time for time in keys if time <= limit + tolerance]
+            if not before and low == 0 and keys:
+                before = [min(keys)]
             if before:
-                return max(Fraction(0), max(before)), target
-            if low == 0 and keys:
-                return max(Fraction(0), min(keys)), target
-        return Fraction(0), None
+                reach = target if target is not None else limit
+                following = [time for time in keys if time > reach + tolerance]
+                return max(Fraction(0), max(before)), target, (min(following) if following else None)
+        return Fraction(0), None, None
 
     @staticmethod
     def _seek_arg_at_or_after(seconds: Fraction) -> str:

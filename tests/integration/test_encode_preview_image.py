@@ -124,3 +124,19 @@ def test_low_frame_rate_reaches_the_next_frame(tmp_path):
     image = _png(tmp_path, previews)
     assert ".apercu-1.0s." in image.name
     assert _rgb_digest(image) == _source_frame_digest(source, 1, tmp_path / "ref.png")
+
+
+@pytest.mark.parametrize("instant, expected", [(0.1, 1), (2.5, 3), (4.0, 4)])
+def test_low_frame_rate_with_b_frames(tmp_path, instant, expected):
+    """1 image/s avec images B (ordre de décodage ≠ affichage) : sonde et découpe atteignent l'image cible."""
+    source = tmp_path / "source.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=1:duration=12", "-c:v", "libx264", "-bf", "3", "-g", "6",
+            "-crf", "0", "-pix_fmt", "yuv420p", str(source))
+    previews = tmp_path / "apercus"
+    done = _cli(tmp_path, "encode", "-i", str(source), "-o", str(tmp_path / "sortie.mkv"), "--video-codec",
+                "libx264", "--crf", "0", "--bit-depth", "8", "--preview-image", str(instant),
+                "--preview-dir", str(previews))
+    assert done.returncode == 0, done.stderr
+    image = _png(tmp_path, previews)
+    assert f".apercu-{float(expected):.1f}s." in image.name
+    assert _rgb_digest(image) == _source_frame_digest(source, expected, tmp_path / "ref.png")

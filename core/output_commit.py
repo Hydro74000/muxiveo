@@ -156,8 +156,8 @@ class _Snapshot:
     mtime_ns: int
     entry_ino: int
     resolved: str
-    #: Changement d'état (POSIX : toute écriture ou modification des droits, non réglable par ``utime``) et droits :
-    #: une réécriture de même taille au mtime restauré reste détectée.
+    #: Changement d'état (POSIX : ctime ; Windows : ChangeTime NTFS — toute écriture ou modification des droits, non
+    #: réglable par ``utime``) et droits : une réécriture de même taille au mtime restauré reste détectée.
     ctime_ns: int = 0
     mode: int = 0
 
@@ -168,8 +168,43 @@ def _snapshot(path: Path) -> _Snapshot | None:
         entry = os.lstat(path)
     except FileNotFoundError:
         return None
+    changed = _windows_change_time(path) if sys.platform == "win32" else st.st_ctime_ns
     return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path),
-                     st.st_ctime_ns, st.st_mode)
+                     changed, st.st_mode)
+
+
+def _windows_change_time(path: Path) -> int:
+    """Windows : ``ChangeTime`` NTFS (``FILE_BASIC_INFO``), modifiée par toute écriture ou changement d'attributs ;
+    ``st_ctime`` y est la date de création. 0 si illisible (comparaison alors sur les autres champs)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [("CreationTime", ctypes.c_longlong), ("LastAccessTime", ctypes.c_longlong),
+                    ("LastWriteTime", ctypes.c_longlong), ("ChangeTime", ctypes.c_longlong),
+                    ("FileAttributes", wintypes.DWORD)]
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    # FILE_READ_ATTRIBUTES, partage lecture / écriture / suppression, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.
+    handle = create(str(path), 0x80, 0x7, None, 3, 0x02000000, None)
+    if not handle or handle == wintypes.HANDLE(-1).value:
+        return 0
+    try:
+        query = kernel32.GetFileInformationByHandleEx
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        info = _FileBasicInfo()
+        if not query(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):  # FileBasicInfo
+            return 0
+        return int(info.ChangeTime)
+    finally:
+        close = kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]  # jamais tronqué à 32 bits
+        close(handle)
 
 
 @dataclass(frozen=True)

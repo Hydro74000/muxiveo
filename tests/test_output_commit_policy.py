@@ -242,8 +242,8 @@ def test_publish_document_default_mode_is_private(tmp_path: Path) -> None:
     assert (os.stat(shared).st_mode & 0o777) == 0o644
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="ctime POSIX (changement d'état)")
 def test_expect_detects_same_size_rewrite_with_restored_mtime(tmp_path: Path) -> None:
+    """POSIX : ctime ; Windows : ChangeTime NTFS (CI Windows)."""
     target = tmp_path / "out.m4a"
     target.write_bytes(b"version A")
     before = os.stat(target)
@@ -254,6 +254,22 @@ def test_expect_detects_same_size_rewrite_with_restored_mtime(tmp_path: Path) ->
     with pytest.raises(OutputStateChangedError):
         OutputReservation.acquire(target, existing=policy)
     assert target.read_bytes() == b"version B"
+
+
+def test_rewrite_during_processing_is_not_replaced(tmp_path: Path) -> None:
+    """Réécriture de même taille au mtime restauré après l'acquisition : publication refusée, candidat conservé."""
+    target = tmp_path / "out.m4a"
+    target.write_bytes(b"version A")
+    before = os.stat(target)
+    with OutputReservation.acquire(target, existing=ExistingPolicy.expect(capture_state(target))) as reservation:
+        candidate = reserve_candidate(target)
+        candidate.write_bytes(b"resultat")
+        time.sleep(0.01)
+        target.write_bytes(b"version B")
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with pytest.raises(OutputChangedError):
+            reservation.publish(candidate)
+    assert target.read_bytes() == b"version B" and candidate.read_bytes() == b"resultat"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="droits POSIX")
