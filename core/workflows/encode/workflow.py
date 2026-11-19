@@ -307,7 +307,7 @@ from core.workflows.encode.planning.validation import (
     validate_encode_config as _validate_encode_config_plan,
     video_settings_errors as _video_settings_errors_plan,
 )
-from core.output_commit import OutputBusyError, OutputReservation
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputReservation
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
     PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
@@ -4064,9 +4064,13 @@ class EncodeWorkflow(QObject):
         *,
         validate: bool = True,
         retain_failed_work_dir: bool = False,
+        existing: ExistingPolicy | None = None,
     ) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
+
+        ``existing`` : sort d'une destination présente, décidé sous la réservation (défaut : remplacement
+        admis) ; refus → :class:`~core.output_commit.OutputRefusedError` levée telle quelle.
 
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
@@ -4082,7 +4086,7 @@ class EncodeWorkflow(QObject):
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
-            reservation = OutputReservation.acquire(config.output)
+            reservation = OutputReservation.acquire(config.output, existing=existing)
         except OutputBusyError as exc:
             raise EncodeError(str(exc)) from exc
         try:

@@ -42,6 +42,7 @@ from core.jobs.extract import LAYER_LABELS, ExtractionPlan, ExtractTools, plan_a
 from core.media_info_fetcher import MediaDetails
 from core.profiles.decision import DecisionProfileManager, apply_decision_profile as apply_decision_profile_v1
 from core.runner import TaskSignals
+from core.output_commit import ExistingPolicy
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.audio_sync import AudioSyncReviewRequired, AudioSyncTrack, format_sync_ranges
 from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args
@@ -57,6 +58,7 @@ from core.workflows.remux_models import (
     clone_track_entry,
     tracks_from_file_info,
 )
+from ui.confirm import confirm_output
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.remux_panel.functions import chapters as chapter_functions
 from ui.panels.remux_panel.functions import config_builder, inspection, output_name, signals, tmdb
@@ -3323,8 +3325,9 @@ class RemuxPanel(QWidget):
                 return sf.info.duration_s
         return None
 
-    def run_operation(self, config: RemuxConfig) -> TaskSignals:
-        return self._workflow.run(config)
+    def run_operation(self, config: RemuxConfig, *, existing: ExistingPolicy | None = None) -> TaskSignals:
+        """Lance le remuxage ; ``existing`` : état de la sortie confirmé par l'utilisateur."""
+        return self._workflow.run(config, existing=existing)
 
     def validate_config(self, config: RemuxConfig) -> list[str]:
         return self._workflow.validate(config)
@@ -3381,11 +3384,13 @@ class RemuxPanel(QWidget):
                    else f"{translate_text(plan.label)} (*{suffix})"]
         if container is not None and container.plan is not None:
             filters.append(container.plan.file_filter)
+        # Remplacement confirmé par notre question, état relevé avant elle (jamais par la boîte native).
         out_str, chosen_filter = QFileDialog.getSaveFileName(
             self,
             translate_text("Extraire la piste"),
             str(source.path.parent / plan.default_name),
             ";;".join(filters),
+            options=QFileDialog.Option.DontConfirmOverwrite,
         )
         if not out_str:
             return
@@ -3394,15 +3399,12 @@ class RemuxPanel(QWidget):
             plan = container
             if out_path.suffix.lower() != container.plan.extension:
                 out_path = out_path.with_suffix(container.plan.extension)
-                # Chemin final différent de celui confirmé par la boîte : remplacement à confirmer à nouveau.
-                if out_path.exists() and QMessageBox.question(
-                        self, translate_text("Remplacer le fichier ?"),
-                        translate_text("{name} existe déjà. Le remplacer ?", name=out_path.name),
-                ) != QMessageBox.StandardButton.Yes:
-                    return
+        existing = confirm_output(self, out_path)
+        if existing is None:
+            return
         label = translate_text("Extraction de la piste #{idx} ({format})", idx=entry.mkv_tid,
                                format=translate_text(plan.label))
-        self._start_extraction(source, plan, out_path, label)
+        self._start_extraction(source, plan, out_path, label, existing)
 
     def _on_extract_attachment(self, file_id: str, attachment: AttachmentInfo) -> None:
         if not self._can_start_auxiliary_operation():
@@ -3421,13 +3423,21 @@ class RemuxPanel(QWidget):
             translate_text("Extraire la pièce jointe"),
             str(source.path.parent / plan.default_name),
             translate_text("Tous les fichiers (*)"),
+            options=QFileDialog.Option.DontConfirmOverwrite,
         )
-        if out_str:
+        if not out_str:
+            return
+        existing = confirm_output(self, Path(out_str))
+        if existing is not None:
             label = translate_text("Extraction de la pièce jointe {name}", name=plan.default_name)
-            self._start_extraction(source, plan, Path(out_str), label)
+            self._start_extraction(source, plan, Path(out_str), label, existing)
 
-    def _start_extraction(self, source: SourceFile, plan: ExtractionPlan, out_path: Path, label: str) -> None:
-        """Extraction en arrière-plan (``core.jobs.extract``), suivie par la barre d'exécution."""
+    def _start_extraction(self, source: SourceFile, plan: ExtractionPlan, out_path: Path, label: str,
+                          existing: ExistingPolicy) -> None:
+        """Extraction en arrière-plan (``core.jobs.extract``), suivie par la barre d'exécution.
+
+        ``existing`` : état de la destination confirmé (:func:`ui.confirm.confirm_output`), exigé jusqu'à la
+        publication : un fichier apparu ou remplacé depuis n'est jamais écrasé."""
         info = source.info
         if info is None:
             return
@@ -3438,8 +3448,7 @@ class RemuxPanel(QWidget):
         tools = ExtractTools(ffmpeg=str(self._config.tool_ffmpeg), dovi_tool=str(self._config.tool_dovi_tool),
                              hdr10plus_tool=str(self._config.tool_hdr10plus))
         self.log_message.emit("INFO", translate_text("{label} vers {name}…", label=label, name=out_path.name))
-        # Remplacement d'un fichier existant confirmé par la boîte d'enregistrement (ou la question ci-dessus).
-        signals = start_extraction(info, [(plan, out_path)], tools=tools, force=out_path.exists(),
+        signals = start_extraction(info, [(plan, out_path)], tools=tools, existing=existing,
                                    progress_args=ffmpeg_progress_args())
         self.extract_started.emit(
             signals,

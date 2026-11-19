@@ -12,13 +12,14 @@ from core.jobs.constants import EXIT_EXISTS
 from core.jobs.errors import JobError
 from core.jobs.options import call_supported
 from core.service.context import ExecutionContext
+from core.service.documents import publish_request_document
 from core.subprocess_utils import ProbeCancelledError, run_probe
 from core.service.errors import ErrorCode, error_code
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
-from core.workflows.subtitle_sync import shift_file
+from core.workflows.subtitle_sync import shift_text
 from core.workflows.sync_calibration import SyncCalibration
 from core.workflows.workflow_store import atomic_write_text
 
@@ -194,7 +195,11 @@ def sync_shift_subtitles(request: ShiftSubtitlesRequest, ctx: ExecutionContext) 
         raise JobError(str(request.output), EXIT_EXISTS)
     calibration = (SyncCalibration.from_dict(json.loads(Path(request.calibration).read_text(encoding="utf-8-sig")))
                    if request.calibration is not None else SyncCalibration.linear(float(request.offset_ms or 0.0)))
-    shift_file(request.input, request.output, calibration)
+    with Path(request.input).open(encoding="utf-8-sig", newline="") as stream:
+        shifted = shift_text(stream.read(), calibration, suffix=Path(request.input).suffix)
+    # Destination réservée jusqu'à la publication : sans force, jamais d'écrasement, même concurrent.
+    publish_request_document(request.output, shifted.encode("utf-8"), force=request.force,
+                             exists_message=str(request.output))
     ctx.events.artifact("subtitles", str(request.output))
     return ShiftSubtitlesResult(output=str(request.output))
 

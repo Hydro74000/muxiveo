@@ -21,9 +21,11 @@ from core.inspector import FileInfo, HDRType
 from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_TOOL, EXIT_VALIDATION, EXIT_WORKFLOW
 from core.jobs.errors import JobError
 from core.output_commit import (
+    ExistingPolicy,
     OutputBusyError,
     OutputChangedError,
     OutputCommitError,
+    OutputRefusedError,
     OutputReservation,
     reserve_candidate,
 )
@@ -286,8 +288,14 @@ def task_runner(signals: Any) -> RunCommand:
 
 
 def start_extraction(info: FileInfo, targets: Sequence[tuple[ExtractionPlan, Path]], *, tools: ExtractTools,
-                     force: bool = False, progress_args: Sequence[str] = ()) -> Any:
-    """Extractions en tâche de fond (panneau Conteneur) : ``TaskSignals`` finished (chemins) / failed / cancelled."""
+                     force: bool = False, existing: ExistingPolicy | None = None,
+                     progress_args: Sequence[str] = ()) -> Any:
+    """Extractions en tâche de fond (panneau Conteneur) : ``TaskSignals`` finished (chemins) / failed / cancelled.
+
+    ``existing`` (une seule cible) : état de la destination confirmé par l'utilisateur, prioritaire sur ``force``.
+    """
+    if existing is not None and len(targets) != 1:
+        raise ValueError("existing : une seule cible d'extraction")
     from concurrent.futures import ThreadPoolExecutor
 
     from core.runner import TaskCancelledError, TaskSignals
@@ -298,7 +306,8 @@ def start_extraction(info: FileInfo, targets: Sequence[tuple[ExtractionPlan, Pat
     def task() -> None:
         try:
             run = task_runner(signals)
-            done = [str(extract(info, plan, output, tools=tools, run=run, force=force, progress_args=progress_args))
+            done = [str(extract(info, plan, output, tools=tools, run=run, force=force, existing=existing,
+                                progress_args=progress_args))
                     for plan, output in targets]
             signals.finished.emit("\n".join(done))
         except TaskCancelledError:
@@ -328,20 +337,27 @@ def extract(
     tools: ExtractTools,
     run: RunCommand,
     force: bool = False,
+    existing: ExistingPolicy | None = None,
     progress_args: Sequence[str] = (),
     attachment_reader: Callable[[Path, int], bytes] = read_attachment,
 ) -> Path:
-    """Extrait ``plan`` vers ``output`` (candidat ``.partial`` publié à la fin)."""
+    """Extrait ``plan`` vers ``output`` (candidat ``.partial`` publié à la fin).
+
+    ``existing`` : sort d'une destination présente (défaut : d'après ``force``), décidé sous la réservation.
+    """
     output = Path(output).expanduser()
-    if output.exists() and not force:
+    policy = existing or ExistingPolicy.from_force(force)
+    if policy.refuses_existing and output.exists():
         raise JobError(f"Sortie déjà existante : {output} (utiliser --force)", EXIT_EXISTS)
     if output.resolve() == Path(info.path).resolve():
         raise JobError("Extraction : la sortie ne peut pas être la source.", EXIT_ARGS)
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
-        reservation = OutputReservation.acquire(output)
+        reservation = OutputReservation.acquire(output, existing=policy)
     except OutputBusyError as exc:
         raise ApiError(ErrorCode.BUSY, str(exc)) from exc
+    except OutputRefusedError as exc:  # apparue entre-temps, ou changée depuis la confirmation
+        raise JobError(str(exc), EXIT_EXISTS) from exc
     candidate: Path | None = None
     scratch: Path | None = None
     try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -12,7 +11,9 @@ from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_VALIDATION, EXIT_WO
 from core.jobs.encode_runtime import encode_workflow, prepare_vulkan, probe_cancel_scope
 from core.jobs.errors import JobError
 from core.json_documents import read_json_document
+from core.output_commit import publish_unique
 from core.service.context import ExecutionContext
+from core.service.documents import publish_request_document
 from core.service.errors import ApiError, ErrorCode
 from core.service.jobs import await_task, raise_for_outcome
 from core.service.models import MAX_API_DIAGNOSTICS, Model, dataclass_schema, field, list_of
@@ -56,20 +57,10 @@ class PreviewCaptureResult(Model):
     warning: str = ""
 
 
-def _unique(target_dir: Path, name: str) -> Path:
-    candidate = target_dir / name
-    stem, suffix = candidate.stem, candidate.suffix
-    index = 1
-    while candidate.exists():
-        candidate = target_dir / f"{stem}-{index}{suffix}"
-        index += 1
-    return candidate
-
-
 def _deliver(source: Path, target_dir: Path, name: str) -> Path:
-    """Copie la capture dans ``target_dir`` puis supprime l'original (jamais le dossier d'aperçus entier)."""
-    target = _unique(target_dir, name)
-    shutil.copy2(source, target)
+    """Copie la capture dans ``target_dir`` sous un nom libre (réservé : jamais celui d'un fichier existant ni d'une
+    livraison concurrente), puis supprime l'original une fois la copie publiée (jamais le dossier d'aperçus entier)."""
+    target = publish_unique(source, target_dir, name)
     source.unlink(missing_ok=True)
     return target
 
@@ -342,11 +333,11 @@ def preset_import(request: PresetImportRequest, ctx: ExecutionContext) -> Preset
            summary="Exporter un preset d'encodage dans un fichier JSON.", mutating=True)
 def preset_export(request: PresetExportRequest, ctx: ExecutionContext) -> PresetFileResult:
     preset = _find(_manager(ctx), request.name)
+    exists = f"Fichier existant : {request.file} (utiliser force)"
     if request.file.exists() and not request.force:
-        raise JobError(f"Fichier existant : {request.file} (utiliser force)", EXIT_EXISTS)
-    from core.workflows.workflow_store import atomic_write_text
-
-    atomic_write_text(Path(request.file), json.dumps(preset.to_json_dict(), ensure_ascii=False, indent=2) + "\n")
+        raise JobError(exists, EXIT_EXISTS)
+    payload = (json.dumps(preset.to_json_dict(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    publish_request_document(Path(request.file), payload, force=request.force, exists_message=exists)
     ctx.events.artifact("preset", str(request.file))
     return PresetFileResult(name=preset.name, file=str(request.file))
 

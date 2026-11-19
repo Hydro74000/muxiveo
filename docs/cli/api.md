@@ -192,6 +192,14 @@ s'arrête.
 Avec `call`, une opération réussie renvoie 0 : son état métier (mise à jour disponible, synchro à
 relire…) est dans `result`.
 
+**Sorties et `force`.** Sans `force`, une destination n'est jamais remplacée, même par deux appels
+simultanés (deux processus, ou plusieurs jobs d'un même worker) : la destination est réservée jusqu'à la
+publication, le premier écrit et l'autre reçoit `output_exists` (ou `busy` s'il arrive pendant l'écriture).
+Vaut pour les médias (remux, encodage, extraction, `hdr.patch`) et les documents (`calibration.*`,
+`encode_preset.export`, `sync.shift_subtitles`). Les captures d'`encode.preview_capture` reçoivent toujours
+un nom libre (`-1`, `-2`…). Remplacés sans condition, comme annoncé : `sync.scan` (`output_json`),
+`hybrid.plan` (`save_recipe`), `hybrid.run` (`report_json`), rapports et moments FEL d'`hdr.inspect`.
+
 ## Worker `serve`
 
 ```bash

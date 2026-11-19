@@ -35,6 +35,7 @@ from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
 from core.i18n import apply_translations, current_language, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
+from core.output_commit import ExistingPolicy
 from core.runner import TaskSignals
 from core.workflows.encode import (
     HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
@@ -4372,15 +4373,16 @@ class EncodePanel(QWidget):
         """Vrai tant qu'une preview est en cours de génération."""
         return getattr(self, "_preview_signals", None) is not None
 
-    def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
+    def run_operation(self, config: "EncodeConfig", *, existing: ExistingPolicy | None = None) -> "TaskSignals":
         """Lance l'encodage et retourne les signaux de progression.
 
         En cas d'échec, le dossier de travail qui contient déjà des fichiers produits
         est gardé : ``failed_work_dir_retained`` laisse l'utilisateur décider.
+        ``existing`` : état de la sortie confirmé par l'utilisateur, exigé jusqu'à la publication.
         """
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
         # dans le thread UI au moment de démarrer l'encodage.
-        return self._workflow.run(config, validate=False, retain_failed_work_dir=True)
+        return self._workflow.run(config, validate=False, retain_failed_work_dir=True, existing=existing)
 
     def validate_config(self, config: "EncodeConfig") -> list[str]:
         """Retourne la liste des erreurs de validation (vide = OK)."""

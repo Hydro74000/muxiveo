@@ -52,6 +52,7 @@ from core.i18n import translate_text
 from core.inspector import FileInfo, FileInspector
 from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
+from ui.confirm import confirm_output
 from ui.design_system import colors as C, font_px, scale
 from ui.operation_bar import OperationState
 from ui.panels.hdr_studio.chart import format_time
@@ -1112,9 +1113,14 @@ class HdrStudio(QWidget):
         self.write_patch(plan)
 
     def write_patch(self, plan: PatchPlan) -> None:
-        """Écrit le fichier corrigé (thread de travail, annulable)."""
+        """Écrit le fichier corrigé (thread de travail, annulable) ; remplacement d'un fichier existant confirmé,
+        état exigé jusqu'à la publication."""
         if self._busy:
             return
+        existing = confirm_output(self, plan.output)
+        if existing is None:
+            return
+        plan = dataclasses.replace(plan, existing=existing)
         self._token += 1
         token = self._token
         cancel = threading.Event()

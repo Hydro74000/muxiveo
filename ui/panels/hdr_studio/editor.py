@@ -461,8 +461,10 @@ class EditionTab(QWidget):
 
     def _browse(self) -> None:
         start = self.output.text().strip() or (self._report.snapshot.path if self._report else str(Path.home()))
+        # Remplacement confirmé à l'écriture (état relevé avant la question), pas par la boîte native.
         path, _ = QFileDialog.getSaveFileName(self, translate_text("Fichier corrigé"), start,
-                                              translate_text("Matroska (*.mkv);;HEVC (*.hevc *.h265)"))
+                                              translate_text("Matroska (*.mkv);;HEVC (*.hevc *.h265)"),
+                                              options=QFileDialog.Option.DontConfirmOverwrite)
         if path:
             self.output.setText(path)
 

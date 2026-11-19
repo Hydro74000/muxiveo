@@ -12,6 +12,7 @@ from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_VALIDATION
 from core.jobs.errors import JobError
 from core.json_documents import read_json_document
 from core.service.context import ExecutionContext
+from core.service.documents import publish_request_document
 from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
@@ -77,9 +78,9 @@ def _write(calibration: SyncCalibration, output: Path | None, force: bool, ctx: 
         return None
     if output.exists() and not force:
         raise JobError(f"Fichier existant : {output} (utiliser --force)", EXIT_EXISTS)
-    from core.atomic_io import atomic_write_text
-
-    atomic_write_text(output, json.dumps(calibration.to_dict(), ensure_ascii=False, indent=2) + "\n")
+    payload = (json.dumps(calibration.to_dict(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    publish_request_document(output, payload, force=force,
+                          exists_message=f"Fichier existant : {output} (utiliser --force)")
     ctx.events.artifact("calibration", str(output))
     return output
 

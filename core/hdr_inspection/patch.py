@@ -21,7 +21,7 @@ from core.hdr_inspection.json_stream import iter_json_array, read_json_head
 from core.hdr_inspection.pq import nits_to_pq
 from core.hdr_inspection.snapshot import PRIMARY_SETS
 from core.i18n import translate_text
-from core.output_commit import OutputCommitError, OutputReservation, reserve_candidate
+from core.output_commit import ExistingPolicy, OutputCommitError, OutputReservation, reserve_candidate
 from core.runner import TaskCancelledError
 
 if TYPE_CHECKING:
@@ -216,6 +216,8 @@ class PatchPlan:
     rpu: RpuEdit | None = None
     hdr10plus: Hdr10PlusEdit | None = None
     notes: tuple[str, ...] = field(default=())
+    #: Sort d'une sortie déjà présente, décidé sous la réservation (None : remplacement admis).
+    existing: ExistingPolicy | None = field(default=None, compare=False)
 
     def is_empty(self) -> bool:
         return ((self.static is None or self.static.is_empty()) and (self.rpu is None or self.rpu.is_empty())
@@ -367,7 +369,7 @@ class MetadataPatcher:
             return produced
 
         try:
-            with OutputReservation.acquire(output) as reservation:
+            with OutputReservation.acquire(output, existing=plan.existing) as reservation:
                 if "extract" in steps:
                     span = weights["extract"] / total_weight
                     self._step(translate_text("Extraction du flux vidéo…"), position, span, "extract_video")

@@ -11,13 +11,20 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from core.i18n import translate_text
+from core.output_commit import ExistingPolicy, capture_state
 from core.workflows.common.validation_override import ValidationOverrideRequest
 
 
-def confirm_overwrite(parent: QWidget | None, output: Path) -> bool:
-    """Vrai si ``output`` n'existe pas ou si l'utilisateur accepte de le remplacer."""
-    if not output.exists():
-        return True
+def confirm_output(parent: QWidget | None, output: Path) -> ExistingPolicy | None:
+    """Politique de publication confirmée pour ``output`` ; None si l'utilisateur refuse de le remplacer.
+
+    L'état de la destination est relevé **avant** la question : c'est exactement cet état qui est exigé
+    jusqu'à la publication (fichier apparu, remplacé ou lien reciblé entre-temps → refus, jamais d'écrasement
+    silencieux).
+    """
+    state = capture_state(output)
+    if state.snapshot is None:
+        return ExistingPolicy.expect(state)
     reply = QMessageBox.question(
         parent,
         translate_text("Fichier existant"),
@@ -29,7 +36,18 @@ def confirm_overwrite(parent: QWidget | None, output: Path) -> bool:
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.No,
     )
-    return reply == QMessageBox.StandardButton.Yes
+    return ExistingPolicy.expect(state) if reply == QMessageBox.StandardButton.Yes else None
+
+
+def confirm_overwrite(parent: QWidget | None, output: Path) -> bool:
+    """Vrai si ``output`` n'existe pas ou si l'utilisateur accepte de le remplacer."""
+    return confirm_output(parent, output) is not None
+
+
+def destination_changed_message(output: Path) -> str:
+    """Refus d'une destination modifiée depuis sa confirmation (message de l'interface)."""
+    return translate_text("La destination {name} a changé depuis la confirmation : rien n'a été écrit. "
+                          "Relancez pour confirmer à nouveau.", name=Path(output).name)
 
 
 def confirm_close_while_running(parent: QWidget | None, elapsed_s: float) -> bool:
@@ -94,4 +112,5 @@ class ValidationOverridePrompt(QObject):
                 request.resolve(False)
 
 
-__all__ = ["confirm_close_while_running", "confirm_overwrite", "ValidationOverridePrompt"]
+__all__ = ["confirm_close_while_running", "confirm_output", "confirm_overwrite", "destination_changed_message",
+           "ValidationOverridePrompt"]

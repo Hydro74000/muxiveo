@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from core.command_preview import format_preview_command, preview_comment
-from core.output_commit import OutputBusyError, OutputReservation
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputReservation
 from core.runner import TaskSignals, ToolRunner
 from core.version import APP_VERSION_LABEL
 from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
@@ -306,7 +306,9 @@ class RemuxWorkflow(QObject):
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
 
-    def run(self, config: RemuxConfig) -> TaskSignals:
+    def run(self, config: RemuxConfig, *, existing: ExistingPolicy | None = None) -> TaskSignals:
+        """Lance le remuxage. ``existing`` : sort d'une destination présente, décidé sous la réservation
+        (défaut : remplacement admis) ; refus → :class:`~core.output_commit.OutputRefusedError` levée telle quelle."""
         self._clean_nfo = config.clean_nfo
         # Chemins absolus AVANT tout : le plan, la validation et le backend
         # doivent consommer exactement les mêmes chemins que l'exécution.
@@ -344,7 +346,7 @@ class RemuxWorkflow(QObject):
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
-            reservation = OutputReservation.acquire(config.output)
+            reservation = OutputReservation.acquire(config.output, existing=existing)
         except OutputBusyError as exc:
             raise RemuxError(str(exc)) from exc
         try:

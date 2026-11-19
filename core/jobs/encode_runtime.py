@@ -17,7 +17,8 @@ from typing import Any
 from core.jobs.constants import EXIT_EXISTS, EXIT_VALIDATION
 from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger
-from core.jobs.options import CommonOptions
+from core.jobs.options import CommonOptions, call_supported
+from core.output_commit import ExistingPolicy, OutputRefusedError
 from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
@@ -194,12 +195,14 @@ def run_encode(
     relay(wf.log_message, lambda level, message: logger.emit(level, message))
     with probe_cancel_scope(wf, cancel.event):  # sondes internes annulables jusqu'au nettoyage
         return _run_checked_encode(wf, encode_config, options=options, config=config, logger=logger, cancel=cancel,
-                                   accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, progress=progress, cache=cache)
+                                   accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, progress=progress, cache=cache,
+                                   existing=ExistingPolicy.from_force(force))
 
 
 def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, options: CommonOptions, config: Any,
                         logger: JobLogger, cancel: CancelToken, accept_dovi_nvenc_crop: bool,
-                        progress: Callable[..., None] | None, cache: Any) -> str:
+                        progress: Callable[..., None] | None, cache: Any,
+                        existing: ExistingPolicy | None = None) -> str:
     prepare_vulkan(wf, encode_config, str(options.ffmpeg or config.tool_ffmpeg), cancel.event)
     encode_config = align_dovi_nvenc(encode_config, wf, accept=accept_dovi_nvenc_crop, logger=logger,
                                      cancel_event=cancel.event)
@@ -241,7 +244,10 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
     retained: list[Any] = []
     if keep:
         relay(wf.failed_work_dir_retained, retained.append)
-    signals = wf.run(encode_config, validate=False, retain_failed_work_dir=keep)
+    try:  # refus revérifié sous la réservation : sortie apparue depuis le contrôle jamais remplacée sans force
+        signals = call_supported(wf.run, encode_config, validate=False, retain_failed_work_dir=keep, existing=existing)
+    except OutputRefusedError as exc:
+        raise JobError(str(exc), EXIT_EXISTS) from exc
     outcome = await_task(signals, cancel, on_progress=on_line, on_progress_pct=on_pct)
     for item in retained:  # échec avec fichiers produits : dossier gardé, proposé au prochain « Nettoyer »
         item.keep()

@@ -50,7 +50,7 @@ from core.workflows.common.validation_override import validate_final_output
 from core.runner import TaskCancelledError
 from core.matroska.validation import validate_matroska_output
 from core.subtitle_codec import plan_subtitle_codec
-from core.output_commit import OutputBusyError, OutputReservation
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputRefusedError, OutputReservation
 from core.workdir import ProcessWorkDir, create_process_work_dir, filesystem_type
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router, P7RoutingDecision
 from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81
@@ -746,19 +746,21 @@ class MergeDoviWorkflow(QObject):
         output_basename: str | None = None,
         extra_subtitle_files: tuple[Path, ...] = (),
         metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
+        existing: ExistingPolicy | None = None,
     ) -> None:
         """Lance le workflow dans un thread secondaire.
 
         ``metadata_adjustment`` : politique explicite si les métadonnées de
         Film 2 n'ont pas le nombre de trames de Film 1 (``EXACT`` par défaut).
+        ``existing`` : sort d'une destination présente (défaut : remplacement admis), décidé sous la réservation.
         """
         self._cancelled = False
         output_path = self.output_path_for(film1, output_dir, output_basename)
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
-            reservation = OutputReservation.acquire(output_path)
-        except OutputBusyError as exc:
+            reservation = OutputReservation.acquire(output_path, existing=existing)
+        except (OutputBusyError, OutputRefusedError) as exc:
             self.workflow_failed.emit(WorkflowStep.VALIDATION, str(exc))
             return
         try:

@@ -37,7 +37,7 @@ from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult, HdrState,
     MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
 )
-from ui.confirm import confirm_overwrite, ValidationOverridePrompt
+from ui.confirm import confirm_output, ValidationOverridePrompt
 from ui.shutdown import defer_close
 from ui.desktop import open_external
 from ui.operation_bar import OperationState
@@ -993,7 +993,8 @@ class MergeDoviPanel(QWidget):
             return
 
         output_path = MergeDoviWorkflow.output_path_for(film1, self._config_section.output_dir)
-        if not confirm_overwrite(self, output_path):
+        existing = confirm_output(self, output_path)
+        if existing is None:
             return
 
         self._result_section.hide_result()
@@ -1033,6 +1034,7 @@ class MergeDoviPanel(QWidget):
                 output_dir   = self._config_section.output_dir,
                 dovi_profile = self._config_section.dovi_profile,
                 metadata_adjustment = self._config_section.metadata_adjustment,
+                existing     = existing,
             )
         except OSError as exc:
             # Dossier de travail non créable (droits, disque) : rien n'a démarré.

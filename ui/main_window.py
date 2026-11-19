@@ -92,12 +92,13 @@ from core.version import (
 from core.workdir import RetainedProcessWorkDir
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
+from core.output_commit import OutputRefusedError
 from core.workflows.encode import EncodeError, HardwareEncoderDetector
 from core.workflows.encode.runtime.storage_guard import format_bytes
 from core.workflows.encode.vulkan import detect_vulkan
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
-from ui.confirm import confirm_close_while_running, confirm_overwrite
+from ui.confirm import confirm_close_while_running, confirm_output, destination_changed_message
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
@@ -2482,13 +2483,17 @@ class MainWindow(QMainWindow):
             if errors:
                 self._report_blocking_errors(errors)
                 return
-            if not confirm_overwrite(self, encode_cfg.output):
+            existing = confirm_output(self, encode_cfg.output)
+            if existing is None:
                 return
             self._op_mode = "encode"
             self._op_encode_config = encode_cfg
             self.log_requested.emit("INFO", f"[MEDIA] Encodage → {encode_cfg.output.name}")
             try:
-                signals = self._encode_panel.run_operation(encode_cfg)
+                signals = self._encode_panel.run_operation(encode_cfg, existing=existing)
+            except OutputRefusedError:
+                self._report_blocking_errors([destination_changed_message(encode_cfg.output)])
+                return
             except EncodeError as exc:
                 self._report_blocking_errors([str(exc)])
                 return
@@ -2499,12 +2504,16 @@ class MainWindow(QMainWindow):
             if errors:
                 self._report_blocking_errors(errors)
                 return
-            if not confirm_overwrite(self, remux_cfg.output):
+            existing = confirm_output(self, remux_cfg.output)
+            if existing is None:
                 return
             self._op_mode = "remux"
             self.log_requested.emit("INFO", f"[MEDIA] Remuxage → {remux_cfg.output.name}")
             try:
-                signals = self._remux_panel.run_operation(remux_cfg)
+                signals = self._remux_panel.run_operation(remux_cfg, existing=existing)
+            except OutputRefusedError:
+                self._report_blocking_errors([destination_changed_message(remux_cfg.output)])
+                return
             except RemuxError as exc:
                 self._report_blocking_errors([str(exc)])
                 return

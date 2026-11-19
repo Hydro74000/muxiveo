@@ -12,7 +12,8 @@ from core.config import AppConfig
 from core.jobs.constants import EXIT_EXISTS
 from core.jobs.errors import JobError
 from core.jobs.logging import JobLogger
-from core.jobs.options import CommonOptions
+from core.jobs.options import CommonOptions, call_supported
+from core.output_commit import ExistingPolicy, OutputRefusedError
 from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
@@ -79,12 +80,15 @@ def run_remux(
     """
     if remux_config.output.exists() and not force:
         raise JobError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
+    existing = ExistingPolicy.from_force(force)  # refus revérifié sous la réservation du workflow
     wf = workflow_factory() if workflow_factory is not None else remux_workflow(config, options)
     relay(wf.log_message, lambda level, message: logger.emit(level, message))
     relay(wf.backend_event,
           lambda report: logger.emit("info", "Sélection du backend de remuxage.", event="mux_backend", **dict(report)))
     try:
-        signals = wf.run(remux_config)
+        signals = call_supported(wf.run, remux_config, existing=existing)
+    except OutputRefusedError as exc:  # sortie apparue depuis le contrôle : jamais remplacée sans force
+        raise JobError(str(exc), EXIT_EXISTS) from exc
     except RemuxValidationError as exc:  # refus avant tout lancement : code public « validation », un détail par écart
         raise ApiError(ErrorCode.VALIDATION, str(exc), details=[ErrorDetail("", error) for error in exc.errors]) from exc
     timeline = TimelineProgress()

@@ -34,7 +34,7 @@ from core.inspector import FileInspector
 from core.jobs.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_VALIDATION, EXIT_WORKFLOW
 from core.jobs.errors import JobError
 from core.jobs.logging import EmitterLogger
-from core.output_commit import OutputBusyError, OutputCommitError
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputCommitError, OutputRefusedError
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
@@ -439,7 +439,7 @@ def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger) -> P
         raise ApiError(ErrorCode.CANCELLED, "Correction annulée.") from exc
     except OutputBusyError as exc:
         raise ApiError(ErrorCode.BUSY, str(exc)) from exc
-    except OutputCommitError as exc:
+    except (OutputCommitError, OutputRefusedError) as exc:  # sortie apparue ou changée : jamais remplacée sans force
         raise JobError(str(exc), EXIT_EXISTS) from exc
     except (PatchError, CommandError) as exc:
         raise JobError(f"Correction impossible : {exc}", EXIT_WORKFLOW) from exc
@@ -467,6 +467,7 @@ def hdr_patch(request: HdrPatchRequest, ctx: ExecutionContext) -> HdrPatchResult
     report, measurement = _load(request, ctx, logger)
     peak = float(request.display_peak or getattr(ctx.config, "display_peak_nits", 1000) or 1000)
     plan, warnings = resolve_plan(request, report, measurement, display_peak=peak)
+    plan = dataclasses.replace(plan, existing=ExistingPolicy.from_force(request.force))
     for message in warnings:
         ctx.events.warning(message, code="hdr_patch_plan")
     changes = describe_plan(plan)
