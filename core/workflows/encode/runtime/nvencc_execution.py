@@ -118,6 +118,7 @@ def _apply_fel_hdr10plus(
     log: Callable[[str], None],
     progress: Callable[[str], None],
     light_statistics_path: Path | None = None,
+    expected_frames: int | None = None,
 ) -> None:
     """HDR10+ (image reconstruite, statistiques du plugin FEL) et MaxCLL/MaxFALL (image produite :
     ``light_statistics_path``, restaurée par le moteur ; sinon les statistiques FEL) injectés dans la sortie NVEncC.
@@ -149,6 +150,12 @@ def _apply_fel_hdr10plus(
             if encoded_frames is not None and count != encoded_frames:
                 raise EncodeError(
                     f"HDR10+ recalculé : {count} trames pour {encoded_frames} encodées ; injection refusée."
+                )
+            # HDR10+ généré : aussi face au compte de la source (troncature commune mesure / encodage).
+            if expected_frames is not None and count != expected_frames:
+                raise EncodeError(
+                    f"HDR10+ recalculé : {count} trames pour {expected_frames} attendues de la source ; "
+                    "injection refusée."
                 )
         # Flux annexB puis flux injecté coexistent avec l'artefact NVEncC.
         needed = 2.2 * intermediate.stat().st_size
@@ -558,6 +565,8 @@ class NvenccDirectOutputRunnerCallbacks:
     log_warn: Callable[[str], None] | None = None
     #: HDR10+ généré refait pour la reprise sur le BL (méthode FEL caduque) : (config, piste, n°, dossier, signaux).
     regenerate_hdr10plus: Callable[..., VideoEncodeSettings] | None = None
+    #: Images d'un flux de la source (source, index du flux) : audit du HDR10+ généré, sans copie DV.
+    source_frame_count: Callable[[Path, int], int | None] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -781,11 +790,26 @@ class NvenccDirectOutputRunner:
                         log=cb.log_info,
                     )
                 expected_hdr10plus: int | None = None
+                # HDR10+ généré : images de la source × rapport de cadence, entrées du JSON et trames encodées
+                # contrôlées indépendamment de la copie DV et de la méthode.
+                generated_source_frames: int | None = None
+                if generates_hdr10plus(runtime_video) and cb.source_frame_count is not None:
+                    counted = cb.source_frame_count(routing.input_path, routing.stream_index)
+                    generated_source_frames = math.ceil(counted * frame_ratio) if counted else None
                 if hdr10plus_json_path is not None and generates_hdr10plus(runtime_video):
-                    # HDR10+ généré : trames encodées = entrées du JSON étendu, contrôlé après l'encodage.
                     expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
                     if expected_hdr10plus is None:
                         raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
+                    if generated_source_frames is not None and expected_hdr10plus != generated_source_frames:
+                        message = translate_text(
+                            "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la "
+                            "source.", entries=expected_hdr10plus, frames=generated_source_frames)
+                        if not accept_validation_override(
+                            cb.validation_override, hdr10plus_json_path, message, signals._cancel_event.is_set,
+                            cb.log_info,
+                        ):
+                            cb.check_cancelled(signals)
+                            raise EncodeError(message)
                 # Cadence déclarée : seul le pipe y4m porte la cadence interpolée (bob natif : NVEncC la double).
                 output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps,
                                                 frame_ratio if needs_ffmpeg_pipe else Fraction(1))
@@ -928,11 +952,28 @@ class NvenccDirectOutputRunner:
                         (statistics_path is not None and hdr10plus_recomputed(runtime_video))
                         or (light_statistics is not None and deferred_light_levels(runtime_video))):
                     cb.check_cancelled(signals)
+                    encoded_frames = monitor.encoded_frames
+                    if generates_hdr10plus(runtime_video) and hdr10plus_recomputed(runtime_video):
+                        # HDR10+ généré sur l'image reconstruite : compte encodé exigé (sondé si NVEncC ne l'a pas
+                        # affiché) ; illisible → refus, sauf décision explicite.
+                        if encoded_frames is None and cb.count_video_frames is not None:
+                            encoded_frames = cb.count_video_frames(intermediate)
+                        if encoded_frames is None:
+                            message = translate_text(
+                                "Audit trames : compte des trames encodées illisible, couverture HDR10+ "
+                                "invérifiable.")
+                            if not accept_validation_override(
+                                cb.validation_override, intermediate, message, signals._cancel_event.is_set,
+                                cb.log_info,
+                            ):
+                                cb.check_cancelled(signals)
+                                raise EncodeError(message)
                     _apply_fel_hdr10plus(
                         video=runtime_video, intermediate=intermediate,
                         statistics_path=statistics_path if hdr10plus_recomputed(runtime_video) else None,
                         light_statistics_path=light_statistics, cwd=cwd,
-                        frame_ratio=frame_ratio, encoded_frames=monitor.encoded_frames, ffmpeg_bin=cb.ffmpeg_bin,
+                        expected_frames=generated_source_frames if generates_hdr10plus(runtime_video) else None,
+                        frame_ratio=frame_ratio, encoded_frames=encoded_frames, ffmpeg_bin=cb.ffmpeg_bin,
                         hdr10plus_bin=hdr10plus_bin, dovi_bin=dovi_bin,
                         run=lambda cmd, label: cb.run_cmd(cmd, cwd, label, lambda line: signals.progress.emit(line), signals),
                         cancelled=signals._cancel_event.is_set, log=cb.log_info, progress=signals.progress.emit,

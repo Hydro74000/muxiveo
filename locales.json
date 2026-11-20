@@ -11502,5 +11502,9 @@
   "Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU (approximatif).": {
     "fra": "Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU (approximatif).",
     "eng": "mvo-fel extension missing: HDR10+ estimated from the RPU L1 (approximate)."
+  },
+  "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la source.": {
+    "fra": "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la source.",
+    "eng": "Frame audit: generated HDR10+: {entries} entries for {frames} frames expected from the source."
   }
 }

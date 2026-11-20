@@ -427,7 +427,52 @@ def test_nvencc_fel_fallback_regenerates_the_hdr10plus_before_the_retry(tmp_path
                       patch("core.fel.pipeline.with_fel_input", side_effect=lambda cmd, video: cmd),
                       patch.object(run.workflow, "prepare_generated_hdr10plus", side_effect=regenerate),
                       patch.object(run.workflow, "_frame_count_guard",
-                                   return_value=SimpleNamespace(source_frame_count=lambda path: 3)))
+                                   return_value=SimpleNamespace(source_frame_count=lambda path, stream=None, **_k: 3)))
     assert not outcome.failed, outcome.failed
     assert len(regenerated) == 1 and regenerated[0].fel_context is None
     assert "nvencc" in run.labels
+
+
+def test_plugin_cancellation_never_falls_back_to_l1(tmp_path):
+    from core.fel.engine import FelCancelled
+
+    class _Cancelled(_MeasureEngine):
+        def measure(self, *args, **kwargs):
+            raise FelCancelled()
+
+    workflow, _ = _workflow(tmp_path)
+    rpu = tmp_path / "source.rpu"
+    rpu.write_bytes(b"rpu")
+    run, calls = _export_run(tmp_path)
+    video = _video(generate_hdr10plus=True, dovi_source_profile="p8_1", source_rpu_path=rpu)
+    with pytest.raises(TaskCancelledError):
+        _prepare(workflow, tmp_path, video, engine=_Cancelled(tmp_path / "x"), run=run)  # jeton non levé
+    assert not calls  # aucun export L1
+
+
+def test_each_generation_writes_in_its_own_folder(tmp_path):
+    workflow, _ = _workflow(tmp_path)
+    engine = _MeasureEngine(write_statistics(tmp_path / "s.jsonl", [100.0] * 4))
+    video = _video(generate_hdr10plus=True, dovi_source_profile="p8_1")
+    first = _prepare(workflow, tmp_path, video, engine=engine).generated_hdr10plus_json
+    second = _prepare(workflow, tmp_path, video, engine=engine).generated_hdr10plus_json
+    assert first.parent != second.parent and first.is_file() and second.is_file()
+
+
+def test_copy_generation_of_a_raw_hevc_source_is_refused(tmp_path):
+    workflow, _ = _workflow(tmp_path)
+    video = _video(codec="copy", copy_dv=True, generate_hdr10plus=True, dovi_source_profile="p8_1")
+    config = EncodeConfig(source=tmp_path / "film.hevc", output=tmp_path / "o.mkv", video=video, audio_tracks=[])
+    errors = workflow._hdr10plus_generation_errors(config)
+    assert len(errors) == 1 and "HEVC brut" in errors[0]
+
+
+def test_nvencc_generated_json_shorter_than_the_source_is_refused(tmp_path):
+    from tests.test_encode_runtime_failures import _Nvencc
+
+    run = _Nvencc(tmp_path, generate_hdr10plus=True, generated_hdr10plus_json=_generated(tmp_path, frames=3))
+    guard = SimpleNamespace(source_frame_count=lambda path, stream=None, **_k: 100)
+    outcome = run.run(patch.object(run.workflow, "_frame_count_guard", return_value=guard))
+    (message, error), = outcome.failed
+    assert isinstance(error, EncodeError) and "3" in message and "100" in message
+    assert "nvencc" not in run.labels  # refus avant l'encodage

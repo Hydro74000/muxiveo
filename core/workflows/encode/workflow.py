@@ -1216,6 +1216,7 @@ class EncodeWorkflow(QObject):
                 validation_override=self._validation_override_for(config),
                 count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
                 regenerate_hdr10plus=self._regenerate_hdr10plus,
+                source_frame_count=lambda path, stream: self._frame_count_guard().source_frame_count(path, stream),
             )
         ).run(
             config,
@@ -3273,6 +3274,11 @@ class EncodeWorkflow(QObject):
             elif sub_profile is _DoviSubProfile.P5 and video.codec == "copy":
                 errors.append(f"Piste vidéo #{index} — HDR10+ généré : en copie, l'image de base d'une source "
                               "Dolby Vision P5 (IPT) ne peut pas porter de HDR10+ ; réencoder la piste.")
+            elif video.codec == "copy" and self._video_source_from_settings(config, video).suffix.lower() in {
+                    ".hevc", ".h265", ".265", ".x265"}:
+                # Flux brut sans horodatage (images B réordonnées) : aucune piste Matroska à patcher.
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : en copie, un flux HEVC brut n'a pas "
+                              "d'horodatage à conserver ; le remuxer d'abord en MKV (Conteneur) ou réencoder.")
         return errors
 
     def _p5_conversion_available(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
@@ -3566,7 +3572,9 @@ class EncodeWorkflow(QObject):
             return dataclasses.replace(video, generated_hdr10plus_json=None, hdr10plus_generation_method=choice.method)
         source = self._video_source_from_settings(config, video)
         stream = self._video_stream_from_settings(video)
-        output = work_dir / f"generated_hdr10plus_{index}.json"
+        # Dossier propre à cette génération : reprises de pistes en parallèle sans fichier commun.
+        own_dir = Path(tempfile.mkdtemp(prefix=f"hdr10plus_{index}_", dir=str(work_dir)))
+        output = own_dir / f"generated_hdr10plus_{index}.json"
         method = choice.method
         statistics = None
         try:
@@ -3584,12 +3592,14 @@ class EncodeWorkflow(QObject):
                          if self._measurement_cache_dir is not None else None)
                 try:
                     statistics, origin = measured_statistics(
-                        engine, source, stream, work_dir, layer=layer, threads=max(2, self._ffmpeg_threads),
+                        engine, source, stream, own_dir, layer=layer, threads=max(2, self._ffmpeg_threads),
                         progress=progress, cancel=cancel_event, cache=cache,
                         cache_write=video.hdr10plus_generation_cache_write,
                         device=video.fel_device if layer == "reconstructed" else "auto",
                         precision=video.fel_precision if layer == "reconstructed" else "fast")
                     self.log_message.emit("INFO", prefix + f"Mesure de l'image pour le HDR10+ : {origin}.")
+                except FelCancelled as exc:
+                    raise TaskCancelledError() from exc  # annulation du plugin : jamais de repli L1
                 except (FelError, MeasurementError, GenerationError, OSError, RuntimeError) as exc:
                     if cancel_event.is_set() or isinstance(exc, (InterruptedError, TaskCancelledError)):
                         raise TaskCancelledError() from exc
@@ -3598,8 +3608,8 @@ class EncodeWorkflow(QObject):
                     method = METHOD_L1
             if method == METHOD_L1:
                 statistics = l1_statistics(
-                    self._generation_rpu(config, video, index=index, work_dir=work_dir, run=run, signals=signals),
-                    dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", run_cmd=run, work_dir=work_dir,
+                    self._generation_rpu(config, video, index=index, work_dir=own_dir, run=run, signals=signals),
+                    dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", run_cmd=run, work_dir=own_dir,
                     cancelled=cancel_event.is_set)
             assert statistics is not None
             generated = write_generated(statistics, output, method, cancelled=cancel_event.is_set)
