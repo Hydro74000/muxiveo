@@ -218,3 +218,48 @@ def test_with_scenes_resplits_and_marks_starts(tmp_path):
     split = with_scenes(statistics, [3, 99, -1])
     assert [(s.first, s.frames) for s in split.scenes] == [(0, 3), (3, 2)]
     assert [frame.scene_start for frame in split.frames] == [True, False, False, True, False]
+
+
+def test_write_cancelled_mid_scene_removes_the_partial_file(tmp_path):
+    from core.fel.hdr10plus import FrameStatistics as Stats
+    from core.fel.hdr10plus import write_hdr10plus_json
+
+    one = read_frame_statistics(write_statistics(tmp_path / "s.jsonl", [100.0]))
+    long_scene = with_scenes(Stats(0, 0, one.frames * 5000, ()), [0])  # un seul plan de 5000 images
+    calls = {"n": 0}
+
+    def cancelled() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # annulation après l'agrégation du plan, pendant ses entrées
+
+    output = tmp_path / "g.json"
+    with pytest.raises(InterruptedError):
+        write_hdr10plus_json(long_scene, output, cancelled=cancelled)
+    assert not output.exists()
+
+
+def test_service_classifies_measure_read_cancellation_as_cancelled(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.fel import engine as engine_module
+    from core.service.errors import ErrorCode, error_code
+    from core.service.ops.hdr import measure_image
+
+    source = write_statistics(tmp_path / "s.jsonl", [100.0] * 3)
+    event = threading.Event()
+
+    class _CancellingEngine(_Engine):
+        capabilities = {"measure": ["base"]}
+
+        def measure(self, *args, **kwargs):
+            backend = super().measure(*args, **kwargs)
+            event.set()  # annulation demandée juste après la mesure, pendant la lecture
+            return backend
+
+    monkeypatch.setattr(engine_module.FelEngine, "installed", classmethod(lambda cls: _CancellingEngine(source)))
+    snapshot = SimpleNamespace(codec="hevc", is_pq=True, dovi=None, fps=24.0, frames=3, duration_s=0.125,
+                               path=str(tmp_path / "m.mkv"), stream_index=0)
+    logger = SimpleNamespace(emit=lambda *a, **k: None)
+    with pytest.raises(InterruptedError) as caught:
+        measure_image(SimpleNamespace(), SimpleNamespace(snapshot=snapshot), 2, tmp_path, logger, cancel=event)
+    assert error_code(caught.value) == ErrorCode.CANCELLED

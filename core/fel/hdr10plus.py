@@ -292,32 +292,43 @@ def _check(cancelled: Callable[[], bool] | None) -> None:
         raise InterruptedError
 
 
-def hdr10plus_document(statistics: FrameStatistics, *, tool: str = FEL_TOOL,
-                       cancelled: Callable[[], bool] | None = None) -> dict:
-    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan.
+_CHECK_FRAMES = 2048
 
-    ``cancelled`` vrai : ``InterruptedError`` (contrôlé tous les 256 plans)."""
-    scene_info: list[dict] = []
+
+def _scene_entries(statistics: FrameStatistics, cancelled: Callable[[], bool] | None):
+    """Entrées ``SceneInfo`` image par image ; annulation contrôlée à chaque plan et toutes les 2048 images."""
     for scene_id, scene in enumerate(statistics.scenes):
-        if scene_id % 256 == 0:
-            _check(cancelled)
+        _check(cancelled)
         parameters = scene_parameters(statistics, scene)
         for offset in range(scene.frames):
-            scene_info.append({
+            if offset and offset % _CHECK_FRAMES == 0:
+                _check(cancelled)
+            yield {
                 "LuminanceParameters": parameters,
                 "NumberOfWindows": 1,
                 "TargetedSystemDisplayMaximumLuminance": 0,
                 "SceneFrameIndex": offset,
                 "SceneId": scene_id,
                 "SequenceFrameIndex": scene.first + offset,
-            })
+            }
+
+
+def _summary(statistics: FrameStatistics) -> dict:
+    return {
+        "SceneFirstFrameIndex": [scene.first for scene in statistics.scenes],
+        "SceneFrameNumbers": [scene.frames for scene in statistics.scenes],
+    }
+
+
+def hdr10plus_document(statistics: FrameStatistics, *, tool: str = FEL_TOOL,
+                       cancelled: Callable[[], bool] | None = None) -> dict:
+    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan.
+
+    ``cancelled`` vrai : ``InterruptedError``."""
     return {
         "JSONInfo": {"HDR10plusProfile": "A", "Version": "1.0"},
-        "SceneInfo": scene_info,
-        "SceneInfoSummary": {
-            "SceneFirstFrameIndex": [scene.first for scene in statistics.scenes],
-            "SceneFrameNumbers": [scene.frames for scene in statistics.scenes],
-        },
+        "SceneInfo": list(_scene_entries(statistics, cancelled)),
+        "SceneInfoSummary": _summary(statistics),
         "ToolInfo": {"Tool": tool, "Version": "1.0"},
     }
 
@@ -356,9 +367,24 @@ def statistics_from_measurement(measurement: object, scene_starts: object, *,
 
 def write_hdr10plus_json(statistics: FrameStatistics, output: Path, *, tool: str = FEL_TOOL,
                          cancelled: Callable[[], bool] | None = None) -> int:
-    """Écrit le JSON HDR10+ ; renvoie le nombre de plans."""
-    document = hdr10plus_document(statistics, tool=tool, cancelled=cancelled)
-    Path(output).write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
+    """Écrit le JSON HDR10+ en flux (même document que :func:`hdr10plus_document`) ; renvoie le nombre de plans.
+
+    Annulation (``InterruptedError``) ou erreur : fichier incomplet supprimé."""
+    def compact(value: object) -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    try:
+        with Path(output).open("w", encoding="utf-8") as out:
+            out.write('{"JSONInfo":' + compact({"HDR10plusProfile": "A", "Version": "1.0"})
+                      + ',"SceneInfo":[')
+            for index, entry in enumerate(_scene_entries(statistics, cancelled)):
+                out.write(("," if index else "") + compact(entry))
+            _check(cancelled)
+            out.write('],"SceneInfoSummary":' + compact(_summary(statistics))
+                      + ',"ToolInfo":' + compact({"Tool": tool, "Version": "1.0"}) + "}")
+    except BaseException:
+        Path(output).unlink(missing_ok=True)
+        raise
     return len(statistics.scenes)
 
 

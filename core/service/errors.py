@@ -116,6 +116,8 @@ def _cancellation_types() -> tuple[type[BaseException], ...]:
     from core.runner import TaskCancelledError
     from core.subprocess_utils import ProbeCancelledError
 
+    # InterruptedError : convention des lecteurs annulables (statistiques de la mesure, export RPU, relevé des
+    # images sans RPU) ; l'EINTR système est relancé par Python (PEP 475), jamais propagé.
     return (KeyboardInterrupt, TaskCancelledError, FelCancelled, DynamicInspectionCancelled, PatchCancelled,
             InspectionCancelled, HevcStreamCancelled, MatroskaWriteCancelled, NvenccCancelled, PluginCancelled,
-            ProbeCancelledError)
+            ProbeCancelledError, InterruptedError)
