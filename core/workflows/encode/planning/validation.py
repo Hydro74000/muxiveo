@@ -64,6 +64,7 @@ def validate_encode_config(
                 tonemap_to_sdr=bool(video.tonemap_to_sdr),
                 copy_dv=bool(video.copy_dv),
                 copy_hdr10plus=bool(video.copy_hdr10plus),
+                generate_hdr10plus=bool(getattr(video, "generate_hdr10plus", False)),
                 master_display=str(video.master_display or ""),
                 max_cll=str(video.max_cll or ""),
                 static_hdr_analysis_request=str(
@@ -94,6 +95,11 @@ def validate_encode_config(
                 f"Piste vidéo #{index} — le tone-mapping HDR → SDR est incompatible "
                 "avec la copie Dolby Vision / HDR10+."
             )
+        if video.tonemap_to_sdr and video.generate_hdr10plus:
+            errors.append(
+                f"Piste vidéo #{index} — le tone-mapping HDR → SDR est incompatible "
+                "avec la génération HDR10+."
+            )
         if video.copy_dv and not supports_dovi(video.codec):
             if str(video.codec or "").startswith("nvencc_"):
                 errors.append(
@@ -105,7 +111,7 @@ def validate_encode_config(
                     f"Piste vidéo #{index} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
                     "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
                 )
-        if video.copy_hdr10plus and not supports_hdr10plus(video.codec):
+        if (video.copy_hdr10plus or video.generate_hdr10plus) and not supports_hdr10plus(video.codec):
             errors.append(
                 f"Piste vidéo #{index} — Le codec '{video.codec}' ne supporte pas l'injection HDR10+."
             )

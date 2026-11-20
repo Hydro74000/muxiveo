@@ -123,6 +123,7 @@ def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
     """True si le job encode requiert la préservation ou l'injection de métadonnées HDR / Dolby Vision."""
     if bool(getattr(config, "copy_dv", False)) or bool(getattr(config, "copy_hdr10plus", False)):
         return True
+    from core.workflows.encode.hdr10plus_output import outputs_hdr10plus
     videos = list(getattr(config, "video_tracks", []) or [])
     if not videos and getattr(config, "video", None) is not None:
         videos = [config.video]
@@ -142,7 +143,7 @@ def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
             sources_to_check.add(v_src)
         if (
             bool(getattr(video, "copy_dv", False))
-            or bool(getattr(video, "copy_hdr10plus", False))
+            or outputs_hdr10plus(video)
             or bool(getattr(video, "inject_hdr_meta", False))
             or bool(getattr(video, "master_display", ""))
             or bool(getattr(video, "max_cll", ""))

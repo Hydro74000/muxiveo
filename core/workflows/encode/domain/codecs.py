@@ -25,6 +25,7 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
     supports_manual_static_hdr_metadata,
 )
+from core.workflows.encode.hdr10plus_output import outputs_hdr10plus
 from core.workflows.encode.models import (
     AudioTrackSettings,
     QualityMode,
@@ -427,7 +428,7 @@ def output_hdr_transfer(video: VideoEncodeSettings) -> str:
     if kind in {"pq", "hlg"}:
         return kind
     sdr_base_dovi = str(getattr(video, "dovi_source_profile", "") or "") == "p8_2"
-    if video.inject_hdr_meta or video.copy_hdr10plus or (video.copy_dv and not sdr_base_dovi):
+    if video.inject_hdr_meta or outputs_hdr10plus(video) or (video.copy_dv and not sdr_base_dovi):
         return "pq"
     return ""
 
@@ -446,7 +447,7 @@ def hdr_setparams_filter(video: VideoEncodeSettings) -> str:
 def requests_hdr_metadata(video: VideoEncodeSettings) -> bool:
     if video.tonemap_to_sdr or not supports_hdr_output(video.codec):
         return False
-    return bool(video.inject_hdr_meta or video.copy_dv or video.copy_hdr10plus)
+    return bool(video.inject_hdr_meta or video.copy_dv or outputs_hdr10plus(video))
 
 
 # Encodeurs ffmpeg qui posent le HDR10 statique depuis les side data des images

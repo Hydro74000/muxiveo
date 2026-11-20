@@ -84,7 +84,7 @@ def estimate_inject_storage_requirements(
     sidecars = 32 * 1024 * 1024
     if video.copy_dv:
         sidecars += 64 * 1024 * 1024
-    if video.copy_hdr10plus:
+    if video.copy_hdr10plus or video.generate_hdr10plus:
         sidecars += 64 * 1024 * 1024
     if config.chapter_overrides:
         sidecars += 16 * 1024 * 1024

@@ -10379,10 +10379,6 @@
     "fra": "HDR :",
     "eng": "HDR:"
   },
-  "HDR10+ de la source : copié ou retiré.": {
-    "fra": "HDR10+ de la source : copié ou retiré.",
-    "eng": "Source HDR10+: copied or removed."
-  },
   "Hybrid :": {
     "fra": "Hybrid :",
     "eng": "Hybrid:"
@@ -11462,5 +11458,9 @@
   "Aucune image mesurée : HDR10+ impossible à générer.": {
     "fra": "Aucune image mesurée : HDR10+ impossible à générer.",
     "eng": "No frame measured: HDR10+ cannot be generated."
+  },
+  "HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré.": {
+    "fra": "HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré.",
+    "eng": "HDR10+: copied from the source, generated from its Dolby Vision (replaces the source HDR10+) or removed."
   }
 }

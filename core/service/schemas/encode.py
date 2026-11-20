@@ -118,6 +118,13 @@ class DolbyVisionSpec(CopySpec):
 
 
 @dataclass(frozen=True)
+class Hdr10PlusSpec(Model):
+    mode: Literal["copy", "generate", "off"] | None = field(
+        default=None, description="copy : HDR10+ de la source ; generate : généré depuis le Dolby Vision de la "
+                                  "source (remplace le HDR10+ de la source, Copy compris) ; off : aucun.")
+
+
+@dataclass(frozen=True)
 class FelSpec(Model):
     """Intégration de la couche Dolby Vision FEL (extension mvo-fel)."""
 
@@ -152,7 +159,7 @@ class VideoEncodeSpec(Model):
     restoration: RestorationSpec | None = None
     static_hdr: StaticHdrSpec | None = None
     dolby_vision: DolbyVisionSpec | None = None
-    hdr10plus: CopySpec | None = None
+    hdr10plus: Hdr10PlusSpec | None = None
     fel: FelSpec | None = None
     tonemap: TonemapSpec | None = None
 

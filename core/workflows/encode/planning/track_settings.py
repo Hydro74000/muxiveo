@@ -58,7 +58,7 @@ PER_SOURCE_HDR_KEYS: tuple[str, ...] = (
 PRESET_FIELDS: tuple[str, ...] = (
     "codec", "quality_mode", "rate_control", "crf", "cq", "bitrate_kbps", "target_size_mb", "preset",
     "extra_params", "bit_depth", "resize", "crop", "filters", "interpolation", "restoration",
-    "bake_dovi_fel", "fel_device", "fel_precision", "fel_hdr10plus", "tonemap_algorithm",
+    "bake_dovi_fel", "fel_device", "fel_precision", "fel_hdr10plus", "generate_hdr10plus", "tonemap_algorithm",
 )
 
 #: Champs propres à la source, jamais repris d'un preset (HDR statique, copie DV / HDR10+, tone mapping).
@@ -399,6 +399,30 @@ def effective_dynamic_hdr_flags(state: Mapping[str, object], *, source_hdr: HDRT
     return copy_dv, copy_hdr10plus
 
 
+#: Sous-profils Dolby Vision dont l'image de base n'est pas PQ (SDR, HLG) : aucun HDR10+ possible.
+_NON_PQ_BASE_DOVI = frozenset({"p8_2", "p8_4"})
+
+
+def hdr10plus_generation_available(ctx: SourceVideoContext, codec: str, *, tonemap: bool) -> bool:
+    """La génération HDR10+ depuis le Dolby Vision s'applique : source DV à image de base PQ, codec qui porte le
+    HDR10+ (Copy compris), sans tone mapping ; jamais Copy d'une source P5 (image de base IPT). Sous-profil
+    inconnu : admis, contrôlé au lancement."""
+    codec = str(codec or "").strip().lower()
+    if tonemap or not source_has_dv(ctx.hdr_type) or not is_hdr10plus_codec(codec):
+        return False
+    profile = str(ctx.dovi_profile or "").strip().lower()
+    return profile not in _NON_PQ_BASE_DOVI and not (codec == "copy" and profile == "p5")
+
+
+def effective_hdr10plus_generation(state: Mapping[str, object], ctx: SourceVideoContext, *,
+                                   codec: str | None = None, tonemap: bool | None = None) -> bool:
+    """HDR10+ généré : intention ``generate_hdr10plus`` et génération applicable (règle unique : panneau, jobs,
+    aperçu, lancement). L'intention reste mémorisée quand elle ne s'applique pas (codec, tone mapping)."""
+    target = state_target_codec(state) if codec is None else codec
+    mapped = bool(state.get("tonemap_to_sdr")) if tonemap is None else tonemap
+    return bool(state.get("generate_hdr10plus")) and hdr10plus_generation_available(ctx, target, tonemap=mapped)
+
+
 def restore_flags(state: Mapping[str, object]) -> tuple[bool, bool]:
     """Dolby Vision / HDR10+ retirés par un codec, à rétablir au retour sur un codec qui les porte."""
     flags = state.get("dynamic_hdr_disabled_by_codec")
@@ -552,7 +576,10 @@ def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(normalized, source_hdr=ctx.hdr_type,
                                                           target_codec=target_codec)
     normalized["copy_dv"] = copy_dv
-    normalized["copy_hdr10plus"] = copy_hdr10plus
+    # Génération : remplace la copie HDR10+ (exclusives).
+    normalized["copy_hdr10plus"] = copy_hdr10plus and not effective_hdr10plus_generation(
+        normalized, ctx, codec=target_codec)
+    normalized["generate_hdr10plus"] = bool(normalized.get("generate_hdr10plus"))
     md, cll = effective_static_hdr_fields(normalized, codec=target_codec)
     editable = static_hdr_editable(normalized, target_codec)
     for (name, _default, marker), value in zip(STATIC_HDR_FIELDS, (md, cll)):
@@ -599,6 +626,7 @@ def default_video_state(ctx: SourceVideoContext, env: EncoderEnvironment | None 
         "bake_dovi_fel": None,
         "fel_device": "auto",
         "copy_hdr10plus": source_has_hdr10plus(ctx.hdr_type),
+        "generate_hdr10plus": False,
         "dovi_profile": "0",
         "tonemap_to_sdr": False,
         "tonemap_choice": None,
@@ -609,6 +637,8 @@ def default_video_state(ctx: SourceVideoContext, env: EncoderEnvironment | None 
 
 #: Options HDR dont « Appliquer à toutes » tient une intention commune (``propagate_state``, ``hdr_common``).
 HDR_COMMON_OPTIONS: tuple[str, ...] = ("inject_hdr_meta", "copy_dv", "copy_hdr10plus")
+#: Génération HDR10+ : intention commune distincte (aucune mémoire de copie), voir ``propagate_state``.
+HDR10PLUS_GENERATION_OPTION = "generate_hdr10plus"
 
 
 def hdr_option_in_source(option: str, ctx: SourceVideoContext) -> bool:
@@ -670,6 +700,12 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
                 memory[option] = _option_memory(own, option)
         state["hdr_disabled_by_codec"] = memory["inject_hdr_meta"]
         state["dynamic_hdr_disabled_by_codec"] = (memory["copy_dv"], memory["copy_hdr10plus"])
+    # Génération HDR10+ : intention propre (jamais une mémoire de copie), conservée par piste ; l'intention commune
+    # s'applique aux seules sources Dolby Vision (hors piste modèle Copy, qui ne propage pas).
+    generate = common.get(HDR10PLUS_GENERATION_OPTION)
+    state[HDR10PLUS_GENERATION_OPTION] = (generate if isinstance(generate, bool) and codec != "copy"
+                                          and source_has_dv(ctx.hdr_type)
+                                          else bool(own.get(HDR10PLUS_GENERATION_OPTION)))
     return normalize_video_state(state, ctx, env)
 
 
@@ -769,7 +805,8 @@ def video_settings_from_state(
     codec = str(state.get("codec") or "libx265")
     tonemap = bool(state.get("tonemap_to_sdr"))
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(state, source_hdr=ctx.hdr_type, target_codec=codec)
-    copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
+    generate_hdr10plus = effective_hdr10plus_generation(state, ctx, codec=codec, tonemap=tonemap)
+    copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap and not generate_hdr10plus
     inject_hdr_meta = effective_static_hdr_injection(state, ctx, codec=codec, tonemap=tonemap)
     master_display, max_cll = effective_static_hdr_fields(state, codec=codec) if inject_hdr_meta else ("", "")
     return VideoEncodeSettings(
@@ -789,7 +826,8 @@ def video_settings_from_state(
         source_bit_depth=ctx.bit_depth,
         source_codec=ctx.codec,
         source_pix_fmt=ctx.pix_fmt,
-        dovi_source_profile=ctx.dovi_profile if codec != "copy" else "",
+        # Copy : sous-profil gardé seulement pour la génération HDR10+ (refus P5 / base non PQ au lancement).
+        dovi_source_profile=ctx.dovi_profile if codec != "copy" or generate_hdr10plus else "",
         encoder_supports_10bit=env.supports_10bit(codec),
         resize=VideoResizeSettings.from_value(state.get("resize")),
         crop=VideoCropSettings.from_value(state.get("crop")),
@@ -811,6 +849,7 @@ def video_settings_from_state(
         static_hdr_metadata_analysis_request=str(state.get("static_hdr_metadata_analysis_request") or ""),
         copy_dv=copy_dv,
         copy_hdr10plus=copy_hdr10plus,
+        generate_hdr10plus=generate_hdr10plus,
         dovi_profile=str(state.get("dovi_profile") or "0"),
         source_color_transfer=ctx.transfer,
         tonemap_to_sdr=tonemap,
@@ -847,6 +886,7 @@ def is_pure_copy(config: object) -> bool:
             and not bool(getattr(video, "tonemap_to_sdr", False))
             and not bool(getattr(video, "has_video_transform", lambda: False)())
             and not requires_dovi_profile_normalization(video)
+            and not bool(getattr(video, "generate_hdr10plus", False))
             for video in video_tracks
         )
         and all(

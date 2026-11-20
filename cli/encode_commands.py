@@ -68,6 +68,11 @@ def _preset_from_args(args: argparse.Namespace) -> dict[str, Any]:
             preset[key] = spec.pop(key)
     if "encoder_preset" in spec:
         preset["preset"] = spec.pop("encoder_preset")
+    # HDR10+ généré : intention enregistrable (effective sur toute source Dolby Vision) ; copie / retrait :
+    # propres à la source.
+    if (spec.get("hdr10plus") or {}).get("mode") == "generate" and len(spec["hdr10plus"]) == 1:
+        preset["generate_hdr10plus"] = True
+        spec.pop("hdr10plus")
     for nested, mapping in (("fel", {"bake": "bake_dovi_fel", "precision": "fel_precision", "device": "fel_device",
                                      "hdr10plus": "fel_hdr10plus"}),
                             ("tonemap", {"algorithm": "tonemap_algorithm"})):

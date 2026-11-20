@@ -34,7 +34,9 @@ def add_encode_options(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--interpolation-preset", choices=("fast", "balanced", "quality", "ultra", "light"))
     group.add_argument("--tonemap", nargs="?", const="hable", metavar="ALGO", help="Tone mapping vers SDR.")
     group.add_argument("--dv", choices=("copy", "off"), help="Dolby Vision de la source : copié ou retiré.")
-    group.add_argument("--hdr10plus", choices=("copy", "off"), help="HDR10+ de la source : copié ou retiré.")
+    group.add_argument("--hdr10plus", choices=("copy", "generate", "off"),
+                       help="HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la "
+                            "source) ou retiré.")
     group.add_argument("--bake-fel", action="store_true", help="Intégrer la couche Dolby Vision FEL (mvo-fel).")
     group.add_argument("--audio-codec", action="append", metavar="SOURCE:FLUX=CODEC[:KBPS]",
                        help="Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable.")

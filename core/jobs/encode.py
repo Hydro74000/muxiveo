@@ -56,6 +56,7 @@ from core.workflows.encode.planning.track_settings import (
     SourceVideoContext,
     apply_preset_to_state,
     default_video_state,
+    effective_hdr10plus_generation,
     extract_hdr_meta_fields,
     is_pure_copy,
     normalize_video_state,
@@ -78,7 +79,7 @@ AUDIO_CODEC_IDS = frozenset(c for c, _ in AUDIO_CODECS)
 _PLAN_FIELDS = (
     "codec", "rate_control", "quality_mode", "crf", "cq", "bitrate_kbps", "target_size_mb", "preset", "extra_params",
     "bit_depth", "inject_hdr_meta", "master_display", "max_cll", "static_hdr_metadata_analysis_request", "copy_dv",
-    "dovi_profile", "copy_hdr10plus", "bake_dovi_fel", "fel_precision", "fel_device", "fel_hdr10plus",
+    "dovi_profile", "copy_hdr10plus", "generate_hdr10plus", "bake_dovi_fel", "fel_precision", "fel_device", "fel_hdr10plus",
     "tonemap_to_sdr", "tonemap_algorithm",
 )
 
@@ -261,6 +262,7 @@ def apply_video_spec(state: dict[str, object], spec: VideoEncodeSpec,
             state["dovi_profile"] = spec.dolby_vision.profile
     if spec.hdr10plus is not None and spec.hdr10plus.mode is not None:
         state["copy_hdr10plus"] = spec.hdr10plus.mode == "copy"
+        state["generate_hdr10plus"] = spec.hdr10plus.mode == "generate"
         state["dynamic_hdr_disabled_by_codec"] = (restore_flags(state)[0], False)
         intents["hdr10plus"] = f"hdr10plus_{spec.hdr10plus.mode}"
     if spec.fel is not None:
@@ -294,6 +296,9 @@ def _check_intents(state: Mapping[str, object], ctx: SourceVideoContext, intents
         warnings.append(f"{label} : Dolby Vision non copié (source sans Dolby Vision ou codec incompatible)")
     if "hdr10plus_copy" in intents and not state.get("copy_hdr10plus"):
         warnings.append(f"{label} : HDR10+ non copié (source sans HDR10+ ou codec incompatible)")
+    if "hdr10plus_generate" in intents and not effective_hdr10plus_generation(state, ctx):
+        warnings.append(f"{label} : HDR10+ non généré (source sans Dolby Vision à image de base PQ, Copy d'une "
+                        "source P5, codec sans HDR10+ ou tone mapping)")
 
 
 def _plan_entry(source: SourceInput, track: TrackEntry, settings: VideoEncodeSettings) -> dict[str, Any]:

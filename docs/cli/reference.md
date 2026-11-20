@@ -113,7 +113,7 @@ muxiveo --cli validate [-h] [--sync-mode {physical,container}] [--sync-subtitles
                        [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
                        [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
                        [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                       [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                       [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                        [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                        [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
                        [--json]
@@ -181,7 +181,7 @@ muxiveo --cli validate [-h] [--sync-mode {physical,container}] [--sync-subtitles
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -220,7 +220,7 @@ muxiveo --cli preview [-h] [--sync-mode {physical,container}] [--sync-subtitles 
                       [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
                       [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
                       [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                      [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                      [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                       [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                       [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
                       [--json]
@@ -288,7 +288,7 @@ muxiveo --cli preview [-h] [--sync-mode {physical,container}] [--sync-subtitles 
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -327,7 +327,7 @@ muxiveo --cli remux [-h] [--sync-mode {physical,container}] [--sync-subtitles {m
                     [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
                     [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                     [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                    [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                    [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                     [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                     [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
                     [--save SAVE]
@@ -395,7 +395,7 @@ muxiveo --cli remux [-h] [--sync-mode {physical,container}] [--sync-subtitles {m
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -434,7 +434,7 @@ muxiveo --cli run [-h] [--sync-mode {physical,container}] [--sync-subtitles {mir
                   [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
                   [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                   [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                  [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                  [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                   [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                   [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
@@ -501,7 +501,7 @@ muxiveo --cli run [-h] [--sync-mode {physical,container}] [--sync-subtitles {mir
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -542,7 +542,7 @@ muxiveo --cli batch [-h] [--sync-mode {physical,container}] [--sync-subtitles {m
                     [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
                     [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                     [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                    [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                    [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                     [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                     [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
@@ -617,7 +617,7 @@ muxiveo --cli batch [-h] [--sync-mode {physical,container}] [--sync-subtitles {m
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -721,7 +721,7 @@ muxiveo --cli encode [-h] [--sync-mode {physical,container}] [--sync-subtitles {
                      [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%]
                      [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
                      [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                      [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                      [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
                      [--preview-image SECONDES] [--preview-video SECONDES:DURÉE] [--random-scene]
@@ -790,7 +790,7 @@ muxiveo --cli encode [-h] [--sync-mode {physical,container}] [--sync-subtitles {
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -873,11 +873,11 @@ muxiveo --cli encode-preset save [-h] [--description DESCRIPTION] [--encode-pres
                                  [--resize PRESET|LxH|N%] [--deinterlace]
                                  [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                                  [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                                 [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
-                                 [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
-                                 [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
-                                 [--video-set CLÉ.POINTÉE=VALEUR] [--force] [--log-format {text,jsonl,events}]
-                                 NOM
+                                 [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,generate,off}]
+                                 [--bake-fel] [--audio-codec SOURCE:FLUX=CODEC[:KBPS]]
+                                 [--video-track SOURCE:FLUX] [--accept-dovi-nvenc-crop]
+                                 [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR] [--force]
+                                 [--log-format {text,jsonl,events}] NOM
 ```
 
 | Option | Effet |
@@ -901,7 +901,7 @@ muxiveo --cli encode-preset save [-h] [--description DESCRIPTION] [--encode-pres
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -1342,7 +1342,7 @@ muxiveo --cli hybrid [-h] [--sync-mode {physical,container}] [--sync-subtitles {
                      [--encoder-preset PRESET] [--bit-depth {auto,8,10}] [--crop auto|HAUT,BAS,GAUCHE,DROITE]
                      [--resize PRESET|LxH|N%] [--deinterlace] [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off]
                      [--interpolate xN|CADENCE] [--interpolation-preset {fast,balanced,quality,ultra,light}]
-                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                     [--tonemap [ALGO]] [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                      [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                      [--accept-dovi-nvenc-crop] [--keep-failed-work-dir] [--video-set CLÉ.POINTÉE=VALEUR]
 ```
@@ -1423,7 +1423,7 @@ muxiveo --cli hybrid [-h] [--sync-mode {physical,container}] [--sync-subtitles {
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -1541,7 +1541,7 @@ muxiveo --cli profile preview [-h] [--sync-mode {physical,container}] [--sync-su
                               [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
                               [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                               [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                              [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                              [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                               [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                               [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
                               [--video-set CLÉ.POINTÉE=VALEUR]
@@ -1605,7 +1605,7 @@ muxiveo --cli profile preview [-h] [--sync-mode {physical,container}] [--sync-su
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -1644,7 +1644,7 @@ muxiveo --cli profile apply [-h] [--sync-mode {physical,container}] [--sync-subt
                             [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
                             [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                             [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                            [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                             [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                             [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
                             [--video-set CLÉ.POINTÉE=VALEUR]
@@ -1709,7 +1709,7 @@ muxiveo --cli profile apply [-h] [--sync-mode {physical,container}] [--sync-subt
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |
@@ -1750,7 +1750,7 @@ muxiveo --cli profile batch [-h] [--sync-mode {physical,container}] [--sync-subt
                             [--crop auto|HAUT,BAS,GAUCHE,DROITE] [--resize PRESET|LxH|N%] [--deinterlace]
                             [--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off] [--interpolate xN|CADENCE]
                             [--interpolation-preset {fast,balanced,quality,ultra,light}] [--tonemap [ALGO]]
-                            [--dv {copy,off}] [--hdr10plus {copy,off}] [--bake-fel]
+                            [--dv {copy,off}] [--hdr10plus {copy,generate,off}] [--bake-fel]
                             [--audio-codec SOURCE:FLUX=CODEC[:KBPS]] [--video-track SOURCE:FLUX]
                             [--accept-dovi-nvenc-crop] [--keep-failed-work-dir]
                             [--video-set CLÉ.POINTÉE=VALEUR]
@@ -1821,7 +1821,7 @@ muxiveo --cli profile batch [-h] [--sync-mode {physical,container}] [--sync-subt
 | `--interpolation-preset` | Préréglage d'interpolation : fast, balanced, quality, ultra ou light. — `fast`, `balanced`, `quality`, `ultra`, `light` |
 | `--tonemap` | Tone mapping vers SDR. |
 | `--dv` | Dolby Vision de la source : copié ou retiré. — `copy`, `off` |
-| `--hdr10plus` | HDR10+ de la source : copié ou retiré. — `copy`, `off` |
+| `--hdr10plus` | HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré. — `copy`, `generate`, `off` |
 | `--bake-fel` | Intégrer la couche Dolby Vision FEL (mvo-fel). |
 | `--audio-codec` | Réencoder une piste audio (ex. 0:1=eac3:640) ; répétable. |
 | `--video-track` | Options vidéo ci-dessus appliquées à cette piste seulement (défaut : toutes). |

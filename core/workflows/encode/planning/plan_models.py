@@ -67,6 +67,8 @@ class PlannedVideoTrack:
     master_display: str
     max_cll: str
     static_hdr_analysis_request: str = ""
+    #: HDR10+ généré depuis le Dolby Vision (remplace ``copy_hdr10plus``).
+    generate_hdr10plus: bool = False
 
 
 @dataclass(frozen=True)

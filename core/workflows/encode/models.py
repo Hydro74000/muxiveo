@@ -428,6 +428,14 @@ class VideoEncodeSettings:
     restore_source_statistics: Path | None = field(default=None, repr=False, compare=False)
     restore_source_light_levels: str = field(default="", repr=False, compare=False)
     copy_hdr10plus:   bool         = False
+    # HDR10+ généré depuis le Dolby Vision de la source (``core/hdr10plus_generation.py``), effectif selon
+    # ``effective_hdr10plus_generation`` : remplace la copie HDR10+ (``copy_hdr10plus`` alors faux).
+    generate_hdr10plus: bool       = False
+    # Posés par le workflow : JSON préparé (indexé sur les images de la source), méthode retenue, et mesure
+    # écrite dans le cache du HDR Studio (jamais pour un segment d'aperçu).
+    generated_hdr10plus_json: Path | None = field(default=None, repr=False, compare=False)
+    hdr10plus_generation_method: str = field(default="", repr=False, compare=False)
+    hdr10plus_generation_cache_write: bool = field(default=True, repr=False, compare=False)
     dovi_profile:     str          = "0"
     # color_transfer ffprobe du flux source ("smpte2084", "arib-std-b67", "bt709"…,
     # "" si inconnu) : détermine si la sortie est HDR et sa VUI (PQ / HLG).
@@ -715,6 +723,7 @@ class EncodePreset:
     fel_precision: str = "exact"  # Profils antérieurs : Lent (recommandé).
     fel_hdr10plus: str = "recompute"  # Profils antérieurs : HDR10+ recalculé (recommandé).
     bake_dovi_fel:              bool | None = None  # Même défaut désactivé pour les anciens profils.
+    generate_hdr10plus:         bool = False  # Intention : effective seulement sur une source Dolby Vision.
     master_display:             str  = ""
     max_cll:                    str  = ""
     tonemap_to_sdr:             bool = False
@@ -759,6 +768,7 @@ class EncodePreset:
             fel_device=self.fel_device,
             fel_precision=self.fel_precision,
             fel_hdr10plus=self.fel_hdr10plus,
+            generate_hdr10plus=self.generate_hdr10plus,
             master_display=self.master_display,
             max_cll=self.max_cll,
             tonemap_to_sdr=self.tonemap_to_sdr,
