@@ -164,3 +164,71 @@ def test_missing_extension_announces_the_l1_estimate(qt_app, monkeypatch):
         assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
     finally:
         panel.close()
+
+
+def test_unchecking_generation_restores_the_hdr10plus_copy(qt_app):
+    for codec in ("copy", "libx265"):
+        panel = _panel((_PATH_A, DV_PLUS, 8, 1))
+        try:
+            _select_codec(panel, codec)
+            _click(panel._generate_hdr10plus_cb)
+            assert not panel._copy_hdr10plus_cb.isChecked()
+            _click(panel._generate_hdr10plus_cb, False)
+            assert panel._copy_hdr10plus_cb.isChecked(), codec
+            _select_codec(panel, "libx265")
+            assert panel._current_video_settings().copy_hdr10plus, codec  # métadonnées de la source gardées
+        finally:
+            panel.close()
+
+
+@pytest.mark.parametrize("preset_generates", [True, False])
+def test_loading_a_preset_in_apply_all_sets_the_common_intent(qt_app, monkeypatch, preset_generates):
+    from core.workflows.encode.models import EncodePreset
+
+    panel = _panel((_PATH_A, DV, 8, 1), (_PATH_B, DV, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        _click(panel._generate_hdr10plus_cb, not preset_generates)  # intention commune contraire au preset
+        preset = EncodePreset(name="P", codec="libx265", generate_hdr10plus=preset_generates)
+        monkeypatch.setattr(panel._profiles, "load_all", lambda: [preset])
+        panel._profile_combo.addItem("P", "P")
+        panel._profile_combo.setCurrentIndex(panel._profile_combo.findData("P"))
+        panel._load_profile()
+        config = panel.collect_config()
+        assert config is not None
+        assert [video.generate_hdr10plus for video in config.video_tracks] == [preset_generates] * 2
+    finally:
+        panel.close()
+
+
+def test_fel_hdr10plus_choice_comes_back_with_the_copy(qt_app):
+    panel = _panel((_PATH_A, DV_PLUS, 7, 6))
+    try:
+        _select_codec(panel, "libx265")
+        if not panel._bake_fel_cb.isEnabled():
+            pytest.skip("intégration FEL indisponible pour ce profil")
+        _click(panel._bake_fel_cb)
+        _click(panel._generate_hdr10plus_cb)
+        assert panel._fel_hdr10plus_widget.isHidden()
+        _click(panel._copy_hdr10plus_cb)
+        assert not panel._fel_hdr10plus_widget.isHidden()
+    finally:
+        panel.close()
+
+
+def test_old_extension_without_measure_announces_the_l1_estimate(qt_app, monkeypatch):
+    from types import SimpleNamespace
+
+    from core import hdr10plus_generation, plugins
+
+    monkeypatch.setattr(plugins, "installed_plugin",
+                        lambda spec, *a, **k: SimpleNamespace(path=Path("/x"), version="0.3.0", manifest={}))
+    monkeypatch.setattr(hdr10plus_generation, "engine_measure_layers", lambda: frozenset())
+    panel = _panel((_PATH_A, DV, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb)
+        assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
+    finally:
+        panel.close()

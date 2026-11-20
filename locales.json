@@ -11495,16 +11495,12 @@
     "fra": "Statistiques HDR10+ (profil A) mesurées sur chaque image par l’extension mvo-fel, une scène par plan Dolby Vision ; sans extension ou source P5 : estimation depuis le L1 du RPU. Remplace le HDR10+ de la source ; en copie, le flux est patché sans réencodage.",
     "eng": "HDR10+ statistics (profile A) measured on every frame by the mvo-fel extension, one scene per Dolby Vision shot; without the extension or for a P5 source: estimated from the RPU L1. Replaces the source HDR10+; when copying, the stream is patched without re-encoding."
   },
-  "Profil 5 : HDR10+ estimé depuis le L1 du RPU (approximatif).": {
-    "fra": "Profil 5 : HDR10+ estimé depuis le L1 du RPU (approximatif).",
-    "eng": "Profile 5: HDR10+ estimated from the RPU L1 (approximate)."
-  },
-  "Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU (approximatif).": {
-    "fra": "Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU (approximatif).",
-    "eng": "mvo-fel extension missing: HDR10+ estimated from the RPU L1 (approximate)."
-  },
   "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la source.": {
     "fra": "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la source.",
     "eng": "Frame audit: generated HDR10+: {entries} entries for {frames} frames expected from the source."
+  },
+  "HDR10+ généré : {reason}.": {
+    "fra": "HDR10+ généré : {reason}.",
+    "eng": "Generated HDR10+: {reason}."
   }
 }

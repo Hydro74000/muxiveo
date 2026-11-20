@@ -319,6 +319,11 @@ class EncodePanel(QWidget):
         #: HDR10+ généré depuis le Dolby Vision voulu pour la piste affichée (mémorisé même quand le codec, le tone
         #: mapping ou la source ne le permettent pas ; case cochée seulement s'il s'applique).
         self._generate_hdr10plus_intent = False
+        #: Copie HDR10+ décochée par la génération (rétablie quand la génération est retirée).
+        self._hdr10plus_copy_replaced = False
+        #: Couches mesurables par l'extension mvo-fel installée, par (dossier, version) : repli L1 annoncé.
+        self._generation_layers_key: tuple[str, str] | None = None
+        self._generation_layers: frozenset[str] = frozenset()
         # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
@@ -4234,6 +4239,9 @@ class EncodePanel(QWidget):
         current = next(((info, track) for info, track, _color in self._video_tracks
                         if self._video_entry_id(track) == self._current_video_entry_id), None)
         ctx = self._source_context(*current) if current is not None else SourceVideoContext()
+        if self._video_apply_all:
+            # « Appliquer à toutes » : l'intention commune suit le preset (sinon elle le contredirait à la propagation).
+            self._hdr_common_intent[HDR10PLUS_GENERATION_OPTION] = bool(preset.generate_hdr10plus)
         self._apply_video_state(apply_preset_to_state(self._current_video_state(), preset, ctx,
                                                       self._encoder_environment()))
         self._save_current_video_state()
@@ -4857,20 +4865,39 @@ class EncodePanel(QWidget):
 
     def _on_copy_hdr10plus_clicked(self, checked: bool) -> None:
         """Copie HDR10+ cochée : la génération depuis le Dolby Vision (exclusive) est retirée."""
+        self._hdr10plus_copy_replaced = False
         if checked and self._generate_hdr10plus_intent:
             self._generate_hdr10plus_intent = False
             self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, False)
             self._sync_generate_hdr10plus()
         self._on_hdr_option_clicked("copy_hdr10plus", checked)
+        self._sync_fel_hdr10plus_option()
 
     def _on_generate_hdr10plus_clicked(self, checked: bool) -> None:
         """Génération HDR10+ cochée : remplace la copie HDR10+ de la source (exclusives)."""
         self._generate_hdr10plus_intent = bool(checked)
         self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, checked)
-        self._sync_generate_hdr10plus()
+        if not checked and self._hdr10plus_copy_replaced:
+            # Génération retirée : la copie HDR10+ qu'elle remplaçait revient (Copy : imposée par la source).
+            self._hdr10plus_copy_replaced = False
+            if self._copy_hdr10plus_cb.isEnabled() or str(self._codec_combo.currentData() or "") == "copy":
+                self._copy_hdr10plus_cb.setChecked(True)
+        self._sync_hdr_controls_for_codec()
         self._sync_fel_hdr10plus_option()
         self._save_current_video_state()
         self._rebuild_preview()
+
+    def _generation_measure_layers(self) -> frozenset[str]:
+        """Couches mesurables par l'extension mvo-fel installée (relu à chaque installation / mise à jour)."""
+        from core import plugins
+        from core.hdr10plus_generation import engine_measure_layers
+
+        installed = plugins.installed_plugin(plugins.FEL)
+        key = None if installed is None else (str(installed.path), str(installed.version))
+        if key != self._generation_layers_key:
+            self._generation_layers_key = key
+            self._generation_layers = engine_measure_layers() if installed is not None else frozenset()
+        return self._generation_layers
 
     def _selected_source_context(self) -> SourceVideoContext:
         """Contexte source de la piste affichée (``track_settings.SourceVideoContext``)."""
@@ -4926,16 +4953,25 @@ class EncodePanel(QWidget):
             if available or ctx is None else self._generate_hdr10plus_reason(ctx, codec, tonemap))
         if generating and self._copy_hdr10plus_cb.isChecked():
             self._copy_hdr10plus_cb.setChecked(False)  # remplacement du HDR10+ de la source
+            self._hdr10plus_copy_replaced = True
         note = ""
-        if generating and ctx is not None and not self._bake_fel_cb.isChecked():
-            if str(ctx.dovi_profile or "").lower() == "p5":
-                note = translate_text("Profil 5 : HDR10+ estimé depuis le L1 du RPU (approximatif).")
-            else:
-                from core import plugins
-                if plugins.installed_plugin(plugins.FEL) is None:
-                    note = (translate_text("Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU "
-                                           "(approximatif).")
-                            + " <a href='manage'>" + translate_text("Gérer les extensions") + "</a>")
+        if generating and ctx is not None:
+            # Méthode prévue (règle du lancement) : estimation L1 annoncée, lien Extensions sans capacité de mesure.
+            from types import SimpleNamespace
+
+            from core.hdr10plus_generation import resolve_generation_method
+            from core.workflows.encode.dovi_policy import sub_profile_from_value
+            from core.workflows.encode.hdr10plus_output import hevc_output
+
+            layers = self._generation_measure_layers()
+            fel = self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
+            choice = resolve_generation_method(
+                sub_profile=sub_profile_from_value(ctx.dovi_profile), fel_bake=fel, fel_statistics=fel,
+                hevc_output=hevc_output(SimpleNamespace(codec=codec)), measure_layers=layers)
+            if choice.approximate:
+                note = translate_text("HDR10+ généré : {reason}.", reason=choice.reason)
+                if not layers:
+                    note += " <a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
         self._generate_hdr10plus_note.setText(note)
         self._generate_hdr10plus_note.setVisible(bool(note))
 
@@ -5523,6 +5559,7 @@ class EncodePanel(QWidget):
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
             self._generate_hdr10plus_intent = bool(state.get("generate_hdr10plus"))
+            self._hdr10plus_copy_replaced = False
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:
