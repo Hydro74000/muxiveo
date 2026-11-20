@@ -775,7 +775,8 @@ bandes noires comme le bouton Auto-crop ; sinon `top` / `bottom` / `left` / `rig
 `target_fps`, `quality`, `mode`), `restoration` (débruitage MVO-R2 : `level`, `mode`, `animation`,
 `sharpen`), `static_hdr` (`mode` `source` / `manual` / `off`, `master_display`, `max_cll`,
 `estimate` `fast` / `precise`), `dolby_vision` (`mode` `copy` / `off`, `profile`), `hdr10plus`
-(`mode`), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
+(`mode` `copy` / `generate` / `off` ; `generate` : HDR10+ généré depuis le Dolby Vision de la source, mesuré sur
+l'image par l'extension mvo-fel sinon estimé depuis le L1 du RPU, remplace celui de la source, Copy compris), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
 `algorithm`). Fournir un bloc `resize`, `interpolation` ou `restoration` l'active (sauf
 `"enabled": false`). Le bloc est validé strictement : clé inconnue ou valeur hors bornes refusée.
 
@@ -787,7 +788,8 @@ sont copiées ; les variantes (`audio_variants`) gardent leur codec.
 la source sont conservés — `dolby_vision.mode: off` (ou `--dv off`), `static_hdr.mode: off` ou le
 tone mapping sur une piste copiée sont refusés (code 3) : il faut réencoder. Une copie Dolby
 Vision ou HDR10+ demandée mais impossible (source sans métadonnées, codec incompatible) donne un
-avertissement. Source HDR vers un codec sans HDR (H.264…, par le codec ou par un preset) : sortie
+avertissement, comme un HDR10+ à générer sans effet (source sans Dolby Vision à image de base PQ, Copy d'une
+source P5, codec sans HDR10+, tone mapping ; intention venue d'un preset comprise). Source HDR vers un codec sans HDR (H.264…, par le codec ou par un preset) : sortie
 SDR par défaut, tone mapping coché d'office comme dans le panneau (`tonemap.enabled: false`, ou
 `--video-set tonemap.enabled=false`, l'empêche). Retour sur un codec HDR (preset suivant, piste,
 `video.default`) : ce tone mapping est retiré et les options HDR10, Dolby Vision et HDR10+
