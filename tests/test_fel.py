@@ -251,6 +251,31 @@ def test_closed_logger_does_not_leak_gpu_reservation_or_pipe():
     producer.output.close.assert_called_once()
 
 
+def test_frames_rendered_without_residual_are_reported_as_warnings():
+    """Images sans RPU ni EL, et images d'un flux commençant avant la première IRAP de l'EL : deux WARN."""
+    statistics = b'{"frames":32,"bl_only_frames":1,"el_unavailable_frames":4}'
+    lib = SimpleNamespace(mvo_fel_run=Mock(return_value=0), mvo_fel_backend=Mock(return_value=b"cpu"),
+                          mvo_fel_statistics=Mock(return_value=statistics))
+    log = Mock()
+    producer = FelProducer.__new__(FelProducer)
+    producer.source = SimpleNamespace(engine=SimpleNamespace(lib=lib, capabilities={"device_selection": 1,
+                                                                                   "statistics": 1}),
+                                     device_plan=SimpleNamespace(log=log))
+    producer._release_device = Mock()
+    producer.cancelled = threading.Event()
+    producer._stop = threading.Event()
+    producer._handle = 1
+    producer.frames = 32
+    producer.output = Mock()
+    producer.error = None
+    producer._run()
+    producer.check_error()
+    warnings = [message for level, message in (item.args for item in log.call_args_list) if level == "WARN"]
+    assert len(warnings) == 2
+    assert "1 image(s) source sans RPU ni couche EL" in warnings[0]
+    assert "4 image(s) au début du flux, avant la première image clé de la couche EL" in warnings[1]
+
+
 @pytest.mark.parametrize("kind", ["mel", "sans_el"])
 def test_confirmation_without_fel_is_noop(tmp_path, monkeypatch, kind):
     import core.fel.preparation as preparation
@@ -667,3 +692,6 @@ def test_base_only_frames_read_from_plugin_statistics():
     assert _base_only_frames('{"bl_only_frames":"2"}') == 0
     assert _base_only_frames("pas du json") == 0
     assert _base_only_frames("[]") == 0
+    # Flux commençant avant la première IRAP de l'EL (plugin ≥ 0.6.1) : compteur distinct.
+    statistics = '{"bl_only_frames":0,"el_unavailable_frames":4}'
+    assert _base_only_frames(statistics) == 0 and _base_only_frames(statistics, "el_unavailable_frames") == 4
