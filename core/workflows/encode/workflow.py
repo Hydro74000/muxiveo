@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 import random
 import re
@@ -327,6 +328,9 @@ from core.workflows.encode.planning.plan_models import (
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
 _PREVIEW_IMAGE_MARGIN_S = 0.5
+#: Aperçu image : l'image clé de découpe est cherchée d'abord dans cette durée avant l'instant demandé (sinon depuis
+#: le début de la source) ; la première lecture de paquets s'étend d'autant après l'instant.
+_PREVIEW_PROBE_WINDOW_S = 30
 #: Tolérance d'arrondi des horodatages (Matroska : milliseconde) entre l'instant demandé et celui d'une image.
 _PREVIEW_PTS_TOLERANCE_S = 0.0005
 
@@ -2653,48 +2657,45 @@ class EncodeWorkflow(QObject):
         """(image clé de découpe ≤ ``time_s``, première image ≥ ``time_s``, image clé suivante), instants relatifs au
         début de la source, dans la base de temps du flux.
 
-        FFprobe lit les paquets dans l'ordre de décodage et s'arrête au premier au-delà de la fin de la fenêtre : une
-        image B proche de la cible peut rester non lue. La fenêtre s'étend donc jusqu'à contenir l'image clé qui suit
-        la cible : toute image affichée avant une image clé est décodée avant elle (ses images de tête la suivent
-        immédiatement), le choix est alors exact quelle que soit la cadence (basse, VFR). Image clé suivante absente
-        jusqu'à la fin de la source : None.
+        Les paquets sont lus dans l'ordre de décodage, par nombre (``début%+#N``), jusqu'à l'image clé qui suit la
+        cible : toute image décodée avant une image clé est affichée avant ses images de tête, la cible est alors
+        définitive quelle que soit la cadence (basse, VFR, images B). Le nombre lu double tant qu'elle manque ; moins
+        de paquets rendus que demandés = fin du flux constatée (image clé suivante : None). Jamais d'intervalle sans
+        fin (« début% ») : FFprobe y lit des champs de fin non initialisés et rend parfois zéro paquet, code 0.
         """
-        fields = self._preview_probe([self._ffprobe_path(), "-v", "error", "-show_entries",
-                                      "format=start_time,duration", "-of", "csv=p=0", *ffprobe_input_args(source)],
-                                     signals, timeout=30.0).strip().split(",")
-        try:
-            origin = Fraction(fields[0] or "0")
-        except (ValueError, ZeroDivisionError):
-            origin = Fraction(0)
-        try:
-            duration: Fraction | None = Fraction(fields[1]) if len(fields) > 1 else None
-        except (ValueError, ZeroDivisionError):
-            duration = None  # durée inconnue (flux brut) : élargissement jusqu'à la dernière fenêtre
+        payload = json.loads(self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-show_entries",
+             "format=start_time:stream=avg_frame_rate,r_frame_rate", "-of", "json", *ffprobe_input_args(source)],
+            signals, timeout=30.0) or "{}")
+        origin = self._fraction_or_none((payload.get("format") or {}).get("start_time")) or Fraction(0)
+        stream = (payload.get("streams") or [{}])[0]
+        # Cadence déclarée : estimation du nombre de paquets de la première lecture (corrigée ensuite par doublement).
+        rate = next((value for value in (self._fraction_or_none(stream.get(key))
+                                         for key in ("avg_frame_rate", "r_frame_rate")) if value), Fraction(1))
         limit = Fraction(time_s).limit_denominator(10**6)
         tolerance = Fraction(1, 10**6)
-        low = max(Fraction(0), limit - 30)
-        spans: tuple[int | None, ...] = (30, 120, 600, 3600, None)  # None : jusqu'à la fin réelle de la source
-        index = 0
+        low = max(Fraction(0), limit - _PREVIEW_PROBE_WINDOW_S)
+
+        def covering_count() -> int:
+            """Paquets attendus de ``low`` à la fenêtre après l'instant demandé."""
+            return max(1, math.ceil(rate * (limit - low + _PREVIEW_PROBE_WINDOW_S)))
+
+        count = covering_count()
         while True:
-            span = spans[index]
-            # Durée du conteneur atteinte (marge d'une seconde) : lecture finale sans borne de fin, jusqu'à la fin
-            # réelle (une durée sous-estimée n'arrête pas la recherche ; une durée juste : une seule lecture).
-            final = span is None or (duration is not None and limit + span >= duration + 1)
-            end_s = "" if final or span is None else f"{float(origin + limit + span):.6f}"
             payload = json.loads(self._preview_probe(
                 [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
-                 f"{float(origin + low):.6f}%{end_s}", "-show_entries", "packet=pts,flags:stream=time_base",
+                 f"{float(origin + low):.6f}%+#{count}", "-show_entries", "packet=pts,flags:stream=time_base",
                  "-of", "json", *ffprobe_input_args(source)], signals, timeout=600.0) or "{}")
-            try:
-                base = Fraction(str((payload.get("streams") or [{}])[0].get("time_base") or "1/1000"))
-            except (ValueError, ZeroDivisionError):
-                base = Fraction(1, 1000)
+            raw = payload.get("packets") or []
+            exhausted = len(raw) < count
+            base = self._fraction_or_none((payload.get("streams") or [{}])[0].get("time_base")) or Fraction(1, 1000)
             packets = [(Fraction(int(packet["pts"])) * base - origin, "K" in str(packet.get("flags") or ""))
-                       for packet in payload.get("packets") or [] if str(packet.get("pts", "")).lstrip("-").isdigit()]
+                       for packet in raw if str(packet.get("pts", "")).lstrip("-").isdigit()]
             keys = [time for time, key in packets if key]
             before = [time for time in keys if time <= limit + tolerance]
             if not before and low > 0:
-                low = Fraction(0)  # aucune image clé dans les 30 s précédentes : même fenêtre depuis le début
+                low = Fraction(0)  # aucune image clé dans la fenêtre précédant l'instant : depuis le début
+                count = max(count, covering_count())
                 continue
             if not before:
                 before = [min(keys)] if keys else [Fraction(0)]
@@ -2702,9 +2703,18 @@ class EncodeWorkflow(QObject):
             target = max(Fraction(0), min(after)) if after else None
             reach = target if target is not None else limit
             following = [time for time in keys if time > reach + tolerance]
-            if following or final:
+            if following or exhausted:
                 return max(Fraction(0), max(before)), target, min(following) if following else None
-            index += 1
+            count *= 2
+
+    @staticmethod
+    def _fraction_or_none(value: object) -> Fraction | None:
+        """Valeur FFprobe (« 24000/1001 », « 0.000000 ») en fraction ; None si absente, nulle (« 0/0 ») ou illisible."""
+        try:
+            fraction = Fraction(str(value))
+        except (ValueError, ZeroDivisionError):
+            return None
+        return fraction or None
 
     @staticmethod
     def _seek_arg_at_or_after(seconds: Fraction) -> str:
