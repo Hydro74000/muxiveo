@@ -19,7 +19,7 @@ from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QFont, QIntValidator, QPixmap, QCursor, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -77,6 +77,7 @@ from core.workflows.encode.runtime.nvencc import (
     detect_nvencc_10bit_codecs, is_nvencc_codec, nvencc_requires_ffmpeg_filter_pipe,
 )
 from core.workflows.encode.planning.track_settings import (
+    HDR10PLUS_GENERATION_OPTION,
     HDR_COMMON_OPTIONS,
     MASTER_DISPLAY_PRIMARIES,
     PER_SOURCE_HDR_KEYS,
@@ -87,6 +88,7 @@ from core.workflows.encode.planning.track_settings import (
     copy_state,
     default_video_state,
     effective_dynamic_hdr_flags,
+    effective_hdr10plus_generation,
     effective_static_hdr_fields,
     effective_static_hdr_injection,
     extract_hdr_meta_fields,
@@ -96,6 +98,7 @@ from core.workflows.encode.planning.track_settings import (
     hdr_meta_from_ffprobe_raw,
     hdr_meta_from_mediainfo,
     hdr_meta_from_mediainfo_json,
+    hdr10plus_generation_available,
     is_pure_copy,
     normalize_video_state,
     preset_problem,
@@ -313,6 +316,9 @@ class EncodePanel(QWidget):
         #: (option absente : aucune intention connue). Tenu hors de l'état des pistes : une piste affichée dont la
         #: source n'a pas l'option ne la modifie pas.
         self._hdr_common_intent: dict[str, bool] = {}
+        #: HDR10+ généré depuis le Dolby Vision voulu pour la piste affichée (mémorisé même quand le codec, le tone
+        #: mapping ou la source ne le permettent pas ; case cochée seulement s'il s'applique).
+        self._generate_hdr10plus_intent = False
         # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
@@ -1522,8 +1528,22 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
         self._copy_hdr10plus_cb.setEnabled(False)
         self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._on_hdr10plus_toggled())
-        self._copy_hdr10plus_cb.clicked.connect(lambda checked: self._on_hdr_option_clicked("copy_hdr10plus", checked))
+        self._copy_hdr10plus_cb.clicked.connect(self._on_copy_hdr10plus_clicked)
         cl.addWidget(self._copy_hdr10plus_cb)
+        # 3 bis. HDR10+ généré depuis le Dolby Vision (remplace celui de la source, Copy compris).
+        self._generate_hdr10plus_cb = QCheckBox("Générer les métadonnées HDR10+ depuis le Dolby Vision")
+        self._generate_hdr10plus_cb.setStyleSheet(_checkbox_style())
+        self._generate_hdr10plus_cb.setEnabled(False)
+        self._generate_hdr10plus_cb.clicked.connect(self._on_generate_hdr10plus_clicked)
+        cl.addWidget(self._generate_hdr10plus_cb)
+        self._generate_hdr10plus_note = QLabel()
+        self._generate_hdr10plus_note.setWordWrap(True)
+        self._generate_hdr10plus_note.setStyleSheet(
+            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;padding-left:20px;"
+        )
+        self._generate_hdr10plus_note.linkActivated.connect(lambda _: self.extensions_page_requested.emit())
+        self._generate_hdr10plus_note.setVisible(False)
+        cl.addWidget(self._generate_hdr10plus_note)
         # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
         self._fel_hdr10plus_choice = "recompute"
         self._fel_hdr10plus_combo = QComboBox()
@@ -3470,6 +3490,7 @@ class EncodePanel(QWidget):
         self._syncing_hdr_controls = True
         try:
             self._apply_codec_hdr_policy_to_widgets(str(self._codec_combo.currentData() or "libx265"))
+            self._sync_generate_hdr10plus()
         finally:
             self._syncing_hdr_controls = False
 
@@ -4286,6 +4307,8 @@ class EncodePanel(QWidget):
             fel_device=vs.fel_device,
             fel_precision=vs.fel_precision,
             fel_hdr10plus=vs.fel_hdr10plus,
+            # Intention (s'applique à toute source Dolby Vision), jamais la copie propre à la source.
+            generate_hdr10plus=self._generate_hdr10plus_intent,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4561,6 +4584,10 @@ class EncodePanel(QWidget):
                 continue
             ctx = self._source_context(info, track)
             codec = state_target_codec(state)
+            if HDR10PLUS_GENERATION_OPTION not in self._hdr_common_intent and hdr_option_in_source(
+                    HDR10PLUS_GENERATION_OPTION, ctx):
+                # Intention de génération : l'état de la piste (mémorisée même si son codec ne la porte pas).
+                self._hdr_common_intent[HDR10PLUS_GENERATION_OPTION] = bool(state.get(HDR10PLUS_GENERATION_OPTION))
             for option in HDR_COMMON_OPTIONS:
                 if option in self._hdr_common_intent or not hdr_option_in_source(option, ctx):
                     continue
@@ -4602,6 +4629,12 @@ class EncodePanel(QWidget):
         restore_dv, restore_hdr10plus = self._dynamic_hdr_disabled_by_codec
         changed = False
         for option, intent in self._hdr_common_intent.items():
+            if option == HDR10PLUS_GENERATION_OPTION:
+                # Intention propre (aucune mémoire de copie) : suivie dès que la source porte du Dolby Vision.
+                if hdr_option_in_source(option, ctx) and self._generate_hdr10plus_intent != intent:
+                    self._generate_hdr10plus_intent = intent
+                    changed = True
+                continue
             if not hdr_option_in_source(option, ctx) or not hdr_option_carried(option, codec):
                 continue
             if boxes[option].isChecked() != intent:
@@ -4614,6 +4647,7 @@ class EncodePanel(QWidget):
             else:
                 restore_hdr10plus = False
         self._dynamic_hdr_disabled_by_codec = (restore_dv, restore_hdr10plus)
+        self._sync_generate_hdr10plus()
         if changed:
             self._save_current_video_state()
 
@@ -4821,6 +4855,90 @@ class EncodePanel(QWidget):
         self._sync_fel_hdr10plus_option()
         self._rebuild_preview()
 
+    def _on_copy_hdr10plus_clicked(self, checked: bool) -> None:
+        """Copie HDR10+ cochée : la génération depuis le Dolby Vision (exclusive) est retirée."""
+        if checked and self._generate_hdr10plus_intent:
+            self._generate_hdr10plus_intent = False
+            self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, False)
+            self._sync_generate_hdr10plus()
+        self._on_hdr_option_clicked("copy_hdr10plus", checked)
+
+    def _on_generate_hdr10plus_clicked(self, checked: bool) -> None:
+        """Génération HDR10+ cochée : remplace la copie HDR10+ de la source (exclusives)."""
+        self._generate_hdr10plus_intent = bool(checked)
+        self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, checked)
+        self._sync_generate_hdr10plus()
+        self._sync_fel_hdr10plus_option()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _selected_source_context(self) -> SourceVideoContext:
+        """Contexte source de la piste affichée (``track_settings.SourceVideoContext``)."""
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            return self._source_context(file_info, track)
+        if self._file_info is not None:
+            return self._source_context(self._file_info, None)
+        return SourceVideoContext()
+
+    def _generates_hdr10plus(self, codec: str | None = None) -> bool:
+        """HDR10+ généré pour la piste affichée : règle effective du cœur (``hdr10plus_generation_available``)."""
+        if not self._generate_hdr10plus_intent or self._file_info is None:
+            return False
+        target = str(codec or self._codec_combo.currentData() or "libx265")
+        return hdr10plus_generation_available(self._selected_source_context(), target,
+                                              tonemap=self._tonemap_cb.isChecked())
+
+    @staticmethod
+    def _generate_hdr10plus_reason(ctx: SourceVideoContext, codec: str, tonemap: bool) -> str:
+        """Pourquoi la génération HDR10+ ne s'applique pas à la piste affichée."""
+        profile = str(ctx.dovi_profile or "").lower()
+        if not source_has_dv(ctx.hdr_type):
+            return translate_text("Source sans Dolby Vision.")
+        if tonemap:
+            return translate_text("Indisponible avec le tone-mapping HDR → SDR (sortie SDR).")
+        if not hdr_option_carried(HDR10PLUS_GENERATION_OPTION, codec):
+            return translate_text("Le codec sélectionné ne porte pas de HDR10+.")
+        if profile in {"p8_2", "p8_4"}:
+            return translate_text("Image de base Dolby Vision non PQ (SDR ou HLG) : aucun HDR10+ possible.")
+        return translate_text("En copie, l'image de base d'une source Dolby Vision P5 (IPT) ne peut pas porter de "
+                              "HDR10+ ; réencoder la piste.")
+
+    def _sync_generate_hdr10plus(self) -> None:
+        """Case « Générer HDR10+ » : active si la génération s'applique, cochée selon l'intention de la piste ;
+        copie HDR10+ décochée quand elle est remplacée ; méthode estimée signalée (repli L1)."""
+        if not hasattr(self, "_generate_hdr10plus_cb"):
+            return
+        codec = str(self._codec_combo.currentData() or "libx265")
+        tonemap = self._tonemap_cb.isChecked()
+        ctx = self._selected_source_context() if self._file_info is not None else None
+        available = ctx is not None and hdr10plus_generation_available(ctx, codec, tonemap=tonemap)
+        generating = available and self._generate_hdr10plus_intent
+        with QSignalBlocker(self._generate_hdr10plus_cb):
+            self._generate_hdr10plus_cb.setEnabled(available)
+            self._generate_hdr10plus_cb.setChecked(generating)
+        self._generate_hdr10plus_cb.setToolTip(
+            translate_text(
+                "Statistiques HDR10+ (profil A) mesurées sur chaque image par l’extension mvo-fel, une scène par "
+                "plan Dolby Vision ; sans extension ou source P5 : estimation depuis le L1 du RPU. Remplace le "
+                "HDR10+ de la source ; en copie, le flux est patché sans réencodage.")
+            if available or ctx is None else self._generate_hdr10plus_reason(ctx, codec, tonemap))
+        if generating and self._copy_hdr10plus_cb.isChecked():
+            self._copy_hdr10plus_cb.setChecked(False)  # remplacement du HDR10+ de la source
+        note = ""
+        if generating and ctx is not None and not self._bake_fel_cb.isChecked():
+            if str(ctx.dovi_profile or "").lower() == "p5":
+                note = translate_text("Profil 5 : HDR10+ estimé depuis le L1 du RPU (approximatif).")
+            else:
+                from core import plugins
+                if plugins.installed_plugin(plugins.FEL) is None:
+                    note = (translate_text("Extension mvo-fel absente : HDR10+ estimé depuis le L1 du RPU "
+                                           "(approximatif).")
+                            + " <a href='manage'>" + translate_text("Gérer les extensions") + "</a>")
+        self._generate_hdr10plus_note.setText(note)
+        self._generate_hdr10plus_note.setVisible(bool(note))
+
     def _sync_fel_hdr10plus_option(self) -> None:
         """Choix HDR10+ visible quand le FEL est intégré et la copie HDR10+ cochée."""
         if not hasattr(self, "_fel_hdr10plus_widget"):
@@ -4829,6 +4947,8 @@ class EncodePanel(QWidget):
         self._fel_hdr10plus_widget.setVisible(
             self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
             and self._copy_hdr10plus_cb.isChecked() and self._copy_hdr10plus_cb.isEnabled()
+            # HDR10+ généré : toujours l'image produite, pas de choix.
+            and not self._generates_hdr10plus()
             # Injection hdr10plus_tool : sorties HEVC seulement (recomputes_hdr10plus).
             and (codec == "libx265" or "hevc" in codec)
         )
@@ -5068,6 +5188,7 @@ class EncodePanel(QWidget):
             "fel_precision": self._fel_precision_choice,
             "fel_hdr10plus": self._fel_hdr10plus_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
+            "generate_hdr10plus": self._generate_hdr10plus_intent,
             "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
             "tonemap_choice": self._tonemap_choice,
@@ -5135,10 +5256,13 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=target_codec,
         )
+        generated = effective_hdr10plus_generation(
+            state, SourceVideoContext(hdr_type=source_hdr, dovi_profile=source_dovi_profile(source_video)),
+            codec=target_codec)
         if target_codec == "copy":
-            if copy_dv and str(state.get("dovi_profile") or "0").strip() == "2":
-                return ("DV", "HDR")
-            return self._source_hdr_badges(source_hdr, source_video)
+            copied = (("DV", "HDR") if copy_dv and str(state.get("dovi_profile") or "0").strip() == "2"
+                      else self._source_hdr_badges(source_hdr, source_video))
+            return (*copied, "10+") if generated and "10+" not in copied else copied
         if bool(state.get("tonemap_to_sdr")):
             return ("SDR",)
 
@@ -5152,7 +5276,7 @@ class EncodePanel(QWidget):
                 badges.append("HDR")
         if copy_dv:
             badges.append("DV")
-        if copy_hdr10plus:
+        if copy_hdr10plus or generated:
             badges.append("10+")
 
         return tuple(badges)
@@ -5280,6 +5404,9 @@ class EncodePanel(QWidget):
             or (codec != "copy" and copy_dv)
             or (codec != "copy" and copy_hdr10plus)
             or (copy_dv and str(state.get("dovi_profile") or "0").strip() == "2")
+            or effective_hdr10plus_generation(
+                state, SourceVideoContext(hdr_type=source_hdr, dovi_profile=source_dovi_profile(source_video)),
+                codec=target_codec)
         )
         return VideoTrackEncodePlan(
             track_entry_id=entry_id,
@@ -5395,6 +5522,7 @@ class EncodePanel(QWidget):
             self._max_cll.setText(cll_state)
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
+            self._generate_hdr10plus_intent = bool(state.get("generate_hdr10plus"))
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:
@@ -5413,6 +5541,7 @@ class EncodePanel(QWidget):
         self._video_encode_controls.setVisible((self._codec_combo.currentData() or "libx265") != "copy")
         self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
+        self._sync_generate_hdr10plus()
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         self._update_bit_depth_control(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "libx265")
@@ -5766,7 +5895,8 @@ class EncodePanel(QWidget):
             target_codec=str(codec),
         )
         # Tone-mapping : sortie SDR, les cases HDR restent mémorisées mais inactives.
-        copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
+        generate_hdr10plus = self._generates_hdr10plus(str(codec))
+        copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap and not generate_hdr10plus
         source_transfer = (
             self._transfer_for_entry(selected_file_info, selected_track)
             if selected_file_info is not None and selected_track is not None
@@ -5800,7 +5930,8 @@ class EncodePanel(QWidget):
             source_bit_depth=self._video_source_bit_depth(selected_file_info, selected_track) if selected_file_info is not None and selected_track is not None else 0,
             source_codec=str(getattr(self._selected_video_track(), "codec", "") or ""),
             source_pix_fmt=self._video_source_pix_fmt(self._selected_video_track()),
-            dovi_source_profile=self._source_dovi_profile(self._selected_video_track()) if codec != "copy" else "",
+            dovi_source_profile=(self._source_dovi_profile(self._selected_video_track())
+                                 if codec != "copy" or generate_hdr10plus else ""),
             encoder_supports_10bit=self._codec_supports_10bit(str(codec)),
             resize=self._current_resize_settings(),
             crop=self._current_crop_settings(),
@@ -5823,6 +5954,7 @@ class EncodePanel(QWidget):
             static_hdr_metadata_analysis_request=str(current_state.get("static_hdr_metadata_analysis_request") or ""),
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
+            generate_hdr10plus=generate_hdr10plus,
             dovi_profile=self._dovi_profile_choice,
             source_color_transfer=source_transfer,
             tonemap_to_sdr=tonemap,

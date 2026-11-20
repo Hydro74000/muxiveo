@@ -642,8 +642,9 @@ HDR10PLUS_GENERATION_OPTION = "generate_hdr10plus"
 
 
 def hdr_option_in_source(option: str, ctx: SourceVideoContext) -> bool:
-    """La source porte ce que l'option recopie (HDR10 statique, Dolby Vision, HDR10+)."""
-    if option == "copy_dv":
+    """La source porte ce que l'option recopie (HDR10 statique, Dolby Vision, HDR10+) ou d'où elle génère (HDR10+
+    généré depuis le Dolby Vision)."""
+    if option in ("copy_dv", HDR10PLUS_GENERATION_OPTION):
         return source_has_dv(ctx.hdr_type)
     if option == "copy_hdr10plus":
         return source_has_hdr10plus(ctx.hdr_type)
@@ -651,10 +652,10 @@ def hdr_option_in_source(option: str, ctx: SourceVideoContext) -> bool:
 
 
 def hdr_option_carried(option: str, codec: str) -> bool:
-    """Le codec porte l'option (HDR en sortie, Dolby Vision, HDR10+)."""
+    """Le codec porte l'option (HDR en sortie, Dolby Vision, HDR10+ copié ou généré)."""
     if option == "copy_dv":
         return is_dovi_codec(codec)
-    if option == "copy_hdr10plus":
+    if option in ("copy_hdr10plus", HDR10PLUS_GENERATION_OPTION):
         return is_hdr10plus_codec(codec)
     return supports_hdr_output(codec)
 
