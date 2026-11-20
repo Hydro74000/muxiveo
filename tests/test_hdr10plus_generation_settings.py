@@ -171,3 +171,26 @@ def test_a_later_layer_replaces_generation_with_copy():
                                    "tracks": [{"select": {"stream": 0}, "hdr10plus": {"mode": "copy"}}]}}, DV_PLUS)
     video = resolved.video[0]
     assert video["copy_hdr10plus"] is True and video["generate_hdr10plus"] is False
+
+
+@pytest.mark.parametrize("hdr,layer", [
+    (HDRType.HDR10, {}),
+    (DV, {"codec": "libsvtav1"}),
+    (DV, {"tonemap": {"enabled": True}}),
+])
+def test_preset_generation_that_does_not_apply_warns(hdr, layer):
+    preset = EncodePreset(name="G", codec="libx265", generate_hdr10plus=True)
+    resolved = _resolve({"preset": "G", "video": {"default": layer}}, hdr, load_preset=lambda name: preset)
+    assert resolved.video[0]["generate_hdr10plus"] is False
+    assert any("HDR10+ non généré" in w for w in resolved.warnings)
+
+
+def test_preset_generation_overridden_by_copy_or_off_does_not_warn():
+    preset = EncodePreset(name="G", codec="libx265", generate_hdr10plus=True)
+    for mode in ("copy", "off"):
+        resolved = _resolve({"preset": "G", "video": {"default": {"hdr10plus": {"mode": mode}}}}, DV,
+                            load_preset=lambda name: preset)
+        assert resolved.video[0]["generate_hdr10plus"] is False
+        assert not any("HDR10+ non généré" in w for w in resolved.warnings)
+    resolved = _resolve({"preset": "G"}, DV, load_preset=lambda name: preset)
+    assert resolved.video[0]["generate_hdr10plus"] is True and not resolved.warnings

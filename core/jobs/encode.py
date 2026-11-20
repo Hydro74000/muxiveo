@@ -296,7 +296,8 @@ def _check_intents(state: Mapping[str, object], ctx: SourceVideoContext, intents
         warnings.append(f"{label} : Dolby Vision non copié (source sans Dolby Vision ou codec incompatible)")
     if "hdr10plus_copy" in intents and not state.get("copy_hdr10plus"):
         warnings.append(f"{label} : HDR10+ non copié (source sans HDR10+ ou codec incompatible)")
-    if "hdr10plus_generate" in intents and not effective_hdr10plus_generation(state, ctx):
+    # Intention de génération de toute origine (couche, preset) ; une couche copy / off l'a déjà retirée.
+    if state.get("generate_hdr10plus") and not effective_hdr10plus_generation(state, ctx):
         warnings.append(f"{label} : HDR10+ non généré (source sans Dolby Vision à image de base PQ, Copy d'une "
                         "source P5, codec sans HDR10+ ou tone mapping)")
 
