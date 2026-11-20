@@ -124,7 +124,17 @@ jobs:
           tests/test_encode_preview_quoting.py
           tests/test_output_commit.py
           tests/test_output_commit_policy.py
+          tests/test_document_publication.py
           tests/test_workdir_ownership.py
+          tests/test_api_request_paths.py
+          tests/test_ini_line_separators.py
+          tests/test_nvencc_install.py
+          tests/test_tool_admission.py
+          tests/test_main_window_extensions.py
+          tests/test_service_hdr_cancel.py
+          tests/test_encode_preview_image.py
+          tests/integration/test_encode_preview_image.py
+          tests/test_windows_named_pipe.py
           tests/test_cli_batch_collisions.py
           tests/test_profile_store.py
           tests/test_json_documents.py

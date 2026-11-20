@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import sys
 import tarfile
 import threading
 import zipfile
@@ -112,7 +113,8 @@ def test_extract_deb_binary(tmp_path):
     deb = _deb(tmp_path / "nvencc.deb", {"./usr/bin/nvencc": b"\x7fELF-nvencc", "./usr/share/doc/x": b"doc"})
     dest = nv.extract_deb_binary(deb, tmp_path / "out" / "nvencc")
     assert dest.read_bytes() == b"\x7fELF-nvencc"
-    assert dest.stat().st_mode & 0o111
+    if sys.platform != "win32":  # aucun bit d'exécution sous Windows
+        assert dest.stat().st_mode & 0o111
 
 
 def test_extract_deb_binary_rejects_package_without_binary(tmp_path):

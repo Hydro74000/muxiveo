@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -362,6 +363,7 @@ def test_document_calibration_with_tilde_is_read_from_home_never_the_cwd(tmp_pat
     assert donor.time_shift_ms == 320
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Win32 retire les blancs finaux des noms de dossier")
 def test_api_output_folders_are_used_as_admitted(tmp_path):
     """Requête de l'API : dossier de sortie blancs compris ; CLI et GUI : blancs retirés (historique)."""
     from core.jobs.remux_config import resolve_final_output

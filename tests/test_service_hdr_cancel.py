@@ -4,8 +4,6 @@ aucun résultat ni fichier."""
 from __future__ import annotations
 
 import os
-import stat
-import sys
 import threading
 import time
 from pathlib import Path
@@ -17,17 +15,12 @@ from core.service import ExecutionContext, ListSink, call
 from core.service.catalog import CATALOG
 from core.service.context import Overrides
 from core.service.errors import ErrorCode, error_code
-
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="sonde factice : script /bin/sh (POSIX)")
+from tests._slow_tool import slow_tool
 
 
 def _slow_probe(tmp_path: Path) -> tuple[Path, Path]:
     """FFprobe qui signale son démarrage puis ne rend jamais la main (tué par le jeton)."""
-    started = tmp_path / "probe.started"
-    script = tmp_path / "ffprobe"
-    script.write_text(f"#!/bin/sh\ntouch '{started}'\nexec sleep 30\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return script, started
+    return slow_tool(tmp_path)
 
 
 def _ctx(tmp_path: Path, probe: Path) -> ExecutionContext:
