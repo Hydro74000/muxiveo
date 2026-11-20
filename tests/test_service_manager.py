@@ -295,6 +295,9 @@ def test_history_is_bounded(monkeypatch):
         _release(f"h{index}")
         jobs.append(manager.submit("t.analysis", {"name": f"h{index}"}))
         _done(manager, jobs[-1])
+    # Un job terminé reste connu jusqu'à la publication de ses événements finaux, qui suit son état terminal :
+    # l'historique ne revient à sa borne qu'après cette publication.
+    _until(lambda: len(manager.list()) <= 3)
     assert [item.job for item in manager.list()] == jobs[-3:]
     with pytest.raises(ApiError):
         manager.get(jobs[0])
