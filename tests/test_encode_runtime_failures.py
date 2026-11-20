@@ -647,11 +647,11 @@ def test_nvencc_more_missing_rpu_than_accepted_is_refused(tmp_path):
     assert not outcome.finished
 
 
-@pytest.mark.parametrize("counted, expected", [
-    (None, translate_text("Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.")),
-    (99, "99 trames encodées pour 100 RPU Dolby Vision"),
-])
-def test_nvencc_encoded_frame_count_must_match_the_rpu(tmp_path, counted, expected):
+@pytest.mark.parametrize("counted", [None, 99])
+def test_nvencc_encoded_frame_count_must_match_the_rpu(tmp_path, counted):
+    # Message traduit à l'exécution : la langue courante peut changer entre la collecte et le test.
+    expected = (translate_text("Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.")
+                if counted is None else "99 trames encodées pour 100 RPU Dolby Vision")
     run = _Nvencc(tmp_path, copy_dv=True, source_rpu_path=_prepared_rpu(tmp_path))
     guard = SimpleNamespace(source_frame_count=lambda path: counted)
     outcome = run.run(_rpu_profile_8(), patch.object(run.workflow, "_check_external_rpu", return_value=100),
