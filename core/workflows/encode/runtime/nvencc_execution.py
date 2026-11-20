@@ -66,8 +66,15 @@ from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_ext
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.fel.engine import FelError
+from core.workflows.encode.hdr10plus_output import (
+    generates_hdr10plus,
+    hdr10plus_from_source,
+    hdr10plus_json_frames,
+    outputs_hdr10plus,
+)
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    wants_recomputed_hdr10plus,
     dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
@@ -118,8 +125,8 @@ def _apply_fel_hdr10plus(
     Flux extrait en annexB, HDR10+ puis SEI CLL injectés, payloads réécrits dans le MKV de NVEncC
     (horodatages et TrackEntry conservés, MaxCLL/MaxFALL posés dans Colour).
     """
-    # Statistiques FEL fournies par l'appelant : HDR10+ recalculé selon le choix.
-    recompute = statistics_path is not None and bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
+    # Statistiques FEL fournies par l'appelant : HDR10+ recalculé selon le choix, ou généré (toujours l'image produite).
+    recompute = statistics_path is not None and wants_recomputed_hdr10plus(video)
     light_path = (light_statistics_path or statistics_path) if deferred_light_levels(video) else None
     try:
         statistics = read_frame_statistics(statistics_path) if recompute and statistics_path is not None else None
@@ -549,6 +556,8 @@ class NvenccDirectOutputRunnerCallbacks:
     #: Trames d'un fichier vidéo produit (repli si NVEncC n'affiche pas son compte).
     count_video_frames: Callable[[Path], int | None] | None = None
     log_warn: Callable[[str], None] | None = None
+    #: HDR10+ généré refait pour la reprise sur le BL (méthode FEL caduque) : (config, piste, n°, dossier, signaux).
+    regenerate_hdr10plus: Callable[..., VideoEncodeSettings] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -700,15 +709,12 @@ class NvenccDirectOutputRunner:
                 # Interpolation RIFE : NVEncC lit un pipe y4m, la copie DoVi /
                 # HDR10+ depuis la source est impossible ; les métadonnées sont
                 # extraites, étendues à la cadence interpolée et fournies en fichiers.
-                frame_ratio = (
-                    _resolve_frame_ratio(
-                        runtime_video,
-                        ffprobe_bin=cb.bins.get("ffprobe") or _ffprobe_beside(cb.ffmpeg_bin),
-                        source=routing.input_path,
-                        stream_index=routing.stream_index,
-                    )
-                    if needs_ffmpeg_pipe
-                    else Fraction(1)
+                # Désentrelacement natif une image par champ (--vpp-yadif bob) : même extension, sans pipe.
+                frame_ratio = _resolve_frame_ratio(
+                    runtime_video,
+                    ffprobe_bin=cb.bins.get("ffprobe") or _ffprobe_beside(cb.ffmpeg_bin),
+                    source=routing.input_path,
+                    stream_index=routing.stream_index,
                 )
                 # RPU indispensable en fichier : converti à l'extraction (P7, P5, FEL ;
                 # NVEncC ne convertit pas le profil du RPU) ou pipe y4m du moteur (interpolation,
@@ -740,15 +746,23 @@ class NvenccDirectOutputRunner:
                     if source_frames:
                         expected_frames = math.ceil(source_frames * frame_ratio)
                 hdr10plus_json_path: Path | None = None
-                if (frame_ratio > 1 or engine_pipe or runtime_video.fel_context) and (
-                        runtime_video.copy_dv or runtime_video.copy_hdr10plus):
+                if generates_hdr10plus(runtime_video) and not hdr10plus_recomputed(runtime_video):
+                    # HDR10+ généré à la préparation : toujours transmis en fichier (jamais « copy »).
+                    prepared_json = runtime_video.generated_hdr10plus_json
+                    if prepared_json is None or not Path(prepared_json).is_file():
+                        raise EncodeError("HDR10+ généré absent : préparation incomplète.")
+                    hdr10plus_json_path = cwd / "generated_hdr10plus.json"
+                    cleanup_paths.append(hdr10plus_json_path)
+                    shutil.copyfile(prepared_json, hdr10plus_json_path)
+                if ((frame_ratio > 1 or engine_pipe or runtime_video.fel_context)
+                        and (runtime_video.copy_dv or outputs_hdr10plus(runtime_video))) or hdr10plus_json_path:
                     def run_interp_metadata(cmd: list[str]) -> object:
                         cb.check_cancelled(signals)
                         return cb.run_cmd(cmd, cwd, "interpolation-metadata",
                                           lambda line: signals.progress.emit(line), signals)
 
                     # HDR10+ recalculé (FEL intégré) : injecté après l'encodage, rien depuis la source.
-                    if runtime_video.copy_hdr10plus and not hdr10plus_recomputed(runtime_video):
+                    if hdr10plus_from_source(runtime_video) and not hdr10plus_recomputed(runtime_video):
                         hdr10plus_json_path = cwd / "source_hdr10plus.json"
                         cleanup_paths.append(hdr10plus_json_path)
                         signals.progress.emit("Extraction métadonnées HDR10+…")
@@ -766,7 +780,15 @@ class NvenccDirectOutputRunner:
                         run_cmd=run_interp_metadata,
                         log=cb.log_info,
                     )
-                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps, frame_ratio)
+                expected_hdr10plus: int | None = None
+                if hdr10plus_json_path is not None and generates_hdr10plus(runtime_video):
+                    # HDR10+ généré : trames encodées = entrées du JSON étendu, contrôlé après l'encodage.
+                    expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
+                    if expected_hdr10plus is None:
+                        raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
+                # Cadence déclarée : seul le pipe y4m porte la cadence interpolée (bob natif : NVEncC la double).
+                output_fps = _multiply_fps_expr(routing.source_fps or routing.input_fps,
+                                                frame_ratio if needs_ffmpeg_pipe else Fraction(1))
 
                 encode_cmd = _build_nvencc_command_runtime(
                     cb.nvencc_bin or "",
@@ -881,6 +903,23 @@ class NvenccDirectOutputRunner:
                 monitor.raise_if_failed(
                     expected_frames=expected_frames, accepted_missing=accepted_missing_rpu, warn=cb.log_info,
                 )
+                if expected_hdr10plus is not None:
+                    encoded = monitor.encoded_frames
+                    if encoded is None and cb.count_video_frames is not None:
+                        encoded = cb.count_video_frames(intermediate)
+                    if encoded is None:
+                        message = translate_text(
+                            "Audit trames : compte des trames encodées illisible, couverture HDR10+ invérifiable.")
+                        if not accept_validation_override(
+                            cb.validation_override, intermediate, message, signals._cancel_event.is_set,
+                            cb.log_info,
+                        ):
+                            cb.check_cancelled(signals)
+                            raise EncodeError(message)
+                    elif encoded != expected_hdr10plus:
+                        raise EncodeError(translate_text(
+                            "NVEncC : {encoded} trames encodées pour {expected} entrées HDR10+ ; sortie refusée "
+                            "(alignement impossible).", encoded=encoded, expected=expected_hdr10plus))
                 if runtime_video.fel_context is not None:
                     cb.log_info("Piste vidéo 1 : reconstruction FEL réussie.")
                 statistics_path = fel_statistics_path(runtime_video)
@@ -956,8 +995,21 @@ class NvenccDirectOutputRunner:
                         remove_path(path)
                     del cleanup_paths[attempt_start:]
                     fallback = fallback_video(original)
-                    config = replace(config, video=fallback, video_tracks=[fallback])
                     signals.progress.emit(f"[WARN] Reconstruction FEL : {exc} ; reprise complète NVEncC sur le BL.")
+                    if generates_hdr10plus(fallback) and fallback.generated_hdr10plus_json is None:
+                        # Méthode FEL caduque : HDR10+ du BL mesuré (ou estimé depuis le L1) avant la reprise.
+                        if cb.regenerate_hdr10plus is None:
+                            signals.failed.emit("HDR10+ généré : reprise sur le BL impossible.", exc)
+                            return
+                        try:
+                            fallback = cb.regenerate_hdr10plus(config, fallback, 1, cwd, signals)
+                        except TaskCancelledError:
+                            signals.cancelled.emit()
+                            return
+                        except Exception as regen_exc:  # noqa: BLE001 — échec de la reprise : signal terminal
+                            signals.failed.emit(str(regen_exc), regen_exc)
+                            return
+                    config = replace(config, video=fallback, video_tracks=[fallback])
                     _task()
             except TaskCancelledError:
                 signals.cancelled.emit()
@@ -1016,6 +1068,8 @@ def build_nvencc_pipeline_commands(
     hdr10plus_preview = (work_dir / "source_hdr10plus.json"
                          if needs_ffmpeg_pipe and routing.video.uses_engine() and routing.video.copy_hdr10plus
                          and not hdr10plus_recomputed(routing.video) else None)
+    if generates_hdr10plus(routing.video) and not hdr10plus_recomputed(routing.video):
+        hdr10plus_preview = work_dir / "generated_hdr10plus.json"  # JSON généré au lancement
     # Cadence encodée comme à l'exécution (interpolation : GOP Dolby Vision borné sur la cadence de sortie).
     preview_fps = routing.source_fps or routing.input_fps
     if needs_ffmpeg_pipe and routing.video.interpolates() and preview_fps:

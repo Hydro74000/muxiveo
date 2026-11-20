@@ -2181,13 +2181,16 @@ class TestMetadataInjectCopyCodec:
     """
 
     def _run_inject_copy(self, tmp_path: Path, copy_dv: bool, copy_hdr10plus: bool):
-        """Lance le workflow copy+inject et retourne (cmds_run, snapshots)."""
+        """Lance le workflow copy+inject et retourne (cmds_run, snapshots).
+
+        Copy ne traite le Dolby Vision qu'en normalisation P8.1 (route d'injection réelle) : sans elle, RPU, EL et
+        record de la piste copiée restent intacts (HDR10+ généré seul)."""
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 200_000)
         config = _make_config(
             source=src, output=tmp_path / "output.mkv",
             video=_make_video_settings(codec="copy"),
-            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus,
+            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus, dovi_profile="2" if copy_dv else "0",
             work_dir=tmp_path / "work",
         )
         wf = _make_workflow()

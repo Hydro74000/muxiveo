@@ -180,7 +180,7 @@ def test_p5_copy_is_refused_before_any_tool(tmp_path):
     run = _Inject(tmp_path)
     with patch.object(metadata_inject, "_load_mediainfo_video", return_value=None), \
             patch.object(metadata_inject.DoviP7Router, "analyze", return_value=_decision(DoviSubProfile.P5)):
-        outcome = run.run(_inject_config(tmp_path, codec="copy", copy_dv=True))
+        outcome = run.run(_inject_config(tmp_path, codec="copy", copy_dv=True, dovi_profile="2"))
     assert [message for message, _ in outcome.failed] == [P5_COPY_NORMALIZE_ERROR]
     assert run.commands == [] and not outcome.finished
     run.assert_work_dir_removed()

@@ -12,6 +12,7 @@ from typing import Callable
 from PySide6.QtCore import Qt
 
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.encode.hdr10plus_output import generates_hdr10plus
 from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
@@ -198,7 +199,7 @@ class EncodePreparationRunner:
             return cb.normalize_dynamic_hdr_multi(config, **kwargs)
         if not cb.is_video_passthrough(config) or cb.wants_dovi_profile_normalization(config):
             return cb.normalize_dynamic_hdr_config(config, **kwargs)
-        if cb.wants_dynamic_hdr_copy(config) and not dry_run:
+        if cb.wants_dynamic_hdr_copy(config) and not dry_run and not generates_hdr10plus(config.video):
             cb.log(
                 "INFO",
                 "Codec COPY : injection DoVi/HDR10+ ignorée — "

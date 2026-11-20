@@ -1058,7 +1058,8 @@ def build_nvencc_command(
         else:
             compatible.extend(item)
     extra_args = compatible
-    if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False):
+    if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False) \
+            or getattr(video, "generate_hdr10plus", False):
         kept = strip_nvencc_latency_args(strip_nvencc_parallel_args(extra_args))
         removed.extend(_tokens_not_kept(extra_args, kept))
         extra_args = kept

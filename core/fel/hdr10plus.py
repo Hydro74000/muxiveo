@@ -41,12 +41,20 @@ def fel_statistics_path(video: object) -> Path | None:
 
 
 def hdr10plus_recomputed(video: object) -> bool:
-    """HDR10+ recalculé sur l'image reconstruite : statistiques du plugin et choix « recompute ».
+    """HDR10+ recalculé sur l'image reconstruite : statistiques du plugin et choix « recompute », ou HDR10+ généré
+    depuis le Dolby Vision (toujours l'image produite, quel que soit l'ancien choix FEL).
 
     Les statistiques peuvent aussi servir aux seuls MaxCLL/MaxFALL (HDR10+ de la source conservé).
     """
-    return bool(fel_statistics_path(video) is not None and getattr(video, "copy_hdr10plus", False)
-                and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
+    return fel_statistics_path(video) is not None and wants_recomputed_hdr10plus(video)
+
+
+def wants_recomputed_hdr10plus(video: object) -> bool:
+    """HDR10+ à recalculer sur l'image produite (statistiques fournies par l'appelant) : généré depuis le Dolby
+    Vision, ou copie HDR10+ avec le choix « recompute »."""
+    if getattr(video, "generate_hdr10plus", False):
+        return True
+    return bool(getattr(video, "copy_hdr10plus", False) and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
 
 
 #: Provenances des MaxCLL/MaxFALL mesurés pendant l'encodage (statistiques de l'image produite).
@@ -196,18 +204,29 @@ def _restore_statistics_pair(video: object) -> tuple[FrameStatistics, FrameStati
 def dynamic_metadata_adequacy(video: object, ratio: Fraction | int = 1) -> tuple[str, str] | None:
     """Restauration avec copie Dolby Vision / HDR10+ : (niveau, message) du contrôle d'adéquation (D-e).
 
-    Les métadonnées copiées décrivent la source image par image ; elles restent adéquates si la Restauration ne
-    change pas la lumière à l'œil (``invisible_light_change`` par image, trame source de chaque trame produite selon
-    ``ratio`` comme muxiveo-rife). Plus de 2 % des images changées (seuil du HDR Studio) : avertissement.
+    Les métadonnées copiées (ou générées depuis la source) décrivent la source image par image ; elles restent
+    adéquates si la Restauration ne change pas la lumière à l'œil (``invisible_light_change`` par image, trame
+    d'entrée du moteur de chaque trame produite comme muxiveo-rife). ``ratio`` : trames encodées par trame source
+    (métadonnées) ; le moteur, qui reçoit les images désentrelacées, en applique la part d'interpolation. Plus de 2 %
+    des images changées (seuil du HDR Studio) : avertissement.
     None : pas de copie dynamique ou pas de mesure.
     """
     from core.hdr_inspection.realign import DYNAMIC_SHARE
     from core.workflows.encode.interpolation import frame_repeats
 
     copied = " / ".join(name for name, on in (("Dolby Vision", getattr(video, "copy_dv", False)),
-                                              ("HDR10+", getattr(video, "copy_hdr10plus", False))) if on)
+                                              ("HDR10+", getattr(video, "copy_hdr10plus", False)
+                                               or getattr(video, "generate_hdr10plus", False))) if on)
     if not copied:
         return None
+    # Le moteur reçoit les images désentrelacées (filtres en amont) : son rapport entrée → sortie exclut le
+    # multiplicateur de champs (YADIF une image par champ) que ``ratio`` compte (interpolation, ou ``deint=all``).
+    interpolates = getattr(video, "interpolates", None)
+    filters = getattr(video, "filters", None)
+    multiplier = filters.field_rate_multiplier() if filters is not None else 1
+    if not (callable(interpolates) and interpolates()) and str(getattr(filters, "yadif_deint", "all")) == "interlaced":
+        multiplier = 1
+    ratio = Fraction(ratio) / multiplier
     try:
         pair = _restore_statistics_pair(video)
     except FrameStatisticsError as exc:

@@ -529,6 +529,19 @@ class VideoEncodeSettings:
             ratio *= self.filters.field_rate_multiplier()
         return ratio
 
+    def metadata_frame_ratio(self, source_rate: str | None = None) -> Fraction:
+        """Trames encodées par trame source pour les métadonnées dynamiques (RPU, HDR10+).
+
+        Interpolation : :meth:`frame_ratio` (cadence cible : cible / source, sans multiplicateur de champs ;
+        facteur : facteur × multiplicateur). Sinon YADIF « une image par champ » désentrelaçant toutes les images
+        (``deint=all``) : ×2. ``deint=interlaced`` (production irrégulière) : 1, l'audit des trames refuse un écart.
+        """
+        if self.interpolates():
+            return self.frame_ratio(source_rate)
+        if self.codec == "copy" or str(self.filters.yadif_deint or "all").strip() == "interlaced":
+            return Fraction(1)
+        return Fraction(self.filters.field_rate_multiplier())
+
 
 @dataclass
 class AudioTrackSettings:

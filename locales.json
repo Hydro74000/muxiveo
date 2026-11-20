@@ -11462,5 +11462,13 @@
   "HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré.": {
     "fra": "HDR10+ : copié de la source, généré depuis son Dolby Vision (remplace celui de la source) ou retiré.",
     "eng": "HDR10+: copied from the source, generated from its Dolby Vision (replaces the source HDR10+) or removed."
+  },
+  "Audit trames : compte des trames encodées illisible, couverture HDR10+ invérifiable.": {
+    "fra": "Audit trames : compte des trames encodées illisible, couverture HDR10+ invérifiable.",
+    "eng": "Frame audit: encoded frame count unreadable, HDR10+ coverage cannot be verified."
+  },
+  "NVEncC : {encoded} trames encodées pour {expected} entrées HDR10+ ; sortie refusée (alignement impossible).": {
+    "fra": "NVEncC : {encoded} trames encodées pour {expected} entrées HDR10+ ; sortie refusée (alignement impossible).",
+    "eng": "NVEncC: {encoded} frames encoded for {expected} HDR10+ entries; output refused (alignment impossible)."
   }
 }

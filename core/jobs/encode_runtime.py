@@ -13,6 +13,7 @@ import dataclasses
 from contextlib import contextmanager
 from collections.abc import Callable, Iterator
 from typing import Any
+from pathlib import Path
 
 from core.jobs.constants import EXIT_EXISTS, EXIT_VALIDATION
 from core.jobs.errors import JobError
@@ -58,8 +59,15 @@ def encode_workflow(config: Any, options: CommonOptions) -> EncodeWorkflow:
         aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
         eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
         regenerate_statistics=getattr(config, "matroska_regenerate_statistics", True),
+        measurement_cache_dir=_measurement_cache_dir(config),
     )
     return wf
+
+
+def _measurement_cache_dir(config: Any) -> Path | None:
+    """Cache des mesures de l'image du HDR Studio (HDR10+ généré) ; None si la configuration n'en a pas."""
+    root = getattr(config, "app_data_dir", None)
+    return Path(root) / "hdr_inspection" if root else None
 
 
 @contextmanager

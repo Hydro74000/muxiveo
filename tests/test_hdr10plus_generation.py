@@ -153,7 +153,8 @@ class _Engine:
         self.source = source
         self.calls: list[tuple[str, str]] = []
 
-    def measure(self, path, stream, statistics_path, *, layer, threads, progress, cancelled, sampling):
+    def measure(self, path, stream, statistics_path, *, layer, threads, progress, cancelled, sampling,
+                device="auto", precision="fast"):
         self.calls.append((layer, sampling))
         Path(statistics_path).write_text(self.source.read_text(encoding="utf-8"), encoding="utf-8")
         return "cpu"

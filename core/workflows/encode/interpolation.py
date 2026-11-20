@@ -1238,11 +1238,12 @@ def resolve_frame_ratio(
     source: Path,
     stream_index: int,
 ) -> Fraction:
-    """Rapport de cadence effectif d'une piste (sonde ffprobe seulement pour une cadence cible)."""
+    """Trames encodées par trame source pour les métadonnées dynamiques (interpolation, YADIF une image par champ ;
+    ``VideoEncodeSettings.metadata_frame_ratio``) ; sonde ffprobe seulement pour une cadence cible."""
     if not video.interpolates():
-        return Fraction(1)
+        return video.metadata_frame_ratio()
     rate = probe_frame_rate(ffprobe_bin, source, stream_index) if video.interpolation.target_fps else None
-    return video.frame_ratio(rate)
+    return video.metadata_frame_ratio(rate)
 
 
 def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, ratio: Fraction | int) -> int | None:

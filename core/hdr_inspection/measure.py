@@ -144,8 +144,8 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
 
 def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
                   threads: int = 8, total_frames: int | None = None, fps: float | None = None, fast: bool = False,
-                  progress: Callable[[int], None] | None = None,
-                  cancel: threading.Event | None = None) -> tuple[ImageMeasurement, str]:
+                  progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
+                  device: str = "auto", precision: str = "fast") -> tuple[ImageMeasurement, str]:
     """Mesure de l'image d'une piste par le plugin mvo-fel (``FelEngine``) : (mesure, moteur exécuté).
 
     Statistiques écrites dans ``work_dir`` puis supprimées. ``fast`` : images clés seules (estimation).
@@ -155,8 +155,8 @@ def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path,
     event = cancel if cancel is not None else threading.Event()
     try:
         backend = engine.measure(  # type: ignore[attr-defined]
-            Path(path), stream_index, statistics, layer=layer, threads=threads, progress=progress,
-            cancelled=event, sampling="keyframes" if fast else "all")
+            Path(path), stream_index, statistics, layer=layer, device=device, precision=precision, threads=threads,
+            progress=progress, cancelled=event, sampling="keyframes" if fast else "all")
         measurement = read_measurement(statistics, layer, total_frames=total_frames, fps=fps,
                                        cancelled=event.is_set)
         return measurement, str(backend)

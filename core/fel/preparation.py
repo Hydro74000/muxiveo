@@ -53,9 +53,10 @@ def _hevc_output(video: VideoEncodeSettings) -> bool:
 
 
 def recomputes_hdr10plus(video: VideoEncodeSettings) -> bool:
-    """HDR10+ recalculé demandé : copie HDR10+ active, sortie HEVC (hdr10plus_tool), choix « recompute »."""
-    return bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute" and _hevc_output(video)
-                and not video.tonemap_to_sdr)
+    """HDR10+ recalculé demandé, sortie HEVC (hdr10plus_tool) : copie HDR10+ active et choix « recompute », ou
+    HDR10+ généré depuis le Dolby Vision (toujours l'image produite)."""
+    wanted = video.generate_hdr10plus or (video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
+    return bool(wanted and _hevc_output(video) and not video.tonemap_to_sdr)
 
 
 #: Provenances des MaxCLL/MaxFALL déduites automatiquement (source, RPU) : remplacées par la mesure.
@@ -157,12 +158,19 @@ def prepare_fel(
         return replace(video, bake_dovi_fel=False, fel_context=None)
 
 
+#: Méthodes de génération HDR10+ liées à l'image reconstruite : caduques après une reprise sur le BL.
+_FEL_GENERATION_METHODS = frozenset({"fel_statistics", "measure_reconstructed"})
+
+
 def fallback_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
+    """Réglages de la reprise sur le BL ; HDR10+ généré sur l'image reconstruite invalidé (JSON à refaire)."""
     context = video.fel_context
     if context is None:
         return video
     restored = replace(video, fel_context=None, bake_dovi_fel=False,
                        max_cll=context.original_max_cll, static_hdr_light_level_source=context.original_light_source)
+    if video.generate_hdr10plus and video.hdr10plus_generation_method in _FEL_GENERATION_METHODS:
+        restored = replace(restored, generated_hdr10plus_json=None, hdr10plus_generation_method="")
     return replace(restored, master_display=context.original_master_display) if context.original_master_display \
         else restored
 

@@ -110,22 +110,23 @@ class NvenccEncodeBackend(EncodeBackend):
             errors.append("NVEncC est sélectionné mais le binaire n'est pas configuré.")
         if video.inject_hdr_meta and not supports_hdr_output(video.codec):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
-        if (video.copy_dv or video.copy_hdr10plus) and is_bluray_playlist(video.source_path or config.source):
+        dynamic = bool(video.copy_dv or video.copy_hdr10plus or video.generate_hdr10plus)
+        if dynamic and is_bluray_playlist(video.source_path or config.source):
             errors.append(
                 "NVEncC ne peut pas copier DoVi/HDR10+ dynamiques depuis une playlist Blu-ray ; "
                 "utilisez le backend FFmpeg pour cette source."
             )
         if video.copy_dv and not supports_dovi(video.codec):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
-        if (video.copy_dv or video.copy_hdr10plus) and not nvencc_supports_dynamic_hdr(video.codec):
+        if dynamic and not nvencc_supports_dynamic_hdr(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         from core.fel.preparation import requested
-        if (video.copy_dv or video.copy_hdr10plus) and nvencc_requires_ffmpeg_prefilter(video) and not requested(video):
+        if dynamic and nvencc_requires_ffmpeg_prefilter(video) and not requested(video):
             errors.append(
                 "NVEncC avec préfiltrage FFmpeg (deblock/chroma_smooth/crop %/resize %) "
                 "est incompatible avec la copie DoVi/HDR10+ dynamique dans cette version."
             )
-        if video.copy_hdr10plus and not videos[0].copy_dv:
+        if (video.copy_hdr10plus or video.generate_hdr10plus) and not videos[0].copy_dv:
             try:
                 ctx.workflow._resolve_nvencc_input_routing(config)
             except Exception as exc:

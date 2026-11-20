@@ -283,7 +283,8 @@ class NvenccInputRouter:
         video = self._cb.primary_video_settings(config)
         input_path = self._cb.video_source_path(config)
         stream_index = self._cb.video_stream_index(config)
-        dynamic_hdr_copy = bool(video.copy_dv or video.copy_hdr10plus)
+        # HDR10+ généré : mêmes horodatages natifs que la copie (métadonnées indexées par trame).
+        dynamic_hdr_copy = bool(video.copy_dv or video.copy_hdr10plus or video.generate_hdr10plus)
         rebased_to_source = False
         forced_reader: str | None = None
         input_reader: str | None = None

@@ -140,6 +140,7 @@ from core.workflows.encode.interpolation import (
     RESTORE_DECODE_FORMAT as _RESTORE_DECODE_FORMAT,
     parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
+    stream_start_time as _stream_start_time,
 )
 from core.workflows.encode.runtime.metadata_inject import (
     _build_dovi_record_from_rpu as _build_dovi_record_from_rpu_runtime,
@@ -268,6 +269,8 @@ from core.workflows.encode.planning.subtitles import (
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
 from core.workflows.encode.hdr_policy import hdr_warnings as _hdr_warnings
+from core.workflows.encode.hdr10plus_output import generates_hdr10plus as _generates_hdr10plus
+from core.workflows.encode.hdr10plus_output import outputs_dynamic_hdr as _outputs_dynamic_hdr
 from core.dovi_profile_detector import DoviProfileDetector as _DoviProfileDetector
 from core.dovi_profile_detector import DoviSubProfile as _DoviSubProfile
 from core.workflows.encode.dovi_policy import (
@@ -374,7 +377,7 @@ def _restore_checks_dynamic_metadata(video: VideoEncodeSettings) -> bool:
     """Restauration d'une source PQ avec copie Dolby Vision / HDR10+ : métadonnées copiées contrôlées après
     l'encodage (``dynamic_metadata_adequacy``)."""
     pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
-    return video.restores() and pq and bool(video.copy_dv or video.copy_hdr10plus)
+    return video.restores() and pq and _outputs_dynamic_hdr(video)
 
 
 def _interpolation_decode_cmd(
@@ -478,9 +481,12 @@ class EncodeWorkflow(QObject):
         eac3_bitrate_per_channel_kbps: int = 96,
         regenerate_statistics: bool = True,
         ffprobe_bin:               str | None = None,
+        measurement_cache_dir:     Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
+        # Cache des mesures de l'image du HDR Studio (``app_data_dir/hdr_inspection``) : HDR10+ généré.
+        self._measurement_cache_dir: Path | None = Path(measurement_cache_dir) if measurement_cache_dir else None
         # FFprobe configuré (réglage tools/ffprobe) ; sans valeur explicite, celui
         # placé à côté de FFmpeg. Un FFmpeg système choisi pour le matériel ne
         # remplace jamais un FFprobe explicite.
@@ -753,8 +759,8 @@ class EncodeWorkflow(QObject):
 
     @staticmethod
     def _wants_dynamic_hdr_copy(config: EncodeConfig) -> bool:
-        video = EncodeWorkflow._primary_video_settings(config)
-        return bool(video.copy_dv or video.copy_hdr10plus)
+        """Métadonnées dynamiques en sortie : Dolby Vision copié, HDR10+ copié ou généré."""
+        return _outputs_dynamic_hdr(EncodeWorkflow._primary_video_settings(config))
 
     @staticmethod
     def _wants_dovi_profile_normalization(config: EncodeConfig) -> bool:
@@ -764,7 +770,9 @@ class EncodeWorkflow(QObject):
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
-            return cls._wants_dovi_profile_normalization(config)
+            # Copie : flux patché (RPU normalisé et / ou HDR10+ généré), horodatage de la piste d'origine.
+            return cls._wants_dovi_profile_normalization(config) or _generates_hdr10plus(
+                cls._primary_video_settings(config))
         video = EncodeWorkflow._primary_video_settings(config)
         if _is_nvencc_codec_runtime(video.codec):
             return False
@@ -827,7 +835,7 @@ class EncodeWorkflow(QObject):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if video.copy_dv and not supports_dovi(video.codec):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
-        if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
+        if _outputs_dynamic_hdr(video) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         _ = plan
         return errors
@@ -1207,6 +1215,7 @@ class EncodeWorkflow(QObject):
                 check_external_rpu=self._check_external_rpu,
                 validation_override=self._validation_override_for(config),
                 count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
+                regenerate_hdr10plus=self._regenerate_hdr10plus,
             )
         ).run(
             config,
@@ -1273,7 +1282,14 @@ class EncodeWorkflow(QObject):
         """Adaptateur : assemble les artefacts multi-vidéo via le contrat partagé."""
         refs: list[_NativeVideoArtifactRef] = []
         for spec, prepared in zip(track_specs, prepared_inputs):
-            if str(spec.video.codec or "").strip().lower() == "copy":
+            if str(spec.video.codec or "").strip().lower() == "copy" and _generates_hdr10plus(spec.video):
+                # Copie patchée (HDR10+ généré) : départ de l'intermédiaire ramené à celui de la piste source.
+                shift_s = (_stream_start_time(self._ffprobe_path(), Path(spec.source), int(spec.stream_index))
+                           - _stream_start_time(self._ffprobe_path(), Path(prepared.path), 0))
+                refs.append(_NativeVideoArtifactRef(
+                    Path(prepared.path), 0, int(spec.offset_ms or 0) + round(1000 * shift_s),
+                ))
+            elif str(spec.video.codec or "").strip().lower() == "copy":
                 refs.append(_NativeVideoArtifactRef(
                     Path(prepared.path), int(spec.stream_index), int(spec.offset_ms or 0),
                 ))
@@ -2045,7 +2061,7 @@ class EncodeWorkflow(QObject):
             # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
             rate = str(stream.get("r_frame_rate") or stream.get("avg_frame_rate") or "")
             info = dataclasses.replace(info, is_vfr=True, cfr_rate=rate)
-        if info.cfr_rate and (video.copy_dv or video.copy_hdr10plus):
+        if info.cfr_rate and _outputs_dynamic_hdr(video):
             # DoVi / HDR10+ sont indexés par trame décodée : aucune trame ne doit
             # être ajoutée ou retirée, la normalisation CFR est désactivée.
             info = dataclasses.replace(info, cfr_rate="")
@@ -2305,6 +2321,16 @@ class EncodeWorkflow(QObject):
                 header.append(
                     f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
                     "Dolby Vision (P5), absent de cet aperçu."
+                )
+            if _generates_hdr10plus(video):
+                header.append(
+                    f"Piste vidéo #{index} : HDR10+ généré au lancement depuis le Dolby Vision ("
+                    + ("image FEL reconstruite" if fel_requested(video) else
+                       "mesure de chaque image par mvo-fel, sinon estimation depuis le L1 du RPU")
+                    + ", plans du RPU) puis "
+                    + ("transmis à NVEncC (--dhdr10-info)" if _is_nvencc_codec_runtime(video.codec)
+                       else "injecté par hdr10plus_tool")
+                    + " ; remplace le HDR10+ de la source ; absent de cet aperçu."
                 )
             if video.restores() and _restore_measures_light_levels(video):
                 header.append(
@@ -2998,6 +3024,10 @@ class EncodeWorkflow(QObject):
             original_video,
             source_path=source_segment,
             stream_index=0,
+            # HDR10+ généré : préparé sur le segment lui-même (mesure jamais gardée dans le cache du HDR Studio).
+            generated_hdr10plus_json=None,
+            hdr10plus_generation_method="",
+            hdr10plus_generation_cache_write=False,
         )
         if video.codec != "copy" and video.quality_mode == QualityMode.SIZE:
             video = replace(
@@ -3064,6 +3094,7 @@ class EncodeWorkflow(QObject):
                     errors.append(error)
         errors.extend(self._dovi_multi_track_errors(config))
         errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
+        errors.extend(error for error in self._hdr10plus_generation_errors(config) if error not in errors)
         errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
         errors.extend(self._restoration_validation_errors(config))
@@ -3148,7 +3179,8 @@ class EncodeWorkflow(QObject):
         changed = False
         for video in tracks:
             normalize = video.copy_dv and str(video.dovi_profile or "0").strip() == _NORMALIZE_P81
-            if video.codec == "copy" and not normalize:
+            # Copy + HDR10+ généré : sous-profil seul (refus P5 / image de base non PQ), flux jamais transformé.
+            if video.codec == "copy" and not normalize and not _generates_hdr10plus(video):
                 resolved.append(video)
                 continue
             sub_profile = self._dovi_sub_profile(
@@ -3226,6 +3258,21 @@ class EncodeWorkflow(QObject):
                         else "."
                     )
                 )
+        return errors
+
+    def _hdr10plus_generation_errors(self, config: EncodeConfig) -> list[str]:
+        """HDR10+ généré : image de base PQ requise (P8.2 SDR, P8.4 HLG refusés), jamais Copy d'une P5 (IPT)."""
+        errors: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if not _generates_hdr10plus(video):
+                continue
+            sub_profile = _sub_profile_from_value(video.dovi_source_profile)
+            if sub_profile in {_DoviSubProfile.P8_2, _DoviSubProfile.P8_4}:
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : image de base {sub_profile.label} non PQ "
+                              "(SDR ou HLG), aucun HDR10+ possible.")
+            elif sub_profile is _DoviSubProfile.P5 and video.codec == "copy":
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : en copie, l'image de base d'une source "
+                              "Dolby Vision P5 (IPT) ne peut pas porter de HDR10+ ; réencoder la piste.")
         return errors
 
     def _p5_conversion_available(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
@@ -3402,8 +3449,18 @@ class EncodeWorkflow(QObject):
             prepared_restore = self._prepare_restore_statistics(video, work_dir=work_dir, index=index)
             changed = changed or prepared_restore is not video
             video = prepared_restore
+
+            def with_generated_hdr10plus(video: VideoEncodeSettings, index: int = index) -> VideoEncodeSettings:
+                """HDR10+ généré préparé en dernier (méthode selon le FEL retenu, RPU P5 réutilisé)."""
+                if not complete_rpu:
+                    return video
+                return self.prepare_generated_hdr10plus(config, video, index=index, work_dir=work_dir, run=run,
+                                                        signals=signals, engine_loader=load_fel_engine)
+
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
-                resolved.append(video)
+                generated = with_generated_hdr10plus(video)
+                changed = changed or generated is not video
+                resolved.append(generated)
                 continue
             from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
 
@@ -3450,7 +3507,7 @@ class EncodeWorkflow(QObject):
                     )
                 for warning in estimate.warnings:
                     self.log_message.emit("WARN", f"Piste vidéo #{index} — {warning}")
-            resolved.append(dataclasses.replace(video, **updates))
+            resolved.append(with_generated_hdr10plus(dataclasses.replace(video, **updates)))
             changed = True
         if changed:
             config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
@@ -3458,6 +3515,135 @@ class EncodeWorkflow(QObject):
         if errors:
             raise EncodeError("\n".join(errors))
         return config
+
+    def prepare_generated_hdr10plus(
+        self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
+        run: Callable[[list[str]], object], signals: TaskSignals | None,
+        engine_loader: Callable[[], Any] | None = None,
+    ) -> VideoEncodeSettings:
+        """HDR10+ généré depuis le Dolby Vision : méthode (``resolve_generation_method``), puis JSON indexé sur les
+        images de la source (mesure de l'image, sinon L1 du RPU) ; statistiques FEL : JSON écrit après l'encodage.
+
+        Appelé à la préparation et par les reprises sur le BL après un échec FEL (méthode réévaluée).
+        Annulation : ``TaskCancelledError`` (jamais de repli L1) ; ni mesure ni L1 : ``EncodeError``.
+        """
+        if not _generates_hdr10plus(video):
+            return video
+        from core.fel.engine import FelCancelled, FelError, measure_supported
+        from core.hdr10plus_generation import (
+            METHOD_FEL_STATISTICS,
+            METHOD_L1,
+            METHOD_MEASURE_RECONSTRUCTED,
+            GenerationError,
+            l1_statistics,
+            measured_statistics,
+            resolve_generation_method,
+            write_generated,
+        )
+        from core.hdr_inspection.cache import InspectionCache
+        from core.hdr_inspection.measure import MeasurementError
+        from core.workflows.encode.hdr10plus_output import hevc_output
+
+        prefix = f"Piste vidéo #{index} — "
+        cancel_event = signals._cancel_event if signals is not None else threading.Event()
+        engine: Any = None
+        try:
+            from core.fel.engine import FelEngine
+
+            engine = engine_loader() if engine_loader is not None else FelEngine.installed()
+        except Exception:  # noqa: BLE001 — extension absente ou illisible : repli L1 annoncé
+            engine = None
+        layers = frozenset(layer for layer in ("base", "reconstructed")
+                           if engine is not None and measure_supported(engine, layer))
+        fel = video.fel_context
+        choice = resolve_generation_method(
+            sub_profile=_sub_profile_from_value(video.dovi_source_profile), fel_bake=fel is not None,
+            fel_statistics=fel is not None and fel.statistics is not None, hevc_output=hevc_output(video),
+            measure_layers=layers)
+        self.log_message.emit("WARN" if choice.approximate else "INFO",
+                              prefix + f"HDR10+ généré depuis le Dolby Vision : {choice.reason}.")
+        if choice.method == METHOD_FEL_STATISTICS:
+            return dataclasses.replace(video, generated_hdr10plus_json=None, hdr10plus_generation_method=choice.method)
+        source = self._video_source_from_settings(config, video)
+        stream = self._video_stream_from_settings(video)
+        output = work_dir / f"generated_hdr10plus_{index}.json"
+        method = choice.method
+        statistics = None
+        try:
+            if method != METHOD_L1:
+                layer = "reconstructed" if method == METHOD_MEASURE_RECONSTRUCTED else "base"
+                total = self._frame_count_guard().source_frame_count(source, stream) or 0
+                step = max(1, total // 20) if total else 10000
+
+                def progress(frames: int) -> None:
+                    if frames % step < 1 or frames == total:
+                        self.log_message.emit("INFO", prefix + "Mesure de l'image pour le HDR10+ : "
+                                              + (f"{frames}/{total} images" if total else f"{frames} images"))
+
+                cache = (InspectionCache(self._measurement_cache_dir)
+                         if self._measurement_cache_dir is not None else None)
+                try:
+                    statistics, origin = measured_statistics(
+                        engine, source, stream, work_dir, layer=layer, threads=max(2, self._ffmpeg_threads),
+                        progress=progress, cancel=cancel_event, cache=cache,
+                        cache_write=video.hdr10plus_generation_cache_write,
+                        device=video.fel_device if layer == "reconstructed" else "auto",
+                        precision=video.fel_precision if layer == "reconstructed" else "fast")
+                    self.log_message.emit("INFO", prefix + f"Mesure de l'image pour le HDR10+ : {origin}.")
+                except (FelError, MeasurementError, GenerationError, OSError, RuntimeError) as exc:
+                    if cancel_event.is_set() or isinstance(exc, (InterruptedError, TaskCancelledError)):
+                        raise TaskCancelledError() from exc
+                    self.log_message.emit("WARN", prefix + f"Mesure de l'image impossible ({exc}) : HDR10+ estimé "
+                                          "depuis le L1 du RPU (approximatif).")
+                    method = METHOD_L1
+            if method == METHOD_L1:
+                statistics = l1_statistics(
+                    self._generation_rpu(config, video, index=index, work_dir=work_dir, run=run, signals=signals),
+                    dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", run_cmd=run, work_dir=work_dir,
+                    cancelled=cancel_event.is_set)
+            assert statistics is not None
+            generated = write_generated(statistics, output, method, cancelled=cancel_event.is_set)
+        except (FelCancelled, InterruptedError) as exc:
+            raise TaskCancelledError() from exc
+        except GenerationError as exc:
+            self._check_cancelled(signals)
+            raise EncodeError(prefix + str(exc)) from exc
+        self.log_message.emit("INFO", prefix + f"HDR10+ généré : {generated.summary}.")
+        return dataclasses.replace(video, generated_hdr10plus_json=output, hdr10plus_generation_method=method)
+
+    def _regenerate_hdr10plus(self, config: EncodeConfig, video: VideoEncodeSettings, index: int, work_dir: Path,
+                              signals: TaskSignals | None) -> VideoEncodeSettings:
+        """HDR10+ généré refait pour une reprise sur le BL (méthode FEL caduque) : mesure de la BL ou L1."""
+        def run(cmd: list[str]) -> object:
+            self._check_cancelled(signals)
+            return self._runner._run_cmd(cmd, cwd=work_dir, label="hdr10plus-generation",
+                                         progress_cb=(signals.progress.emit if signals is not None else None),
+                                         signals=signals)
+
+        return self.prepare_generated_hdr10plus(config, video, index=index, work_dir=work_dir, run=run,
+                                                signals=signals)
+
+    def _generation_rpu(
+        self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
+        run: Callable[[list[str]], object], signals: TaskSignals | None,
+    ) -> Path:
+        """RPU d'origine (mode 0) complété aux rangs des images sans RPU, pour le L1 : celui de la préparation s'il
+        existe (copie DV réencodée), sinon extrait ici, sans réinjection."""
+        # RPU P5 converti en P8.1 (mode 3) : L1 inchangé, déjà complété à la préparation.
+        for prepared in (video.source_rpu_path, video.p5_rpu_path):
+            if prepared is not None and Path(prepared).is_file():
+                return Path(prepared)
+        from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+        source = self._video_source_from_settings(config, video)
+        rpu = work_dir / f"hdr10plus_rpu_{index}.bin"
+        self.log_message.emit("INFO", f"Piste vidéo #{index} — extraction du RPU Dolby Vision (L1 du HDR10+)…")
+        extract_dovi_rpu(
+            source=source, stream_index=self._video_stream_from_settings(video), ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", output_rpu=rpu, work_dir=work_dir,
+            run_cmd=run, cleanup_paths=[], mode="0",
+        )
+        return self._complete_source_rpu(config, video, rpu, index=index, run=run, signals=signals, source=source)
 
     def _prepare_source_rpu(
         self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
@@ -3772,7 +3958,7 @@ class EncodeWorkflow(QObject):
                 continue
             source = self._video_source_from_settings(config, video)
             info = self._interpolation_source(video, source)
-            if info.is_vfr and (video.copy_dv or video.copy_hdr10plus):
+            if info.is_vfr and _outputs_dynamic_hdr(video):
                 errors.append(
                     f"Interpolation d'images : {source.name} est à cadence variable (VFR). La copie "
                     "Dolby Vision / HDR10+ impose de conserver chaque trame, ce qui fausserait la durée : "
@@ -3892,7 +4078,7 @@ class EncodeWorkflow(QObject):
             source = self._video_source_from_settings(config, video)
             # Le y4m ne porte pas d'horodatage : source VFR normalisée CFR, ce qui fausserait les métadonnées
             # dynamiques indexées par trame.
-            if (video.copy_dv or video.copy_hdr10plus) and self._interpolation_source(video, source).is_vfr:
+            if _outputs_dynamic_hdr(video) and self._interpolation_source(video, source).is_vfr:
                 errors.append(
                     f"MVO-R2 : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
                     "impose de conserver chaque trame, ce qui fausserait la durée : désactiver la copie DoVi / "
@@ -3973,7 +4159,7 @@ class EncodeWorkflow(QObject):
             decision.selected == "native" and decision.pipeline == _PIPELINE_FFMPEG_DIRECT
         ):
             for index, video in enumerate(self._video_tracks(config)):
-                if str(video.codec or "").strip().lower() != "copy":
+                if str(video.codec or "").strip().lower() != "copy" or _generates_hdr10plus(video):
                     artifacts.append(f"<work>/video_{index}.mkv")
                     estimated_bytes += source_size
         if decision.pipeline == _PIPELINE_METADATA_INJECT:
@@ -3984,6 +4170,9 @@ class EncodeWorkflow(QObject):
             # Pic simultané : au plus deux copies vidéo (le squelette de
             # timing, payloads vides, est négligeable).
             estimated_bytes += 2 * source_size
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if _generates_hdr10plus(video):
+                artifacts.append(f"<work>/generated_hdr10plus_{index}.json")
         if decision.selected == "native":
             for index, audio in enumerate(config.audio_tracks):
                 codec = str(audio.codec or "copy").strip().lower()
@@ -4513,6 +4702,8 @@ class EncodeWorkflow(QObject):
                 two_pass_log_prefix=self._two_pass_log_prefix,
                 native_assemble=self._native_assemble_multi if native_mux else None,
                 validation_override=self._validation_override_for(config),
+                regenerate_hdr10plus=self._regenerate_hdr10plus,
+                stream_start_time=lambda path, stream: _stream_start_time(self._ffprobe_path(), Path(path), stream),
             )
         ).run(
             config,

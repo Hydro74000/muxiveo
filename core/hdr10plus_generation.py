@@ -206,8 +206,8 @@ def l1_statistics(rpu: Path, *, dovi_tool_bin: str, run_cmd: Callable[[list[str]
 def measured_statistics(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
                         threads: int = 8, total_frames: int | None = None, fps: float | None = None,
                         progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
-                        cache: InspectionCache | None = None,
-                        cache_write: bool = True) -> tuple[FrameStatistics, str]:
+                        cache: InspectionCache | None = None, cache_write: bool = True, device: str = "auto",
+                        precision: str = "fast") -> tuple[FrameStatistics, str]:
     """Statistiques de la mesure complète de ``layer`` : (statistiques, origine pour le journal).
 
     Cache du HDR Studio relu (mesure complète seulement) et alimenté si ``cache_write`` (jamais pour un segment
@@ -217,7 +217,8 @@ def measured_statistics(engine: object, path: Path, stream_index: int, work_dir:
     origin = translate_text("cache du HDR Studio")
     if measurement is None:
         measurement, origin = measure_track(engine, path, stream_index, work_dir, layer=layer, threads=threads,
-                                            total_frames=total_frames, fps=fps, progress=progress, cancel=cancel)
+                                            total_frames=total_frames, fps=fps, progress=progress, cancel=cancel,
+                                            device=device, precision=precision)
         if cache is not None and cache_write:
             cache.store_measurement(path, stream_index, measurement)
     return statistics_from_measurement_scenes(measurement, cancelled=cancelled), origin

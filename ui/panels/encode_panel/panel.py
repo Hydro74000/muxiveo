@@ -273,6 +273,7 @@ class EncodePanel(QWidget):
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
             regenerate_statistics=getattr(config, "matroska_regenerate_statistics", True),
+            measurement_cache_dir=config.app_data_dir / "hdr_inspection",
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._workflow.set_validation_override(self._validation_prompt.request)
