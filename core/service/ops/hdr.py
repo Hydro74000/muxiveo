@@ -19,7 +19,7 @@ from core.hdr_inspection import DynamicInspector, InspectionCache, InspectionRep
 from core.hdr_inspection.advice import Advice, build_advice
 from core.hdr_inspection.compare import Side, compare
 from core.hdr_inspection.fel_analyzer import FelReport, verdict
-from core.hdr_inspection.measure import ImageMeasurement, read_measurement
+from core.hdr_inspection.measure import ImageMeasurement, measure_track
 from core.hdr_inspection.report import report_data, write_report
 from core.hdr_inspection.tonemap import TvModel
 from core.i18n import translate_text
@@ -150,17 +150,15 @@ def measure_image(config: AppConfig, report: InspectionReport, threads: int, wor
     step = max(1, total // 20)
     owned = create_process_work_dir(work_root, process_name="hdr-mesure")
     try:
-        statistics = owned.path / "mesure.jsonl"
-
         def progress(frames: int) -> None:
             if frames % step < 1 or frames == total:
                 logger.emit("info", f"Mesure : {frames}/{total} images")
 
-        backend = engine.measure(Path(snapshot.path), snapshot.stream_index, statistics, layer="base",
-                                 threads=threads, progress=progress, cancelled=cancel or threading.Event(),
-                                 sampling="keyframes" if fast else "all")
+        measurement, backend = measure_track(engine, Path(snapshot.path), snapshot.stream_index, owned.path,
+                                             threads=threads, total_frames=frames, fps=fps, fast=fast,
+                                             progress=progress, cancel=cancel)
         logger.emit("info", f"Mesure de l'image : {backend}")
-        return read_measurement(statistics, "base", total_frames=frames, fps=fps)
+        return measurement
     finally:
         owned.remove()
 

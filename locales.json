@@ -11418,5 +11418,49 @@
   "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).": {
     "fra": "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).",
     "eng": "{tool}: {detail} (metadata completed or truncated by the tool)."
+  },
+  "image FEL reconstruite, mesurée pendant l'encodage": {
+    "fra": "image FEL reconstruite, mesurée pendant l'encodage",
+    "eng": "reconstructed FEL picture, measured during encoding"
+  },
+  "image FEL reconstruite, mesurée avant l'encodage": {
+    "fra": "image FEL reconstruite, mesurée avant l'encodage",
+    "eng": "reconstructed FEL picture, measured before encoding"
+  },
+  "estimation depuis le L1 du RPU (mesure de l'image reconstruite indisponible)": {
+    "fra": "estimation depuis le L1 du RPU (mesure de l'image reconstruite indisponible)",
+    "eng": "estimate from the RPU L1 (measurement of the reconstructed picture unavailable)"
+  },
+  "estimation depuis le L1 du RPU (profil 5 : aucune couche HDR10 à mesurer)": {
+    "fra": "estimation depuis le L1 du RPU (profil 5 : aucune couche HDR10 à mesurer)",
+    "eng": "estimate from the RPU L1 (profile 5: no HDR10 layer to measure)"
+  },
+  "mesure de chaque image de la source": {
+    "fra": "mesure de chaque image de la source",
+    "eng": "measurement of every source frame"
+  },
+  "estimation depuis le L1 du RPU (extension mvo-fel 0.4.0 ou plus récente absente)": {
+    "fra": "estimation depuis le L1 du RPU (extension mvo-fel 0.4.0 ou plus récente absente)",
+    "eng": "estimate from the RPU L1 (mvo-fel extension 0.4.0 or later not installed)"
+  },
+  "Mesure rapide (images clés) : une mesure complète est requise pour générer le HDR10+.": {
+    "fra": "Mesure rapide (images clés) : une mesure complète est requise pour générer le HDR10+.",
+    "eng": "Fast measurement (keyframes): a full measurement is required to generate HDR10+."
+  },
+  "RPU Dolby Vision vide : HDR10+ impossible à générer.": {
+    "fra": "RPU Dolby Vision vide : HDR10+ impossible à générer.",
+    "eng": "Empty Dolby Vision RPU: HDR10+ cannot be generated."
+  },
+  "RPU Dolby Vision sans L1 : HDR10+ impossible à générer.": {
+    "fra": "RPU Dolby Vision sans L1 : HDR10+ impossible à générer.",
+    "eng": "Dolby Vision RPU without L1: HDR10+ cannot be generated."
+  },
+  "cache du HDR Studio": {
+    "fra": "cache du HDR Studio",
+    "eng": "HDR Studio cache"
+  },
+  "Aucune image mesurée : HDR10+ impossible à générer.": {
+    "fra": "Aucune image mesurée : HDR10+ impossible à générer.",
+    "eng": "No frame measured: HDR10+ cannot be generated."
   }
 }

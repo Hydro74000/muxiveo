@@ -16,6 +16,7 @@ vérifiées face au HDR10+ d'un disque UHD (même définition appliquée à sa B
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -282,10 +283,24 @@ def scene_parameters(statistics: FrameStatistics, scene: SceneRecord) -> dict:
     }
 
 
-def hdr10plus_document(statistics: FrameStatistics) -> dict:
-    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan."""
+#: Outil inscrit dans ``ToolInfo`` : HDR10+ recalculé sur l'image reconstruite (FEL).
+FEL_TOOL = "Muxiveo (mvo-fel)"
+
+
+def _check(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise InterruptedError
+
+
+def hdr10plus_document(statistics: FrameStatistics, *, tool: str = FEL_TOOL,
+                       cancelled: Callable[[], bool] | None = None) -> dict:
+    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan.
+
+    ``cancelled`` vrai : ``InterruptedError`` (contrôlé tous les 256 plans)."""
     scene_info: list[dict] = []
     for scene_id, scene in enumerate(statistics.scenes):
+        if scene_id % 256 == 0:
+            _check(cancelled)
         parameters = scene_parameters(statistics, scene)
         for offset in range(scene.frames):
             scene_info.append({
@@ -303,12 +318,15 @@ def hdr10plus_document(statistics: FrameStatistics) -> dict:
             "SceneFirstFrameIndex": [scene.first for scene in statistics.scenes],
             "SceneFrameNumbers": [scene.frames for scene in statistics.scenes],
         },
-        "ToolInfo": {"Tool": "Muxiveo (mvo-fel)", "Version": "1.0"},
+        "ToolInfo": {"Tool": tool, "Version": "1.0"},
     }
 
 
-def statistics_from_measurement(measurement: object, scene_starts: object) -> FrameStatistics:
-    """Statistiques par image d'une mesure du HDR Studio (``ImageMeasurement``), découpées en ``scene_starts``."""
+def statistics_from_measurement(measurement: object, scene_starts: object, *,
+                                cancelled: Callable[[], bool] | None = None) -> FrameStatistics:
+    """Statistiques par image d'une mesure du HDR Studio (``ImageMeasurement``), découpées en ``scene_starts``.
+
+    ``cancelled`` vrai : ``InterruptedError`` (contrôlé toutes les 8192 images)."""
     import numpy as np
 
     max_rgb = np.asarray(getattr(measurement, "max_rgb"), dtype=np.float64)
@@ -321,19 +339,25 @@ def statistics_from_measurement(measurement: object, scene_starts: object) -> Fr
     if not count or percentiles.shape != (count, len(_PERCENTILE_INDEX)):
         raise FrameStatisticsError("Mesure de l'image incomplète.")
     first = set(starts)
-    frames = tuple(FrameRecord(index in first, (float(max_rgb[index, 0]), float(max_rgb[index, 1]),
-                                                float(max_rgb[index, 2])), float(average[index]),
-                               float(y9999[index]), float(y100[index]), tuple(float(v) for v in percentiles[index]))
-                   for index in range(count))
+    records: list[FrameRecord] = []
+    for index in range(count):
+        if index % 8192 == 0:
+            _check(cancelled)
+        records.append(FrameRecord(index in first, (float(max_rgb[index, 0]), float(max_rgb[index, 1]),
+                                                    float(max_rgb[index, 2])), float(average[index]),
+                                   float(y9999[index]), float(y100[index]),
+                                   tuple(float(v) for v in percentiles[index])))
+    frames = tuple(records)
     bounds = [*starts, count]
     scenes = tuple(SceneRecord(start, end - start) for start, end in zip(bounds, bounds[1:]))
     window = getattr(measurement, "window", (0, 0, 0, 0))
     return FrameStatistics(int(window[2]), int(window[3]), frames, scenes)
 
 
-def write_hdr10plus_json(statistics: FrameStatistics, output: Path) -> int:
+def write_hdr10plus_json(statistics: FrameStatistics, output: Path, *, tool: str = FEL_TOOL,
+                         cancelled: Callable[[], bool] | None = None) -> int:
     """Écrit le JSON HDR10+ ; renvoie le nombre de plans."""
-    document = hdr10plus_document(statistics)
+    document = hdr10plus_document(statistics, tool=tool, cancelled=cancelled)
     Path(output).write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
     return len(statistics.scenes)
 

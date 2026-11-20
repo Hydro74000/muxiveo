@@ -106,10 +106,11 @@ class InspectionCache:
         except OSError:
             pass
 
-    def load_measurement(self, path: Path, stream_index: int, layer: str = "base") -> ImageMeasurement | None:
+    def load_measurement(self, path: Path, stream_index: int, layer: str = "base", *,
+                         complete_only: bool = False) -> ImageMeasurement | None:
         """Mesure de l'image en cache (fichier distinct des métadonnées dynamiques) : complète de préférence,
-        sinon mesure rapide (images clés)."""
-        for suffix in ("", "-keyframes"):
+        sinon mesure rapide (images clés), jamais avec ``complete_only`` (valeurs tenues entre images clés)."""
+        for suffix in ("",) if complete_only else ("", "-keyframes"):
             measurement = self._load_measurement(path, stream_index, layer, suffix)
             if measurement is not None:
                 return measurement

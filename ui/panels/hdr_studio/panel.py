@@ -44,7 +44,7 @@ from core.hdr_inspection import summary
 from core.hdr_inspection.compare import Side
 from core.hdr_inspection.realign import Realignment, realign
 from core.hdr_inspection.fel_analyzer import CaptureLayer
-from core.hdr_inspection.measure import ImageMeasurement, read_measurement
+from core.hdr_inspection.measure import ImageMeasurement, measure_track
 from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan, analyze_rpu_gaps
 from core.hdr_inspection.report import write_report
 from core.hdr_inspection.snapshot import HdrSnapshot
@@ -649,15 +649,12 @@ class HdrStudio(QWidget):
             owned = None
             try:
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-mesure")
-                statistics = owned.path / "mesure.jsonl"
                 # Mesure rapide : la progression reçoit la position dans le flux (images).
-                backend = engine.measure(
-                    Path(info.path), snapshot.stream_index, statistics, layer="base",
-                    threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)),
-                    progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
-                    cancelled=cancel, sampling="keyframes" if fast else "all")
-                measurement = read_measurement(statistics, "base", total_frames=frames, fps=fps,
-                                               cancelled=cancel.is_set)
+                measurement, backend = measure_track(
+                    engine, Path(info.path), snapshot.stream_index, owned.path,
+                    threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)), total_frames=frames, fps=fps,
+                    fast=fast, progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
+                    cancel=cancel)
                 self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
                 self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
                 self._measured.emit(token, measurement, "")

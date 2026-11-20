@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -113,6 +114,8 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
                     covered += int(item["frames"])
                     for index, count in item.get("maxrgb_hist") or ():
                         histogram[int(index)] += int(count)
+    except InterruptedError:
+        raise  # annulation (sous-classe d'OSError) : jamais confondue avec une lecture impossible
     except (OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, MeasurementError):
             raise
@@ -137,6 +140,28 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
     if not fps or fps <= 0:
         raise MeasurementError("Statistiques de l'image : cadence requise pour une mesure par images clés.")
     return _expand(measurement, np.frombuffer(times, dtype=np.float64), fps, total_frames)
+
+
+def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
+                  threads: int = 8, total_frames: int | None = None, fps: float | None = None, fast: bool = False,
+                  progress: Callable[[int], None] | None = None,
+                  cancel: threading.Event | None = None) -> tuple[ImageMeasurement, str]:
+    """Mesure de l'image d'une piste par le plugin mvo-fel (``FelEngine``) : (mesure, moteur exécuté).
+
+    Statistiques écrites dans ``work_dir`` puis supprimées. ``fast`` : images clés seules (estimation).
+    Annulation : ``FelCancelled`` pendant la mesure, ``InterruptedError`` pendant la lecture.
+    """
+    statistics = Path(work_dir) / f"mesure-{layer}.jsonl"
+    event = cancel if cancel is not None else threading.Event()
+    try:
+        backend = engine.measure(  # type: ignore[attr-defined]
+            Path(path), stream_index, statistics, layer=layer, threads=threads, progress=progress,
+            cancelled=event, sampling="keyframes" if fast else "all")
+        measurement = read_measurement(statistics, layer, total_frames=total_frames, fps=fps,
+                                       cancelled=event.is_set)
+        return measurement, str(backend)
+    finally:
+        statistics.unlink(missing_ok=True)
 
 
 def _expand(measurement: ImageMeasurement, times: np.ndarray, fps: float, total_frames: int | None) -> ImageMeasurement:
