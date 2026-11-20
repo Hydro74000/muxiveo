@@ -207,18 +207,33 @@ def test_every_signal_keeps_its_own_targets():
         os.close(read)
 
 
+def _open_descriptors() -> set[tuple[int, int, int]]:
+    """Descripteurs ouverts du processus, identifiés par numéro et objet ouvert (périphérique, inode)."""
+    found = set()
+    for entry in Path("/proc/self/fd").iterdir():
+        try:
+            status = os.fstat(int(entry.name))
+        except OSError:  # descripteur de l'itération elle-même, ou fermé entre-temps
+            continue
+        found.add((int(entry.name), status.st_dev, status.st_ino))
+    return found
+
+
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descripteurs listés par /proc")
 def test_interrupt_guards_leak_neither_descriptors_nor_threads():
+    """Aucun descripteur ni fil laissé par les gardes : seuls ceux apparus pendant les gardes comptent (les
+    ressources d'autres tests libérées entre-temps, par le ramasse-miettes ou la fin de leurs fils, ne faussent rien)."""
     previous = signal.getsignal(signal.SIGINT)
     with interrupt_guard(CancelToken()):
         pass
-    descriptors = len(list(Path("/proc/self/fd").iterdir()))
-    threads = threading.active_count()
+    descriptors = _open_descriptors()
+    threads = set(threading.enumerate())
     for _ in range(50):
         with interrupt_guard(CancelToken()):
             os.kill(os.getpid(), signal.SIGINT)
             time.sleep(0.002)
-    assert len(list(Path("/proc/self/fd").iterdir())) == descriptors and threading.active_count() == threads
+    assert _open_descriptors() - descriptors == set()
+    assert set(threading.enumerate()) - threads == set()
     assert signal.getsignal(signal.SIGINT) is previous
 
 
