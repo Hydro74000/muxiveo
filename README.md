@@ -10,7 +10,7 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 **Français** | [English](README_EN.md)
 
 [![Site officiel](https://img.shields.io/badge/Site%20Web-muxiveo.fr-2ea44f?style=flat-square&logo=googlechrome&logoColor=white)](https://muxiveo.fr/)
-[![Version](https://img.shields.io/badge/version-v5.1.1-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
+[![Version](https://img.shields.io/badge/version-v5.2.0-blue.svg?style=flat-square)](https://github.com/Hydro74000/Muxiveo/releases)
 [![Plateformes](https://img.shields.io/badge/plateformes-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg?style=flat-square)](#-téléchargement--installation-rapide)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-green.svg?style=flat-square)](LICENSE)
 [![Documentation Wiki](https://img.shields.io/badge/Documentation-Wiki-orange?style=flat-square&logo=gitbook&logoColor=white)](https://github.com/Hydro74000/Muxiveo/wiki)
@@ -38,7 +38,7 @@ Suite logicielle complète de préparation, remuxage sans perte et encodage vid�
 | **Marier une vidéo 4K et l'audio/subs d'une autre édition** | **Studio d'Hybridation** | Calage acoustique FFT (*Zero Delay*) | [Guide Hybridation & Synchro](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) |
 | **Inspecter, mesurer ou corriger le HDR (MaxCLL, DoVi)** | **HDR Studio** | Analyse et édition sans réencodage | [Guide HDR Studio](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) |
 | **Transférer Dolby Vision / HDR10+ entre deux fichiers** | **Fusion DoVi / HDR10+** | Injection de métadonnées sans perte | [Guide Fusion DoVi](https://github.com/Hydro74000/Muxiveo/wiki/Interface-et-usage#fusion-dovi--hdr10) |
-| **Retirer le grain et le bruit en gardant le détail** | **MVO-R2** (Moteur vidéo MVO, extension) | Débruitage neuronal GPU | [Guide Encodage vidéo et HDR](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR) |
+| **Retirer le grain et le bruit en gardant le détail** | **MVO-R2** (Moteur vidéo MVO, extension) | Débruitage neuronal GPU | [Guide Débruitage MVO-R2](https://github.com/Hydro74000/Muxiveo/wiki/Debruitage-MVO-R2) |
 | **Fluidifier les mouvements (24 → 60 i/s)** | **MVO-RIFE** (Extension) | Interpolation neuronale GPU | [Guide MVO-RIFE](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-MVO-RIFE) |
 | **Automatiser les choix sur une série ou un lot** | **Profils** / **CLI** | Profils décisionnels & scripts | [Guide Profils](https://github.com/Hydro74000/Muxiveo/wiki/Profils) & [Guide CLI](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless) |
 
@@ -81,7 +81,7 @@ Le remuxage prépare un fichier MKV propre en quelques secondes, sans aucune rec
 * **Normalisation des métadonnées de pistes** : Édition des langues avec sélection normalisée BCP47 (ex: `fr-FR`, `en-US`), renommage des titres de pistes et attribution des drapeaux Matroska (*Par défaut*, *Forcé*, *Malentendant*, *Commentaire*, *Original*).
 * **Moteur Matroska natif** : Muxiveo embarque son propre multiplexeur EBML natif pour assembler les flux sans intermédiaire, préserver les structures de tags complexes et maximiser la rapidité, avec repli transparent sur FFmpeg si le traitement l'exige.
 * **Nettoyage des sous-titres EIA-608/708** : Détection et élimination des sous-titres incrustés obsolètes (*Closed Captions*) sans décompresser la vidéo ni toucher aux métadonnées HDR.
-* **Extraction rapide** : Export direct d'une piste audio ou d'un flux de sous-titres par clic droit dans la table.
+* **Extraction en un clic droit** : Enregistrez séparément une piste audio, de sous-titres ou vidéo, une pièce jointe (police, jaquette), le RPU Dolby Vision, les métadonnées HDR10+ ou les couches d'un Dolby Vision profil 7, sans réencodage.
 
 ### 2. Encodage sur-mesure & Accélération matérielle
 Dès qu'une recompression ou une réduction de taille est requise, le panneau Encodage applique les réglages par piste :
@@ -100,6 +100,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
   * Recopie sans perte (*passthrough*) des formats haute fidélité : Dolby TrueHD avec métadonnées spatiales Dolby Atmos, DTS-HD MA, DTS:X, FLAC.
   * Transcodage multicanal de haute qualité en **E-AC-3**, **AAC** ou **FLAC**.
   * **Variantes audio indépendantes** : Générez par exemple une piste stéréo ou un flux de compatibilité AC-3 5.1 à partir d'un master TrueHD Atmos sans modifier la piste source d'origine.
+* **Aperçu avant encodage** : Visualisez l'image encodée à l'instant de votre choix (ou tiré au hasard), avec tous les réglages de la piste, ou générez un court extrait vidéo pour juger le rendu avant de lancer le traitement complet.
 
 > 📖 Pour approfondir les options d'encodage, les filtres et les profils de compression, consultez le [Guide de l'encodage vidéo et HDR sur le Wiki](https://github.com/Hydro74000/Muxiveo/wiki/Encodage-video-et-HDR).
 
@@ -121,6 +122,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 * **Détection des coupures & Calibration multi-segments** : Localisation des coupures publicitaires ou variantes de montage TV avec découpage de la timeline en segments indépendants recalés séparément.
 * **Synchronisation physique (*Zero Delay*)** : Décalage physique réel du flux audio (insertion de silence ou découpe au paquet près) et réalignement des sous-titres texte (SRT, ASS, VTT). Cette méthode évite les désynchronisations constatées sur les téléviseurs et barres de son qui ignorent les tags de décalage virtuel de conteneur.
 * **Hybridation par lots** : Appariement automatique des fichiers d'une saison entière par détection des motifs d'épisodes (`S01E01`), avec préparation parallèle optimisée, calibration et traitement groupé.
+* **Recettes réutilisables** : Exportez la sélection des pistes et les réglages d'une saison, puis réimportez-les pour la saison suivante ou pour la ligne de commande.
 
 > 📖 Consultez le [Guide d'hybridation et synchronisation](https://github.com/Hydro74000/Muxiveo/wiki/Hybridation) ainsi que la page [Qualité et dépannage audio](https://github.com/Hydro74000/Muxiveo/wiki/Synchronisation-qualite).
 
@@ -153,6 +155,8 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 * **Compensation de netteté** : rend une partie du détail fin retiré, seulement là où il est stable d'une image à l'autre.
 * **HDR, Dolby Vision, FEL** : traitement en 10 bits, MaxCLL / MaxFALL conservés ou mesurés sur l'image débruitée, métadonnées dynamiques copiées et contrôlées ; débruitage puis interpolation dans le même passage.
 
+> 📖 Consultez le [Guide du débruitage MVO-R2](https://github.com/Hydro74000/Muxiveo/wiki/Debruitage-MVO-R2).
+
 ### 🏎️ Fluidification d'image IA (MVO-RIFE)
 *Multiplication de la cadence d'images par réseau de neurones avec accélération GPU.*
 
@@ -167,7 +171,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
 ### 🧩 Écosystème d'extensions (muxiveo-plugins)
 *Distribution et maintenance indépendante des modules spécialisés.*
 
-Certaines fonctionnalités avancées (le moteur d'interpolation **MVO-RIFE**, l'accélération neuronale **TensorRT** et la reconstruction 12-bit **Merge FEL**) sont développées et distribuées sous forme d'extensions modulaires.
+Certaines fonctionnalités avancées (le **moteur vidéo MVO** pour le débruitage MVO-R2 et l'interpolation MVO-RIFE, l'accélération neuronale **TensorRT** et la reconstruction 12-bit **Merge FEL**) sont développées et distribuées sous forme d'extensions modulaires. L'encodeur NVIDIA **NVEncC** s'installe et se met à jour depuis la même page.
 
 * **Dépôt officiel** : Toutes les extensions sont packagées, versionnées et publiées sur le dépôt GitHub dédié [Hydro74000/muxiveo-plugins](https://github.com/Hydro74000/muxiveo-plugins).
 * **Gestion intégrée en un clic** : Depuis la page **Extensions** de la barre latérale, vous pouvez installer, mettre à jour ou supprimer ces modules directement dans l'interface, sans redémarrer Muxiveo. L'application vérifie la compatibilité de votre matériel et l'intégrité des fichiers par empreinte SHA-256.
@@ -236,9 +240,9 @@ muxiveo --cli call media.inspect --request requete.json
 muxiveo --cli serve        # worker JSON-RPC sur stdio pour un outil local
 ```
 
-Toutes les fonctions de l'interface (sauf Merge DoVi) existent en CLI, chacune étant une opération de la
-couche de service appelable en JSON (`call`, `operations`) ou par un outil local via le worker `serve`
-(jobs concurrents, événements en direct, annulation).
+Toutes les fonctions de l'interface (sauf Fusion DoVi) existent en ligne de commande. Pour piloter Muxiveo
+depuis un script ou un autre logiciel, chaque fonction s'appelle aussi en JSON (`call`) ou via un processus
+de service (`serve`) qui suit plusieurs traitements à la fois.
 
 > 📖 Référence complète : `muxiveo --cli help --all`, [docs/cli/reference.md](docs/cli/reference.md) ; guide par tâche : [docs/cli/README.md](docs/cli/README.md) ; API : [docs/cli/api.md](docs/cli/api.md) ; wiki : [CLI headless](https://github.com/Hydro74000/Muxiveo/wiki/CLI-headless).
 
