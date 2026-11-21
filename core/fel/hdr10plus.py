@@ -6,6 +6,8 @@ par plan Dolby Vision. Ce module en tire, plan par plan, les métadonnées HDR10
 JSON de ``hdr10plus_tool`` (profil A : sans courbe de Bézier, la TV construit son tone mapping
 depuis les statistiques), et les MaxCLL/MaxFALL exacts de la sortie.
 
+MaxScl : maximum du plan des pics de chaque image plafonnés aux pixels isolés (``maxscl_cap``).
+
 Distribution (9 valeurs, convention de la spécification HDR10+ LLC) : percentiles de maxRGB
 1, 25, 50, 75, 90, 95 % (moyenne sur le plan des percentiles de chaque image) et 99,98 % (leur
 maximum) ; la position « 5 » porte DistributionY99 (maximum sur le plan du percentile 99,99 % de
@@ -22,6 +24,12 @@ from fractions import Fraction
 from pathlib import Path
 
 DISTRIBUTION_INDEX = (1, 5, 10, 25, 50, 75, 90, 95, 99)
+#: MaxScl : pic de chaque canal plafonné à max(plancher, facteur × percentile 99,98 % de maxRGB, Y 99,99 %) de chaque
+#: image avant le maximum du plan. Les pixels isolés au-delà (< 0,02 %) ne font plus tasser les hautes lumières du plan
+#: par la TV ; le plancher garde les points lumineux sur fond sombre (ciel étoilé). Banc 2026-11-21 (6 titres WEB) :
+#: tassement > 0,15 EV sur écran 600 nits de 0–12 % des images (pic absolu) à 0 %, MaxScl à 0,03–0,67 EV du HDR10+ livré.
+MAXSCL_PEAK_FACTOR = 2.0
+MAXSCL_PEAK_FLOOR_NITS = 1000.0
 # Ordre des percentiles de maxRGB émis par le plugin (1, 25, 50, 75, 90, 95, 99,98 %).
 _PERCENTILE_INDEX = (1, 25, 50, 75, 90, 95, 99)
 _BINS = 1024
@@ -278,6 +286,20 @@ def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[st
                    "écart visible).")
 
 
+def maxscl_cap(p9998_nits: float, y9999_nits: float) -> float:
+    """Plafond du pic d'un canal pour MaxScl (nits) : voir ``MAXSCL_PEAK_FACTOR``."""
+    return max(MAXSCL_PEAK_FLOOR_NITS, MAXSCL_PEAK_FACTOR * p9998_nits, y9999_nits)
+
+
+def maxscl_peaks(max_rgb: object, p9998: object, y9999: object) -> object:
+    """Pic plafonné de chaque image (nits, plus grand canal), vectorisé : règle de MaxScl appliquée à une mesure."""
+    import numpy as np
+
+    cap = np.maximum(np.maximum(MAXSCL_PEAK_FLOOR_NITS, MAXSCL_PEAK_FACTOR * np.asarray(p9998, dtype=np.float64)),
+                     np.asarray(y9999, dtype=np.float64))
+    return np.minimum(np.asarray(max_rgb, dtype=np.float64).max(axis=1), cap)
+
+
 def _tenths(nits: float) -> int:
     return max(0, min(100000, round(nits * 10)))
 
@@ -298,7 +320,8 @@ def scene_parameters(statistics: FrameStatistics, scene: SceneRecord) -> dict:
             "DistributionIndex": list(DISTRIBUTION_INDEX),
             "DistributionValues": [values[index] for index in DISTRIBUTION_INDEX],
         },
-        "MaxScl": [_tenths(max(frame.max_nits[channel] for frame in frames)) for channel in range(3)],
+        "MaxScl": [_tenths(max(min(frame.max_nits[channel], maxscl_cap(frame.percentiles[-1], frame.y9999_nits))
+                               for frame in frames)) for channel in range(3)],
     }
 
 

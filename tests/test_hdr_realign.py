@@ -150,3 +150,15 @@ def test_l6_keeps_the_rpu_mastering_when_the_mdcv_is_below_the_picture(tmp_path)
     # L6 : niveaux mesurés, écran 4000 nits conservé (jamais ramené au MDCV contredit).
     assert result.l6 == (4000, 0.005, 2211, 204)
     assert proposals["l6"].proposed == "2211 / 204, 0.005 – 4000 nits"
+
+
+def test_isolated_pixels_above_the_maxscl_are_not_clipping(tmp_path):
+    """Pic de quelques pixels (4000 nits, 99,98 % à 600) : un MaxScl de 1200 (2 × 99,98 %) n'est pas un écrêtage ;
+    un MaxScl de 500, sous le contenu non isolé, l'est."""
+    measurement = dataclasses.replace(
+        _measurement(4000, 80), percentiles=np.tile(np.array([0.1, 5, 20, 60, 120, 200, 600], np.float32), (10, 1)),
+        y9999=np.full(10, 700, np.float32))
+    kept = realign(_report(tmp_path, max_pq=3079, maxscl=(12000, 11000, 10000)), measurement, 1000)
+    assert "hdr10plus" not in [p.key for p in kept.proposals]
+    clipped = realign(_report(tmp_path, max_pq=3079, maxscl=(5000, 4800, 4500)), measurement, 1000)
+    assert "hdr10plus" in [p.key for p in clipped.proposals]

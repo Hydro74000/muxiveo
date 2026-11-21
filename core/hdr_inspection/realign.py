@@ -232,11 +232,16 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     scenes: np.ndarray | None = None
     if hdr10plus is not None and hdr10plus.frames and not estimate:
         count = min(hdr10plus.frames, measurement.frames)
-        # Par plan du HDR10+ (MaxScl constant sur le plan = maximum du plan).
+        # Par plan du HDR10+ (MaxScl constant sur le plan = maximum du plan). Écrêtage : face au pic hors pixels isolés
+        # (règle du MaxScl calculé par Muxiveo, ``maxscl_peaks``) ; assombrissement : face au pic absolu.
+        from core.fel.hdr10plus import maxscl_peaks
+
+        capped = _per_scene(maxscl_peaks(measurement.max_rgb[:count], measurement.percentiles[:count, -1],
+                                         measurement.y9999[:count]), hdr10plus.scene_starts, np.fmax)
         measured = _per_scene(measurement.peaks()[:count], hdr10plus.scene_starts, np.fmax)
         declared = _per_scene(hdr10plus.max_scl[:count], hdr10plus.scene_starts, np.fmax)
         valid = measured > 50
-        under = valid & (measured > 1.25 * declared)
+        under = valid & (capped > 1.25 * declared)
         over = valid & (declared > 2 * measured) & (declared > 400)
         saturated = int(hdr10plus.saturated().size)
         mismatch = hdr10plus.frames != measurement.frames

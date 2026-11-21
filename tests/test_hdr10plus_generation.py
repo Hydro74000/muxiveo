@@ -264,3 +264,19 @@ def test_service_classifies_measure_read_cancellation_as_cancelled(tmp_path, mon
     with pytest.raises(InterruptedError) as caught:
         measure_image(SimpleNamespace(), SimpleNamespace(snapshot=snapshot), 2, tmp_path, logger, cancel=event)
     assert error_code(caught.value) == ErrorCode.CANCELLED
+
+
+@pytest.mark.parametrize("peak,p9998,y9999,expected", [
+    (4000.0, 500.0, 600.0, 1000.0),   # pixels isolés : plancher de 1000 nits
+    (4000.0, 900.0, 950.0, 1800.0),   # 2 × 99,98 %
+    (5000.0, 600.0, 1500.0, 1500.0),  # jamais sous Y 99,99 % (distribution cohérente)
+    (800.0, 100.0, 120.0, 800.0),     # sous le plancher : pic absolu gardé (points lumineux sur fond sombre)
+    (1500.0, 900.0, 950.0, 1500.0),   # pic proche du contenu : inchangé
+])
+def test_maxscl_caps_isolated_pixels_only(peak, p9998, y9999, expected):
+    from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord, scene_parameters, maxscl_peaks
+
+    record = FrameRecord(True, (peak, peak * 0.9, peak * 0.8), 50.0, y9999, 0.5, (1.0, 5.0, 10.0, 20.0, 50.0, 80.0, p9998))
+    statistics = FrameStatistics(0, 0, (record,), (SceneRecord(0, 1),))
+    assert scene_parameters(statistics, statistics.scenes[0])["MaxScl"][0] == round(expected * 10)
+    assert float(maxscl_peaks(np.array([[peak, peak * 0.9, peak * 0.8]]), [p9998], [y9999])[0]) == expected
