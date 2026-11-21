@@ -4840,7 +4840,6 @@ class EncodePanel(QWidget):
     def _on_fel_clicked(self, checked: bool) -> None:
         self._bake_fel_choice = checked
         self._sync_dovi_profile_options()
-        self._sync_generate_hdr10plus()  # méthode HDR10+ annoncée : FEL ou non
         self._save_current_video_state()
         self._rebuild_preview()
 
@@ -4882,11 +4881,6 @@ class EncodePanel(QWidget):
         """Génération HDR10+ cochée : remplace la copie HDR10+ de la source (exclusives)."""
         self._generate_hdr10plus_intent = bool(checked)
         self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, checked)
-        if not checked and self._hdr10plus_copy_replaced:
-            # Génération retirée : la copie HDR10+ qu'elle remplaçait revient (Copy : imposée par la source).
-            self._hdr10plus_copy_replaced = False
-            if self._copy_hdr10plus_cb.isEnabled() or str(self._codec_combo.currentData() or "") == "copy":
-                self._copy_hdr10plus_cb.setChecked(True)
         self._sync_hdr_controls_for_codec()
         self._sync_fel_hdr10plus_option()
         self._save_current_video_state()
@@ -4960,6 +4954,13 @@ class EncodePanel(QWidget):
         if generating and self._copy_hdr10plus_cb.isChecked():
             self._copy_hdr10plus_cb.setChecked(False)  # remplacement du HDR10+ de la source
             self._hdr10plus_copy_replaced = True
+        elif not generating and self._hdr10plus_copy_replaced and (
+                self._copy_hdr10plus_cb.isEnabled() or codec == "copy"):
+            # Génération retirée ou inapplicable : la copie qu'elle remplaçait revient (Copy : imposée par la
+            # source). Codec sans HDR10+ : remplacement gardé jusqu'au retour d'un codec qui le porte.
+            self._hdr10plus_copy_replaced = False
+            if codec != "copy":
+                self._copy_hdr10plus_cb.setChecked(True)
         note = ""
         if generating and ctx is not None:
             # Méthode prévue (règle du lancement) : estimation L1 annoncée, lien Extensions sans capacité de mesure.
@@ -5068,6 +5069,7 @@ class EncodePanel(QWidget):
         self._dovi_p81_note.setVisible(bool(conversion_notes))
         self._dovi_plan_label.setText("\n".join(notes))
         self._dovi_plan_label.setVisible(bool(notes))
+        self._sync_generate_hdr10plus()  # méthode HDR10+ annoncée d'après le choix FEL affiché
 
     def _selected_video_hdr_type(self) -> HDRType:
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
@@ -5233,10 +5235,9 @@ class EncodePanel(QWidget):
             "fel_device": self._fel_device_choice,
             "fel_precision": self._fel_precision_choice,
             "fel_hdr10plus": self._fel_hdr10plus_choice,
-            "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
+            # Intention de copie : gardée sous la génération qui la remplace (exclusion appliquée aux réglages).
+            "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked() or self._hdr10plus_copy_replaced,
             "generate_hdr10plus": self._generate_hdr10plus_intent,
-            # Copie HDR10+ décochée par la génération : rétablie quand la génération est retirée.
-            "hdr10plus_copy_replaced": self._hdr10plus_copy_replaced,
             "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
             "tonemap_choice": self._tonemap_choice,
@@ -5571,7 +5572,7 @@ class EncodePanel(QWidget):
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
             self._generate_hdr10plus_intent = bool(state.get("generate_hdr10plus"))
-            self._hdr10plus_copy_replaced = bool(state.get("hdr10plus_copy_replaced"))
+            self._hdr10plus_copy_replaced = False  # reposé par la synchro si la génération remplace la copie
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:

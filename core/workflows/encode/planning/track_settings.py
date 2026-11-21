@@ -576,9 +576,9 @@ def normalize_video_state(state: Mapping[str, object], ctx: SourceVideoContext,
     copy_dv, copy_hdr10plus = effective_dynamic_hdr_flags(normalized, source_hdr=ctx.hdr_type,
                                                           target_codec=target_codec)
     normalized["copy_dv"] = copy_dv
-    # Génération : remplace la copie HDR10+ (exclusives).
-    normalized["copy_hdr10plus"] = copy_hdr10plus and not effective_hdr10plus_generation(
-        normalized, ctx, codec=target_codec)
+    # Intention de copie HDR10+ gardée sous la génération qui la remplace : exclusion appliquée aux réglages
+    # (``video_settings_from_state``), copie rétablie quand la génération est retirée (piste, preset, propagation).
+    normalized["copy_hdr10plus"] = copy_hdr10plus
     normalized["generate_hdr10plus"] = bool(normalized.get("generate_hdr10plus"))
     md, cll = effective_static_hdr_fields(normalized, codec=target_codec)
     editable = static_hdr_editable(normalized, target_codec)
@@ -707,8 +707,6 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
     state[HDR10PLUS_GENERATION_OPTION] = (generate if isinstance(generate, bool) and codec != "copy"
                                           and source_has_dv(ctx.hdr_type)
                                           else bool(own.get(HDR10PLUS_GENERATION_OPTION)))
-    # Copie HDR10+ remplacée par la génération (rétablie au retrait, panneau) : marqueur propre à la piste.
-    state["hdr10plus_copy_replaced"] = bool(own.get("hdr10plus_copy_replaced"))
     return normalize_video_state(state, ctx, env)
 
 

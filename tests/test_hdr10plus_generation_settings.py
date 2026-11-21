@@ -63,7 +63,8 @@ def test_generation_replaces_the_source_hdr10plus_copy():
     ctx = _ctx(DV_PLUS, dovi=8, compat=1)
     for codec in ("libx265", "copy"):
         state = _state(ctx, codec=codec, copy_hdr10plus=True, generate_hdr10plus=True)
-        assert state["copy_hdr10plus"] is False and state["generate_hdr10plus"] is True
+        # Intention de copie gardée dans l'état (rétablie au retrait de la génération), exclue des réglages.
+        assert state["copy_hdr10plus"] is True and state["generate_hdr10plus"] is True
         settings = _settings(state, ctx)
         assert settings.generate_hdr10plus and not settings.copy_hdr10plus
         assert outputs_hdr10plus(settings) and not hdr10plus_from_source(settings) and outputs_dynamic_hdr(settings)
@@ -111,7 +112,11 @@ def test_generation_is_not_mixed_with_the_hdr10plus_copy_memory():
     assert propagated["generate_hdr10plus"] is True
     assert ts.restore_flags(propagated) == (True, True)  # mémoires de copie DV / HDR10+ inchangées
     back = ts.normalize_video_state({**propagated, "codec": "libx265"}, ctx)
-    assert back["generate_hdr10plus"] is True and back["copy_hdr10plus"] is False
+    assert back["generate_hdr10plus"] is True and back["copy_hdr10plus"] is True  # intention rétablie
+    settings = _settings(back, ctx)
+    assert settings.generate_hdr10plus and not settings.copy_hdr10plus
+    # Génération retirée : la copie de la source revient sans autre action.
+    assert _settings({**back, "generate_hdr10plus": False}, ctx).copy_hdr10plus
 
 
 # ── Presets ──────────────────────────────────────────────────────────────────

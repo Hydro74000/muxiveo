@@ -305,3 +305,72 @@ def test_fel_click_refreshes_the_announced_method(qt_app, monkeypatch):
         assert panel._generate_hdr10plus_note.isHidden()
     finally:
         panel.close()
+
+
+def test_copy_comes_back_after_apply_all_from_copy(qt_app):
+    panel = _panel((_PATH_A, DV, 8, 1), (_PATH_B, DV_PLUS, 8, 1))
+    try:
+        _select_codec(panel, "copy")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb)
+        _click(panel._generate_hdr10plus_cb, False)
+        config = panel.collect_config()
+        assert config is not None
+        second = config.video_tracks[1]
+        assert second.copy_hdr10plus and not second.generate_hdr10plus  # HDR10+ de la source gardé
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("preset_generates", [True, False])
+def test_copy_comes_back_after_a_preset(qt_app, monkeypatch, preset_generates):
+    from core.workflows.encode.models import EncodePreset
+
+    panel = _panel((_PATH_A, DV_PLUS, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        if not preset_generates:
+            _click(panel._generate_hdr10plus_cb)  # génération active avant le preset qui la retire
+        preset = EncodePreset(name="P", codec="libx265", generate_hdr10plus=preset_generates)
+        monkeypatch.setattr(panel._profiles, "load_all", lambda: [preset])
+        panel._profile_combo.addItem("P", "P")
+        panel._profile_combo.setCurrentIndex(panel._profile_combo.findData("P"))
+        panel._load_profile()
+        if preset_generates:
+            assert panel._generate_hdr10plus_cb.isChecked() and not panel._copy_hdr10plus_cb.isChecked()
+            _click(panel._generate_hdr10plus_cb, False)
+        video = panel._current_video_settings()
+        assert video.copy_hdr10plus and not video.generate_hdr10plus
+        assert panel._copy_hdr10plus_cb.isChecked()
+    finally:
+        panel.close()
+
+
+def test_method_note_follows_the_fel_choice_of_each_track(qt_app, monkeypatch):
+    from types import SimpleNamespace
+
+    from core import hdr10plus_generation, plugins
+    from core.hdr10plus_generation import EngineSupport
+
+    installed = SimpleNamespace(path=Path("/x"), version="0.3.0", manifest={})
+    monkeypatch.setattr(plugins, "installed_plugin", lambda spec, *a, **k: installed)
+    monkeypatch.setattr(hdr10plus_generation, "engine_generation_support",
+                        lambda: EngineSupport(installed=True, frame_statistics=True))
+    panel = _panel((_PATH_A, DV, 7, 6), (_PATH_B, DV, 7, 6))
+    try:
+        for row, fel in ((1, False), (0, True)):
+            panel._video_list.setCurrentRow(row)
+            _select_codec(panel, "libx265")
+            if not panel._bake_fel_cb.isEnabled():
+                pytest.skip("intégration FEL indisponible pour ce profil")
+            _click(panel._bake_fel_cb, fel)
+            _click(panel._generate_hdr10plus_cb)
+        assert panel._generate_hdr10plus_note.isHidden()  # A : statistiques de l'image FEL
+        panel._video_list.setCurrentRow(1)
+        assert "L1" in panel._generate_hdr10plus_note.text() and not panel._generate_hdr10plus_note.isHidden()
+        panel._video_list.setCurrentRow(0)
+        assert panel._bake_fel_cb.isChecked() and panel._generate_hdr10plus_note.isHidden()
+    finally:
+        panel.close()
+
