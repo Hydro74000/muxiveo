@@ -22,6 +22,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 DISTRIBUTION_INDEX = (1, 5, 10, 25, 50, 75, 90, 95, 99)
 #: MaxScl : pic de chaque canal plafonné à max(plancher, facteur × percentile 99,98 % de maxRGB, Y 99,99 %) de chaque
@@ -291,7 +295,7 @@ def maxscl_cap(p9998_nits: float, y9999_nits: float) -> float:
     return max(MAXSCL_PEAK_FLOOR_NITS, MAXSCL_PEAK_FACTOR * p9998_nits, y9999_nits)
 
 
-def maxscl_peaks(max_rgb: object, p9998: object, y9999: object) -> object:
+def maxscl_peaks(max_rgb: object, p9998: object, y9999: object) -> np.ndarray:
     """Pic plafonné de chaque image (nits, plus grand canal), vectorisé : règle de MaxScl appliquée à une mesure."""
     import numpy as np
 
