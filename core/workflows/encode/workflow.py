@@ -1216,7 +1216,8 @@ class EncodeWorkflow(QObject):
                 validation_override=self._validation_override_for(config),
                 count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
                 regenerate_hdr10plus=self._regenerate_hdr10plus,
-                source_frame_count=lambda path, stream: self._frame_count_guard().source_frame_count(path, stream),
+                source_frame_count=lambda path, stream, exact=False: self._frame_count_guard().source_frame_count(
+                    path, stream, exact=exact),
             )
         ).run(
             config,

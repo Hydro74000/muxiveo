@@ -566,7 +566,8 @@ class NvenccDirectOutputRunnerCallbacks:
     #: HDR10+ généré refait pour la reprise sur le BL (méthode FEL caduque) : (config, piste, n°, dossier, signaux).
     regenerate_hdr10plus: Callable[..., VideoEncodeSettings] | None = None
     #: Images d'un flux de la source (source, index du flux) : audit du HDR10+ généré, sans copie DV.
-    source_frame_count: Callable[[Path, int], int | None] | None = None
+    #: Appel ``(source, flux)`` puis ``(source, flux, exact=True)`` pour recompter après un écart.
+    source_frame_count: Callable[..., int | None] | None = None
 
 
 class NvenccDirectOutputRunner:
@@ -793,17 +794,26 @@ class NvenccDirectOutputRunner:
                 # HDR10+ généré : images de la source × rapport de cadence, entrées du JSON et trames encodées
                 # contrôlées indépendamment de la copie DV et de la méthode.
                 generated_source_frames: int | None = None
-                if generates_hdr10plus(runtime_video) and cb.source_frame_count is not None:
-                    counted = cb.source_frame_count(routing.input_path, routing.stream_index)
-                    generated_source_frames = math.ceil(counted * frame_ratio) if counted else None
                 if hdr10plus_json_path is not None and generates_hdr10plus(runtime_video):
                     expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
                     if expected_hdr10plus is None:
                         raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
-                    if generated_source_frames is not None and expected_hdr10plus != generated_source_frames:
+                    counter = cb.source_frame_count
+                    counted = counter(routing.input_path, routing.stream_index) if counter is not None else None
+                    if counter is not None and counted and math.ceil(counted * frame_ratio) != expected_hdr10plus:
+                        # Compte rapide contredit : recomptage exact avant de conclure (comme le RPU externe).
+                        counted = counter(routing.input_path, routing.stream_index, exact=True) or counted
+                    generated_source_frames = math.ceil(counted * frame_ratio) if counted else None
+                    message = ""
+                    if generated_source_frames is None:
+                        message = translate_text(
+                            "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames "
+                            "invérifiable.")
+                    elif expected_hdr10plus != generated_source_frames:
                         message = translate_text(
                             "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la "
                             "source.", entries=expected_hdr10plus, frames=generated_source_frames)
+                    if message:
                         if not accept_validation_override(
                             cb.validation_override, hdr10plus_json_path, message, signals._cancel_event.is_set,
                             cb.log_info,

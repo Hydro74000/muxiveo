@@ -19,7 +19,7 @@ from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.encode import EncodeConfig, EncodeError, EncodeWorkflow, VideoEncodeSettings
 from core.workflows.encode.models import FrameInterpolationSettings, VideoFilterSettings
 from core.workflows.encode.planning.track_settings import is_pure_copy
-from core.workflows.encode.runtime import metadata_inject, multi_video
+from core.workflows.encode.runtime import metadata_inject, multi_video, nvencc_execution
 from core.workflows.encode.runtime.nvencc import build_nvencc_command
 from tests.test_encode_runtime_failures import (  # noqa: F401 — fixtures autouse importées
     _create_output,
@@ -476,3 +476,40 @@ def test_nvencc_generated_json_shorter_than_the_source_is_refused(tmp_path):
     (message, error), = outcome.failed
     assert isinstance(error, EncodeError) and "3" in message and "100" in message
     assert "nvencc" not in run.labels  # refus avant l'encodage
+
+
+def test_nvencc_stale_quick_count_is_recounted_exactly_before_refusing(tmp_path):
+    from tests.test_encode_runtime_failures import _Nvencc
+
+    run = _Nvencc(tmp_path, generate_hdr10plus=True, generated_hdr10plus_json=_generated(tmp_path, frames=3))
+    calls: list[bool] = []
+
+    def count(path, stream=None, *, exact=False):
+        calls.append(exact)
+        return 3 if exact else 4  # compte rapide périmé, compte exact juste
+
+    guard = SimpleNamespace(source_frame_count=count)
+    run.nvencc_output = ["encoded 3 frames"]
+    outcome = run.run(patch.object(run.workflow, "_frame_count_guard", return_value=guard))
+    assert calls[:2] == [False, True]
+    assert "nvencc" in run.labels
+    assert not any("3 entrées pour 4" in message for message, _ in outcome.failed)
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_nvencc_unreadable_source_count_is_refused_unless_overridden(tmp_path, override):
+    from tests.test_encode_runtime_failures import _Nvencc
+
+    run = _Nvencc(tmp_path, generate_hdr10plus=True, generated_hdr10plus_json=_generated(tmp_path, frames=3))
+    guard = SimpleNamespace(source_frame_count=lambda path, stream=None, **_k: None)
+    patches = [patch.object(run.workflow, "_frame_count_guard", return_value=guard)]
+    if override:
+        patches.append(patch.object(nvencc_execution, "accept_validation_override", return_value=True))
+    outcome = run.run(*patches)
+    if override:
+        assert "nvencc" in run.labels
+    else:
+        (message, error), = outcome.failed
+        assert isinstance(error, EncodeError) and message == translate_text(
+            "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.")
+        assert "nvencc" not in run.labels

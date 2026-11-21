@@ -11502,5 +11502,9 @@
   "HDR10+ généré : {reason}.": {
     "fra": "HDR10+ généré : {reason}.",
     "eng": "Generated HDR10+: {reason}."
+  },
+  "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.": {
+    "fra": "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.",
+    "eng": "Frame audit: generated HDR10+: source frames unreadable, frame alignment cannot be verified."
   }
 }
