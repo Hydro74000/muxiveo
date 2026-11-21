@@ -563,3 +563,38 @@ def test_nvencc_fel_statistics_unreadable_source_count_is_refused_before_encodin
     assert isinstance(error, EncodeError) and message == translate_text(
         "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.")
     assert not inject.called and "nvencc-pipe" not in run.labels  # refus avant l'encodage
+
+
+def test_frame_count_guard_probes_are_killed_by_cancellation(tmp_path):
+    import shutil
+    import time
+
+    if shutil.which("sleep") is None:
+        pytest.skip("commande sleep absente")
+    workflow, _ = _workflow(tmp_path)
+    signals = TaskSignals()
+    guard = workflow._frame_count_guard(signals)
+    threading.Timer(0.2, signals.cancel).start()
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        guard._run(["sleep", "30"], capture_output=True, text=True)
+    assert time.monotonic() - started < 10  # sonde arrêtée, pas attendue
+
+
+def test_nvencc_cancellation_during_the_source_count_stops_before_encoding(tmp_path):
+    from tests.test_encode_runtime_failures import _Nvencc
+
+    run = _Nvencc(tmp_path, generate_hdr10plus=True, generated_hdr10plus_json=_generated(tmp_path, frames=3))
+    seen: list[object] = []
+
+    def count(path, stream=None, *, exact=False, **_kwargs):
+        run.signals.cancel()  # « Annuler » pendant la lecture de la source
+        return 3
+
+    def guard_for(signals=None):
+        seen.append(signals)
+        return SimpleNamespace(source_frame_count=count)
+
+    outcome = run.run(patch.object(run.workflow, "_frame_count_guard", side_effect=guard_for))
+    assert outcome.cancelled == 1 and not outcome.failed and "nvencc" not in run.labels
+    assert seen and seen[0] is not None  # sondes liées aux signaux du job

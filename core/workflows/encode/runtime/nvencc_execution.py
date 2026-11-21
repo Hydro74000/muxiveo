@@ -561,7 +561,8 @@ class NvenccDirectOutputRunnerCallbacks:
     #: Dérogation explicite (interface) à un refus de la garde stricte.
     validation_override: ValidationOverride | None = None
     #: Trames d'un fichier vidéo produit (repli si NVEncC n'affiche pas son compte).
-    count_video_frames: Callable[[Path], int | None] | None = None
+    #: Appel ``(fichier, signals=…)`` : sondes arrêtées par l'annulation du job.
+    count_video_frames: Callable[..., int | None] | None = None
     log_warn: Callable[[str], None] | None = None
     #: HDR10+ généré refait pour la reprise sur le BL (méthode FEL caduque) : (config, piste, n°, dossier, signaux).
     regenerate_hdr10plus: Callable[..., VideoEncodeSettings] | None = None
@@ -800,8 +801,10 @@ class NvenccDirectOutputRunner:
                     counter = cb.source_frame_count
                     if counter is None:
                         return None
-                    counted = (counter(routing.input_path, routing.stream_index, exact=True) if exact
-                               else counter(routing.input_path, routing.stream_index))
+                    # Sondes enregistrées auprès du job : « Annuler » les arrête (lecture complète d'un gros fichier).
+                    counted = (counter(routing.input_path, routing.stream_index, exact=True, signals=signals) if exact
+                               else counter(routing.input_path, routing.stream_index, signals=signals))
+                    cb.check_cancelled(signals)
                     return math.ceil(counted * frame_ratio) if counted else None
 
                 if generates_hdr10plus(runtime_video):
@@ -937,7 +940,8 @@ class NvenccDirectOutputRunner:
                     cb.run_cmd(encode_cmd, cwd, "nvencc", _progress, signals)
                 # Après encodage, avant assemblage : toutes les trames ont reçu leur RPU.
                 if expected_frames is not None and monitor.encoded_frames is None and cb.count_video_frames is not None:
-                    monitor.encoded_frames = cb.count_video_frames(intermediate)
+                    monitor.encoded_frames = cb.count_video_frames(intermediate, signals=signals)
+                    cb.check_cancelled(signals)
                 if expected_frames is not None and monitor.encoded_frames is None:
                     message = translate_text(
                         "Audit trames : compte des trames encodées illisible, couverture RPU invérifiable.")
@@ -952,7 +956,8 @@ class NvenccDirectOutputRunner:
                 if expected_hdr10plus is not None:
                     encoded = monitor.encoded_frames
                     if encoded is None and cb.count_video_frames is not None:
-                        encoded = cb.count_video_frames(intermediate)
+                        encoded = cb.count_video_frames(intermediate, signals=signals)
+                        cb.check_cancelled(signals)
                     if encoded is None:
                         message = translate_text(
                             "Audit trames : compte des trames encodées illisible, couverture HDR10+ invérifiable.")
@@ -979,7 +984,8 @@ class NvenccDirectOutputRunner:
                         # HDR10+ généré sur l'image reconstruite : compte encodé exigé (sondé si NVEncC ne l'a pas
                         # affiché) ; illisible → refus, sauf décision explicite.
                         if encoded_frames is None and cb.count_video_frames is not None:
-                            encoded_frames = cb.count_video_frames(intermediate)
+                            encoded_frames = cb.count_video_frames(intermediate, signals=signals)
+                            cb.check_cancelled(signals)
                         if encoded_frames is None:
                             message = translate_text(
                                 "Audit trames : compte des trames encodées illisible, couverture HDR10+ "

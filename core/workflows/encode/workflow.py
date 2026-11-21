@@ -31,6 +31,7 @@ from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.workflows.common.audio_timestamps import adjust_input_timestamp, preroll_input_offset, probe_timestamp_payload
 from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
+    run_cancellable_capture,
     subprocess_text_kwargs,
 )
 from core.subtitle_codec import plan_subtitle_codec
@@ -1214,10 +1215,10 @@ class EncodeWorkflow(QObject):
                 wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
                 check_external_rpu=self._check_external_rpu,
                 validation_override=self._validation_override_for(config),
-                count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
+                count_video_frames=lambda path, signals=None: self._frame_count_guard(signals).source_frame_count(path),
                 regenerate_hdr10plus=self._regenerate_hdr10plus,
-                source_frame_count=lambda path, stream, exact=False: self._frame_count_guard().source_frame_count(
-                    path, stream, exact=exact),
+                source_frame_count=lambda path, stream, exact=False, signals=None: self._frame_count_guard(
+                    signals).source_frame_count(path, stream, exact=exact),
             )
         ).run(
             config,
@@ -3768,11 +3769,23 @@ class EncodeWorkflow(QObject):
         mode = str(track.get("FrameRate_Mode") or track.get("FrameRate_Mode_Original") or "").strip().lower()
         return mode in {"vfr", "variable"}
 
-    def _frame_count_guard(self) -> _FrameCountGuard:
+    def _frame_count_guard(self, signals: TaskSignals | None = None) -> _FrameCountGuard:
+        """Garde de comptage ; ``signals`` : sondes enregistrées auprès du job, arrêtées par « Annuler »."""
+        run_command = None
+        if signals is not None:
+            def check() -> None:
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
+
+            def run_command(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                return run_cancellable_capture(
+                    cmd, cancel_cb=signals._cancel_event.is_set, check_cancelled=check,
+                    on_start=signals._register_proc, on_end=signals._unregister_proc, **kwargs)
         return _FrameCountGuard(
             mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
             ffprobe_bin=self._ffprobe_path(),
             dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            run_command=run_command,
         )
 
     def _check_external_rpu(self, source: Path, stream_index: int, rpu_bin: Path) -> int:
