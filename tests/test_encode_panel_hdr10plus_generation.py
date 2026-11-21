@@ -374,3 +374,35 @@ def test_method_note_follows_the_fel_choice_of_each_track(qt_app, monkeypatch):
     finally:
         panel.close()
 
+
+
+def test_copy_intent_survives_an_h264_detour_and_a_track_switch(qt_app):
+    panel = _panel((_PATH_A, DV_PLUS, 8, 1), (_PATH_B, DV, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb)
+        _select_codec(panel, "libx264")  # codec sans HDR10+ : intention de copie mémorisée
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb, False)
+        config = panel.collect_config()
+        assert config is not None and config.video_tracks[0].copy_hdr10plus
+    finally:
+        panel.close()
+
+
+def test_apply_all_started_from_h264_keeps_the_copy_intent(qt_app):
+    panel = _panel((_PATH_A, DV_PLUS, 8, 1), (_PATH_B, DV_PLUS, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb)
+        _select_codec(panel, "libx264")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx265")
+        _click(panel._generate_hdr10plus_cb, False)
+        config = panel.collect_config()
+        assert config is not None
+        assert [video.copy_hdr10plus for video in config.video_tracks] == [True, True]
+    finally:
+        panel.close()

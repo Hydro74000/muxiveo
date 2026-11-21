@@ -3462,16 +3462,17 @@ class EncodePanel(QWidget):
         codec_dv_ok = self._is_dovi_codec(codec) if self._video_apply_all else dv_ok
         codec_hdr10plus_ok = self._is_hdr10plus_codec(codec) if self._video_apply_all else hdr10plus_ok
         if not self._loading_video_settings:
+            # Copie HDR10+ masquée par la génération qui la remplace : toujours l'intention de la piste.
+            copy_hdr10plus = self._copy_hdr10plus_cb.isChecked() or self._hdr10plus_copy_replaced
             if self._video_apply_all:
                 restore_dv = restore_dv or (not codec_dv_ok and self._copy_dv_cb.isChecked())
-                restore_hdr10plus = restore_hdr10plus or (
-                    not codec_hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
-                )
+                restore_hdr10plus = restore_hdr10plus or (not codec_hdr10plus_ok and copy_hdr10plus)
             else:
                 restore_dv = restore_dv or (has_dv and not dv_ok and self._copy_dv_cb.isChecked())
-                restore_hdr10plus = restore_hdr10plus or (
-                    has_hdr10plus and not hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
-                )
+                restore_hdr10plus = restore_hdr10plus or (has_hdr10plus and not hdr10plus_ok and copy_hdr10plus)
+            if restore_hdr10plus:
+                # Intention reprise par la mémoire du codec (rétablie avec un codec qui porte le HDR10+).
+                self._hdr10plus_copy_replaced = False
         if codec_dv_ok and restore_dv and not auto_check:
             self._copy_dv_cb.setChecked(True)
             restore_dv = False
@@ -4652,6 +4653,8 @@ class EncodePanel(QWidget):
             if boxes[option].isChecked() != intent:
                 boxes[option].setChecked(intent)
                 changed = True
+            if option == "copy_hdr10plus" and not intent:
+                self._hdr10plus_copy_replaced = False  # copie retirée par l'intention commune : jamais rétablie
             if option == "inject_hdr_meta":
                 self._hdr_disabled_by_codec = False
             elif option == "copy_dv":
