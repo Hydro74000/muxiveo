@@ -80,15 +80,28 @@ def _check(cancelled: Callable[[], bool] | None) -> None:
         raise InterruptedError
 
 
-def engine_measure_layers() -> frozenset[str]:
-    """Couches mesurables par l'extension mvo-fel installée (vide : absente, incompatible ou < 0.4.0)."""
+@dataclass(frozen=True)
+class EngineSupport:
+    """Capacités de l'extension mvo-fel installée utiles à la génération (mêmes sondes que le lancement)."""
+
+    installed: bool = False
+    #: Statistiques de chaque image produite pendant l'encodage FEL (capacité ``frame_statistics``).
+    frame_statistics: bool = False
+    #: Couches mesurables avant l'encodage (vide : extension < 0.4.0).
+    layers: frozenset[str] = frozenset()
+
+
+def engine_generation_support() -> EngineSupport:
+    """Capacités de l'extension mvo-fel installée (rien : absente, incompatible ou illisible)."""
     try:
-        from core.fel.engine import FelEngine, measure_supported
+        from core.fel.engine import FelEngine, frame_statistics_supported, measure_supported
 
         engine = FelEngine.installed()
     except Exception:  # noqa: BLE001 — extension absente ou illisible : repli L1 annoncé par l'appelant
-        return frozenset()
-    return frozenset(layer for layer in ("base", "reconstructed") if measure_supported(engine, layer))
+        return EngineSupport()
+    return EngineSupport(
+        installed=True, frame_statistics=frame_statistics_supported(engine),
+        layers=frozenset(layer for layer in ("base", "reconstructed") if measure_supported(engine, layer)))
 
 
 def resolve_generation_method(*, sub_profile: DoviSubProfile, fel_bake: bool, fel_statistics: bool,

@@ -707,6 +707,8 @@ def propagate_state(template: Mapping[str, object], own: Mapping[str, object], c
     state[HDR10PLUS_GENERATION_OPTION] = (generate if isinstance(generate, bool) and codec != "copy"
                                           and source_has_dv(ctx.hdr_type)
                                           else bool(own.get(HDR10PLUS_GENERATION_OPTION)))
+    # Copie HDR10+ remplacée par la génération (rétablie au retrait, panneau) : marqueur propre à la piste.
+    state["hdr10plus_copy_replaced"] = bool(own.get("hdr10plus_copy_replaced"))
     return normalize_video_state(state, ctx, env)
 
 

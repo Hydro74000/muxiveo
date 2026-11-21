@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
@@ -148,6 +149,9 @@ from ui.confirm import ValidationOverridePrompt
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
+
+if TYPE_CHECKING:
+    from core.hdr10plus_generation import EngineSupport
 
 
 # Taille > 0 ; débit selon le mode (VBR NVENC / NVEncC : 0 = illimité).
@@ -322,8 +326,8 @@ class EncodePanel(QWidget):
         #: Copie HDR10+ décochée par la génération (rétablie quand la génération est retirée).
         self._hdr10plus_copy_replaced = False
         #: Couches mesurables par l'extension mvo-fel installée, par (dossier, version) : repli L1 annoncé.
-        self._generation_layers_key: tuple[str, str] | None = None
-        self._generation_layers: frozenset[str] = frozenset()
+        self._generation_support_key: tuple[str, str] | None = None
+        self._generation_support_cache: EngineSupport | None = None
         # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
@@ -4836,6 +4840,7 @@ class EncodePanel(QWidget):
     def _on_fel_clicked(self, checked: bool) -> None:
         self._bake_fel_choice = checked
         self._sync_dovi_profile_options()
+        self._sync_generate_hdr10plus()  # méthode HDR10+ annoncée : FEL ou non
         self._save_current_video_state()
         self._rebuild_preview()
 
@@ -4887,17 +4892,18 @@ class EncodePanel(QWidget):
         self._save_current_video_state()
         self._rebuild_preview()
 
-    def _generation_measure_layers(self) -> frozenset[str]:
-        """Couches mesurables par l'extension mvo-fel installée (relu à chaque installation / mise à jour)."""
+    def _generation_support(self) -> EngineSupport:
+        """Capacités de l'extension mvo-fel installée (relues à chaque installation / mise à jour)."""
         from core import plugins
-        from core.hdr10plus_generation import engine_measure_layers
+        from core.hdr10plus_generation import EngineSupport, engine_generation_support
 
         installed = plugins.installed_plugin(plugins.FEL)
         key = None if installed is None else (str(installed.path), str(installed.version))
-        if key != self._generation_layers_key:
-            self._generation_layers_key = key
-            self._generation_layers = engine_measure_layers() if installed is not None else frozenset()
-        return self._generation_layers
+        if key != self._generation_support_key or self._generation_support_cache is None:
+            self._generation_support_key = key
+            self._generation_support_cache = (engine_generation_support() if installed is not None
+                                              else EngineSupport())
+        return self._generation_support_cache
 
     def _selected_source_context(self) -> SourceVideoContext:
         """Contexte source de la piste affichée (``track_settings.SourceVideoContext``)."""
@@ -4963,14 +4969,18 @@ class EncodePanel(QWidget):
             from core.workflows.encode.dovi_policy import sub_profile_from_value
             from core.workflows.encode.hdr10plus_output import hevc_output
 
-            layers = self._generation_measure_layers()
-            fel = self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
+            support = self._generation_support()
+            track = self._selected_video_track()
+            # FEL intégré au lancement : extension présente et couche FEL (une MEL est sans effet).
+            fel = (self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled() and support.installed
+                   and getattr(track, "dovi_profile", None) == 7 and getattr(track, "dovi_el_type", None) != "MEL")
             choice = resolve_generation_method(
-                sub_profile=sub_profile_from_value(ctx.dovi_profile), fel_bake=fel, fel_statistics=fel,
-                hevc_output=hevc_output(SimpleNamespace(codec=codec)), measure_layers=layers)
+                sub_profile=sub_profile_from_value(ctx.dovi_profile), fel_bake=fel,
+                fel_statistics=fel and support.frame_statistics,
+                hevc_output=hevc_output(SimpleNamespace(codec=codec)), measure_layers=support.layers)
             if choice.approximate:
                 note = translate_text("HDR10+ généré : {reason}.", reason=choice.reason)
-                if not layers:
+                if not support.layers:
                     note += " <a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
         self._generate_hdr10plus_note.setText(note)
         self._generate_hdr10plus_note.setVisible(bool(note))
@@ -5225,6 +5235,8 @@ class EncodePanel(QWidget):
             "fel_hdr10plus": self._fel_hdr10plus_choice,
             "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
             "generate_hdr10plus": self._generate_hdr10plus_intent,
+            # Copie HDR10+ décochée par la génération : rétablie quand la génération est retirée.
+            "hdr10plus_copy_replaced": self._hdr10plus_copy_replaced,
             "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
             "tonemap_choice": self._tonemap_choice,
@@ -5559,7 +5571,7 @@ class EncodePanel(QWidget):
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
             self._generate_hdr10plus_intent = bool(state.get("generate_hdr10plus"))
-            self._hdr10plus_copy_replaced = False
+            self._hdr10plus_copy_replaced = bool(state.get("hdr10plus_copy_replaced"))
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:

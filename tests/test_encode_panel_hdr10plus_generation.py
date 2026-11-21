@@ -224,11 +224,84 @@ def test_old_extension_without_measure_announces_the_l1_estimate(qt_app, monkeyp
 
     monkeypatch.setattr(plugins, "installed_plugin",
                         lambda spec, *a, **k: SimpleNamespace(path=Path("/x"), version="0.3.0", manifest={}))
-    monkeypatch.setattr(hdr10plus_generation, "engine_measure_layers", lambda: frozenset())
+    monkeypatch.setattr(hdr10plus_generation, "engine_generation_support",
+                        lambda: hdr10plus_generation.EngineSupport(installed=True, frame_statistics=True))
     panel = _panel((_PATH_A, DV, 8, 1))
     try:
         _select_codec(panel, "libx265")
         _click(panel._generate_hdr10plus_cb)
         assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
+    finally:
+        panel.close()
+
+
+def test_replaced_copy_comes_back_after_a_track_switch(qt_app):
+    panel = _panel((_PATH_A, DV_PLUS, 8, 1), (_PATH_B, DV, 8, 1))
+    try:
+        _select_codec(panel, "libx265")
+        assert panel._copy_hdr10plus_cb.isChecked()
+        _click(panel._generate_hdr10plus_cb)
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)
+        _click(panel._generate_hdr10plus_cb, False)
+        video = panel._current_video_settings()
+        assert video.copy_hdr10plus and not video.generate_hdr10plus  # HDR10+ de la source gardé
+    finally:
+        panel.close()
+
+
+def _fel_panel(monkeypatch, support):
+    from types import SimpleNamespace
+
+    from core import hdr10plus_generation, plugins
+
+    installed = SimpleNamespace(path=Path("/x"), version="0.6.1", manifest={}) if support.installed else None
+    monkeypatch.setattr(plugins, "installed_plugin", lambda spec, *a, **k: installed)
+    monkeypatch.setattr(hdr10plus_generation, "engine_generation_support", lambda: support)
+    panel = _panel((_PATH_A, DV, 7, 6))
+    _select_codec(panel, "libx265")
+    if not panel._bake_fel_cb.isEnabled():
+        panel.close()
+        pytest.skip("intégration FEL indisponible pour ce profil")
+    return panel
+
+
+def test_fel_without_extension_announces_the_l1_estimate(qt_app, monkeypatch):
+    from core.hdr10plus_generation import EngineSupport
+
+    panel = _fel_panel(monkeypatch, EngineSupport())
+    try:
+        _click(panel._bake_fel_cb)
+        _click(panel._generate_hdr10plus_cb)
+        assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
+    finally:
+        panel.close()
+
+
+def test_fel_without_frame_statistics_or_measure_announces_the_l1_estimate(qt_app, monkeypatch):
+    from core.hdr10plus_generation import EngineSupport
+
+    panel = _fel_panel(monkeypatch, EngineSupport(installed=True))
+    try:
+        _click(panel._bake_fel_cb)
+        _click(panel._generate_hdr10plus_cb)
+        assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
+    finally:
+        panel.close()
+
+
+def test_fel_click_refreshes_the_announced_method(qt_app, monkeypatch):
+    from core.hdr10plus_generation import EngineSupport
+
+    # Extension 0.3.0 : statistiques FEL, aucune mesure préalable.
+    panel = _fel_panel(monkeypatch, EngineSupport(installed=True, frame_statistics=True))
+    try:
+        _click(panel._bake_fel_cb)
+        _click(panel._generate_hdr10plus_cb)
+        assert panel._generate_hdr10plus_note.isHidden()  # statistiques de l'image FEL
+        _click(panel._bake_fel_cb, False)
+        assert not panel._generate_hdr10plus_note.isHidden() and "L1" in panel._generate_hdr10plus_note.text()
+        _click(panel._bake_fel_cb)
+        assert panel._generate_hdr10plus_note.isHidden()
     finally:
         panel.close()
