@@ -776,7 +776,9 @@ bandes noires comme le bouton Auto-crop ; sinon `top` / `bottom` / `left` / `rig
 `sharpen`), `static_hdr` (`mode` `source` / `manual` / `off`, `master_display`, `max_cll`,
 `estimate` `fast` / `precise`), `dolby_vision` (`mode` `copy` / `off`, `profile`), `hdr10plus`
 (`mode` `copy` / `generate` / `off` ; `generate` : HDR10+ généré depuis le Dolby Vision de la source, mesuré sur
-l'image par l'extension mvo-fel sinon estimé depuis le L1 du RPU, remplace celui de la source, Copy compris), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
+l'image par l'extension mvo-fel sinon estimé depuis le L1 du RPU, remplace celui de la source, Copy compris
+sauf source HEVC brute `.hevc` / `.h265` (sans horodatage : remuxer d'abord en MKV) ; NVEncC : préfiltres FFmpeg
+— deblock, chroma_smooth, crop ou resize en % — refusés hors intégration FEL), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
 `algorithm`). Fournir un bloc `resize`, `interpolation` ou `restoration` l'active (sauf
 `"enabled": false`). Le bloc est validé strictement : clé inconnue ou valeur hors bornes refusée.
 
