@@ -78,17 +78,22 @@ def _hdr10plus(path: Path, tmp_path: Path) -> dict:
     return json.loads(target.read_text(encoding="utf-8"))
 
 
-def _rpu_frames(path: Path, tmp_path: Path) -> int:
+def _rpu_bytes(path: Path, tmp_path: Path) -> bytes:
+    """RPU de la piste vidéo, extraits tels quels (mode 0)."""
     rpu = tmp_path / f"{path.stem}.rpu.bin"
     _run(["dovi_tool", "extract-rpu", "-i", str(path), "-o", str(rpu)])
-    summary = _run(["dovi_tool", "info", "-i", str(rpu), "--summary"]).stdout
-    return int(next(line for line in summary.splitlines() if "Frames" in line).split(":")[1])
+    return rpu.read_bytes()
+
+
+def _dovi_record(path: Path) -> dict | None:
+    """Record de configuration Dolby Vision de la piste vidéo (champs FFprobe), ``None`` s'il est absent."""
+    out = _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", str(path)]).stdout
+    return next((side for side in json.loads(out)["streams"][0].get("side_data_list") or []
+                 if side.get("side_data_type") == "DOVI configuration record"), None)
 
 
 def _has_dovi_record(path: Path) -> bool:
-    out = _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", str(path)]).stdout
-    return any(side.get("side_data_type") == "DOVI configuration record"
-               for side in json.loads(out)["streams"][0].get("side_data_list") or [])
+    return _dovi_record(path) is not None
 
 
 def test_copy_patches_the_stream_and_keeps_dolby_vision(dv_source, tmp_path):
@@ -100,7 +105,13 @@ def test_copy_patches_the_stream_and_keeps_dolby_vision(dv_source, tmp_path):
     assert document["SceneInfoSummary"]["SceneFirstFrameIndex"] == [0, 12]
     first, second = (document["SceneInfo"][index]["LuminanceParameters"]["MaxScl"][0] for index in (0, 12))
     assert first > second  # plans du RPU : L1 max différents
-    assert _rpu_frames(output, tmp_path) == _FRAMES and _has_dovi_record(output)
+    # Dolby Vision intact : RPU identiques octet pour octet, record complet (profil, compat-id…) inchangé.
+    (tmp_path / "source").mkdir()
+    source_rpu = _rpu_bytes(dv_source, tmp_path / "source")
+    assert source_rpu and _rpu_bytes(output, tmp_path) == source_rpu
+    record = _dovi_record(dv_source)
+    assert record is not None and record.get("dv_bl_signal_compatibility_id") == 1
+    assert _dovi_record(output) == record
 
 
 def test_reencode_generates_without_copying_dolby_vision(dv_source, tmp_path):
