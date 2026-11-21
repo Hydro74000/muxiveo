@@ -513,3 +513,53 @@ def test_nvencc_unreadable_source_count_is_refused_unless_overridden(tmp_path, o
         assert isinstance(error, EncodeError) and message == translate_text(
             "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.")
         assert "nvencc" not in run.labels
+
+
+def _nvencc_fel_statistics(tmp_path, counts):
+    """Encodage NVEncC FEL + HDR10+ généré (statistiques du plugin, 2 images encodées) ; source comptée par
+    ``counts`` (compte rapide, compte exact). Renvoie l'exécution, les appels de comptage et l'injection."""
+    from unittest.mock import Mock
+
+    from tests.test_encode_runtime_failures import _fel_context, _Nvencc
+
+    fel = dataclasses.replace(_fel_context(tmp_path), statistics=tmp_path / "fel_statistics.jsonl")
+    run = _Nvencc(tmp_path, fel_context=fel, bake_dovi_fel=True, generate_hdr10plus=True,
+                  hdr10plus_generation_method=METHOD_FEL_STATISTICS)
+    calls: list[bool] = []
+
+    def count(path, stream=None, *, exact=False):
+        calls.append(exact)
+        return counts[1] if exact else counts[0]
+
+    def pipe(*, encode_cmd, monitor, **_kwargs):
+        run.labels.append("nvencc-pipe")
+        Path(encode_cmd[encode_cmd.index("-o") + 1]).write_bytes(b"\x00")
+        monitor.feed("encoded 2 frames")
+
+    inject = Mock()
+    outcome = run.run(patch.object(nvencc_execution.NvenccPipeExecutor, "run", side_effect=pipe),
+                      patch("core.fel.pipeline.with_fel_input", side_effect=lambda cmd, video: cmd),
+                      patch.object(nvencc_execution, "_apply_fel_hdr10plus", inject),
+                      patch.object(run.workflow, "_frame_count_guard",
+                                   return_value=SimpleNamespace(source_frame_count=count)))
+    return run, outcome, calls, inject
+
+
+def test_nvencc_fel_statistics_generation_keeps_the_source_audit(tmp_path):
+    _run, _outcome, calls, inject = _nvencc_fel_statistics(tmp_path, (100, 100))
+    assert inject.call_args.kwargs["expected_frames"] == 100  # injection refusera 2 entrées face à 100 images
+    assert calls == [False, True]  # compte rapide contredit par l'encodage : recompté
+    assert "nvencc-pipe" in _run.labels
+
+
+def test_nvencc_fel_statistics_stale_quick_count_is_recounted(tmp_path):
+    _run, _outcome, calls, inject = _nvencc_fel_statistics(tmp_path, (4, 2))
+    assert inject.call_args.kwargs["expected_frames"] == 2 and calls == [False, True]
+
+
+def test_nvencc_fel_statistics_unreadable_source_count_is_refused_before_encoding(tmp_path):
+    run, outcome, _calls, inject = _nvencc_fel_statistics(tmp_path, (None, None))
+    (message, error), = outcome.failed
+    assert isinstance(error, EncodeError) and message == translate_text(
+        "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.")
+    assert not inject.called and "nvencc-pipe" not in run.labels  # refus avant l'encodage

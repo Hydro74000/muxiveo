@@ -794,29 +794,41 @@ class NvenccDirectOutputRunner:
                 # HDR10+ généré : images de la source × rapport de cadence, entrées du JSON et trames encodées
                 # contrôlées indépendamment de la copie DV et de la méthode.
                 generated_source_frames: int | None = None
-                if hdr10plus_json_path is not None and generates_hdr10plus(runtime_video):
-                    expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
-                    if expected_hdr10plus is None:
-                        raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
+
+                def generated_source_count(*, exact: bool = False) -> int | None:
+                    """Images attendues du HDR10+ généré : images de la source × rapport de cadence."""
                     counter = cb.source_frame_count
-                    counted = counter(routing.input_path, routing.stream_index) if counter is not None else None
-                    if counter is not None and counted and math.ceil(counted * frame_ratio) != expected_hdr10plus:
+                    if counter is None:
+                        return None
+                    counted = (counter(routing.input_path, routing.stream_index, exact=True) if exact
+                               else counter(routing.input_path, routing.stream_index))
+                    return math.ceil(counted * frame_ratio) if counted else None
+
+                if generates_hdr10plus(runtime_video):
+                    # Toutes méthodes : JSON préparé comparé avant l'encodage ; statistiques FEL (JSON écrit après
+                    # l'encodage) comparées ensuite, ce compte transmis à l'injection.
+                    if hdr10plus_json_path is not None:
+                        expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
+                        if expected_hdr10plus is None:
+                            raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
+                    generated_source_frames = generated_source_count()
+                    if (generated_source_frames is not None and expected_hdr10plus is not None
+                            and generated_source_frames != expected_hdr10plus):
                         # Compte rapide contredit : recomptage exact avant de conclure (comme le RPU externe).
-                        counted = counter(routing.input_path, routing.stream_index, exact=True) or counted
-                    generated_source_frames = math.ceil(counted * frame_ratio) if counted else None
+                        generated_source_frames = generated_source_count(exact=True) or generated_source_frames
                     message = ""
                     if generated_source_frames is None:
                         message = translate_text(
                             "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames "
                             "invérifiable.")
-                    elif expected_hdr10plus != generated_source_frames:
+                    elif expected_hdr10plus is not None and expected_hdr10plus != generated_source_frames:
                         message = translate_text(
                             "Audit trames : HDR10+ généré : {entries} entrées pour {frames} images attendues de la "
                             "source.", entries=expected_hdr10plus, frames=generated_source_frames)
                     if message:
                         if not accept_validation_override(
-                            cb.validation_override, hdr10plus_json_path, message, signals._cancel_event.is_set,
-                            cb.log_info,
+                            cb.validation_override, hdr10plus_json_path or routing.input_path, message,
+                            signals._cancel_event.is_set, cb.log_info,
                         ):
                             cb.check_cancelled(signals)
                             raise EncodeError(message)
@@ -978,6 +990,10 @@ class NvenccDirectOutputRunner:
                             ):
                                 cb.check_cancelled(signals)
                                 raise EncodeError(message)
+                        if (generated_source_frames is not None and encoded_frames is not None
+                                and generated_source_frames != encoded_frames):
+                            # Compte rapide de la source contredit par l'encodage : recomptage exact avant l'audit.
+                            generated_source_frames = generated_source_count(exact=True) or generated_source_frames
                     _apply_fel_hdr10plus(
                         video=runtime_video, intermediate=intermediate,
                         statistics_path=statistics_path if hdr10plus_recomputed(runtime_video) else None,
