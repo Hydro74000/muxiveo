@@ -53,6 +53,7 @@ from core.workflows.remux_models import (
     TrackEntry,
     normalize_mux_backend,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 MATROSKA_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
@@ -400,6 +401,7 @@ def build_canonicalization_command(
         if codec_arg != "copy":
             command.extend([f"-c:s:{subtitle_index}", codec_arg])
         subtitle_index += 1
+    command.extend(matroska_output_args(ffmpeg_bin, target))
     command.append(str(target))
     return command
 
@@ -520,6 +522,7 @@ def build_audio_variant_command(
         command.extend(["-b:a", f"{variant.bitrate_kbps}k"])
     if variant.downmix_51:
         command.extend(["-ac:a", "6", "-channel_layout:a", "5.1"])
+    command.extend(matroska_output_args(ffmpeg_bin, target))
     command.append(str(target))
     return command
 

@@ -73,6 +73,7 @@ from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 import dataclasses
 
@@ -551,7 +552,8 @@ class MetadataInjectRunner:
                     append_ffmpeg_input_args(timed_cmd, selected_video_source)
                     timed_cmd.extend([
                         "-map", f"0:{int(selected_video_stream)}", "-c:v", "copy",
-                        "-an", "-sn", "-dn", str(enc_video_mkv),
+                        "-an", "-sn", "-dn", *matroska_output_args(cb.ffmpeg_bin, enc_video_mkv),
+                        str(enc_video_mkv),
                     ])
                     _run(timed_cmd)
                     _check()
@@ -1106,6 +1108,7 @@ class MetadataInjectRunner:
                     tag_input_index=tag_input_index,
                     plan=encode_plan,
                 )
+                recon_cmd.extend(matroska_output_args(recon_cmd[0], config.output))
                 recon_cmd.append(str(config.output))
 
                 dovi_post_actions: tuple[Callable[[Path], object], ...] = ()

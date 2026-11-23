@@ -20,6 +20,7 @@ from core.workflows.common.sync_rewrite import (
     sync_rewrite_forced_offset,
     track_has_object_audio_metadata,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int | None = None) -> str:
@@ -161,7 +162,7 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
                 # Le filtre remet déjà le PCM à zéro. Conserver les timestamps
                 # de l'encodeur : setts annulerait son pré-roll tout en gardant
                 # le CodecDelay Matroska (+5 ms avec AC-3/E-AC-3 à 48 kHz).
-            command += [str(output)]
+            command += [*matroska_output_args(ffmpeg, output), str(output)]
         else:
             codec = track.codec.casefold()
             if codec in {"ass", "ssa"}:

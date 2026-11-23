@@ -153,7 +153,6 @@ from core.workflows.encode.runtime.mux_assembly import (
     EncodeStreamMappingService as _EncodeStreamMappingService,
     TrackMetadataArgsBuilder as _TrackMetadataArgsBuilder,
     TrackMetadataArgsBuilderCallbacks as _TrackMetadataArgsBuilderCallbacks,
-    build_injected_hevc_wrap_command as _build_injected_hevc_wrap_command_runtime,
     disposition_value_from_edit as _disposition_value_from_edit_runtime,
     normalized_track_language_value as _normalized_track_language_value_runtime,
     track_spec_for_track_order as _track_spec_for_track_order_runtime,
@@ -329,6 +328,7 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
 _PREVIEW_IMAGE_MARGIN_S = 0.5
@@ -2905,6 +2905,7 @@ class EncodeWorkflow(QObject):
             "-sn",
             "-dn",
             "-map_metadata", "-1",
+            *matroska_output_args(self._ffmpeg, output),
             str(output),
         ])
         return cmd
@@ -5257,23 +5258,6 @@ class EncodeWorkflow(QObject):
     @staticmethod
     def _fps_expr_to_float(value: object) -> float | None:
         return _fps_expr_to_float_runtime(value)
-
-    def _wrap_injected_hevc_for_reconstruction(
-        self,
-        *,
-        source: Path,
-        hevc_input: Path,
-        mkv_output: Path,
-    ) -> list[str]:
-        return _build_injected_hevc_wrap_command_runtime(
-            ffmpeg_bin=self._ffmpeg,
-            source=source,
-            hevc_input=hevc_input,
-            mkv_output=mkv_output,
-            source_video_fps_expr=self._source_video_fps_expr,
-            ffmpeg_progress_args=self._ffmpeg_progress_args,
-            ffmpeg_thread_args=self._ffmpeg_thread_args,
-        )
 
     def _resolve_global_tags(self, config: EncodeConfig) -> dict[str, str]:
         tags = _common_resolve_global_tags(config.tag_overrides, "")

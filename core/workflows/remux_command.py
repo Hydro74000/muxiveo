@@ -17,6 +17,7 @@ from core.workflows.common.sync_rewrite import (
 )
 from core.workflows.common.attachments import canonical_attachment_output_name, mime_for_path
 from core.workflows.common.track_types import TimelineMappedTrack
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.common.timeline_sync import append_strict_interleave_mux_flags
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE as STREAM_SPEC_BY_TYPE
 from core.workflows.common.metadata import matroska_video_tag_args
@@ -203,6 +204,7 @@ def build_remux_command(
         cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={canonical_attachment_output_name(attachment_path)}"])
         att_t_idx += 1
 
+    cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(cli_path(config.output))
     return cmd
 

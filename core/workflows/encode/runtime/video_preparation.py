@@ -37,6 +37,7 @@ from core.workflows.encode.interpolation import (
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 @dataclass(frozen=True)
@@ -253,7 +254,7 @@ class VideoOnlyCommandBuilder:
             self.append_video_codec_and_hdr_args(
                 cmd, video, bitrate_kbps=cb.size_to_bitrate_kbps_for_video(config, video),
             )
-            cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+            cmd.extend(["-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_path), str(output_path)])
             return [cmd]
         if video.quality_mode == QualityMode.SIZE:
             bitrate = cb.size_to_bitrate_kbps_for_video(config, video)
@@ -280,7 +281,7 @@ class VideoOnlyCommandBuilder:
             if passlog_prefix is not None:
                 pass2.extend(["-passlogfile", str(passlog_prefix)])
             pass2.extend(["-pass", "2"])
-            pass2.extend(["-an", "-sn", "-dn", str(output_path)])
+            pass2.extend(["-an", "-sn", "-dn", *matroska_output_args(pass2[0], output_path), str(output_path)])
             return [pass1, pass2]
 
         cmd = self.build_video_track_base_cmd(
@@ -291,7 +292,7 @@ class VideoOnlyCommandBuilder:
             thread_count=thread_count,
         )
         self.append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+        cmd.extend(["-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_path), str(output_path)])
         return [cmd]
 
     def build_video_only_mkv_commands(
@@ -330,7 +331,7 @@ class VideoOnlyCommandBuilder:
             self.append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
             if passlog_prefix is not None:
                 pass2.extend(["-passlogfile", str(passlog_prefix)])
-            pass2.extend(["-pass", "2", "-fps_mode", "passthrough", "-an", "-sn", "-dn", str(output_mkv)])
+            pass2.extend(["-pass", "2", "-fps_mode", "passthrough", "-an", "-sn", "-dn", *matroska_output_args(pass2[0], output_mkv), str(output_mkv)])
             return [pass1, pass2]
 
         cmd = self.build_video_track_base_cmd(
@@ -338,7 +339,7 @@ class VideoOnlyCommandBuilder:
             offset_ms=offset_ms, thread_count=thread_count,
         )
         self.append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-fps_mode", "passthrough", "-an", "-sn", "-dn", str(output_mkv)])
+        cmd.extend(["-fps_mode", "passthrough", "-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_mkv), str(output_mkv)])
         return [cmd]
 
     def build_video_only_cmd(self, config: EncodeConfig, output_hevc: Path) -> list[str]:

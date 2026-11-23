@@ -60,6 +60,7 @@ from core.workflows.encode.runtime_helpers import (
     VideoTrackPrepTask,
 )
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 @dataclass(frozen=True)
@@ -339,7 +340,7 @@ class MultiVideoPipelineRunner:
                 copy_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(copy_cmd, source)
                 copy_cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-an", "-sn", "-dn",
-                                 str(enc_video_mkv)])
+                                 *matroska_output_args(cb.ffmpeg_bin, enc_video_mkv), str(enc_video_mkv)])
                 commands = [copy_cmd]
             else:
                 commands = cb.build_video_only_mkv_commands(
@@ -920,6 +921,7 @@ class MultiVideoPipelineRunner:
                     include_copy_video_stream_passthrough=False,
                     plan=encode_plan,
                 )
+                final_cmd.extend(matroska_output_args(final_cmd[0], config.output))
                 final_cmd.append(str(config.output))
                 output = cb.finalize_ffmpeg(
                     config,

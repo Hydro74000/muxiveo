@@ -18,7 +18,6 @@ import heapq
 import mimetypes
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from math import gcd
 from pathlib import Path
 
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
@@ -29,7 +28,7 @@ from .contract import (
     ExpectedTrackFlags,
     MatroskaOutputContract,
 )
-from .ids import CHAPTERS_ID, TAGS_ID
+from .ids import CHAPTERS_ID, DEFAULT_TIMESTAMP_SCALE_NS, TAGS_ID
 from .language import bcp47_for_language, matroska_legacy_language
 from .mux_plan import (
     MatroskaMuxPacket,
@@ -39,7 +38,7 @@ from .mux_plan import (
     deterministic_uid,
     deterministic_uid128,
 )
-from .reader import MatroskaAttachment, MatroskaReader, MatroskaTrack
+from .reader import MatroskaAttachment, MatroskaBlock, MatroskaReader, MatroskaTrack
 from .validation import TRACK_TYPE_LABELS
 from .writer import (
     build_attachments_element,
@@ -47,6 +46,53 @@ from .writer import (
     build_tags_element,
     rewrite_tag_target_uids,
 )
+
+
+def _quantized_ns(value_ns: int, scale_ns: int) -> int:
+    """Instant arrondi au tick le plus proche (demi-tick vers le haut), en ns."""
+    return ((value_ns + scale_ns // 2) // scale_ns) * scale_ns
+
+
+def quantize_block(block: MatroskaBlock, scale_ns: int) -> MatroskaBlock:
+    """Bloc exprimé en ticks entiers de ``scale_ns`` (identique s'il l'est déjà).
+
+    Les extrémités sont quantifiées, jamais les écarts : une durée vaut
+    ``q(t + d) − q(t)`` (au moins un tick si elle n'est pas nulle) et une
+    référence ``q(t + r) − q(t)`` (au moins un tick, de même signe), pour que
+    la cible d'une référence ou la fin d'un bloc restent celles de la source.
+    """
+    timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
+    duration_ns = block.duration_ns
+    if duration_ns is None and block.duration_ms is not None:
+        duration_ns = block.duration_ms * 1_000_000
+    references_ns = block.references_ns or tuple(value * 1_000_000 for value in block.references)
+    if (
+        timestamp_ns % scale_ns == 0
+        and (duration_ns is None or duration_ns % scale_ns == 0)
+        and all(value % scale_ns == 0 for value in references_ns)
+    ):
+        return block
+    start_ns = _quantized_ns(timestamp_ns, scale_ns)
+    changes: dict[str, object] = {
+        "timestamp_ns": start_ns,
+        "timestamp_ms": round(start_ns / 1_000_000),
+    }
+    if duration_ns is not None:
+        quantized_duration = _quantized_ns(timestamp_ns + duration_ns, scale_ns) - start_ns
+        if duration_ns > 0:
+            quantized_duration = max(scale_ns, quantized_duration)
+        changes["duration_ns"] = quantized_duration
+        changes["duration_ms"] = round(quantized_duration / 1_000_000)
+    if references_ns:
+        quantized_refs: list[int] = []
+        for value in references_ns:
+            quantized = _quantized_ns(timestamp_ns + value, scale_ns) - start_ns
+            if value and not quantized:
+                quantized = scale_ns if value > 0 else -scale_ns
+            quantized_refs.append(quantized)
+        changes["references_ns"] = tuple(quantized_refs)
+        changes["references"] = tuple(round(value / 1_000_000) for value in quantized_refs)
+    return replace(block, **changes)  # type: ignore[arg-type]
 
 
 def canonical_attachment_output_name(path: Path) -> str:
@@ -303,12 +349,10 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     readers = {path: MatroskaReader(path) for path in reader_order}
     native_tracks = {path: reader.tracks() for path, reader in readers.items()}
 
-    timestamp_scale_ns = 0
-    for reader in readers.values():
-        timestamp_scale_ns = gcd(timestamp_scale_ns, reader.timestamp_scale_ns())
-    for track in plan.ordered_tracks:
-        timestamp_scale_ns = gcd(timestamp_scale_ns, abs(int(track.time_shift_ms or 0)) * 1_000_000)
-    timestamp_scale_ns = timestamp_scale_ns or 1_000_000
+    # Échelle de sortie fixe (1 ms, valeur Matroska usuelle) : une entrée plus
+    # fine (artefact FFmpeg à 10 µs, fichier tiers) est quantifiée bloc par bloc
+    # (``quantize_block``) au lieu d'imposer son échelle à toute la sortie.
+    timestamp_scale_ns = DEFAULT_TIMESTAMP_SCALE_NS
 
     origin_tracks: dict[Path, list[MatroskaTrack]] = {}
 
@@ -402,6 +446,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             targets = routes.get(block.track_number)
             if not targets:
                 continue
+            block = quantize_block(block, timestamp_scale_ns)
             source_timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
             for output_index, offset_ms in targets:
                 shifted_timestamp_ns = source_timestamp_ns + offset_ms * 1_000_000

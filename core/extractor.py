@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.subtitle_codec import CONVERT_TO_SRT, MKV_COPY_SAFE, UNSUPPORTED
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ class TrackExtractor:
             ffmpeg_bin, "-hide_banner", "-y", *list(progress_args or ()),
             *(list(input_args) if input_args is not None else ["-i", str(source)]),
             "-map", f"0:{stream_index}", f"-c:{letter}", plan.codec_arg, *plan.extra_args,
+            *(matroska_output_args(ffmpeg_bin) if plan.output_format == "matroska" else []),
             "-f", plan.output_format, str(output),
         ]
 

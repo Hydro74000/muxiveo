@@ -25,6 +25,7 @@ from core.subprocess_utils import (
     watch_process_cancellation,
 )
 from core.workflows.common.ffmpeg_runtime import cli_path as _cli_path
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.remux_models import RemuxError, SourceInput
 
 
@@ -588,6 +589,7 @@ class FfmpegTimelineSync:
                     *self._thread_args,
                     "-c", "copy",
                     *self._timeline_rebase_args(track_type),
+                    *matroska_output_args(self._ffmpeg),
                     "-f", "matroska",
                     "pipe:1",
                 ]
@@ -718,6 +720,7 @@ class FfmpegTimelineSync:
             *self._thread_args,
             "-c", "copy",
             *self._timeline_rebase_args(track_type),
+            *matroska_output_args(self._ffmpeg, destination),
             _cli_path(destination),
         ]
         self._log("$ " + " ".join(str(c) for c in cmd))
@@ -753,6 +756,7 @@ class FfmpegTimelineSync:
             *self._thread_args,
             "-c", "copy",
             *self._timeline_rebase_args(track_type),
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             "pipe:1",
         ]

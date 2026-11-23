@@ -25,6 +25,7 @@ from core.workflows.audio_sync import SYNC_AUDIO_ORIGIN_FILTER  # noqa: F401  (r
 from core.workflows.common.audio_timestamps import (
     common_timestamp_origin, input_timestamp_offset_args, preroll_input_offset, probe_timestamp_payload, timestamp_seconds,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 if TYPE_CHECKING:
     from core.workflows.sync_calibration import SyncCalibration
@@ -865,6 +866,7 @@ class SyncRewriteService:
         # Le PCM est déjà recalé par asetpts ; préserver le pré-roll encodeur
         # pour que le CodecDelay Matroska ne crée pas un retard supplémentaire.
         cmd.extend([
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
@@ -970,6 +972,7 @@ class SyncRewriteService:
             ),
         ])
         cmd.extend([
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
@@ -1002,6 +1005,7 @@ class SyncRewriteService:
             "-c:a", "copy",
             "-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS",
             "-avoid_negative_ts", "make_zero",
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
@@ -1059,6 +1063,7 @@ class SyncRewriteService:
             "-i", str(shifted),
             "-map", "0:0",
             "-c:s", "copy",
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ]

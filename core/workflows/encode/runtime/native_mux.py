@@ -61,6 +61,7 @@ from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.planning.plan_models import PlannedTrackMetadata
 from core.workflows.encode.planning.track_metadata import resolve_track_metadata
 from core.workflows.remux_plan import MATROSKA_EXTENSIONS
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 #: Type Matroska « subtitle » dans les TrackEntry natifs.
@@ -357,7 +358,9 @@ def prepare_native_encode_inputs(
                 [_codec(index) for index in indexes if _kind(index) == "subtitle"]
             ))
             context_arg = "0" if keep_context else "-1"
-            command.extend(["-map_metadata", context_arg, "-map_chapters", context_arg, str(target)])
+            command.extend(["-map_metadata", context_arg, "-map_chapters", context_arg])
+            command.extend(matroska_output_args(ffmpeg_bin, target))
+            command.append(str(target))
             _run(command, f"ffmpeg-native-canonical-source-{ordinal}", target)
             for position, index in enumerate(indexes):
                 tracks[(source, index)] = (target, position)
@@ -782,6 +785,7 @@ def materialize_audio_artifacts(
             "-i", str(source), "-map", f"0:{stream_index}",
         ]
         command.extend(audio_codec_args(0, audio))
+        command.extend(matroska_output_args(ffmpeg_bin, target))
         command.append(str(target))
         run_cmd(command, f"ffmpeg-native-audio-{audio_index}")
         artifacts[audio_index] = target

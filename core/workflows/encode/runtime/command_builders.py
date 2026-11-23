@@ -7,6 +7,7 @@ from typing import Callable
 
 from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskSignals
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.common.timeline_sync import sync_cleanup_paths as _common_sync_cleanup_paths
 from core.workflows.encode.domain import (
     EncodeCodecDomainCallbacks as _EncodeCodecDomainCallbacks,
@@ -136,6 +137,7 @@ def build_single_pass(
         metadata_inputs=metadata_inputs,
         offset_remap=offset_remap,
     )
+    cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(str(config.output))
     return cmd
 
@@ -227,6 +229,7 @@ def build_two_pass(
         metadata_inputs=metadata_inputs,
         offset_remap=pass2_offset_remap,
     )
+    pass2.extend(matroska_output_args(pass2[0], config.output))
     pass2.append(str(config.output))
     return [pass1, pass2]
 
@@ -310,6 +313,7 @@ def build_runtime_single_pass_with_sync(
         sync_remap=sync_remap,
         strict_interleave=strict_interleave,
     )
+    cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(str(config.output))
     return cmd, live_session, _common_sync_cleanup_paths(sync_inputs)
 
@@ -428,5 +432,6 @@ def build_runtime_two_pass_with_sync(
         sync_remap=sync_remap,
         strict_interleave=strict_interleave,
     )
+    pass2.extend(matroska_output_args(pass2[0], config.output))
     pass2.append(str(config.output))
     return [pass1, pass2], live_session, _common_sync_cleanup_paths(sync_inputs)

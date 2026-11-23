@@ -38,6 +38,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_audio_start_probe: sonde réelle du premier paquet audio (AudioSyncScanner.start_delay_s)"
     )
+    config.addinivalue_line(
+        "markers",
+        "real_matroska_timestamp_scale_probe: sonde réelle de l'option FFmpeg -timestamp_scale (muxeur Matroska)",
+    )
 
 
 def pytest_unconfigure(config):
@@ -135,6 +139,22 @@ def _no_audio_start_probe_by_default(request, monkeypatch):
         from core.workflows.audio_sync_scan import AudioSyncScanner
 
         monkeypatch.setattr(AudioSyncScanner, "start_delay_s", lambda _self, _track: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_matroska_timestamp_scale_probe_by_default(request, monkeypatch):
+    """Commandes FFmpeg indépendantes du binaire installé : ``-timestamp_scale`` absent par défaut.
+
+    Sonde réelle pour les tests d'intégration (FFmpeg réel) et le marqueur
+    ``real_matroska_timestamp_scale_probe`` ; les autres tests injectent leur réponse.
+    """
+    if request.node.get_closest_marker("real_matroska_timestamp_scale_probe") is not None:
+        return
+    if "integration" in request.node.path.parts:
+        return
+    from core.workflows.common import ffmpeg_runtime
+
+    monkeypatch.setattr(ffmpeg_runtime, "matroska_timestamp_scale_supported", lambda _ffmpeg: False)
 
 
 @pytest.fixture(autouse=True)

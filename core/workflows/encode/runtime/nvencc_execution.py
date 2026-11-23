@@ -83,6 +83,7 @@ from core.matroska.hevc.access_units import HevcStreamCancelled
 from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.hevc_static_hdr_metadata import replace_content_light_level_sei_file
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSettings | None = None) -> bool:
@@ -532,6 +533,7 @@ class NvenccRuntimeRemuxBuilder:
             include_copy_video_stream_passthrough=True,
             plan=plan,
         )
+        cmd.extend(matroska_output_args(cmd[0], config.output))
         cmd.append(str(config.output))
         return cmd, live_session, _common_sync_cleanup_paths(sync_inputs)
 
@@ -1194,6 +1196,7 @@ def build_nvencc_pipeline_commands(
         "-map", "1:s?",
         "-map_chapters", "1",
         "-c", "copy",
+        *matroska_output_args(ffmpeg_bin, config.output),
         str(config.output),
     ])
     return [decode, encode, remux] if decode is not None else [encode, remux]
