@@ -114,10 +114,11 @@ def _normalized_tags(reader: MatroskaReader) -> list[tuple]:
                     if child_id == _TARGETS_ID:
                         for target_id, target_payload in payload_children(child_payload):
                             value = int.from_bytes(target_payload, "big")
+                            # Rang d'une cible connue, sinon UID brut : jamais confondus.
                             if target_id == _TAG_TRACK_UID_ID:
-                                targets.append((target_id, "piste", track_rank.get(value, value)))
+                                targets.append((target_id, *_ranked(track_rank, value, "piste")))
                             elif target_id == _TAG_ATTACHMENT_UID_ID:
-                                targets.append((target_id, "pièce jointe", attachment_rank.get(value, value)))
+                                targets.append((target_id, *_ranked(attachment_rank, value, "pièce jointe")))
                             else:
                                 targets.append((target_id, target_payload))
                     elif child_id == _SIMPLE_TAG_ID and _simple_tag_name(child_payload) in _STATISTICS_TAGS:
@@ -127,6 +128,10 @@ def _normalized_tags(reader: MatroskaReader) -> list[tuple]:
                 if simple:
                     result.append((tuple(targets), tuple(simple)))
     return sorted(result, key=repr)
+
+
+def _ranked(ranks: dict[int, int], value: int, kind: str) -> tuple[str, int]:
+    return (f"{kind} (rang)", ranks[value]) if value in ranks else (f"{kind} (UID brut)", value)
 
 
 def _simple_tag_name(payload: bytes) -> str:

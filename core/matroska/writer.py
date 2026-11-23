@@ -957,7 +957,11 @@ class MatroskaWriter:
             # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
             raise
         except BaseException:
-            partial.unlink(missing_ok=True)
+            # Nettoyage qui ne masque jamais l'exception en cours (annulation comprise).
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise
         finally:
             # Flux paresseux interrompu (erreur, annulation) : lecteurs, fichiers

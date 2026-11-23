@@ -570,22 +570,23 @@ def repair_ffmpeg_interleave(
     except OSError as exc:
         warn(f"Entrelacement non corrigé : réservation du réassemblage impossible ({exc}).")
         return False
-    identity = deterministic_source_identity(candidate)
-    tracks = reader.tracks()
-    plan = MatroskaAssemblyPlan(
-        output=temporary,
-        ordered_tracks=tuple(MatroskaAssemblyTrack(candidate, index, identity) for index in range(len(tracks))),
-        attachments=tuple(
-            MatroskaAssemblyAttachment(candidate, index, identity) for index in range(len(reader.attachments()))
-        ),
-        chapter_source=candidate,
-        tag_copy_sources=(candidate,),
-        segment_title=None,
-        segment_info_source=candidate,
-        segment_info_passthrough=True,
-    )
-    plan = replace(plan, expected_output_contract=contract or assembly_output_contract(plan))
     try:
+        # Préparation comprise dans le nettoyage : le temporaire réservé ne survit à aucune erreur.
+        identity = deterministic_source_identity(candidate)
+        tracks = reader.tracks()
+        plan = MatroskaAssemblyPlan(
+            output=temporary,
+            ordered_tracks=tuple(MatroskaAssemblyTrack(candidate, index, identity) for index in range(len(tracks))),
+            attachments=tuple(
+                MatroskaAssemblyAttachment(candidate, index, identity) for index in range(len(reader.attachments()))
+            ),
+            chapter_source=candidate,
+            tag_copy_sources=(candidate,),
+            segment_title=None,
+            segment_info_source=candidate,
+            segment_info_passthrough=True,
+        )
+        plan = replace(plan, expected_output_contract=contract or assembly_output_contract(plan))
         try:
             MatroskaWriter().write(compile_assembly_plan(plan), cancel_cb=cancelled)
         except (MatroskaWriteCancelled, CopyCheckCancelled):

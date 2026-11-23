@@ -429,3 +429,118 @@ def test_destination_changed_during_the_repair_is_never_overwritten(tmp_path: Pa
     finally:
         reservation.release()
     assert output.read_bytes() == b"fichier apparu pendant le job"
+
+
+# --- Seconde relecture du lot 8 ----------------------------------------------
+
+def test_raw_uid_zero_is_not_confused_with_rank_zero(tmp_path: Path) -> None:
+    from core.matroska.ebml import string_element
+    from core.matroska.ids import SIMPLE_TAG_ID, TAG_ID, TAG_NAME_ID, TAG_STRING_ID, TAG_TRACK_UID_ID, TAGS_ID, TARGETS_ID
+
+    def tag(uid: int) -> bytes:
+        return element(TAGS_ID, element(TAG_ID, element(TARGETS_ID, uint_element(TAG_TRACK_UID_ID, uid)) + element(
+            SIMPLE_TAG_ID, string_element(TAG_NAME_ID, "COMMENT") + string_element(TAG_STRING_ID, "x"),
+        )))
+
+    ranked = _with_opaque(tmp_path / "ranked.mkv", tag(101), delay_ms=0)  # piste de rang 0
+    raw_zero = _with_opaque(tmp_path / "raw.mkv", tag(0), delay_ms=0)     # UID brut 0
+    assert any("Tags" in difference for difference in compare_matroska_copy(ranked, raw_zero))
+
+
+def test_preparation_error_releases_the_reserved_temporary(tmp_path: Path, monkeypatch) -> None:
+    import core.matroska.mux_plan as mux_plan
+
+    candidate = _badly_interleaved(tmp_path / "out.mkv.partial")
+
+    def unreadable(_path):
+        raise OSError(5, "Erreur d'entrée/sortie")
+
+    monkeypatch.setattr(mux_plan, "deterministic_source_identity", unreadable)
+    repaired, logs = _repair(candidate)
+    assert repaired is False and any("non corrigé" in message for _level, message in logs)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["out.mkv.partial"]
+
+
+def test_writer_cleanup_failure_never_masks_its_cancellation(tmp_path: Path, monkeypatch) -> None:
+    from core.matroska.writer import MatroskaWriteCancelled
+
+    real_unlink = Path.unlink
+
+    def locked_partial(self, *args, **kwargs):
+        if self.name.endswith(".partial"):
+            raise PermissionError(13, "verrouillé")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_partial)
+    tracks = (MatroskaMuxTrack(Path("a.mkv"), _track(1, 11), 1, 101),)
+    with pytest.raises(MatroskaWriteCancelled):
+        MatroskaWriter().write(
+            MatroskaMuxPlan(tmp_path / "out.mkv", tracks, iter(_packets(1, 0, 30_000, 1))),
+            cancel_cb=lambda: True,
+        )
+
+
+def test_every_encode_pipeline_finalizes_through_the_repairing_transaction() -> None:
+    """Direct, NVEncC, multi-vidéo, injection : un seul muxage final FFmpeg (décision du filet incluse)."""
+    import ast
+
+    tree = ast.parse(Path("core/workflows/encode/workflow.py").read_text(encoding="utf-8"))
+    finalizers = [
+        ast.unparse(keyword.value)
+        for node in ast.walk(tree) if isinstance(node, ast.Call)
+        for keyword in node.keywords if keyword.arg == "finalize_ffmpeg"
+    ]
+    assert len(finalizers) >= 5
+    assert set(finalizers) == {"self._finalize_ffmpeg_output"}
+
+
+@pytest.mark.usefixtures("qt_app")
+def test_encode_repairs_with_the_real_contract(tmp_path: Path, monkeypatch) -> None:
+    """Encode Copy en Auto (repli) : contrat réel du job, post-actions réelles, candidat réassemblé."""
+    import subprocess
+
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe requis")
+    from core.matroska.mux_plan import MatroskaMuxTrack as MuxTrack
+    from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, VideoEncodeSettings
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    source = tmp_path / "src.mkv"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=s=64x64:r=25:d=10",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=10",
+                    "-c:v", "ffv1", "-c:a", "ac3", "-metadata:s:a:0", "language=fre", str(source)], check=True)
+    config = EncodeConfig(source=source, output=tmp_path / "out.mkv", video=VideoEncodeSettings(codec="copy"),
+                          audio_tracks=[AudioTrackSettings(stream_index=1)], copy_subtitles=False,
+                          mux_backend="auto", write_nfo=False)
+    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe")
+    logs: list[str] = []
+    workflow.log_message.connect(lambda level, message: logs.append(f"{level} {message}"))
+
+    def run_command(command, _cwd, _label, _progress, _signals):
+        if Path(command[0]).name.startswith("ffprobe"):
+            return subprocess.run(command, capture_output=True, text=True, check=True).stdout
+        # « Muxage final FFmpeg » simulé : toute la vidéo, puis tout l'audio (10 s de retard).
+        reader = MatroskaReader(source)
+        tracks = reader.tracks()
+        mux_tracks = tuple(
+            MuxTrack(source, track, index, 1000 + index, patch_language=False, patch_name=False, patch_flags=False)
+            for index, track in enumerate(tracks, 1)
+        )
+        packets = []
+        for index, track in enumerate(tracks, 1):
+            packets.extend(MatroskaMuxPacket(index, block, rank) for rank, block in enumerate(
+                reader.blocks(track_numbers={track.number}, first_lace_only=True)))
+        MatroskaWriter().write(MatroskaMuxPlan(Path(command[-1]), mux_tracks, iter(packets)))
+        return ""
+
+    monkeypatch.setattr(workflow, "_run_transaction_command", run_command)
+    from core.runner import TaskSignals
+
+    workflow._finalize_ffmpeg_output(config, ["ffmpeg", str(config.output)], None, "final", TaskSignals(),
+                                     plan=workflow._build_encode_plan(config))
+    assert interleave_warnings(scan_interleave(config.output)) == []
+    assert any("corrigé par l'assembleur natif" in line for line in logs), logs
+    output_tracks = MatroskaReader(config.output).tracks()
+    assert [track.codec_id for track in output_tracks] == ["V_FFV1", "A_AC3"]
+    assert output_tracks[1].language == "fre"
