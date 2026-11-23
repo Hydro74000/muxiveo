@@ -65,6 +65,7 @@ from core.workdir import (
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
+from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line
 
 
 class RemuxBackend(Protocol):
@@ -303,6 +304,8 @@ def run_native_remux(
                 prepared_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
             )
             log("INFO", "Backend Matroska natif multi-pistes sélectionné (plan v1).")
+            # Sondé dans le fil de travail (``-version`` jamais sur le fil de l'interface).
+            log("INFO", ffmpeg_version_log_line(ffmpeg_bin))
             run_config = replace(prepared_config, sources=[
                 replace(
                     source,

@@ -134,11 +134,24 @@ def bundled_tool_entry(binary: Path | str | None) -> dict[str, Any] | None:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(payload, dict):
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    if not isinstance(tools, list):
         return None
-    for entry in payload.get("tools") or ():
-        if isinstance(entry, dict) and path.name in (entry.get("files") or {}):
-            return entry
+    for entry in tools:
+        if not isinstance(entry, dict):
+            continue
+        files = entry.get("files")
+        if not isinstance(files, dict) or path.name not in files:
+            continue
+        details = entry.get("details")
+        # Métadonnées mal typées : ignorées (diagnostic seulement, jamais bloquant).
+        clean = {key: value for key, value in entry.items() if key != "details"}
+        if isinstance(details, dict):
+            clean["details"] = {str(key): str(value) for key, value in details.items()
+                                if isinstance(value, (str, int, float))}
+        if not isinstance(clean.get("version"), str):
+            clean["version"] = ""
+        return clean
     return None
 
 

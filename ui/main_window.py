@@ -656,7 +656,9 @@ class DashboardPage(QWidget):
 
     def tool_versions_text(self) -> str:
         """Versions des outils, une ligne chacun (rapport de bug)."""
-        return "\n".join(f"{name} : {report.label()}" for name, report in self._tool_reports.items())
+        return "\n".join(
+            f"{name} : {report.label(translate_text)}" for name, report in self._tool_reports.items()
+        )
 
     def _show_tools_menu(self, global_pos) -> None:
         menu = QMenu(self)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,14 +37,18 @@ class ToolVersionReport:
     verification: str | None = None
     libraries: dict[str, str] = field(default_factory=dict)
 
-    def label(self) -> str:
-        """Une ligne lisible : version, puis provenance (embarqué) ou chemin (système)."""
+    def label(self, translate: Callable[[str], str] | None = None) -> str:
+        """Une ligne lisible : version, puis provenance (embarqué) ou chemin (système).
+
+        ``translate`` : traduction des mots fixes pour l'interface (journal et API : français).
+        """
+        tr = translate or (lambda text: text)
         if self.path is None:
-            return "introuvable"
-        version = self.version or "version inconnue"
+            return tr("introuvable")
+        version = self.version or tr("version inconnue")
         if self.bundled:
             origin = ", ".join(part for part in (self.release, self.published) if part)
-            return f"{version} — embarqué" + (f" ({origin})" if origin else "")
+            return f"{version} — {tr('embarqué')}" + (f" ({origin})" if origin else "")
         return f"{version} — {self.path}"
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,8 +113,12 @@ def tool_version_report(name: str, command: str | Path | None, *, probe: bool = 
     details = dict(entry.get("details") or {}) if entry else {}
     version = _meaningful(entry.get("version")) if entry else None
     if name == "ffprobe" and entry:
-        version = _meaningful(details.get("ffprobe_build")) or version
+        # Build propre à ffprobe : jamais celle de ffmpeg à sa place.
+        version = _meaningful(details.get("ffprobe_build"))
     libraries = {key: str(details[key]) for key in ("libavformat", "libavcodec") if key in details}
+    # Sonde : outil système, ou outil embarqué dont le manifeste ne donne pas la
+    # build (paquet antérieur). L'interface l'appelle depuis son fil de détection,
+    # comme ``ffmpeg -encoders`` ; ``probe=False`` au démarrage.
     if version is None and probe:
         if name in _FFMPEG_TOOLS:
             probed = ffmpeg_build_details(path)

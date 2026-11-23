@@ -11542,5 +11542,17 @@
   "Ajouter version et provenance de chaque outil (build FFmpeg embarquée…).": {
     "fra": "Ajouter version et provenance de chaque outil (build FFmpeg embarquée…).",
     "eng": "Add each tool's version and origin (bundled FFmpeg build…)."
+  },
+  "introuvable": {
+    "fra": "introuvable",
+    "eng": "not found"
+  },
+  "version inconnue": {
+    "fra": "version inconnue",
+    "eng": "unknown version"
+  },
+  "embarqué": {
+    "fra": "embarqué",
+    "eng": "bundled"
   }
 }

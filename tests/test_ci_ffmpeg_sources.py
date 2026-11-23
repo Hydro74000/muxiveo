@@ -20,9 +20,33 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
+_INSTALL = re.compile(r"\b(?:apt-get|apt|choco|winget|dnf|yum|pacman)\b[^\n]*\b(?:install|-S)\b")
+
+
+def _joined_lines(text: str) -> list[str]:
+    """Lignes avec continuations shell (``\\``) ou PowerShell (`` ` ``) rattachées à leur commande.
+
+    Le numéro de ligne reste celui du début de la commande (lignes de suite vidées).
+    """
+    raw = text.splitlines()
+    lines: list[str] = []
+    index = 0
+    while index < len(raw):
+        line = raw[index]
+        start = len(lines)
+        lines.append(line)
+        while line.rstrip().endswith(("\\", "`")) and index + 1 < len(raw):
+            index += 1
+            line = raw[index]
+            lines[start] = lines[start].rstrip()[:-1] + " " + line.strip()
+            lines.append("")
+        index += 1
+    return lines
+
+
 def _ffmpeg_installs(text: str) -> list[tuple[int, str]]:
-    """Installations de FFmpeg par gestionnaire de paquets (apt, choco, winget), hors macOS."""
-    lines = text.splitlines()
+    """Installations de FFmpeg par gestionnaire de paquets (apt, choco, winget…), hors macOS."""
+    lines = _joined_lines(text)
     found: list[tuple[int, str]] = []
     index = 0
     while index < len(lines):
@@ -46,8 +70,7 @@ def _ffmpeg_installs(text: str) -> list[tuple[int, str]]:
         if stripped.startswith(("- name:", "name:", "#")) or "brew install" in stripped:
             index += 1
             continue
-        if "Gyan.FFmpeg" in stripped or (re.search(r"\b(apt-get|apt|choco|winget)\s+install\b", stripped)
-                                         and _FFMPEG_WORD.search(stripped)):
+        if "Gyan.FFmpeg" in stripped or (_INSTALL.search(stripped) and _FFMPEG_WORD.search(stripped)):
             found.append((index + 1, "install"))
         index += 1
     return found
@@ -85,5 +108,14 @@ def test_scanner_detects_package_manager_installs() -> None:
           packages=(
             ffmpeg
           )
+      - run: sudo apt-get -y --no-install-recommends install ffmpeg
+      - run: |
+          sudo apt-get install -y \\
+            mediainfo \\
+            ffmpeg
+      - run: choco install `
+          ffmpeg
     """
-    assert [kind for _line, kind in _ffmpeg_installs(sample)] == ["packages", "install", "install", "packages"]
+    assert [kind for _line, kind in _ffmpeg_installs(sample)] == [
+        "packages", "install", "install", "packages", "install", "install", "install",
+    ]

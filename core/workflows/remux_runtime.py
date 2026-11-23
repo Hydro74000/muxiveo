@@ -21,6 +21,7 @@ from core.workdir import (
 )
 from core.workflows.common.chapters import probe_media_duration_seconds, write_ffmetadata_chapters
 from core.workflows.common.ffmpeg_runtime import (
+    ffmpeg_version_log_line,
     cli_path as _cli_path,
     ffmpeg_progress_args as _ffmpeg_progress_args,
 )
@@ -136,6 +137,8 @@ class RemuxRuntimeRunner:
             try:
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
+                # Sondé dans le fil de travail (``-version`` jamais sur le fil de l'interface).
+                cb.log("INFO", ffmpeg_version_log_line(cb.ffmpeg_bin))
                 relocated_attachments = relocate_tmdb_covers_to_process_dir(
                     [Path(p) for p in config.extra_attachments],
                     work_root=work_root,

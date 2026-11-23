@@ -189,6 +189,34 @@ def test_dashboard_tooltip_and_copied_versions(qt_app, tmp_path: Path, monkeypat
     assert page._tool_badges["mediainfo"].toolTip() == translate_text("{name} : introuvable", name="mediainfo")
     page._copy_tool_versions()
     copied = QGuiApplication.clipboard().text()
-    assert "ffmpeg : N-9-g9-20261121 — embarqué (r@latest, d)" in copied
+    assert f"ffmpeg : N-9-g9-20261121 — {translate_text('embarqué')} (r@latest, d)" in copied
     assert logs
     page.deleteLater()
+
+
+def test_bundled_lookup_ignores_mistyped_manifest(tmp_path: Path) -> None:
+    for payload in ({"tools": 1}, {"tools": [1, {"files": 3}]}, [1, 2]):
+        (tmp_path / MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+        assert bundled_tool_entry(tmp_path / "ffmpeg") is None
+    (tmp_path / MANIFEST_NAME).write_text(json.dumps({"tools": [
+        {"tool": "ffmpeg", "version": 3, "files": {"ffmpeg": "x"}, "details": ["bad"]},
+    ]}), encoding="utf-8")
+    entry = bundled_tool_entry(tmp_path / "ffmpeg")
+    assert entry is not None and entry["version"] == "" and "details" not in entry
+
+
+def test_ffprobe_never_borrows_ffmpeg_build(tmp_path: Path) -> None:
+    from core.tool_versions import tool_version_report
+
+    _bundle(tmp_path, version="N-5-g5-20261121", details={"ffprobe_build": UNKNOWN_BUILD})
+    assert tool_version_report("ffprobe", tmp_path / "ffprobe", probe=False).version is None
+
+
+def test_label_translated_for_the_interface(tmp_path: Path) -> None:
+    from core.tool_versions import ToolVersionReport
+
+    words = {"introuvable": "not found", "version inconnue": "unknown version", "embarqué": "bundled"}
+    assert ToolVersionReport(name="x", path=None).label(words.get) == "not found"
+    assert ToolVersionReport(name="x", path="/x", bundled=True, release="r").label(words.get) == (
+        "unknown version — bundled (r)"
+    )
