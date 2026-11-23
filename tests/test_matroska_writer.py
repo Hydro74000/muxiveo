@@ -510,20 +510,31 @@ def test_background_writer_abandon_during_a_write_keeps_its_accounting(monkeypat
     assert failures == []
 
 
-def test_background_writer_blocks_the_producer_when_the_queue_is_full() -> None:
+def test_background_writer_blocks_the_producer_when_the_queue_is_full(monkeypatch) -> None:
+    """Borne du module lue à l'instanciation ; le producteur entre réellement en attente."""
     import threading
-    import time
 
-    from core.matroska.writer import _BackgroundWriter
+    import core.matroska.writer as module
 
+    monkeypatch.setattr(module, "_BACKGROUND_WRITE_BYTES", 1)
     fh = _SlowFile()
-    sink = _BackgroundWriter(fh, limit=1)  # type: ignore[arg-type]
+    sink = module._BackgroundWriter(fh)  # type: ignore[arg-type]
     sink.write(b"a")
     assert fh.started.wait(5)
+    waiting = threading.Event()
+    real_wait = sink._cond.wait
+
+    def observed_wait(timeout=None):
+        if threading.current_thread().name == "producteur":
+            waiting.set()
+        return real_wait(timeout)
+
+    sink._cond.wait = observed_wait  # type: ignore[method-assign]
     done = threading.Event()
-    threading.Thread(target=lambda: (sink.write(b"b"), done.set()), daemon=True).start()
-    time.sleep(0.1)
-    assert not done.is_set()  # file pleine : le producteur attend
+    producer = threading.Thread(target=lambda: (sink.write(b"b"), done.set()), name="producteur", daemon=True)
+    producer.start()
+    assert waiting.wait(5)  # file pleine : le producteur attend la fin de l'écriture en cours
+    assert not done.is_set()
     fh.release.set()
     assert done.wait(5)
     sink.close()
