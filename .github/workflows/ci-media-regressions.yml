@@ -1,4 +1,4 @@
-name: Media regressions (FFmpeg 6.1 / 8.1, FEL and RIFE CPU)
+name: Media regressions (FFmpeg 6.1 / master, FEL and RIFE CPU)
 
 # Le gate général couvre les contrats simulés et les widgets. Ici les outils
 # réels vérifient les origines audio, le pré-roll et les images reconstruites.
@@ -30,6 +30,7 @@ on:
       - "tests/test_workflows_common.py"
       - "tests/conftest.py"
       - "scripts/ci_media_tools.py"
+      - ".github/actions/ffmpeg-master/**"
       - "requirements.txt"
       - ".github/workflows/ci-media-regressions.yml"
 
@@ -139,7 +140,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ffmpeg: ["6.1", "8.1"]
+        # 6.1 : plancher des FFmpeg de distribution ; master : build des paquets.
+        ffmpeg: ["6.1", "master"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -160,11 +162,9 @@ jobs:
           echo "$PWD/ci-media-tools" >> "$GITHUB_PATH"
           echo "MUXIVEO_TEST_FEL_LIBRARY=$PWD/ci-media-tools/libmvo_fel.so" >> "$GITHUB_ENV"
           echo "MUXIVEO_TEST_FEL_FIXTURE=$PWD/ci-media-tools/synthetic-fel.hevc" >> "$GITHUB_ENV"
-      - name: Install verified FFmpeg 8.1
-        if: matrix.ffmpeg == '8.1'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci_media_tools.py ffmpeg ci-media-tools
+      - name: Install verified FFmpeg master
+        if: matrix.ffmpeg == 'master'
+        uses: ./.github/actions/ffmpeg-master
       - name: Check required tools and runtime versions
         env:
           EXPECTED_FFMPEG: ${{ matrix.ffmpeg }}
@@ -176,8 +176,11 @@ jobs:
           for tool in ("ffmpeg", "ffprobe"):
               version = subprocess.check_output([tool, "-version"], text=True).splitlines()[0]
               print(version)
-              expected = re.escape(os.environ["EXPECTED_FFMPEG"])
-              assert re.match(rf"{tool} version n?{expected}(?:[.\s-]|$)", version), version
+              if os.environ["EXPECTED_FFMPEG"] == "master":
+                  assert version.startswith(f"{tool} version N-"), version
+              else:
+                  expected = re.escape(os.environ["EXPECTED_FFMPEG"])
+                  assert re.match(rf"{tool} version n?{expected}(?:[.\s-]|$)", version), version
           subprocess.run(["dovi_tool", "--version"], check=True)
           assert Path(os.environ["MUXIVEO_TEST_FEL_FIXTURE"]).is_file()
           print(FelEngine(Path(os.environ["MUXIVEO_TEST_FEL_LIBRARY"])).capabilities)

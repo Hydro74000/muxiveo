@@ -49,12 +49,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest pytest-qt
-          winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
-          $ffPath = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Gyan.FFmpeg*" -Directory | Select-Object -First 1).FullName
-          $binDir = (Get-ChildItem -Path $ffPath -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
-          echo "$binDir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          & "$binDir\ffmpeg.exe" -version
-          & "$binDir\ffprobe.exe" -version
+
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
 
       - name: Run Targeted Encode Tests
         shell: pwsh

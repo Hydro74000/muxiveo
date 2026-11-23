@@ -14,6 +14,7 @@ from core.update_check import UpdateCheckError, normalize_update_channel, query_
 from core.version import APP_BUILD_VERSION, APP_NAME
 from core.workflows.encode.interpolation import NvofCapability, TrtCapability
 from core.workflows.encode.vulkan import VulkanCapability
+from core.tool_versions import ToolVersionReport, tool_version_report
 
 
 @dataclass(frozen=True)
@@ -66,17 +67,36 @@ def system_version(request: VersionRequest, ctx: ExecutionContext) -> VersionRes
 class ToolsRequest(Model):
     """Commandes d'outils résolues par Muxiveo (configuration, extensions, PATH)."""
 
+    versions: bool = field(
+        default=False,
+        description="Ajoute version et provenance de chaque outil (manifeste des outils embarqués, "
+                    "sinon sonde --version / -version de l'outil système).",
+    )
+
+
+_TOOL_VERSION_SCHEMA = dataclass_schema(ToolVersionReport, exclude=("name",))
+
 
 @dataclass(frozen=True)
 class ToolsResult(Model):
     version: int = 1
     tools: dict[str, str] = field(default_factory=dict, description="Outil → commande exécutée.")
+    versions: dict[str, Any] | None = field(
+        default=None,
+        description="Outil → version et provenance (seulement avec « versions »).",
+        schema={"type": "object", "additionalProperties": _TOOL_VERSION_SCHEMA},
+    )
 
 
 @operation("system.tools", request=ToolsRequest, result=ToolsResult,
-           summary="Commandes d'outils externes résolues par Muxiveo.")
-def system_tools(_request: ToolsRequest, ctx: ExecutionContext) -> ToolsResult:
-    return ToolsResult(tools=dict(ctx.config.tool_commands()))
+           summary="Commandes d'outils externes résolues par Muxiveo ; avec versions, build et provenance.")
+def system_tools(request: ToolsRequest, ctx: ExecutionContext) -> ToolsResult:
+    commands = dict(ctx.config.tool_commands())
+    if not request.versions:
+        return ToolsResult(tools=commands)
+    return ToolsResult(tools=commands, versions={
+        name: tool_version_report(name, command).to_dict() for name, command in commands.items()
+    })
 
 
 SchemaVersion = Literal["1", "exact-job", "decision-profile", "all", "api"]

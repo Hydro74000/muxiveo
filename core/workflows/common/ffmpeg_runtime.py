@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from core.subprocess_utils import ProbeCancelledError, run_probe
+from core.tool_versions import ToolVersionReport, resolve_tool, tool_version_report
 
 
 def cli_path(path: Path | str) -> str:
@@ -117,3 +118,28 @@ def matroska_output_args(
     if matroska_timestamp_scale_supported(ffmpeg_bin):
         return ["-timestamp_scale", str(MATROSKA_TIMESTAMP_SCALE_NS)]
     return []
+
+
+@lru_cache(maxsize=16)
+def _cached_ffmpeg_version_report(binary: str, size: int, mtime_ns: int) -> ToolVersionReport:
+    return tool_version_report("ffmpeg", binary)
+
+
+def ffmpeg_version_report(ffmpeg_bin: str | Path | None) -> ToolVersionReport:
+    """Build et provenance du FFmpeg utilisé (manifeste embarqué, sinon ``-version``), en cache par binaire."""
+    path = resolve_tool(ffmpeg_bin)
+    if path is None:
+        return ToolVersionReport(name="ffmpeg", path=None)
+    try:
+        resolved = path.resolve()
+        stat = resolved.stat()
+    except OSError:
+        return ToolVersionReport(name="ffmpeg", path=None)
+    # Chemin d'origine conservé : le manifeste d'un bundle se trouve à côté de
+    # l'exécutable désigné, pas forcément à côté de sa cible de lien.
+    return _cached_ffmpeg_version_report(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+def ffmpeg_version_log_line(ffmpeg_bin: str | Path | None) -> str:
+    """Ligne de journal en tête de job : build FFmpeg et provenance (diagnostic)."""
+    return f"FFmpeg : {ffmpeg_version_report(ffmpeg_bin).label()}"

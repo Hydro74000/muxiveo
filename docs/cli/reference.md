@@ -2096,11 +2096,12 @@ muxiveo --cli version --install --yes
 Chemins des outils résolus par Muxiveo (JSON).
 
 ```text
-muxiveo --cli tools [-h] [--log-format {text,jsonl,events}]
+muxiveo --cli tools [-h] [--versions] [--log-format {text,jsonl,events}]
 ```
 
 | Option | Effet |
 |---|---|
+| `--versions` | Ajouter version et provenance de chaque outil (build FFmpeg embarquée…). |
 | `--log-format` | Format du journal : text (lisible), jsonl (une ligne JSON par message) ou events (événements versionnés sur stderr, réponse JSON sur stdout). (défaut : `text`) — `text`, `jsonl`, `events` |
 
 **Exemples**
@@ -2681,7 +2682,7 @@ Appelables par `muxiveo --cli call OPÉRATION --request requête.json` ; schéma
 | `sync.shift_subtitles` | Recaler un fichier de sous-titres texte (décalage ou calibration). | écrit |
 | `sync.waveform` | Forme d'onde d'une piste audio sur une plage (pics par tranche), données du Synchro Studio. | longue |
 | `system.capabilities` | Capacités de la machine : encodeurs, préréglages, Vulkan, NVOF / TensorRT, moteur vidéo MVO. | longue, GPU |
-| `system.tools` | Commandes d'outils externes résolues par Muxiveo. | — |
+| `system.tools` | Commandes d'outils externes résolues par Muxiveo ; avec versions, build et provenance. | — |
 | `system.version` | Version de Muxiveo ; avec check, comparaison à la dernière release du canal. | — |
 | `tmdb.details` | Fiche TMDB complète (titre, année, épisode, résumé, genres, couverture) et balises MKV. | — |
 | `tmdb.search` | Rechercher un film ou une série sur TMDB (25 résultats au plus). | — |

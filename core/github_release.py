@@ -39,6 +39,8 @@ class ReleaseAsset:
     name: str
     url: str
     sha256: str
+    #: Date de mise à jour de l'asset (ISO 8601, API GitHub) : identifie une release roulante.
+    updated_at: str = ""
 
 
 def requested_tag(tool: str) -> str | None:
@@ -149,7 +151,7 @@ def select_asset(release: dict, repo: str, *patterns: str) -> ReleaseAsset:
             f"{repo} {tag} : aucun SHA-256 publié par GitHub pour {name}, "
             "intégrité invérifiable — téléchargement refusé."
         )
-    return ReleaseAsset(repo, tag, name, url, sha256)
+    return ReleaseAsset(repo, tag, name, url, sha256, str(asset.get("updated_at") or ""))
 
 
 def release_asset(tool: str, *patterns: str, user_agent: str = "Muxiveo-builder") -> ReleaseAsset:

@@ -57,11 +57,14 @@ jobs:
         uses: ./.github/actions/apt-install
         with:
           packages: >-
-            ffmpeg mediainfo g++
+            mediainfo g++
             libegl1 libgl1 libglib2.0-0 libdbus-1-3
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
             libxkbcommon-x11-0
+
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
 
       - name: Install Python dependencies
         run: |
@@ -107,9 +110,12 @@ jobs:
           python -m pip install -r requirements.txt pytest pytest-qt
 
       # FFmpeg et MediaInfo réels : worker serve en sous-processus (tests/integration/test_serve.py).
-      - name: Install FFmpeg and MediaInfo
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
+
+      - name: Install MediaInfo
         shell: pwsh
-        run: choco install ffmpeg mediainfo-cli -y --no-progress
+        run: choco install mediainfo-cli -y --no-progress
 
       # Qt réel (pas le bootstrap simulé) : verrous msvcrt, aperçus cmd.exe
       # réellement exécutés, propriété des fichiers et chemins Windows,

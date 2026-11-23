@@ -50,6 +50,7 @@ from core.workdir import (
     ensure_work_dir as ensure_work_dir_path,
     prepare_process_work_dir,
 )
+from core.tool_versions import ToolVersionReport, tool_version_report
 
 
 # ---------------------------------------------------------------------------
@@ -1705,6 +1706,18 @@ class AppConfig:
 
     def all_tools_available(self) -> dict[str, bool]:
         return {name: _command_exists(cmd) for name, cmd in self.tool_commands().items()}
+
+    def tool_version_report(self, name: str, *, probe: bool = True) -> ToolVersionReport:
+        """Version et provenance d'un outil (manifeste des outils embarqués, sinon sonde ``--version``).
+
+        ``probe=False`` : aucun processus (interface au démarrage) ; un outil système
+        garde alors une version inconnue.
+        """
+        return tool_version_report(name, self.tool_commands().get(name), probe=probe)
+
+    def tool_version_reports(self, *, probe: bool = True) -> dict[str, ToolVersionReport]:
+        """:meth:`tool_version_report` de chaque outil configuré."""
+        return {name: self.tool_version_report(name, probe=probe) for name in self.tool_commands()}
 
     def ensure_work_dir(self) -> Path:
         """Crée le work_dir ; un chemin par défaut de l'application est marqué Muxiveo."""

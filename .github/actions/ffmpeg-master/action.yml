@@ -1,0 +1,18 @@
+name: ffmpeg-master
+description: >-
+  Installe FFmpeg master (FFmpeg-Builds, même build que les paquets, SHA-256 GitHub vérifié),
+  le place en tête du PATH, puis vérifie que les ffmpeg / ffprobe résolus sont bien cette build.
+  Linux et Windows ; macOS reste sur Homebrew (seul FFmpeg du paquet macOS).
+runs:
+  using: composite
+  steps:
+    - name: Install FFmpeg master (verified)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python "$GITHUB_WORKSPACE/scripts/ci_media_tools.py" ffmpeg "$RUNNER_TEMP/ffmpeg-master"
+        echo "$RUNNER_TEMP/ffmpeg-master" >> "$GITHUB_PATH"
+    - name: Check resolved FFmpeg master
+      shell: bash
+      run: python "$GITHUB_WORKSPACE/scripts/ci_media_tools.py" --check-ffmpeg-master "$RUNNER_TEMP/ffmpeg-master"

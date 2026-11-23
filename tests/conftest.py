@@ -152,9 +152,15 @@ def _no_matroska_timestamp_scale_probe_by_default(request, monkeypatch):
         return
     if "integration" in request.node.path.parts:
         return
+    from core.tool_versions import ToolVersionReport
     from core.workflows.common import ffmpeg_runtime
 
     monkeypatch.setattr(ffmpeg_runtime, "matroska_timestamp_scale_supported", lambda _ffmpeg: False)
+    # Ligne « FFmpeg : … » des jobs : aucun ``ffmpeg -version`` réel.
+    monkeypatch.setattr(
+        ffmpeg_runtime, "ffmpeg_version_report",
+        lambda _ffmpeg: ToolVersionReport(name="ffmpeg", path="ffmpeg", version="tests"),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -197,6 +203,8 @@ def _dashboard_probes_simulated(request, monkeypatch):
             lambda: SimpleNamespace(detect=lambda ffmpeg, **_kw: (set(), ffmpeg)),
         )
         monkeypatch.setattr(main_window, "detect_vulkan", lambda _ffmpeg: VulkanCapability(reason="tests"))
+        # Versions des outils : aucun ``--version`` réel (info-bulles du manifeste seulement).
+        monkeypatch.setattr(DashboardPage, "_probe_tool_versions", staticmethod(lambda _config: {}))
     pages: list[DashboardPage] = []
     start = DashboardPage._start_hw_detection
 

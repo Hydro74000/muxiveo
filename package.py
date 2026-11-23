@@ -64,10 +64,8 @@ from typing import Any, Iterable
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.github_release import (
     github_release_asset,
-    published_checksum,
     release_asset,
     verify_download,
-    verify_sha256,
 )
 from core.python_requirements import read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
@@ -75,8 +73,9 @@ from core.tool_manifest import (
     PREEXISTING,
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
-    VERIFIED_PUBLISHED_CHECKSUM,
     ToolManifest,
+    ffmpeg_build_details,
+    is_master_build,
 )
 from core.version import (
     APP_APPSTREAM_ID,
@@ -2820,32 +2819,57 @@ def _mediainfo_latest_windows_version() -> str:
     return versions[0]
 
 
-_GYAN_FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+def _windows_tool_launcher() -> tuple[tuple[str, ...], dict[str, str] | None]:
+    """Exécution d'un outil Windows embarqué : directe sous Windows, via Wine pour le build croisé."""
+    if os.name == "nt":
+        return (), None
+    if shutil.which("wine"):
+        return ("wine",), _wine_env("-all")
+    return (), None
+
+
+def _windows_ffmpeg_details(tools_dir: Path) -> dict[str, str]:
+    """Build réelle de ffmpeg.exe / ffprobe.exe embarqués (« inconnue » si non exécutables)."""
+    launcher, env = _windows_tool_launcher()
+    details = ffmpeg_build_details(tools_dir / "ffmpeg.exe", launcher=launcher, env=env, timeout=180)
+    details["ffprobe_build"] = ffmpeg_build_details(
+        tools_dir / "ffprobe.exe", launcher=launcher, env=env, timeout=180,
+    )["build"]
+    return details
 
 
 def _dl_windows_ffmpeg(tools_dir: Path) -> None:
+    """FFmpeg master de FFmpeg-Builds, comme la CI : aucune autre source acceptée.
+
+    Binaires déjà présents (dossier réutilisé) : conservés seulement s'ils sont une
+    build master vérifiable ; sinon refus explicite (les supprimer pour retélécharger).
+    """
     binaries = [tools_dir / "ffmpeg.exe", tools_dir / "ffprobe.exe"]
     if all(path.is_file() for path in binaries):
-        _ok("ffmpeg.exe et ffprobe.exe déjà présents dans tools/")
-        TOOL_MANIFEST.add("ffmpeg", version="?", source=str(tools_dir), verification=PREEXISTING, files=binaries)
+        details = _windows_ffmpeg_details(tools_dir)
+        if not (is_master_build(details["build"]) and is_master_build(details["ffprobe_build"])):
+            raise RuntimeError(
+                f"ffmpeg.exe / ffprobe.exe déjà présents dans {tools_dir} mais pas en build master vérifiable "
+                f"(ffmpeg {details['build']}, ffprobe {details['ffprobe_build']}) : supprimez-les pour "
+                "télécharger la build master de FFmpeg-Builds."
+            )
+        _ok(f"ffmpeg.exe et ffprobe.exe déjà présents dans tools/ (build {details['build']})")
+        TOOL_MANIFEST.add(
+            "ffmpeg", version=details["build"], source=str(tools_dir), verification=PREEXISTING,
+            files=binaries, details=details,
+        )
         return
-    _step("Téléchargement FFmpeg + FFprobe Windows (BtbN master GPL static)")
+    _step("Téléchargement FFmpeg + FFprobe Windows (FFmpeg-Builds master GPL static)")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.zip"
+        # Release roulante « latest » : SHA-256 publié par l'API GitHub. Aucun repli
+        # (autre build = autre comportement que celui testé en CI) : échec explicite.
         try:
-            # Release roulante « latest » : SHA-256 publié par l'API GitHub.
             asset = github_release_asset("FFmpeg-Builds/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
             _download_file(asset.url, archive, timeout=180)
-            version, url, verification = f"{asset.repo}@{asset.tag}", asset.url, VERIFIED_GITHUB_DIGEST
         except (OSError, urllib.error.URLError) as exc:
-            # Repli réseau uniquement ; l'archive Gyan est vérifiée par sa somme publiée.
-            _warn(f"Échec BtbN ({exc}), tentative fallback Gyan...")
-            url = _GYAN_FFMPEG_URL
-            _download_file(url, archive, timeout=180)
-            verify_sha256(archive, published_checksum(url + ".sha256"), Path(url).name)
-            version, verification = "gyan.dev release-essentials", VERIFIED_PUBLISHED_CHECKSUM
-        else:
-            verify_download(asset, archive)
+            raise RuntimeError(f"FFmpeg master (FFmpeg-Builds) indisponible : {exc}") from exc
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 base_name = Path(name).name.lower()
@@ -2853,10 +2877,15 @@ def _dl_windows_ffmpeg(tools_dir: Path) -> None:
                     data = zf.read(name)
                     dest = tools_dir / Path(name).name
                     dest.write_bytes(data)
+        details = _windows_ffmpeg_details(tools_dir)
+        details["release"] = f"{asset.repo}@{asset.tag}"
+        if asset.updated_at:
+            details["asset_updated_at"] = asset.updated_at
         TOOL_MANIFEST.add(
-            "ffmpeg", version=version, source=url, verification=verification, archive=archive, files=binaries,
+            "ffmpeg", version=details["build"], source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=binaries, details=details,
         )
-    _ok("ffmpeg.exe et ffprobe.exe installés dans tools/")
+    _ok(f"ffmpeg.exe et ffprobe.exe installés dans tools/ (build {details['build']})")
 
 
 def _dl_windows_mediainfo(tools_dir: Path) -> None:

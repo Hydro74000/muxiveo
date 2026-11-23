@@ -74,6 +74,7 @@ from core.tool_manifest import (
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
     ToolManifest,
+    ffmpeg_build_details,
 )
 from core.version import (
     APP_APPSTREAM_ID,
@@ -640,13 +641,21 @@ def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
         _download(asset.url, archive, timeout=120)
         verify_download(asset, archive)
         _extract_from_tar(archive, ["ffmpeg", "ffprobe"], tools_dir)
+        # Build réelle consignée (la release « latest » change chaque jour) : sonde
+        # exécutée sur l'hôte, « inconnue » pour une architecture non exécutable.
+        details = ffmpeg_build_details(tools_dir / "ffmpeg")
+        details["ffprobe_build"] = ffmpeg_build_details(tools_dir / "ffprobe")["build"]
+        details["release"] = f"{asset.repo}@{asset.tag}"
+        if asset.updated_at:
+            details["asset_updated_at"] = asset.updated_at
         TOOL_MANIFEST.add(
-            "ffmpeg", version=f"{asset.repo}@{asset.tag}", source=asset.url,
+            "ffmpeg", version=details["build"], source=asset.url,
             verification=VERIFIED_GITHUB_DIGEST, archive=archive,
-            files=[tools_dir / "ffmpeg", tools_dir / "ffprobe"],
+            files=[tools_dir / "ffmpeg", tools_dir / "ffprobe"], details=details,
         )
+        info(f"Build FFmpeg embarquée : {details['build']}")
 
-    ok("ffmpeg + ffprobe (BtbN master GPL) installés")
+    ok("ffmpeg + ffprobe (FFmpeg-Builds master GPL) installés")
 
 
 def _mediainfo_latest_version() -> str:

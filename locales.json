@@ -11506,5 +11506,41 @@
   "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.": {
     "fra": "Audit trames : HDR10+ généré : images de la source illisibles, alignement des trames invérifiable.",
     "eng": "Frame audit: generated HDR10+: source frames unreadable, frame alignment cannot be verified."
+  },
+  "{name} : introuvable": {
+    "fra": "{name} : introuvable",
+    "eng": "{name}: not found"
+  },
+  "Version : {version}": {
+    "fra": "Version : {version}",
+    "eng": "Version: {version}"
+  },
+  "inconnue": {
+    "fra": "inconnue",
+    "eng": "unknown"
+  },
+  "Emplacement : {path}": {
+    "fra": "Emplacement : {path}",
+    "eng": "Location: {path}"
+  },
+  "Provenance : outil embarqué ({origin})": {
+    "fra": "Provenance : outil embarqué ({origin})",
+    "eng": "Origin: bundled tool ({origin})"
+  },
+  "Provenance : outil du système": {
+    "fra": "Provenance : outil du système",
+    "eng": "Origin: system tool"
+  },
+  "Copier les versions des outils": {
+    "fra": "Copier les versions des outils",
+    "eng": "Copy tool versions"
+  },
+  "Versions des outils copiées dans le presse-papiers.": {
+    "fra": "Versions des outils copiées dans le presse-papiers.",
+    "eng": "Tool versions copied to the clipboard."
+  },
+  "Ajouter version et provenance de chaque outil (build FFmpeg embarquée…).": {
+    "fra": "Ajouter version et provenance de chaque outil (build FFmpeg embarquée…).",
+    "eng": "Add each tool's version and origin (bundled FFmpeg build…)."
   }
 }

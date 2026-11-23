@@ -23,6 +23,7 @@ from core.workflows.common.chapters import (
 from core.workflows.common.ffmpeg_runtime import (
     cli_path as _cli_path,
     ffmpeg_progress_args,
+    ffmpeg_version_log_line,
     ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
 )
@@ -323,6 +324,7 @@ class RemuxWorkflow(QObject):
             "INFO",
             f"MUX_BACKEND requested={plan.requested_backend} selected={plan.selected_backend} plan_version=1",
         )
+        self.log_message.emit("INFO", ffmpeg_version_log_line(self._ffmpeg))
         errors = self.validate(config, plan=plan)
         if errors:
             raise RemuxValidationError(errors)

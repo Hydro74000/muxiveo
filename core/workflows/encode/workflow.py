@@ -328,7 +328,7 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
-from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
 _PREVIEW_IMAGE_MARGIN_S = 0.5
@@ -4263,6 +4263,8 @@ class EncodeWorkflow(QObject):
 
     def _log_workflow_type(self, workflow_kind: str) -> None:
         self.log_message.emit("INFO", f"WORKFLOW TYPE - {workflow_kind}")
+        # Build exacte de l'outil (diagnostic : FFmpeg master change chaque jour).
+        self.log_message.emit("INFO", ffmpeg_version_log_line(self._ffmpeg))
 
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")

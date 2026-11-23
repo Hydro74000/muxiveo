@@ -55,7 +55,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox,
-    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
     QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -68,6 +68,7 @@ from core.i18n import apply_translations, install_qt_translations, set_current_l
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
+from core.tool_versions import ToolVersionReport
 from core.update_check import (
     UPDATE_CHECK_TIMEOUT_S,
     UpdateInfo,
@@ -426,6 +427,8 @@ class DashboardPage(QWidget):
     trt_badge_clicked = Signal()
     rife_badge_clicked = Signal()       # badge muxiveo-rife → page Extensions
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
+    # dict[str, ToolVersionReport] — versions des outils (sondes du thread de détection).
+    _tool_versions_detected = Signal(object)
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
@@ -458,6 +461,11 @@ class DashboardPage(QWidget):
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
         self._accel_detected.connect(self._on_accel_detected, Qt.ConnectionType.QueuedConnection)
+        self._tool_versions_detected.connect(self._on_tool_versions_detected, Qt.ConnectionType.QueuedConnection)
+        # Badges « Outils disponibles » : info-bulle = version et provenance (diagnostic).
+        self._tool_badges: dict[str, QLabel] = {}
+        self._tool_base_tooltips: dict[str, str] = {}
+        self._tool_reports: dict[str, ToolVersionReport] = {}
         self._vulkan_badge: QLabel | None = None
         self._nvof_badge: QLabel | None = None
         self._trt_badge: _ClickableBadge | None = None
@@ -512,16 +520,29 @@ class DashboardPage(QWidget):
         grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         availability = self._config.all_tools_available()
+        self._tool_badges = {}
+        self._tool_base_tooltips = {}
         for tool_name, available in availability.items():
             if tool_name == "muxiveo-rife":
                 # Moteur vidéo MVO (extension mvo-rife) : badge cliquable vers la page Extensions.
                 self._rife_badge = _ClickableBadge()
                 self._rife_badge.clicked.connect(self.rife_badge_clicked.emit)
                 badge = self._make_tool_badge(tool_name, available, self._rife_badge)
-                badge.setToolTip(translate_text("Moteur vidéo MVO (débruitage, interpolation) : page Extensions."))
+                self._tool_base_tooltips[tool_name] = translate_text(
+                    "Moteur vidéo MVO (débruitage, interpolation) : page Extensions."
+                )
             else:
                 badge = self._make_tool_badge(tool_name, available)
+            self._tool_badges[tool_name] = badge
             grid_layout.addWidget(badge)
+        # Outils embarqués : version lue dans le manifeste, sans lancer de processus ;
+        # outils système : version complétée par la détection asynchrone.
+        self._tool_reports = self._config.tool_version_reports(probe=False)
+        self._apply_tool_tooltips()
+        tools_grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tools_grid.customContextMenuRequested.connect(
+            lambda pos, grid=tools_grid: self._show_tools_menu(grid.mapToGlobal(pos))
+        )
 
         root.addWidget(tools_grid)
 
@@ -595,6 +616,57 @@ class DashboardPage(QWidget):
             rl.addWidget(val_lbl)
             rl.addStretch()
             root.addWidget(row)
+
+    @staticmethod
+    def _tool_tooltip(report: ToolVersionReport) -> str:
+        """Info-bulle d'un outil : version, emplacement et provenance."""
+        if report.path is None:
+            return translate_text("{name} : introuvable", name=report.name)
+        lines = [translate_text("Version : {version}", version=report.version or translate_text("inconnue"))]
+        if report.libraries:
+            lines.append(", ".join(f"{name} {version}" for name, version in sorted(report.libraries.items())))
+        lines.append(translate_text("Emplacement : {path}", path=report.path))
+        if report.bundled:
+            origin = ", ".join(part for part in (report.release, report.published) if part)
+            lines.append(translate_text("Provenance : outil embarqué ({origin})", origin=origin or "?"))
+        else:
+            lines.append(translate_text("Provenance : outil du système"))
+        return "\n".join(lines)
+
+    def _apply_tool_tooltips(self) -> None:
+        for name, badge in self._tool_badges.items():
+            report = self._tool_reports.get(name)
+            parts = [self._tool_base_tooltips.get(name, "")]
+            if report is not None:
+                parts.append(self._tool_tooltip(report))
+            badge.setToolTip("\n".join(part for part in parts if part))
+
+    @staticmethod
+    def _probe_tool_versions(config: AppConfig) -> dict[str, ToolVersionReport]:
+        """Thread worker : versions des outils (``-version`` / ``--version`` des outils système)."""
+        return config.tool_version_reports(probe=True)
+
+    def _run_tool_versions(self) -> None:
+        self._tool_versions_detected.emit(self._probe_tool_versions(self._config))
+
+    def _on_tool_versions_detected(self, reports: dict[str, ToolVersionReport]) -> None:
+        """Slot Qt (thread principal) : info-bulles complétées par les versions sondées."""
+        self._tool_reports.update(reports)
+        self._apply_tool_tooltips()
+
+    def tool_versions_text(self) -> str:
+        """Versions des outils, une ligne chacun (rapport de bug)."""
+        return "\n".join(f"{name} : {report.label()}" for name, report in self._tool_reports.items())
+
+    def _show_tools_menu(self, global_pos) -> None:
+        menu = QMenu(self)
+        copy = menu.addAction(translate_text("Copier les versions des outils"))
+        copy.triggered.connect(self._copy_tool_versions)
+        menu.exec(global_pos)
+
+    def _copy_tool_versions(self) -> None:
+        QGuiApplication.clipboard().setText(self.tool_versions_text())
+        self._log(translate_text("Versions des outils copiées dans le presse-papiers."), LogLevel.INFO)
 
     def _make_tool_badge(self, name: str, available: bool, lbl: QLabel | None = None) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
@@ -777,6 +849,7 @@ class DashboardPage(QWidget):
         self._executor.submit(self._run_hw_detection)
         self._executor.submit(self._run_vulkan_detection)
         self._executor.submit(self._run_accel_detection)
+        self._executor.submit(self._run_tool_versions)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""

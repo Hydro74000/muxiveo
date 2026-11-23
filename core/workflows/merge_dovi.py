@@ -111,7 +111,7 @@ from core.matroska.native_muxer import MatroskaNativeMuxer
 from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
 from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import MatroskaWriter
-from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
 _PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
@@ -1104,6 +1104,7 @@ class MergeDoviWorkflow(QObject):
         step = WorkflowStep.VALIDATION
         t0   = time.monotonic()
         self.step_started.emit(step)
+        self.step_progress.emit(step, ffmpeg_version_log_line(self._bins["ffmpeg"]))
 
         # Fichiers présents
         for label, path in [("Film 1", film1), ("Film 2", film2)]:

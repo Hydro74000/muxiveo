@@ -166,6 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     schema.set_defaults(func=cmd_schema)
 
     tools = sub.add_parser("tools", help="Afficher les chemins d'outils résolus par Muxiveo.")
+    tools.add_argument("--versions", action="store_true",
+                       help="Ajouter version et provenance de chaque outil (build FFmpeg embarquée…).")
     tools.add_argument("--log-format", choices=LOG_FORMATS, default="text")
     tools.set_defaults(func=cmd_tools)
 

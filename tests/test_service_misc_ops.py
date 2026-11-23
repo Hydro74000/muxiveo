@@ -32,7 +32,9 @@ def test_every_published_operation_has_a_closed_request_schema():
 
 def test_system_tools_and_schema_get():
     ctx, _ = _ctx(SimpleNamespace(tool_commands=lambda: {"ffmpeg": "/x/ffmpeg"}))
-    assert call(CATALOG, "system.tools", {}, ctx).to_dict() == {"version": 1, "tools": {"ffmpeg": "/x/ffmpeg"}}
+    assert call(CATALOG, "system.tools", {}, ctx).to_dict() == {
+        "version": 1, "tools": {"ffmpeg": "/x/ffmpeg"}, "versions": None,
+    }
     ctx, _ = _ctx()
     assert call(CATALOG, "schema.get", {"version": "api"}, ctx).schema["api_version"] == 1
     ctx, _ = _ctx()

@@ -40,11 +40,12 @@ from cli.service_adapter import (
 
 def cmd_tools(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     """Commandes d'outils résolues (opération system.tools)."""
-    result, ctx = run_operation("system.tools", {}, config=config, logger=logger)
+    payload = {"versions": True} if getattr(args, "versions", False) else {}
+    result, ctx = run_operation("system.tools", payload, config=config, logger=logger)
     if getattr(args, "log_format", "text") == "events":
         print_json(envelope("system.tools", ctx.events.job, result=result))
     else:
-        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        print(json.dumps(result.to_dict(omit_none=True), ensure_ascii=False, indent=2))
     return EXIT_OK
 
 
