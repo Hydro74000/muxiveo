@@ -212,8 +212,12 @@ def rewrite_tag_target_uids(
     attachment_uids: Mapping[int, int],
     drop_chapter_targets: bool = False,
     drop_track_statistics: bool = False,
+    track_targets_only: bool = False,
 ) -> bytes:
     """Remap copied Tag targets and discard tags whose target was not selected.
+
+    ``track_targets_only`` : seuls les tags ciblant une piste retenue sont gardés
+    (en-tête de producteur : son tag global ``ENCODER`` n'est pas celui de la source).
 
     Fresh per-track statistics are generated from packets by the native
     assembler.  When requested, stale technical statistics attached to a
@@ -271,7 +275,7 @@ def rewrite_tag_target_uids(
                 break
             alternatives = [element(TARGETS_ID, b"".join(combo)) for combo in itertools.product(*choices)]
             variants = [[*variant, alternative] for variant in variants for alternative in alternatives]
-        if keep_tag and has_tag_value:
+        if keep_tag and has_tag_value and (remapped_track_target or not track_targets_only):
             rebuilt_tags.extend(element(TAG_ID, b"".join(variant)) for variant in variants)
     return element(TAGS_ID, b"".join(rebuilt_tags))
 

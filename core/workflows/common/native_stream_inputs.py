@@ -515,8 +515,15 @@ class StreamInputs:
         source = Path(group[0].source)
         if self._ffprobe is not None and group[0].origin_s is None:
             if source not in self._origins:
-                self._origins[source] = probe_start_time(source, self._ffprobe)
-            group = tuple(replace(item, origin_s=self._origins[source]) for item in group)
+                try:
+                    self._origins[source] = probe_start_time(source, self._ffprobe)
+                except RuntimeError:
+                    # En-tête seul (métadonnées, aucun bloc lu) : une source sans
+                    # origine sondable (SRT externe) reste lisible ; une route l'exige.
+                    if not header_only:
+                        raise
+            if source in self._origins:
+                group = tuple(replace(item, origin_s=self._origins[source]) for item in group)
         ordinal = len(self._producers)
         indexes = ",".join(str(item.stream_index) for item in group)
         label = f"{source.name} #{indexes}"

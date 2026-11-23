@@ -512,6 +512,9 @@ class MatroskaAssemblyPlan:
     chapter_source: Path | None = None
     tag_overrides: dict[str, str] | None = None
     tag_copy_sources: tuple[Path, ...] = ()
+    #: Sources dont seuls les tags ciblant une piste retenue sont copiés (en-têtes de
+    #: producteurs en flux, origines de pistes réécrites).
+    track_tag_sources: tuple[Path, ...] = ()
     #: ``None`` préserve le titre source ; une chaîne vide le supprime.
     segment_title: str | None = None
     title_tag_value: str = ""
@@ -659,7 +662,7 @@ def compile_assembly_plan(
         _register(track.artifact)
     _register(plan.segment_info_source)
     _register(plan.chapter_source if plan.chapter_entries is None else None)
-    for source in plan.tag_copy_sources:
+    for source in (*plan.tag_copy_sources, *plan.track_tag_sources):
         _register(source)
     for attachment in plan.attachments:
         _register(attachment.artifact)
@@ -825,6 +828,19 @@ def compile_assembly_plan(
                     attachment_uids=attachment_uid_maps.get(source, {}),
                     drop_chapter_targets=plan.chapter_entries is not None,
                     drop_track_statistics=True,
+                )
+                for raw in readers[source].raw_top_level(TAGS_ID)
+            )
+        for source in plan.track_tag_sources:
+            if source in plan.tag_copy_sources:
+                continue
+            opaque.extend(
+                rewrite_tag_target_uids(
+                    raw,
+                    track_uids=track_uid_maps.get(source, {}),
+                    attachment_uids={},
+                    drop_track_statistics=True,
+                    track_targets_only=True,
                 )
                 for raw in readers[source].raw_top_level(TAGS_ID)
             )

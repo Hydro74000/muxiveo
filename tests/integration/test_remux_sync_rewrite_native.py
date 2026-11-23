@@ -258,3 +258,95 @@ def test_subtitle_emptied_by_the_rewrite_keeps_its_track(tmp_path: Path) -> None
     subtitle = next(track for track in reader.tracks() if track.track_type == 17)
     assert subtitle.codec_id == "S_TEXT/UTF8"
     assert not [block for block in reader.blocks() if block.track_number == subtitle.number]
+
+
+def _first_ms(path: Path, track_position: int) -> list[int]:
+    return [timestamp for timestamp, _payload in _blocks(path)[track_position]]
+
+
+def test_source_left_without_direct_route_is_placed_like_ffmpeg(tmp_path: Path) -> None:
+    """MKV à origine 5 s : une piste réécrite, l'autre devenue variante → plus aucune route directe."""
+    foreign = tmp_path / "late.mkv"
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=3",
+            "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+            "-map", "0:a", "-map", "1:a", "-c:a", "eac3", "-output_ts_offset", "5", str(foreign))
+
+    def layout(config: RemuxConfig) -> RemuxConfig:
+        sources = list(config.sources)
+        tracks = list(sources[1].tracks)
+        tracks[0] = replace(tracks[0], time_shift_ms=700)
+        tracks[1] = replace(tracks[1], time_shift_ms=0, orig_codec=tracks[1].codec, codec="AC3")
+        sources[1] = replace(sources[1], tracks=tracks)
+        return replace(config, sources=sources)
+
+    native = _run(layout(_config(tmp_path, tmp_path / "native.mkv", backend="native", foreign=foreign)))
+    ffmpeg = _run(layout(_config(tmp_path, tmp_path / "ffmpeg.mkv", backend="ffmpeg", foreign=foreign)))
+    # Piste réécrite (3e piste de sortie) : même placement que FFmpeg.
+    ours, theirs = _first_ms(native, 2), _first_ms(ffmpeg, 2)
+    assert len(ours) == len(theirs)
+    assert max(abs(a - b) for a, b in zip(ours, theirs)) <= 1
+
+
+def test_external_srt_rewritten_and_emptied(tmp_path: Path) -> None:
+    """SRT externe (aucune origine sondable) : réécrit, puis vidé, sans échec du natif."""
+    srt = tmp_path / "external.srt"
+    srt.write_text(_SRT, encoding="utf-8")
+    video = _video_source(tmp_path / "video.mkv")
+    for shift, expected_blocks in ((700, 2), (-9000, 0)):
+        sources = []
+        order = []
+        for index, path in enumerate((video, srt)):
+            tracks = tracks_from_file_info(FileInspector().inspect(path), file_id=f"s{index}")
+            if index == 1:
+                tracks = [replace(track, time_shift_ms=shift) for track in tracks]
+            sources.append(SourceInput(path=path, file_index=index, tracks=tracks))
+            order.extend((index, track.mkv_tid, track.entry_id) for track in tracks)
+        output = tmp_path / f"srt_{shift}.mkv"
+        _run(RemuxConfig(sources=sources, output=output, track_order=order, keep_chapters=False,
+                         mux_backend="native", work_dir=tmp_path / "work"))
+        reader = MatroskaReader(output)
+        subtitle = next(track for track in reader.tracks() if track.track_type == 17)
+        blocks = [block for block in reader.blocks() if block.track_number == subtitle.number]
+        assert len(blocks) == expected_blocks
+        if expected_blocks:
+            assert blocks[0].timestamp_ms == 800 + shift
+
+
+def test_track_tags_of_a_canonicalized_origin_follow_the_rewritten_track(tmp_path: Path) -> None:
+    """Ogg (canonicalisé) avec tags copiés : le tag de la piste réécrite suit la sortie."""
+    ogg = tmp_path / "tagged.ogg"
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=3",
+            "-c:a", "libvorbis", "-metadata:s:a:0", "MUSICIAN=KEEP-ME", str(ogg))
+    video = _video_source(tmp_path / "video.mkv")
+    sources, order = [], []
+    for index, path in enumerate((video, ogg)):
+        tracks = tracks_from_file_info(FileInspector().inspect(path), file_id=f"o{index}")
+        if index == 1:
+            tracks = [replace(track, time_shift_ms=600) for track in tracks]
+        sources.append(SourceInput(path=path, file_index=index, tracks=tracks, copy_tags=index == 1))
+        order.extend((index, track.mkv_tid, track.entry_id) for track in tracks)
+    output = tmp_path / "tagged.mkv"
+    workflow = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe", sync_rewrite_enabled=True,
+                             sync_advanced_audio_rewrite_enabled=True)
+    state = wait_task(workflow.run(RemuxConfig(
+        sources=sources, output=output, track_order=order, keep_chapters=False,
+        mux_backend="native", work_dir=tmp_path / "work",
+    )), timeout=180.0)
+    assert state["failed"] is None, state["failed"]
+    reader = MatroskaReader(output)
+    audio = next(track for track in reader.tracks() if track.codec_id == "A_VORBIS")
+    assert any(
+        tag.targets.get("63c5") == audio.uid and ("MUSICIAN", "KEEP-ME") in tag.values
+        for tag in reader.tags()
+    )
+    # En-tête d'origine : ses tags de piste seulement (aucun ENCODER global en double).
+    globals_ = [tag for tag in reader.tags() if not tag.targets]
+    assert len(globals_) == len({tag.values for tag in globals_})
+
+
+def test_preview_of_a_rewritten_variant_is_conditional(tmp_path: Path) -> None:
+    config = _config(tmp_path, tmp_path / "out.mkv", backend="native", audio_variant="AC3")
+    plan = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe", sync_rewrite_enabled=True).compile_plan(config)
+    variants = [action for action in plan.preparation_actions if action.kind == "audio_variant"]
+    assert len(variants) == 1
+    assert variants[0].command == () and "produite par la réécriture" in variants[0].description

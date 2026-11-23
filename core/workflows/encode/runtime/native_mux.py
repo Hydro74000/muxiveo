@@ -149,12 +149,11 @@ class NativeEncodePreparation:
             return self.streams.context(spec)
         return self.container_artifacts.get(Path(source), Path(source))
 
-    def tag_artifacts_for_container(self, source: Path) -> list[Path]:
-        """Sources de tags : contexte (tags globaux), plus chaque route en flux (tags de sa piste)."""
-        artifacts = [self.artifact_for_container(source)]
+    def track_tag_artifacts_for_container(self, source: Path) -> list[Path]:
+        """En-têtes en flux d'une source : seuls leurs tags de pistes sont copiés."""
         if self.streams is not None and Path(source) in self.context_specs:
-            artifacts.extend(self.streams.route_headers(source))
-        return artifacts
+            return self.streams.route_headers(source)
+        return []
 
 
 @dataclass(frozen=True)
@@ -801,8 +800,11 @@ def build_encode_assembly_plan(
         chapter_source=chapter_source,
         tag_overrides=dict(config.tag_overrides) if config.tag_overrides is not None else None,
         tag_copy_sources=tuple(
+            preparation.artifact_for_container(Path(path)) for path in config.tag_sources
+        ) if config.tag_overrides is None else (),
+        track_tag_sources=tuple(
             artifact for path in config.tag_sources
-            for artifact in preparation.tag_artifacts_for_container(Path(path))
+            for artifact in preparation.track_tag_artifacts_for_container(Path(path))
         ) if config.tag_overrides is None else (),
         segment_title=(
             config.file_title

@@ -701,11 +701,34 @@ def _audio_variant_actions(
     config: RemuxConfig,
     ffmpeg_bin: str,
     variants: tuple[NativeAudioVariantPlan, ...],
+    rewritten: frozenset[tuple[int, str]] = frozenset(),
 ) -> list[RemuxPreparationAction]:
+    """Actions des variantes ; ``rewritten`` : (source, entrée) réécrites par la synchro."""
+    from core.workflows.common.sync_rewrite import REWRITE_AUDIO_CODECS
+
     actions: list[RemuxPreparationAction] = []
     source_by_index = {source.file_index: source for source in config.sources}
     for variant in variants:
         source = source_by_index[variant.source_file_index]
+        if (variant.source_file_index, variant.entry_id) in rewritten:
+            # Même règle qu'à l'exécution : la réécriture simple encode directement au
+            # contrat (une seule perte) ; sinon variante depuis l'artefact réécrit.
+            produced = variant.target_codec in REWRITE_AUDIO_CODECS
+            actions.append(RemuxPreparationAction(
+                kind="audio_variant",
+                description=(
+                    f"Variante audio {variant.target_codec.upper()} de {source.path.name} "
+                    f"(piste #{variant.stream_index}) : "
+                    + ("produite par la réécriture de synchro si la piste est éligible après sonde, "
+                       "sinon variante depuis la source (décalage conteneur)"
+                       if produced else
+                       "appliquée à la piste réécrite (réécriture sans perte), ou depuis la source "
+                       "si la piste n'est pas éligible après sonde")
+                ),
+                source_file_index=variant.source_file_index,
+                target_name=variant.target_name,
+            ))
+            continue
         command = build_audio_variant_command(
             variant,
             source.path,
@@ -996,6 +1019,7 @@ def plan_remux(
             target_name=tmdb_filename,
         ))
 
+    rewrite_intents: list = []
     if sync_rewrite is not None:
         from core.workflows.remux_sync_rewrite import plan_sync_rewrites
 
@@ -1028,7 +1052,11 @@ def plan_remux(
         canonical_actions, canonical_index_maps = _canonicalization_actions(config, ffmpeg_bin)
         preparation_actions.extend(canonical_actions)
         audio_variants = plan_native_audio_variants(config)
-        preparation_actions.extend(_audio_variant_actions(config, ffmpeg_bin, audio_variants))
+        preparation_actions.extend(_audio_variant_actions(
+            config, ffmpeg_bin, audio_variants,
+            frozenset((intent.mapped_track.source_file_index, intent.mapped_track.track.entry_id)
+                      for intent in rewrite_intents),
+        ))
     else:
         if config.chapter_overrides:
             preparation_actions.append(RemuxPreparationAction(

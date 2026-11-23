@@ -348,17 +348,20 @@ def stream_assembly_plan(
         header, position = streams.route(spec_for(source, int(track.artifact_track_index)))
         tracks.append(replace(track, artifact=header, artifact_track_index=position, origin=None))
     tag_sources: list[Path] = []
+    track_tag_sources: list[Path] = list(assembly.track_tag_sources)
     for path in assembly.tag_copy_sources:
         context = context_of(path)
         if context is not None:
             tag_sources.append(context)
         if Path(path) in streamed:
-            tag_sources.extend(streams.route_headers(path))
+            # Tags propres aux pistes ; les tags globaux viennent du contexte.
+            track_tag_sources.extend(streams.route_headers(path))
     return replace(
         assembly,
         ordered_tracks=tuple(tracks),
         chapter_source=context_of(assembly.chapter_source),
         tag_copy_sources=tuple(dict.fromkeys(tag_sources)),
+        track_tag_sources=tuple(dict.fromkeys(track_tag_sources)),
         segment_info_source=context_of(assembly.segment_info_source),
         artifact_order=tuple(dict.fromkeys(
             item for item in (context_of(path) for path in assembly.artifact_order) if item is not None
@@ -370,14 +373,21 @@ def _readable_origins(
     assembly: MatroskaAssemblyPlan,
     config: RemuxConfig,
     streams: StreamArtifacts,
+    origin_tag_sources: frozenset[Path] = frozenset(),
 ) -> MatroskaAssemblyPlan:
-    """Origine non Matroska (MP4 en flux, TS…) d'une piste réécrite : en-tête seul de la piste."""
+    """Origine non Matroska (MP4 en flux, TS…) d'une piste réécrite : en-tête seul de la piste.
+
+    ``origin_tag_sources`` : sources d'origine dont les tags sont copiés ; l'en-tête
+    devient fournisseur de tags (les tags de piste y ciblent l'UID de l'origine,
+    jamais celui d'un artefact canonical où la piste ne figure pas).
+    """
     entries = {
         track.rewrite_origin: track
         for source in config.sources for track in source.tracks
         if track.rewrite_origin is not None
     }
     tracks = []
+    extra_tag_sources: list[Path] = []
     for track in assembly.ordered_tracks:
         origin = track.origin
         if origin is None or Path(origin[0]).suffix.lower() in MATROSKA_EXTENSIONS:
@@ -390,7 +400,13 @@ def _readable_origins(
             (entry.orig_codec or entry.codec) if entry is not None else "",
         ))
         tracks.append(replace(track, origin=header))
-    return replace(assembly, ordered_tracks=tuple(tracks))
+        if Path(origin[0]) in origin_tag_sources:
+            extra_tag_sources.append(header[0])
+    return replace(
+        assembly,
+        ordered_tracks=tuple(tracks),
+        track_tag_sources=tuple(dict.fromkeys([*assembly.track_tag_sources, *extra_tag_sources])),
+    )
 
 
 def build_native_plan(
@@ -398,6 +414,7 @@ def build_native_plan(
     *,
     output_contract=None,
     streams: StreamArtifacts | None = None,
+    origin_tag_sources: frozenset[Path] = frozenset(),
 ) -> MatroskaMuxPlan:
     """Plan bas niveau du writer, compilé via le contrat d'assemblage partagé.
 
@@ -405,7 +422,7 @@ def build_native_plan(
     """
     assembly = remux_assembly_plan(config)
     if streams is not None:
-        assembly = _readable_origins(assembly, config, streams)
+        assembly = _readable_origins(assembly, config, streams, origin_tag_sources)
         assembly = stream_assembly_plan(assembly, config, streams)
     if output_contract is None:
         from core.matroska.assembly import assembly_output_contract
@@ -676,7 +693,13 @@ def run_native_remux(
             if native_rewrites:
                 # Origine native de chaque source d'origine (R(S)) : piste réécrite
                 # placée par rapport à sa source comme le muxage final FFmpeg.
-                routed_sources = {track_order_parts(item)[0] for item in run_config.track_order}
+                # Routes directes restantes : une piste devenue variante n'en est plus une.
+                variant_positions = {variant.order_index for variant in execution_plan.audio_variants}
+                routed_sources = {
+                    track_order_parts(item)[0]
+                    for position, item in enumerate(run_config.track_order)
+                    if position not in variant_positions
+                }
                 current_sources = {source.file_index: source for source in run_config.sources}
 
                 def _native_origin(rewrite: NativeRewrite) -> float | None:
@@ -746,6 +769,11 @@ def run_native_remux(
                 log("INFO", "Lecture en flux des sources MP4/MOV (sans fichier intermédiaire).")
             plan_matroska = build_native_plan(
                 run_config, output_contract=output_contract, streams=streams,
+                origin_tag_sources=frozenset(
+                    rewrite.origin_path for rewrite in native_rewrites
+                    if any(source.file_index == rewrite.origin_source_index and source.copy_tags
+                           for source in config.sources)
+                ),
             )
             log_step(4, "Écriture Matroska native multi-pistes")
             if any(track.remove_closed_captions for track in plan_matroska.tracks):
