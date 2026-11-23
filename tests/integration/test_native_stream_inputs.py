@@ -78,6 +78,7 @@ def test_producer_command_shape() -> None:
     subtitle = producer_command("ffmpeg", StreamTrackSpec(Path("in.mp4"), 3, "subtitle", "mov_text"))
     assert subtitle[subtitle.index("-c:s:0") + 1] == "srt"
     assert subtitle[subtitle.index("-map_chapters") + 1] == "-1"
+    assert subtitle[subtitle.index("-map_metadata:g") + 1] == "-1"
 
 
 @_needs_ffmpeg
@@ -153,7 +154,7 @@ def test_cancellation_kills_producer_and_raises_cancelled(tmp_path: Path) -> Non
 def test_header_only_producer_is_stopped_on_purpose(tmp_path: Path) -> None:
     source = _stream_file(tmp_path / "src.mkv")
     logs: list[str] = []
-    inputs = StreamInputs(sys.executable, tmp_path, log=lambda _level, message: logs.append(message))
+    inputs = StreamInputs(sys.executable, tmp_path, ffprobe_bin=None, log=lambda _level, message: logs.append(message))
     # Producteur simulé à la place de FFmpeg : seule la mécanique d'arrêt est testée ici.
     command = _replay(source, hang=30)
     from core.workflows.common import native_stream_inputs as module
@@ -169,3 +170,70 @@ def test_header_only_producer_is_stopped_on_purpose(tmp_path: Path) -> None:
     assert inputs._producers[0]._process.poll() is not None
     assert any("arrêté volontairement" in message for message in logs)
     inputs.close()
+
+
+def _script_command(script: str) -> list[str]:
+    return [sys.executable, "-c", script]
+
+
+def test_origin_is_explicit_and_probed_once(tmp_path: Path) -> None:
+    from core.workflows.common.native_stream_inputs import probe_start_time
+
+    command = producer_command("ffmpeg", StreamTrackSpec(Path("in.mp4"), 1, "audio", origin_s=-0.021333))
+    assert command.index("-copyts") < command.index("-i")
+    assert command[command.index("-output_ts_offset") + 1] == "0.021333"
+    if shutil.which("ffprobe"):
+        source = tmp_path / "s.mp4"
+        make_av_container(source, duration=1.0)
+        assert isinstance(probe_start_time(source, "ffprobe"), float)
+
+
+def test_stderr_flood_never_blocks_the_stream(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    replay = _replay(source)[2]
+    flood = "import sys\nsys.stderr.write('x' * 1_000_000 + '\\n'); sys.stderr.flush()\n" + replay
+    producer = StreamProducer(_script_command(flood), tmp_path / "h.mkv", label="bavard")
+    assert len(list(producer.reader.blocks())) == len(list(MatroskaReader(source).blocks()))
+
+
+def test_close_kills_descendants_holding_stderr(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    spawn = (
+        "import subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        + _replay(source, limit=_first_cluster_end(source))[2]
+    )
+    producer = StreamProducer(_script_command(spawn), tmp_path / "h.mkv", label="descendant")
+    started = time.monotonic()
+    producer.close()
+    producer.close()  # idempotent
+    assert time.monotonic() - started < 10
+
+
+def test_cancel_through_task_signals_while_reading_header(tmp_path: Path, monkeypatch) -> None:
+    from core.runner import TaskSignals
+    from core.workflows.common import native_stream_inputs as module
+
+    source = _stream_file(tmp_path / "src.mkv")
+    signals = TaskSignals()
+    monkeypatch.setattr(module, "producer_command", lambda _ffmpeg, _spec: _replay(source, delay=30))
+    inputs = StreamInputs(sys.executable, tmp_path, ffprobe_bin=None, cancelled=signals._cancel_event.is_set,
+                          register=signals._register_proc, unregister=signals._unregister_proc)
+    threading.Timer(0.3, signals.cancel).start()
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        inputs.open(StreamTrackSpec(source, 0, "audio"))
+    assert time.monotonic() - started < 10
+    inputs.close()
+
+
+def test_failure_while_cancelled_is_reported_as_cancellation(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    cancelled = threading.Event()
+    producer = StreamProducer(_replay(source, limit=_first_cluster_end(source), code=3), tmp_path / "h.mkv",
+                              label="annulé", cancelled=cancelled.is_set)
+    blocks = producer.reader.blocks()
+    next(blocks)
+    cancelled.set()
+    with pytest.raises(TaskCancelledError):
+        list(blocks)
