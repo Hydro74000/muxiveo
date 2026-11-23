@@ -43,7 +43,7 @@ from core.matroska.writer import (
 )
 from core.workflows.remux_mapping import resolve_mapped_tracks, track_order_parts
 from core.workflows.remux_mapping import normalized_language_value, resolved_global_tags
-from core.workflows.remux_models import RemuxConfig, SourceInput
+from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput
 from core.workflows.remux_plan import (
     MATROSKA_EXTENSIONS,
     MuxBackendDecision,
@@ -57,6 +57,7 @@ from core.workflows.remux_plan import (
     plan_remux,
     select_mux_backend,
 )
+from core.workflows.remux_plan import _metadata_carrier_stream
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workdir import (
     download_tmdb_cover,
@@ -67,6 +68,12 @@ from core.workdir import (
 )
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line
 from core.matroska.validation import interleave_warning_lines, mux_track_labels
+from core.workflows.common.native_stream_inputs import (
+    StreamArtifacts,
+    StreamInputs,
+    StreamTrackSpec,
+    is_streamable_source,
+)
 
 
 class RemuxBackend(Protocol):
@@ -212,18 +219,91 @@ def remux_assembly_plan(config: RemuxConfig) -> MatroskaAssemblyPlan:
     )
 
 
+def stream_assembly_plan(
+    assembly: MatroskaAssemblyPlan,
+    config: RemuxConfig,
+    streams: StreamArtifacts,
+) -> MatroskaAssemblyPlan:
+    """Pistes des sources ISO BMFF lues en flux : une route par piste, contexte sur un en-tête dédié.
+
+    Chaque piste d'une telle source devient l'en-tête de son producteur (piste
+    0) ; chapitres, tags globaux, Segment Info et ordre des artefacts pointent
+    vers le producteur de contexte de la source ; les tags propres à chaque
+    piste viennent des en-têtes de ses routes.
+    """
+    streamed = {Path(source.path): source for source in config.sources if is_streamable_source(source.path)}
+    if not streamed:
+        return assembly
+
+    def spec_for(source: SourceInput, stream_index: int, *, context: bool = False) -> StreamTrackSpec:
+        entry = next((track for track in source.tracks if track.mkv_tid == stream_index), None)
+        kind = entry.track_type if entry is not None else ""
+        codec = (entry.codec if entry is not None else "") or ""
+        return StreamTrackSpec(Path(source.path), stream_index, kind, codec, carry_context=context)
+
+    used: dict[Path, list[int]] = {}
+    for track in assembly.ordered_tracks:
+        if Path(track.artifact) in streamed:
+            used.setdefault(Path(track.artifact), []).append(int(track.artifact_track_index))
+
+    def context_of(path: Path | None) -> Path | None:
+        source = streamed.get(Path(path)) if path is not None else None
+        if source is None:
+            return path
+        # Porteur du contexte : une piste déjà lue de la source, sinon le flux le plus léger.
+        selected = used.get(Path(source.path)) or []
+        carrier = selected[0] if selected else _metadata_carrier_stream(source)
+        if carrier is None:
+            raise RemuxError(f"{source.path.name} : aucun flux pour porter chapitres et tags.")
+        return streams.context(spec_for(source, int(carrier), context=True))
+
+    tracks = []
+    for track in assembly.ordered_tracks:
+        source = streamed.get(Path(track.artifact))
+        if source is None:
+            tracks.append(track)
+            continue
+        header = streams.route(spec_for(source, int(track.artifact_track_index)))
+        tracks.append(replace(track, artifact=header, artifact_track_index=0, origin=None))
+    tag_sources: list[Path] = []
+    for path in assembly.tag_copy_sources:
+        context = context_of(path)
+        if context is not None:
+            tag_sources.append(context)
+        if Path(path) in streamed:
+            tag_sources.extend(streams.route_headers(path))
+    return replace(
+        assembly,
+        ordered_tracks=tuple(tracks),
+        chapter_source=context_of(assembly.chapter_source),
+        tag_copy_sources=tuple(dict.fromkeys(tag_sources)),
+        segment_info_source=context_of(assembly.segment_info_source),
+        artifact_order=tuple(dict.fromkeys(
+            item for item in (context_of(path) for path in assembly.artifact_order) if item is not None
+        )),
+    )
+
+
 def build_native_plan(
     config: RemuxConfig,
     *,
     output_contract=None,
+    streams: StreamArtifacts | None = None,
 ) -> MatroskaMuxPlan:
-    """Plan bas niveau du writer, compilé via le contrat d'assemblage partagé."""
+    """Plan bas niveau du writer, compilé via le contrat d'assemblage partagé.
+
+    ``streams`` : sources ISO BMFF lues en flux (sinon déjà canonicalisées).
+    """
     assembly = remux_assembly_plan(config)
+    if streams is not None:
+        assembly = stream_assembly_plan(assembly, config, streams)
     if output_contract is None:
         from core.matroska.assembly import assembly_output_contract
         output_contract = assembly_output_contract(assembly)
     assembly = replace(assembly, expected_output_contract=output_contract)
-    return compile_assembly_plan(assembly)
+    if streams is None:
+        return compile_assembly_plan(assembly)
+    return compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen)
 
 
 def run_native_remux(
@@ -254,6 +334,14 @@ def run_native_remux(
 
     def task() -> None:
         canonical_root: Path | None = None
+        # Sources ISO BMFF lues en flux (producteurs FFmpeg sur pipes), fermées en fin de tâche.
+        stream_inputs = StreamInputs(
+            ffmpeg_bin, process_work_dir, ffprobe_bin=ffprobe_bin,
+            cancelled=signals._cancel_event.is_set,
+            register=signals._register_proc, unregister=signals._unregister_proc,
+            log=log,
+        )
+        streams = StreamArtifacts(stream_inputs)
 
         def _check_cancel() -> None:
             if signals._cancel_event.is_set():
@@ -463,8 +551,10 @@ def run_native_remux(
                 _check_cancel()
 
             log_step(3, "Construction du plan Matroska natif")
+            if any(action.kind == "stream_source" for action in execution_plan.preparation_actions):
+                log_step(2, "Lecture en flux des sources MP4/MOV (sans fichier intermédiaire)")
             plan_matroska = build_native_plan(
-                run_config, output_contract=output_contract,
+                run_config, output_contract=output_contract, streams=streams,
             )
             log_step(4, "Écriture Matroska native multi-pistes")
             if any(track.remove_closed_captions for track in plan_matroska.tracks):
@@ -517,6 +607,7 @@ def run_native_remux(
         except Exception as exc:
             signals.failed.emit(str(exc), exc)
         finally:
+            stream_inputs.close()
             if canonical_root is not None:
                 shutil.rmtree(canonical_root, ignore_errors=True)
             remove_path(process_work_dir)
@@ -530,7 +621,7 @@ def run_native_remux(
 __all__ = [
     "FfmpegRemuxBackend", "MuxBackendDecision", "MuxExecutionPlan",
     "NativeMatroskaBackend",
-    "RemuxBackend", "build_native_plan", "mux_backend_report",
+    "RemuxBackend", "build_native_plan", "mux_backend_report", "stream_assembly_plan",
     "build_canonicalization_command",
     "MATROSKA_EXTENSIONS",
     "native_capability_reasons", "native_preparation_commands",

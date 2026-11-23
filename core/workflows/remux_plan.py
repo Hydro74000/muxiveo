@@ -54,6 +54,7 @@ from core.workflows.remux_models import (
     normalize_mux_backend,
 )
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.native_stream_inputs import StreamTrackSpec, is_streamable_source, producer_command
 
 
 MATROSKA_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
@@ -599,6 +600,28 @@ def _canonicalization_actions(
                 continue
             streams = [carrier]
             index_map = {carrier: 0}
+        if is_streamable_source(source.path):
+            # MP4/MOV : pistes lues en flux par l'assemblage natif, sans fichier
+            # intermédiaire (un producteur par piste ; aperçu = leurs commandes).
+            entries = {track.mkv_tid: track for track in source.tracks}
+            for position, stream in enumerate(streams):
+                entry = entries.get(stream)
+                spec = StreamTrackSpec(
+                    source.path, stream, entry.track_type if entry is not None else "",
+                    (entry.codec if entry is not None else "") or "",
+                    carry_context=position == 0 and bool(participation.copy_tags or participation.copy_chapters),
+                )
+                actions.append(RemuxPreparationAction(
+                    kind="stream_source",
+                    description=(
+                        f"Lecture en flux de {source.path.name} (flux {stream}, sans fichier intermédiaire ; "
+                        "origine temporelle sondée au lancement)"
+                    ),
+                    source_file_index=source.file_index,
+                    target_name=f"stream_{source.file_index}_{stream}",
+                    command=tuple(producer_command(ffmpeg_bin, spec)),
+                ))
+            continue
         index_maps[source.file_index] = index_map
         target_name = f"source_{source.file_index}.mkv"
         command = build_canonicalization_command(

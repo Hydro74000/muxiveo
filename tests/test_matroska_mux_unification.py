@@ -773,7 +773,9 @@ class TestNativeEncodeAssembly:
         assert audio.flag_original
         assert audio.flag_commentary
 
-    def test_native_assembly_materializes_non_matroska_copied_audio(self, tmp_path: Path) -> None:
+    def test_native_assembly_materializes_non_matroska_copied_audio(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         foreign = tmp_path / "audio.mp4"
         foreign.write_bytes(b"mp4")
         artifact = _write_mkv(
@@ -952,7 +954,9 @@ class TestNativeEncodeAssembly:
 
         assert [commands[0][i + 1] for i, arg in enumerate(commands[0]) if arg == "-map"] == ["0:2"]
 
-    def test_native_assembly_copied_mp4_video_without_context(self, tmp_path: Path) -> None:
+    def test_native_assembly_copied_mp4_video_without_context(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         """Vidéo MP4 copiée sans chapitres ni tags : les infos de segment
         viennent de l'artefact canonique, jamais du MP4 (« VINT EBML invalide »)."""
         source = tmp_path / "source.mp4"
@@ -1521,7 +1525,9 @@ class TestNativeSyncRewrite:
         )
         assert plan.ordered_tracks[1].time_shift_ms == 120
 
-    def test_rewritten_mp4_subtitle_keeps_canonical_metadata(self, tmp_path: Path) -> None:
+    def test_rewritten_mp4_subtitle_keeps_canonical_metadata(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         """Sous-titre MP4 réécrit : langue, nom et flags repris de l'artefact canonique."""
         from core.matroska.ids import FLAG_DEFAULT_ID, FLAG_FORCED_ID, LANGUAGE_ID, NAME_ID
 

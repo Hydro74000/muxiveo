@@ -329,6 +329,7 @@ from core.workflows.encode.planning.plan_models import (
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
+from core.workflows.common.native_stream_inputs import is_streamable_source
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
 _PREVIEW_IMAGE_MARGIN_S = 0.5
@@ -4519,6 +4520,14 @@ class EncodeWorkflow(QObject):
                 self.log_message.emit("WARN", f"Impossible d'inspecter les pistes vidéo Matroska : {exc}")
                 actual_track_idx = stream_idx
             video_artifacts = [_NativeVideoArtifactRef(source, track_index=actual_track_idx, offset_ms=video_offset_ms)]
+            commands: list[list[str]] = []
+            intermediate = None
+        elif is_copy and is_streamable_source(source):
+            # Copie depuis MP4/MOV : piste lue en flux par l'assemblage natif
+            # (producteur FFmpeg sur pipe), aucun fichier vidéo intermédiaire.
+            video_artifacts = [_NativeVideoArtifactRef(
+                source, track_index=self._video_stream_index(config), offset_ms=video_offset_ms,
+            )]
             commands = []
             intermediate = None
         else:

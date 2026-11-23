@@ -334,7 +334,10 @@ class TestCanonicalizationIndexMapping:
         assert "-c:s:0 srt" in joined
 
     def test_plan_records_explicit_index_map(self, tmp_path: Path) -> None:
+        # Canonicalisation fichier : conteneurs non ISO BMFF (les MP4 sont lus en flux).
         source = self._mp4_source(tmp_path)
+        source = SourceInput(source.path.with_suffix(".ts"), 0, source.tracks)
+        source.path.write_bytes(b"fixture")
         cfg = RemuxConfig(
             sources=[source],
             output=tmp_path / "out.mkv",
@@ -508,7 +511,8 @@ class TestNativeRunnerCancellation:
             "core.workflows.remux_backend.subprocess.Popen", _CancellingProcess,
         )
         _CancellingProcess.holder = {}
-        mp4 = tmp_path / "in.mp4"
+        # Conteneur canonicalisé en fichier (TS) : les MP4 sont lus en flux.
+        mp4 = tmp_path / "in.ts"
         mp4.write_bytes(b"fixture")
         cfg = RemuxConfig(
             sources=[SourceInput(mp4, 0, [_track(0)])],

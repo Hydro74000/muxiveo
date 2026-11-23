@@ -17,7 +17,7 @@ import hashlib
 import heapq
 import mimetypes
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -174,8 +174,11 @@ class _SharedArtifactRead:
     def __init__(
         self, reader: MatroskaReader, routes: list[_Route], budget: int | None = None,
         *, sparse_tracks: dict[int, int] | None = None,
+        reopen: Callable[[], MatroskaReader] | None = None,
     ) -> None:
         self._reader = reader
+        # Lecture propre d'une route détachée : nouveau lecteur (flux) ou le même fichier.
+        self._reopen = reopen
         self._routes = routes
         self._budget = SHARED_READ_QUEUE_BYTES if budget is None else budget
         self._by_track: dict[int, list[_Route]] = {}
@@ -281,7 +284,8 @@ class _SharedArtifactRead:
         route.own = self._own_stream(route, start)
 
     def _own_stream(self, route: _Route, start: int) -> Iterator[MatroskaMuxPacket]:
-        blocks = self._reader.blocks(track_numbers={route.track_number}, first_lace_only=True)
+        reader = self._reopen() if self._reopen is not None else self._reader
+        blocks = reader.blocks(track_numbers={route.track_number}, first_lace_only=True)
         try:
             for sequence, block in enumerate(blocks):
                 if sequence < start:
@@ -622,8 +626,19 @@ def assembly_output_contract(
     )
 
 
-def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
-    """Compile le plan d'assemblage vers le plan bas niveau du writer natif."""
+def compile_assembly_plan(
+    plan: MatroskaAssemblyPlan,
+    *,
+    readers: Mapping[Path, MatroskaReader] | None = None,
+    reopen: Mapping[Path, Callable[[], MatroskaReader]] | None = None,
+) -> MatroskaMuxPlan:
+    """Compile le plan d'assemblage vers le plan bas niveau du writer natif.
+
+    ``readers`` : lecteurs fournis pour certains artefacts (flux lus par pipe :
+    métadonnées de leur en-tête, blocs à usage unique). ``reopen`` : nouvelle
+    lecture d'un tel artefact, pour une route qui quitte la lecture partagée
+    (un flux ne se relit pas). Sans eux, chaque artefact est un fichier Matroska.
+    """
     if not plan.ordered_tracks:
         raise ValueError("Plan d'assemblage sans piste.")
     if plan.expected_output_contract is None:
@@ -649,7 +664,8 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     for attachment in plan.attachments:
         _register(attachment.artifact)
 
-    readers = {path: MatroskaReader(path) for path in reader_order}
+    provided = dict(readers or {})
+    readers = {path: provided.get(path) or MatroskaReader(path) for path in reader_order}
     native_tracks = {path: reader.tracks() for path, reader in readers.items()}
 
     # Échelle de sortie fixe (1 ms, valeur Matroska usuelle) : une entrée plus
@@ -753,7 +769,7 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
     shared_reads = {
         artifact: _SharedArtifactRead(readers[artifact], routes, sparse_tracks={
             track.number: track.uid for track in native_tracks[artifact] if track.track_type == 17
-        })
+        }, reopen=(reopen or {}).get(artifact))
         for artifact, routes in routes_by_artifact.items()
     }
     packet_stream = merge_packet_sources([
