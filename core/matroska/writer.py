@@ -59,12 +59,13 @@ class _BackgroundWriter:
     Cluster suivant (Remux réel : 6,8 s d'écriture sur 23 s dans le fil
     principal). ``position`` suit la fin logique du fichier. Une erreur
     d'écriture est relevée au prochain appel ; ``close`` attend la fin des
-    écritures, ou les abandonne (``abandon=True``, candidat supprimé ensuite).
+    écritures, ou les abandonne (``abandon=True``, candidat supprimé ensuite) :
+    l'écriture en cours se termine, les suivantes sont retirées de la file.
     """
 
-    def __init__(self, fh: BinaryIO, *, limit: int = _BACKGROUND_WRITE_BYTES) -> None:
+    def __init__(self, fh: BinaryIO, *, limit: int | None = None) -> None:
         self._fh = fh
-        self._limit = limit
+        self._limit = _BACKGROUND_WRITE_BYTES if limit is None else limit
         self.position = fh.tell()
         self._queue: deque[tuple[bytes | list[bytes], int]] = deque()
         self._pending = 0
@@ -94,7 +95,8 @@ class _BackgroundWriter:
                     self._cond.wait()
                 if not self._queue:
                     return
-                data, size = self._queue[0]
+                # Retiré sous verrou : un abandon pendant l'écriture ne vide que la suite.
+                data, size = self._queue.popleft()
             try:
                 # Jointure hors du fil principal (sans GIL au-delà d'un Mio).
                 self._fh.write(b"".join(data) if isinstance(data, list) else data)
@@ -106,7 +108,6 @@ class _BackgroundWriter:
                     self._cond.notify_all()
                 return
             with self._cond:
-                self._queue.popleft()
                 self._pending -= size
                 self._cond.notify_all()
 
@@ -114,13 +115,43 @@ class _BackgroundWriter:
         """Fin des écritures (attendues, ou abandonnées) ; relève une erreur d'écriture."""
         with self._cond:
             if abandon:
+                self._pending -= sum(size for _data, size in self._queue)
                 self._queue.clear()
-                self._pending = 0
             self._closed = True
             self._cond.notify_all()
         self._thread.join()
         if self._error is not None and not abandon:
             raise self._error
+
+class _AbandonOnError:
+    """Fil d'écriture des Clusters, abandonné et rejoint en cas d'erreur **avant** la fermeture du fichier.
+
+    Placé après le fichier dans le même ``with`` : sa sortie précède celle du
+    fichier, aucune écriture du fil ne vise donc un fichier fermé, et
+    l'exception d'origine est conservée (l'abandon ne lève jamais).
+    """
+
+    def __init__(self) -> None:
+        self._sink: _BackgroundWriter | None = None
+
+    def start(self, fh: BinaryIO) -> _BackgroundWriter:
+        self._sink = _BackgroundWriter(fh)
+        return self._sink
+
+    def finish(self) -> None:
+        """Fin normale : écritures attendues, erreur différée relevée."""
+        sink, self._sink = self._sink, None
+        if sink is not None:
+            sink.close()
+
+    def __enter__(self) -> "_AbandonOnError":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        sink, self._sink = self._sink, None
+        if sink is not None:
+            sink.close(abandon=exc_type is not None)
+
 
 _PATCHED_TRACK_FLAG_FIELDS = {
     FLAG_ENABLED_ID, FLAG_DEFAULT_ID, FLAG_FORCED_ID,
@@ -715,9 +746,9 @@ class MatroskaWriter:
         # Candidat propre à cette écriture : un `.partial` existant (autre job,
         # ancien schéma de nommage) n'est jamais réutilisé ni supprimé.
         partial = reserve_candidate(destination)
-        sink: _BackgroundWriter | None = None
+        sinks = _AbandonOnError()
         try:
-            with partial.open("wb") as fh:
+            with partial.open("wb") as fh, sinks:
                 fh.write(_build_ebml_header())
                 # Taille de Segment : VINT 8 octets « inconnue » réservée,
                 # patchée avec la taille réelle en fin d'écriture.
@@ -760,7 +791,7 @@ class MatroskaWriter:
                 # Entrelacement mesuré dans l'ordre d'écriture (avertissement, jamais bloquant).
                 interleave = InterleaveTracker()
                 _notify("clusters", fh.tell())
-                sink = _BackgroundWriter(fh)
+                sink = sinks.start(fh)
                 pending = next(packet_iter, None)
                 while pending is not None:
                     _check_cancel("clusters")
@@ -838,9 +869,7 @@ class MatroskaWriter:
                         )
                     _notify("clusters", sink.position)
                 # Toutes les écritures de Clusters terminées avant tout repositionnement.
-                closing_sink = sink
-                sink = None
-                closing_sink.close()
+                sinks.finish()
                 _check_cancel("cues")
                 if plan.regenerate_statistics:
                     statistics_tags = build_track_statistics_tags_element({
@@ -923,8 +952,6 @@ class MatroskaWriter:
             # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
             raise
         except BaseException:
-            if sink is not None:
-                sink.close(abandon=True)
             partial.unlink(missing_ok=True)
             raise
         finally:
