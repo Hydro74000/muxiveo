@@ -224,12 +224,13 @@ def stream_assembly_plan(
     config: RemuxConfig,
     streams: StreamArtifacts,
 ) -> MatroskaAssemblyPlan:
-    """Pistes des sources ISO BMFF lues en flux : une route par piste, contexte sur un en-tête dédié.
+    """Pistes des sources ISO BMFF lues en flux, contexte sur un en-tête dédié.
 
-    Chaque piste d'une telle source devient l'en-tête de son producteur (piste
-    0) ; chapitres, tags globaux, Segment Info et ordre des artefacts pointent
-    vers le producteur de contexte de la source ; les tags propres à chaque
-    piste viennent des en-têtes de ses routes.
+    Vidéo et audio d'une source partagent un producteur (pistes dans l'ordre de
+    sortie), chaque sous-titre a le sien (:func:`group_stream_specs`) ;
+    chapitres, tags globaux, Segment Info et ordre des artefacts pointent vers
+    le producteur de contexte de la source ; les tags propres à chaque piste
+    viennent des en-têtes de ses producteurs.
     """
     streamed = {Path(source.path): source for source in config.sources if is_streamable_source(source.path)}
     if not streamed:
@@ -257,14 +258,19 @@ def stream_assembly_plan(
             raise RemuxError(f"{source.path.name} : aucun flux pour porter chapitres et tags.")
         return streams.context(spec_for(source, int(carrier), context=True))
 
+    # Vidéo et audio d'une même source sur un seul producteur, chaque sous-titre sur le sien.
+    streams.declare(
+        spec_for(streamed[Path(track.artifact)], int(track.artifact_track_index))
+        for track in assembly.ordered_tracks if Path(track.artifact) in streamed
+    )
     tracks = []
     for track in assembly.ordered_tracks:
         source = streamed.get(Path(track.artifact))
         if source is None:
             tracks.append(track)
             continue
-        header = streams.route(spec_for(source, int(track.artifact_track_index)))
-        tracks.append(replace(track, artifact=header, artifact_track_index=0, origin=None))
+        header, position = streams.route(spec_for(source, int(track.artifact_track_index)))
+        tracks.append(replace(track, artifact=header, artifact_track_index=position, origin=None))
     tag_sources: list[Path] = []
     for path in assembly.tag_copy_sources:
         context = context_of(path)

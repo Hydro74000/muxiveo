@@ -12,6 +12,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from io import BytesIO
 import mmap
+import os
 from pathlib import Path
 import struct
 from typing import BinaryIO, Iterable, Iterator, overload
@@ -24,49 +25,109 @@ _CONTENT_ENCRYPTION_ID = bytes.fromhex("5035")
 _INFO_DURATION_ID = bytes.fromhex("4489")
 
 
-class _MappedInput:
-    """Projection glissante : mémoire résidente bornée, offsets de fichier absolus.
+#: Lecture positionnelle sans position de fichier partagée (POSIX) ; sinon poignée dédiée au fil.
+_PREAD = getattr(os, "pread", None)
 
-    Les slices retournent des bytes indépendants du mapping, donc les paquets
-    déjà lus restent valides après remapping. Une frame plus grande que la
-    fenêtre reste lisible, comme avec le lecteur tamponné.
+
+class _WindowedInput:
+    """Fenêtre glissante lue par blocs : mémoire bornée, offsets de fichier absolus.
+
+    Parcours séquentiel des paquets : de grandes lectures contiguës, et la
+    fenêtre suivante lue par un fil pendant le traitement de la courante. Une
+    projection mmap y payait une faute de page synchrone par petite zone (MKV
+    de 9 Go à froid : 11,2 s contre 3,6 s, débit du disque) ; une lecture
+    synchrone par fenêtre laissait encore le disque inactif pendant le
+    traitement (``POSIX_FADV_WILLNEED`` sans effet mesuré). Les slices sont des
+    bytes indépendants de la fenêtre, donc les paquets déjà lus restent valides
+    après son remplacement. Une frame plus grande que la fenêtre reste lisible.
+    Mémoire : deux fenêtres au plus.
     """
 
-    _WINDOW_BYTES = 32 * 1024 * 1024
+    _WINDOW_BYTES = 8 * 1024 * 1024
 
-    def __init__(self, fh: BinaryIO, size: int) -> None:
+    def __init__(self, fh: BinaryIO, size: int, path: Path | None = None) -> None:
         self._fh = fh
         self._size = size
-        self._mapping: mmap.mmap | None = None
+        self._path = path
+        self._buffer: bytes | None = None
         self._start = self._end = 0
+        self._pool: ThreadPoolExecutor | None = None
+        self._ahead: Future[bytes] | None = None
+        self._ahead_start = 0
+        self._ahead_fh: BinaryIO | None = None
         self._ensure(0, min(1, size))
 
     def __len__(self) -> int:
         return self._size
 
     def element_header(self, cursor: int, limit: int) -> tuple[int, int, int | None]:
-        mapping = self._ensure(cursor, min(cursor + 16, limit))
-        element_id, payload, size = _memory_element_header(mapping, cursor - self._start, limit - self._start)
+        buffer = self._ensure(cursor, min(cursor + 16, limit))
+        element_id, payload, size = _memory_element_header(buffer, cursor - self._start, limit - self._start)
         return element_id, payload + self._start, size
 
-    def block_data(self, start: int, end: int) -> tuple[mmap.mmap, int, int]:
-        mapping = self._ensure(start, end)
-        return mapping, start - self._start, end - self._start
+    def block_data(self, start: int, end: int) -> tuple[bytes, int, int]:
+        buffer = self._ensure(start, end)
+        return buffer, start - self._start, end - self._start
 
-    def _ensure(self, start: int, end: int) -> mmap.mmap:
-        if self._mapping is not None and self._start <= start and end <= self._end:
-            return self._mapping
-        self.close()
-        self._start = start - start % mmap.ALLOCATIONGRANULARITY
-        length = min(self._size - self._start, max(self._WINDOW_BYTES, end - self._start))
-        self._mapping = mmap.mmap(self._fh.fileno(), length, access=mmap.ACCESS_READ, offset=self._start)
-        self._end = self._start + length
-        if hasattr(mmap, "MADV_SEQUENTIAL"):
-            try:
-                self._mapping.madvise(mmap.MADV_SEQUENTIAL)
-            except (OSError, ValueError):
-                pass
-        return self._mapping
+    def _ensure(self, start: int, end: int) -> bytes:
+        if self._buffer is not None and self._start <= start and end <= self._end:
+            return self._buffer
+        taken = self._take_ahead(start, end)
+        if taken is not None:
+            self._start, self._buffer = taken
+        else:
+            self._buffer = None
+            self._start = start
+            self._fh.seek(start)
+            # Bornée à la fin du fichier : un accès au-delà échoue comme sur le fichier.
+            self._buffer = self._fh.read(max(0, min(self._size - start, max(self._WINDOW_BYTES, end - start))))
+        self._end = self._start + len(self._buffer)
+        self._schedule_ahead()
+        return self._buffer
+
+    def _take_ahead(self, start: int, end: int) -> tuple[int, bytes] | None:
+        """Fenêtre suivante déjà lue, raccordée à la fin utile de la courante ; ``None`` sinon."""
+        future, self._ahead = self._ahead, None
+        if future is None:
+            return None
+        try:
+            ahead = future.result()
+        except (OSError, ValueError):
+            return None  # relue de façon synchrone : l'erreur éventuelle y est levée
+        ahead_start = self._ahead_start
+        ahead_end = ahead_start + len(ahead)
+        if self._buffer is None or not (self._start <= start <= ahead_end and end <= ahead_end):
+            return None
+        if start >= ahead_start:
+            return ahead_start, ahead
+        # Élément à cheval sur les deux fenêtres : fin de la courante + suivante.
+        return start, self._buffer[start - self._start:] + ahead
+
+    def _schedule_ahead(self) -> None:
+        if self._end >= self._size or (_PREAD is None and self._path is None):
+            return
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="matroska-window")
+        self._ahead_start = self._end
+        self._ahead = self._pool.submit(self._read_at, self._end, min(self._WINDOW_BYTES, self._size - self._end))
+
+    def _read_at(self, position: int, length: int) -> bytes:
+        """Lecture de la fenêtre suivante, dans le fil (aucune position partagée avec ``fh``)."""
+        if _PREAD is not None:
+            chunks: list[bytes] = []
+            while length > 0:
+                chunk = _PREAD(self._fh.fileno(), length, position)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                position += len(chunk)
+                length -= len(chunk)
+            return chunks[0] if len(chunks) == 1 else b"".join(chunks)
+        if self._ahead_fh is None:
+            assert self._path is not None
+            self._ahead_fh = self._path.open("rb")
+        self._ahead_fh.seek(position)
+        return self._ahead_fh.read(length)
 
     @overload
     def __getitem__(self, key: int) -> int: ...
@@ -76,17 +137,24 @@ class _MappedInput:
 
     def __getitem__(self, key: int | slice) -> int | bytes:
         if isinstance(key, int):
-            mapping = self._ensure(key, key + 1)
-            return mapping[key - self._start]
+            buffer = self._ensure(key, key + 1)
+            return buffer[key - self._start]
         start = 0 if key.start is None else key.start
         end = self._size if key.stop is None else key.stop
-        mapping = self._ensure(start, end)
-        return mapping[start - self._start:end - self._start]
+        buffer = self._ensure(start, end)
+        return buffer[start - self._start:end - self._start]
 
     def close(self) -> None:
-        if self._mapping is not None:
-            self._mapping.close()
-            self._mapping = None
+        self._buffer = None
+        future, self._ahead = self._ahead, None
+        if future is not None:
+            future.cancel()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+        if self._ahead_fh is not None:
+            self._ahead_fh.close()
+            self._ahead_fh = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +183,7 @@ def _read_exact(fh: BinaryIO, count: int) -> bytes:
     return value
 
 
-def _read_vint_value(data: bytes | mmap.mmap | _MappedInput, offset: int = 0) -> tuple[int, int]:
+def _read_vint_value(data: bytes | mmap.mmap | _WindowedInput, offset: int = 0) -> tuple[int, int]:
     if offset >= len(data):
         raise ValueError("VINT absent")
     first = data[offset]
@@ -127,7 +195,7 @@ def _read_vint_value(data: bytes | mmap.mmap | _MappedInput, offset: int = 0) ->
     return int.from_bytes(data[offset:offset + length], "big") & ((1 << (7 * length)) - 1), length
 
 
-def _memory_element_header(data: mmap.mmap, cursor: int, limit: int) -> tuple[int, int, int | None]:
+def _memory_element_header(data: bytes | mmap.mmap, cursor: int, limit: int) -> tuple[int, int, int | None]:
     """ID entier, début du payload et taille, avec les mêmes bornes que read_element."""
     first = data[cursor]
     id_len = 1 if first & 0x80 else _vint_length(first)
@@ -1037,7 +1105,7 @@ class MatroskaReader:
 
     @staticmethod
     def _decode_block(
-        raw: bytes | mmap.mmap | _MappedInput,
+        raw: bytes | mmap.mmap | _WindowedInput,
         cluster_timestamp: int,
         *,
         duration_ms: int | None = None,
@@ -1054,7 +1122,7 @@ class MatroskaReader:
         raw_end: int | None = None,
     ) -> Iterator["MatroskaBlock"]:
         end = len(raw) if raw_end is None else raw_end
-        if isinstance(raw, _MappedInput):
+        if isinstance(raw, _WindowedInput):
             raw, raw_offset, end = raw.block_data(raw_offset, end)
         track_no, length = _read_vint_value(raw, raw_offset)
         if end - raw_offset < length + 3:
@@ -1173,22 +1241,22 @@ class MatroskaReader:
         if read_payload:
             with self.path.open("rb") as fh:
                 try:
-                    mapped = _MappedInput(fh, self.path.stat().st_size)
+                    mapped = _WindowedInput(fh, self.path.stat().st_size, self.path)
                 except (OSError, ValueError, OverflowError):
                     mapped = None
                 if mapped is not None:
                     with closing(mapped):
                         # Les erreurs de parsing ne déclenchent jamais un
                         # second parcours qui dupliquerait les paquets émis.
-                        yield from self._blocks_mmap(mapped, track_numbers, first_lace_only)
+                        yield from self._blocks_windowed(mapped, track_numbers, first_lace_only)
                     return
         yield from self._blocks_stream(
             track_numbers=track_numbers, read_payload=read_payload,
             first_lace_only=first_lace_only,
         )
 
-    def _blocks_mmap(
-        self, data: _MappedInput, track_numbers: set[int] | None, first_lace_only: bool,
+    def _blocks_windowed(
+        self, data: _WindowedInput, track_numbers: set[int] | None, first_lace_only: bool,
     ) -> Iterator["MatroskaBlock"]:
         scale_ns = self.timestamp_scale_ns()
         segment = self.segment()

@@ -124,6 +124,24 @@ def test_streamed_mp4_equals_file_canonicalization(tmp_path: Path, monkeypatch) 
     assert _tags(streamed) == _tags(canonical)
 
 
+def test_video_and_audio_of_a_source_share_one_producer(tmp_path: Path, monkeypatch) -> None:
+    """Un producteur pour vidéo + audio du MP4 (relire la source par piste coûtait une lecture complète
+    par piste) ; le contexte garde son producteur d'en-tête seul."""
+    from core.workflows.common.native_stream_inputs import StreamInputs
+
+    opened: list[tuple[tuple[int, ...], bool]] = []
+    real_open = StreamInputs.open
+
+    def record(self, spec, *, duration_ns=None, header_only=False):
+        group = (spec,) if hasattr(spec, "stream_index") else tuple(spec)
+        opened.append((tuple(item.stream_index for item in group), header_only))
+        return real_open(self, spec, duration_ns=duration_ns, header_only=header_only)
+
+    monkeypatch.setattr(StreamInputs, "open", record)
+    _remux(tmp_path, tmp_path / "out.mkv")
+    assert [streams for streams, header_only in opened if not header_only] == [(0, 1)]
+
+
 def test_reopened_stream_routes_give_the_same_output(tmp_path: Path, monkeypatch) -> None:
     """Budget nul : chaque route quitte la lecture partagée ; un flux est relu par un nouveau producteur."""
     from core.matroska import assembly
@@ -340,7 +358,8 @@ def test_failing_producer_fails_the_assembly_without_output(tmp_path: Path, monk
 
     def broken(ffmpeg_bin, spec):
         command = real(ffmpeg_bin, spec)
-        if spec.stream_index == 1:
+        group = (spec,) if isinstance(spec, native_stream_inputs.StreamTrackSpec) else tuple(spec)
+        if any(item.stream_index == 1 for item in group):
             command.insert(command.index("-f"), "-option_inexistante")
         return command
 

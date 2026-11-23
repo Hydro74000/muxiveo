@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import heapq
 import itertools
+import threading
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from .ebml import (
     binary_element, element, encode_unknown_size_marker, encode_vint_size,
@@ -45,6 +47,80 @@ from core.output_commit import OutputCommitError, publish_candidate, reserve_can
 #: Charge utile maximale d'un Cluster (octets). Borne le pic mémoire du
 #: writer (groupe courant + copies transitoires) indépendamment du flux.
 _MAX_CLUSTER_PAYLOAD_BYTES = 4 * 1024 * 1024
+#: Clusters en attente d'écriture (octets) dans le fil d'écriture.
+_BACKGROUND_WRITE_BYTES = 16 * 1024 * 1024
+
+
+class _BackgroundWriter:
+    """Écriture des Clusters dans un fil, file bornée en octets.
+
+    L'appel système (copie vers le cache, attente du disque quand les pages
+    sales s'accumulent) recouvre la lecture des sources et l'assemblage du
+    Cluster suivant (Remux réel : 6,8 s d'écriture sur 23 s dans le fil
+    principal). ``position`` suit la fin logique du fichier. Une erreur
+    d'écriture est relevée au prochain appel ; ``close`` attend la fin des
+    écritures, ou les abandonne (``abandon=True``, candidat supprimé ensuite).
+    """
+
+    def __init__(self, fh: BinaryIO, *, limit: int = _BACKGROUND_WRITE_BYTES) -> None:
+        self._fh = fh
+        self._limit = limit
+        self.position = fh.tell()
+        self._queue: deque[tuple[bytes | list[bytes], int]] = deque()
+        self._pending = 0
+        self._error: BaseException | None = None
+        self._closed = False
+        self._cond = threading.Condition()
+        self._thread = threading.Thread(target=self._run, name="matroska-writer", daemon=True)
+        self._thread.start()
+
+    def write(self, data: bytes | list[bytes], size: int | None = None) -> None:
+        """Met en file ``data`` (ou les morceaux d'une liste, joints dans le fil)."""
+        size = len(data) if size is None else size
+        with self._cond:
+            while self._error is None and self._pending and self._pending + size > self._limit:
+                self._cond.wait()
+            if self._error is not None:
+                raise self._error
+            self._queue.append((data, size))
+            self._pending += size
+            self._cond.notify_all()
+        self.position += size
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._queue and not self._closed:
+                    self._cond.wait()
+                if not self._queue:
+                    return
+                data, size = self._queue[0]
+            try:
+                # Jointure hors du fil principal (sans GIL au-delà d'un Mio).
+                self._fh.write(b"".join(data) if isinstance(data, list) else data)
+            except BaseException as exc:
+                with self._cond:
+                    self._error = exc
+                    self._queue.clear()
+                    self._pending = 0
+                    self._cond.notify_all()
+                return
+            with self._cond:
+                self._queue.popleft()
+                self._pending -= size
+                self._cond.notify_all()
+
+    def close(self, *, abandon: bool = False) -> None:
+        """Fin des écritures (attendues, ou abandonnées) ; relève une erreur d'écriture."""
+        with self._cond:
+            if abandon:
+                self._queue.clear()
+                self._pending = 0
+            self._closed = True
+            self._cond.notify_all()
+        self._thread.join()
+        if self._error is not None and not abandon:
+            raise self._error
 
 _PATCHED_TRACK_FLAG_FIELDS = {
     FLAG_ENABLED_ID, FLAG_DEFAULT_ID, FLAG_FORCED_ID,
@@ -639,6 +715,7 @@ class MatroskaWriter:
         # Candidat propre à cette écriture : un `.partial` existant (autre job,
         # ancien schéma de nommage) n'est jamais réutilisé ni supprimé.
         partial = reserve_candidate(destination)
+        sink: _BackgroundWriter | None = None
         try:
             with partial.open("wb") as fh:
                 fh.write(_build_ebml_header())
@@ -683,6 +760,7 @@ class MatroskaWriter:
                 # Entrelacement mesuré dans l'ordre d'écriture (avertissement, jamais bloquant).
                 interleave = InterleaveTracker()
                 _notify("clusters", fh.tell())
+                sink = _BackgroundWriter(fh)
                 pending = next(packet_iter, None)
                 while pending is not None:
                     _check_cancel("clusters")
@@ -718,12 +796,13 @@ class MatroskaWriter:
                         parts = _packet_parts(packet, cluster_time, plan.timestamp_scale_ns)
                         payload_parts.extend(parts)
                         packet_sizes.append(sum(map(len, parts)))
-                    cluster_offset = fh.tell() - payload_start
+                    cluster_offset = sink.position - payload_start
                     interleave.cluster(cluster_time * plan.timestamp_scale_ns)
                     for packet in group:
                         interleave.packet(packet.output_track_number, _timestamp_ns(packet))
-                    fh.write(CLUSTER_ID + encode_vint_size_minimal(len(timestamp_element) + sum(packet_sizes)))
-                    fh.write(b"".join(payload_parts))
+                    cluster_payload = len(timestamp_element) + sum(packet_sizes)
+                    sink.write(CLUSTER_ID + encode_vint_size_minimal(cluster_payload))
+                    sink.write(payload_parts, cluster_payload)
                     # CueRelativePosition (RFC 9559) : relatif au premier
                     # octet du payload du Cluster (0 = premier élément).
                     relative_position = len(timestamp_element)
@@ -757,7 +836,11 @@ class MatroskaWriter:
                         packet_counts[packet.output_track_number] = (
                             packet_counts.get(packet.output_track_number, 0) + 1
                         )
-                    _notify("clusters", fh.tell())
+                    _notify("clusters", sink.position)
+                # Toutes les écritures de Clusters terminées avant tout repositionnement.
+                closing_sink = sink
+                sink = None
+                closing_sink.close()
                 _check_cancel("cues")
                 if plan.regenerate_statistics:
                     statistics_tags = build_track_statistics_tags_element({
@@ -840,6 +923,8 @@ class MatroskaWriter:
             # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
             raise
         except BaseException:
+            if sink is not None:
+                sink.close(abandon=True)
             partial.unlink(missing_ok=True)
             raise
         finally:

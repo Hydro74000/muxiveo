@@ -81,6 +81,63 @@ def test_producer_command_shape() -> None:
     assert subtitle[subtitle.index("-map_metadata:g") + 1] == "-1"
 
 
+def test_grouped_producer_command_maps_every_track_in_order() -> None:
+    group = (
+        StreamTrackSpec(Path("in.mp4"), 1, "audio", "eac3"),
+        StreamTrackSpec(Path("in.mp4"), 0, "video", "hevc"),
+        StreamTrackSpec(Path("in.mp4"), 3, "subtitle", "mov_text"),
+        StreamTrackSpec(Path("in.mp4"), 4, "subtitle", "mov_text"),
+    )
+    command = producer_command("ffmpeg", group)
+    assert [command[i + 1] for i, arg in enumerate(command) if arg == "-map"] == ["0:1", "0:0", "0:3", "0:4"]
+    assert command.count("-i") == 1
+    assert "-tag:v:0" in command
+    # Conversion des sous-titres par position de sortie parmi les sous-titres.
+    assert command[command.index("-c:s:0") + 1] == "srt"
+    assert command[command.index("-c:s:1") + 1] == "srt"
+    with pytest.raises(ValueError):
+        producer_command("ffmpeg", (group[0], StreamTrackSpec(Path("other.mp4"), 0, "video")))
+
+
+def test_group_stream_specs_keeps_dense_tracks_together_and_subtitles_apart() -> None:
+    from core.workflows.common.native_stream_inputs import group_stream_specs
+
+    a_video = StreamTrackSpec(Path("a.mp4"), 0, "video")
+    a_sub = StreamTrackSpec(Path("a.mp4"), 2, "subtitle")
+    b_audio = StreamTrackSpec(Path("b.m4a"), 0, "audio")
+    a_audio = StreamTrackSpec(Path("a.mp4"), 1, "audio")
+    groups = group_stream_specs([a_video, a_sub, b_audio, a_audio, a_video])
+    assert groups == [(a_video, a_audio), (a_sub,), (b_audio,)]
+
+
+def test_declared_routes_share_positions_and_reopen_the_same_group(tmp_path: Path) -> None:
+    from core.workflows.common.native_stream_inputs import StreamArtifacts
+
+    opened: list[tuple[int, ...]] = []
+
+    class Inputs:
+        def open(self, spec, *, duration_ns=None, header_only=False):
+            group = (spec,) if isinstance(spec, StreamTrackSpec) else tuple(spec)
+            opened.append(tuple(item.stream_index for item in group))
+            reader = type("Reader", (), {})()
+            reader.path = tmp_path / f"h{len(opened)}.mkv"
+            return reader
+
+    streams = StreamArtifacts(Inputs())  # type: ignore[arg-type]
+    video, audio, sub = (StreamTrackSpec(Path("a.mp4"), 0, "video"), StreamTrackSpec(Path("a.mp4"), 1, "audio"),
+                         StreamTrackSpec(Path("a.mp4"), 2, "subtitle"))
+    streams.declare([audio, video, sub])
+    header, position = streams.route(video)
+    assert (header, position) == (tmp_path / "h1.mkv", 1)
+    assert streams.route(audio) == (header, 0)
+    assert streams.route(sub) == (tmp_path / "h2.mkv", 0)
+    assert streams.metadata(audio) == (header, 0)
+    assert opened == [(1, 0), (2,)]
+    streams.reopen[header]()
+    assert opened[-1] == (1, 0)
+    assert streams.route_headers("a.mp4") == [header, tmp_path / "h2.mkv"]
+
+
 @_needs_ffmpeg
 @pytest.mark.parametrize("stream_index", [0, 1])
 def test_stream_equals_file_copy(tmp_path: Path, stream_index: int) -> None:
@@ -237,3 +294,42 @@ def test_failure_while_cancelled_is_reported_as_cancellation(tmp_path: Path) -> 
     cancelled.set()
     with pytest.raises(TaskCancelledError):
         list(blocks)
+
+
+def test_prefetched_pipe_is_bounded_and_returns_the_same_bytes() -> None:
+    import io
+
+    from core.workflows.common import native_stream_inputs as module
+
+    data = bytes(range(256)) * (40 * 1024 * 16)  # 10 Mio
+    pipe = module._PrefetchedPipe(io.BufferedReader(io.BytesIO(data)), label="test", limit=1024 * 1024)
+    deadline = time.monotonic() + 5
+    while pipe._pending < 1024 * 1024 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.05)
+    # Jamais plus de la borne + un morceau en attente.
+    assert pipe._pending <= 1024 * 1024 + module._PREFETCH_CHUNK
+    received = bytearray()
+    sizes = (1, 3, 7, 4096, 200_000)
+    index = 0
+    while True:
+        chunk = pipe.read(sizes[index % len(sizes)])
+        index += 1
+        if not chunk:
+            break
+        received += chunk
+    assert bytes(received) == data
+    pipe.close()
+
+
+def test_prefetched_pipe_close_stops_a_blocked_filler() -> None:
+    import io
+
+    from core.workflows.common import native_stream_inputs as module
+
+    pipe = module._PrefetchedPipe(io.BufferedReader(io.BytesIO(b"x" * (8 * 1024 * 1024))), label="test", limit=4096)
+    assert pipe.read(10) == b"x" * 10
+    started = time.monotonic()
+    pipe.close()
+    assert time.monotonic() - started < 5
+    assert not pipe._thread.is_alive()

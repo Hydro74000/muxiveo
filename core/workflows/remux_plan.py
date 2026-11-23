@@ -54,7 +54,9 @@ from core.workflows.remux_models import (
     normalize_mux_backend,
 )
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
-from core.workflows.common.native_stream_inputs import StreamTrackSpec, is_streamable_source, producer_command
+from core.workflows.common.native_stream_inputs import (
+    StreamTrackSpec, group_stream_specs, is_streamable_source, producer_command,
+)
 
 
 MATROSKA_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
@@ -602,8 +604,9 @@ def _canonicalization_actions(
             index_map = {carrier: 0}
         if is_streamable_source(source.path):
             # MP4/MOV : pistes lues en flux par l'assemblage natif, sans fichier
-            # intermédiaire. Aperçu = producteurs lancés : une route par piste
-            # lue, et un producteur d'en-tête seul pour chapitres / tags globaux.
+            # intermédiaire. Aperçu = producteurs lancés (vidéo et audio sur un
+            # seul, chaque sous-titre sur le sien, dans l'ordre de sortie), et un
+            # producteur d'en-tête seul pour chapitres / tags globaux.
             entries = {track.mkv_tid: track for track in source.tracks}
 
             def _spec(stream: int, *, context: bool = False) -> StreamTrackSpec:
@@ -614,16 +617,22 @@ def _canonicalization_actions(
                 )
 
             routed = [stream for stream in streams if stream in index_map and selected.get(source.file_index)]
-            for stream in routed:
+            output_order = [
+                int(item[1]) for item in config.track_order
+                if int(item[0]) == source.file_index and int(item[1]) in routed
+            ]
+            ordered_streams = list(dict.fromkeys([*output_order, *routed]))
+            for group in group_stream_specs(_spec(stream) for stream in ordered_streams):
+                indexes = [str(spec.stream_index) for spec in group]
                 actions.append(RemuxPreparationAction(
                     kind="stream_source",
                     description=(
-                        f"Lecture en flux de {source.path.name} (flux {stream}, sans fichier intermédiaire ; "
-                        "origine temporelle sondée au lancement)"
+                        f"Lecture en flux de {source.path.name} (flux {', '.join(indexes)}, sans fichier "
+                        "intermédiaire ; origine temporelle sondée au lancement)"
                     ),
                     source_file_index=source.file_index,
-                    target_name=f"stream_{source.file_index}_{stream}",
-                    command=tuple(producer_command(ffmpeg_bin, _spec(stream))),
+                    target_name=f"stream_{source.file_index}_{'-'.join(indexes)}",
+                    command=tuple(producer_command(ffmpeg_bin, group)),
                 ))
             carrier = min(streams)
             actions.append(RemuxPreparationAction(

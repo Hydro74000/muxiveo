@@ -15,6 +15,7 @@ from core.matroska.reader import MatroskaBlock, MatroskaReader, MatroskaTrack
 from core.matroska.contract import ExpectedMatroskaTrack, MatroskaOutputContract
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.matroska.writer import (
+    MatroskaWriteCancelled,
     MatroskaWriteProgress,
     MatroskaWriter,
     build_track_statistics_tags_element,
@@ -384,3 +385,84 @@ def test_writer_progress_reports_percent(tmp_path: Path) -> None:
         if p.percent is not None:
             assert 0 <= p.percent <= 100
 
+
+
+def _many_packets(count: int, size: int) -> tuple[MatroskaMuxTrack, list[MatroskaMuxPacket]]:
+    video = source_track(1, 10, "V_MPEG4/ISO/AVC", 1)
+    track = MatroskaMuxTrack(Path("v.mkv"), video, 1, deterministic_uid("v"))
+    packets = [MatroskaMuxPacket(1, MatroskaBlock(1, index * 40, 0x80, bytes([index % 251]) * size), index)
+               for index in range(count)]
+    return track, packets
+
+
+def test_background_cluster_writes_keep_cluster_offsets_and_cues(tmp_path: Path, monkeypatch) -> None:
+    """Clusters écrits par le fil d'écriture : file bornée minuscule, positions des Cues exactes."""
+    import core.matroska.writer as module
+
+    monkeypatch.setattr(module, "_BACKGROUND_WRITE_BYTES", 1)
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 64 * 1024)
+    track, packets = _many_packets(200, 5000)
+    output = tmp_path / "out.mkv"
+    MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)))
+    reader = MatroskaReader(output)
+    assert [block.payload for block in reader.blocks()] == [packet.block.payload for packet in packets]
+    clusters = reader.cluster_elements()
+    assert len(clusters) > 10
+    # Chaque Cue désigne le début d'un Cluster réel.
+    segment = reader.segment()
+    cluster_positions = {cluster.offset - segment.payload_offset for cluster in clusters}
+    cue_positions = reader.cue_block_positions({1})
+    assert cue_positions and {cluster for cluster, _relative in cue_positions[1]} <= cluster_positions
+
+
+def test_background_write_error_fails_the_write_and_removes_partial(tmp_path: Path, monkeypatch) -> None:
+    import core.matroska.writer as module
+
+    real_init = module._BackgroundWriter.__init__
+
+    class Failing:
+        def __init__(self, fh):
+            self._fh = fh
+            self._count = 0
+
+        def write(self, data):
+            self._count += 1
+            if self._count > 3:
+                raise OSError(28, "No space left on device")
+            return self._fh.write(data)
+
+        def tell(self):
+            return self._fh.tell()
+
+    def failing_init(self, fh, **kwargs):
+        real_init(self, Failing(fh), **kwargs)
+
+    monkeypatch.setattr(module._BackgroundWriter, "__init__", failing_init)
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
+    track, packets = _many_packets(100, 5000)
+    output = tmp_path / "out.mkv"
+    with pytest.raises(OSError, match="No space left"):
+        MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)))
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_cancel_during_clusters_abandons_background_writes(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    import core.matroska.writer as module
+
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
+    track, packets = _many_packets(200, 5000)
+    calls = {"count": 0}
+
+    def cancel() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 20
+
+    output = tmp_path / "out.mkv"
+    with pytest.raises(MatroskaWriteCancelled):
+        MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)), cancel_cb=cancel)
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+    assert not [thread for thread in threading.enumerate() if thread.name == "matroska-writer"]

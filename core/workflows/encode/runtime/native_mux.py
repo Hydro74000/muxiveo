@@ -13,6 +13,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable
 
 from core.bluray import ffprobe_input_args
@@ -117,14 +118,22 @@ class NativeEncodePreparation:
         key = (Path(source), int(stream_index))
         spec = self._stream_spec(*key)
         if spec is not None and self.streams is not None:
-            return self.streams.route(spec), 0
+            return self.streams.route(spec)
         return self.track_artifacts.get(key, key)
+
+    def declare_routes(self, keys: Iterable[tuple[Path, int]]) -> None:
+        """Pistes lues par l'assemblage : celles d'une même source partagent un producteur."""
+        if self.streams is None:
+            return
+        self.streams.declare(
+            spec for key in keys if (spec := self._stream_spec(*key)) is not None
+        )
 
     def metadata_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
         """TrackEntry lisible d'une piste sans la faire lire (en flux : en-tête seul)."""
         spec = self._stream_spec(source, stream_index)
         if spec is not None and self.streams is not None:
-            return self.streams.metadata(spec), 0
+            return self.streams.metadata(spec)
         return self.artifact_for_track(source, stream_index)
 
     def rewrite_input_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
@@ -652,6 +661,16 @@ def build_encode_assembly_plan(
             identities[path] = deterministic_source_identity(path)
         return identities[path]
 
+    subtitles = _assembly_subtitles(config, resolved_subtitles, preparation)
+    # Pistes lues en flux : vidéo et audio d'une même source sur un seul producteur.
+    preparation.declare_routes([
+        *((Path(ref.path), int(ref.track_index)) for ref in video_artifacts),
+        *(
+            (Path(audio.source_path or config.source), int(audio.stream_index))
+            for audio_index, audio in enumerate(config.audio_tracks) if audio_index not in materialized_audio
+        ),
+        *(key for key in subtitles if key not in sync_rewrites.subtitles),
+    ])
     ordered: list[MatroskaAssemblyTrack] = []
     for ref in video_artifacts:
         artifact, track_index = preparation.artifact_for_track(ref.path, ref.track_index)
@@ -688,7 +707,6 @@ def build_encode_assembly_plan(
                 time_shift_ms=_offset_ms(config, "audio", source, audio.stream_index),
             ))
 
-    subtitles = _assembly_subtitles(config, resolved_subtitles, preparation)
     for subtitle_path, subtitle_index in subtitles:
         rewritten = sync_rewrites.subtitles.get((subtitle_path, subtitle_index))
         if rewritten is not None:

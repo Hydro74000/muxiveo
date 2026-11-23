@@ -24,7 +24,7 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -49,6 +49,13 @@ from core.workflows.common.metadata import matroska_video_tag_args
 _EXIT_TIMEOUT_S = 60.0
 #: Lignes de stderr gardées pour expliquer un échec.
 _STDERR_TAIL_LINES = 40
+#: Avance de lecture d'un producteur (octets en attente, par route) : FFmpeg lit
+#: sa source pendant que l'assemblage traite et écrit.
+PREFETCH_BYTES = 16 * 1024 * 1024
+#: Lecture unitaire du fil d'avance.
+_PREFETCH_CHUNK = 1024 * 1024
+#: Capacité demandée au pipe sous Linux (``pipe-max-size`` par défaut, sans privilège).
+_PIPE_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -66,24 +73,70 @@ class StreamTrackSpec:
     origin_s: float | None = None
 
 
-def producer_command(ffmpeg_bin: str, spec: StreamTrackSpec) -> list[str]:
-    """Commande FFmpeg d'un producteur : une piste, copiée, en Matroska sur ``pipe:1``."""
+def _as_group(spec: StreamTrackSpec | Sequence[StreamTrackSpec]) -> tuple[StreamTrackSpec, ...]:
+    group = (spec,) if isinstance(spec, StreamTrackSpec) else tuple(spec)
+    if not group or len({Path(item.source) for item in group}) != 1:
+        raise ValueError("Producteur en flux : une ou plusieurs pistes d'une même source attendues.")
+    return group
+
+
+def group_stream_specs(specs: Iterable[StreamTrackSpec]) -> list[tuple[StreamTrackSpec, ...]]:
+    """Producteurs d'un ensemble de pistes : les pistes denses d'une source ensemble, chaque sous-titre seul.
+
+    Un producteur par piste relisait toute la source pour chacune (MP4 : le
+    démultiplexeur saute d'échantillon en échantillon ; audio seul d'un film
+    2160p : 6,5 Go lus, 16,5 s, contre 7,6 s pour vidéo + audio d'un seul
+    FFmpeg). Vidéo et audio, entrelacés par FFmpeg, tiennent dans les files de
+    la lecture partagée ; un sous-titre, dont le bloc suivant peut être des
+    minutes plus loin, garde son producteur (quelques sauts dans la source).
+    Ordre : celui de la première apparition ; doublons retirés.
+    """
+    groups: dict[Path, list[StreamTrackSpec]] = {}
+    seen: set[tuple[Path, int]] = set()
+    result: list[tuple[StreamTrackSpec, ...] | list[StreamTrackSpec]] = []
+    for spec in specs:
+        key = (Path(spec.source), int(spec.stream_index))
+        if key in seen:
+            continue
+        seen.add(key)
+        if spec.kind == "subtitle":
+            result.append((spec,))
+            continue
+        group = groups.get(key[0])
+        if group is None:
+            group = groups[key[0]] = []
+            result.append(group)
+        group.append(spec)
+    return [tuple(group) for group in result]
+
+
+def producer_command(ffmpeg_bin: str, spec: StreamTrackSpec | Sequence[StreamTrackSpec]) -> list[str]:
+    """Commande FFmpeg d'un producteur : pistes d'une source, copiées, en Matroska sur ``pipe:1``.
+
+    Pistes de sortie dans l'ordre de ``spec`` ; contexte et origine pris de la première.
+    """
+    group = _as_group(spec)
+    spec = group[0]
     command = [ffmpeg_bin, "-nostdin", "-hide_banner", "-loglevel", "error"]
     if spec.origin_s is not None:
         # Horodatages de la source, rebasés sur une origine commune explicite :
         # jamais un départ recalculé d'après la seule piste sélectionnée.
         command.append("-copyts")
     append_ffmpeg_input_args(command, spec.source)
-    command.extend(["-map", f"0:{int(spec.stream_index)}", "-c", "copy"])
-    if spec.kind == "video":
-        command.extend(matroska_video_tag_args([spec.codec.upper()]))
-    elif spec.kind == "subtitle" and spec.codec:
+    for item in group:
+        command.extend(["-map", f"0:{int(item.stream_index)}"])
+    command.extend(["-c", "copy"])
+    command.extend(matroska_video_tag_args([item.codec.upper() for item in group if item.kind == "video"]))
+    subtitles = [item for item in group if item.kind == "subtitle"]
+    for position, item in enumerate(subtitles):
+        if not item.codec:
+            continue
         try:
-            codec_arg, _warning = plan_subtitle_codec(spec.codec)
+            codec_arg, _warning = plan_subtitle_codec(item.codec)
         except ValueError:
             codec_arg = "copy"
         if codec_arg != "copy":
-            command.extend(["-c:s:0", codec_arg])
+            command.extend([f"-c:s:{position}", codec_arg])
     if spec.carry_context:
         # Fournisseur de contexte : tags globaux et chapitres de la source.
         command.extend(["-map_metadata", "0", "-map_chapters", "0"])
@@ -147,6 +200,102 @@ def _start_process(command: list[str]) -> subprocess.Popen:
     return proc
 
 
+def _enlarge_pipe(stream: BinaryIO) -> None:
+    """Pipe de 1 Mio sous Linux (moins de réveils) ; sans effet ailleurs ou si refusé."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import fcntl
+
+        fcntl.fcntl(stream.fileno(), fcntl.F_SETPIPE_SZ, _PIPE_BYTES)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+class _PrefetchedPipe:
+    """Lecture anticipée du stdout d'un producteur, dans un fil.
+
+    Un pipe ne garde que 64 Kio : sans avance, FFmpeg reste bloqué pendant chaque
+    traitement et chaque écriture de l'assemblage, et ses lectures disque ne
+    recouvrent rien (Remux réel : 11,6 s d'attente sur les pipes). Le fil lit par
+    morceaux tant que moins de ``limit`` octets attendent ; ``read`` sert les
+    petites lectures (en-têtes EBML) depuis le morceau courant, sans verrou.
+    """
+
+    def __init__(self, stream: BinaryIO, *, label: str, limit: int = PREFETCH_BYTES) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._chunks: deque[bytes] = deque()
+        self._pending = 0
+        self._current = b""
+        self._offset = 0
+        self._eof = False
+        self._error: BaseException | None = None
+        self._closed = False
+        self._cond = threading.Condition()
+        _enlarge_pipe(stream)
+        self._thread = threading.Thread(target=self._fill, name=f"stdout-{label}", daemon=True)
+        self._thread.start()
+
+    def _fill(self) -> None:
+        read = getattr(self._stream, "read1", None) or self._stream.read
+        try:
+            while True:
+                with self._cond:
+                    while self._pending >= self._limit and not self._closed:
+                        self._cond.wait()
+                    if self._closed:
+                        return
+                chunk = read(_PREFETCH_CHUNK)
+                if not chunk:
+                    return
+                with self._cond:
+                    self._chunks.append(chunk)
+                    self._pending += len(chunk)
+                    self._cond.notify_all()
+        except (OSError, ValueError) as exc:
+            with self._cond:
+                self._error = exc
+        finally:
+            with self._cond:
+                self._eof = True
+                self._cond.notify_all()
+
+    def _next_chunk(self) -> bool:
+        with self._cond:
+            while not self._chunks and not self._eof:
+                self._cond.wait()
+            if not self._chunks:
+                if self._error is not None:
+                    raise self._error
+                return False
+            self._current = self._chunks.popleft()
+            self._pending -= len(self._current)
+            self._offset = 0
+            self._cond.notify_all()
+            return True
+
+    def read(self, size: int = -1) -> bytes:
+        """Au plus ``size`` octets déjà reçus (au moins un), ``b""`` en fin de flux."""
+        if self._offset >= len(self._current) and not self._next_chunk():
+            return b""
+        start = self._offset
+        end = len(self._current) if size < 0 else min(len(self._current), start + size)
+        self._offset = end
+        if start == 0 and end == len(self._current):
+            return self._current
+        return self._current[start:end]
+
+    def close(self) -> None:
+        """Arrête le fil (après la fin du producteur, qui débloque sa lecture en cours)."""
+        with self._cond:
+            self._closed = True
+            self._chunks.clear()
+            self._pending = 0
+            self._cond.notify_all()
+        self._thread.join(timeout=5)
+
+
 class StreamProducer:
     """Un FFmpeg producteur, son pipe et son lecteur Matroska séquentiel."""
 
@@ -169,6 +318,7 @@ class StreamProducer:
         self._done = False
         self._closed = False
         self._stderr_thread: threading.Thread | None = None
+        self._stdout: _PrefetchedPipe | None = None
         self._process = _start_process(command)
         try:
             if register is not None:
@@ -176,7 +326,8 @@ class StreamProducer:
             self._stderr_thread = threading.Thread(target=self._drain_stderr, name=f"stderr-{label}", daemon=True)
             self._stderr_thread.start()
             assert self._process.stdout is not None
-            source = MatroskaStreamSource(cast(BinaryIO, self._process.stdout), header_path)
+            self._stdout = _PrefetchedPipe(cast(BinaryIO, self._process.stdout), label=label)
+            source = MatroskaStreamSource(cast(BinaryIO, self._stdout), header_path)
             try:
                 source.read_header()
             except (ValueError, OSError) as exc:
@@ -265,6 +416,8 @@ class StreamProducer:
         job = getattr(process, "_muxiveo_job", None)
         if job is not None:
             job.terminate()
+        if self._stdout is not None:
+            self._stdout.close()
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=5)
         for stream in (process.stdout, process.stderr):
@@ -345,25 +498,29 @@ class StreamInputs:
         self._producers: list[StreamProducer] = []
 
     def open(
-        self, spec: StreamTrackSpec, *, duration_ns: int | None = None, header_only: bool = False,
+        self, spec: StreamTrackSpec | Sequence[StreamTrackSpec], *, duration_ns: int | None = None,
+        header_only: bool = False,
     ) -> StreamedMatroskaReader:
-        """Démarre le producteur de ``spec`` et renvoie son lecteur (en-tête déjà lu).
+        """Démarre le producteur de ``spec`` (une piste ou plusieurs d'une source) et renvoie son
+        lecteur (en-tête déjà lu).
 
         ``header_only`` : seules les métadonnées comptent (contexte, piste
         réécrite ailleurs) ; le producteur est arrêté aussitôt l'en-tête lu.
         """
+        group = _as_group(spec)
         if self._cancelled():
             raise TaskCancelledError()
-        if self._ffprobe is not None and spec.origin_s is None:
-            source = Path(spec.source)
+        source = Path(group[0].source)
+        if self._ffprobe is not None and group[0].origin_s is None:
             if source not in self._origins:
                 self._origins[source] = probe_start_time(source, self._ffprobe)
-            spec = replace(spec, origin_s=self._origins[source])
+            group = tuple(replace(item, origin_s=self._origins[source]) for item in group)
         ordinal = len(self._producers)
-        label = f"{spec.source.name} #{spec.stream_index}"
-        header = self._work_dir / f"stream_{ordinal}_{spec.stream_index}.header.mkv"
+        indexes = ",".join(str(item.stream_index) for item in group)
+        label = f"{source.name} #{indexes}"
+        header = self._work_dir / f"stream_{ordinal}_{indexes.replace(',', '-')}.header.mkv"
         producer = StreamProducer(
-            producer_command(self._ffmpeg, spec), header, label=label, duration_ns=duration_ns,
+            producer_command(self._ffmpeg, group), header, label=label, duration_ns=duration_ns,
             cancelled=self._cancelled, register=self._register, unregister=self._unregister,
         )
         self._producers.append(producer)
@@ -408,32 +565,61 @@ class StreamArtifacts:
     def __init__(self, inputs: StreamInputs, *, duration_ns: int | None = None) -> None:
         self._inputs = inputs
         self._duration_ns = duration_ns
-        self._routes: dict[tuple[Path, int], Path] = {}
+        #: (source, index) → (en-tête du producteur, position de la piste dans son flux).
+        self._routes: dict[tuple[Path, int], tuple[Path, int]] = {}
+        #: Pistes annoncées, pas encore démarrées : groupe de producteur de chacune.
+        self._groups: dict[tuple[Path, int], tuple[StreamTrackSpec, ...]] = {}
         self._metadata: dict[tuple[Path, int], Path] = {}
         self._contexts: dict[Path, Path] = {}
         self._route_headers: dict[Path, list[Path]] = {}
         self.readers: dict[Path, MatroskaReader] = {}
         self.reopen: dict[Path, Callable[[], MatroskaReader]] = {}
 
-    def _open(self, spec: StreamTrackSpec, *, header_only: bool = False) -> StreamedMatroskaReader:
+    def _open(
+        self, spec: StreamTrackSpec | Sequence[StreamTrackSpec], *, header_only: bool = False,
+    ) -> StreamedMatroskaReader:
         return self._inputs.open(spec, duration_ns=self._duration_ns, header_only=header_only)
 
-    def route(self, spec: StreamTrackSpec) -> Path:
-        """Artefact lu par l'assemblage (une piste, sans contexte) ; un producteur par piste source."""
-        route_spec = replace(spec, carry_context=False)
-        key = (Path(spec.source), int(spec.stream_index))
-        header = self._routes.get(key)
-        if header is None:
-            reader = self._open(route_spec)
-            header = Path(reader.path)
-            self._routes[key] = header
-            self._route_headers.setdefault(key[0], []).append(header)
-            self.readers[header] = reader
-            self.reopen[header] = partial(self._open, route_spec)
-        return header
+    def declare(self, specs: Iterable[StreamTrackSpec]) -> None:
+        """Pistes que l'assemblage lira : regroupées par :func:`group_stream_specs` au premier ``route``.
 
-    def metadata(self, spec: StreamTrackSpec) -> Path:
-        """En-tête d'une piste (TrackEntry) sans la lire : celui de sa route, sinon un producteur d'en-tête seul."""
+        Facultatif : une piste non annoncée a son propre producteur.
+        """
+        for group in group_stream_specs(replace(spec, carry_context=False) for spec in specs):
+            for spec in group:
+                key = (Path(spec.source), int(spec.stream_index))
+                if key not in self._routes:
+                    self._groups[key] = group
+
+    def route(self, spec: StreamTrackSpec) -> tuple[Path, int]:
+        """Artefact lu par l'assemblage (sans contexte) et position de la piste dans son flux.
+
+        Les pistes annoncées ensemble (:meth:`declare`) partagent un producteur,
+        démarré une fois ; une route détachée de la lecture partagée relance le
+        même groupe (même numérotation des pistes).
+        """
+        key = (Path(spec.source), int(spec.stream_index))
+        found = self._routes.get(key)
+        if found is not None:
+            return found
+        group = self._groups.get(key) or (replace(spec, carry_context=False),)
+        group = tuple(
+            member for member in group
+            if (Path(member.source), int(member.stream_index)) not in self._routes
+        )
+        reader = self._open(group)
+        header = Path(reader.path)
+        self._route_headers.setdefault(key[0], []).append(header)
+        self.readers[header] = reader
+        self.reopen[header] = partial(self._open, group)
+        for position, member in enumerate(group):
+            member_key = (Path(member.source), int(member.stream_index))
+            self._routes[member_key] = (header, position)
+            self._groups.pop(member_key, None)
+        return self._routes[key]
+
+    def metadata(self, spec: StreamTrackSpec) -> tuple[Path, int]:
+        """TrackEntry d'une piste sans la lire : celui de sa route, sinon un producteur d'en-tête seul."""
         key = (Path(spec.source), int(spec.stream_index))
         if key in self._routes:
             return self._routes[key]
@@ -442,7 +628,7 @@ class StreamArtifacts:
             header = Path(self._open(replace(spec, carry_context=False), header_only=True).path)
             self._metadata[key] = header
             self._route_headers.setdefault(key[0], []).append(header)
-        return header
+        return header, 0
 
     def context(self, spec: StreamTrackSpec) -> Path:
         """En-tête portant chapitres et tags globaux de ``spec.source`` (producteur d'en-tête seul)."""
@@ -460,5 +646,5 @@ class StreamArtifacts:
 
 __all__ = [
     "STREAMABLE_SUFFIXES", "StreamArtifacts", "StreamInputs", "StreamProducer", "StreamTrackSpec",
-    "is_streamable_source", "producer_command",
+    "group_stream_specs", "is_streamable_source", "producer_command",
 ]
