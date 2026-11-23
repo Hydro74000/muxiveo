@@ -57,7 +57,8 @@ def _replay(path: Path, *, limit: int | None = None, code: int = 0, delay: float
         "    sys.stdout.buffer.write(data[start:start + 65536]); sys.stdout.buffer.flush()\n"
         f"    time.sleep({chunk_delay})\n"
         f"time.sleep({hang})\n"
-        f"sys.stderr.write('panne simulée\\n'); sys.exit({code})\n"
+        # Octets UTF-8, comme FFmpeg (la console Windows coderait sinon en cp1252).
+        f"sys.stderr.buffer.write('panne simulée\\n'.encode('utf-8')); sys.stderr.flush(); sys.exit({code})\n"
     )
     return [sys.executable, "-c", script]
 

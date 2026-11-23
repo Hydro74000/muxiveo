@@ -1,7 +1,8 @@
 # Installation Chocolatey robuste : 3 tentatives espacées, puis contrôle des commandes attendues.
 $ErrorActionPreference = 'Stop'
-$packages = $env:CHOCO_PACKAGES -split '\s+' | Where-Object { $_ }
-$commands = $env:CHOCO_COMMANDS -split '\s+' | Where-Object { $_ }
+# @() : un seul paquet reste un tableau (sinon une chaîne, que @packages éclaterait en caractères).
+$packages = @($env:CHOCO_PACKAGES -split '\s+' | Where-Object { $_ })
+$commands = @($env:CHOCO_COMMANDS -split '\s+' | Where-Object { $_ })
 
 function Get-MissingCommands {
     $commands | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }

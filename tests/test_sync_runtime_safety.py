@@ -68,7 +68,7 @@ def test_bounded_interleave_preserves_packets_with_late_subtitle(tmp_path):
     def packets(path):
         result = run([
             "ffprobe", "-v", "error", "-show_packets", "-show_data_hash", "sha256",
-            "-show_entries", "packet=stream_index,pts,dts,duration,data_hash", "-of", "json", str(path),
+            "-show_entries", "packet=stream_index,pts,pts_time,dts,duration,data_hash", "-of", "json", str(path),
         ])
         tracks = {}
         for packet in json.loads(result.stdout)["packets"]:
@@ -78,5 +78,6 @@ def test_bounded_interleave_preserves_packets_with_late_subtitle(tmp_path):
     actual, expected = packets(config.output), packets(baseline)
     assert len(actual) == 4
     assert actual == expected  # Ni perte de paquet, ni décalage audio/vidéo/sous-titre.
-    assert actual[2][0]["pts"] - actual[1][0]["pts"] == 168
-    assert actual[3][0]["pts"] >= 195600
+    # En secondes : la base de temps dépend du FFmpeg (1 ms, ou 10 µs pour master sans -timestamp_scale).
+    assert round((float(actual[2][0]["pts_time"]) - float(actual[1][0]["pts_time"])) * 1000) == 168
+    assert float(actual[3][0]["pts_time"]) >= 195.6

@@ -543,7 +543,11 @@ def test_encode_repairs_with_the_real_contract(tmp_path: Path, monkeypatch) -> N
         for index, track in enumerate(tracks, 1):
             packets.extend(MatroskaMuxPacket(index, block, rank) for rank, block in enumerate(
                 reader.blocks(track_numbers={track.number}, first_lace_only=True)))
-        MatroskaWriter().write(MatroskaMuxPlan(Path(command[-1]), mux_tracks, iter(packets)))
+        MatroskaWriter().write(MatroskaMuxPlan(
+            Path(command[-1]), mux_tracks, iter(packets),
+            # Échelle de la source (FFmpeg master : 10 µs par défaut, sonde neutralisée en test).
+            timestamp_scale_ns=reader.timestamp_scale_ns(),
+        ))
         return ""
 
     monkeypatch.setattr(workflow, "_run_transaction_command", run_command)
