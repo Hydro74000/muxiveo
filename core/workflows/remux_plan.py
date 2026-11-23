@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -697,34 +698,53 @@ def _attached_picture_actions(
     return actions
 
 
+def _planned_rewrite_codecs(intents, settings) -> dict[tuple[int, str], str | None]:
+    """Codec prévu de l'artefact de chaque piste audio réécrite (aperçu des variantes)."""
+    from core.workflows.common.sync_rewrite import planned_rewrite_codec
+    from core.workflows.remux_sync_rewrite import audio_rewrite_preserve_source
+
+    planned: dict[tuple[int, str], str | None] = {}
+    for intent in intents:
+        track = intent.mapped_track.track
+        if track.track_type != "audio":
+            continue
+        planned[(intent.mapped_track.source_file_index, track.entry_id)] = planned_rewrite_codec(
+            track.orig_codec or track.codec, track.codec,
+            preserve_source=audio_rewrite_preserve_source(track),
+            advanced_audio=bool(settings is not None and settings.advanced_audio),
+            offset_ms=intent.offset_ms,
+        )
+    return planned
+
+
 def _audio_variant_actions(
     config: RemuxConfig,
     ffmpeg_bin: str,
     variants: tuple[NativeAudioVariantPlan, ...],
-    rewritten: frozenset[tuple[int, str]] = frozenset(),
+    rewritten: Mapping[tuple[int, str], str | None] | None = None,
 ) -> list[RemuxPreparationAction]:
-    """Actions des variantes ; ``rewritten`` : (source, entrée) réécrites par la synchro."""
-    from core.workflows.common.sync_rewrite import REWRITE_AUDIO_CODECS
-
+    """Actions des variantes ; ``rewritten`` : (source, entrée) réécrites → codec prévu de l'artefact."""
     actions: list[RemuxPreparationAction] = []
+    rewritten = rewritten or {}
     source_by_index = {source.file_index: source for source in config.sources}
     for variant in variants:
         source = source_by_index[variant.source_file_index]
-        if (variant.source_file_index, variant.entry_id) in rewritten:
-            # Même règle qu'à l'exécution : la réécriture simple encode directement au
-            # contrat (une seule perte) ; sinon variante depuis l'artefact réécrit.
-            produced = variant.target_codec in REWRITE_AUDIO_CODECS
+        key = (variant.source_file_index, variant.entry_id)
+        if key in rewritten:
+            # Même règle qu'à l'exécution (planned_rewrite_codec, commune au service).
+            planned = rewritten[key]
+            label = f"Variante audio {variant.target_codec.upper()} de {source.path.name} (piste #{variant.stream_index}) : "
+            if planned is None:
+                branch = "variante depuis la source (piste non réécrite, décalage conteneur)"
+            elif planned == variant.target_codec:
+                branch = ("produite par la réécriture de synchro si la piste est éligible après sonde, "
+                          "sinon variante depuis la source (décalage conteneur)")
+            else:
+                branch = (f"appliquée à la piste réécrite ({planned.upper()}), ou depuis la source "
+                          "si la piste n'est pas éligible après sonde")
             actions.append(RemuxPreparationAction(
                 kind="audio_variant",
-                description=(
-                    f"Variante audio {variant.target_codec.upper()} de {source.path.name} "
-                    f"(piste #{variant.stream_index}) : "
-                    + ("produite par la réécriture de synchro si la piste est éligible après sonde, "
-                       "sinon variante depuis la source (décalage conteneur)"
-                       if produced else
-                       "appliquée à la piste réécrite (réécriture sans perte), ou depuis la source "
-                       "si la piste n'est pas éligible après sonde")
-                ),
+                description=label + branch,
                 source_file_index=variant.source_file_index,
                 target_name=variant.target_name,
             ))
@@ -1054,8 +1074,7 @@ def plan_remux(
         audio_variants = plan_native_audio_variants(config)
         preparation_actions.extend(_audio_variant_actions(
             config, ffmpeg_bin, audio_variants,
-            frozenset((intent.mapped_track.source_file_index, intent.mapped_track.track.entry_id)
-                      for intent in rewrite_intents),
+            _planned_rewrite_codecs(rewrite_intents, sync_rewrite),
         ))
     else:
         if config.chapter_overrides:

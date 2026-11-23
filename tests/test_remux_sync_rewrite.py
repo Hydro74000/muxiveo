@@ -143,3 +143,23 @@ def test_final_shift_is_relative_minus_native_origin(tmp_path: Path) -> None:
     # Source d'origine sans route native : placée comme FFmpeg place sa source.
     orphan = finalize_native_rewrite_shifts(config, [rewrite], lambda _r: None)
     assert orphan.sources[0].tracks[0].time_shift_ms == round((0.016 - 600.0) * 1000)
+
+
+@pytest.mark.parametrize("source,target,preserve,advanced,offset,expected", [
+    ("E-AC-3", "AC3", False, False, 700, "ac3"),       # simple : directement la variante
+    ("E-AC-3", "E-AC-3", True, False, 700, "eac3"),    # sans variante : codec de la source
+    ("AC3", "FLAC", False, False, 700, None),          # cible hors réécriture simple : non réécrite
+    ("FLAC", "AC3", False, True, 700, "flac"),         # sans perte : FLAC, variante ensuite
+    ("Vorbis", "FLAC", False, True, 700, "flac"),      # avec perte → FLAC demandé : produit directement
+    ("MP3", "AAC", False, True, 700, "aac"),           # avec perte → AAC : un seul encodage avec perte
+    ("MP3", "Opus", False, True, 700, "flac"),         # cible hors contrat : intermédiaire FLAC
+    ("MP3", "AAC", False, False, 700, None),           # audio avancé désactivé
+    ("DTS", "DTS", True, True, -300, "dts"),           # copie / coupe
+    ("DTS", "DTS", True, True, 300, None),             # copie / coupe : retard positif refusé
+])
+def test_planned_rewrite_codec_matches_the_service_rule(source, target, preserve, advanced, offset, expected) -> None:
+    from core.workflows.common.sync_rewrite import planned_rewrite_codec
+
+    assert planned_rewrite_codec(
+        source, target, preserve_source=preserve, advanced_audio=advanced, offset_ms=offset,
+    ) == expected

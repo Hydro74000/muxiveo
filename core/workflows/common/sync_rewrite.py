@@ -190,6 +190,54 @@ def _advanced_audio_kind(codec_key: str, *, object_audio: bool) -> str:
     return ""
 
 
+def advanced_rewrite_output_codec(
+    source_codec_key: str, kind: str, *, target_codec: str = "", preserve_source: bool = True,
+) -> str:
+    """Codec produit par une réécriture audio avancée (règle unique : service et aperçu).
+
+    Copie / coupe : codec de la source ; lossless vers FLAC : FLAC ; WavPack ;
+    avec perte et variante demandée : directement le codec de la variante
+    (AC-3, E-AC-3, AAC, FLAC), sinon intermédiaire FLAC (un seul encodage avec perte).
+    """
+    if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
+        return source_codec_key
+    if kind == "lossless_to_flac":
+        output = "flac"
+    elif source_codec_key == "wv":
+        output = "wavpack"
+    else:
+        output = source_codec_key
+    if kind == "lossy" and not preserve_source:
+        requested = normalized_rewrite_codec(target_codec or "")
+        if requested and requested != source_codec_key:
+            output = requested if requested in REWRITE_AUDIO_CODECS or requested == "flac" else "flac"
+    return output
+
+
+def planned_rewrite_codec(
+    source_codec: str, target_codec: str, *, preserve_source: bool, advanced_audio: bool, offset_ms: int,
+) -> str | None:
+    """Codec de l'artefact d'une réécriture audio, prévu sans sonde (aperçu) ; ``None`` : non réécrite.
+
+    La sonde peut encore refuser la réécriture (canaux, audio objet) : l'aperçu
+    le présente comme une branche conditionnelle.
+    """
+    source_key = normalized_rewrite_codec(source_codec)
+    target_key = normalized_rewrite_codec(target_codec)
+    if source_key in REWRITE_AUDIO_CODECS:
+        if preserve_source:
+            return source_key
+        return target_key if target_key in REWRITE_AUDIO_CODECS else None
+    if not advanced_audio:
+        return None
+    kind = _advanced_audio_kind(source_key, object_audio=False)
+    if not kind or not _advanced_audio_kind_supports_offset(kind, int(offset_ms)):
+        return None
+    return advanced_rewrite_output_codec(
+        source_key, kind, target_codec=target_codec, preserve_source=preserve_source,
+    )
+
+
 def _advanced_audio_kind_supports_offset(kind: str, offset_ms: int) -> bool:
     if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
         return int(offset_ms or 0) < 0
@@ -693,18 +741,16 @@ class SyncRewriteService:
                     source_timestamp_offset_s=timestamp_seconds(probe.get("_preroll_input_offset_s")),
                 )
 
-            rewrite_codec_key = self._advanced_audio_output_codec(source_codec_key, kind)
-            downmix_51 = False
-            if kind == "lossy" and not preserve_source_audio_params:
-                # Variante demandée : un seul encodage avec perte (directement au
-                # contrat), sinon intermédiaire FLAC puis variante.
-                requested_codec = normalized_rewrite_codec(audio_target_codec or "")
-                if requested_codec and requested_codec != source_codec_key:
-                    if requested_codec in REWRITE_AUDIO_CODECS or requested_codec == "flac":
-                        rewrite_codec_key = requested_codec
-                        downmix_51 = _variant_channels(requested_codec, channels_count) != channels_count
-                    else:
-                        rewrite_codec_key = "flac"
+            # Variante demandée : un seul encodage avec perte (directement au
+            # contrat), sinon intermédiaire FLAC puis variante.
+            rewrite_codec_key = advanced_rewrite_output_codec(
+                source_codec_key, kind, target_codec=audio_target_codec,
+                preserve_source=preserve_source_audio_params,
+            )
+            downmix_51 = (
+                kind == "lossy" and not preserve_source_audio_params
+                and _variant_channels(rewrite_codec_key, channels_count) != channels_count
+            )
             if kind == "truehd" and not self._truehd_reencode_supported(probe):
                 self._log(
                     "Sync réelle audio avancée ignorée: TrueHD/MLP sans Atmos hors layout "
@@ -899,14 +945,6 @@ class SyncRewriteService:
         ])
         self._run_checked(cmd, destination, "Réécriture sync audio échouée", cancel_cb=cancel_cb)
         return destination
-
-    @staticmethod
-    def _advanced_audio_output_codec(source_codec_key: str, kind: str) -> str:
-        if kind == "lossless_to_flac":
-            return "flac"
-        if source_codec_key == "wv":
-            return "wavpack"
-        return source_codec_key
 
     @staticmethod
     def _truehd_reencode_supported(probe: Mapping[str, object]) -> bool:
@@ -1472,6 +1510,8 @@ class SyncRewriteService:
 
 __all__ = [
     "EmptySubtitleRewrite",
+    "advanced_rewrite_output_codec",
+    "planned_rewrite_codec",
     "REWRITE_AUDIO_CODECS",
     "REWRITE_SUBTITLE_CODECS",
     "SYNC_REWRITE_MODE_AUTO",
