@@ -252,7 +252,7 @@ def stream_assembly_plan(
             return path
         # Porteur du contexte : une piste déjà lue de la source, sinon le flux le plus léger.
         selected = used.get(Path(source.path)) or []
-        carrier = selected[0] if selected else _metadata_carrier_stream(source)
+        carrier = min(selected) if selected else _metadata_carrier_stream(source)
         if carrier is None:
             raise RemuxError(f"{source.path.name} : aucun flux pour porter chapitres et tags.")
         return streams.context(spec_for(source, int(carrier), context=True))
@@ -552,7 +552,7 @@ def run_native_remux(
 
             log_step(3, "Construction du plan Matroska natif")
             if any(action.kind == "stream_source" for action in execution_plan.preparation_actions):
-                log_step(2, "Lecture en flux des sources MP4/MOV (sans fichier intermédiaire)")
+                log("INFO", "Lecture en flux des sources MP4/MOV (sans fichier intermédiaire).")
             plan_matroska = build_native_plan(
                 run_config, output_contract=output_contract, streams=streams,
             )

@@ -602,15 +602,19 @@ def _canonicalization_actions(
             index_map = {carrier: 0}
         if is_streamable_source(source.path):
             # MP4/MOV : pistes lues en flux par l'assemblage natif, sans fichier
-            # intermédiaire (un producteur par piste ; aperçu = leurs commandes).
+            # intermédiaire. Aperçu = producteurs lancés : une route par piste
+            # lue, et un producteur d'en-tête seul pour chapitres / tags globaux.
             entries = {track.mkv_tid: track for track in source.tracks}
-            for position, stream in enumerate(streams):
+
+            def _spec(stream: int, *, context: bool = False) -> StreamTrackSpec:
                 entry = entries.get(stream)
-                spec = StreamTrackSpec(
+                return StreamTrackSpec(
                     source.path, stream, entry.track_type if entry is not None else "",
-                    (entry.codec if entry is not None else "") or "",
-                    carry_context=position == 0 and bool(participation.copy_tags or participation.copy_chapters),
+                    (entry.codec if entry is not None else "") or "", carry_context=context,
                 )
+
+            routed = [stream for stream in streams if stream in index_map and selected.get(source.file_index)]
+            for stream in routed:
                 actions.append(RemuxPreparationAction(
                     kind="stream_source",
                     description=(
@@ -619,8 +623,16 @@ def _canonicalization_actions(
                     ),
                     source_file_index=source.file_index,
                     target_name=f"stream_{source.file_index}_{stream}",
-                    command=tuple(producer_command(ffmpeg_bin, spec)),
+                    command=tuple(producer_command(ffmpeg_bin, _spec(stream))),
                 ))
+            carrier = min(streams)
+            actions.append(RemuxPreparationAction(
+                kind="stream_context",
+                description=f"En-tête de contexte de {source.path.name} (chapitres, tags globaux ; arrêt après l'en-tête)",
+                source_file_index=source.file_index,
+                target_name=f"stream_context_{source.file_index}",
+                command=tuple(producer_command(ffmpeg_bin, _spec(carrier, context=True))),
+            ))
             continue
         index_maps[source.file_index] = index_map
         target_name = f"source_{source.file_index}.mkv"
@@ -998,7 +1010,10 @@ def plan_remux(
         needs_ffmpeg_preparation = any(
             action.command
             for action in preparation_actions
-            if action.kind in {"canonicalize_source", "extract_attachment", "audio_variant", "physical_sync"}
+            if action.kind in {
+                "canonicalize_source", "stream_source", "stream_context", "extract_attachment",
+                "audio_variant", "physical_sync",
+            }
         )
         required_tools = ("ffprobe", "ffmpeg") if needs_ffmpeg_preparation else ("ffprobe",)
     else:

@@ -65,8 +65,38 @@ def _remux(tmp_path: Path, output: Path) -> Path:
 
 
 def _tracks(path: Path) -> list[tuple]:
-    return [(t.codec_id, t.codec_private, t.default_duration_ns, t.video, t.audio, t.block_addition_mappings,
-             t.language, t.name) for t in MatroskaReader(path).tracks()]
+    """TrackEntry brut (CodecPrivate, CodecDelay, SeekPreRoll, flags, langue…), hors TrackUID.
+
+    L'UID d'une piste dérive de celui de l'artefact lu, que FFmpeg tire au hasard à chaque muxage.
+    Écartés aussi : Void et MaxBlockAdditionID nul (valeur par défaut), réservés par FFmpeg sur une
+    sortie fichier seulement (place pour un BlockAdditionMapping), jamais sur un pipe.
+    """
+    from core.matroska.ids import MAX_BLOCK_ADDITION_ID_ID, TRACK_UID_ID, VOID_ID
+    from core.matroska.reader import payload_children
+
+    def kept(child: tuple) -> bool:
+        if child[0] in (TRACK_UID_ID, VOID_ID):
+            return False
+        return not (child[0] == MAX_BLOCK_ADDITION_ID_ID and not any(child[1]))
+
+    return [(t.codec_id, tuple(child for child in payload_children(t.raw_entry) if kept(child)))
+            for t in MatroskaReader(path).tracks()]
+
+
+def _tags(path: Path) -> list[tuple]:
+    """Tags avec leurs cibles ramenées au numéro de piste (UID → piste)."""
+    reader = MatroskaReader(path)
+    numbers = {track.uid: track.number for track in reader.tracks()}
+    skipped = {"BPS", "DURATION", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES", "_STATISTICS_TAGS",
+               "_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_DATE_UTC"}
+    tags = []
+    for tag in reader.tags():
+        targets = tuple(sorted((key, numbers.get(value, value) if key == "63c5" else value)
+                               for key, value in tag.targets.items()))
+        values = tuple(value for value in tag.values if value[0].upper() not in skipped)
+        if values:
+            tags.append((targets, values))
+    return sorted(tags)
 
 
 def _blocks(path: Path) -> dict[int, list[tuple]]:
@@ -91,6 +121,17 @@ def test_streamed_mp4_equals_file_canonicalization(tmp_path: Path, monkeypatch) 
 
     assert _tracks(streamed) == _tracks(canonical)
     assert _blocks(streamed) == _blocks(canonical)
+    assert _tags(streamed) == _tags(canonical)
+
+
+def test_reopened_stream_routes_give_the_same_output(tmp_path: Path, monkeypatch) -> None:
+    """Budget nul : chaque route quitte la lecture partagée ; un flux est relu par un nouveau producteur."""
+    from core.matroska import assembly
+
+    reference = _remux(tmp_path, tmp_path / "reference.mkv")
+    monkeypatch.setattr(assembly, "SHARED_READ_QUEUE_BYTES", 0)
+    detached = _remux(tmp_path, tmp_path / "detached.mkv")
+    assert _blocks(detached) == _blocks(reference)
 
 
 def test_streamed_timestamps_follow_source_origin(tmp_path: Path) -> None:
@@ -274,6 +315,7 @@ def test_chapters_and_tags_of_streamed_source_kept(tmp_path: Path, monkeypatch) 
                                             "_STATISTICS_WRITING_DATE_UTC"}}
 
     assert tag_values(streamed) == tag_values(canonical)
+    assert _tags(streamed) == _tags(canonical)
 
 
 def test_duplicated_mp4_track_reads_one_stream_for_both_outputs(tmp_path: Path) -> None:
@@ -307,3 +349,97 @@ def test_failing_producer_fails_the_assembly_without_output(tmp_path: Path, monk
         _assemble_encode(_encode_config(source, tmp_path / "out.mkv"))
     assert not (tmp_path / "out.mkv").exists()
     assert not list(tmp_path.glob("*.partial"))
+
+
+
+def _mp4_with_cover(path: Path) -> Path:
+    plain = _mp4_with_bframes_and_late_audio(path.with_name("plain_cover.mp4"))
+    cover = path.with_name("cover.png")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    "color=c=red:s=64x64:d=1", "-frames:v", "1", str(cover)], check=True)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(plain), "-i", str(cover),
+                    "-map", "0", "-map", "1", "-c", "copy", "-disposition:v:1", "attached_pic", str(path)], check=True)
+    return path
+
+
+def _remux_variants(tmp_path: Path, monkeypatch, build) -> tuple[Path, Path]:
+    from core.workflows import remux_plan
+
+    streamed = tmp_path / "streamed.mkv"
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(build(streamed)), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    monkeypatch.setattr(remux_plan, "is_streamable_source", lambda _path: False)
+    monkeypatch.setattr("core.workflows.remux_backend.is_streamable_source", lambda _path: False)
+    canonical = tmp_path / "canonical.mkv"
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(build(canonical)), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    return streamed, canonical
+
+
+def test_mp4_cover_attachment_with_streamed_tracks(tmp_path: Path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    source = _mp4_with_cover(tmp_path / "cover.mp4")
+    info = FileInspector().inspect(source)
+    tracks = [track for track in tracks_from_file_info(info, file_id="src-0") if track.track_type != "attachment"]
+
+    def build(output: Path) -> RemuxConfig:
+        src = SourceInput(path=source, file_index=0, tracks=tracks)
+        src = replace(src, selected_attachments=list(info.attachments))
+        return RemuxConfig(sources=[src], output=output, keep_chapters=False, mux_backend="native",
+                           track_order=[(0, t.mkv_tid) for t in tracks if t.track_type in ("video", "audio")],
+                           work_dir=tmp_path / "work")
+
+    streamed, canonical = _remux_variants(tmp_path, monkeypatch, build)
+    assert MatroskaReader(streamed).attachment_headers()
+    assert [(a.name, a.media_type, a.size) for a in MatroskaReader(streamed).attachment_headers()] == [
+        (a.name, a.media_type, a.size) for a in MatroskaReader(canonical).attachment_headers()
+    ]
+    assert _blocks(streamed) == _blocks(canonical)
+
+
+def test_physical_sync_on_streamed_mp4(tmp_path: Path, monkeypatch) -> None:
+    source = _mp4_with_bframes_and_late_audio(tmp_path / "video.mp4")
+    tracks = tracks_from_file_info(FileInspector().inspect(source), file_id="src-0")
+    for track in tracks:
+        if track.track_type == "audio":
+            track.time_shift_ms = 300
+
+    def build(output: Path) -> RemuxConfig:
+        return RemuxConfig(sources=[SourceInput(path=source, file_index=0, tracks=tracks)], output=output,
+                           keep_chapters=False, mux_backend="native", sync_mode="physical",
+                           track_order=[(0, t.mkv_tid) for t in tracks], work_dir=tmp_path / "work")
+
+    streamed, canonical = _remux_variants(tmp_path, monkeypatch, build)
+    streamed_blocks, canonical_blocks = _blocks(streamed), _blocks(canonical)
+    assert streamed_blocks[1] == canonical_blocks[1]
+    assert [item[0] for item in streamed_blocks[2]] == [item[0] for item in canonical_blocks[2]]
+
+
+def test_mov_text_emptied_by_sync_keeps_its_track(tmp_path: Path) -> None:
+    from core.workflows.common.track_types import TrackOffset
+    from core.workflows.sync_calibration import SyncCalibration, SyncSegment
+
+    from ._synth import make_mp4_with_mov_text
+
+    source = tmp_path / "subs.mp4"
+    make_mp4_with_mov_text(source, duration=2.0)
+    calibration = SyncCalibration((SyncSegment(0, -3000),)).to_dict()
+    from dataclasses import replace
+
+    config = replace(
+        _encode_config(source, tmp_path / "out.mkv",
+                       offsets=[TrackOffset("subtitle", source, 2, calibration=calibration)]),
+        subtitle_tracks=[(source, 2)],
+    )
+    from core.workflows.common.sync_rewrite import SyncRewriteService
+    from core.workflows.encode.runtime.native_mux import NativeVideoArtifactRef, assemble_encode_output_native
+
+    output = assemble_encode_output_native(
+        config, video_artifacts=[NativeVideoArtifactRef(source, 0)], work_dir=tmp_path,
+        signals=None, run_cmd=_run_command, log=lambda *_: None, resolved_subtitles=[(source, 2)],
+        sync_rewrite=SyncRewriteService(ffmpeg_bin="ffmpeg"),
+    )
+    tracks = MatroskaReader(output).tracks()
+    assert [t.codec_id for t in tracks if t.track_type == 17] == ["S_TEXT/UTF8"]
+    assert 3 not in _blocks(output)

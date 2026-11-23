@@ -441,6 +441,7 @@ class StreamArtifacts:
         if header is None:
             header = Path(self._open(replace(spec, carry_context=False), header_only=True).path)
             self._metadata[key] = header
+            self._route_headers.setdefault(key[0], []).append(header)
         return header
 
     def context(self, spec: StreamTrackSpec) -> Path:
@@ -453,7 +454,7 @@ class StreamArtifacts:
         return header
 
     def route_headers(self, source: Path | str) -> list[Path]:
-        """En-têtes des routes d'une source (tags propres à chaque piste)."""
+        """En-têtes de pistes d'une source, routes et en-têtes seuls (tags propres à chaque piste)."""
         return list(self._route_headers.get(Path(source), ()))
 
 
