@@ -59,7 +59,9 @@ def quantize_block(block: MatroskaBlock, scale_ns: int) -> MatroskaBlock:
     Les extrémités sont quantifiées, jamais les écarts : une durée vaut
     ``q(t + d) − q(t)`` (au moins un tick si elle n'est pas nulle) et une
     référence ``q(t + r) − q(t)`` (au moins un tick, de même signe), pour que
-    la cible d'une référence ou la fin d'un bloc restent celles de la source.
+    la cible d'une référence ou la fin d'un bloc restent celles de la source
+    (une référence peut donc valoir 0 si les deux blocs tombent sur le même
+    tick ; la forcer à ±1 changerait sa cible).
     """
     timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
     duration_ns = block.duration_ns
@@ -84,12 +86,7 @@ def quantize_block(block: MatroskaBlock, scale_ns: int) -> MatroskaBlock:
         changes["duration_ns"] = quantized_duration
         changes["duration_ms"] = round(quantized_duration / 1_000_000)
     if references_ns:
-        quantized_refs: list[int] = []
-        for value in references_ns:
-            quantized = _quantized_ns(timestamp_ns + value, scale_ns) - start_ns
-            if value and not quantized:
-                quantized = scale_ns if value > 0 else -scale_ns
-            quantized_refs.append(quantized)
+        quantized_refs = [_quantized_ns(timestamp_ns + value, scale_ns) - start_ns for value in references_ns]
         changes["references_ns"] = tuple(quantized_refs)
         changes["references"] = tuple(round(value / 1_000_000) for value in quantized_refs)
     return replace(block, **changes)  # type: ignore[arg-type]

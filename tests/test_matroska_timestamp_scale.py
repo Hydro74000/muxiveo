@@ -159,12 +159,15 @@ def test_quantize_rounds_endpoints_not_deltas() -> None:
     assert quantized.references == (-42,)
 
 
-def test_quantize_never_collapses_nonzero_values() -> None:
+def test_quantize_keeps_durations_and_reference_targets() -> None:
     block = MatroskaBlock(1, 0, 0, b"x", timestamp_ns=10_000, duration_ns=200_000, references_ns=(300_000,))
     quantized = quantize_block(block, _MS)
     assert quantized.timestamp_ns == 0
-    assert quantized.duration_ns == _MS
-    assert quantized.references_ns == (_MS,)
+    assert quantized.duration_ns == _MS  # durée non nulle : au moins un tick
+    # Bloc à 0,3 ms référençant 0,1 ms : les deux tombent sur 0 ms, la référence vise 0 ms.
+    assert quantize_block(
+        MatroskaBlock(1, 0, 0, b"x", timestamp_ns=300_000, references_ns=(-200_000,)), _MS,
+    ).references_ns == (0,)
     zero = quantize_block(MatroskaBlock(1, 0, 0, b"x", timestamp_ns=10_000, duration_ns=0), _MS)
     assert zero.duration_ns == 0
 
@@ -212,3 +215,16 @@ def test_fine_scale_artifact_is_written_at_one_millisecond(tmp_path: Path) -> No
     assert [block.payload for block in blocks] == [b"a0", b"a1", b"a2", b"a3"]
     # Références vers le bloc précédent : écart entre extrémités quantifiées.
     assert [block.references_ns for block in blocks[1:]] == [(-32 * _MS,), (-32 * _MS,), (-32 * _MS,)]
+
+
+@pytest.mark.usefixtures("option_supported")
+def test_nvencc_remux_command_adds_option_for_mkv_only(tmp_path: Path) -> None:
+    from core.workflows.encode.runtime.nvencc import build_remux_cmd
+
+    for output, expected in ((tmp_path / "o.mkv", True), (tmp_path / "o.mp4", False)):
+        cmd = build_remux_cmd(ffmpeg_bin="ffmpeg", encoded_video=tmp_path / "v.hevc",
+                              source=tmp_path / "s.mkv", output=output)
+        if expected:
+            assert cmd[-3:] == [*_OPTION, str(output)]
+        else:
+            assert "-timestamp_scale" not in cmd

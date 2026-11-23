@@ -35,6 +35,7 @@ from pathlib import Path
 from core.bluray import append_ffmpeg_input_args
 from core.workflows.encode.catalog import hdr_capabilities
 from core.subprocess_utils import run_detection, subprocess_text_kwargs
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.encode.models import (
     VideoCropSettings,
     VideoEncodeSettings,
@@ -1156,6 +1157,7 @@ def build_remux_cmd(
     cmd.extend(["-c", "copy"])
     if extra_args:
         cmd.extend(extra_args)
+    cmd.extend(matroska_output_args(ffmpeg_bin, output))
     cmd.append(str(output))
     return cmd
 
