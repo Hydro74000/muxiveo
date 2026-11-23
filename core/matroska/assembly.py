@@ -114,6 +114,8 @@ SHARED_READ_QUEUE_BYTES = 64 * 1024 * 1024
 class _PacketSource(Protocol):
     def next_packet(self) -> MatroskaMuxPacket | None: ...
 
+    def finish(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -123,6 +125,9 @@ class _IteratorSource:
 
     def next_packet(self) -> MatroskaMuxPacket | None:
         return next(self._stream, None)
+
+    def finish(self) -> None:
+        return None
 
     def close(self) -> None:
         close = getattr(self._stream, "close", None)
@@ -138,8 +143,8 @@ class _Route:
         self.output_index = output_index
         self.offset_ns = offset_ns
         self.scale_ns = scale_ns
-        # (rang du bloc dans la piste source, paquet ou None si écarté avant zéro, octets)
-        self.queue: deque[tuple[int, MatroskaMuxPacket | None, int]] = deque()
+        # (rang du bloc dans la piste source, paquet, octets)
+        self.queue: deque[tuple[int, MatroskaMuxPacket, int]] = deque()
         self.queued_bytes = 0
         self.own: Iterator[MatroskaMuxPacket] | None = None
 
@@ -198,10 +203,10 @@ class _SharedArtifactRead:
             indexed = positions.get(number) or set()
             if not indexed or frame_counts.get(uid) != len(indexed):
                 continue
-            blocks = list(self._reader.indexed_blocks(indexed, first_lace_only=True))
-            self._indexed_counts[number] = len(blocks)
+            self._indexed_counts[number] = len(indexed)
             for route in self._by_track[number]:
-                route.own = _indexed_route_stream(route, blocks)
+                # Lecture à la demande (un bloc en mémoire), une par route.
+                route.own = _indexed_route_stream(self._reader, route, frozenset(indexed))
 
     def next_packet(self, route: _Route) -> MatroskaMuxPacket | None:
         if not self._prepared:
@@ -213,11 +218,21 @@ class _SharedArtifactRead:
                 _sequence, packet, size = route.queue.popleft()
                 route.queued_bytes -= size
                 self._queued -= size
-                if packet is not None:
-                    return packet
-                continue
+                return packet
             if not self._pull():
                 return None
+
+    def finish(self) -> None:
+        """Lecture partagée menée jusqu'à la fin du fichier : comptes des pistes indexées vérifiés.
+
+        Toutes les routes lues par la passe partagée peuvent l'avoir quittée
+        (détachées) avant la fin : la vérification doit pourtant avoir lieu
+        avant la publication.
+        """
+        if not self._indexed_counts:
+            return
+        while self._pull():
+            pass
 
     def _pull(self) -> bool:
         if self._stream is None:
@@ -243,7 +258,10 @@ class _SharedArtifactRead:
             if route.own is not None:
                 continue
             packet = route.packet(sequence, block)
-            size = len(packet.block.encoded_frames_payload or packet.block.payload) if packet is not None else 0
+            if packet is None:
+                # Écarté (avant zéro après décalage) : rien en file, le rang reste compté.
+                continue
+            size = len(packet.block.encoded_frames_payload or packet.block.payload)
             route.queue.append((sequence, packet, size))
             route.queued_bytes += size
             self._queued += size
@@ -287,11 +305,25 @@ class _SharedArtifactRead:
             close_stream()
 
 
-def _indexed_route_stream(route: _Route, blocks: list[MatroskaBlock]) -> Iterator[MatroskaMuxPacket]:
-    for sequence, block in enumerate(blocks):
-        packet = route.packet(sequence, block)
-        if packet is not None:
-            yield packet
+def _indexed_route_stream(
+    reader: MatroskaReader, route: _Route, positions: frozenset[tuple[int, int]],
+) -> Iterator[MatroskaMuxPacket]:
+    """Blocs d'une piste lus aux positions de ses Cues ; une Cue visant une autre piste est refusée."""
+    blocks = reader.indexed_blocks(positions, first_lace_only=True)
+    try:
+        for sequence, block in enumerate(blocks):
+            if block.track_number != route.track_number:
+                raise ValueError(
+                    f"Index Matroska (Cues) incohérent : une entrée de la piste #{route.track_number} "
+                    f"désigne un bloc de la piste #{block.track_number}."
+                )
+            packet = route.packet(sequence, block)
+            if packet is not None:
+                yield packet
+    finally:
+        close = getattr(blocks, "close", None)
+        if callable(close):
+            close()
 
 
 def _statistics_frame_counts(reader: MatroskaReader) -> dict[int, int]:
@@ -314,6 +346,9 @@ class _SharedRouteSource:
 
     def next_packet(self) -> MatroskaMuxPacket | None:
         return self._shared.next_packet(self._route)
+
+    def finish(self) -> None:
+        self._shared.finish()
 
     def close(self) -> None:
         self._shared.close()
@@ -348,6 +383,9 @@ def merge_packet_sources(sources: Sequence[_PacketSource]) -> Iterator[MatroskaM
                 _key, index, packet = heapq.heappop(heap)
                 yield packet
                 push(index)
+            # Fin normale : contrôles différés (comptes des Cues) avant que le writer publie.
+            for source in sources:
+                source.finish()
         finally:
             for source in sources:
                 source.close()

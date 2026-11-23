@@ -279,3 +279,66 @@ def test_queue_budget_detaches_the_loaded_route_and_keeps_order(tmp_path: Path, 
     assert detached == [2]  # l'audio écrit d'un bloc en avance passe sur sa propre lecture
     assert _max_lag_ms(order) == 0
     assert [ms for track, ms in order if track == 2] == list(range(0, 60_000, 500))
+
+
+def test_incomplete_cues_detected_even_when_every_shared_route_is_detached(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    from core.matroska import assembly
+
+    source = tmp_path / "detached.mkv"
+    _write_av_subtitles(source, subtitle_times=[5_000, 300_000, 590_000])
+    real_positions = MatroskaReader.cue_block_positions
+    monkeypatch.setattr(MatroskaReader, "cue_block_positions", lambda self, numbers: {
+        number: set(sorted(values)[:-1]) for number, values in real_positions(self, numbers).items()
+    })
+    monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 2})
+    # Budget nul : vidéo et audio quittent la passe partagée dès les premiers blocs.
+    monkeypatch.setattr(assembly, "SHARED_READ_QUEUE_BYTES", 0)
+    with pytest.raises(ValueError, match="Cues.*incomplet"):
+        _assemble(source, tmp_path / "out.mkv", _all_tracks(source))
+    assert not (tmp_path / "out.mkv").exists()
+
+
+def test_cue_pointing_to_another_track_is_refused(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+
+    from core.matroska import assembly
+
+    source = tmp_path / "wrong.mkv"
+    _write_av_subtitles(source, subtitle_times=[5_000, 300_000, 590_000])
+    real_positions = MatroskaReader.cue_block_positions
+
+    def video_positions(self, numbers):
+        video = sorted(real_positions(self, {1})[1])[:3]
+        return {number: set(video) for number in numbers}
+
+    monkeypatch.setattr(MatroskaReader, "cue_block_positions", video_positions)
+    monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 3})
+    with pytest.raises(ValueError, match="désigne un bloc de la piste #1"):
+        _assemble(source, tmp_path / "out.mkv", _all_tracks(source))
+
+
+def test_dropped_packets_are_not_queued(tmp_path: Path, monkeypatch) -> None:
+    from core.matroska import assembly
+
+    audio = [MatroskaMuxPacket(2, _block(2, ms, b"a"), i) for i, ms in enumerate(range(0, 120_000, 20))]
+    video = [MatroskaMuxPacket(1, _block(1, ms, b"v"), i) for i, ms in enumerate(range(0, 120_000, 1000))]
+    source = tmp_path / "neg.mkv"
+    _write_source(source, sorted(audio + video, key=lambda p: p.block.timestamp_ms))
+    longest: list[int] = []
+    original_pull = assembly._SharedArtifactRead._pull
+
+    def spy(self):
+        result = original_pull(self)
+        longest.append(max((len(route.queue) for route in self._routes), default=0))
+        return result
+
+    monkeypatch.setattr(assembly._SharedArtifactRead, "_pull", spy)
+    output = _assemble(source, tmp_path / "out.mkv", (
+        MatroskaAssemblyTrack(artifact=source, artifact_track_index=0, source_identity="s"),
+        MatroskaAssemblyTrack(artifact=source, artifact_track_index=1, source_identity="s", time_shift_ms=-100_000),
+    ))
+    # 5 000 paquets audio écartés (avant zéro) : aucun n'occupe la file.
+    assert max(longest) < 100
+    assert [ms for track, ms in _file_order(output) if track == 2] == list(range(0, 20_000, 20))
