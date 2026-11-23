@@ -233,12 +233,22 @@ class MatroskaTrackStatisticsEditor:
         accumulators: dict[int, _TrackAccumulator] = {}
         max_packet_timestamp_ns: int | None = None
         last_delta_by_track: dict[int, int] = {}
-        # Résumés émis dans l'ordre du fichier : entrelacement mesuré au passage.
-        interleave = InterleaveTracker()
+        # Résumés émis dans l'ordre du fichier : entrelacement mesuré au passage
+        # (non évalué si un Cluster n'a pas de Timestamp).
+        interleave: InterleaveTracker | None = InterleaveTracker()
+        current_cluster: int | None = None
         for block in reader.block_summaries(workers=workers):
             item = accumulators.setdefault(block.track_number, _TrackAccumulator())
             timestamp_ns = block.timestamp_ns
-            interleave.packet(block.track_number, timestamp_ns)
+            if interleave is not None:
+                if block.cluster_offset != current_cluster:
+                    current_cluster = block.cluster_offset
+                    if block.cluster_timestamp_ns is None:
+                        interleave = None
+                    else:
+                        interleave.cluster(block.cluster_timestamp_ns)
+                if interleave is not None:
+                    interleave.packet(block.track_number, timestamp_ns)
             explicit_duration_ns = block.duration_ns
             if item.first_timestamp_ns < 0 or timestamp_ns < item.first_timestamp_ns:
                 item.first_timestamp_ns = timestamp_ns
@@ -264,7 +274,7 @@ class MatroskaTrackStatisticsEditor:
             track_numbers=frozenset(accumulators),
             max_packet_timestamp_ns=max_packet_timestamp_ns,
             last_delta_by_track=last_delta_by_track,
-            interleave=interleave.report(),
+            interleave=interleave.report() if interleave is not None else None,
         )
 
 

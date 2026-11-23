@@ -465,8 +465,11 @@ class RemuxRuntimeRunner:
                 for message in ffmpeg_output_interleave_warnings(
                     candidate,
                     packet_validation if isinstance(packet_validation, MatroskaPacketValidation) else None,
+                    cancelled=signals._cancel_event.is_set,
                 ):
                     cb.log("WARN", message)
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
                 publish_candidate(candidate, run_config.output)
                 # Un échec NFO après commit ne transforme plus un média valide
                 # en workflow échoué.

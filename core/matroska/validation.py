@@ -8,7 +8,7 @@ la source unique de vérité.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,7 @@ from typing import Any
 from . import contract as _contract
 from .ids import CHAPTERS_ID, CLUSTER_ID, INFO_ID, TAGS_ID, TRACKS_ID
 from .language import matroska_legacy_language
-from .reader import MatroskaAttachmentHeader, MatroskaReader, MatroskaTrack
+from .reader import MatroskaAttachmentHeader, MatroskaBlockSummary, MatroskaReader, MatroskaTrack
 
 
 #: Types de piste Matroska → libellés publics du remux.
@@ -118,9 +118,9 @@ def interleave_warnings(
     for track_number in sorted(report.lagged_packets):
         label = labels.get(track_number, f"piste #{track_number}")
         messages.append(
-            f"Entrelacement : {label} écrite jusqu'à {_seconds(report.max_lag_ns[track_number])} après les "
-            f"autres pistes (à {_seconds(report.lag_at_ns[track_number])} du film, "
-            f"{report.lagged_packets[track_number]} paquet(s) au-delà de {_seconds(report.threshold_ns)}) : "
+            f"Entrelacement : {label} — paquets écrits jusqu'à {_seconds(report.max_lag_ns[track_number])} "
+            f"en retard sur l'horodatage le plus avancé déjà écrit (à {_seconds(report.lag_at_ns[track_number])} "
+            f"du film, {report.lagged_packets[track_number]} paquet(s) au-delà de {_seconds(report.threshold_ns)}) : "
             "après un déplacement, un lecteur peut perdre cette piste."
         )
     if report.backward_clusters:
@@ -167,26 +167,44 @@ def file_track_labels(path: Path) -> dict[int, str]:
     }
 
 
-def scan_interleave(path: Path) -> InterleaveReport:
-    """Entrelacement d'un fichier existant (sorties FFmpeg) : en-têtes seuls, sans payload."""
-    reader = MatroskaReader(path)
+def interleave_from_summaries(
+    summaries: Iterable[MatroskaBlockSummary],
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> InterleaveReport | None:
+    """Entrelacement d'après les résumés de blocs, dans l'ordre du fichier.
+
+    ``None`` si l'évaluation est impossible (Cluster sans Timestamp : horodatages
+    des blocs inconnus) ou interrompue par ``cancelled``.
+    """
     tracker = InterleaveTracker()
-    with path.open("rb") as fh:
-        for item in reader.top_level():
-            if item.element_id != CLUSTER_ID:
-                continue
-            fh.seek(item.payload_offset)
-            head = fh.read(16)
-            if len(head) >= 3 and head[0] == 0xE7:
-                size_length = 9 - head[1].bit_length()
-                size = int.from_bytes(head[1:1 + size_length], "big") & ((1 << (7 * size_length)) - 1)
-                start = 1 + size_length
-                if 0 < size <= 8 and start + size <= len(head):
-                    tracker.cluster(int.from_bytes(head[start:start + size], "big") * reader.timestamp_scale_ns())
-    for block in reader.blocks(read_payload=False):
-        timestamp = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
-        tracker.packet(block.track_number, timestamp)
+    current_cluster: int | None = None
+    for count, summary in enumerate(summaries):
+        if cancelled is not None and count % 4096 == 0 and cancelled():
+            return None
+        if summary.cluster_offset != current_cluster:
+            current_cluster = summary.cluster_offset
+            if summary.cluster_timestamp_ns is None:
+                return None
+            tracker.cluster(summary.cluster_timestamp_ns)
+        tracker.packet(summary.track_number, summary.timestamp_ns)
     return tracker.report()
+
+
+def scan_interleave(path: Path, *, cancelled: Callable[[], bool] | None = None) -> InterleaveReport | None:
+    """Entrelacement d'un fichier existant (sorties FFmpeg) : en-têtes de blocs seuls, sans payload."""
+    return interleave_from_summaries(MatroskaReader(path).block_summaries(), cancelled=cancelled)
+
+
+def interleave_warning_lines(
+    report: InterleaveReport | None,
+    track_labels: Callable[[], Mapping[int, str]],
+) -> list[str]:
+    """Avertissements d'entrelacement sans jamais lever : un diagnostic n'empêche pas une publication."""
+    try:
+        return interleave_warnings(report, track_labels=track_labels())
+    except Exception:  # noqa: BLE001 - diagnostic seulement
+        return []
 
 
 #: Clusters de fin sondés pour l'horodatage du dernier paquet. Les Clusters
@@ -632,6 +650,8 @@ __all__ = [
     "MatroskaPacketValidation",
     "TRACK_TYPE_LABELS",
     "file_track_labels",
+    "interleave_from_summaries",
+    "interleave_warning_lines",
     "interleave_warnings",
     "mux_track_labels",
     "scan_interleave",

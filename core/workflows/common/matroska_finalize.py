@@ -28,7 +28,7 @@ from core.matroska.reader import MatroskaReader
 from core.matroska.validation import (
     MatroskaPacketValidation,
     file_track_labels,
-    interleave_warnings,
+    interleave_warning_lines,
     scan_interleave,
     validate_matroska_output,
 )
@@ -293,20 +293,24 @@ class MatroskaTrackStatisticsPostAction:
 
 
 def ffmpeg_output_interleave_warnings(
-    candidate: Path, packet_validation: MatroskaPacketValidation | None,
+    candidate: Path,
+    packet_validation: MatroskaPacketValidation | None,
+    *,
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[str]:
     """Entrelacement d'une sortie écrite par FFmpeg (avertissements, jamais bloquants).
 
     Mesure reprise du parcours des statistiques quand il a eu lieu, sinon
-    relecture des en-têtes de blocs (sans payload).
+    relecture des en-têtes de blocs (sans payload), interrompue par
+    ``cancelled``. Aucune exception : un diagnostic n'empêche pas la publication.
     """
-    report = packet_validation.interleave if packet_validation is not None else None
-    if report is None:
-        try:
-            report = scan_interleave(candidate)
-        except (OSError, ValueError):
-            return []
-    return interleave_warnings(report, track_labels=file_track_labels(candidate))
+    try:
+        report = packet_validation.interleave if packet_validation is not None else None
+        if report is None:
+            report = scan_interleave(candidate, cancelled=cancelled)
+    except Exception:  # noqa: BLE001 - diagnostic seulement
+        return []
+    return interleave_warning_lines(report, lambda: file_track_labels(candidate))
 
 
 @dataclass
@@ -403,8 +407,11 @@ class MatroskaOutputTransaction:
             )
             self._check_cancelled(signals)
             if self.warn is not None:
-                for message in ffmpeg_output_interleave_warnings(candidate, packet_validation):
+                for message in ffmpeg_output_interleave_warnings(
+                    candidate, packet_validation, cancelled=signals._cancel_event.is_set,
+                ):
                     self.warn(message)
+            self._check_cancelled(signals)
             publish_candidate(candidate, self.output)
             if self.write_nfo is not None:
                 try:

@@ -62,7 +62,7 @@ from core.workflows.encode.planning.plan_models import PlannedTrackMetadata
 from core.workflows.encode.planning.track_metadata import resolve_track_metadata
 from core.workflows.remux_plan import MATROSKA_EXTENSIONS
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
-from core.matroska.validation import interleave_warnings, mux_track_labels
+from core.matroska.validation import interleave_warning_lines, mux_track_labels
 
 
 #: Type Matroska « subtitle » dans les TrackEntry natifs.
@@ -897,8 +897,8 @@ def assemble_encode_output_native(
                 cancelled=signals._cancel_event.is_set if signals is not None else lambda: False,
                 warn=lambda message: log("WARN", message),
             )
-            for message in interleave_warnings(
-                packet_validation.interleave, track_labels=mux_track_labels(mux_plan.tracks),
+            for message in interleave_warning_lines(
+                packet_validation.interleave, lambda: mux_track_labels(mux_plan.tracks),
             ):
                 log("WARN", message)
 

@@ -66,7 +66,7 @@ from core.workdir import (
     remove_path,
 )
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line
-from core.matroska.validation import interleave_warnings, mux_track_labels
+from core.matroska.validation import interleave_warning_lines, mux_track_labels
 
 
 class RemuxBackend(Protocol):
@@ -487,8 +487,8 @@ def run_native_remux(
                     cancelled=signals._cancel_event.is_set,
                     warn=lambda message: log("WARN", message),
                 )
-                for message in interleave_warnings(
-                    packet_validation.interleave, track_labels=mux_track_labels(plan_matroska.tracks),
+                for message in interleave_warning_lines(
+                    packet_validation.interleave, lambda: mux_track_labels(plan_matroska.tracks),
                 ):
                     log("WARN", message)
 

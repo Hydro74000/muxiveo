@@ -1683,6 +1683,8 @@ class MatroskaReader:
                     elem_size: int,
                     cluster_timestamp: int,
                     duration_ns: int | None,
+                    cluster_offset: int = -1,
+                    has_timestamp: bool = True,
                 ) -> "MatroskaBlockSummary":
                     probe_size = min(elem_size, 256)
                     header = mm[payload_offset:payload_offset + probe_size]
@@ -1709,12 +1711,15 @@ class MatroskaReader:
                         duration_ns=duration_ns,
                         frame_count=frame_count,
                         payload_bytes=max(0, elem_size - header_bytes),
+                        cluster_offset=cluster_offset,
+                        cluster_timestamp_ns=cluster_timestamp * scale_ns if has_timestamp else None,
                     )
 
                 for cluster in clusters:
                     cur = cluster.payload_offset
                     limit = cluster.end if cluster.end is not None else size
                     cluster_timestamp = 0
+                    has_timestamp = False
                     while cur < limit:
                         first = mm[cur]
                         id_len = _vint_length(first)
@@ -1740,8 +1745,12 @@ class MatroskaReader:
                             cluster_timestamp = int.from_bytes(
                                 mm[payload_offset:child_end], "big",
                             )
+                            has_timestamp = True
                         elif elem_id == self.SIMPLE_BLOCK_ID:
-                            yield block_summary_mem(payload_offset, size_val, cluster_timestamp, None)
+                            yield block_summary_mem(
+                                payload_offset, size_val, cluster_timestamp, None,
+                                cluster.offset, has_timestamp,
+                            )
                         elif elem_id == self.BLOCK_GROUP_ID:
                             bg_cur = payload_offset
                             block_payload_offset = None
@@ -1777,6 +1786,8 @@ class MatroskaReader:
                                 block_size_val,
                                 cluster_timestamp,
                                 duration_ticks * scale_ns if duration_ticks else None,
+                                cluster.offset,
+                                has_timestamp,
                             )
 
     def _scan_clusters_stream(
@@ -1799,6 +1810,8 @@ class MatroskaReader:
                 element: EbmlElement,
                 cluster_timestamp: int,
                 duration_ns: int | None,
+                cluster_offset: int = -1,
+                has_timestamp: bool = True,
             ) -> "MatroskaBlockSummary":
                 if element.size is None:
                     raise ValueError("Block Matroska de taille inconnue")
@@ -1830,10 +1843,13 @@ class MatroskaReader:
                     duration_ns=duration_ns,
                     frame_count=frame_count,
                     payload_bytes=max(0, element.size - header_bytes),
+                    cluster_offset=cluster_offset,
+                    cluster_timestamp_ns=cluster_timestamp * scale_ns if has_timestamp else None,
                 )
 
             for cluster in clusters:
                 timestamp = 0
+                has_timestamp = False
                 fh.seek(cluster.payload_offset)
                 for child in iter_children(fh, cluster, file_size=size):
                     if child.size is None:
@@ -1842,8 +1858,9 @@ class MatroskaReader:
                         timestamp = int.from_bytes(
                             read_at(child.payload_offset, child.size), "big",
                         )
+                        has_timestamp = True
                     elif child.element_id == self.SIMPLE_BLOCK_ID:
-                        yield block_summary(child, timestamp, None)
+                        yield block_summary(child, timestamp, None, cluster.offset, has_timestamp)
                     elif child.element_id == self.BLOCK_GROUP_ID:
                         block: EbmlElement | None = None
                         duration_ticks = 0
@@ -1863,6 +1880,8 @@ class MatroskaReader:
                             block,
                             timestamp,
                             duration_ticks * scale_ns if duration_ticks else None,
+                            cluster.offset,
+                            has_timestamp,
                         )
 
 
@@ -1900,6 +1919,10 @@ class MatroskaBlockSummary:
     duration_ns: int | None
     frame_count: int
     payload_bytes: int
+    #: Position du Cluster d'appartenance (identifie un changement de Cluster).
+    cluster_offset: int = -1
+    #: Timestamp du Cluster en ns ; ``None`` si le Cluster n'en a pas avant ce bloc.
+    cluster_timestamp_ns: int | None = None
 
 
 @dataclass(frozen=True)
