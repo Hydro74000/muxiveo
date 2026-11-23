@@ -330,6 +330,7 @@ from core.workflows.encode.planning.plan_models import (
 )
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
 from core.workflows.common.native_stream_inputs import is_streamable_source
+from core.workflows.common.timeline_sync import SyncInput
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
 _PREVIEW_IMAGE_MARGIN_S = 0.5
@@ -1447,7 +1448,7 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals | None = None,
         allow_live: bool = True,
         plan: _EncodePlan | None = None,
-    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]:
+    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]:
         return _EncodeMultisourceSyncService(
             _EncodeMultisourceSyncCallbacks(
                 ffmpeg_bin=self._ffmpeg,
@@ -1473,7 +1474,7 @@ class EncodeWorkflow(QObject):
         _append_strict_interleave_mux_flags_runtime(cmd)
 
     @staticmethod
-    def _append_sync_inputs(cmd: list[str], sync_inputs: list[Path | str]) -> None:
+    def _append_sync_inputs(cmd: list[str], sync_inputs: list[SyncInput]) -> None:
         _append_sync_inputs_runtime(cmd, sync_inputs)
 
     def _append_stream_maps_and_attachments(
@@ -1789,12 +1790,16 @@ class EncodeWorkflow(QObject):
         offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
         sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
         strict_interleave: bool = False,
+        subtitle_copy_input_indices: list[int] | None = None,
     ) -> None:
         self._append_stream_maps_and_attachments(
             cmd,
             config,
             source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(all_sources_count)),
+            subtitle_copy_input_indices=(
+                list(range(all_sources_count)) if subtitle_copy_input_indices is None
+                else subtitle_copy_input_indices
+            ),
             sync_remap=sync_remap,
             offset_remap=offset_remap,
             subtitle_tracks_override=list(plan.resolved_subtitle_tracks),

@@ -2083,6 +2083,9 @@ class MainWindow(QMainWindow):
         self._encode_panel.operation_changed.connect(self._request_operation_refresh)
         self._remux_panel.operation_changed.connect(self._request_operation_refresh)
         self.log_requested.connect(self._on_log_requested)
+        # Migrations de la configuration (une fois, au premier lancement concerné).
+        for notice in getattr(self._config, "load_notices", ()):
+            self.log_requested.emit("INFO", translate_text(notice))
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
         self._log_panel.startup_expanded_changed.connect(self._on_log_startup_changed)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)

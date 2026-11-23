@@ -61,6 +61,7 @@ from core.workflows.encode.runtime_helpers import (
 )
 from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.timeline_sync import SyncInput
 
 
 @dataclass(frozen=True)
@@ -92,9 +93,9 @@ class MultiVideoPipelineRunnerCallbacks:
     format_bytes: Callable[[int], str]
     available_ram_bytes: Callable[[], int]
     source_input_index_map: Callable[[list[Path], int], dict[Path, int]]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    sync_cleanup_paths: Callable[[list[Path | str]], list[Path]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    sync_cleanup_paths: Callable[[list[SyncInput]], list[Path]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     prepare_container_metadata_inputs: Callable[..., tuple[int, int | None, int | None]]
     ffmpeg_thread_args: Callable[[], list[str]]
     append_offset_aux_inputs: Callable[..., tuple[int, dict[tuple[Path, int, str], tuple[int, int]]]]
@@ -806,7 +807,7 @@ class MultiVideoPipelineRunner:
                 all_sources = list(encode_plan.all_sources)
                 source_idx = cb.source_input_index_map(all_sources, len(prepared_inputs_ready))
                 sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
-                sync_inputs: list[Path | str] = []
+                sync_inputs: list[SyncInput] = []
                 strict_interleave = False
 
                 final_cmd: list[str] = [cb.ffmpeg_bin, "-hide_banner", "-y"]

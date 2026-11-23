@@ -131,6 +131,19 @@ class TestCommonTimelineSync:
         assert cmd == ["-f", "matroska", "-i", str(sync_path), "-f", "nut", "-i", "pipe:sync"]
         assert sync_cleanup_paths([sync_path, "pipe:sync"]) == [sync_path]
 
+    def test_prepared_sync_inputs_carry_their_container(self, tmp_path):
+        from core.workflows.encode.planning.track_assembly import build_track_input_paths
+        from core.workflows.remux_timeline_sync import SyncPreparedInput
+
+        fifo = tmp_path / "live.fifo"
+        prepared = [SyncPreparedInput((1, 1, "audio"), fifo, 2, container_format="nut"),
+                    SyncPreparedInput((1, 2, "audio"), "pipe:sync", 3)]
+        cmd: list[str] = []
+        append_sync_inputs(cmd, prepared)
+        assert cmd == ["-f", "nut", "-i", str(fifo), "-f", "matroska", "-i", "pipe:sync"]
+        assert sync_cleanup_paths(prepared) == [fifo]
+        assert build_track_input_paths(sync_inputs=prepared) == (fifo, "pipe:sync")
+
 
 class TestCommonSyncRewrite:
     @pytest.fixture(autouse=True)

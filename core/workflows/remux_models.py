@@ -26,8 +26,8 @@ _MATROSKA_SOURCE_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d
 
 
 def normalize_mux_backend(value: str | None) -> str:
-    """Return a stable public backend name, rejecting unknown contracts."""
-    backend = str(value or "ffmpeg").strip().lower()
+    """Return a stable public backend name, rejecting unknown contracts (absent : ``auto``)."""
+    backend = str(value or "auto").strip().lower()
     if backend not in MUX_BACKENDS:
         raise ValueError(
             "mux_backend invalide : attendu 'auto', 'native' ou 'ffmpeg'."

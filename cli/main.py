@@ -62,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
             raise
         for warning in getattr(config, "load_warnings", []):
             logger.emit("warning", warning)
+        for notice in getattr(config, "load_notices", []):
+            logger.emit("info", notice)
         return int(args.func(args, config, logger))
     except ToolNotFoundError as exc:
         logger.emit("error", str(exc))

@@ -628,7 +628,8 @@ def config_to_template(job: dict[str, Any], *, include_output: bool = False) -> 
         "chapters": job.get("chapters", {}),
         "tmdb": job.get("tmdb", False),
         "extra_attachments": job.get("extra_attachments", []),
-        "mux_backend": job.get("mux_backend", "ffmpeg"),
+        # Absent = réglage global au chargement : jamais un choix figé à l'export.
+        "mux_backend": job.get("mux_backend"),
         "tag_overrides": job.get("tag_overrides", None),
     }
     if include_output and job.get("output"):

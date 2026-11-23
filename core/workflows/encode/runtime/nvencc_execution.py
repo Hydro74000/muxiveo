@@ -84,6 +84,7 @@ from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.hevc_static_hdr_metadata import replace_content_light_level_sei_file
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.timeline_sync import SyncInput
 
 
 def nvencc_needs_ffmpeg_pipe(routing: NvenccInputRouting, video: VideoEncodeSettings | None = None) -> bool:
@@ -417,8 +418,8 @@ class NvenccRuntimeRemuxBuilderCallbacks:
     ffmpeg_thread_args: Callable[[int | None], list[str]]
     offset_input_args: Callable[[int], list[str]]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     materialize_container_metadata_inputs: Callable[..., MaterializedContainerMetadataPlan]
     append_offset_aux_inputs: Callable[..., tuple[int, dict[tuple[Path, int, str], tuple[int, int]]]]
     append_stream_maps_and_attachments: Callable[..., None]

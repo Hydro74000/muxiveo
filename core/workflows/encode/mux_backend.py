@@ -18,7 +18,6 @@ Politique (lot 2) :
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,77 +105,6 @@ def encode_native_mux_blockers(config: EncodeConfig, *, pipeline: str) -> tuple[
     return tuple(dict.fromkeys(reasons))
 
 
-def _non_matroska_copied_video_sources(config: EncodeConfig) -> list[Path]:
-    """Sources non Matroska des pistes vidéo copiées (remballage MKV complet requis en natif)."""
-    videos = list(config.video_tracks or []) or ([config.video] if config.video is not None else [])
-    sources: list[Path] = []
-    for video in videos:
-        if video is None or str(video.codec or "copy").strip().lower() != "copy":
-            continue
-        source = Path(video.source_path or config.source)
-        if source.suffix.lower() not in MATROSKA_EXTENSIONS and source not in sources:
-            sources.append(source)
-    return sources
-
-
-def _wants_dovi_or_hdr(config: EncodeConfig) -> bool:
-    """True si le job encode requiert la préservation ou l'injection de métadonnées HDR / Dolby Vision."""
-    if bool(getattr(config, "copy_dv", False)) or bool(getattr(config, "copy_hdr10plus", False)):
-        return True
-    from core.workflows.encode.hdr10plus_output import outputs_hdr10plus
-    videos = list(getattr(config, "video_tracks", []) or [])
-    if not videos and getattr(config, "video", None) is not None:
-        videos = [config.video]
-    sources_to_check: set[Path] = set()
-    src = Path(getattr(config, "source", ""))
-    if src.is_file():
-        sources_to_check.add(src)
-
-    all_tonemapped = bool(videos)
-    for video in videos:
-        if video is None:
-            continue
-        if not bool(getattr(video, "tonemap_to_sdr", False)):
-            all_tonemapped = False
-        v_src = Path(getattr(video, "source_path", None) or "")
-        if v_src.is_file():
-            sources_to_check.add(v_src)
-        if (
-            bool(getattr(video, "copy_dv", False))
-            or outputs_hdr10plus(video)
-            or bool(getattr(video, "inject_hdr_meta", False))
-            or bool(getattr(video, "master_display", ""))
-            or bool(getattr(video, "max_cll", ""))
-        ):
-            return True
-
-    if all_tonemapped:
-        return False
-
-    for source_path in sources_to_check:
-        if source_path.suffix.lower() in MATROSKA_EXTENSIONS:
-            try:
-                from core.matroska.reader import MatroskaReader
-
-                reader = MatroskaReader(source_path)
-                for track in reader.tracks():
-                    if track.track_type == 1:
-                        tc = track.video.get("transfer_characteristics")
-                        if (
-                            track.block_addition_mappings
-                            or tc in (14, 16, 18)
-                            or track.video.get("max_cll")
-                            or track.video.get("luminance_max")
-                        ):
-                            return True
-            except (OSError, ValueError) as exc:
-                logging.getLogger(__name__).warning(
-                    "Lecture des métadonnées HDR Matroska impossible pour %s : %s",
-                    source_path, exc,
-                )
-    return False
-
-
 def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeMuxDecision:
     """Décide du backend d'assemblage final, avant tout démarrage effectif.
 
@@ -184,7 +112,7 @@ def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeM
     mode ``auto`` le repli est décidé ici, au préflight, et journalisé avant
     toute écriture.
     """
-    requested = normalize_mux_backend(getattr(config, "mux_backend", "ffmpeg"))
+    requested = normalize_mux_backend(getattr(config, "mux_backend", None))
     if requested == "ffmpeg":
         return EncodeMuxDecision(
             requested=requested, selected="ffmpeg", pipeline=pipeline,
@@ -202,33 +130,16 @@ def select_encode_mux_backend(config: EncodeConfig, *, pipeline: str) -> EncodeM
             requested="auto", selected="ffmpeg", pipeline=pipeline,
             reason="; ".join(blockers), diagnostics=blockers,
         )
-    if pipeline == PIPELINE_FFMPEG_DIRECT:
-        remuxed = _non_matroska_copied_video_sources(config)
-        if remuxed:
-            return EncodeMuxDecision(
-                requested="auto", selected="ffmpeg", pipeline=pipeline,
-                reason=(
-                    "chemin FFmpeg direct monopasse conservé : vidéo copiée depuis "
-                    f"une source non Matroska ({', '.join(p.name for p in remuxed)}) — "
-                    "le natif imposerait un remballage complet préalable, pour une "
-                    "signalisation DoVi/HDR identique (muxer Matroska FFmpeg)"
-                ),
-            )
-        if _wants_dovi_or_hdr(config):
-            return EncodeMuxDecision(
-                requested="auto", selected="native", pipeline=pipeline,
-                reason="assemblage natif sélectionné : préservation requise des métadonnées Dolby Vision / HDR10+",
-            )
-        return EncodeMuxDecision(
-            requested="auto", selected="ffmpeg", pipeline=pipeline,
-            reason=(
-                "chemin FFmpeg direct monopasse conservé : le natif n'imposerait "
-                "qu'une passe disque supplémentaire sans bénéfice fonctionnel"
-            ),
-        )
+    # Toute sortie .mkv non bloquée : assemblage natif (entrelacement exact,
+    # échelle 1 ms) ; chemin direct : vidéo encodée en artefact, pistes MP4/MOV
+    # copiées lues en flux sans fichier intermédiaire.
     return EncodeMuxDecision(
         requested="auto", selected="native", pipeline=pipeline,
-        reason="artefacts Matroska matérialisés — assemblage natif sans post-patch",
+        reason=(
+            "assemblage natif sélectionné : vidéo encodée en artefact, pistes copiées lues directement"
+            if pipeline == PIPELINE_FFMPEG_DIRECT
+            else "artefacts Matroska matérialisés — assemblage natif sans post-patch"
+        ),
     )
 
 

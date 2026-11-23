@@ -77,7 +77,7 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
 
     preview = _run_cli(root, "preview", "--config", str(config))
     assert preview.returncode == 0, preview.stderr
-    assert "ffmpeg" in preview.stdout
+    assert "native Matroska" in preview.stdout
     assert out.as_posix() in preview.stdout
 
     validate_json = _run_cli(root, "validate", "--config", str(config), "--json")
@@ -90,30 +90,30 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert preview_json.returncode == 0, preview_json.stderr
     preview_payload = json.loads(preview_json.stdout)
     assert preview_payload["valid"] is True
-    assert preview_payload["command"][0] == "ffmpeg"
-    # Défaut effectif sans configuration : FFmpeg (setting global [matroska]).
-    assert preview_payload["selected_backend"] == "ffmpeg"
+    # Défaut effectif sans configuration : Auto → natif pour une sortie .mkv (setting global [matroska]).
+    marker = "REM " if sys.platform == "win32" else "# "
+    assert preview_payload["command_text"].startswith(marker + "Backend: native Matroska")
+    assert preview_payload["selected_backend"] == "native"
     assert preview_payload["plan_version"] == 1
-    assert preview_payload["execution_preview"]["action"] == "external_ffmpeg"
+    assert preview_payload["execution_preview"]["action"] == "internal_matroska_write"
 
-    # Choix explicite du job : le natif reste prioritaire sur le setting.
+    # Choix explicite du job : FFmpeg reste prioritaire sur le setting.
     config.write_text(
         json.dumps({
             "version": 1,
             "sources": [{"path": str(src)}],
             "output": str(out),
-            "mux_backend": "native",
+            "mux_backend": "ffmpeg",
         }),
         encoding="utf-8",
     )
-    preview_native = _run_cli(root, "preview", "--config", str(config), "--json")
-    assert preview_native.returncode == 0, preview_native.stderr
-    native_payload = json.loads(preview_native.stdout)
-    assert native_payload["valid"] is True
-    marker = "REM " if sys.platform == "win32" else "# "
-    assert native_payload["command_text"].startswith(marker + "Backend: native Matroska")
-    assert native_payload["selected_backend"] == "native"
-    assert native_payload["execution_preview"]["action"] == "internal_matroska_write"
+    preview_ffmpeg = _run_cli(root, "preview", "--config", str(config), "--json")
+    assert preview_ffmpeg.returncode == 0, preview_ffmpeg.stderr
+    ffmpeg_payload = json.loads(preview_ffmpeg.stdout)
+    assert ffmpeg_payload["valid"] is True
+    assert ffmpeg_payload["command"][0] == "ffmpeg"
+    assert ffmpeg_payload["selected_backend"] == "ffmpeg"
+    assert ffmpeg_payload["execution_preview"]["action"] == "external_ffmpeg"
 
 
 def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path) -> None:

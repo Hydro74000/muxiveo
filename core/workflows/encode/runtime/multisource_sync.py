@@ -22,6 +22,7 @@ from core.workflows.remux_timeline_sync import (
     LiveSyncSession,
     TimelineSyncFallbackHelper,
 )
+from core.workflows.common.timeline_sync import SyncInput
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ class EncodeMultisourceSyncService:
         signals: TaskSignals | None = None,
         allow_live: bool = True,
         plan: EncodePlan | None = None,
-    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]:
+    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]:
         cb = self._cb
         encode_plan = plan
         source_idx_local = {p: i for i, p in enumerate(all_sources)}
@@ -151,7 +152,8 @@ class EncodeMultisourceSyncService:
         prepared = prepared_result.prepared_inputs
         live_session = prepared_result.live_session
 
-        sync_inputs: list[Path | str] = [item.path for item in prepared]
+        # Entrées préparées complètes : leur conteneur (NUT des FIFO live POSIX) suit jusqu'à la commande.
+        sync_inputs: list[SyncInput] = list(prepared)
         remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
         path_by_source_idx = {idx: path for path, idx in source_idx_local.items()}
         for item in prepared:
@@ -168,5 +170,5 @@ def append_strict_interleave_mux_flags(cmd: list[str]) -> None:
     _common_append_strict_interleave_mux_flags(cmd)
 
 
-def append_sync_inputs(cmd: list[str], sync_inputs: list[Path | str]) -> None:
+def append_sync_inputs(cmd: list[str], sync_inputs: list[SyncInput]) -> None:
     _common_append_sync_inputs(cmd, sync_inputs)

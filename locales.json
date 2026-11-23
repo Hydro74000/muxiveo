@@ -4159,9 +4159,9 @@
     "fra": "Muxage Matroska",
     "eng": "Matroska muxing"
   },
-  "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.": {
-    "fra": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.",
-    "eng": "Final Matroska assembler for the remux and encode workflows. FFmpeg by default; Auto selects the native muxer whenever the plan allows it and logs the fallback; Native never falls back."
+  "Assembleur final Matroska des workflows remux et encodage. Auto par défaut : muxeur natif pour toute sortie .mkv que le plan permet (entrelacement exact, échelle de temps 1 ms), FFmpeg sinon, repli journalisé ; Natif n'autorise aucun repli ; FFmpeg garde le muxage FFmpeg.": {
+    "fra": "Assembleur final Matroska des workflows remux et encodage. Auto par défaut : muxeur natif pour toute sortie .mkv que le plan permet (entrelacement exact, échelle de temps 1 ms), FFmpeg sinon, repli journalisé ; Natif n'autorise aucun repli ; FFmpeg garde le muxage FFmpeg.",
+    "eng": "Final Matroska assembler for the remux and encode workflows. Auto by default: native muxer for every .mkv output the plan allows (exact interleaving, 1 ms timestamp scale), FFmpeg otherwise, fallback logged; Native never falls back; FFmpeg keeps FFmpeg muxing."
   },
   "Workflow": {
     "fra": "Workflow",
@@ -11554,5 +11554,9 @@
   "embarqué": {
     "fra": "embarqué",
     "eng": "bundled"
+  },
+  "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres.": {
+    "fra": "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres.",
+    "eng": "Mux backend: former FFmpeg default replaced by Auto (native Matroska assembly for every .mkv output); FFmpeg remains available in Settings."
   }
 }

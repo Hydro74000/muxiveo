@@ -158,14 +158,17 @@ facultatif et son absence conserve tous les jobs v1 existants :
 }
 ```
 
-- `auto` inspecte le plan complet, choisit le writer natif lorsqu'il peut tenir
-  le contrat et journalise tout repli FFmpeg avec sa raison exacte ;
+- `auto` (défaut) choisit le writer natif pour toute sortie `.mkv` que le plan
+  permet (entrelacement exact, échelle de temps 1 ms, pistes MP4/MOV lues en
+  flux) et journalise tout repli FFmpeg avec sa raison exacte ;
 - `native` est strict et ne replie jamais ;
-- `ffmpeg` conserve le chemin historique.
+- `ffmpeg` conserve le muxage FFmpeg.
 
 `--mux-backend auto|native|ffmpeg` surcharge le job pour `validate`, `preview`,
-`run`, `remux`, `batch` et les variantes basées sur un profil. La préférence
-persistée `[matroska] mux_backend = auto` ne remplace pas un choix explicite du job.
+`run`, `remux`, `batch` et les variantes basées sur un profil. Sans champ dans le
+job, la préférence persistée `[matroska] mux_backend` (défaut `auto`) s'applique ;
+elle ne remplace jamais un choix explicite du job. Un gabarit exporté sans choix
+n'écrit pas de `mux_backend`.
 
 ### `sources`
 

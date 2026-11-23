@@ -74,6 +74,7 @@ from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.remux_timeline_sync import LiveSyncSession
 from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.timeline_sync import SyncInput
 
 import dataclasses
 
@@ -130,9 +131,9 @@ class MetadataInjectRunnerCallbacks:
     cleanup_two_pass_logs_for_prefix: Callable[[Path], None]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
     source_input_index_map: Callable[[list[Path]], dict[Path, int]]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    sync_cleanup_paths: Callable[[list[Path | str]], list[Path]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    sync_cleanup_paths: Callable[[list[SyncInput]], list[Path]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     prepare_container_metadata_inputs: Callable[..., tuple[int, int | None, int | None]]
     ffmpeg_thread_args: Callable[[], list[str]]
     ffmpeg_progress_args: Callable[[], list[str]]
@@ -995,7 +996,7 @@ class MetadataInjectRunner:
                 extra_sources = all_sources[1:]
                 recon_source_idx = cb.source_input_index_map(all_sources)
                 sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
-                sync_inputs: list[Path | str] = []
+                sync_inputs: list[SyncInput] = []
                 strict_interleave = False
 
                 recon_cmd = [

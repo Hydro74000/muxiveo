@@ -4564,8 +4564,39 @@ class TestEncodeRuntimeMultiSourceSync:
         assert calls["file"] == 0
         assert live is not None
         assert strict is True
-        assert sync_inputs == [sync_audio]
+        assert [item.path for item in sync_inputs] == [sync_audio]
         assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_live_sync_fifo_is_read_in_its_written_container(self, tmp_path, monkeypatch):
+        """FIFO live POSIX écrite en NUT : l'encodage la lit en ``-f nut``, jamais en Matroska."""
+        from core.workflows.remux_timeline_sync import SyncPreparedInput
+
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        src_main.touch()
+        src_alt.touch()
+        fifo = tmp_path / "sync_audio.fifo"
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main, tmp_path / "out.mkv", video=_make_video_settings(codec="copy"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                return SimpleNamespace(inputs=[SyncPreparedInput((1, 1, "audio"), fifo, 2, container_format="nut")])
+
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
+        _remap, sync_inputs, _live, _strict = wf._prepare_multisource_sync(
+            config=cfg, all_sources=[src_main, src_alt], sync_base_input_idx=2, work_dir=tmp_path, allow_live=True,
+        )
+        cmd: list[str] = []
+        wf._append_sync_inputs(cmd, sync_inputs)
+        assert cmd == ["-f", "nut", "-i", str(fifo)]
 
     def test_prepare_multisource_sync_fallback_uses_workspace(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"
@@ -4617,7 +4648,7 @@ class TestEncodeRuntimeMultiSourceSync:
         assert calls == [tmp_path]
         assert live is None
         assert strict is True
-        assert sync_inputs == [sync_audio]
+        assert [item.path for item in sync_inputs] == [sync_audio]
         assert remap[(src_alt, 1, "audio")] == (2, 0)
 
     def test_runtime_single_pass_copy_subtitles_uses_sync_remap_when_resolved(self, tmp_path):
@@ -4688,9 +4719,34 @@ class TestEncodeRuntimeMultiSourceSync:
             cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
 
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        inputs = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-i"]
         assert "0:s?" in map_values
-        assert "1:s?" in map_values
+        # Source audio secondaire : ses sous-titres lus par une entrée rouverte (2), jamais par
+        # celle de l'audio (1), qui avancerait l'audio de plusieurs minutes devant la vidéo.
+        assert inputs[:3] == [str(src_main), str(src_alt), str(src_alt)]
+        assert "2:s?" in map_values and "1:s?" not in map_values
         assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_direct_encode_isolates_subtitles_sharing_the_audio_input_only(self, tmp_path):
+        """Vidéo d'une source, audio + sous-titres d'une autre (cas MVO) : sous-titres sur une entrée à part ;
+        sous-titres de la source vidéo laissés sur son entrée (un seul démultiplexeur, ordre du fichier)."""
+        src_main = tmp_path / "main.mp4"
+        src_alt = tmp_path / "alt.mkv"
+        src_main.touch()
+        src_alt.touch()
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main, tmp_path / "out.mkv", video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+                          AudioTrackSettings(stream_index=1, codec="copy", source_path=src_main)],
+            subtitle_tracks=[(src_alt, 3), (src_main, 2)], copy_subtitles=False,
+        )
+        cmd = wf._build_single_pass(cfg)
+        inputs = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-i"]
+        maps = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert inputs[:3] == [str(src_main), str(src_alt), str(src_alt)]
+        assert "2:3" in maps and "1:3" not in maps
+        assert "0:2" in maps
 
     def test_build_single_pass_applies_video_audio_subtitle_offsets(self, tmp_path):
         src = tmp_path / "src.mkv"

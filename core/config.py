@@ -90,6 +90,8 @@ def _resolve_ini_path() -> Path:
 
 _INI_PATH = _resolve_ini_path()
 _MISSING = object()
+#: Marqueur QSettings : migration unique de l'ancien défaut FFmpeg du backend de muxage vers Auto.
+_MUX_BACKEND_AUTO_MIGRATION_KEY = "matroska/mux_backend_default_auto"
 
 # Fichier QSettings Windows, distinct de config.ini. QSettings (format INI de
 # Qt) interprète « \ » comme caractère d'échappement : pointé sur config.ini
@@ -989,7 +991,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "section": "matroska",
         "title": "Muxage Matroska",
         "fields": (
-            {"key": "mux_backend", "attr": "matroska_mux_backend", "kind": "choice", "label": "Backend de muxage", "description": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.", "options": (("ffmpeg", "FFmpeg"), ("native", "Natif Matroska"), ("auto", "Auto"))},
+            {"key": "mux_backend", "attr": "matroska_mux_backend", "kind": "choice", "label": "Backend de muxage", "description": "Assembleur final Matroska des workflows remux et encodage. Auto par défaut : muxeur natif pour toute sortie .mkv que le plan permet (entrelacement exact, échelle de temps 1 ms), FFmpeg sinon, repli journalisé ; Natif n'autorise aucun repli ; FFmpeg garde le muxage FFmpeg.", "options": (("auto", "Auto"), ("native", "Natif Matroska"), ("ffmpeg", "FFmpeg"))},
             {"key": "regenerate_statistics", "attr": "matroska_regenerate_statistics", "kind": "bool", "label": "Régénérer les statistiques de pistes (BPS, frames, octets)", "description": "Calcule et écrit les balises statistiques Matroska (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) par piste pour MediaInfo. Activé par défaut."},
         ),
     },
@@ -1409,12 +1411,28 @@ class AppConfig:
         )
         # [matroska] mux_backend — réglage global unique pilotant le muxage
         # final des workflows remux ET encode. Priorité : choix explicite du
-        # job/panel/CLI > ce réglage > ffmpeg. Migration : l'ancien
+        # job/panel/CLI > ce réglage > auto. Migration : l'ancien
         # [remux] mux_backend n'est honoré que s'il est explicitement présent
-        # (config.ini ou QSettings) ; absent ou invalide → ffmpeg (avec
+        # (config.ini ou QSettings) ; absent ou invalide → auto (avec
         # avertissement pour une valeur invalide).
         self.load_warnings: list[str] = []
+        #: Informations de chargement (migrations), journalisées une fois au démarrage.
+        self.load_notices: list[str] = []
         raw_mux_backend = self._resolve_text("matroska", "mux_backend", "matroska/mux_backend", "").lower()
+        if not self._settings.value(_MUX_BACKEND_AUTO_MIGRATION_KEY, False):
+            # Défaut FFmpeg → Auto (2026-11) : ``save()`` écrivait toujours le
+            # backend, une valeur « ffmpeg » enregistrée avant ce marqueur est donc
+            # l'ancien défaut, pas un choix. Migrée une seule fois ; un choix
+            # explicite dans config.ini est respecté, un choix FFmpeg fait après
+            # la migration aussi (marqueur posé).
+            if raw_mux_backend == "ffmpeg" and self._ini_lookup("matroska", "mux_backend") is _MISSING:
+                raw_mux_backend = "auto"
+                self._settings.setValue("matroska/mux_backend", "auto")
+                self.load_notices.append(
+                    "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif "
+                    "pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres."
+                )
+            self._settings.setValue(_MUX_BACKEND_AUTO_MIGRATION_KEY, True)
         if not raw_mux_backend:
             legacy_ini = self._ini_lookup("remux", "mux_backend")
             if legacy_ini is not _MISSING and str(legacy_ini) != "":
@@ -1428,9 +1446,9 @@ class AppConfig:
         else:
             if raw_mux_backend:
                 self.load_warnings.append(
-                    f"[matroska] mux_backend invalide ({raw_mux_backend!r}) : retour au défaut 'ffmpeg'."
+                    f"[matroska] mux_backend invalide ({raw_mux_backend!r}) : retour au défaut 'auto'."
                 )
-            self.matroska_mux_backend = "ffmpeg"
+            self.matroska_mux_backend = "auto"
         self.matroska_regenerate_statistics = self._resolve_bool(
             "matroska",
             "regenerate_statistics",
@@ -1588,6 +1606,7 @@ class AppConfig:
         s.setValue("sync/cadence_audio_method", self.sync_cadence_audio_method)
         s.setValue("sync/quick_audio_check", "true" if self.sync_quick_audio_check else "false")
         s.setValue("matroska/mux_backend", self.matroska_mux_backend)
+        s.setValue(_MUX_BACKEND_AUTO_MIGRATION_KEY, True)
         s.setValue(
             "matroska/regenerate_statistics",
             "true" if self.matroska_regenerate_statistics else "false",

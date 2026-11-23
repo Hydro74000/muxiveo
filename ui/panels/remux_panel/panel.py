@@ -528,7 +528,7 @@ class RemuxPanel(QWidget):
         backend_label.setStyleSheet(f"color: {_C.TEXT_SEC}; background: transparent;")
         self._mux_backend_combo = QComboBox()
         for value, label in (
-            ("ffmpeg", "FFmpeg"), ("native", "Natif Matroska"), ("auto", "Auto"),
+            ("auto", "Auto"), ("native", "Natif Matroska"), ("ffmpeg", "FFmpeg"),
         ):
             self._mux_backend_combo.addItem(translate_text(label), value)
         # Override du job, initialisé avec le réglage global [matroska].

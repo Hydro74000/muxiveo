@@ -17,6 +17,7 @@ from core.workflows.encode.domain import (
 )
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.offsets import build_offset_specs as _build_offset_specs_plan
+from core.workflows.encode.planning.subtitle_inputs import IsolatedSubtitleInputs, plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.plan_models import (
     EncodePlan as _EncodePlan,
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
@@ -24,6 +25,7 @@ from core.workflows.encode.planning.plan_models import (
 )
 from core.workflows.encode.planning.track_assembly import build_track_input_paths as _build_track_input_paths_plan
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.workflows.common.timeline_sync import SyncInput
 
 
 @dataclass(frozen=True)
@@ -39,8 +41,8 @@ class EncodeCommandBuilderCallbacks:
     resolve_track_assembly_and_offset_remap: Callable[..., tuple[_ResolvedTrackAssembly, dict[tuple[Path, int, str], tuple[int, int]]]]
     append_primary_video_map_and_codec: Callable[..., None]
     append_common_streams_and_metadata: Callable[..., None]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     append_offset_aux_inputs: Callable[..., tuple[int, dict[tuple[Path, int, str], tuple[int, int]]]]
     video_track_mapping: Callable[..., tuple[tuple[Path, int, str], Path | str, int]]
 
@@ -81,6 +83,31 @@ def _video_input(video_map: tuple[int, int], offset_remap: dict, video_key) -> i
     return int(offset_remap.get(video_key, video_map)[0])
 
 
+def _isolate_subtitles(
+    cmd: list[str],
+    config: EncodeConfig,
+    plan: _EncodePlan,
+    *,
+    source_idx: dict[Path, int],
+    sync_remap: dict,
+    start_input_index: int,
+) -> IsolatedSubtitleInputs:
+    """Sous-titres d'une entrée qui fournit l'audio mais pas la vidéo : lus par une entrée à part.
+
+    Un sous-titre clairsemé lu dans la même entrée que l'audio fait avancer
+    son démultiplexeur : FFmpeg écrit alors des minutes d'audio avant la
+    vidéo, lue sur une autre entrée. L'entrée de la vidéo reste partagée.
+    """
+    video_input = int(sync_remap.get(plan.video_key, plan.video_default_map)[0])
+    isolated = plan_isolated_subtitle_inputs(
+        config, plan, source_idx=source_idx, sync_remap=sync_remap,
+        start_input_index=start_input_index, shared_inputs=(video_input,),
+    )
+    for source in isolated.paths:
+        append_ffmpeg_input_args(cmd, source)
+    return isolated
+
+
 def build_single_pass(
     callbacks: EncodeCommandBuilderCallbacks,
     config: EncodeConfig,
@@ -98,10 +125,13 @@ def build_single_pass(
     cmd.extend(_hardware_input_args_domain(video, callbacks=callbacks.codec_domain_callbacks()))
     for src in all_sources:
         append_ffmpeg_input_args(cmd, src)
+    subtitles = _isolate_subtitles(
+        cmd, config, plan, source_idx=source_idx, sync_remap={}, start_input_index=len(all_sources),
+    )
     metadata_inputs = callbacks.materialize_container_metadata_inputs(
         config,
         source_idx=source_idx,
-        next_input_index=len(all_sources),
+        next_input_index=len(all_sources) + len(subtitles.paths),
         plan=plan,
         chapter_materialize_dir=chapter_materialize_dir,
         chapter_probe_source=config.source,
@@ -113,8 +143,9 @@ def build_single_pass(
         config=config,
         plan=plan,
         source_idx=source_idx,
-        track_input_paths=_build_track_input_paths_plan(all_sources=all_sources),
+        track_input_paths=_build_track_input_paths_plan(all_sources=all_sources) + subtitles.paths,
         start_input_index=metadata_inputs.next_input_index,
+        sync_remap=subtitles.remap,
     )
     cmd.extend(_video_output_args(
         callbacks, video, video_input=_video_input(track_assembly.video_map, offset_remap, plan.video_key),
@@ -136,6 +167,8 @@ def build_single_pass(
         plan=plan,
         metadata_inputs=metadata_inputs,
         offset_remap=offset_remap,
+        sync_remap=subtitles.remap,
+        subtitle_copy_input_indices=list(subtitles.copy_input_indices),
     )
     cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(str(config.output))
@@ -189,10 +222,13 @@ def build_two_pass(
     pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
 
     pass2 = _base()
+    subtitles = _isolate_subtitles(
+        pass2, config, plan, source_idx=source_idx, sync_remap={}, start_input_index=len(all_sources),
+    )
     metadata_inputs = callbacks.materialize_container_metadata_inputs(
         config,
         source_idx=source_idx,
-        next_input_index=len(all_sources),
+        next_input_index=len(all_sources) + len(subtitles.paths),
         plan=plan,
         chapter_materialize_dir=chapter_materialize_dir,
         chapter_probe_source=config.source,
@@ -204,8 +240,9 @@ def build_two_pass(
         config=config,
         plan=plan,
         source_idx=source_idx,
-        track_input_paths=_build_track_input_paths_plan(all_sources=all_sources),
+        track_input_paths=_build_track_input_paths_plan(all_sources=all_sources) + subtitles.paths,
         start_input_index=metadata_inputs.next_input_index,
+        sync_remap=subtitles.remap,
     )
     pass2.extend(_video_output_args(
         callbacks, video, video_input=_video_input(track_assembly.video_map, pass2_offset_remap, plan.video_key),
@@ -228,6 +265,8 @@ def build_two_pass(
         plan=plan,
         metadata_inputs=metadata_inputs,
         offset_remap=pass2_offset_remap,
+        sync_remap=subtitles.remap,
+        subtitle_copy_input_indices=list(subtitles.copy_input_indices),
     )
     pass2.extend(matroska_output_args(pass2[0], config.output))
     pass2.append(str(config.output))
@@ -264,11 +303,16 @@ def build_runtime_single_pass_with_sync(
     for src in all_sources:
         append_ffmpeg_input_args(cmd, src)
     callbacks.append_sync_inputs(cmd, sync_inputs)
+    subtitles = _isolate_subtitles(
+        cmd, config, plan, source_idx=source_idx, sync_remap=sync_remap,
+        start_input_index=len(all_sources) + len(sync_inputs),
+    )
+    sync_remap = subtitles.remap
 
     metadata_inputs = callbacks.materialize_container_metadata_inputs(
         config,
         source_idx=source_idx,
-        next_input_index=len(all_sources) + len(sync_inputs),
+        next_input_index=len(all_sources) + len(sync_inputs) + len(subtitles.paths),
         plan=plan,
         chapter_materialize_dir=chapter_materialize_dir,
         chapter_probe_source=config.source,
@@ -283,7 +327,7 @@ def build_runtime_single_pass_with_sync(
         track_input_paths=_build_track_input_paths_plan(
             all_sources=all_sources,
             sync_inputs=sync_inputs,
-        ),
+        ) + subtitles.paths,
         start_input_index=metadata_inputs.next_input_index,
         sync_remap=sync_remap,
         video_fallback_input=plan.video_source,
@@ -312,6 +356,7 @@ def build_runtime_single_pass_with_sync(
         offset_remap=offset_remap,
         sync_remap=sync_remap,
         strict_interleave=strict_interleave,
+        subtitle_copy_input_indices=list(subtitles.copy_input_indices),
     )
     cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(str(config.output))
@@ -382,10 +427,15 @@ def build_runtime_two_pass_with_sync(
     pass1.extend(["-pass", "1", "-an", "-f", "null", os.devnull])
 
     pass2 = _base(True)
+    subtitles = _isolate_subtitles(
+        pass2, config, plan, source_idx=source_idx, sync_remap=sync_remap,
+        start_input_index=len(all_sources) + len(sync_inputs),
+    )
+    sync_remap = subtitles.remap
     metadata_inputs = callbacks.materialize_container_metadata_inputs(
         config,
         source_idx=source_idx,
-        next_input_index=len(all_sources) + len(sync_inputs),
+        next_input_index=len(all_sources) + len(sync_inputs) + len(subtitles.paths),
         plan=plan,
         chapter_materialize_dir=chapter_materialize_dir,
         chapter_probe_source=config.source,
@@ -400,7 +450,7 @@ def build_runtime_two_pass_with_sync(
         track_input_paths=_build_track_input_paths_plan(
             all_sources=all_sources,
             sync_inputs=sync_inputs,
-        ),
+        ) + subtitles.paths,
         start_input_index=metadata_inputs.next_input_index,
         sync_remap=sync_remap,
         video_default_map=sync_remap.get(video_key, video_default_map),
@@ -431,6 +481,7 @@ def build_runtime_two_pass_with_sync(
         offset_remap=pass2_offset_remap,
         sync_remap=sync_remap,
         strict_interleave=strict_interleave,
+        subtitle_copy_input_indices=list(subtitles.copy_input_indices),
     )
     pass2.extend(matroska_output_args(pass2[0], config.output))
     pass2.append(str(config.output))
