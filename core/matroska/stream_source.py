@@ -16,11 +16,11 @@ Duration). Tout écart au format attendu lève ``ValueError`` explicitement.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO
 
-from .reader import MatroskaBlock, MatroskaReader, MatroskaTrack
+from .reader import EbmlElement, MatroskaBlock, MatroskaBlockSummary, MatroskaReader, MatroskaTrack
 
 _EBML_HEADER_ID = bytes.fromhex("1a45dfa3")
 _SEGMENT_ID = bytes.fromhex("18538067")
@@ -111,6 +111,8 @@ class MatroskaStreamSource:
         self._header_read = False
         self._blocks_started = False
         self._scale_ns = 1_000_000
+        # Fin du Segment (position dans le flux) si sa taille est déclarée.
+        self._segment_end: int | None = None
 
     def _bounded(self, size: int | None, what: str) -> int:
         if size is None:
@@ -119,43 +121,67 @@ class MatroskaStreamSource:
             raise ValueError(f"Flux Matroska : {what} de {size} octets au-delà de la borne ({self._max}).")
         return size
 
+    def _segment_left(self) -> int | None:
+        return None if self._segment_end is None else self._segment_end - self._stream.position
+
+    def _check_in_segment(self, size: int, what: str) -> None:
+        left = self._segment_left()
+        if left is not None and size > left:
+            raise ValueError(f"Flux Matroska : {what} débordant du Segment.")
+
     def read_header(self) -> MatroskaReader:
-        """Lit l'en-tête jusqu'au premier Cluster, le recopie dans ``header_path`` et renvoie son lecteur."""
+        """Lit l'en-tête jusqu'au premier Cluster, le recopie dans ``header_path`` et renvoie son lecteur.
+
+        Recopie progressive (tampon borné) : seul l'élément en cours de copie
+        transite en mémoire, par tranches.
+        """
         if self._header_read:
             raise ValueError("En-tête du flux Matroska déjà lu.")
         self._header_read = True
-        parts: list[bytes] = []
-        header = _read_element_header(self._stream)
-        if header is None or header[0] != _EBML_HEADER_ID:
-            raise ValueError("Flux Matroska sans en-tête EBML.")
-        size = self._bounded(header[1], "en-tête EBML")
-        parts.append(header[2] + self._stream.exact(size, "en-tête EBML"))
-        segment = _read_element_header(self._stream)
-        if segment is None or segment[0] != _SEGMENT_ID:
-            raise ValueError("Flux Matroska sans Segment.")
-        # Fichier d'en-tête : Segment de taille inconnue (il s'arrête avant les Clusters).
-        parts.append(_SEGMENT_ID + _UNKNOWN_SIZE_8)
-        while True:
-            element = _read_element_header(self._stream)
-            if element is None:
-                raise ValueError("Flux Matroska sans Cluster.")
-            element_id, element_size, raw_header = element
-            if element_id == _CLUSTER_ID:
-                self._pending_cluster = self._bounded_cluster(element_size)
-                break
-            size = self._bounded(element_size, "élément d'en-tête")
-            parts.append(raw_header + self._stream.exact(size, "élément d'en-tête"))
         self._header_path.parent.mkdir(parents=True, exist_ok=True)
-        self._header_path.write_bytes(b"".join(parts))
+        with self._header_path.open("wb") as output:
+            header = _read_element_header(self._stream)
+            if header is None or header[0] != _EBML_HEADER_ID:
+                raise ValueError("Flux Matroska sans en-tête EBML.")
+            output.write(header[2])
+            self._copy(output, self._bounded(header[1], "en-tête EBML"), "en-tête EBML")
+            segment = _read_element_header(self._stream)
+            if segment is None or segment[0] != _SEGMENT_ID:
+                raise ValueError("Flux Matroska sans Segment.")
+            if segment[1] is not None:
+                self._segment_end = self._stream.position + segment[1]
+            # Fichier d'en-tête : Segment de taille inconnue (il s'arrête avant les Clusters).
+            output.write(_SEGMENT_ID + _UNKNOWN_SIZE_8)
+            while True:
+                if self._segment_left() == 0:
+                    raise ValueError("Flux Matroska sans Cluster.")
+                element = _read_element_header(self._stream)
+                if element is None:
+                    raise ValueError("Flux Matroska sans Cluster.")
+                element_id, element_size, raw_header = element
+                if element_id == _CLUSTER_ID:
+                    self._pending_cluster = self._cluster_size(element_size)
+                    break
+                size = self._bounded(element_size, "élément d'en-tête")
+                self._check_in_segment(size, "élément d'en-tête")
+                output.write(raw_header)
+                self._copy(output, size, "élément d'en-tête")
         reader = MatroskaReader(self._header_path)
         self._scale_ns = reader.timestamp_scale_ns()
         check_codec_private(reader.tracks())
         return reader
 
-    @staticmethod
-    def _bounded_cluster(size: int | None) -> int:
+    def _copy(self, output: BinaryIO, size: int, what: str) -> None:
+        remaining = size
+        while remaining:
+            chunk = self._stream.exact(min(remaining, 1024 * 1024), what)
+            output.write(chunk)
+            remaining -= len(chunk)
+
+    def _cluster_size(self, size: int | None) -> int:
         if size is None:
             raise ValueError("Flux Matroska : Cluster de taille inconnue, non pris en charge.")
+        self._check_in_segment(size, "Cluster")
         return size
 
     def blocks(self, *, first_lace_only: bool = False) -> Iterator[MatroskaBlock]:
@@ -174,42 +200,52 @@ class MatroskaStreamSource:
             cluster_size = None
             # Éléments suivants : autre Cluster, ou éléments de fin (Cues, Tags) ignorés.
             while True:
+                left = self._segment_left()
+                if left == 0:
+                    return  # fin du Segment déclaré : la suite du flux ne lui appartient pas
                 element = _read_element_header(self._stream)
                 if element is None:
+                    if left is not None:
+                        raise ValueError("Flux Matroska tronqué (Segment incomplet).")
                     return
                 element_id, element_size, _raw = element
                 if element_id == _CLUSTER_ID:
-                    cluster_size = self._bounded_cluster(element_size)
+                    cluster_size = self._cluster_size(element_size)
                     break
-                self._stream.skip(self._bounded(element_size, "élément de fin"), "élément de fin")
+                size = self._bounded(element_size, "élément de fin")
+                self._check_in_segment(size, "élément de fin")
+                self._stream.skip(size, "élément de fin")
 
     def _cluster_blocks(self, cluster_size: int, first_lace_only: bool) -> Iterator[MatroskaBlock]:
-        remaining = cluster_size
-        timestamp = 0
-        while remaining:
-            start = self._stream.position
+        end = self._stream.position + cluster_size
+        timestamp: int | None = None
+        while self._stream.position < end:
             element = _read_element_header(self._stream)
             if element is None:
                 raise ValueError("Flux Matroska tronqué (Cluster incomplet).")
             element_id, element_size, _raw = element
             size = self._bounded(element_size, "élément de Cluster")
+            # Bornes vérifiées avant toute lecture du payload et tout bloc rendu.
+            if self._stream.position + size > end:
+                raise ValueError("Flux Matroska : élément débordant de son Cluster.")
             if element_id == _TIMESTAMP_ID:
                 timestamp = int.from_bytes(self._stream.exact(size, "Timestamp"), "big")
-            elif element_id == _SIMPLE_BLOCK_ID:
-                data = self._stream.exact(size, "SimpleBlock")
-                yield from MatroskaReader._decode_block(
-                    data, timestamp, timestamp_scale_ns=self._scale_ns, first_lace_only=first_lace_only,
-                )
-            elif element_id == _BLOCK_GROUP_ID:
-                data = self._stream.exact(size, "BlockGroup")
-                yield from MatroskaReader.decode_block_group(
-                    data, timestamp, timestamp_scale_ns=self._scale_ns, first_lace_only=first_lace_only,
-                )
+            elif element_id in (_SIMPLE_BLOCK_ID, _BLOCK_GROUP_ID):
+                if timestamp is None:
+                    raise ValueError("Flux Matroska : bloc avant le Timestamp de son Cluster.")
+                data = self._stream.exact(size, "bloc")
+                if element_id == _SIMPLE_BLOCK_ID:
+                    yield from MatroskaReader._decode_block(
+                        data, timestamp, timestamp_scale_ns=self._scale_ns, first_lace_only=first_lace_only,
+                    )
+                else:
+                    yield from MatroskaReader.decode_block_group(
+                        data, timestamp, timestamp_scale_ns=self._scale_ns, first_lace_only=first_lace_only,
+                    )
             else:
                 self._stream.skip(size, "élément de Cluster")
-            remaining -= self._stream.position - start
-            if remaining < 0:
-                raise ValueError("Flux Matroska : élément débordant de son Cluster.")
+        if timestamp is None:
+            raise ValueError("Flux Matroska : Cluster sans Timestamp.")
 
 
 def check_codec_private(tracks: list[MatroskaTrack]) -> None:
@@ -245,6 +281,33 @@ class StreamedMatroskaReader(MatroskaReader):
     def segment_duration_ns(self) -> int | None:
         """Durée de la source (inspection) pour la progression : le flux n'en porte pas."""
         return self._duration_hint_ns
+
+    def _sequential_only(self, operation: str) -> ValueError:
+        return ValueError(
+            f"Flux Matroska lu séquentiellement : {operation} impossible (positions de fichier inexistantes)."
+        )
+
+    def block_summaries(
+        self, *, workers: int = 1, clusters: list[EbmlElement] | None = None,
+    ) -> Iterator[MatroskaBlockSummary]:
+        raise self._sequential_only("résumé des blocs")
+
+    def cluster_elements(self) -> list[EbmlElement]:
+        raise self._sequential_only("liste des Clusters")
+
+    def indexed_blocks(
+        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False,
+    ) -> Iterator[MatroskaBlock]:
+        raise self._sequential_only("lecture par les Cues")
+
+    def blocks_at(
+        self, positions: Iterable[tuple[int, int]],
+    ) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
+        raise self._sequential_only("lecture par les Cues")
+
+    def cue_block_positions(self, track_numbers: set[int]) -> dict[int, set[tuple[int, int]]] | None:
+        """Aucun index dans un flux : jamais de lecture par positions."""
+        return None
 
 
 def open_stream_reader(
