@@ -217,3 +217,215 @@ def test_encode_transaction_repairs_when_asked(tmp_path: Path) -> None:
     assert output.exists()
     assert interleave_warnings(scan_interleave(output)) == [], logs
     assert any("corrigé par l'assembleur natif" in message for message in logs)
+
+
+# --- Relecture du lot 8 -------------------------------------------------------
+
+def test_fingerprint_covers_the_lacing_mode(tmp_path: Path, monkeypatch) -> None:
+    from core.matroska import copy_check
+
+    path = _badly_interleaved(tmp_path / "a.mkv", delay_ms=0)
+
+    def laced(mode: int):
+        def blocks(_self, **_kwargs):
+            yield MatroskaBlock(1, 0, 0x80 | (mode << 1), b"x", lace_count=2, lacing_mode=mode,
+                                encoded_frames_payload=b"\x01\x02xx", timestamp_ns=0)
+        return blocks
+
+    monkeypatch.setattr(MatroskaReader, "blocks", laced(1))
+    xiph = copy_check.block_fingerprints(path)
+    monkeypatch.setattr(MatroskaReader, "blocks", laced(2))
+    assert copy_check.block_fingerprints(path) != xiph
+
+
+def _with_opaque(path: Path, opaque: bytes, *, delay_ms: int = 60_000) -> Path:
+    tracks = (MatroskaMuxTrack(Path("a.mkv"), _track(1, 11), 1, 101),
+              MatroskaMuxTrack(Path("b.mkv"), _track(2, 22), 2, 202))
+    first, second = _packets(1, 0, 70_000, 1), _packets(2, 0, 70_000, 2)
+    lag = delay_ms // 32
+    order: list[MatroskaMuxPacket] = []
+    for index, packet in enumerate(first):
+        order.append(packet)
+        if index >= lag:
+            order.append(second[index - lag])
+    order.extend(second[len(first) - lag:])
+    MatroskaWriter().write(MatroskaMuxPlan(path, tracks, iter(order), duration_ms=70_000, opaque_top_level=(opaque,)))
+    return path
+
+
+def _tag(language: str) -> bytes:
+    from core.matroska.ebml import string_element
+    from core.matroska.ids import SIMPLE_TAG_ID, TAG_ID, TAG_NAME_ID, TAG_STRING_ID, TAG_TRACK_UID_ID, TAGS_ID, TARGETS_ID
+
+    return element(TAGS_ID, element(TAG_ID, element(TARGETS_ID, uint_element(TAG_TRACK_UID_ID, 202)) + element(
+        SIMPLE_TAG_ID, string_element(TAG_NAME_ID, "COMMENT") + string_element(TAG_STRING_ID, "x")
+        + string_element(bytes.fromhex("447a"), language),
+    )))
+
+
+def test_tag_language_change_is_detected(tmp_path: Path) -> None:
+    french = _with_opaque(tmp_path / "fr.mkv", _tag("fre"), delay_ms=0)
+    english = _with_opaque(tmp_path / "en.mkv", _tag("eng"), delay_ms=0)
+    assert any("Tags" in difference for difference in compare_matroska_copy(french, english))
+    assert compare_matroska_copy(french, french) == []
+
+
+def test_sub_millisecond_original_is_compared_like_the_assembly(tmp_path: Path) -> None:
+    """Candidat à 10 µs (FFmpeg master) : copie quantifiée à 1 ms acceptée."""
+    path = tmp_path / "fine.mkv.partial"
+    tracks = (MatroskaMuxTrack(Path("a.mkv"), _track(1, 11), 1, 101),
+              MatroskaMuxTrack(Path("b.mkv"), _track(2, 22), 2, 202))
+    first = [MatroskaMuxPacket(1, MatroskaBlock(1, ms, 0x80, bytes([1, ms % 251]) * 50,
+                                                timestamp_ns=ms * _MS + 500_000), ms) for ms in range(0, 90_000, 32)]
+    second = [MatroskaMuxPacket(2, MatroskaBlock(2, ms, 0x80, bytes([2, ms % 251]) * 50,
+                                                 timestamp_ns=ms * _MS + 500_000), ms) for ms in range(0, 90_000, 32)]
+    lag = 60_000 // 32
+    order = []
+    for index, packet in enumerate(first):
+        order.append(packet)
+        if index >= lag:
+            order.append(second[index - lag])
+    order.extend(second[len(first) - lag:])
+    MatroskaWriter().write(MatroskaMuxPlan(path, tracks, iter(order), timestamp_scale_ns=10_000, duration_ms=90_000))
+    repaired, logs = _repair(path)
+    assert repaired, logs
+
+
+def test_long_candidate_name_uses_a_bounded_temporary(tmp_path: Path) -> None:
+    candidate = _badly_interleaved(tmp_path / ("n" * 230 + ".mkv.partial"))
+    repaired, logs = _repair(candidate)
+    assert repaired, logs
+    assert not list(tmp_path.glob(".muxiveo-repair-*"))
+
+
+def test_cleanup_failure_never_masks_the_cancellation(tmp_path: Path, monkeypatch) -> None:
+    candidate = _badly_interleaved(tmp_path / "out.mkv.partial")
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name.startswith(".muxiveo-repair-") and not self.name.endswith(".partial"):
+            raise PermissionError(13, "verrouillé")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(TaskCancelledError):
+        _repair(candidate, cancelled=lambda: True)
+
+
+@pytest.mark.parametrize("chapters", ["ordered", "segment_uid"])
+def test_non_copyable_chapters_are_refused(tmp_path: Path, chapters: str) -> None:
+    from core.matroska.ids import CHAPTER_ATOM_ID, CHAPTER_TIME_START_ID, CHAPTER_UID_ID, CHAPTERS_ID, EDITION_ENTRY_ID
+    from core.matroska.ebml import binary_element
+
+    atom = uint_element(CHAPTER_UID_ID, 7) + uint_element(CHAPTER_TIME_START_ID, 0)
+    if chapters == "segment_uid":
+        atom += binary_element(bytes.fromhex("6e67"), b"\x02" * 16)
+    edition = element(CHAPTER_ATOM_ID, atom)
+    if chapters == "ordered":
+        edition = uint_element(bytes.fromhex("45dd"), 1) + edition
+    candidate = _with_opaque(tmp_path / "out.mkv.partial", element(CHAPTERS_ID, element(EDITION_ENTRY_ID, edition)))
+    before = candidate.read_bytes()
+    repaired, logs = _repair(candidate)
+    assert repaired is False and any("chapitres" in message for _level, message in logs)
+    assert candidate.read_bytes() == before
+
+
+def test_missing_measurement_of_the_reassembly_refuses_the_substitution(tmp_path: Path, monkeypatch) -> None:
+    candidate = _badly_interleaved(tmp_path / "out.mkv.partial")
+    before = candidate.read_bytes()
+    report = scan_interleave(candidate)
+    monkeypatch.setattr(finalize, "scan_interleave", lambda *_a, **_k: None)
+    logs: list[tuple[str, str]] = []
+    assert repair_ffmpeg_interleave(candidate, None, report, log=lambda *item: logs.append(item)) is False
+    assert any("mesure" in message for _level, message in logs)
+    assert candidate.read_bytes() == before
+
+
+def test_enospc_after_the_partial_exists_keeps_the_candidate(tmp_path: Path, monkeypatch) -> None:
+    import core.matroska.writer as writer_module
+
+    candidate = _badly_interleaved(tmp_path / "out.mkv.partial")
+    before = candidate.read_bytes()
+    real_write = writer_module._BackgroundWriter.write
+    calls = {"count": 0}
+
+    def full_disk(self, data, size=None):
+        calls["count"] += 1
+        if calls["count"] > 5:
+            raise OSError(28, "No space left on device")
+        return real_write(self, data, size)
+
+    monkeypatch.setattr(writer_module._BackgroundWriter, "write", full_disk)
+    repaired, logs = _repair(candidate)
+    assert repaired is False and any("non corrigé" in message for _level, message in logs)
+    assert candidate.read_bytes() == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["out.mkv.partial"]
+
+
+def test_cancellation_after_the_partial_exists_cleans_everything(tmp_path: Path) -> None:
+    candidate = _badly_interleaved(tmp_path / "out.mkv.partial")
+    calls = {"count": 0}
+
+    def later() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 2
+
+    with pytest.raises(TaskCancelledError):
+        _repair(candidate, cancelled=later)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["out.mkv.partial"]
+
+
+@pytest.mark.parametrize("backend,expected", [("auto", True), ("ffmpeg", False)])
+def test_encode_final_mux_repairs_only_an_auto_fallback(tmp_path: Path, monkeypatch, backend, expected) -> None:
+    """Muxage final FFmpeg de l'Encode (chemin commun : direct, NVEncC, multi-vidéo, injection)."""
+    from core.workflows.common.matroska_finalize import MatroskaOutputTransaction
+    from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
+
+    seen: list[tuple[bool, object]] = []
+    monkeypatch.setattr(MatroskaOutputTransaction, "execute",
+                        lambda self, *_a, **_k: seen.append((self.repair_interleave, self.contract)) or "")
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    source = tmp_path / "src.mkv"
+    source.write_bytes(b"")
+    config = EncodeConfig(source=source, output=tmp_path / "out.mkv", video=VideoEncodeSettings(codec="copy"),
+                          audio_tracks=[], copy_subtitles=False, mux_backend=backend)
+    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg")
+    monkeypatch.setattr(workflow, "_attachment_stream_expectations", lambda _config: ())
+    monkeypatch.setattr(workflow, "_source_has_chapters_hint", lambda _config: False)
+    monkeypatch.setattr("core.workflows.encode.workflow.build_encode_output_contract",
+                        lambda *_a, **_k: "contrat réel")
+    workflow._finalize_ffmpeg_output(config, ["ffmpeg", str(config.output)], None, "final", None,  # type: ignore[arg-type]
+                                     plan=workflow._build_encode_plan(config))
+    assert seen == [(expected, "contrat réel")]
+
+
+def test_destination_changed_during_the_repair_is_never_overwritten(tmp_path: Path, monkeypatch) -> None:
+    from core.output_commit import OutputCommitError, OutputReservation
+    from core.runner import TaskSignals
+    from core.workflows.common.matroska_finalize import MatroskaOutputTransaction
+
+    output = tmp_path / "out.mkv"
+    reservation = OutputReservation.acquire(output)
+    real_repair = finalize.repair_ffmpeg_interleave
+
+    def repair_then_intruder(*args, **kwargs):
+        result = real_repair(*args, **kwargs)
+        output.write_bytes(b"fichier apparu pendant le job")
+        return result
+
+    monkeypatch.setattr(finalize, "repair_ffmpeg_interleave", repair_then_intruder)
+
+    def run_command(command, _cwd, _label, _progress, _signals):
+        if command[0] == "ffmpeg":
+            _badly_interleaved(Path(command[-1]))
+        return ""
+
+    transaction = MatroskaOutputTransaction(output=output, contract=None, ffprobe_bin="ffprobe",  # type: ignore[arg-type]
+                                            run_command=run_command, repair_interleave=True)
+    try:
+        with pytest.raises(OutputCommitError):
+            transaction.execute(["ffmpeg", str(output)], cwd=None, label="final", signals=TaskSignals())
+    finally:
+        reservation.release()
+    assert output.read_bytes() == b"fichier apparu pendant le job"

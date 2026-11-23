@@ -15,6 +15,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .assembly import quantize_block
+from .ids import DEFAULT_TIMESTAMP_SCALE_NS
 from .reader import MatroskaReader, payload_children
 
 #: Éléments du TrackEntry régénérés par le writer (jamais comparés).
@@ -33,9 +35,10 @@ class CopyCheckCancelled(Exception):
 def block_fingerprints(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, ...]:
     """Empreinte SHA-256 de la suite des blocs de chaque piste (dans l'ordre des pistes).
 
-    Couvre horodatage (1 ms), durée, drapeaux (clé, invisible, discardable),
-    ReferenceBlock, CodecState, BlockAdditions, DiscardPadding, nombre de laces
-    et payload brut (lacing compris). Un bloc portant un élément de BlockGroup
+    Couvre horodatage, durée et références quantifiés comme l'assemblage
+    (``quantize_block``, 1 ms), drapeaux (clé, invisible, discardable),
+    CodecState, BlockAdditions, DiscardPadding, mode et nombre de laces, et
+    payload brut (en-tête de laçage et tailles compris). Un bloc portant un élément de BlockGroup
     non représenté lève ``ValueError`` : sa copie ne serait pas fidèle.
     """
     reader = MatroskaReader(path)
@@ -51,17 +54,17 @@ def block_fingerprints(path: Path, *, cancelled: Callable[[], bool] | None = Non
             digest = digests.get(block.track_number)
             if digest is None:
                 raise ValueError(f"Bloc d'une piste absente (#{block.track_number}).")
+            # Même normalisation que l'assemblage (extrémités quantifiées à 1 ms).
+            block = quantize_block(block, DEFAULT_TIMESTAMP_SCALE_NS)
             timestamp = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
             duration = block.duration_ns if block.duration_ns is not None else (
                 block.duration_ms * 1_000_000 if block.duration_ms is not None else None
             )
             references = block.references_ns or tuple(value * 1_000_000 for value in block.references)
             header = (
-                round(timestamp / 1_000_000),
-                None if duration is None else round(duration / 1_000_000),
+                timestamp, duration,
                 bool(block.is_keyframe), bool(block.flags & 0x08), bool(block.flags & 0x01),
-                tuple(round(value / 1_000_000) for value in references),
-                block.discard_padding_ns, block.lace_count,
+                tuple(references), block.discard_padding_ns, block.lace_count, block.lacing_mode,
             )
             digest.update(repr(header).encode())
             for part in (block.codec_state, block.block_additions, block.encoded_frames_payload or block.payload):
@@ -81,25 +84,56 @@ def _track_entries(reader: MatroskaReader) -> list[tuple[tuple[bytes, bytes], ..
     ]
 
 
+_TAGS_ID = bytes.fromhex("1254c367")
+_TAG_ID = bytes.fromhex("7373")
+_TARGETS_ID = bytes.fromhex("63c0")
+_SIMPLE_TAG_ID = bytes.fromhex("67c8")
+_TAG_NAME_ID = bytes.fromhex("45a3")
+_TAG_TRACK_UID_ID = bytes.fromhex("63c5")
+_TAG_ATTACHMENT_UID_ID = bytes.fromhex("63c6")
+
+
 def _normalized_tags(reader: MatroskaReader) -> list[tuple]:
-    """Tags hors statistiques, cibles ramenées au rang de la piste / pièce jointe."""
+    """Tags comparés en EBML : cibles de piste / pièce jointe ramenées à leur rang,
+    statistiques régénérées retirées, tout le reste (langues, valeurs binaires,
+    tags imbriqués, cibles répétées) conservé octet pour octet."""
     track_rank = {track.uid: rank for rank, track in enumerate(reader.tracks())}
     attachment_rank = {attachment.uid: rank for rank, attachment in enumerate(reader.attachments())}
-    result = []
-    for tag in reader.tags():
-        values = tuple(value for value in tag.values if value[0].upper() not in _STATISTICS_TAGS)
-        if not values:
-            continue
-        targets: list[tuple[str, object]] = []
-        for key, value in sorted(tag.targets.items()):
-            if key == "63c5":
-                targets.append((key, ("piste", track_rank.get(value))))
-            elif key == "63c6":
-                targets.append((key, ("pièce jointe", attachment_rank.get(value))))
-            else:
-                targets.append((key, value))
-        result.append((tuple(targets), values))
+    result: list[tuple] = []
+    for raw in reader.raw_top_level(_TAGS_ID):
+        for element_id, payload in payload_children(raw):
+            if element_id != _TAGS_ID:
+                continue
+            for tag_id, tag_payload in payload_children(payload):
+                if tag_id != _TAG_ID:
+                    result.append(("élément", tag_id, tag_payload))
+                    continue
+                targets: list[tuple] = []
+                simple: list[bytes] = []
+                for child_id, child_payload in payload_children(tag_payload):
+                    if child_id == _TARGETS_ID:
+                        for target_id, target_payload in payload_children(child_payload):
+                            value = int.from_bytes(target_payload, "big")
+                            if target_id == _TAG_TRACK_UID_ID:
+                                targets.append((target_id, "piste", track_rank.get(value, value)))
+                            elif target_id == _TAG_ATTACHMENT_UID_ID:
+                                targets.append((target_id, "pièce jointe", attachment_rank.get(value, value)))
+                            else:
+                                targets.append((target_id, target_payload))
+                    elif child_id == _SIMPLE_TAG_ID and _simple_tag_name(child_payload) in _STATISTICS_TAGS:
+                        continue
+                    else:
+                        simple.append(child_id + child_payload)
+                if simple:
+                    result.append((tuple(targets), tuple(simple)))
     return sorted(result, key=repr)
+
+
+def _simple_tag_name(payload: bytes) -> str:
+    for child_id, child_payload in payload_children(payload):
+        if child_id == _TAG_NAME_ID:
+            return child_payload.decode("utf-8", "replace").upper()
+    return ""
 
 
 def _info_passthrough(reader: MatroskaReader) -> tuple[bytes, ...]:

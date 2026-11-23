@@ -468,31 +468,48 @@ __all__ = [
 #: Marge d'espace du réassemblage (Cues, statistiques, Clusters à 1 ms).
 _REPAIR_SPACE_RATIO = 1.02
 _REPAIR_SPACE_MARGIN = 64 * 1024 * 1024
-#: ChapterTrack : chapitres liés à des pistes (UID), non transposables par une copie isolée.
-_CHAPTER_TRACK_ID = bytes.fromhex("8f")
+#: Chapitres non transposables par une copie isolée : liés à des pistes (ChapterTrack),
+#: à d'autres segments (ChapterSegmentUID, ChapterSegmentEditionUID) ou éditions ordonnées.
 _CHAPTERS_ID = bytes.fromhex("1043a770")
 _CHAPTER_CONTAINERS = frozenset({bytes.fromhex("45b9"), bytes.fromhex("b6")})  # EditionEntry, ChapterAtom
+_CHAPTER_LINK_IDS = frozenset({
+    bytes.fromhex("8f"),      # ChapterTrack
+    bytes.fromhex("6e67"),    # ChapterSegmentUID
+    bytes.fromhex("6ebc"),    # ChapterSegmentEditionUID
+})
+_EDITION_FLAG_ORDERED_ID = bytes.fromhex("45dd")
 
 
-def _contains_element(payload: bytes, target: bytes) -> bool:
+def _chapters_not_copyable(payload: bytes) -> bool:
     from core.matroska.reader import payload_children
 
     for child_id, child_payload in payload_children(payload):
-        if child_id == target:
+        if child_id in _CHAPTER_LINK_IDS:
             return True
-        if child_id in _CHAPTER_CONTAINERS and _contains_element(child_payload, target):
+        if child_id == _EDITION_FLAG_ORDERED_ID and int.from_bytes(child_payload or b"\0", "big"):
+            return True
+        if child_id in _CHAPTER_CONTAINERS and _chapters_not_copyable(child_payload):
             return True
     return False
 
 
 def _chapters_reference_tracks(reader: MatroskaReader) -> bool:
+    """Chapitres liés à des pistes ou à d'autres segments, ou édition ordonnée."""
     from core.matroska.reader import payload_children
 
     for raw in reader.raw_top_level(_CHAPTERS_ID):
         for element_id, payload in payload_children(raw):
-            if element_id == _CHAPTERS_ID and _contains_element(payload, _CHAPTER_TRACK_ID):
+            if element_id == _CHAPTERS_ID and _chapters_not_copyable(payload):
                 return True
     return False
+
+
+def _remove_quietly(path: Path) -> None:
+    """Nettoyage qui ne masque jamais l'exception en cours (annulation comprise)."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def repair_ffmpeg_interleave(
@@ -538,14 +555,21 @@ def repair_ffmpeg_interleave(
     candidate = Path(candidate)
     reader = MatroskaReader(candidate)
     if _chapters_reference_tracks(reader):
-        warn("Entrelacement non corrigé : chapitres liés à des pistes (copie isolée non fidèle).")
+        warn("Entrelacement non corrigé : chapitres liés à des pistes ou à d'autres segments, "
+             "ou édition ordonnée (copie isolée non fidèle).")
         return False
     size = candidate.stat().st_size
     free = shutil.disk_usage(candidate.parent).free
     if free < size * _REPAIR_SPACE_RATIO + _REPAIR_SPACE_MARGIN:
         warn("Entrelacement non corrigé : espace disque insuffisant pour le réassemblage natif.")
         return False
-    temporary = candidate.with_name(f"{candidate.name}.{secrets.token_hex(4)}.repair.mkv")
+    # Nom court et borné (jamais au-delà de NAME_MAX), réservé par création exclusive.
+    temporary = candidate.parent / f".muxiveo-repair-{secrets.token_hex(8)}.mkv"
+    try:
+        os.close(os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except OSError as exc:
+        warn(f"Entrelacement non corrigé : réservation du réassemblage impossible ({exc}).")
+        return False
     identity = deterministic_source_identity(candidate)
     tracks = reader.tracks()
     plan = MatroskaAssemblyPlan(
@@ -572,7 +596,13 @@ def repair_ffmpeg_interleave(
         if errors:
             warn("Entrelacement non corrigé : réassemblage refusé par le contrat (" + "; ".join(errors) + ").")
             return False
-        if interleave_warnings(scan_interleave(temporary, cancelled=cancelled)):
+        after = scan_interleave(temporary, cancelled=cancelled)
+        if cancelled is not None and cancelled():
+            raise TaskCancelledError()
+        if after is None:
+            warn("Entrelacement non corrigé : mesure du réassemblage indisponible.")
+            return False
+        if interleave_warnings(after):
             # Désordre interne à une piste : l'ordre de décodage interdit de le corriger.
             warn("Entrelacement non corrigé : désordre interne à une piste, conservé par l'ordre de décodage.")
             return False
@@ -598,4 +628,4 @@ def repair_ffmpeg_interleave(
         warn(f"Entrelacement non corrigé : écriture du réassemblage impossible ({exc}).")
         return False
     finally:
-        temporary.unlink(missing_ok=True)
+        _remove_quietly(temporary)
