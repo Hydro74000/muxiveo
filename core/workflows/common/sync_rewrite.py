@@ -41,6 +41,13 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
+#: Downmix d'une variante AC-3 (5.1 au plus), comme ``build_audio_variant_command``.
+_DOWNMIX_51_ARGS = ("-ac:a", "6", "-channel_layout:a", "5.1")
+
+
+def _variant_channels(codec_key: str, channels: int) -> int:
+    """Canaux de sortie d'une variante : l'AC-3 s'arrête à 5.1."""
+    return 6 if codec_key == "ac3" and channels > 6 else channels
 SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
 SYNC_REWRITE_MODE_AUTO = ""
 SYNC_REWRITE_MODE_OFFSET = "offset"
@@ -586,7 +593,7 @@ class SyncRewriteService:
                     rewrite_bitrate_kbps = self._normalize_audio_bitrate_kbps(
                         rewrite_codec_key,
                         audio_target_bitrate_kbps,
-                        channels_count,
+                        _variant_channels(rewrite_codec_key, channels_count),
                     )
                 out = self._rewrite_audio(
                     source=source,
@@ -602,6 +609,10 @@ class SyncRewriteService:
                     crossfade_ms=crossfade_ms,
                     source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
                     sample_rate=_positive_int(probe.get("sample_rate")),
+                    downmix_51=(
+                        not preserve_source_audio_params
+                        and _variant_channels(rewrite_codec_key, channels_count) != channels_count
+                    ),
                 )
                 bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
@@ -683,20 +694,31 @@ class SyncRewriteService:
                 )
 
             rewrite_codec_key = self._advanced_audio_output_codec(source_codec_key, kind)
+            downmix_51 = False
+            if kind == "lossy" and not preserve_source_audio_params:
+                # Variante demandée : un seul encodage avec perte (directement au
+                # contrat), sinon intermédiaire FLAC puis variante.
+                requested_codec = normalized_rewrite_codec(audio_target_codec or "")
+                if requested_codec and requested_codec != source_codec_key:
+                    if requested_codec in REWRITE_AUDIO_CODECS or requested_codec == "flac":
+                        rewrite_codec_key = requested_codec
+                        downmix_51 = _variant_channels(requested_codec, channels_count) != channels_count
+                    else:
+                        rewrite_codec_key = "flac"
             if kind == "truehd" and not self._truehd_reencode_supported(probe):
                 self._log(
                     "Sync réelle audio avancée ignorée: TrueHD/MLP sans Atmos hors layout "
                     f"supporté (stream={stream_index}); fallback offset."
                 )
                 return None
-            rewrite_bitrate_kbps = self._advanced_audio_bitrate_kbps(
+            rewrite_bitrate_kbps = None if rewrite_codec_key == "flac" else self._advanced_audio_bitrate_kbps(
                 codec_key=rewrite_codec_key,
                 source_codec_key=source_codec_key,
                 kind=kind,
                 audio_target_bitrate_kbps=audio_target_bitrate_kbps,
                 probe=probe,
                 display_info=display_info,
-                channels=channels_count,
+                channels=_variant_channels(rewrite_codec_key, channels_count),
             )
             out = self._rewrite_audio_advanced(
                 source=source,
@@ -709,6 +731,7 @@ class SyncRewriteService:
                 experimental=kind == "truehd",
                 cancel_cb=cancel_cb,
                 source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
+                downmix_51=downmix_51,
             )
             bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
             self._log(
@@ -831,9 +854,12 @@ class SyncRewriteService:
         crossfade_ms: int = 80,
         source_origin_s: float = 0.0,
         sample_rate: int | None = None,
+        downmix_51: bool = False,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
-        bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(codec_key, channels)
+        bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(
+            codec_key, 6 if downmix_51 else channels,
+        )
         cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
@@ -862,6 +888,7 @@ class SyncRewriteService:
         cmd.extend([
             "-c:a", codec_key,
             "-b:a", f"{bitrate}k",
+            *(_DOWNMIX_51_ARGS if downmix_51 else ()),
         ])
         # Le PCM est déjà recalé par asetpts ; préserver le pré-roll encodeur
         # pour que le CodecDelay Matroska ne crée pas un retard supplémentaire.
@@ -946,6 +973,7 @@ class SyncRewriteService:
         experimental: bool = False,
         cancel_cb: Callable[[], bool] | None = None,
         source_origin_s: float = 0.0,
+        downmix_51: bool = False,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         if offset_ms > 0:
@@ -970,6 +998,7 @@ class SyncRewriteService:
                 bitrate_kbps=bitrate_kbps,
                 experimental=experimental,
             ),
+            *(_DOWNMIX_51_ARGS if downmix_51 else ()),
         ])
         cmd.extend([
             *matroska_output_args(self._ffmpeg),

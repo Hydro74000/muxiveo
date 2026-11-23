@@ -309,6 +309,7 @@ class StreamProducer:
         cancelled: Callable[[], bool] = lambda: False,
         register: Callable[[subprocess.Popen], None] | None = None,
         unregister: Callable[[subprocess.Popen], None] | None = None,
+        header_only: bool = False,
     ) -> None:
         self.label = label
         self._cancelled = cancelled
@@ -329,7 +330,8 @@ class StreamProducer:
             self._stdout = _PrefetchedPipe(cast(BinaryIO, self._process.stdout), label=label)
             source = MatroskaStreamSource(cast(BinaryIO, self._stdout), header_path)
             try:
-                source.read_header()
+                # En-tête seul (métadonnées) : CodecPrivate non exigé (TS lu pour son TrackEntry).
+                source.read_header(require_codec_private=not header_only)
             except (ValueError, OSError) as exc:
                 raise self.failure(exc) from exc
             if self._cancelled():
@@ -522,6 +524,7 @@ class StreamInputs:
         producer = StreamProducer(
             producer_command(self._ffmpeg, group), header, label=label, duration_ns=duration_ns,
             cancelled=self._cancelled, register=self._register, unregister=self._unregister,
+            header_only=header_only,
         )
         self._producers.append(producer)
         if self._cancelled():

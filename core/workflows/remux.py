@@ -48,6 +48,7 @@ from core.workflows.remux_models import (
 from core.workflows.remux_backend import (
     FfmpegRemuxBackend, NativeMatroskaBackend,
 )
+from core.workflows.remux_sync_rewrite import SyncRewriteSettings
 from core.workflows.remux_plan import (
     MuxExecutionPlan,
     mux_backend_report_from_plan,
@@ -212,10 +213,21 @@ class RemuxWorkflow(QObject):
             extra_attachments=[_abs(Path(item)) for item in config.extra_attachments],
         )
 
+    def sync_rewrite_settings(self) -> SyncRewriteSettings:
+        """Réglages de la réécriture de synchro, transmis au plan et aux deux backends."""
+        return SyncRewriteSettings(
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio=self._sync_advanced_audio_rewrite_enabled,
+            audio_bitrates=dict(self._sync_rewrite_audio_bitrates),
+        )
+
     def compile_plan(self, config: RemuxConfig) -> MuxExecutionPlan:
         """Compile le plan d'exécution unique consommé par validation/preview/run."""
         config = self._absolute_paths_config(config)
-        return _plan_remux(config, ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe)
+        return _plan_remux(
+            config, ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe,
+            sync_rewrite=self.sync_rewrite_settings(),
+        )
 
     def validate(self, config: RemuxConfig, *, plan: MuxExecutionPlan | None = None) -> list[str]:
         return _validate_remux_config(
@@ -346,6 +358,7 @@ class RemuxWorkflow(QObject):
             ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe,
             finalize=self._write_nfo, plan=plan,
             validation_override=self._validation_override,
+            sync_rewrite=self.sync_rewrite_settings(),
         )
         ffmpeg_backend = FfmpegRemuxBackend(
             execute_callback=lambda item: self._run_ffmpeg(item, plan),

@@ -10,7 +10,6 @@ from typing import Callable
 
 from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
-from core.workflows.common.audio_timestamps import preroll_input_offset, probe_timestamp_payload
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
 from core.workdir import (
     download_tmdb_cover,
@@ -25,11 +24,14 @@ from core.workflows.common.ffmpeg_runtime import (
     cli_path as _cli_path,
     ffmpeg_progress_args as _ffmpeg_progress_args,
 )
-from core.workflows.common.sync_rewrite import (
-    SyncRewriteService,
-    audio_bitrate_kbps_from_display_info,
-    normalized_rewrite_codec,
-    sync_rewrite_forced_offset,
+from core.workflows.common.sync_rewrite import SyncRewriteService
+from core.workflows.remux_sync_rewrite import (
+    SyncRewriteSettings,
+    audio_rewrite_preserve_source,
+    materialize_sync_rewrites,
+    plan_sync_rewrites,
+    probe_preroll_offset,
+    rewrite_input_offsets,
 )
 from core.matroska.contract import MatroskaOutputContract, without_expected_attachment
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
@@ -40,12 +42,10 @@ from core.workflows.common.attachments import canonical_attachment_output_name
 from core.workflows.remux_attachments import extract_attached_pics as _extract_attached_pics_helper
 from core.workflows.remux_mapping import (
     MappedTrack,
-    track_sync_payload,
     requires_file_sync_fallback_for_offsets as _requires_file_sync_fallback_for_offsets_helper,
 )
 from core.workflows.remux_models import RemuxConfig, RemuxError
 from core.workflows.remux_plan import MuxExecutionPlan
-from core.workflows.sync_calibration import effective_calibration, resolve_track_sync
 from core.workflows.remux_sync import (
     decide_strict_interleave_with_prescan as _decide_strict_interleave_with_prescan_helper,
     prepare_timeline_sync_inputs as _prepare_timeline_sync_inputs_helper,
@@ -87,25 +87,8 @@ class RemuxRuntimeRunner:
     def __init__(self, callbacks: RemuxRuntimeRunnerCallbacks) -> None:
         self._cb = callbacks
 
-    @staticmethod
-    def _audio_rewrite_preserve_source(track) -> bool:
-        source_codec = normalized_rewrite_codec(str(getattr(track, "orig_codec", "") or getattr(track, "codec", "") or ""))
-        current_codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
-        if current_codec and source_codec and current_codec != source_codec:
-            return False
-        source_bitrate = audio_bitrate_kbps_from_display_info(
-            str(getattr(track, "orig_display_info", "") or "")
-        )
-        current_bitrate = audio_bitrate_kbps_from_display_info(
-            str(getattr(track, "display_info", "") or "")
-        )
-        if source_bitrate is not None and current_bitrate is not None and source_bitrate != current_bitrate:
-            return False
-        source_display = str(getattr(track, "orig_display_info", "") or "")
-        current_display = str(getattr(track, "display_info", "") or "")
-        if source_display != current_display and (source_bitrate is None) != (current_bitrate is None):
-            return False
-        return True
+    #: Compatibilité : règle partagée avec le backend natif.
+    _audio_rewrite_preserve_source = staticmethod(audio_rewrite_preserve_source)
 
     def run(self, config: RemuxConfig, plan: MuxExecutionPlan) -> TaskSignals:
         cb = self._cb
@@ -193,20 +176,15 @@ class RemuxRuntimeRunner:
 
                 extra_inputs: list[Path | str] = []
                 cb.log_step(3, "Analyse du mapping pistes + pré-scan de risque")
-                mapped_tracks: list[MappedTrack] = list(plan.mapped_tracks)
-                rewrite_enabled = cb.sync_rewrite_enabled()
-                if not rewrite_enabled and any(
-                    mapped.track.track_type in {"audio", "subtitle"}
-                    and effective_calibration(
-                        track_sync_payload(run_config, mapped.track, mapped.source_file_index),
-                        mapped.track.track_type,
-                    ) is not None
-                    for mapped in mapped_tracks
-                ):
-                    raise RemuxError(
-                        "Synchronisation multi-segments : la réécriture sync réelle est requise "
-                        "(activer sync.rewrite_enabled ou choisir sync_mode=physical)."
-                    )
+                rewrite_settings = SyncRewriteSettings(
+                    enabled=cb.sync_rewrite_enabled(),
+                    advanced_audio=cb.sync_advanced_audio_rewrite_enabled(),
+                    audio_bitrates=cb.sync_rewrite_audio_bitrates(),
+                )
+                # Décision partagée avec le backend natif (calibration sans réécriture → erreur).
+                mapped_tracks, rewrite_intents = plan_sync_rewrites(
+                    run_config, list(plan.mapped_tracks), rewrite_settings,
+                )
                 strict_interleave = _decide_strict_interleave_with_prescan_helper(
                     run_config,
                     resolve_mapped_tracks=lambda _config: list(plan.mapped_tracks),
@@ -224,104 +202,47 @@ class RemuxRuntimeRunner:
                 if extracted_pics:
                     run_config = replace(run_config, extra_attachments=[*run_config.extra_attachments, *extracted_pics])
 
-                if strict_interleave:
-                    cb.log_step(4, "Synchronisation timeline multi-source (live/fallback)")
-                    allow_live_sync = True
-                    if _requires_file_sync_fallback_for_offsets_helper(mapped_tracks):
-                        allow_live_sync = False
-                        cb.log(
-                            "INFO",
-                            "Décalage sur piste étrangère détecté : sync live désactivé, fallback fichier forcé.",
-                        )
-                    mapped_tracks, sync_prepared, live_sync_session = _prepare_timeline_sync_inputs_helper(
-                        run_config,
-                        mapped_tracks,
-                        tmp_dir,
-                        signals,
-                        allow_live=allow_live_sync,
-                        ffmpeg_bin=cb.ffmpeg_bin,
-                        ffmpeg_thread_args=cb.ffmpeg_thread_args(),
-                        log_cb=cb.log,
-                        syncer_factory=FfmpegTimelineSync,
-                        fallback_helper_factory=TimelineSyncFallbackHelper,
-                    )
-                    sync_cleanup_paths = [p for p in (item.path for item in sync_prepared) if isinstance(p, Path)]
-                else:
-                    cb.log_step(4, "Synchronisation timeline multi-source (non requise)")
-
-                if rewrite_enabled:
-                    cb.log_step(5, "Réécriture réelle des décalages audio/sous-titres")
+                # Réécriture d'abord, sur les références d'origine : la synchro
+                # timeline remplace ensuite source et index des pistes étrangères
+                # (fichier extrait, FIFO), qu'une réécriture ne doit jamais lire.
+                rewritten_inputs: list[SyncPreparedInput] = []
+                rewritten_by_index: dict[int, MappedTrack] = {}
+                if rewrite_settings.enabled:
+                    cb.log_step(4, "Réécriture réelle des décalages audio/sous-titres")
                     rewrite_service = SyncRewriteService(
                         ffmpeg_bin=cb.ffmpeg_bin,
                         ffprobe_bin=cb.ffprobe_bin,
                         ffmpeg_progress_args=_ffmpeg_progress_args(),
                         ffmpeg_thread_args=cb.ffmpeg_thread_args(),
-                        audio_bitrate_per_channel=cb.sync_rewrite_audio_bitrates(),
-                        advanced_audio_enabled=cb.sync_advanced_audio_rewrite_enabled(),
+                        audio_bitrate_per_channel=dict(rewrite_settings.audio_bitrates),
+                        advanced_audio_enabled=rewrite_settings.advanced_audio,
                         log_cb=lambda msg: cb.log("INFO", msg),
                         progress_cb=signals.progress.emit,
                     )
-                    rewritten_tracks: list[MappedTrack] = []
-                    rewritten_inputs: list[SyncPreparedInput] = []
-                    for mapped_track in mapped_tracks:
-                        offset_ms = int(getattr(mapped_track.track, "time_shift_ms", 0) or 0)
-                        offset_ms, calibration = resolve_track_sync(
-                            track_sync_payload(run_config, mapped_track.track, mapped_track.source_file_index),
-                            offset_ms,
-                            mapped_track.track.track_type,
-                        ) if mapped_track.track.track_type in {"audio", "subtitle"} else (offset_ms, None)
-                        if offset_ms != mapped_track.track.time_shift_ms:
-                            mapped_track = replace(mapped_track, track=replace(mapped_track.track, time_shift_ms=offset_ms))
-                        if (offset_ms == 0 and calibration is None) or (
-                            calibration is None and sync_rewrite_forced_offset(mapped_track.track)
-                        ):
-                            rewritten_tracks.append(mapped_track)
-                            continue
-                        prepared = rewrite_service.maybe_materialize(
-                            source_path=mapped_track.source_path,
-                            stream_index=int(mapped_track.stream_index),
-                            track_type=mapped_track.track.track_type,
-                            codec=mapped_track.track.orig_codec or mapped_track.track.codec,
-                            title=mapped_track.track.title,
-                            display_info=mapped_track.track.orig_display_info or mapped_track.track.display_info,
-                            offset_ms=offset_ms,
-                            tmp_dir=tmp_dir,
-                            input_idx=len(run_config.sources) + len(sync_prepared) + len(rewritten_inputs),
-                            token=(
-                                f"remux_f{mapped_track.source_file_index}_"
-                                f"s{mapped_track.stream_index}_{mapped_track.out_type_index}_"
-                                f"{mapped_track.track.track_type}"
-                            ),
-                            preserve_source_audio_params=self._audio_rewrite_preserve_source(mapped_track.track),
-                            audio_target_codec=mapped_track.track.codec,
-                            audio_target_bitrate_kbps=audio_bitrate_kbps_from_display_info(
-                                mapped_track.track.display_info
-                            ),
-                            cancel_cb=signals._cancel_event.is_set,
-                            calibration=calibration,
-                            crossfade_ms=config.crossfade_ms,
-                        )
-                        if prepared is None:
-                            if calibration is not None:
-                                raise RemuxError(
-                                    "Calibration multi-segments non applicable à cette piste "
-                                    f"(#{mapped_track.stream_index}) : synchronisation interrompue.",
-                                )
-                            rewritten_tracks.append(mapped_track)
-                            continue
+                    materialized = materialize_sync_rewrites(
+                        run_config, rewrite_intents, service=rewrite_service, tmp_dir=tmp_dir,
+                        first_input_idx=len(run_config.sources), cancel_cb=signals._cancel_event.is_set,
+                    )
+                    for item in materialized:
+                        prepared = item.prepared
+                        assert prepared is not None  # sous-titres vidés : non pris en charge ici
+                        mapped_track = item.intent.mapped_track
                         consumed_track = replace(
                             mapped_track.track,
                             time_shift_ms=0,
                             sync_rewrite_label=prepared.mode_label,
                             sync_calibration=None,
+                            # Codec de l'artefact : une variante déjà produite par la
+                            # réécriture n'est jamais réencodée une seconde fois.
+                            orig_codec=prepared.codec or mapped_track.track.orig_codec,
                         )
-                        rewritten_tracks.append(replace(
+                        rewritten_by_index[item.intent.index] = replace(
                             mapped_track,
                             source_input_idx=prepared.input_idx,
                             source_path=prepared.path,
                             stream_index=0,
                             track=consumed_track,
-                        ))
+                        )
                         rewritten_inputs.append(SyncPreparedInput(
                             key=(
                                 mapped_track.source_file_index,
@@ -332,29 +253,49 @@ class RemuxRuntimeRunner:
                             input_idx=prepared.input_idx,
                             container_format="matroska",
                         ))
-                        timestamp_offsets = {
-                            **run_config.input_timestamp_offsets,
-                            prepared.path: prepared.ffmpeg_timestamp_offset_s,
-                        }
-                        if mapped_track.track.track_type == "audio":
-                            timestamp_offsets.setdefault(Path(mapped_track.source_path), prepared.source_timestamp_offset_s)
-                        run_config = replace(run_config, input_timestamp_offsets=timestamp_offsets)
-                    mapped_tracks = rewritten_tracks
-                    if rewritten_inputs:
-                        sync_prepared.extend(rewritten_inputs)
-                    if any(item.key[2] == "audio" for item in rewritten_inputs):
-                        # La source vidéo peut avoir son propre CodecDelay
-                        # audio, même si ces pistes audio ne sont pas retenues.
-                        timestamp_offsets = dict(run_config.input_timestamp_offsets)
-                        for source in run_config.sources:
-                            if source.path not in timestamp_offsets:
-                                payload = probe_timestamp_payload(
-                                    source.path, cb.ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
-                                )
-                                timestamp_offsets[source.path] = preroll_input_offset(payload)
-                        run_config = replace(run_config, input_timestamp_offsets=timestamp_offsets)
+                    # -itsoffset du muxage final (règle partagée avec le placement natif).
+                    run_config = replace(run_config, input_timestamp_offsets=rewrite_input_offsets(
+                        run_config.input_timestamp_offsets, materialized,
+                        [source.path for source in run_config.sources],
+                        probe_preroll_offset(cb.ffprobe_bin, signals._cancel_event.is_set),
+                    ))
                 else:
-                    cb.log_step(5, "Réécriture réelle des décalages désactivée")
+                    cb.log_step(4, "Réécriture réelle des décalages désactivée")
+
+                # Synchro timeline : pistes non réécrites seulement (les autres sont déjà placées).
+                remaining = [track for index, track in enumerate(mapped_tracks) if index not in rewritten_by_index]
+                if strict_interleave:
+                    cb.log_step(5, "Synchronisation timeline multi-source (live/fallback)")
+                    allow_live_sync = True
+                    if _requires_file_sync_fallback_for_offsets_helper(remaining):
+                        allow_live_sync = False
+                        cb.log(
+                            "INFO",
+                            "Décalage sur piste étrangère détecté : sync live désactivé, fallback fichier forcé.",
+                        )
+                    remaining, timeline_prepared, live_sync_session = _prepare_timeline_sync_inputs_helper(
+                        run_config,
+                        remaining,
+                        tmp_dir,
+                        signals,
+                        allow_live=allow_live_sync,
+                        ffmpeg_bin=cb.ffmpeg_bin,
+                        ffmpeg_thread_args=cb.ffmpeg_thread_args(),
+                        log_cb=cb.log,
+                        syncer_factory=FfmpegTimelineSync,
+                        fallback_helper_factory=TimelineSyncFallbackHelper,
+                        base_input_idx=len(run_config.sources) + len(rewritten_inputs),
+                    )
+                else:
+                    cb.log_step(5, "Synchronisation timeline multi-source (non requise)")
+                    timeline_prepared = []
+                kept = iter(remaining)
+                mapped_tracks = [
+                    rewritten_by_index[index] if index in rewritten_by_index else next(kept)
+                    for index in range(len(mapped_tracks))
+                ]
+                # Ordre des entrées FFmpeg : réécritures, puis synchro timeline.
+                sync_prepared = [*rewritten_inputs, *timeline_prepared]
 
                 sync_cleanup_paths = [p for p in (item.path for item in sync_prepared) if isinstance(p, Path)]
                 sync_inputs: list[Path | str] = [item.path for item in sync_prepared]

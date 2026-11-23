@@ -129,11 +129,12 @@ class MatroskaStreamSource:
         if left is not None and size > left:
             raise ValueError(f"Flux Matroska : {what} débordant du Segment.")
 
-    def read_header(self) -> MatroskaReader:
+    def read_header(self, *, require_codec_private: bool = True) -> MatroskaReader:
         """Lit l'en-tête jusqu'au premier Cluster, le recopie dans ``header_path`` et renvoie son lecteur.
 
         Recopie progressive (tampon borné) : seul l'élément en cours de copie
-        transite en mémoire, par tranches.
+        transite en mémoire, par tranches. ``require_codec_private`` faux : en-tête
+        lu pour ses métadonnées seules (aucun bloc décodé), CodecPrivate non exigé.
         """
         if self._header_read:
             raise ValueError("En-tête du flux Matroska déjà lu.")
@@ -168,7 +169,8 @@ class MatroskaStreamSource:
                 self._copy(output, size, "élément d'en-tête")
         reader = MatroskaReader(self._header_path)
         self._scale_ns = reader.timestamp_scale_ns()
-        check_codec_private(reader.tracks())
+        if require_codec_private:
+            check_codec_private(reader.tracks())
         return reader
 
     def _copy(self, output: BinaryIO, size: int, what: str) -> None:

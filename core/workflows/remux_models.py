@@ -75,6 +75,9 @@ class TrackEntry:
     sync_rewrite_label: str = field(default="", repr=False)
     sync_rewrite_mode: str = field(default="", repr=False)  # "" = auto, "offset" = sync standard forcée
     sync_calibration: dict | None = field(default=None, repr=False)
+    #: Piste d'origine (source, index) d'une piste réécrite par la synchro (artefact
+    #: mono-piste) : ses tags et son TrackEntry suivent la piste de sortie.
+    rewrite_origin: tuple[Path, int] | None = field(default=None, repr=False)
 
     # Flags MKV éditables (transmis à FFmpeg si modifiés)
     flag_enabled:          bool = field(default=True,  repr=False)  # --track-enabled-flag

@@ -13,6 +13,8 @@ repli.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,9 +45,7 @@ from core.workflows.remux_mapping import (
     normalized_language_value,
     resolve_mapped_tracks,
     track_order_parts,
-    track_sync_payload,
 )
-from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
@@ -58,6 +58,10 @@ from core.workflows.common.native_stream_inputs import (
     StreamTrackSpec, group_stream_specs, is_streamable_source, producer_command,
 )
 
+
+
+if TYPE_CHECKING:
+    from core.workflows.remux_sync_rewrite import SyncRewriteSettings
 
 MATROSKA_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
 
@@ -255,21 +259,8 @@ def native_capability_reasons(
                     plan_subtitle_codec(track.codec)
                 except ValueError as exc:
                     reasons.append(f"{source.path.name}: {exc}")
-            if track.sync_rewrite_label and track.time_shift_ms and config.sync_mode != "physical":
-                reasons.append(
-                    f"{source.path.name}: réécriture de synchronisation avancée à matérialiser par FFmpeg"
-                )
-            if (
-                config.sync_mode != "physical"
-                and track.track_type in {"audio", "subtitle"}
-                and effective_calibration(
-                    track_sync_payload(config, track, source.file_index),
-                    track.track_type,
-                ) is not None
-            ):
-                reasons.append(
-                    f"{source.path.name}: synchronisation multi-segments à matérialiser par FFmpeg"
-                )
+            # Réécriture de synchro et calibrations multi-segments : matérialisées
+            # avant l'assemblage natif (remux_sync_rewrite), plus un blocage.
         if source.file_index not in participating:
             continue
         participation = participations[source.file_index]
@@ -953,8 +944,14 @@ def plan_remux(
     *,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
+    sync_rewrite: "SyncRewriteSettings | None" = None,
 ) -> MuxExecutionPlan:
-    """Compile le plan d'exécution unique (backend, préparations, contrat)."""
+    """Compile le plan d'exécution unique (backend, préparations, contrat).
+
+    ``sync_rewrite`` : réglages de la réécriture de synchro ; ses intentions sont
+    décrites en actions ``sync_rewrite`` (mêmes pour les deux backends), une
+    calibration sans réécriture possible devient une erreur de validation.
+    """
     _ = ffprobe_bin  # symétrie d'API : le second validateur est toujours ffprobe
     # Instances Matroska mémoïsées partagées sur toute la compilation : évite de
     # reparcourir une même source dans le préflight natif puis le contrat.
@@ -999,6 +996,31 @@ def plan_remux(
             target_name=tmdb_filename,
         ))
 
+    if sync_rewrite is not None:
+        from core.workflows.remux_sync_rewrite import plan_sync_rewrites
+
+        try:
+            _resolved, rewrite_intents = plan_sync_rewrites(config, compiled_mapped_tracks, sync_rewrite)
+        except RemuxError as exc:
+            mapping_errors.append(str(exc))
+            rewrite_intents = []
+        for intent in rewrite_intents:
+            mapped = intent.mapped_track
+            branch = (
+                "réécriture requise (calibration)" if intent.required
+                else "réécriture si la piste est éligible après sonde, sinon décalage conteneur"
+            )
+            preparation_actions.append(RemuxPreparationAction(
+                kind="sync_rewrite",
+                description=(
+                    f"Synchro de {Path(mapped.source_path).name} #{mapped.stream_index} "
+                    f"({mapped.track.track_type}, {intent.offset_ms:+d} ms) : {branch} ; "
+                    "commande FFmpeg déterminée après sonde de la piste"
+                ),
+                source_file_index=mapped.source_file_index,
+                target_name=f"sync_rewrite_{mapped.source_file_index}_{mapped.stream_index}_{mapped.out_type_index}",
+            ))
+
     canonical_index_maps: dict[int, dict[int, int]] = {}
     audio_variants: tuple[NativeAudioVariantPlan, ...] = ()
     if decision.selected == "native":
@@ -1017,11 +1039,11 @@ def plan_remux(
 
     if decision.selected == "native":
         needs_ffmpeg_preparation = any(
-            action.command
+            action.command or action.kind == "sync_rewrite"
             for action in preparation_actions
             if action.kind in {
                 "canonicalize_source", "stream_source", "stream_context", "extract_attachment",
-                "audio_variant", "physical_sync",
+                "audio_variant", "physical_sync", "sync_rewrite",
             }
         )
         required_tools = ("ffprobe", "ffmpeg") if needs_ffmpeg_preparation else ("ffprobe",)
