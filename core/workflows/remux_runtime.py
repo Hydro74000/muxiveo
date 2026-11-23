@@ -34,7 +34,7 @@ from core.workflows.remux_sync_rewrite import (
     rewrite_input_offsets,
 )
 from core.matroska.contract import MatroskaOutputContract, without_expected_attachment
-from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
+from core.matroska.validation import MatroskaPacketValidation, scan_interleave, validate_matroska_output
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.common.track_statistics import derive_output_statistics
 from core.workflows.remux_plan import passthrough_source_refs
@@ -56,7 +56,7 @@ from core.workflows.remux_timeline_sync import (
     SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
-from core.workflows.common.matroska_finalize import ffmpeg_output_interleave_warnings
+from core.workflows.common.matroska_finalize import ffmpeg_output_interleave_warnings, repair_ffmpeg_interleave
 
 
 @dataclass(frozen=True)
@@ -376,6 +376,20 @@ class RemuxRuntimeRunner:
                 # Le patch de statistiques a déjà parcouru les paquets : son
                 # résumé évite une seconde lecture intégrale du candidat.
                 packet_validation = getattr(statistics_result, "packet_validation", None)
+                if plan.requested_backend == "auto" and run_config.output.suffix.lower() == ".mkv":
+                    # Repli FFmpeg en Auto : un candidat mal entrelacé est réassemblé
+                    # nativement (copie fidèle vérifiée) avant la validation.
+                    report = (
+                        packet_validation.interleave
+                        if isinstance(packet_validation, MatroskaPacketValidation)
+                        and packet_validation.interleave is not None
+                        else scan_interleave(candidate, cancelled=signals._cancel_event.is_set)
+                    )
+                    if repair_ffmpeg_interleave(
+                        candidate, output_contract, report,
+                        cancelled=signals._cancel_event.is_set, log=cb.log,
+                    ):
+                        packet_validation = None  # mesures du premier fichier périmées
                 validation_errors = validate_matroska_output(
                     candidate,
                     output_contract,

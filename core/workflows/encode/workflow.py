@@ -330,6 +330,7 @@ from core.workflows.encode.planning.plan_models import (
 )
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
 from core.workflows.common.native_stream_inputs import is_streamable_source
+from core.workflows.remux_models import normalize_mux_backend as _normalize_mux_backend
 from core.workflows.common.timeline_sync import SyncInput
 
 #: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
@@ -4844,6 +4845,13 @@ class EncodeWorkflow(QObject):
             warn=lambda message: self.log_message.emit("WARN", message),
             track_enabled_post_action=self._track_enabled_post_action,
             validation_override=self._validation_override_for(config),
+            # Muxage final FFmpeg d'un job demandé en Auto = repli (le natif est retenu
+            # pour toute sortie .mkv non bloquée) : filet de réassemblage natif.
+            repair_interleave=(
+                _normalize_mux_backend(getattr(config, "mux_backend", None)) == "auto"
+                and config.output.suffix.lower() == ".mkv"
+            ),
+            info=lambda message: self.log_message.emit("INFO", message),
         )
         return transaction.execute(
             command,

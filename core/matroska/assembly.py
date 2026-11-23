@@ -30,7 +30,7 @@ from .contract import (
     ExpectedTrackFlags,
     MatroskaOutputContract,
 )
-from .ids import CHAPTERS_ID, DEFAULT_TIMESTAMP_SCALE_NS, TAGS_ID
+from .ids import CHAPTERS_ID, DEFAULT_TIMESTAMP_SCALE_NS, INFO_ID, TAGS_ID
 from .language import bcp47_for_language, matroska_legacy_language
 from .mux_plan import (
     MatroskaMuxPacket,
@@ -524,6 +524,9 @@ class MatroskaAssemblyPlan:
     artifact_order: tuple[Path, ...] = ()
     segment_info_source: Path | None = None
     expected_output_contract: MatroskaOutputContract | None = None
+    #: Copie fidèle : enfants d'Info de ``segment_info_source`` hors champs gérés
+    #: recopiés tels quels (DateUTC…) ; liens de segments → refus (ValueError).
+    segment_info_passthrough: bool = False
 
 
 def assembly_output_contract(
@@ -880,6 +883,9 @@ def compile_assembly_plan(
         for track in plan.ordered_tracks
         if (duration := readers[track.artifact].segment_duration_ns()) is not None
     ), default=0)
+    info_passthrough: tuple[bytes, ...] = ()
+    if plan.segment_info_passthrough:
+        info_passthrough = segment_info_passthrough(info_reader)
     return MatroskaMuxPlan(
         plan.output, tuple(output_tracks), packet_stream,
         duration_ms=round(max_duration_ns / 1_000_000),
@@ -891,7 +897,65 @@ def compile_assembly_plan(
         title=segment_title,
         opaque_top_level=tuple(opaque),
         regenerate_statistics=True,
+        info_passthrough=info_passthrough,
     )
+
+
+#: Champs d'Info écrits par le writer (jamais recopiés).
+_MANAGED_INFO_IDS = frozenset({
+    bytes.fromhex("2ad7b1"),  # TimestampScale
+    bytes.fromhex("4489"),    # Duration
+    bytes.fromhex("73a4"),    # SegmentUID
+    bytes.fromhex("7ba9"),    # Title
+    bytes.fromhex("4d80"),    # MuxingApp
+    bytes.fromhex("5741"),    # WritingApp
+    bytes.fromhex("ec"),      # Void
+    bytes.fromhex("bf"),      # CRC-32
+})
+#: Liens entre segments : une copie isolée les rendrait faux.
+SEGMENT_LINK_INFO_IDS = frozenset({
+    bytes.fromhex("7384"),    # SegmentFilename
+    bytes.fromhex("3cb923"),  # PrevUID
+    bytes.fromhex("3c83ab"),  # PrevFilename
+    bytes.fromhex("3eb923"),  # NextUID
+    bytes.fromhex("3e83bb"),  # NextFilename
+    bytes.fromhex("4444"),    # SegmentFamily
+    bytes.fromhex("6924"),    # ChapterTranslate
+})
+
+
+def segment_info_passthrough(reader: MatroskaReader) -> tuple[bytes, ...]:
+    """Enfants bruts d'Info hors champs gérés ; liens de segments refusés (``ValueError``)."""
+    children: list[bytes] = []
+    for raw in reader.raw_top_level(INFO_ID):
+        for child_id, child_raw in _raw_info_children(raw):
+            if child_id in SEGMENT_LINK_INFO_IDS:
+                raise ValueError("Segment Info : liens entre segments non transposables par une copie isolée.")
+            if child_id not in _MANAGED_INFO_IDS:
+                children.append(child_raw)
+    return tuple(children)
+
+
+def _raw_info_children(raw_info: bytes) -> list[tuple[bytes, bytes]]:
+    """(ID, élément brut) de chaque enfant d'un élément Info brut."""
+    from io import BytesIO
+
+    from .reader import read_element
+
+    stream = BytesIO(raw_info)
+    info = read_element(stream, limit=len(raw_info))
+    if info is None or info.size is None:
+        return []
+    children: list[tuple[bytes, bytes]] = []
+    stream.seek(info.payload_offset)
+    end = info.payload_offset + info.size
+    while stream.tell() < end:
+        child = read_element(stream, limit=end)
+        if child is None or child.size is None:
+            break
+        children.append((child.element_id, raw_info[child.offset:child.payload_offset + child.size]))
+        stream.seek(child.payload_offset + child.size)
+    return children
 
 
 __all__ = [

@@ -599,6 +599,7 @@ def _plan_info(plan: MatroskaMuxPlan, duration_ns: int) -> bytes:
         string_element(TITLE_ID, plan.title) if plan.title else b"",
         string_element(MUXING_APP_ID, plan.muxing_app),
         string_element(WRITING_APP_ID, plan.writing_app),
+        *plan.info_passthrough,
     )))
 
 

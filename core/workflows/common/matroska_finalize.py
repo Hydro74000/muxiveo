@@ -29,6 +29,7 @@ from core.matroska.validation import (
     MatroskaPacketValidation,
     file_track_labels,
     interleave_warning_lines,
+    interleave_warnings,
     scan_interleave,
     validate_matroska_output,
 )
@@ -325,6 +326,10 @@ class MatroskaOutputTransaction:
     #: Applique le FlagEnabled du contrat, que FFmpeg ne sait pas écrire.
     track_enabled_post_action: MatroskaTrackEnabledPostAction | None = None
     validation_override: ValidationOverride | None = None
+    #: Repli FFmpeg d'un job demandé en Auto : candidat mal entrelacé réassemblé
+    #: nativement avant validation (décision transmise, jamais recalculée ici).
+    repair_interleave: bool = False
+    info: Callable[[str], None] | None = None
 
     @property
     def candidate(self) -> Path:
@@ -342,6 +347,11 @@ class MatroskaOutputTransaction:
     def _check_cancelled(signals: TaskSignals) -> None:
         if signals._cancel_event.is_set():
             raise TaskCancelledError()
+
+    def _log(self, level: str, message: str) -> None:
+        callback = self.warn if level == "WARN" else self.info
+        if callback is not None:
+            callback(message)
 
     def execute(
         self,
@@ -381,6 +391,19 @@ class MatroskaOutputTransaction:
                 summary = getattr(result, "packet_validation", None)
                 if isinstance(summary, MatroskaPacketValidation):
                     packet_validation = summary
+                self._check_cancelled(signals)
+
+            if self.repair_interleave:
+                report = (
+                    packet_validation.interleave
+                    if packet_validation is not None and packet_validation.interleave is not None
+                    else scan_interleave(candidate, cancelled=signals._cancel_event.is_set)
+                )
+                if repair_ffmpeg_interleave(
+                    candidate, self.contract, report,
+                    cancelled=signals._cancel_event.is_set, log=self._log,
+                ):
+                    packet_validation = None  # mesures du premier fichier périmées
                 self._check_cancelled(signals)
 
             errors = validate_matroska_output(
@@ -436,3 +459,143 @@ __all__ = [
     "PostAction",
     "RunCommand",
 ]
+
+
+# =============================================================================
+# Filet de sécurité : réassemblage natif d'une sortie FFmpeg mal entrelacée
+# =============================================================================
+
+#: Marge d'espace du réassemblage (Cues, statistiques, Clusters à 1 ms).
+_REPAIR_SPACE_RATIO = 1.02
+_REPAIR_SPACE_MARGIN = 64 * 1024 * 1024
+#: ChapterTrack : chapitres liés à des pistes (UID), non transposables par une copie isolée.
+_CHAPTER_TRACK_ID = bytes.fromhex("8f")
+_CHAPTERS_ID = bytes.fromhex("1043a770")
+_CHAPTER_CONTAINERS = frozenset({bytes.fromhex("45b9"), bytes.fromhex("b6")})  # EditionEntry, ChapterAtom
+
+
+def _contains_element(payload: bytes, target: bytes) -> bool:
+    from core.matroska.reader import payload_children
+
+    for child_id, child_payload in payload_children(payload):
+        if child_id == target:
+            return True
+        if child_id in _CHAPTER_CONTAINERS and _contains_element(child_payload, target):
+            return True
+    return False
+
+
+def _chapters_reference_tracks(reader: MatroskaReader) -> bool:
+    from core.matroska.reader import payload_children
+
+    for raw in reader.raw_top_level(_CHAPTERS_ID):
+        for element_id, payload in payload_children(raw):
+            if element_id == _CHAPTERS_ID and _contains_element(payload, _CHAPTER_TRACK_ID):
+                return True
+    return False
+
+
+def repair_ffmpeg_interleave(
+    candidate: Path,
+    contract: MatroskaOutputContract | None,
+    report,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    log: Callable[[str, str], None] | None = None,
+) -> bool:
+    """Réassemble nativement un candidat FFmpeg mal entrelacé ; ``True`` si substitué.
+
+    Le réassemblage (toutes les pistes, pièces jointes, chapitres, tags, Info du
+    candidat) est écrit dans un temporaire du même dossier, validé avec le
+    contrat d'origine, comparé au candidat (:func:`compare_matroska_copy`) et
+    contrôlé (entrelacement), puis seulement substitué au candidat
+    (``os.replace``, même réservation). Tout échec laisse le candidat intact et
+    renvoie ``False`` avec un WARN ; l'annulation n'est jamais absorbée.
+    """
+    import os
+    import secrets
+    import shutil
+
+    from dataclasses import replace
+
+    from core.matroska.assembly import (
+        MatroskaAssemblyAttachment,
+        MatroskaAssemblyPlan,
+        MatroskaAssemblyTrack,
+        assembly_output_contract,
+        compile_assembly_plan,
+    )
+    from core.matroska.copy_check import CopyCheckCancelled, compare_matroska_copy
+    from core.matroska.mux_plan import deterministic_source_identity
+    from core.matroska.writer import MatroskaWriteCancelled, MatroskaWriter
+
+    def warn(message: str) -> None:
+        if log is not None:
+            log("WARN", message)
+
+    if report is None or not interleave_warnings(report):
+        return False
+    candidate = Path(candidate)
+    reader = MatroskaReader(candidate)
+    if _chapters_reference_tracks(reader):
+        warn("Entrelacement non corrigé : chapitres liés à des pistes (copie isolée non fidèle).")
+        return False
+    size = candidate.stat().st_size
+    free = shutil.disk_usage(candidate.parent).free
+    if free < size * _REPAIR_SPACE_RATIO + _REPAIR_SPACE_MARGIN:
+        warn("Entrelacement non corrigé : espace disque insuffisant pour le réassemblage natif.")
+        return False
+    temporary = candidate.with_name(f"{candidate.name}.{secrets.token_hex(4)}.repair.mkv")
+    identity = deterministic_source_identity(candidate)
+    tracks = reader.tracks()
+    plan = MatroskaAssemblyPlan(
+        output=temporary,
+        ordered_tracks=tuple(MatroskaAssemblyTrack(candidate, index, identity) for index in range(len(tracks))),
+        attachments=tuple(
+            MatroskaAssemblyAttachment(candidate, index, identity) for index in range(len(reader.attachments()))
+        ),
+        chapter_source=candidate,
+        tag_copy_sources=(candidate,),
+        segment_title=None,
+        segment_info_source=candidate,
+        segment_info_passthrough=True,
+    )
+    plan = replace(plan, expected_output_contract=contract or assembly_output_contract(plan))
+    try:
+        try:
+            MatroskaWriter().write(compile_assembly_plan(plan), cancel_cb=cancelled)
+        except (MatroskaWriteCancelled, CopyCheckCancelled):
+            raise TaskCancelledError() from None
+        if cancelled is not None and cancelled():
+            raise TaskCancelledError()
+        errors = validate_matroska_output(temporary, contract)
+        if errors:
+            warn("Entrelacement non corrigé : réassemblage refusé par le contrat (" + "; ".join(errors) + ").")
+            return False
+        if interleave_warnings(scan_interleave(temporary, cancelled=cancelled)):
+            # Désordre interne à une piste : l'ordre de décodage interdit de le corriger.
+            warn("Entrelacement non corrigé : désordre interne à une piste, conservé par l'ordre de décodage.")
+            return False
+        try:
+            differences = compare_matroska_copy(candidate, temporary, cancelled=cancelled)
+        except CopyCheckCancelled:
+            raise TaskCancelledError() from None
+        except ValueError as exc:
+            differences = [str(exc)]
+        if differences:
+            warn("Entrelacement non corrigé : copie non fidèle (" + "; ".join(differences) + ").")
+            return False
+        os.replace(temporary, candidate)
+        if log is not None:
+            log("INFO", f"Entrelacement corrigé par l'assembleur natif ({len(tracks)} pistes).")
+        return True
+    except TaskCancelledError:
+        raise
+    except ValueError as exc:
+        warn(f"Entrelacement non corrigé : {exc}")
+        return False
+    except OSError as exc:
+        warn(f"Entrelacement non corrigé : écriture du réassemblage impossible ({exc}).")
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)

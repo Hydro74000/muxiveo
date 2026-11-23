@@ -25,6 +25,10 @@ _CONTENT_ENCRYPTION_ID = bytes.fromhex("5035")
 _INFO_DURATION_ID = bytes.fromhex("4489")
 
 
+#: Enfants de BlockGroup représentés par :class:`MatroskaBlock` (Block, ReferenceBlock,
+#: BlockDuration, DiscardPadding, CodecState, BlockAdditions ; Void et CRC-32 neutres).
+_REPRESENTED_GROUP_IDS = frozenset({0xA1, 0xFB, 0x9B, 0x75A2, 0xA4, 0x75A1, 0xEC, 0xBF})
+
 #: Lecture positionnelle sans position de fichier partagée (POSIX) ; sinon poignée dédiée au fil.
 _PREAD = getattr(os, "pread", None)
 
@@ -1120,6 +1124,7 @@ class MatroskaReader:
         first_lace_only: bool = False,
         raw_offset: int = 0,
         raw_end: int | None = None,
+        unrepresented_group_elements: bool = False,
     ) -> Iterator["MatroskaBlock"]:
         end = len(raw) if raw_end is None else raw_end
         if isinstance(raw, _WindowedInput):
@@ -1159,6 +1164,7 @@ class MatroskaReader:
                 encoded_frames_payload=encoded_frames_payload,
                 is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
                 payload_bytes=len(frame),
+                unrepresented_group_elements=unrepresented_group_elements,
             )
 
     @classmethod
@@ -1323,6 +1329,7 @@ class MatroskaReader:
                     values: dict[int, list[bytes]] = {}
                     for part_id, start, end in parts:
                         values.setdefault(part_id, []).append(data[start:end])
+                    unrepresented = any(part_id not in _REPRESENTED_GROUP_IDS for part_id in values)
                     references = tuple(int.from_bytes(item, "big", signed=True) for item in values.get(0xFB, []))
                     duration_ticks = int.from_bytes((values.get(0x9B) or [b""])[0], "big")
                     yield from self._decode_block(
@@ -1336,6 +1343,7 @@ class MatroskaReader:
                         discard_padding_ns=int.from_bytes((values.get(0x75A2) or [b""])[0], "big", signed=True),
                         codec_state=(values.get(0xA4) or [b""])[0],
                         block_additions=(values.get(0x75A1) or [b""])[0],
+                        unrepresented_group_elements=unrepresented,
                     )
 
     def _blocks_stream(
@@ -1606,6 +1614,10 @@ class MatroskaReader:
         blocks = values.get(cls.BLOCK_ID)
         if not blocks:
             raise ValueError("BlockGroup sans Block")
+        unrepresented = any(
+            int.from_bytes(child_id, "big") not in _REPRESENTED_GROUP_IDS
+            for child_id in values if child_id != cls.BLOCK_ID
+        )
         references = tuple(int.from_bytes(item, "big", signed=True)
                            for item in values.get(cls.REFERENCE_BLOCK_ID, []))
         duration_ticks = int.from_bytes((values.get(cls.BLOCK_DURATION_ID) or [b""])[0], "big")
@@ -1621,6 +1633,7 @@ class MatroskaReader:
             ),
             codec_state=(values.get(cls.CODEC_STATE_ID) or [b""])[0],
             block_additions=(values.get(cls.BLOCK_ADDITIONS_ID) or [b""])[0],
+            unrepresented_group_elements=unrepresented,
         )
 
     def blocks_at(self, positions: Iterable[tuple[int, int]]) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
@@ -2014,6 +2027,9 @@ class MatroskaBlock:
     # SimpleBlock: bit keyframe. BlockGroup: absence de ReferenceBlock.
     is_keyframe: bool | None = None
     payload_bytes: int = 0
+    #: BlockGroup portant un élément non représenté ici (ReferencePriority,
+    #: ReferenceVirtual, Slices…) : une copie fidèle doit le refuser.
+    unrepresented_group_elements: bool = False
 
 
 @dataclass(frozen=True)

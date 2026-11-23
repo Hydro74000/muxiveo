@@ -94,6 +94,8 @@ class MatroskaMuxPlan:
     #: Compteurs calculés pendant l'écriture, puis Tags indexés en fin de
     #: Segment. Évite une première lecture exhaustive des sources.
     regenerate_statistics: bool = False
+    #: Enfants bruts d'Info recopiés après les champs gérés (DateUTC… d'une copie fidèle).
+    info_passthrough: tuple[bytes, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.tracks:
