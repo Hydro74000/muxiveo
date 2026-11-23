@@ -112,6 +112,7 @@ from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
 from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import MatroskaWriter
 from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
+from core.matroska.validation import interleave_warnings, mux_track_labels
 
 # Outils dont la barre de progression XX% n'est émise qu'en TTY.
 _PTY_PROGRESS_TOOLS: frozenset[str] = frozenset({"dovi_tool", "hdr10plus_tool"})
@@ -2244,6 +2245,10 @@ class MergeDoviWorkflow(QObject):
                 override=self._validation_override, cancelled=lambda: self._cancelled,
                 warn=lambda msg: self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {msg}"),
             )
+            for message in interleave_warnings(
+                packet_validation.interleave, track_labels=mux_track_labels(mux_plan.tracks),
+            ):
+                self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {message}")
 
         MatroskaWriter().write(
             mux_plan,

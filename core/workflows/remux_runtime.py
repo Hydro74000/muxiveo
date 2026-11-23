@@ -56,6 +56,7 @@ from core.workflows.remux_timeline_sync import (
     SyncPreparedInput,
     TimelineSyncFallbackHelper,
 )
+from core.workflows.common.matroska_finalize import ffmpeg_output_interleave_warnings
 
 
 @dataclass(frozen=True)
@@ -461,6 +462,11 @@ class RemuxRuntimeRunner:
                 )
                 if signals._cancel_event.is_set():
                     raise TaskCancelledError()
+                for message in ffmpeg_output_interleave_warnings(
+                    candidate,
+                    packet_validation if isinstance(packet_validation, MatroskaPacketValidation) else None,
+                ):
+                    cb.log("WARN", message)
                 publish_candidate(candidate, run_config.output)
                 # Un échec NFO après commit ne transforme plus un média valide
                 # en workflow échoué.

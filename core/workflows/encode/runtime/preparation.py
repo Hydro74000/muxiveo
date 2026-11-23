@@ -16,6 +16,7 @@ from core.workflows.encode.hdr10plus_output import generates_hdr10plus
 from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.common.metadata import duplicate_default_track_warnings, output_track_label
 
 
 @dataclass(frozen=True)
@@ -319,6 +320,7 @@ class EncodePreparationRunner:
                 else "Routage du workflow (encode vidéo interpolé puis assemblage)",
             )
             plan = cb.build_encode_plan(prepared_config)
+            log_default_flag_warnings(cb.log, plan)
             if prep_signals is not None:
                 cb.bind_output_hooks(
                     prep_signals,
@@ -355,6 +357,7 @@ class EncodePreparationRunner:
             # l'assembleur natif matérialise l'audio et écrit la sortie.
             cb.log_step(4, "Routage du workflow (encode découpé puis assemblage natif)")
             plan = cb.build_encode_plan(prepared_config)
+            log_default_flag_warnings(cb.log, plan)
             if prep_signals is not None:
                 cb.bind_output_hooks(
                     prep_signals,
@@ -405,6 +408,7 @@ class EncodePreparationRunner:
             )
 
         plan = cb.build_encode_plan(prepared_config)
+        log_default_flag_warnings(cb.log, plan)
         signals = (
             cb.run_with_metadata_inject(
                 prepared_config,
@@ -429,3 +433,16 @@ class EncodePreparationRunner:
                 include_nfo=native_mux and prepared_config.write_nfo,
             )
         return signals
+
+
+def log_default_flag_warnings(log: Callable[[str, str], None], plan: EncodePlan) -> None:
+    """WARN si plusieurs pistes d'un même type sont marquées par défaut (flags inchangés)."""
+    for message in duplicate_default_track_warnings(
+        (
+            item.track_type,
+            bool(item.flags is not None and item.flags.default),
+            output_track_label(position, item.language, item.name),
+        )
+        for position, item in enumerate(plan.track_metadata, start=1)
+    ):
+        log("WARN", message)

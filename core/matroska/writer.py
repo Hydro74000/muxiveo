@@ -38,7 +38,7 @@ from .native_muxer import (
 )
 from .reader import read_element, _split_lace_sizes
 from .reader import MatroskaAttachment
-from .validation import MatroskaPacketValidation
+from .validation import InterleaveTracker, MatroskaPacketValidation
 from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 
 
@@ -680,6 +680,8 @@ class MatroskaWriter:
                     32767 * plan.timestamp_scale_ns,
                 )
                 packet_iter = iter(packets)
+                # Entrelacement mesuré dans l'ordre d'écriture (avertissement, jamais bloquant).
+                interleave = InterleaveTracker()
                 _notify("clusters", fh.tell())
                 pending = next(packet_iter, None)
                 while pending is not None:
@@ -717,6 +719,9 @@ class MatroskaWriter:
                         payload_parts.extend(parts)
                         packet_sizes.append(sum(map(len, parts)))
                     cluster_offset = fh.tell() - payload_start
+                    interleave.cluster(cluster_time * plan.timestamp_scale_ns)
+                    for packet in group:
+                        interleave.packet(packet.output_track_number, _timestamp_ns(packet))
                     fh.write(CLUSTER_ID + encode_vint_size_minimal(len(timestamp_element) + sum(packet_sizes)))
                     fh.write(b"".join(payload_parts))
                     # CueRelativePosition (RFC 9559) : relatif au premier
@@ -825,6 +830,7 @@ class MatroskaWriter:
                         track_numbers=frozenset(packet_counts),
                         max_packet_timestamp_ns=validation_max_packet_timestamp_ns,
                         last_delta_by_track=dict(last_delta_by_track),
+                        interleave=interleave.report(),
                     ),
                 )
             _check_cancel("commit")

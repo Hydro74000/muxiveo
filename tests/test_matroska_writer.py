@@ -112,11 +112,12 @@ def test_writer_validation_reuses_written_packet_summary(tmp_path: Path, monkeyp
 
     MatroskaWriter().write(plan, external_validator=validate_without_block_scan)
 
-    assert received == [MatroskaPacketValidation(
-        track_numbers=frozenset({1, 2}),
-        max_packet_timestamp_ns=25_000_000,
-        last_delta_by_track={},
-    )]
+    assert len(received) == 1
+    assert received[0].track_numbers == frozenset({1, 2})
+    assert received[0].max_packet_timestamp_ns == 25_000_000
+    assert received[0].last_delta_by_track == {}
+    # Entrelacement mesuré pendant l'écriture : aucun retard.
+    assert received[0].interleave is not None and not received[0].interleave.lagged_packets
 
 
 def test_streaming_packets_match_tuple_output_and_patch_duration(tmp_path: Path) -> None:

@@ -62,6 +62,7 @@ from core.workflows.remux_runtime import (
     RemuxRuntimeRunner,
     RemuxRuntimeRunnerCallbacks,
 )
+from core.workflows.common.metadata import duplicate_default_track_warnings, output_track_label
 
 def write_mediainfo_nfo(
     output_path: Path,
@@ -326,6 +327,15 @@ class RemuxWorkflow(QObject):
         errors = self.validate(config, plan=plan)
         if errors:
             raise RemuxValidationError(errors)
+        for message in duplicate_default_track_warnings(
+            (
+                item.track.track_type,
+                bool(item.track.flag_default),
+                output_track_label(position, item.track.language, item.track.title),
+            )
+            for position, item in enumerate(plan.mapped_tracks, start=1)
+        ):
+            self.log_message.emit("WARN", message)
         if plan.fallback:
             self.log_message.emit(
                 "WARN",

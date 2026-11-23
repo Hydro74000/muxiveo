@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from core.lang_tags import Rfc5646LanguageTags as LangTags
 
@@ -112,3 +112,33 @@ def matroska_video_tag_args(video_codecs: list[str]) -> list[str]:
         if tag:
             args.extend([f"-tag:v:{out_index}", tag])
     return args
+
+
+_DEFAULT_TRACK_KINDS = {"video": "vidéo", "audio": "audio", "subtitle": "sous-titres"}
+
+
+def duplicate_default_track_warnings(tracks: Iterable[tuple[str, bool, str]]) -> list[str]:
+    """Avertissement par type de piste ayant plusieurs pistes marquées par défaut.
+
+    ``tracks`` : ``(type, défaut, libellé)`` de chaque piste de sortie, dans
+    l'ordre. Les flags ne sont jamais modifiés : le lecteur choisit parmi elles
+    selon ses préférences de langue, sinon la première.
+    """
+    defaults: dict[str, list[str]] = {}
+    for track_type, is_default, label in tracks:
+        if is_default:
+            defaults.setdefault(track_type, []).append(label)
+    return [
+        f"Plusieurs pistes {_DEFAULT_TRACK_KINDS.get(kind, kind)} marquées par défaut : {', '.join(labels)}. "
+        "Le lecteur choisit selon ses préférences de langue, sinon la première."
+        for kind, labels in defaults.items()
+        if len(labels) > 1
+    ]
+
+
+def output_track_label(position: int, language: str | None, name: str | None) -> str:
+    """Libellé court d'une piste de sortie (position, langue, nom) pour les messages."""
+    details = " ".join(part for part in ((language or "").strip(),) if part and part != "und")
+    if name:
+        details = f"{details} « {name} »".strip()
+    return f"#{position}" + (f" ({details})" if details else "")

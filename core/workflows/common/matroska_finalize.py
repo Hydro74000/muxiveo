@@ -25,7 +25,13 @@ from core.matroska.editors.track_flags import (
     MatroskaTrackEnabledPatchResult,
 )
 from core.matroska.reader import MatroskaReader
-from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
+from core.matroska.validation import (
+    MatroskaPacketValidation,
+    file_track_labels,
+    interleave_warnings,
+    scan_interleave,
+    validate_matroska_output,
+)
 from core.output_commit import OutputCommitError, candidate_pattern, publish_candidate, reserve_candidate
 from core.runner import TaskCancelledError, TaskSignals
 from core.workflows.common.validation_override import ValidationOverride, validate_final_output
@@ -286,6 +292,23 @@ class MatroskaTrackStatisticsPostAction:
         return result
 
 
+def ffmpeg_output_interleave_warnings(
+    candidate: Path, packet_validation: MatroskaPacketValidation | None,
+) -> list[str]:
+    """Entrelacement d'une sortie écrite par FFmpeg (avertissements, jamais bloquants).
+
+    Mesure reprise du parcours des statistiques quand il a eu lieu, sinon
+    relecture des en-têtes de blocs (sans payload).
+    """
+    report = packet_validation.interleave if packet_validation is not None else None
+    if report is None:
+        try:
+            report = scan_interleave(candidate)
+        except (OSError, ValueError):
+            return []
+    return interleave_warnings(report, track_labels=file_track_labels(candidate))
+
+
 @dataclass
 class MatroskaOutputTransaction:
     output: Path
@@ -379,6 +402,9 @@ class MatroskaOutputTransaction:
                 warn=self.warn,
             )
             self._check_cancelled(signals)
+            if self.warn is not None:
+                for message in ffmpeg_output_interleave_warnings(candidate, packet_validation):
+                    self.warn(message)
             publish_candidate(candidate, self.output)
             if self.write_nfo is not None:
                 try:
