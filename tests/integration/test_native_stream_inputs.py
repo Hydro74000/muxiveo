@@ -1,0 +1,171 @@
+"""Producteurs FFmpeg sur pipes : flux identique au fichier, échecs expliqués, annulation, arrêt volontaire."""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from core.matroska import ebml
+from core.matroska.ids import CODEC_ID_ID, TRACK_NUMBER_ID, TRACK_TYPE_ID, TRACK_UID_ID
+from core.matroska.mux_plan import MatroskaMuxPacket, MatroskaMuxPlan, MatroskaMuxTrack
+from core.matroska.reader import MatroskaBlock, MatroskaReader, MatroskaTrack
+from core.matroska.writer import MatroskaWriter
+from core.runner import TaskCancelledError
+from core.workflows.common.native_stream_inputs import (
+    StreamInputs,
+    StreamProducer,
+    StreamTrackSpec,
+    producer_command,
+)
+
+from ._synth import make_av_container, make_mp4_with_mov_text
+
+_MS = 1_000_000
+_needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg requis")
+
+
+def _summary(blocks) -> list[tuple]:
+    return [(b.timestamp_ns, b.duration_ns, b.payload) for b in blocks]
+
+
+def _stream_file(path: Path) -> Path:
+    """MKV d'une piste audio, écrit par le writer natif (source des producteurs simulés)."""
+    raw = b"".join((
+        ebml.uint_element(TRACK_NUMBER_ID, 1), ebml.uint_element(TRACK_UID_ID, 9),
+        ebml.uint_element(TRACK_TYPE_ID, 2), ebml.ascii_element(CODEC_ID_ID, "A_AC3"),
+    ))
+    track = MatroskaTrack(1, 9, 2, "A_AC3", b"", "", "und", "", raw)
+    packets = tuple(MatroskaMuxPacket(1, MatroskaBlock(1, ms, 0x80, b"x" * 3000, timestamp_ns=ms * _MS), i)
+                    for i, ms in enumerate(range(0, 60_000, 32)))
+    MatroskaWriter().write(MatroskaMuxPlan(path, (MatroskaMuxTrack(Path("a.mkv"), track, 1, 9),), packets))
+    return path
+
+
+def _replay(path: Path, *, limit: int | None = None, code: int = 0, delay: float = 0.0, chunk_delay: float = 0.0,
+            hang: float = 0.0) -> list[str]:
+    """Producteur simulé : rejoue un fichier sur stdout (coupé, lent, silencieux, en échec)."""
+    script = (
+        "import sys, time\n"
+        f"data = open({str(path)!r}, 'rb').read()[:{limit!r}]\n"
+        f"time.sleep({delay})\n"
+        "for start in range(0, len(data), 65536):\n"
+        "    sys.stdout.buffer.write(data[start:start + 65536]); sys.stdout.buffer.flush()\n"
+        f"    time.sleep({chunk_delay})\n"
+        f"time.sleep({hang})\n"
+        f"sys.stderr.write('panne simulée\\n'); sys.exit({code})\n"
+    )
+    return [sys.executable, "-c", script]
+
+
+def _first_cluster_end(path: Path) -> int:
+    cluster = next(e for e in MatroskaReader(path).top_level() if e.element_id == bytes.fromhex("1f43b675"))
+    assert cluster.end is not None
+    return cluster.end
+
+
+def test_producer_command_shape() -> None:
+    video = producer_command("ffmpeg", StreamTrackSpec(Path("in.mp4"), 0, "video", "hevc", carry_context=True))
+    assert video[video.index("-map") + 1] == "0:0"
+    assert video[video.index("-avoid_negative_ts") + 1] == "disabled"
+    assert video[video.index("-map_metadata") + 1] == "0"
+    assert video[-3:] == ["-f", "matroska", "pipe:1"]
+    assert "-tag:v:0" in video
+    subtitle = producer_command("ffmpeg", StreamTrackSpec(Path("in.mp4"), 3, "subtitle", "mov_text"))
+    assert subtitle[subtitle.index("-c:s:0") + 1] == "srt"
+    assert subtitle[subtitle.index("-map_chapters") + 1] == "-1"
+
+
+@_needs_ffmpeg
+@pytest.mark.parametrize("stream_index", [0, 1])
+def test_stream_equals_file_copy(tmp_path: Path, stream_index: int) -> None:
+    source = tmp_path / "source.mp4"
+    make_av_container(source, duration=3.0)
+    spec = StreamTrackSpec(source, stream_index, "video" if stream_index == 0 else "audio", "h264")
+    reference = tmp_path / "reference.mkv"
+    command = producer_command("ffmpeg", spec)
+    subprocess.run([*command[:-1], str(reference)], check=True)
+    with StreamInputs("ffmpeg", tmp_path) as inputs:
+        reader = inputs.open(spec)
+        streamed = _summary(reader.blocks(first_lace_only=True))
+    assert streamed == _summary(MatroskaReader(reference).blocks(first_lace_only=True))
+
+
+@_needs_ffmpeg
+def test_mov_text_converted_and_context_carried(tmp_path: Path) -> None:
+    source = tmp_path / "subs.mp4"
+    make_mp4_with_mov_text(source)
+    with StreamInputs("ffmpeg", tmp_path) as inputs:
+        reader = inputs.open(StreamTrackSpec(source, 2, "subtitle", "mov_text", carry_context=True))
+        assert reader.tracks()[0].codec_id == "S_TEXT/UTF8"
+        assert list(reader.blocks())
+
+
+def test_slow_and_silent_producer_gives_the_same_blocks(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    producer = StreamProducer(_replay(source, delay=0.3, chunk_delay=0.01), tmp_path / "h.mkv", label="lent")
+    assert _summary(producer.reader.blocks()) == _summary(MatroskaReader(source).blocks())
+    assert producer.done
+
+
+def test_failure_at_a_clean_boundary_reports_exit_code(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    producer = StreamProducer(_replay(source, limit=_first_cluster_end(source), code=3), tmp_path / "h.mkv",
+                              label="piste test")
+    with pytest.raises(RuntimeError, match=r"piste test : FFmpeg a échoué \(3\).*panne simulée"):
+        list(producer.reader.blocks())
+
+
+def test_truncated_stream_reports_producer_failure(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    producer = StreamProducer(_replay(source, limit=_first_cluster_end(source) + 1000, code=1), tmp_path / "h.mkv",
+                              label="piste test")
+    with pytest.raises(RuntimeError, match=r"FFmpeg a échoué \(1\)"):
+        list(producer.reader.blocks())
+
+
+def test_cancellation_kills_producer_and_raises_cancelled(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    cancelled = threading.Event()
+    registered: list[subprocess.Popen] = []
+    producer = StreamProducer(
+        _replay(source, limit=_first_cluster_end(source), hang=30), tmp_path / "h.mkv", label="bloqué",
+        cancelled=cancelled.is_set, register=registered.append, unregister=registered.remove,
+    )
+    process = registered[0]
+    blocks = producer.reader.blocks()
+    next(blocks)
+    # Annulation comme TaskSignals.cancel : processus enregistrés tués, puis lecture interrompue.
+    cancelled.set()
+    threading.Timer(0.2, lambda: process.kill()).start()
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        list(blocks)
+    assert time.monotonic() - started < 10
+    assert process.poll() is not None
+    assert registered == []
+
+
+def test_header_only_producer_is_stopped_on_purpose(tmp_path: Path) -> None:
+    source = _stream_file(tmp_path / "src.mkv")
+    logs: list[str] = []
+    inputs = StreamInputs(sys.executable, tmp_path, log=lambda _level, message: logs.append(message))
+    # Producteur simulé à la place de FFmpeg : seule la mécanique d'arrêt est testée ici.
+    command = _replay(source, hang=30)
+    from core.workflows.common import native_stream_inputs as module
+
+    original = module.producer_command
+    module.producer_command = lambda _ffmpeg, _spec: command  # type: ignore[assignment]
+    try:
+        reader = inputs.open(StreamTrackSpec(source, 0, "audio"), header_only=True)
+    finally:
+        module.producer_command = original  # type: ignore[assignment]
+    assert reader.tracks()[0].codec_id == "A_AC3"
+    assert inputs._producers[0].stopped
+    assert inputs._producers[0]._process.poll() is not None
+    assert any("arrêté volontairement" in message for message in logs)
+    inputs.close()

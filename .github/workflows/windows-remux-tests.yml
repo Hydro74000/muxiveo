@@ -7,6 +7,9 @@ on:
       - "core/workflows/remux.py"
       - "core/workflows/remux_models.py"
       - "core/workflows/remux_timeline_sync.py"
+      - "core/workflows/common/native_stream_inputs.py"
+      - "core/matroska/stream_source.py"
+      - "tests/integration/test_native_stream_inputs.py"
       - "tests/test_remux_workflow.py"
       - "tests/test_remux_timeline_sync.py"
       - "scripts/windows_pytest_bootstrap.py"
@@ -23,6 +26,9 @@ on:
       - "core/workflows/remux.py"
       - "core/workflows/remux_models.py"
       - "core/workflows/remux_timeline_sync.py"
+      - "core/workflows/common/native_stream_inputs.py"
+      - "core/matroska/stream_source.py"
+      - "tests/integration/test_native_stream_inputs.py"
       - "tests/test_remux_workflow.py"
       - "tests/test_remux_timeline_sync.py"
       - "scripts/windows_pytest_bootstrap.py"
@@ -58,4 +64,4 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python scripts/windows_pytest_bootstrap.py tests/test_remux_workflow.py tests/test_remux_timeline_sync.py
+          python scripts/windows_pytest_bootstrap.py tests/test_remux_workflow.py tests/test_remux_timeline_sync.py tests/integration/test_native_stream_inputs.py
