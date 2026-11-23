@@ -464,20 +464,32 @@ def test_preparation_error_releases_the_reserved_temporary(tmp_path: Path, monke
 def test_writer_cleanup_failure_never_masks_its_cancellation(tmp_path: Path, monkeypatch) -> None:
     from core.matroska.writer import MatroskaWriteCancelled
 
+    import core.matroska.writer as writer_module
+
     real_unlink = Path.unlink
+    attempts: list[str] = []
 
     def locked_partial(self, *args, **kwargs):
         if self.name.endswith(".partial"):
+            attempts.append(self.name)
             raise PermissionError(13, "verrouillé")
         return real_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", locked_partial)
+    monkeypatch.setattr(writer_module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
     tracks = (MatroskaMuxTrack(Path("a.mkv"), _track(1, 11), 1, 101),)
+    calls = {"count": 0}
+
+    def after_some_clusters() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 5  # le .partial existe et contient déjà des Clusters
+
     with pytest.raises(MatroskaWriteCancelled):
         MatroskaWriter().write(
             MatroskaMuxPlan(tmp_path / "out.mkv", tracks, iter(_packets(1, 0, 30_000, 1))),
-            cancel_cb=lambda: True,
+            cancel_cb=after_some_clusters,
         )
+    assert attempts, "la suppression du .partial doit avoir été tentée"
 
 
 def test_every_encode_pipeline_finalizes_through_the_repairing_transaction() -> None:
