@@ -1522,29 +1522,38 @@ class MatroskaReader:
                     continue
                 if element.element_id != self.BLOCK_GROUP_ID:
                     raise ValueError("Cue vers un élément qui n'est pas un bloc")
-                values: dict[bytes, list[bytes]] = {}
-                for child_id, child in payload_children(data):
-                    values.setdefault(child_id, []).append(child)
-                blocks = values.get(self.BLOCK_ID)
-                if not blocks:
-                    raise ValueError("BlockGroup indexé sans Block")
-                block = blocks[0]
-                references = tuple(int.from_bytes(item, "big", signed=True)
-                                   for item in values.get(self.REFERENCE_BLOCK_ID, []))
-                duration_ticks = int.from_bytes((values.get(self.BLOCK_DURATION_ID) or [b""])[0], "big")
-                yield from self._decode_block(
-                    block, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
-                    duration_ms=round(duration_ticks * scale_ns / 1_000_000) if duration_ticks else None,
-                    duration_ns=duration_ticks * scale_ns if duration_ticks else None,
-                    references=tuple(round(value * scale_ns / 1_000_000) for value in references),
-                    references_ns=tuple(value * scale_ns for value in references),
-                    is_keyframe=not references,
-                    discard_padding_ns=int.from_bytes(
-                        (values.get(self.DISCARD_PADDING_ID) or [b""])[0], "big", signed=True,
-                    ),
-                    codec_state=(values.get(self.CODEC_STATE_ID) or [b""])[0],
-                    block_additions=(values.get(self.BLOCK_ADDITIONS_ID) or [b""])[0],
+                yield from self.decode_block_group(
+                    data, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
                 )
+
+    @classmethod
+    def decode_block_group(
+        cls, data: bytes, cluster_timestamp: int, *, timestamp_scale_ns: int, first_lace_only: bool = False,
+    ) -> Iterator["MatroskaBlock"]:
+        """Blocs d'un BlockGroup (payload complet) : Block, durée, références et compléments."""
+        scale_ns = timestamp_scale_ns
+        values: dict[bytes, list[bytes]] = {}
+        for child_id, child in payload_children(data):
+            values.setdefault(child_id, []).append(child)
+        blocks = values.get(cls.BLOCK_ID)
+        if not blocks:
+            raise ValueError("BlockGroup sans Block")
+        references = tuple(int.from_bytes(item, "big", signed=True)
+                           for item in values.get(cls.REFERENCE_BLOCK_ID, []))
+        duration_ticks = int.from_bytes((values.get(cls.BLOCK_DURATION_ID) or [b""])[0], "big")
+        yield from cls._decode_block(
+            blocks[0], cluster_timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+            duration_ms=round(duration_ticks * scale_ns / 1_000_000) if duration_ticks else None,
+            duration_ns=duration_ticks * scale_ns if duration_ticks else None,
+            references=tuple(round(value * scale_ns / 1_000_000) for value in references),
+            references_ns=tuple(value * scale_ns for value in references),
+            is_keyframe=not references,
+            discard_padding_ns=int.from_bytes(
+                (values.get(cls.DISCARD_PADDING_ID) or [b""])[0], "big", signed=True,
+            ),
+            codec_state=(values.get(cls.CODEC_STATE_ID) or [b""])[0],
+            block_additions=(values.get(cls.BLOCK_ADDITIONS_ID) or [b""])[0],
+        )
 
     def blocks_at(self, positions: Iterable[tuple[int, int]]) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
         """Blocs désignés par des positions de Cues, dans l'ordre du fichier.
