@@ -16,9 +16,11 @@ from __future__ import annotations
 import hashlib
 import heapq
 import mimetypes
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Protocol
 
 from core.version import APP_VERSION_LABEL, WRITING_APPLICATION_TAG
 
@@ -90,6 +92,272 @@ def quantize_block(block: MatroskaBlock, scale_ns: int) -> MatroskaBlock:
         changes["references_ns"] = tuple(quantized_refs)
         changes["references"] = tuple(round(value / 1_000_000) for value in quantized_refs)
     return replace(block, **changes)  # type: ignore[arg-type]
+
+
+def _append_uid(mapping: dict[int, list[int]], source_uid: int, output_uid: int) -> None:
+    targets = mapping.setdefault(source_uid, [])
+    if output_uid not in targets:
+        targets.append(output_uid)
+
+
+def _packet_timestamp_ns(packet: MatroskaMuxPacket) -> int:
+    block = packet.block
+    return block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
+
+
+#: File d'attente d'une lecture partagée (octets de payload) : au-delà, la route
+#: la plus chargée passe sur sa propre lecture. Mémoire bornée quelle que soit la
+#: disposition de la source ; une source bien entrelacée reste lue une seule fois.
+SHARED_READ_QUEUE_BYTES = 64 * 1024 * 1024
+
+
+class _PacketSource(Protocol):
+    def next_packet(self) -> MatroskaMuxPacket | None: ...
+
+    def close(self) -> None: ...
+
+
+class _IteratorSource:
+    def __init__(self, stream: Iterator[MatroskaMuxPacket]) -> None:
+        self._stream = stream
+
+    def next_packet(self) -> MatroskaMuxPacket | None:
+        return next(self._stream, None)
+
+    def close(self) -> None:
+        close = getattr(self._stream, "close", None)
+        if callable(close):
+            close()
+
+
+class _Route:
+    """Piste source → piste de sortie (décalage compris), avec sa file d'attente."""
+
+    def __init__(self, track_number: int, output_index: int, offset_ns: int, scale_ns: int) -> None:
+        self.track_number = track_number
+        self.output_index = output_index
+        self.offset_ns = offset_ns
+        self.scale_ns = scale_ns
+        # (rang du bloc dans la piste source, paquet ou None si écarté avant zéro, octets)
+        self.queue: deque[tuple[int, MatroskaMuxPacket | None, int]] = deque()
+        self.queued_bytes = 0
+        self.own: Iterator[MatroskaMuxPacket] | None = None
+
+    def packet(self, sequence: int, block: MatroskaBlock) -> MatroskaMuxPacket | None:
+        block = quantize_block(block, self.scale_ns)
+        source_timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
+        shifted_timestamp_ns = source_timestamp_ns + self.offset_ns
+        if shifted_timestamp_ns < 0:
+            return None
+        if self.offset_ns:
+            block = replace(
+                block, timestamp_ms=round(shifted_timestamp_ns / 1_000_000), timestamp_ns=shifted_timestamp_ns,
+            )
+        return MatroskaMuxPacket(self.output_index, block, sequence)
+
+
+class _SharedArtifactRead:
+    """Lecture séquentielle unique d'un artefact, distribuée aux files de ses routes.
+
+    Pistes clairsemées (sous-titres) : leur prochain bloc peut se trouver des
+    minutes plus loin dans le fichier ; l'attendre ferait déborder les files des
+    autres pistes. Quand les Cues indexent chacun de leurs blocs (nombre égal aux
+    statistiques de la piste), ils sont lus directement aux positions indexées,
+    et la lecture partagée vérifie ce compte jusqu'à la fin du fichier.
+    """
+
+    def __init__(
+        self, reader: MatroskaReader, routes: list[_Route], budget: int | None = None,
+        *, sparse_tracks: dict[int, int] | None = None,
+    ) -> None:
+        self._reader = reader
+        self._routes = routes
+        self._budget = SHARED_READ_QUEUE_BYTES if budget is None else budget
+        self._by_track: dict[int, list[_Route]] = {}
+        for route in routes:
+            self._by_track.setdefault(route.track_number, []).append(route)
+        self._dispatched: dict[int, int] = dict.fromkeys(self._by_track, 0)
+        self._stream: Iterator[MatroskaBlock] | None = None
+        self._queued = 0
+        # Piste clairsemée → UID (statistiques) ; lecture par les Cues décidée au premier paquet.
+        self._sparse_tracks = dict(sparse_tracks or {})
+        self._prepared = False
+        self._indexed_counts: dict[int, int] = {}
+
+    def _prepare(self) -> None:
+        self._prepared = True
+        sparse = {number: uid for number, uid in self._sparse_tracks.items() if number in self._by_track}
+        # Vérification garantie : au moins une piste reste lue par la passe partagée.
+        if not sparse or set(sparse) == set(self._by_track):
+            return
+        positions = self._reader.cue_block_positions(set(sparse))
+        if positions is None:
+            return
+        frame_counts = _statistics_frame_counts(self._reader)
+        for number, uid in sparse.items():
+            indexed = positions.get(number) or set()
+            if not indexed or frame_counts.get(uid) != len(indexed):
+                continue
+            blocks = list(self._reader.indexed_blocks(indexed, first_lace_only=True))
+            self._indexed_counts[number] = len(blocks)
+            for route in self._by_track[number]:
+                route.own = _indexed_route_stream(route, blocks)
+
+    def next_packet(self, route: _Route) -> MatroskaMuxPacket | None:
+        if not self._prepared:
+            self._prepare()
+        while True:
+            if route.own is not None:
+                return next(route.own, None)
+            if route.queue:
+                _sequence, packet, size = route.queue.popleft()
+                route.queued_bytes -= size
+                self._queued -= size
+                if packet is not None:
+                    return packet
+                continue
+            if not self._pull():
+                return None
+
+    def _pull(self) -> bool:
+        if self._stream is None:
+            self._stream = self._reader.blocks(track_numbers=set(self._by_track), first_lace_only=True)
+        block = next(self._stream, None)
+        if block is None:
+            for number, count in self._indexed_counts.items():
+                if self._dispatched[number] != count:
+                    raise ValueError(
+                        f"Index Matroska (Cues) incomplet pour la piste #{number} : {count} bloc(s) indexé(s), "
+                        f"{self._dispatched[number]} dans le fichier."
+                    )
+            self._indexed_counts.clear()
+            return False
+        routes = self._by_track.get(block.track_number)
+        if not routes:
+            return True
+        sequence = self._dispatched[block.track_number]
+        self._dispatched[block.track_number] = sequence + 1
+        if block.track_number in self._indexed_counts:
+            return True
+        for route in routes:
+            if route.own is not None:
+                continue
+            packet = route.packet(sequence, block)
+            size = len(packet.block.encoded_frames_payload or packet.block.payload) if packet is not None else 0
+            route.queue.append((sequence, packet, size))
+            route.queued_bytes += size
+            self._queued += size
+        while self._queued > self._budget:
+            loaded = [route for route in self._routes if route.own is None and route.queued_bytes]
+            if not loaded:
+                break
+            self._detach(max(loaded, key=lambda route: route.queued_bytes))
+        return True
+
+    def _detach(self, route: _Route) -> None:
+        """La route lit désormais sa piste elle-même, à partir de son premier bloc non consommé."""
+        start = route.queue[0][0] if route.queue else self._dispatched[route.track_number]
+        self._queued -= route.queued_bytes
+        route.queue.clear()
+        route.queued_bytes = 0
+        route.own = self._own_stream(route, start)
+
+    def _own_stream(self, route: _Route, start: int) -> Iterator[MatroskaMuxPacket]:
+        blocks = self._reader.blocks(track_numbers={route.track_number}, first_lace_only=True)
+        try:
+            for sequence, block in enumerate(blocks):
+                if sequence < start:
+                    continue
+                packet = route.packet(sequence, block)
+                if packet is not None:
+                    yield packet
+        finally:
+            close = getattr(blocks, "close", None)
+            if callable(close):
+                close()
+
+    def close(self) -> None:
+        for route in self._routes:
+            if route.own is not None:
+                close_own = getattr(route.own, "close", None)
+                if callable(close_own):
+                    close_own()
+        close_stream = getattr(self._stream, "close", None)
+        if callable(close_stream):
+            close_stream()
+
+
+def _indexed_route_stream(route: _Route, blocks: list[MatroskaBlock]) -> Iterator[MatroskaMuxPacket]:
+    for sequence, block in enumerate(blocks):
+        packet = route.packet(sequence, block)
+        if packet is not None:
+            yield packet
+
+
+def _statistics_frame_counts(reader: MatroskaReader) -> dict[int, int]:
+    """``NUMBER_OF_FRAMES`` des statistiques de chaque piste (UID → nombre), quand il est lisible."""
+    counts: dict[int, int] = {}
+    for tag in reader.tags():
+        uid = tag.targets.get("63c5")
+        if not uid:
+            continue
+        for name, value in tag.values:
+            if name.upper() == "NUMBER_OF_FRAMES" and value.strip().isdigit():
+                counts[uid] = int(value.strip())
+    return counts
+
+
+class _SharedRouteSource:
+    def __init__(self, shared: _SharedArtifactRead, route: _Route) -> None:
+        self._shared = shared
+        self._route = route
+
+    def next_packet(self) -> MatroskaMuxPacket | None:
+        return self._shared.next_packet(self._route)
+
+    def close(self) -> None:
+        self._shared.close()
+
+
+def merge_packet_sources(sources: Sequence[_PacketSource]) -> Iterator[MatroskaMuxPacket]:
+    """Fusion des routes par timestamp, sans jamais réordonner une route.
+
+    Clé de chaque route = maximum courant de ses timestamps (B-frames comprises) :
+    non décroissante, elle rend la fusion exacte. À clé égale, l'ordre des routes
+    (ordre des pistes de sortie) départage. Chaque source est fermée en fin de
+    fusion, d'erreur ou d'annulation (fichiers et fenêtres mmap libérés).
+    """
+    def generate() -> Iterator[MatroskaMuxPacket]:
+        keys: list[int | None] = [None] * len(sources)
+        heap: list[tuple[int, int, MatroskaMuxPacket]] = []
+
+        def push(index: int) -> None:
+            packet = sources[index].next_packet()
+            if packet is None:
+                return
+            timestamp = _packet_timestamp_ns(packet)
+            previous = keys[index]
+            key = timestamp if previous is None or timestamp > previous else previous
+            keys[index] = key
+            heapq.heappush(heap, (key, index, packet))
+
+        try:
+            for index in range(len(sources)):
+                push(index)
+            while heap:
+                _key, index, packet = heapq.heappop(heap)
+                yield packet
+                push(index)
+        finally:
+            for source in sources:
+                source.close()
+
+    return generate()
+
+
+def merge_route_streams(streams: list[Iterator[MatroskaMuxPacket]]) -> Iterator[MatroskaMuxPacket]:
+    """:func:`merge_packet_sources` sur des flux de paquets déjà par route."""
+    return merge_packet_sources([_IteratorSource(stream) for stream in streams])
 
 
 def canonical_attachment_output_name(path: Path) -> str:
@@ -363,9 +631,10 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
         return origin_tracks[path]
 
     output_tracks: list[MatroskaMuxTrack] = []
-    track_uid_maps: dict[Path, dict[int, int]] = {}
-    # artefact → numéro de piste source → [(piste sortie, offset ms)].
-    packet_routes: dict[Path, dict[int, list[tuple[int, int]]]] = {}
+    # artefact → UID source → UID de sortie (plusieurs pour une piste dupliquée).
+    track_uid_maps: dict[Path, dict[int, list[int]]] = {}
+    # Routes de sortie, dans l'ordre des pistes : (artefact, piste source, piste sortie, offset ms).
+    packet_routes: list[tuple[Path, int, int, int]] = []
     for output_index, track in enumerate(plan.ordered_tracks, start=1):
         artifact_tracks = native_tracks[track.artifact]
         if not 0 <= track.artifact_track_index < len(artifact_tracks):
@@ -392,10 +661,10 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             identity, (origin_track or source_track).uid, output_index,
             uid_language, uid_name, uid_default, uid_forced,
         )
-        track_uid_maps.setdefault(track.artifact, {})[source_track.uid] = uid
+        _append_uid(track_uid_maps.setdefault(track.artifact, {}), source_track.uid, uid)
         if track.origin is not None and origin_track is not None:
             # Tags de la source ciblant la piste remplacée : suivent la sortie.
-            track_uid_maps.setdefault(track.origin[0], {}).setdefault(origin_track.uid, uid)
+            _append_uid(track_uid_maps.setdefault(track.origin[0], {}), origin_track.uid, uid)
 
         if track.language_value is not None:
             legacy_language = matroska_legacy_language(track.language_value)
@@ -430,48 +699,28 @@ def compile_assembly_plan(plan: MatroskaAssemblyPlan) -> MatroskaMuxPlan:
             patch_flags=track.flags is not None,
             remove_closed_captions=track.remove_closed_captions,
         ))
-        offset = int(track.time_shift_ms or 0)
-        packet_routes.setdefault(track.artifact, {}).setdefault(
-            source_track.number, []).append((output_index, offset))
+        packet_routes.append((track.artifact, source_track.number, output_index, int(track.time_shift_ms or 0)))
 
-    def artifact_packet_stream(artifact: Path) -> Iterator[MatroskaMuxPacket]:
-        """Une passe streaming sur les blocks d'un artefact (mémoire bornée)."""
-        routes = packet_routes.get(artifact, {})
-        for source_sequence, block in enumerate(readers[artifact].blocks(
-            track_numbers=set(routes.keys()), first_lace_only=True,
-        )):
-            targets = routes.get(block.track_number)
-            if not targets:
-                continue
-            block = quantize_block(block, timestamp_scale_ns)
-            source_timestamp_ns = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
-            for output_index, offset_ms in targets:
-                shifted_timestamp_ns = source_timestamp_ns + offset_ms * 1_000_000
-                if shifted_timestamp_ns < 0:
-                    continue
-                shifted = block if not offset_ms else block.__class__(**{
-                    **block.__dict__,
-                    "timestamp_ms": round(shifted_timestamp_ns / 1_000_000),
-                    "timestamp_ns": shifted_timestamp_ns,
-                })
-                yield MatroskaMuxPacket(output_index, shifted, source_sequence)
-
-    active_artifacts = [path for path in readers if packet_routes.get(path)]
-    if len(active_artifacts) <= 1:
-        packet_stream: Iterator[MatroskaMuxPacket] = (
-            artifact_packet_stream(active_artifacts[0]) if active_artifacts else iter(())
-        )
-    else:
-        # Ordre interne de chaque artefact préservé ; fusion inter-artefacts
-        # par timestamp décalé (heapq.merge ne réordonne jamais un flux).
-        packet_stream = heapq.merge(
-            *(artifact_packet_stream(path) for path in active_artifacts),
-            key=lambda packet: (
-                packet.block.timestamp_ns
-                if packet.block.timestamp_ns is not None
-                else packet.block.timestamp_ms * 1_000_000
-            ),
-        )
+    # Une route par piste de sortie. Les routes d'un même artefact partagent une
+    # lecture séquentielle unique (une seule passe d'E/S) ; une route dont la file
+    # d'attente dépasse le budget (source mal entrelacée, duplication décalée)
+    # passe sur sa propre lecture. L'ordre de sortie ne dépend jamais de la
+    # disposition des sources.
+    routes_by_artifact: dict[Path, list[_Route]] = {}
+    ordered_routes: list[tuple[Path, _Route]] = []
+    for artifact, track_number, output_index, offset_ms in packet_routes:
+        route = _Route(track_number, output_index, offset_ms * 1_000_000, timestamp_scale_ns)
+        routes_by_artifact.setdefault(artifact, []).append(route)
+        ordered_routes.append((artifact, route))
+    shared_reads = {
+        artifact: _SharedArtifactRead(readers[artifact], routes, sparse_tracks={
+            track.number: track.uid for track in native_tracks[artifact] if track.track_type == 17
+        })
+        for artifact, routes in routes_by_artifact.items()
+    }
+    packet_stream = merge_packet_sources([
+        _SharedRouteSource(shared_reads[artifact], route) for artifact, route in ordered_routes
+    ])
 
     opaque: list[bytes] = []
     attachments: list[MatroskaAttachment] = []

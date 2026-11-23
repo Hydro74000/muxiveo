@@ -1470,6 +1470,82 @@ class MatroskaReader:
                     ))
         return positions
 
+    def indexed_blocks(
+        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False,
+    ) -> Iterator["MatroskaBlock"]:
+        """Blocs complets (horodatage, durée, références) aux positions de Cues, dans l'ordre du fichier.
+
+        Comme :meth:`blocks_at`, seuls l'en-tête du Cluster, son Timestamp et le
+        bloc visé sont lus : quelques lectures par bloc, jamais de parcours des
+        Clusters. Une position qui ne désigne pas un bloc lève ``ValueError``.
+        """
+        segment = self.segment()
+        size = self.path.stat().st_size
+        segment_end = segment.end if segment.end is not None else size
+        scale_ns = self.timestamp_scale_ns()
+        clusters: dict[int, tuple[int, int, int]] = {}
+        with self.path.open("rb", buffering=self._SKIPPING_READ_BUFFER) as fh:
+            for position in sorted(set(positions)):
+                cluster_position, relative = position
+                bounds = clusters.get(cluster_position)
+                if bounds is None:
+                    fh.seek(segment.payload_offset + cluster_position)
+                    cluster = read_element(fh, limit=segment_end)
+                    if cluster is None or cluster.element_id != self.CLUSTER_ID:
+                        raise ValueError("Cue vers un élément qui n'est pas un Cluster")
+                    cluster_end = cluster.end if cluster.end is not None else segment_end
+                    # Timestamp en tête du Cluster, après un éventuel CRC-32 ou Void.
+                    timestamp_element = read_element(fh, limit=cluster_end)
+                    while (
+                        timestamp_element is not None and timestamp_element.size is not None
+                        and timestamp_element.element_id in (b"\xbf", b"\xec")
+                    ):
+                        fh.seek(timestamp_element.payload_offset + timestamp_element.size)
+                        timestamp_element = read_element(fh, limit=cluster_end)
+                    if timestamp_element is None or timestamp_element.element_id != self.TIMESTAMP_ID:
+                        raise ValueError("Cluster sans Timestamp en tête")
+                    timestamp = int.from_bytes(_read_exact(fh, timestamp_element.size or 0), "big")
+                    bounds = (cluster.payload_offset, cluster_end, timestamp)
+                    clusters[cluster_position] = bounds
+                start, end, timestamp = bounds
+                if start + relative >= end:
+                    raise ValueError("Cue hors du Cluster")
+                fh.seek(start + relative)
+                element = read_element(fh, limit=end)
+                if element is None or element.size is None:
+                    raise ValueError("Bloc indexé illisible")
+                data = _read_exact(fh, element.size)
+                if element.element_id == self.SIMPLE_BLOCK_ID:
+                    yield from self._decode_block(
+                        data, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                    )
+                    continue
+                if element.element_id != self.BLOCK_GROUP_ID:
+                    raise ValueError("Cue vers un élément qui n'est pas un bloc")
+                values: dict[bytes, list[bytes]] = {}
+                for child_id, child in payload_children(data):
+                    values.setdefault(child_id, []).append(child)
+                blocks = values.get(self.BLOCK_ID)
+                if not blocks:
+                    raise ValueError("BlockGroup indexé sans Block")
+                block = blocks[0]
+                references = tuple(int.from_bytes(item, "big", signed=True)
+                                   for item in values.get(self.REFERENCE_BLOCK_ID, []))
+                duration_ticks = int.from_bytes((values.get(self.BLOCK_DURATION_ID) or [b""])[0], "big")
+                yield from self._decode_block(
+                    block, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                    duration_ms=round(duration_ticks * scale_ns / 1_000_000) if duration_ticks else None,
+                    duration_ns=duration_ticks * scale_ns if duration_ticks else None,
+                    references=tuple(round(value * scale_ns / 1_000_000) for value in references),
+                    references_ns=tuple(value * scale_ns for value in references),
+                    is_keyframe=not references,
+                    discard_padding_ns=int.from_bytes(
+                        (values.get(self.DISCARD_PADDING_ID) or [b""])[0], "big", signed=True,
+                    ),
+                    codec_state=(values.get(self.CODEC_STATE_ID) or [b""])[0],
+                    block_additions=(values.get(self.BLOCK_ADDITIONS_ID) or [b""])[0],
+                )
+
     def blocks_at(self, positions: Iterable[tuple[int, int]]) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
         """Blocs désignés par des positions de Cues, dans l'ordre du fichier.
 

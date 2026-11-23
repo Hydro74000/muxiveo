@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable
+import itertools
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -100,8 +101,8 @@ def _simple_tag_name(raw_simple_tag: bytes) -> str:
 def rewrite_tag_target_uids(
     raw_tags: bytes,
     *,
-    track_uids: dict[int, int],
-    attachment_uids: dict[int, int],
+    track_uids: Mapping[int, int | Sequence[int]],
+    attachment_uids: Mapping[int, int],
     drop_chapter_targets: bool = False,
     drop_track_statistics: bool = False,
 ) -> bytes:
@@ -110,13 +111,15 @@ def rewrite_tag_target_uids(
     Fresh per-track statistics are generated from packets by the native
     assembler.  When requested, stale technical statistics attached to a
     selected source track are dropped before those fresh values are appended.
+    Une piste source copiée vers plusieurs sorties (``track_uids`` : liste
+    d'UID) voit ses tags dupliqués, un par piste de sortie.
     """
     rebuilt_tags: list[bytes] = []
     for child_id, child_raw in _raw_children(_element_payload(raw_tags)):
         if child_id != TAG_ID:
             rebuilt_tags.append(child_raw)
             continue
-        rebuilt_tag: list[bytes] = []
+        variants: list[list[bytes]] = [[]]
         keep_tag = True
         remapped_track_target = False
         has_tag_value = False
@@ -128,34 +131,41 @@ def rewrite_tag_target_uids(
                     and _simple_tag_name(tag_child_raw).upper() in _TRACK_STATISTICS_TAGS
                 ):
                     continue
-                rebuilt_tag.append(tag_child_raw)
+                for variant in variants:
+                    variant.append(tag_child_raw)
                 has_tag_value = True
                 continue
             if tag_child_id != TARGETS_ID:
-                rebuilt_tag.append(tag_child_raw)
+                for variant in variants:
+                    variant.append(tag_child_raw)
                 has_tag_value = True
                 continue
-            rebuilt_targets: list[bytes] = []
+            choices: list[list[bytes]] = []
             for target_id, target_raw in _raw_children(_element_payload(tag_child_raw)):
                 if target_id in {TAG_CHAPTER_UID_ID, TAG_EDITION_UID_ID} and drop_chapter_targets:
                     keep_tag = False
                     break
                 if target_id not in {TAG_TRACK_UID_ID, TAG_ATTACHMENT_UID_ID}:
-                    rebuilt_targets.append(target_raw)
+                    choices.append([target_raw])
                     continue
                 old_uid = int.from_bytes(_element_payload(target_raw), "big")
-                uid_map = track_uids if target_id == TAG_TRACK_UID_ID else attachment_uids
+                uid_map: Mapping[int, int | Sequence[int]] = (
+                    track_uids if target_id == TAG_TRACK_UID_ID else attachment_uids
+                )
                 if old_uid and old_uid not in uid_map:
                     keep_tag = False
                     break
                 if target_id == TAG_TRACK_UID_ID and old_uid in track_uids:
                     remapped_track_target = True
-                rebuilt_targets.append(uint_element(target_id, uid_map.get(old_uid, old_uid)))
+                mapped = uid_map.get(old_uid, old_uid)
+                new_uids = [mapped] if isinstance(mapped, int) else list(mapped)
+                choices.append([uint_element(target_id, uid) for uid in new_uids])
             if not keep_tag:
                 break
-            rebuilt_tag.append(element(TARGETS_ID, b"".join(rebuilt_targets)))
+            alternatives = [element(TARGETS_ID, b"".join(combo)) for combo in itertools.product(*choices)]
+            variants = [[*variant, alternative] for variant in variants for alternative in alternatives]
         if keep_tag and has_tag_value:
-            rebuilt_tags.append(element(TAG_ID, b"".join(rebuilt_tag)))
+            rebuilt_tags.extend(element(TAG_ID, b"".join(variant)) for variant in variants)
     return element(TAGS_ID, b"".join(rebuilt_tags))
 
 
@@ -826,6 +836,12 @@ class MatroskaWriter:
         except BaseException:
             partial.unlink(missing_ok=True)
             raise
+        finally:
+            # Flux paresseux interrompu (erreur, annulation) : lecteurs, fichiers
+            # et fenêtres mmap des sources fermés tout de suite, pas au ramasse-miettes.
+            close = getattr(packets, "close", None)
+            if callable(close):
+                close()
         return destination
 
 
