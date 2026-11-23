@@ -1437,8 +1437,10 @@ class AppConfig:
                 saved_backend = "auto"
                 self._pending_settings_writes["matroska/mux_backend"] = "auto"
             elif not saved_backend and legacy_saved_backend == "ffmpeg":
+                # Ancienne clé migrée en place : une surcharge [remux] de config.ini
+                # garde sa priorité (une nouvelle clé [matroska] la masquerait).
                 legacy_saved_backend = "auto"
-                self._pending_settings_writes["matroska/mux_backend"] = "auto"
+                self._pending_settings_writes["remux/mux_backend"] = "auto"
             self._pending_settings_writes[_MUX_BACKEND_AUTO_MIGRATION_KEY] = True
         ini_backend = self._ini_lookup("matroska", "mux_backend")
         if ini_backend is not _MISSING:
@@ -1452,9 +1454,15 @@ class AppConfig:
                 raw_mux_backend = str(legacy_ini).lower()
             else:
                 raw_mux_backend = legacy_saved_backend
+        migrated_key = next(
+            (key for key in ("matroska/mux_backend", "remux/mux_backend") if key in self._pending_settings_writes),
+            None,
+        )
+        legacy_ini_backend = self._ini_lookup("remux", "mux_backend")
         if (
-            "matroska/mux_backend" in self._pending_settings_writes
+            migrated_key is not None
             and ini_backend is _MISSING
+            and (migrated_key == "matroska/mux_backend" or legacy_ini_backend in (_MISSING, ""))
             and raw_mux_backend == "auto"
         ):
             self.load_notices.append(

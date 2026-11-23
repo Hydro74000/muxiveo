@@ -365,8 +365,20 @@ class TestMatroskaMuxSetting:
         values: dict[str, object] = {"remux/mux_backend": "ffmpeg"}
         config, _settings = _app_config(tmp_path, settings_values=values)
         assert config.matroska_mux_backend == "auto"
-        config.persist_load_migrations()
-        assert values["matroska/mux_backend"] == "auto"
+        assert len(config.persist_load_migrations()) == 1
+        assert values["remux/mux_backend"] == "auto"
+        assert "matroska/mux_backend" not in values
+
+    @pytest.mark.parametrize("legacy_ini", ["native", "ffmpeg"])
+    def test_legacy_ini_override_survives_the_legacy_migration(self, tmp_path: Path, legacy_ini: str) -> None:
+        """Ancienne clé QSettings migrée en place : la surcharge [remux] de config.ini reste prioritaire."""
+        values: dict[str, object] = {"remux/mux_backend": "ffmpeg"}
+        ini = f"[remux]\nmux_backend = {legacy_ini}\n"
+        config, _settings = _app_config(tmp_path, ini_text=ini, settings_values=values)
+        assert config.matroska_mux_backend == legacy_ini
+        assert config.persist_load_migrations() == []  # rien d'effectif à annoncer
+        again, _settings = _app_config(tmp_path, ini_text=ini, settings_values=values)
+        assert again.matroska_mux_backend == legacy_ini
 
     def test_fresh_profile_sets_the_marker_so_a_later_ffmpeg_choice_holds(self, tmp_path: Path) -> None:
         values: dict[str, object] = {}
