@@ -1416,31 +1416,51 @@ class AppConfig:
         # (config.ini ou QSettings) ; absent ou invalide → auto (avec
         # avertissement pour une valeur invalide).
         self.load_warnings: list[str] = []
-        #: Informations de chargement (migrations), journalisées une fois au démarrage.
+        #: Migrations calculées au chargement, sans écriture : persistées et
+        #: journalisées par :meth:`persist_load_migrations` (démarrage GUI / CLI).
         self.load_notices: list[str] = []
-        raw_mux_backend = self._resolve_text("matroska", "mux_backend", "matroska/mux_backend", "").lower()
-        if not self._settings.value(_MUX_BACKEND_AUTO_MIGRATION_KEY, False):
+        self._pending_settings_writes: dict[str, object] = {}
+
+        def _setting_text(key: str) -> str:
+            value = self._settings.value(key, None)
+            return "" if value in (None, "") else str(value).strip().lower()
+
+        saved_backend = _setting_text("matroska/mux_backend")
+        legacy_saved_backend = _setting_text("remux/mux_backend")
+        if _setting_text(_MUX_BACKEND_AUTO_MIGRATION_KEY) not in {"1", "true", "yes"}:
             # Défaut FFmpeg → Auto (2026-11) : ``save()`` écrivait toujours le
             # backend, une valeur « ffmpeg » enregistrée avant ce marqueur est donc
-            # l'ancien défaut, pas un choix. Migrée une seule fois ; un choix
-            # explicite dans config.ini est respecté, un choix FFmpeg fait après
-            # la migration aussi (marqueur posé).
-            if raw_mux_backend == "ffmpeg" and self._ini_lookup("matroska", "mux_backend") is _MISSING:
-                raw_mux_backend = "auto"
-                self._settings.setValue("matroska/mux_backend", "auto")
-                self.load_notices.append(
-                    "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif "
-                    "pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres."
-                )
-            self._settings.setValue(_MUX_BACKEND_AUTO_MIGRATION_KEY, True)
-        if not raw_mux_backend:
+            # l'ancien défaut, pas un choix. La valeur enregistrée est migrée
+            # quelle que soit la surcharge de config.ini (qui reste prioritaire) ;
+            # un choix FFmpeg fait après la migration est respecté (marqueur).
+            if saved_backend == "ffmpeg":
+                saved_backend = "auto"
+                self._pending_settings_writes["matroska/mux_backend"] = "auto"
+            elif not saved_backend and legacy_saved_backend == "ffmpeg":
+                legacy_saved_backend = "auto"
+                self._pending_settings_writes["matroska/mux_backend"] = "auto"
+            self._pending_settings_writes[_MUX_BACKEND_AUTO_MIGRATION_KEY] = True
+        ini_backend = self._ini_lookup("matroska", "mux_backend")
+        if ini_backend is not _MISSING:
+            # Clé présente (même vide → défaut Auto) : jamais l'ancienne clé [remux].
+            raw_mux_backend = str(ini_backend).lower()
+        elif saved_backend:
+            raw_mux_backend = saved_backend
+        else:
             legacy_ini = self._ini_lookup("remux", "mux_backend")
             if legacy_ini is not _MISSING and str(legacy_ini) != "":
                 raw_mux_backend = str(legacy_ini).lower()
             else:
-                legacy_settings = self._settings.value("remux/mux_backend", None)
-                if legacy_settings not in (None, ""):
-                    raw_mux_backend = str(legacy_settings).lower()
+                raw_mux_backend = legacy_saved_backend
+        if (
+            "matroska/mux_backend" in self._pending_settings_writes
+            and ini_backend is _MISSING
+            and raw_mux_backend == "auto"
+        ):
+            self.load_notices.append(
+                "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif "
+                "pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres."
+            )
         if raw_mux_backend in {"auto", "native", "ffmpeg"}:
             self.matroska_mux_backend = raw_mux_backend
         else:
@@ -1567,6 +1587,24 @@ class AppConfig:
     # Sauvegarde
     # ------------------------------------------------------------------
 
+    def persist_load_migrations(self) -> list[str]:
+        """Écrit une fois les migrations du chargement ; renvoie les messages à journaliser.
+
+        Appelée au démarrage de l'interface et du CLI, qui journalisent le
+        résultat. Une lecture de la configuration (aide du CLI, instantané de
+        service, Paramètres) n'écrit jamais rien d'elle-même.
+        """
+        if not self._pending_settings_writes:
+            return []
+        try:
+            for key, value in self._pending_settings_writes.items():
+                self._settings.setValue(key, value)
+        except Exception:  # persistance facultative : migration rejouée au prochain démarrage
+            return []
+        self._pending_settings_writes = {}
+        notices, self.load_notices = self.load_notices, []
+        return notices
+
     def save(self) -> None:
         """Persiste la configuration dans QSettings pour les fallbacks runtime."""
         s = self._settings
@@ -1607,6 +1645,8 @@ class AppConfig:
         s.setValue("sync/quick_audio_check", "true" if self.sync_quick_audio_check else "false")
         s.setValue("matroska/mux_backend", self.matroska_mux_backend)
         s.setValue(_MUX_BACKEND_AUTO_MIGRATION_KEY, True)
+        # Valeur effective et marqueur écrits : une migration en attente n'a plus d'objet.
+        self._pending_settings_writes = {}
         s.setValue(
             "matroska/regenerate_statistics",
             "true" if self.matroska_regenerate_statistics else "false",

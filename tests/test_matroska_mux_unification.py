@@ -308,33 +308,87 @@ class TestMatroskaMuxSetting:
         assert config.load_notices == []
 
     def test_saved_ffmpeg_from_the_old_default_migrates_to_auto_once(self, tmp_path: Path) -> None:
-        values = {"matroska/mux_backend": "ffmpeg"}
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
         config, _settings = _app_config(tmp_path, settings_values=values)
         assert config.matroska_mux_backend == "auto"
-        assert len(config.load_notices) == 1 and "Auto" in config.load_notices[0]
+        # Lecture seule : rien n'est écrit avant le démarrage qui journalise.
+        assert values == {"matroska/mux_backend": "ffmpeg"}
+        notices = config.persist_load_migrations()
+        assert len(notices) == 1 and "Auto" in notices[0]
         assert values["matroska/mux_backend"] == "auto"
         assert values["matroska/mux_backend_default_auto"] is True
+        assert config.persist_load_migrations() == []
         # Choix FFmpeg fait après la migration (Paramètres) : respecté, plus jamais migré.
         values["matroska/mux_backend"] = "ffmpeg"
         again, _settings = _app_config(tmp_path, settings_values=values)
         assert again.matroska_mux_backend == "ffmpeg"
-        assert again.load_notices == []
+        assert again.persist_load_migrations() == []
 
-    def test_explicit_ffmpeg_in_config_ini_is_never_migrated(self, tmp_path: Path) -> None:
-        values = {"matroska/mux_backend": "ffmpeg"}
+    def test_reading_the_configuration_never_writes(self, tmp_path: Path) -> None:
+        """Aide du CLI, instantanés : une lecture n'écrit ni la migration ni son marqueur."""
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        for _ in range(2):
+            config, settings = _app_config(tmp_path, settings_values=values)
+            assert config.matroska_mux_backend == "auto"
+            assert not settings.setValue.called
+        assert values == {"matroska/mux_backend": "ffmpeg"}
+        assert len(config.persist_load_migrations()) == 1  # migration toujours disponible au démarrage
+
+    @pytest.mark.parametrize("override", ["native", "auto", ""])
+    def test_ini_override_still_migrates_the_saved_old_default(self, tmp_path: Path, override: str) -> None:
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(
+            tmp_path, ini_text=f"[matroska]\nmux_backend = {override}\n", settings_values=values,
+        )
+        assert config.matroska_mux_backend == (override or "auto")
+        config.persist_load_migrations()
+        assert values["matroska/mux_backend"] == "auto"
+        # Surcharge retirée : la valeur enregistrée est déjà migrée, FFmpeg ne revient pas.
+        (tmp_path / "config.ini").unlink()
+        again, _settings = _app_config(tmp_path, settings_values=values)
+        assert again.matroska_mux_backend == "auto"
+
+    def test_explicit_ffmpeg_in_config_ini_is_respected(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
         config, _settings = _app_config(tmp_path, ini_text="[matroska]\nmux_backend = ffmpeg\n", settings_values=values)
         assert config.matroska_mux_backend == "ffmpeg"
-        assert config.load_notices == []
-        assert values["matroska/mux_backend"] == "ffmpeg"
+        assert config.persist_load_migrations() == []  # rien d'effectif à annoncer
+
+    def test_empty_matroska_key_means_auto_never_the_legacy_key(self, tmp_path: Path) -> None:
+        config, _settings = _app_config(
+            tmp_path, ini_text="[matroska]\nmux_backend =\n\n[remux]\nmux_backend = native\n",
+            settings_values={"remux/mux_backend": "native"},
+        )
+        assert config.matroska_mux_backend == "auto"
+
+    def test_legacy_saved_old_default_migrates_too(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {"remux/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        assert config.matroska_mux_backend == "auto"
+        config.persist_load_migrations()
+        assert values["matroska/mux_backend"] == "auto"
 
     def test_fresh_profile_sets_the_marker_so_a_later_ffmpeg_choice_holds(self, tmp_path: Path) -> None:
         values: dict[str, object] = {}
         config, _settings = _app_config(tmp_path, settings_values=values)
         assert config.matroska_mux_backend == "auto"
+        assert config.persist_load_migrations() == []
         assert values["matroska/mux_backend_default_auto"] is True
         values["matroska/mux_backend"] = "ffmpeg"
         again, _settings = _app_config(tmp_path, settings_values=values)
         assert again.matroska_mux_backend == "ffmpeg"
+
+    def test_save_supersedes_a_pending_migration(self, tmp_path: Path) -> None:
+        import core.config as cfg_mod
+
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        config.matroska_mux_backend = "ffmpeg"  # choix explicite dans les Paramètres
+        with patch.object(cfg_mod, "_INI_PATH", tmp_path / "config.ini"):
+            config.save()
+        assert config.persist_load_migrations() == []
+        assert values["matroska/mux_backend"] == "ffmpeg"
+        assert values["matroska/mux_backend_default_auto"] is True
 
     def test_reads_new_ini_section(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path, ini_text="[matroska]\nmux_backend = native\n")

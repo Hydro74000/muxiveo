@@ -62,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
             raise
         for warning in getattr(config, "load_warnings", []):
             logger.emit("warning", warning)
-        for notice in getattr(config, "load_notices", []):
+        persist_migrations = getattr(config, "persist_load_migrations", None)
+        for notice in persist_migrations() if callable(persist_migrations) else []:
             logger.emit("info", notice)
         return int(args.func(args, config, logger))
     except ToolNotFoundError as exc:
