@@ -1,0 +1,133 @@
+"""Merge DoVi — alignement : table d'images, analyse des signatures (sans média)."""
+from __future__ import annotations
+
+import json
+import subprocess
+from dataclasses import replace
+from fractions import Fraction
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+import pytest
+
+from core.workflows.merge_dovi_align.frames import (
+    FrameTable,
+    FrameTableError,
+    VideoProps,
+    parse_packet_pts,
+    parse_stream_props,
+    read_frame_table,
+)
+from core.workflows.merge_dovi_align.probe import (
+    STRIP,
+    VIGNETTE_H,
+    _Accumulator,
+    black_threshold,
+    filter_graph,
+    parse_showinfo,
+)
+
+
+def _props(width: int = 320, height: int = 180) -> VideoProps:
+    return VideoProps("hevc", width, height, Fraction(1), "tv", "smpte2084", "bt2020", Fraction(1, 1000),
+                      "yuv420p10le")
+
+
+def test_stream_props_parsed_with_defaults() -> None:
+    props = parse_stream_props(json.dumps({"format": {"start_time": "5.000000"}, "streams": [{
+        "codec_name": "hevc", "width": 3840, "height": 2160, "sample_aspect_ratio": "1:1",
+        "pix_fmt": "yuv420p10le", "color_range": "tv", "color_transfer": "smpte2084",
+        "color_primaries": "bt2020", "time_base": "1/1000"}]}))
+    assert (props.width, props.height, props.sar, props.time_base) == (3840, 2160, 1, Fraction(1, 1000))
+    assert props.pq and not props.full_range and props.start_time == 5
+    assert parse_stream_props(json.dumps({"streams": [{"width": 8, "height": 8}]})).sar == 1
+
+
+def test_stream_props_refuse_missing_video() -> None:
+    with pytest.raises(FrameTableError):
+        parse_stream_props(json.dumps({"streams": []}))
+    with pytest.raises(FrameTableError):
+        parse_stream_props(json.dumps({"streams": [{"width": 0, "height": 10}]}))
+
+
+def test_packet_pts_sorted_to_display_order() -> None:
+    assert parse_packet_pts("0\n167\n83\n42\n125\n") == ((0, 42, 83, 125, 167), "")
+
+
+@pytest.mark.parametrize(("payload", "reason"), [
+    ("0\nN/A\n42\n", "paquet vidéo sans PTS"),
+    ("0\n42\n42\n", "PTS répétés"),
+    ("", "aucun paquet vidéo"),
+])
+def test_packet_pts_refusals(payload: str, reason: str) -> None:
+    assert parse_packet_pts(payload) == ((), reason)
+
+
+def test_frame_table_ranks_and_exact_seek() -> None:
+    table = FrameTable(Path("a.mkv"), _props(), True, "", (1000, 1042, 1083, 1125))
+    assert table.frames == 4 and table.frame_interval == 41
+    assert [table.rank_of(value) for value in (1000, 1083, 1084)] == [0, 2, None]
+    # Demi-image avant le PTS visé, depuis le départ du conteneur.
+    assert table.seek_seconds(2) == "1.062500000"
+    shifted = FrameTable(Path("a.mkv"), replace(_props(), start_time=Fraction(1)), True, "", table.pts)
+    assert shifted.seek_seconds(2) == "0.062500000" and shifted.seek_seconds(0) == "0.000000000"
+    with pytest.raises(ValueError):
+        table.seek_seconds(4)
+
+
+def _completed(stdout: str) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess([], 0, stdout, "")
+
+
+def test_read_frame_table_non_indexable_container_skips_packets() -> None:
+    stream = json.dumps({"streams": [{"width": 320, "height": 180, "time_base": "1/90000"}]})
+    with patch("core.workflows.merge_dovi_align.frames.run_cancellable_capture",
+               return_value=_completed(stream)) as run:
+        table = read_frame_table(Path("film.m2ts"))
+    assert not table.indexable and table.frames is None and "m2ts" in table.reason
+    assert run.call_count == 1
+
+
+def test_read_frame_table_indexable() -> None:
+    stream = json.dumps({"streams": [{"width": 320, "height": 180, "time_base": "1/1000"}]})
+    with patch("core.workflows.merge_dovi_align.frames.run_cancellable_capture",
+               side_effect=[_completed(stream), _completed("0\n83\n42\n")]):
+        table = read_frame_table(Path("film.mkv"))
+    assert table.indexable and table.pts == (0, 42, 83)
+
+
+def test_showinfo_parsing_keeps_output_order() -> None:
+    lines = [
+        "[Parsed_showinfo_0 @ 0x1] n:   0 pts:1200032 pts_time:1200.032 duration: 41",
+        "[Parsed_showinfo_0 @ 0x1] config in time_base: 1/1000",
+        "[Parsed_showinfo_0 @ 0x1] n:   1 pts:1200074 pts_time:1200.074",
+        "[Parsed_showinfo_0 @ 0x1] n:   3 pts:1200157 pts_time:1200.157",
+    ]
+    assert parse_showinfo(lines) == [1200032, 1200074]
+
+
+def test_filter_graph_masks_before_any_reduction() -> None:
+    graph = filter_graph(3840, 2160, black_threshold(False))
+    assert graph.index("lut=c0='gt(val,80)*1023'") < graph.index("scale=64:2160")
+    assert "transpose=dir=clock" in graph and "vstack=inputs=3" in graph
+    assert black_threshold(True) == 16
+    assert filter_graph(64, 64, 80, cuda_format="p010le").startswith("[0:v:0]hwdownload,format=p010le,")
+
+
+def _stacked(width: int, height: int, rows: slice, cols: slice, luma: int = 400) -> bytes:
+    plane = np.zeros((height + width + VIGNETTE_H, STRIP), dtype="<u2")
+    plane[:height][rows, 3] = 65535
+    plane[height:height + width][cols, 60] = 65535
+    plane[height + width:, :24] = luma * 64
+    return plane.tobytes()
+
+
+def test_accumulator_bars_and_blank_frames() -> None:
+    acc = _Accumulator(320, 180)
+    acc.add(_stacked(320, 180, slice(20, 160), slice(40, 290)))
+    acc.add(_stacked(320, 180, slice(0, 0), slice(0, 0), luma=64))
+    result = acc.result([0, 1], [0, 42], "logiciel")
+    assert (result.top[0], result.bottom[0], result.left[0], result.right[0]) == (20, 20, 40, 30)
+    assert (result.top[1], result.bottom[1]) == (-1, -1)
+    assert result.mean[0] == pytest.approx(400) and result.vignettes[0, 0, 0] == 100

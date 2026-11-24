@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Callable
 
-from core.matroska.hevc.access_units import HevcStreamCancelled, iter_hevc_access_units
+from core.matroska.hevc.access_units import HevcAccessUnit, HevcStreamCancelled, iter_hevc_access_units
 
 _SPS, _PPS, _EOS = 33, 34, 36
 _BLA_W_LP, _IDR_W_RADL, _IDR_N_LP, _CRA, _IRAP_LAST = 16, 19, 20, 21, 23
@@ -140,6 +140,14 @@ def iter_pictures(path: Path, *, cancelled: Callable[[], bool] | None = None,
     Le tri sur la clé donne l'ordre d'affichage. ``cancelled`` : :class:`HevcStreamCancelled` levée par le
     parcours ; :class:`PocError` si le flux est illisible.
     """
+    for key, kinds, _unit in iter_picture_units(path, cancelled=cancelled, progress=progress):
+        yield key, kinds
+
+
+def iter_picture_units(path: Path, *, cancelled: Callable[[], bool] | None = None,
+                       progress: Callable[[int], None] | None = None,
+                       ) -> Iterator[tuple[tuple[int, int], frozenset[int], HevcAccessUnit]]:
+    """Comme :func:`iter_pictures`, avec l'unité d'accès de chaque image (contenu des NAL inspectable)."""
     sps: dict[int, tuple[int, bool]] = {}
     pps: dict[int, tuple[int, bool, bool, int]] = {}
     cvs, prev_tid0_poc, after_eos = -1, 0, True
@@ -183,7 +191,7 @@ def iter_pictures(path: Path, *, cancelled: Callable[[], bool] | None = None,
         sub_layer_non_reference = nal_type <= 14 and nal_type % 2 == 0
         if temporal_id == 0 and not (_RADL_N <= nal_type <= _RASL_R) and not sub_layer_non_reference:
             prev_tid0_poc = poc
-        yield (cvs, poc), frozenset(kinds)
+        yield (cvs, poc), frozenset(kinds), unit
 
 
 def _slice_pps_id(payload: bytes, nal_type: int) -> int:
@@ -194,4 +202,4 @@ def _slice_pps_id(payload: bytes, nal_type: int) -> int:
     return bits.ue()
 
 
-__all__ = ["HevcStreamCancelled", "PocError", "iter_pictures"]
+__all__ = ["HevcStreamCancelled", "PocError", "iter_picture_units", "iter_pictures"]
