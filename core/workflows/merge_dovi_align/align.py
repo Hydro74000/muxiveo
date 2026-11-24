@@ -305,19 +305,35 @@ class _ShotModel:
             values[forbid[2]] = -1e12
         return values
 
-    def _step(self, score: np.ndarray, emission: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Score après un plan et état précédent de chaque état."""
+    def _step(self, score: np.ndarray, emission: np.ndarray, k: int,
+              none_position: float) -> tuple[np.ndarray, np.ndarray, float]:
+        """Score après le plan ``k``, état précédent de chaque état et position mémorisée de « sans
+        correspondance » : fin, dans Film 2, du dernier plan placé du meilleur chemin qui y passe. Une reprise
+        depuis « sans correspondance » n'est admise que si le plan repris commence après cette position."""
+        start = int(self.bounds[k])
         mapped = score[:self.none]
         prefix_best = np.maximum.accumulate(mapped)
         prefix_arg = _prefix_argmax(mapped)
         allowed, allowed_arg = prefix_best[self.limit], prefix_arg[self.limit]
-        from_none = score[self.none] > allowed
-        best = np.append(np.where(from_none, score[self.none], allowed), np.max(score))
-        arg = np.append(np.where(from_none, self.none, allowed_arg), int(np.argmax(score)))
+        resumable = start + self.candidates >= none_position
+        from_none = resumable & (score[self.none] > allowed)
+        best_mapped = int(np.argmax(mapped))
+        best = np.append(np.where(from_none, score[self.none], allowed), mapped[best_mapped])
+        arg = np.append(np.where(from_none, self.none, allowed_arg), best_mapped)
         switch = best - CHANGE_PENALTY
         stay = switch <= score
         source = np.where(stay, np.arange(self.states), arg)
-        return np.where(stay, score, switch) + emission, source
+        if not stay[self.none]:
+            none_position = float(start + self.candidates[best_mapped])
+        return np.where(stay, score, switch) + emission, source, none_position
+
+    def _start(self, emission: np.ndarray, entry: int | None, k: int) -> tuple[np.ndarray, np.ndarray, float]:
+        if entry is None:
+            return emission, np.arange(self.states), -np.inf
+        start = np.full(self.states, -1e12)
+        start[entry] = 0.0
+        position = -np.inf if entry == self.none else float(int(self.bounds[k]) + self.candidates[entry])
+        return self._step(start, emission, k, position)
 
     def solve(self, first: int = 0, last: int | None = None, *, entry: int | None = None,
               exit: int | None = None, forbid: tuple[int, int, int] | None = None) -> tuple[np.ndarray, float]:
@@ -325,27 +341,19 @@ class _ShotModel:
         plan précédant ``first`` ; ``exit`` : état imposé au dernier plan ; ``forbid`` : (plans début, fin,
         état) interdit."""
         last = self.shots if last is None else last
-        checkpoints: list[np.ndarray] = []
-        score = np.zeros(0)
+        checkpoints: list[tuple[np.ndarray, float]] = []
+        score, position = np.zeros(0), -np.inf
         for k in range(first, last):
             if (k - first) % 256 == 0:
                 self.hooks.check()
             emission = self.emission(k, forbid)
             if k == first:
-                if entry is None:
-                    score = emission
-                else:
-                    start = np.full(self.states, -1e12)
-                    start[entry] = 0.0
-                    score, _source = self._step(start, emission)
+                score, _source, position = self._start(emission, entry, k)
             else:
-                score, _source = self._step(score, emission)
+                score, _source, position = self._step(score, emission, k, position)
             if (k - first) % CHECKPOINT == CHECKPOINT - 1:
-                checkpoints.append(score.copy())
-        if exit is not None:
-            state = exit
-        else:
-            state = int(np.argmax(score))
+                checkpoints.append((score.copy(), position))
+        state = exit if exit is not None else int(np.argmax(score))
         total = float(score[state])
         path = np.zeros(last - first, dtype=np.int64)
         # Remontée bloc par bloc : recalcul des états précédents depuis le point de reprise du bloc.
@@ -355,26 +363,62 @@ class _ShotModel:
             self.hooks.check()
             sources: list[np.ndarray] = []
             if block_start == first:
-                if entry is None:
-                    score = self.emission(first, forbid)
-                    sources.append(np.arange(self.states))
-                else:
-                    start = np.full(self.states, -1e12)
-                    start[entry] = 0.0
-                    score, source = self._step(start, self.emission(first, forbid))
-                    sources.append(source)
+                score, source, position = self._start(self.emission(first, forbid), entry, first)
+                sources.append(source)
                 begin = first + 1
             else:
-                score = checkpoints[(block_start - first) // CHECKPOINT - 1].copy()
+                saved, position = checkpoints[(block_start - first) // CHECKPOINT - 1]
+                score = saved.copy()
                 begin = block_start
             for k in range(begin, block_end):
-                score, source = self._step(score, self.emission(k, forbid))
+                score, source, position = self._step(score, self.emission(k, forbid), k, position)
                 sources.append(source)
             for k in range(block_end - 1, block_start - 1, -1):
                 path[k - first] = state
                 state = int(sources[k - block_start][state])
             block_end = block_start
         return path, total
+
+    def alternatives(self, path: np.ndarray) -> np.ndarray:
+        """Pour chaque plan, score de la meilleure carte qui ne passe pas par l'état du chemin retenu à ce plan
+        (max-marginales). Calcul **relâché** (bascules sans contrainte d'ordre) : majorant de toute carte
+        concurrente, donc marges prudentes. Mémoire par points de reprise."""
+        shots = self.shots
+        checkpoints: list[np.ndarray] = []
+        forward = np.zeros(0)
+        for k in range(shots):
+            if k % 256 == 0:
+                self.hooks.check()
+            emission = self.emission(k, None)
+            forward = emission if k == 0 else np.maximum(forward, forward.max() - CHANGE_PENALTY) + emission
+            if k % CHECKPOINT == CHECKPOINT - 1:
+                checkpoints.append(forward.copy())
+        out = np.full(shots, -np.inf)
+        backward = np.zeros(self.states)
+        block_end = shots
+        while block_end > 0:
+            block_start = ((block_end - 1) // CHECKPOINT) * CHECKPOINT
+            self.hooks.check()
+            values: list[np.ndarray] = []
+            current = np.zeros(0)
+            for k in range(block_start, block_end):
+                emission = self.emission(k, None)
+                if k == 0:
+                    current = emission
+                elif k == block_start:
+                    previous = checkpoints[k // CHECKPOINT - 1]
+                    current = np.maximum(previous, previous.max() - CHANGE_PENALTY) + emission
+                else:
+                    current = np.maximum(current, current.max() - CHANGE_PENALTY) + emission
+                values.append(current)
+            for k in range(block_end - 1, block_start - 1, -1):
+                marginal = values[k - block_start] + backward
+                marginal[int(path[k])] = -np.inf
+                out[k] = float(marginal.max())
+                continuation = backward + self.emission(k, None)
+                backward = np.maximum(continuation, continuation.max() - CHANGE_PENALTY)
+            block_end = block_start
+        return out
 
     def offsets(self, path: np.ndarray) -> np.ndarray:
         return np.asarray([_NONE if s == self.none else int(self.candidates[s]) for s in path], dtype=np.int64)
@@ -549,27 +593,30 @@ def _refine_junction(ctx: _Context, lo: int, hi: int, da: int, db: int) -> tuple
 def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
     """Passe complète : écarts locaux à l'intérieur d'un segment (au moins ``FRAME_RUN`` images informatives
     consécutives nettement mieux appariées à un même autre décalage, ± ``FRAME_BAND``) ; (début, fin,
-    décalage absolu)."""
+    décalage absolu). Calcul par blocs, suites lues sur tout le segment."""
     indices = np.arange(segment.film1_start, segment.film1_end, dtype=np.int64)
-    out: list[tuple[int, int, int]] = []
+    best = np.zeros(indices.size, dtype=np.int64)
+    strong = np.zeros(indices.size, dtype=bool)
     for start in range(0, indices.size, 4096):
         chunk = indices[start:start + 4096]
         corr, both, _one = ctx.pair_scores(chunk, segment.offset, FRAME_BAND)
         masked = np.where(both, corr, -np.inf)
-        best = np.argmax(masked, axis=1) - FRAME_BAND
+        best[start:start + chunk.size] = np.argmax(masked, axis=1) - FRAME_BAND
         lead = masked.max(axis=1) - masked[:, FRAME_BAND]
-        strong = both[:, FRAME_BAND] & (best != 0) & (lead > 0.02) & ~ctx.film1_static[chunk]
-        k = 0
-        while k < chunk.size:
-            if not strong[k]:
-                k += 1
-                continue
-            end = k
-            while end + 1 < chunk.size and strong[end + 1] and best[end + 1] == best[k]:
-                end += 1
-            if end - k + 1 >= FRAME_RUN:
-                out.append((int(chunk[k]), int(chunk[end]) + 1, segment.offset + int(best[k])))
-            k = end + 1
+        strong[start:start + chunk.size] = (both[:, FRAME_BAND] & (best[start:start + chunk.size] != 0)
+                                            & (lead > 0.02) & ~ctx.film1_static[chunk])
+    out: list[tuple[int, int, int]] = []
+    k = 0
+    while k < indices.size:
+        if not strong[k]:
+            k += 1
+            continue
+        end = k
+        while end + 1 < indices.size and strong[end + 1] and best[end + 1] == best[k]:
+            end += 1
+        if end - k + 1 >= FRAME_RUN:
+            out.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
+        k = end + 1
     return out
 
 
@@ -620,28 +667,23 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     raw = _absorb_blank([(a, b, d) for a, b, d, _k0, _k1 in runs], ctx.film1_informative)
     _refine_all(ctx, raw)
     built = _bounded(raw, n2)
-    if film2.full is not None:
+    full_at_build = film2.full is not None
+    if full_at_build:
         built = _frame_refine(ctx, built, n2, say)
     _check_order(built)
 
-    # Marge entre chemins concurrents : la meilleure carte qui évite le décalage d'une suite de plans
-    # (transitions comprises, sur la suite et ses voisins) ; écart faible → segment ambigu.
+    # Marge entre chemins concurrents (max-marginales, divergences partielles comprises) : segment ambigu si
+    # une carte qui évite son décalage sur un seul de ses plans s'approche de la meilleure.
+    alternatives = model.alternatives(path)
     ambiguous: list[Segment] = []
     for _a, _b, d, k0, k1 in runs:
         if d is None:
             continue
-        hooks.check()
-        state = int(np.flatnonzero(candidates == d)[0])
-        lo_k, hi_k = max(0, k0 - 4), min(model.shots, k1 + 4)
-        entry = int(path[lo_k - 1]) if lo_k > 0 else None
-        exit_state = int(path[hi_k - 1])
-        _best, local = model.solve(lo_k, hi_k, entry=entry, exit=exit_state)
-        _alt, alternative = model.solve(lo_k, hi_k, entry=entry, exit=exit_state, forbid=(k0, k1, state))
-        if local - alternative < AMBIGUITY_MARGIN:
+        if best_score - float(alternatives[k0:k1].max()) < AMBIGUITY_MARGIN:
             ambiguous.extend(seg for seg in built if seg.offset == d and seg.film1_start < bounds[k1]
                              and seg.film1_end > bounds[k0])
 
-    exhaustive = film2.full is not None
+    exhaustive = full_at_build
     content: list[tuple[int, int, int]] = []        # fenêtres de contenu (début, fin, décalage)
     positions: list[tuple[int, int]] = []           # points dont la position est confirmée par l'image
     on_cut: list[tuple[int, int]] = []              # points sur une coupe commune (contenu à établir)
@@ -681,6 +723,10 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                                  f"(décalage {d:+d}).", ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
+    if film2.full is not None and not full_at_build:
+        # Passe complète déclenchée en cours de vérification : tout le parcours exhaustif est repris.
+        say("Vérification reprise sur la passe complète de Film 2.")
+        return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
 
     covered = np.zeros(n1, dtype=bool)
     for seg in built:
@@ -694,6 +740,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         "change_points": int(metadata.change_points.size), "points_on_cuts": len(on_cut),
         "points_by_image": len(positions), "ambiguous_segments": len(ambiguous), "content_checked": content_checked,
         "film2_decoded": film2.decoded, "film2_full": film2.full is not None, "film2_full_reason": film2.full_reason,
+        "exhaustive": full_at_build,
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
@@ -913,21 +960,22 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
         return float(np.mean(ctx.film1.mean[a:b])), float(np.max(ctx.film1.peak[a:b]))
 
     def film2_levels(i: int, d: int) -> tuple[float, float] | None:
-        if not metadata.luminance.size:
+        if not metadata.luminance.size or not metadata.peak.size:
             return None
         a, b = shot(i)
         lo, hi = max(0, a + d), min(metadata.frames, b + d)
         if hi <= lo:
             return None
-        mean = float(np.mean(metadata.luminance[lo:hi]))
-        return mean, float(np.max(metadata.peak[lo:hi])) if metadata.peak.size else mean
+        return float(np.mean(metadata.luminance[lo:hi])), float(np.max(metadata.peak[lo:hi]))
 
     def informative(i: int) -> bool:
         a, b = shot(i)
         return float(np.mean(ctx.film1.std[a:b])) >= MIN_STD
 
     pending = [(i, d) for i, d in on_cut if not confirmed[i]]
-    if ctx.film2.full is None:
+    if ctx.film2.full is None and not metadata.peak.size:
+        say(f"Pic non décrit par les métadonnées : {len(pending)} plans confirmés par l'image.")
+    elif ctx.film2.full is None:
         pairs = []
         for i, d in on_cut:
             levels = film2_levels(i, d)

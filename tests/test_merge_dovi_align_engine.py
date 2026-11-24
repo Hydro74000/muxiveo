@@ -14,6 +14,8 @@ from core.workflows.merge_dovi_align.align import (
     Film2Frames,
     _check_order,
     _Context,
+    _frame_scan,
+    _ShotModel,
     _isotonic,
     _refine_junction,
     align,
@@ -447,6 +449,7 @@ def test_too_few_calibration_shots_force_the_full_pass() -> None:
     scenes = whole(film(rng, 40))
     result, source, full = run(scenes, scenes, bars2=4, frame_rate=24.0)
     assert full and "étalonnable" in source.full_reason and result.identity
+    assert result.stats["exhaustive"]  # parcours repris entièrement sur la passe complète
 
 
 def test_window_budget_is_global() -> None:
@@ -509,3 +512,77 @@ def test_cancellation_is_checked_before_any_work() -> None:
 def test_segments_order_check() -> None:
     with pytest.raises(AlignmentError):
         _check_order([Segment(0, 100, 500), Segment(100, 50, 400)])
+
+
+
+def test_relaxed_max_marginals_match_brute_force() -> None:
+    import itertools
+
+    bounds = np.asarray([0, 10, 25, 40, 55])
+    film1_cut = np.zeros(56, dtype=bool)
+    film1_cut[bounds[:-1]] = True
+    cuts2 = np.asarray([0, 10, 25, 47, 62])
+    candidates = np.asarray([0, 7])
+    model = _ShotModel(bounds, film1_cut, cuts2, 80, candidates, ProcessHooks())
+    path, _score = model.solve()
+    alternatives = model.alternatives(path)
+    emissions = [model.emission(k, None) for k in range(model.shots)]
+    for k in range(model.shots):
+        best = -np.inf
+        for states in itertools.product(range(model.states), repeat=model.shots):
+            if states[k] == path[k]:
+                continue
+            total = sum(emissions[q][states[q]] for q in range(model.shots))
+            total -= align_module.CHANGE_PENALTY * sum(a != b for a, b in zip(states, states[1:]))
+            best = max(best, total)
+        assert alternatives[k] == pytest.approx(best)
+
+
+def test_unmatched_shots_never_resume_backwards_in_film2() -> None:
+    rng = np.random.default_rng(31)
+    for _trial in range(20):
+        lengths = rng.integers(8, 30, size=30)
+        bounds = np.concatenate([[0], np.cumsum(lengths)])
+        film1_cut = np.zeros(int(bounds[-1]) + 1, dtype=bool)
+        film1_cut[bounds[:-1]] = True
+        # Film 2 répète une partie du film : un chemin sans contrainte relirait Film 2 à rebours.
+        part = bounds[:-1]
+        cuts2 = np.unique(np.concatenate([part + 300, part[10:20] + 300 - 260]))
+        candidates = np.arange(-400, 401, 20)
+        model = _ShotModel(bounds, film1_cut, cuts2, 2000, candidates, ProcessHooks())
+        offsets = model.offsets(model.solve()[0])
+        end = -np.inf
+        for k, d in enumerate(offsets.tolist()):
+            if d == align_module._NONE:
+                continue
+            start = bounds[k] + d
+            assert start >= end - align_module.MAX_INSERT
+            end = bounds[k + 1] + d
+
+
+def test_missing_peak_metadata_forces_image_confirmation() -> None:
+    rng = np.random.default_rng(32)
+    scenes = whole(film(rng))
+    meta = metadata_for(scenes)
+    no_peak = Film2Metadata(meta.frames, meta.change_points, meta.reference_cuts, meta.luminance, meta.kinds)
+    logs: list[str] = []
+    result, _source, _full = run(scenes, scenes, bars2=4, frame_rate=0.5, metadata=no_peak, log=logs.append)
+    assert result.identity and any("Pic non décrit" in line for line in logs)
+
+
+def test_frame_scan_finds_a_short_gap_across_block_boundaries() -> None:
+    """Images 4095–4097 de Film 1 retrouvées deux rangs plus tôt dans Film 2 (à cheval sur la frontière des
+    blocs de calcul, 4096) : écart local retenu d'un seul tenant."""
+    rng = np.random.default_rng(33)
+
+    class Noise(Scene):
+        def frame(self, index: int, dx: int = 0) -> np.ndarray:
+            return 300 + 200 * np.random.default_rng(index).uniform(-1, 1, size=(H, W))
+
+    scene = Noise(rng, 4200)
+    sig1 = render([(scene, 0, 4200)], 4)
+    order = np.arange(4200)
+    order[4093:4098] = np.arange(4095, 4100)
+    sig2 = align_module.take(sig1, order)
+    ctx = _Context(sig1, Film2Frames(4200, full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
+    assert (4095, 4098, -2) in _frame_scan(ctx, Segment(0, 4200, 0))
