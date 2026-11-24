@@ -25,6 +25,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 
 from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, TrackTimeOffset, VideoEncodeSettings
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
@@ -259,11 +261,71 @@ class TestNoMergeReturnsOriginal:
             orig_language="", orig_title="",
         )
         enc = _encode_cfg(src, out, file_title="Film", keep_chapters=True)
+        enc.copy_subtitles = False
         rmx = _remux_cfg(src, out, keep_chapters=True, tracks=[bare_track])
 
         result = _merge(enc, rmx)
 
         assert result is enc, "Devrait retourner l'objet original sans reconstruction"
+
+
+class TestRemuxSubtitleSelectionIsAuthoritative:
+    """La sélection de sous-titres du job conteneur fait foi, même vide.
+
+    Cas réel (Le Samouraï) : tous les sous-titres décochés dans le panneau
+    Conteneur, ``copy_subtitles=True`` du panneau Encodage → toutes les pistes
+    de sous-titres des sources se retrouvaient dans la sortie.
+    """
+
+    @pytest.mark.parametrize("video_title", ["", "Titre piste"], ids=["sans-fusion", "avec-fusion"])
+    def test_all_subtitles_unchecked_copies_none(self, tmp_path, qt_app, video_title):
+        from core.workflows.encode.planning.subtitles import resolve_subtitle_tracks_for_encode
+        from core.workflows.encode.runtime.native_mux import resolve_native_subtitle_tracks
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264", display_info="",
+            language="", title=video_title, orig_language="", orig_title="",
+        )
+        unchecked = TrackEntry(
+            mkv_tid=2, track_type="subtitle", codec="SUBRIP", display_info="",
+            language="eng", title="English forced", orig_language="eng", orig_title="English forced",
+        )
+        enc = _encode_cfg(src, out)
+        assert enc.copy_subtitles is True  # copie générique du panneau Encodage
+        rmx = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[video, unchecked])],
+            output=out,
+            track_order=[(0, 0)],  # sous-titre décoché : absent de l'ordre de sortie
+            keep_chapters=True,
+        )
+
+        result = _merge(enc, rmx)
+
+        assert result.copy_subtitles is False
+        assert result.subtitle_tracks == []
+        resolved = resolve_subtitle_tracks_for_encode(result, [src], probe_indices=lambda _p, _t: [2])
+        assert list(resolved.tracks) == []
+        assert resolve_native_subtitle_tracks(result) == []
+
+    def test_checked_subtitle_only(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video, kept, dropped = _track(0), _track(2, "subtitle"), _track(3, "subtitle")
+        rmx = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[video, kept, dropped])],
+            output=out,
+            track_order=[(0, 0), (0, 2)],
+            keep_chapters=True,
+        )
+
+        result = _merge(_encode_cfg(src, out), rmx)
+
+        assert result.copy_subtitles is False
+        assert result.subtitle_tracks == [(src, 2)]
 
 
 # ---------------------------------------------------------------------------
@@ -711,7 +773,9 @@ class TestTrackTimeOffsetsPropagation:
             time_shift_ms=0,
         )
         enc = _encode_cfg(src, out)
+        enc.copy_subtitles = False
         rmx = _remux_cfg(src, out, tracks=[video])
 
         result = _merge(enc, rmx)
         assert result is enc
+        assert result.track_time_offsets == []

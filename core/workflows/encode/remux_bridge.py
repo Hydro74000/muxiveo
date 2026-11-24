@@ -53,6 +53,8 @@ def merge_remux_into_encode_config(
             continue
         ordered_tracks.append((ordered_source.path, ordered_track))
 
+    # La sélection du job conteneur fait foi, même vide (tous les sous-titres
+    # décochés) : jamais de repli sur la copie générique du panneau Encodage.
     sub_tracks = [
         (src_path, track.mkv_tid)
         for src_path, track in ordered_tracks
@@ -159,8 +161,7 @@ def merge_remux_into_encode_config(
         _append_track_offset(TrackType.AUDIO.value, src_path, audio_settings.stream_index, audio_entry)
 
     sub_offset = audio_offset + len(encode_cfg.audio_tracks)
-    used_sub_tracks = sub_tracks or encode_cfg.subtitle_tracks
-    for sub_order, (sub_path, sub_sid) in enumerate(used_sub_tracks):
+    for sub_order, (sub_path, sub_sid) in enumerate(sub_tracks):
         subtitle_entry = remux_track_map.get((sub_path, sub_sid))
         if subtitle_entry is None:
             continue
@@ -180,18 +181,24 @@ def merge_remux_into_encode_config(
         and encode_cfg.keep_chapters == remux_cfg.keep_chapters
         and remux_cfg.chapter_overrides is None
     ):
-        # Le choix de backend de muxage du job conteneur reste propagé, sans
-        # reconstruire l'objet quand rien ne change.
-        if encode_cfg.mux_backend == remux_cfg.mux_backend:
+        # Le backend de muxage et l'absence de sous-titres du job conteneur
+        # restent propagés, sans reconstruire l'objet quand rien ne change.
+        if (
+            encode_cfg.mux_backend == remux_cfg.mux_backend
+            and not encode_cfg.copy_subtitles
+            and not encode_cfg.subtitle_tracks
+        ):
             return encode_cfg
-        return dataclasses_replace(encode_cfg, mux_backend=remux_cfg.mux_backend)
+        return dataclasses_replace(
+            encode_cfg, mux_backend=remux_cfg.mux_backend, copy_subtitles=False, subtitle_tracks=[],
+        )
 
     return dataclasses_replace(
         encode_cfg,
         video_tracks=video_tracks,
         audio_tracks=encode_cfg.audio_tracks,
-        copy_subtitles=encode_cfg.copy_subtitles if not sub_tracks else False,
-        subtitle_tracks=sub_tracks or encode_cfg.subtitle_tracks,
+        copy_subtitles=False,
+        subtitle_tracks=sub_tracks,
         keep_chapters=remux_cfg.keep_chapters,
         chapter_overrides=chapter_overrides,
         attachment_streams=attachment_streams,
