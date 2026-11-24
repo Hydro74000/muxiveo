@@ -383,8 +383,15 @@ def _decode(table: FrameTable, ffmpeg: str, hooks: ProcessHooks, *, seek: str | 
     last_error = ""
     for attempt in attempts:
         decoder = "CUDA" if attempt else "logiciel"
-        acc, pts, code, errors = _run(_command(ffmpeg, table, seek=seek, frames=frames, download=attempt),
-                                      table, hooks, progress)
+        try:
+            acc, pts, code, errors = _run(_command(ffmpeg, table, seek=seek, frames=frames, download=attempt),
+                                          table, hooks, progress)
+        except ProbeError as exc:
+            if not attempt:
+                raise
+            # Image tronquée par le décodeur matériel : même reprise en logiciel (l'annulation, elle, remonte).
+            code, errors = -1, str(exc)
+            acc, pts = _Accumulator(table.props.width, table.props.height), []
         if code == 0 or (frames is not None and len(acc.bars) >= frames):
             return acc, pts, decoder
         last_error = errors

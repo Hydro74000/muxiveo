@@ -287,3 +287,23 @@ def test_cuda_failure_after_some_frames_restarts_in_software(monkeypatch: pytest
     assert len(full) == 10 and full.decoder == "logiciel" and calls == [True, False]
     assert preference.hwaccel is None
     assert "-noautorotate" in probe_module._command("ffmpeg", table, seek=None, frames=None, download=None)
+
+
+def test_cuda_truncated_frame_restarts_in_software(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = FrameTable(Path("a.mkv"), _props(), True, "", tuple(range(0, 420, 42)))
+    calls: list[bool] = []
+
+    def fake_run(command, table, hooks, progress):
+        calls.append("-hwaccel" in command)
+        if calls[-1]:
+            raise probe_module.ProbeError("Image tronquée dans la sortie de FFmpeg.")
+        acc = _Accumulator(320, 180)
+        for _ in range(10):
+            acc.add(_stacked(320, 180, slice(10, 170), slice(0, 320)))
+        return acc, list(range(0, 420, 42)), 0, ""
+
+    monkeypatch.setattr(probe_module, "_run", fake_run)
+    monkeypatch.setattr(probe_module, "_pixel_formats", lambda ffmpeg, hooks: _MASTER)
+    preference = probe_module.DecoderPreference("cuda")
+    assert len(probe_module.decode_all(table, hwaccel=preference)) == 10
+    assert calls == [True, False] and preference.hwaccel is None
