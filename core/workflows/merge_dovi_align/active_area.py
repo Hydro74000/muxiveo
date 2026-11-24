@@ -75,19 +75,18 @@ def _shot_sides(signatures: Signatures, a: int, b: int) -> tuple[Area | None, bo
 
 
 def _dominants(values: list[int]) -> list[int]:
+    """Valeurs dominantes : valeurs regroupées à ± ``TOLERANCE`` px **avant** comptage, groupe retenu s'il
+    réunit assez de plans ; représentant = plus petite valeur du groupe (arrondi inférieur sûr)."""
     if not values:
         return []
-    counts: dict[int, int] = {}
-    for value in values:
-        counts[value] = counts.get(value, 0) + 1
     threshold = max(2, int(np.ceil(DOMINANT_SHARE * len(values))))
-    out: list[int] = []
-    for value in sorted(counts, key=lambda v: (-counts[v], v)):
-        if counts[value] < threshold:
-            break
-        if all(abs(value - kept) > TOLERANCE for kept in out):
-            out.append(value)
-    return sorted(out)
+    groups: list[list[int]] = []
+    for value in sorted(values):
+        if groups and value - groups[-1][0] <= 2 * TOLERANCE:
+            groups[-1].append(value)
+        else:
+            groups.append([value])
+    return [group[0] for group in groups if len(group) >= threshold]
 
 
 def _snap(value: int, dominants: list[int]) -> int:
@@ -145,15 +144,19 @@ def plan_active_area(film1: Signatures, cuts1: np.ndarray, alignment: AlignmentM
 
 def _concordance(shots: list[tuple[int, int, Area | None, bool]], filled: list[tuple[int, int, Area]],
                  alignment: AlignmentMap, film2_l5: np.ndarray) -> str:
-    """Motif de non-concordance du L5 de Film 2 avec Film 1 ; vide si concordant."""
-    for (a, b, measured, proof), (_a, _b, planned) in zip(shots, filled):
-        for seg in alignment.segments:
-            lo, hi = max(a, seg.film1_start), min(b, seg.film1_end)
-            if hi <= lo:
-                continue
-            authored = film2_l5[lo + seg.offset:hi + seg.offset]
-            if measured is not None and np.any(authored > np.asarray(measured)):
-                return f"L5 de Film 2 couvrant des lignes visibles de Film 1 (images {lo}–{hi - 1})"
-            if proof and np.any(np.abs(authored - np.asarray(planned)) > TOLERANCE):
-                return f"L5 de Film 2 différent des barres de Film 1 (images {lo}–{hi - 1})"
+    """Motif de non-concordance du L5 de Film 2, **projeté** sur chaque image de Film 1 (images sans
+    correspondance comprises, qui en recevraient une copie), avec les barres retenues ; vide si concordant."""
+    projected = np.zeros((alignment.film1_frames, 4), dtype=np.int64)
+    for seg in alignment.segments:
+        projected[seg.film1_start:seg.film1_end] = film2_l5[seg.film2_start:seg.film2_end]
+    for gap in alignment.uncovered:
+        projected[gap.start:gap.start + gap.length] = film2_l5[gap.source]
+    for (a, b, measured, _proof), (_a, _b, planned) in zip(shots, filled):
+        if measured is None:
+            continue  # plan entièrement noir : aucune ligne visible à couvrir
+        authored = projected[a:b]
+        if np.any(authored > np.asarray(measured)):
+            return f"L5 de Film 2 couvrant des lignes visibles de Film 1 (images {a}–{b - 1})"
+        if np.any(np.abs(authored - np.asarray(planned)) > TOLERANCE):
+            return f"L5 de Film 2 différent des barres de Film 1 (images {a}–{b - 1})"
     return ""

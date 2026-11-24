@@ -13,8 +13,8 @@ Chaque passe est relue : empreinte de chaque image = celle de l'image de Film 2 
 """
 from __future__ import annotations
 
+import hashlib
 import json
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,9 +23,10 @@ import numpy as np
 
 from .active_area import ActiveAreaPlan, l5_per_frame
 from .align import AlignmentError, AlignmentMap, Uncovered
+from core.hdr_inspection.json_stream import iter_json_array
+
 from .signals import hdr10plus_digests, rpu_digests
 
-_L6 = re.compile(r"Mastering display:\s*([\d.]+)/([\d.]+) nits\.\s*MaxCLL:\s*(\d+) nits,\s*MaxFALL:\s*(\d+)")
 Runner = Callable[[list[str]], str]
 
 
@@ -174,7 +175,15 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
     cuts_now, _l5 = _export_cuts(current, work_dir / "align_mid", dovi_tool, run, plan.film1_frames)
     finish = plan.rpu_finish_edit(cuts_now)
     if finish is not None:
+        before = _export_entries(current, work_dir / "align_mid_all.json", dovi_tool, run)
         current = _run_editor(dovi_tool, current, finish, work_dir / "align_rpu_final", run)
+        after = _export_entries(current, work_dir / "align_final_all.json", dovi_tool, run)
+        if [digest for digest, _l6 in after] != [digest for digest, _l6 in before]:
+            raise AlignmentError("RPU final : données de rendu modifiées hors des champs édités (coupes, L5, L6).")
+        wanted = None if plan.level6 is None else tuple(plan.level6[key] for key in _L6_KEYS)
+        for index, ((_d, l6_after), (_e, l6_before)) in enumerate(zip(after, before)):
+            if l6_after != (wanted if wanted is not None else l6_before):
+                raise AlignmentError(f"RPU final : L6 inattendu à l'image {index} ({l6_after}).")
     cuts, level5 = _export_cuts(current, work_dir / "align_out", dovi_tool, run, plan.film1_frames)
     if len(rpu_digests(current)) != plan.film1_frames:
         raise AlignmentError("RPU final : nombre d'images différent de Film 1.")
@@ -188,15 +197,54 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
         expected_l5 = level5_in[plan.sources]
     if not np.array_equal(level5, expected_l5):
         raise AlignmentError("RPU final : zone active (L5) différente de celle prévue.")
-    if plan.level6 is not None:
-        summary = run([dovi_tool, "info", "-i", str(current), "--summary"])
-        match = _L6.search(summary)
-        wanted = plan.level6
-        if match is None or (round(float(match.group(2))), int(match.group(3)), int(match.group(4))) != (
-                wanted["max_display_mastering_luminance"], wanted["max_content_light_level"],
-                wanted["max_frame_average_light_level"]):
-            raise AlignmentError("RPU final : L6 différent de celui prévu.")
     return current
+
+
+_L6_KEYS = ("max_display_mastering_luminance", "min_display_mastering_luminance", "max_content_light_level",
+            "max_frame_average_light_level")
+#: Champs qu'une passe de finition a le droit de modifier (et qui ne participent donc pas à l'empreinte).
+_EDITED_BLOCKS = frozenset({"Level5", "Level6"})
+
+
+def normalized_entry(entry: dict) -> tuple[bytes, tuple[int, ...] | None]:
+    """(empreinte d'une image d'export RPU sans les champs édités — coupe, L5, L6, nombre de blocs, CRC —,
+    valeurs L6 de l'image ou None)."""
+    entry = json.loads(json.dumps(entry))
+    entry.pop("rpu_data_crc32", None)
+    level6: tuple[int, ...] | None = None
+    dm = entry.get("vdr_dm_data") or {}
+    dm.pop("scene_refresh_flag", None)
+    for name in ("cmv29_metadata", "cmv40_metadata"):
+        meta = dm.get(name)
+        if not isinstance(meta, dict):
+            continue
+        blocks = []
+        for block in meta.get("ext_metadata_blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            if "Level6" in block and level6 is None:
+                values = block["Level6"]
+                level6 = tuple(int(values.get(key, 0)) for key in _L6_KEYS)
+            if not (set(block) & _EDITED_BLOCKS):
+                blocks.append(block)
+        meta["ext_metadata_blocks"] = blocks
+        meta.pop("num_ext_blocks", None)
+    digest = hashlib.blake2b(json.dumps(entry, sort_keys=True).encode(), digest_size=16).digest()
+    return digest, level6
+
+
+def _export_entries(rpu: Path, target: Path, dovi_tool: str, run: Runner) -> list[tuple[bytes, tuple[int, ...] | None]]:
+    """Export complet du RPU lu en flux (fichier supprimé ensuite)."""
+    run([dovi_tool, "export", "-i", str(rpu), "-d", f"all={target}"])
+    try:
+        out = []
+        for entry in iter_json_array(target):
+            if not isinstance(entry, dict):
+                raise AlignmentError("Export RPU illisible.")
+            out.append(normalized_entry(entry))
+        return out
+    finally:
+        target.unlink(missing_ok=True)
 
 
 def apply_hdr10plus(plan: EditPlan, json_in: Path, work_dir: Path, *, hdr10plus_tool: str, run: Runner) -> Path:

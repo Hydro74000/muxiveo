@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.workflows.merge_dovi_align.active_area import l5_per_frame, plan_active_area
+from core.workflows.merge_dovi_align.active_area import _dominants, l5_per_frame, plan_active_area
 from core.workflows.merge_dovi_align.align import AlignmentError, AlignmentMap, Segment, Uncovered
-from core.workflows.merge_dovi_align.edits import EditRefused, _cut_ranges, build_edit_plan
+from core.workflows.merge_dovi_align.edits import EditRefused, _cut_ranges, build_edit_plan, normalized_entry
 from core.workflows.merge_dovi_align.probe import Signatures
 from core.workflows.merge_dovi_align.static_hdr import level6_edit, resolve_static_hdr
 
@@ -131,3 +131,50 @@ def test_incoherent_map_is_refused() -> None:
 def test_scene_cut_ranges_cover_every_frame() -> None:
     assert _cut_ranges(np.asarray([0, 3, 4]), 7) == {"0-0": True, "1-2": False, "3-3": True, "4-4": True,
                                                      "5-6": False}
+
+
+# --- Relecture du lot 3 ---------------------------------------------------------------------------
+
+def test_kept_l5_is_checked_on_frames_without_counterpart_too() -> None:
+    # Film 1 : 40 images à barres 7/7 puis 10 images pleine image (0/0) sans correspondance, qui recevraient
+    # une copie du L5 7/7 de l'image voisine de Film 2.
+    sig = _signatures([(7, 7)] * 40 + [(0, 0)] * 10)
+    gap = Uncovered(40, 10, False, 39, False)
+    alignment = AlignmentMap(50, 40, (Segment(0, 40, 0),), (), (gap,), np.asarray([0, 40]))
+    film2_l5 = np.tile(np.asarray([0, 0, 7, 7]), (40, 1))
+    plan = plan_active_area(sig, np.asarray([0, 40]), alignment, film2_l5=film2_l5, film2_size=(384, 216))
+    assert not plan.keep and "visibles" in plan.reason
+
+
+def test_kept_l5_must_match_retained_bars_on_every_shot() -> None:
+    # Plan sans bord franc (barres mesurées 7 à 12) : 7 retenu ; un L5 0/0 de Film 2 n'y concorde pas.
+    sig = _signatures([(7, 7)] * 30 + [(7 + k % 6, 7) for k in range(10)])
+    film2_l5 = np.tile(np.asarray([0, 0, 7, 7]), (40, 1))
+    film2_l5[30:] = 0
+    plan = plan_active_area(sig, np.asarray([0, 10, 20, 30]), _identity(40), film2_l5=film2_l5,
+                            film2_size=(384, 216))
+    assert not plan.keep and "différent" in plan.reason
+
+
+def test_dominants_are_grouped_before_counting() -> None:
+    assert _dominants([6, 7, 8]) == [6]
+    assert _dominants([6, 7, 8, 30, 68, 68]) == [6, 68]
+
+
+def _entry(level1: int, l5: int, l6: tuple[int, int, int, int], flag: int, crc: int) -> dict:
+    return {
+        "rpu_data_crc32": crc,
+        "vdr_dm_data": {"scene_refresh_flag": flag, "cmv29_metadata": {"num_ext_blocks": 3, "ext_metadata_blocks": [
+            {"Level1": {"min_pq": 0, "max_pq": level1, "avg_pq": 100}},
+            {"Level5": {"active_area_top_offset": l5}},
+            {"Level6": dict(zip(("max_display_mastering_luminance", "min_display_mastering_luminance",
+                                 "max_content_light_level", "max_frame_average_light_level"), l6))}]}},
+    }
+
+
+def test_normalized_rpu_digest_ignores_only_edited_fields() -> None:
+    base, base_l6 = normalized_entry(_entry(3000, 276, (1000, 1, 449, 331), 0, 1))
+    edited, edited_l6 = normalized_entry(_entry(3000, 68, (1000, 1, 452, 312), 1, 2))
+    other, _ = normalized_entry(_entry(3001, 276, (1000, 1, 449, 331), 0, 1))
+    assert base == edited and base != other
+    assert base_l6 == (1000, 1, 449, 331) and edited_l6 == (1000, 1, 452, 312)
