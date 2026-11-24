@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 from core.bluray import ffprobe_input_args
@@ -34,9 +35,12 @@ class TimestampSequence:
     ``durations_ms`` : durée de chaque frame, calculée à partir des deltas
                        PTS successifs (la dernière frame réutilise la durée
                        précédente faute de mieux).
+    ``nominal_frame_duration_ns`` : durée nominale d'une image (DefaultDuration
+                       Matroska), 0 si inconnue.
     """
     pts_ms: tuple[int, ...]
     durations_ms: tuple[int, ...]
+    nominal_frame_duration_ns: int = 0
 
     def __len__(self) -> int:
         return len(self.pts_ms)
@@ -78,7 +82,7 @@ class MatroskaTimestampReader:
         cmd = [
             self._ffprobe, "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries", "packet=pts_time,duration_time",
+            "-show_entries", "packet=pts_time,duration_time:stream=r_frame_rate",
             "-of", "json",
         ]
         cmd.extend(ffprobe_input_args(source))
@@ -146,10 +150,32 @@ class MatroskaTimestampReader:
                     bucket.pop(0) if bucket else default_duration
                 )
 
+        streams = payload.get("streams") or [{}]
         return TimestampSequence(
             pts_ms=tuple(ordered_pts),
             durations_ms=tuple(ordered_durations),
+            nominal_frame_duration_ns=_nominal_frame_duration_ns(
+                streams[0].get("r_frame_rate"), durations_ms_list[:-1],
+            ),
         )
+
+
+def _nominal_frame_duration_ns(rate: object, deltas_ms: list[int]) -> int:
+    """Durée nominale d'une image : ``r_frame_rate`` exact s'il concorde (±1 ms)
+    avec l'écart médian des PTS en présentation, sinon cet écart médian."""
+    positive = sorted(delta for delta in deltas_ms if delta > 0)
+    if not positive:
+        return 0
+    median_ms = positive[len(positive) // 2]
+    try:
+        fps = Fraction(str(rate))
+    except (ValueError, ZeroDivisionError):
+        fps = Fraction(0)
+    if fps > 0:
+        frame_ns = round(Fraction(1_000_000_000) / fps)
+        if abs(frame_ns - median_ms * 1_000_000) <= 1_000_000:
+            return frame_ns
+    return median_ms * 1_000_000
 
 
 __all__ = [

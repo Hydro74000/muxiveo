@@ -309,3 +309,44 @@ class TestMatroskaNativeMuxerFfprobeRoundTrip:
         )
         assert result.returncode == 0
         assert "matroska" in result.stdout.lower()
+
+
+class TestMatroskaNativeMuxerDefaultDuration:
+    """DefaultDuration écrit : sans lui, cadence lue 24,417 i/s (images B) et durée gonflée."""
+
+    @staticmethod
+    def _mux(tmp_path, name: str, source, stdout: str):
+        hevc = tmp_path / f"{name}.hevc"
+        hevc.write_bytes(_build_fake_hevc(frame_count=3))
+        out = tmp_path / f"{name}.mkv"
+        with patch(
+            "core.matroska.timestamps.subprocess.run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr=""),
+        ):
+            MatroskaNativeMuxer().mux(
+                hevc_input=hevc, source_for_timestamps=source, output=out,
+                pixel_width=1920, pixel_height=1080, timestamp_order="packet",
+            )
+        return MatroskaReader(out).tracks()[0].default_duration_ns, out
+
+    def test_default_duration_from_source_rate(self, tmp_path):
+        stdout = json.dumps({
+            "packets": [{"pts_time": t} for t in ("0.000000", "0.083000", "0.042000")],
+            "streams": [{"r_frame_rate": "24000/1001"}],
+        })
+        duration, _ = self._mux(tmp_path, "rate", tmp_path / "src.mp4", stdout)
+        assert duration == 41_708_333
+
+    def test_default_duration_copied_from_matroska_source(self, tmp_path):
+        # Source Matroska à 41,708333 ms ; ffprobe annonce 25 i/s : la piste source prime.
+        src_stdout = json.dumps({
+            "packets": [{"pts_time": t} for t in ("0.000000", "0.042000", "0.083000")],
+            "streams": [{"r_frame_rate": "24000/1001"}],
+        })
+        _, source = self._mux(tmp_path, "src", tmp_path / "none.mp4", src_stdout)
+        stdout = json.dumps({
+            "packets": [{"pts_time": t} for t in ("0.000000", "0.040000", "0.080000")],
+            "streams": [{"r_frame_rate": "25/1"}],
+        })
+        duration, _ = self._mux(tmp_path, "copy", source, stdout)
+        assert duration == 41_708_333

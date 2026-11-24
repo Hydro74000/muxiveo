@@ -118,6 +118,17 @@ def test_merge_dovi_identical_counts_end_to_end(qt_app, tmp_path: Path) -> None:
     assert result.get("status") == "finished", result
     output = Path(result["out"])
     assert _rpu_frames(output, tmp_path) == _FRAMES
+    # DefaultDuration écrit : cadence moyenne et durée de piste égales à Film 1
+    # (sans lui : cadence estimée sur l'ordre de décodage, 24,417 i/s).
+    def video(path: Path) -> dict:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=avg_frame_rate:stream_tags=DURATION", "-of", "json", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return json.loads(probe.stdout)["streams"][0]
+    assert video(output)["avg_frame_rate"] == video(film1)["avg_frame_rate"] == "24000/1001"
+    assert video(output)["tags"]["DURATION"] == video(film1)["tags"]["DURATION"]
     # Dossier process supprimé, seul le marqueur de racine subsiste.
     assert [p.name for p in (tmp_path / "work").iterdir()] == [".muxiveo-workdir"]
 

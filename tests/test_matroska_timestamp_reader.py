@@ -135,3 +135,31 @@ class TestMatroskaTimestampReader:
         ):
             with pytest.raises(RuntimeError, match="indisponible"):
                 reader.read(tmp_path / "src.mkv")
+
+
+class TestNominalFrameDuration:
+    """Durée nominale (DefaultDuration) déduite de ``r_frame_rate`` ou des PTS."""
+
+    @staticmethod
+    def _read(tmp_path, pts_ms: list[int], rate: str | None):
+        payload: dict = {"packets": [{"pts_time": f"{pts / 1000:.6f}"} for pts in pts_ms]}
+        if rate is not None:
+            payload["streams"] = [{"r_frame_rate": rate}]
+        with patch("core.matroska.timestamps.subprocess.run", return_value=_completed(json.dumps(payload))):
+            return MatroskaTimestampReader().read(tmp_path / "x.mkv", sort_by_pts=False)
+
+    def test_exact_ntsc_rate_from_r_frame_rate(self, tmp_path):
+        # Ordre de décodage avec images B : PTS arrondis à la milliseconde.
+        seq = self._read(tmp_path, [0, 167, 83, 42, 125, 334, 250, 209, 292], "24000/1001")
+        assert seq.nominal_frame_duration_ns == 41_708_333
+
+    def test_rate_contradicted_by_timestamps_falls_back_to_median(self, tmp_path):
+        seq = self._read(tmp_path, [0, 40, 80, 120, 160], "90000/1")
+        assert seq.nominal_frame_duration_ns == 40_000_000
+
+    def test_missing_rate_uses_median_delta(self, tmp_path):
+        seq = self._read(tmp_path, [0, 40, 100, 140], None)
+        assert seq.nominal_frame_duration_ns == 40_000_000
+
+    def test_single_frame_has_no_nominal_duration(self, tmp_path):
+        assert self._read(tmp_path, [0], "24000/1001").nominal_frame_duration_ns == 0
