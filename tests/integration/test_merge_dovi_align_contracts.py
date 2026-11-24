@@ -14,6 +14,7 @@ import pytest
 
 from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord, hdr10plus_document
 from core.matroska.hevc.access_units import iter_hevc_access_units
+from core.matroska.hevc.poc import iter_pictures
 from core.matroska.native_muxer import MatroskaNativeMuxer
 from core.workflows.merge_dovi_align.presence import (
     has_hdr10plus,
@@ -203,11 +204,15 @@ def test_presence_audits_see_holes_the_extractors_hide(tmp_path: Path) -> None:
     assert complete.frames == frames and complete.complete
 
     # RPU retiré de l'unité 3 (décodage), HDR10+ retiré de l'unité 5 : rangs d'affichage par POC.
-    holed = _strip(full, tmp_path / "holed.hevc", {3: 62, 5: 39})
+    holed = _strip(full, tmp_path / "holed.hevc", {0: 62, 3: 62, 5: 39})
+    # Oracle : rang d'affichage de chaque unité d'après le POC (ordre de décodage → affichage).
+    keys = [key for key, _kinds in iter_pictures(full)]
+    display = {decode: rank for rank, decode in enumerate(sorted(range(len(keys)), key=lambda i: keys[i]))}
     rpu_gaps = scan_annexb_presence(holed, has_rpu)
     hdr_gaps = scan_annexb_presence(holed, has_hdr10plus)
-    assert len(rpu_gaps.missing) == 1 and not rpu_gaps.trailing
-    assert len(hdr_gaps.missing) == 1 and not hdr_gaps.trailing
+    assert rpu_gaps.missing == tuple(sorted((display[0], display[3]))) and not rpu_gaps.trailing
+    assert hdr_gaps.missing == (display[5],) and not hdr_gaps.trailing
+    assert display[3] != 3 or display[5] != 5, "images B attendues : ordres de décodage et d'affichage distincts"
     # L'extracteur HDR10+ comble le trou : le compte extrait ne le révèle pas.
     extracted = tmp_path / "extracted.json"
     result = subprocess.run(["hdr10plus_tool", "extract", "-i", str(holed), "-o", str(extracted)],

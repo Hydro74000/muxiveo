@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import threading
+import time
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -19,6 +22,9 @@ from core.workflows.merge_dovi_align.frames import (
     parse_stream_props,
     read_frame_table,
 )
+from core.workflows.merge_dovi_align import probe as probe_module
+from core.workflows.merge_dovi_align.presence import PresenceError, _gaps
+from core.workflows.merge_dovi_align.process import ProcessHooks
 from core.workflows.merge_dovi_align.probe import (
     STRIP,
     VIGNETTE_H,
@@ -131,3 +137,61 @@ def test_accumulator_bars_and_blank_frames() -> None:
     assert (result.top[0], result.bottom[0], result.left[0], result.right[0]) == (20, 20, 40, 30)
     assert (result.top[1], result.bottom[1]) == (-1, -1)
     assert result.mean[0] == pytest.approx(400) and result.vignettes[0, 0, 0] == 100
+
+
+# --- Lot 1, relecture : CUDA, relances, annulation, présence ---------------------------------------
+
+@pytest.mark.parametrize(("pix_fmt", "expected"), [
+    ("yuv420p", "nv12"), ("yuv420p10le", "p010le"), ("yuv420p12le", "p016le"),
+    ("yuv422p10le", "p210le"), ("yuv444p", "yuv444p"), ("yuv444p10le", "yuv444p16le"),
+    ("gray", None), ("yuv410p", None), ("", None),
+])
+def test_cuda_download_format_follows_chroma_and_depth(pix_fmt: str, expected: str | None) -> None:
+    assert probe_module.cuda_format(pix_fmt) == expected
+
+
+def test_window_retries_any_anomaly_earlier(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = FrameTable(Path("a.mkv"), _props(), True, "", tuple(range(0, 420, 42)))
+    seeks: list[str] = []
+    answers = iter([
+        [9999, 42 * 3, 42 * 4],        # PTS inconnu : relance
+        [42 * 3, 42 * 3, 42 * 4],      # image dupliquée : relance
+        [42 * 2, 42 * 3, 42 * 4, 42 * 5],  # départ plus tôt, fenêtre complète
+    ])
+
+    def fake_decode(table, ffmpeg, hooks, *, seek, frames, hwaccel, progress):
+        seeks.append(seek)
+        pts = next(answers)
+        acc = _Accumulator(320, 180)
+        for _ in pts:
+            acc.add(_stacked(320, 180, slice(10, 170), slice(0, 320)))
+        return acc, pts, "logiciel"
+
+    monkeypatch.setattr(probe_module, "_decode", fake_decode)
+    window = probe_module.decode_window(table, 3, 3)
+    assert window.ranks.tolist() == [3, 4, 5] and len(seeks) == 3
+    assert seeks[0] == table.seek_seconds(3) and seeks[2] == table.seek_seconds(0)
+
+
+def test_cancellation_stops_a_blocked_reader_and_cleans_up() -> None:
+    table = FrameTable(Path("a.mkv"), _props(64, 64), True, "", (0, 42))
+    command = [sys.executable, "-c", "import sys, time; sys.stdout.write('x'); sys.stdout.flush(); time.sleep(60)"]
+    started: list = []
+    ended: list = []
+    cancel = threading.Event()
+    hooks = ProcessHooks(cancelled=cancel.is_set, on_start=started.append, on_end=ended.append)
+    threading.Timer(0.3, cancel.set).start()
+    begin = time.monotonic()
+    with pytest.raises(InterruptedError):
+        probe_module._run(command, table, hooks, None)
+    assert time.monotonic() - begin < 10
+    assert started and ended and started[0] is ended[0]
+    proc = ended[0]
+    assert proc.poll() is not None and proc.stdout.closed and proc.stderr.closed
+
+
+def test_equal_timestamps_make_missing_ranks_ambiguous() -> None:
+    with pytest.raises(PresenceError):
+        _gaps([0, 40, 40], [2])
+    assert _gaps([0, 40, 40], []).missing == ()
+    assert _gaps([0, 80, 40], [1]).missing == (2,)

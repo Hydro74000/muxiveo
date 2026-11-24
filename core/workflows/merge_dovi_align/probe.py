@@ -24,7 +24,11 @@ from typing import cast
 
 import numpy as np
 
-from core.subprocess_utils import kill_process_tree, subprocess_windows_no_window_kwargs
+from core.subprocess_utils import (
+    kill_process_tree,
+    subprocess_windows_no_window_kwargs,
+    watch_process_cancellation,
+)
 
 from .frames import FrameTable
 from .process import ProcessHooks
@@ -145,8 +149,21 @@ def parse_showinfo(lines: list[str]) -> list[int]:
     return out
 
 
-def _cuda_format(pix_fmt: str) -> str:
-    return "p010le" if "10" in pix_fmt or "12" in pix_fmt or "16" in pix_fmt else "nv12"
+#: Format de téléchargement des images NVDEC selon (chrominance, profondeur) de la source.
+_CUDA_FORMATS: dict[tuple[str, int], str] = {
+    ("420", 8): "nv12", ("420", 10): "p010le", ("420", 12): "p016le",
+    ("422", 8): "nv16", ("422", 10): "p210le", ("422", 12): "p216le",
+    ("444", 8): "yuv444p", ("444", 10): "yuv444p16le", ("444", 12): "yuv444p16le",
+}
+_PIX_FMT = re.compile(r"^yuv(420|422|444)p(?:(10|12)(?:le|be))?$")
+
+
+def cuda_format(pix_fmt: str) -> str | None:
+    """Format transférable depuis NVDEC pour ``pix_fmt`` ; None si NVDEC ne le produit pas (repli logiciel)."""
+    match = _PIX_FMT.match(pix_fmt or "")
+    if match is None:
+        return None
+    return _CUDA_FORMATS.get((match.group(1), int(match.group(2) or 8)))
 
 
 def _command(ffmpeg: str, table: FrameTable, *, seek: str | None, frames: int | None, hwaccel: str | None) -> list[str]:
@@ -160,7 +177,7 @@ def _command(ffmpeg: str, table: FrameTable, *, seek: str | None, frames: int | 
         cmd += ["-ss", seek]
     cmd += ["-i", str(table.path), "-an", "-sn", "-dn"]
     graph = filter_graph(props.width, props.height, black_threshold(props.full_range),
-                         cuda_format=_cuda_format(props.pix_fmt) if hwaccel == "cuda" else None)
+                         cuda_format=cuda_format(props.pix_fmt) if hwaccel == "cuda" else None)
     cmd += ["-filter_complex", graph, "-map", "[out]", "-fps_mode", "passthrough"]
     if frames is not None:
         cmd += ["-frames:v", str(frames)]
@@ -168,61 +185,75 @@ def _command(ffmpeg: str, table: FrameTable, *, seek: str | None, frames: int | 
     return cmd
 
 
-def _run(command: list[str], table: FrameTable, hooks: ProcessHooks, decoder: str,
-         progress: Callable[[int], None] | None) -> tuple[_Accumulator, list[int], int, str]:
-    """Lance FFmpeg, analyse chaque image en flux ; (accumulateur, PTS showinfo, code retour, erreurs)."""
-    hooks.check()
-    acc = _Accumulator(table.props.width, table.props.height)
+def _popen(command: list[str]) -> subprocess.Popen:
     kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "stdin": subprocess.DEVNULL}
     kwargs.update(subprocess_windows_no_window_kwargs(include_stdin=False))
     if sys.platform != "win32":
         kwargs["start_new_session"] = True
     # Commande argv construite ici, sans interprétation shell.
     # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-    proc = subprocess.Popen(command, **kwargs)
-    if hooks.on_start is not None:
-        hooks.on_start(proc)
+    return subprocess.Popen(command, **kwargs)
+
+
+def _run(command: list[str], table: FrameTable, hooks: ProcessHooks,
+         progress: Callable[[int], None] | None) -> tuple[_Accumulator, list[int], int, str]:
+    """Lance FFmpeg, analyse chaque image en flux ; (accumulateur, PTS showinfo, code retour, erreurs).
+
+    Annulation surveillée pendant les lectures bloquantes (processus tué, ``InterruptedError``) ; flux
+    fermés, processus attendu et ``on_end`` appelé dans tous les cas.
+    """
+    hooks.check()
+    acc = _Accumulator(table.props.width, table.props.height)
+    proc = _popen(command)
     lines: list[str] = []
     errors: deque[str] = deque(maxlen=40)
-
-    def drain() -> None:
-        assert proc.stderr is not None
-        for raw in proc.stderr:
-            text = raw.decode("utf-8", "replace")
-            if "pts:" in text and "n:" in text:
-                lines.append(text)
-            else:
-                errors.append(text.rstrip())
-
-    reader = threading.Thread(target=drain, name="merge-dovi-align-stderr", daemon=True)
-    reader.start()
-    buffer = bytearray(acc.frame_bytes)
-    view = memoryview(buffer)
-    stdout = cast(io.BufferedReader, proc.stdout)
+    reader: threading.Thread | None = None
     try:
-        while True:
-            if hooks.cancelled():
-                raise InterruptedError("Alignement annulé.")
-            got = 0
-            while got < acc.frame_bytes:
-                chunk = stdout.readinto(view[got:])
-                if not chunk:
+        if hooks.on_start is not None:
+            hooks.on_start(proc)
+
+        def drain() -> None:
+            assert proc.stderr is not None
+            for raw in proc.stderr:
+                text = raw.decode("utf-8", "replace")
+                if "pts:" in text and "n:" in text:
+                    lines.append(text)
+                else:
+                    errors.append(text.rstrip())
+
+        reader = threading.Thread(target=drain, name="merge-dovi-align-stderr", daemon=True)
+        reader.start()
+        buffer = bytearray(acc.frame_bytes)
+        view = memoryview(buffer)
+        stdout = cast(io.BufferedReader, proc.stdout)
+        with watch_process_cancellation(proc, hooks.cancelled):
+            while True:
+                got = 0
+                while got < acc.frame_bytes:
+                    chunk = stdout.readinto(view[got:])
+                    if not chunk:
+                        break
+                    got += chunk
+                if got == 0:
                     break
-                got += chunk
-            if got == 0:
-                break
-            if got < acc.frame_bytes:
-                raise ProbeError("Image tronquée dans la sortie de FFmpeg.")
-            acc.add(buffer)
-            if progress is not None and len(acc.bars) % 256 == 0:
-                progress(len(acc.bars))
-        returncode = proc.wait()
+                if got < acc.frame_bytes:
+                    hooks.check()
+                    raise ProbeError("Image tronquée dans la sortie de FFmpeg.")
+                acc.add(buffer)
+                if progress is not None and len(acc.bars) % 256 == 0:
+                    progress(len(acc.bars))
+            returncode = proc.wait()
+        hooks.check()
     except BaseException:
         kill_process_tree(proc, timeout=0.2)
-        proc.wait()
         raise
     finally:
-        reader.join(timeout=5)
+        proc.wait()
+        if reader is not None:
+            reader.join(timeout=5)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
         if hooks.on_end is not None:
             hooks.on_end(proc)
     return acc, parse_showinfo(lines), returncode, "\n".join(list(errors)[-8:])
@@ -230,13 +261,15 @@ def _run(command: list[str], table: FrameTable, hooks: ProcessHooks, decoder: st
 
 def _decode(table: FrameTable, ffmpeg: str, hooks: ProcessHooks, *, seek: str | None, frames: int | None,
             hwaccel: str | None, progress: Callable[[int], None] | None) -> tuple[_Accumulator, list[int], str]:
-    """Décodage CUDA si demandé, repli logiciel si le décodeur matériel échoue avant toute image."""
+    """Décodage CUDA si demandé et possible, repli logiciel si le décodeur matériel échoue avant toute image."""
+    if hwaccel == "cuda" and cuda_format(table.props.pix_fmt) is None:
+        hwaccel = None
     attempts = [hwaccel, None] if hwaccel else [None]
     last_error = ""
     for attempt in attempts:
         decoder = "CUDA" if attempt == "cuda" else "logiciel"
         acc, pts, code, errors = _run(_command(ffmpeg, table, seek=seek, frames=frames, hwaccel=attempt),
-                                      table, hooks, decoder, progress)
+                                      table, hooks, progress)
         if code == 0 or (frames is not None and len(acc.bars) >= frames):
             return acc, pts, decoder
         last_error = errors
@@ -281,8 +314,8 @@ def decode_window(table: FrameTable, start: int, count: int, *, ffmpeg: str = "f
                   hooks: ProcessHooks | None = None, hwaccel: str | None = None) -> Signatures:
     """Images ``[start, start + count)`` d'une entrée indexable, chacune identifiée par son PTS exact.
 
-    Recherche une demi-image avant l'image visée ; si le démuxeur part plus loin, relance plus tôt.
-    Image manquante, dupliquée ou inconnue : :class:`ProbeError`.
+    Recherche une demi-image avant l'image visée ; toute anomalie (départ trop tardif, PTS inconnu, image
+    manquante ou dupliquée) relance la recherche plus tôt ; échec de toutes les relances : :class:`ProbeError`.
     """
     hooks = hooks or ProcessHooks()
     if not table.indexable:
@@ -292,19 +325,24 @@ def decode_window(table: FrameTable, start: int, count: int, *, ffmpeg: str = "f
     stop = min(total, start + count)
     if stop <= start:
         raise ProbeError("Fenêtre vide.")
+    expected = list(range(start, stop))
+    reason = "introuvable par recherche"
+    tried: set[int] = set()
     for back in (0, 1, 8, 48):
         first = max(0, start - back)
+        if first in tried:
+            continue
+        tried.add(first)
         acc, pts, decoder = _decode(table, ffmpeg, hooks, seek=table.seek_seconds(first),
                                     frames=stop - first, hwaccel=hwaccel, progress=None)
-        ranks = _ranks(table, pts, len(acc.bars))
-        if not ranks or ranks[0] > start:
-            if first == 0:
-                break
+        try:
+            ranks = _ranks(table, pts, len(acc.bars))
+        except ProbeError as exc:
+            reason = str(exc)
             continue
-        signatures = acc.result(ranks, pts, decoder)
         offset = ranks.index(start) if start in ranks else -1
-        expected = list(range(start, stop))
         if offset < 0 or ranks[offset:offset + len(expected)] != expected:
-            raise ProbeError(f"Fenêtre {start}–{stop - 1} de {table.path.name} : images manquantes ou dupliquées.")
-        return signatures.slice(offset, offset + len(expected))
-    raise ProbeError(f"Fenêtre {start}–{stop - 1} de {table.path.name} introuvable par recherche.")
+            reason = "images manquantes, dupliquées ou départ trop tardif"
+            continue
+        return acc.result(ranks, pts, decoder).slice(offset, offset + len(expected))
+    raise ProbeError(f"Fenêtre {start}–{stop - 1} de {table.path.name} : {reason}.")

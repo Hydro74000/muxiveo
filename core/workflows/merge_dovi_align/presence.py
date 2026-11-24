@@ -30,6 +30,10 @@ def has_hdr10plus(nals: Iterable[tuple[int, bytes]]) -> bool:
     return any(kind in _SEI_NALS and _HDR10PLUS_T35 in payload for kind, payload in nals)
 
 
+class PresenceError(RuntimeError):
+    """Rang d'affichage d'une image sans métadonnée impossible à établir sans ambiguïté."""
+
+
 @dataclass(frozen=True)
 class PresenceGaps:
     """Images sans la métadonnée cherchée (rangs comptés depuis 0)."""
@@ -58,8 +62,12 @@ def _length_prefixed_nals(payload: bytes, length_size: int) -> list[tuple[int, b
     return nals
 
 
-def _gaps(order_keys: list[object], missing_decode: list[int]) -> PresenceGaps:
-    order = sorted(range(len(order_keys)), key=lambda index: (order_keys[index], index))
+def _gaps(order_keys: list, missing_decode: list[int]) -> PresenceGaps:
+    """Rangs d'affichage des images manquantes ; clés d'affichage égales avec un trou : :class:`PresenceError`
+    (départager par l'ordre de décodage pourrait viser une autre image que celle qui manque)."""
+    if missing_decode and len(set(order_keys)) != len(order_keys):
+        raise PresenceError("Horodatages d'images égaux : rang des images sans métadonnée indéterminé.")
+    order = sorted(range(len(order_keys)), key=lambda index: order_keys[index])
     rank = {decode: display for display, decode in enumerate(order)}
     trailing = bool(missing_decode) and missing_decode == list(
         range(len(order_keys) - len(missing_decode), len(order_keys)))
@@ -70,7 +78,7 @@ def scan_matroska_presence(path: Path, track_index: int, present: NalPredicate, 
                            cancelled: Callable[[], bool] | None = None) -> PresenceGaps:
     """Blocs vidéo d'un MKV : images sans la métadonnée, rang d'affichage par horodatage.
 
-    PTS égaux départagés par l'ordre de décodage. ``InterruptedError`` si ``cancelled``.
+    Horodatages égaux avec un trou : :class:`PresenceError`. ``InterruptedError`` si ``cancelled``.
     """
     from core.matroska.reader import MatroskaReader
 
@@ -82,7 +90,7 @@ def scan_matroska_presence(path: Path, track_index: int, present: NalPredicate, 
     track = tracks[track_index]
     private = track.codec_private
     length_size = (private[21] & 0x03) + 1 if len(private) >= 23 and private[0] == 1 else 4
-    stamps: list[object] = []
+    stamps: list[int] = []
     missing: list[int] = []
     for block in reader.blocks(track_numbers={track.number}):
         index = len(stamps)
@@ -102,7 +110,7 @@ def scan_annexb_presence(path: Path, present: NalPredicate, *,
     """
     from core.matroska.hevc.poc import iter_picture_units
 
-    keys: list[object] = []
+    keys: list[tuple[int, int]] = []
     missing: list[int] = []
     for key, _kinds, unit in iter_picture_units(Path(path), cancelled=cancelled):
         if not present([(nal.nal_type, nal.payload) for nal in unit.nal_units]):

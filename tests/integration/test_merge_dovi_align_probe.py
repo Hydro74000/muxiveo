@@ -17,16 +17,24 @@ pytestmark = pytest.mark.skipif(
 W, H = 320, 180
 
 
-def _encode_frames(path: Path, lumas: list[np.ndarray], *, codec: list[str], extra: list[str] = ()) -> Path:
-    """Images Y 10 bits données (chroma neutre) → fichier ; ``color_range`` limité."""
+_CHROMA = {"420": (2, 2), "422": (2, 1), "444": (1, 1)}
+
+
+def _encode_frames(path: Path, lumas: list[np.ndarray], *, codec: list[str], extra: list[str] = (),
+                   chroma: str = "420", bits: int = 10, color_range: str = "tv") -> Path:
+    """Images Y données (chroma neutre) → fichier ; sous-échantillonnage, profondeur et plage choisis."""
+    sx, sy = _CHROMA[chroma]
+    pix_fmt = f"yuv{chroma}p" + ("10le" if bits == 10 else "")
+    dtype = "<u2" if bits == 10 else "u1"
+    neutral = 512 if bits == 10 else 128
     raw = bytearray()
     for luma in lumas:
-        raw += luma.astype("<u2").tobytes()
-        raw += np.full((H // 2, W // 2), 512, dtype="<u2").tobytes() * 2
+        raw += luma.astype(dtype).tobytes()
+        raw += np.full((H // sy, W // sx), neutral, dtype=dtype).tobytes() * 2
     subprocess.run([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p10le",
-        "-s", f"{W}x{H}", "-r", "24000/1001", "-color_range", "tv", "-i", "-", *codec, "-color_range", "tv",
-        *extra, str(path),
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", pix_fmt,
+        "-s", f"{W}x{H}", "-r", "24000/1001", "-color_range", color_range, "-i", "-", *codec,
+        "-color_range", color_range, *extra, str(path),
     ], input=bytes(raw), check=True, capture_output=True)
     return path
 
@@ -95,3 +103,40 @@ def test_window_refused_on_non_indexable_input(tmp_path: Path, bframes_mkv: Path
     with pytest.raises(ProbeError):
         decode_window(table, 0, 4)
     assert len(decode_all(table)) == 96
+
+
+@pytest.mark.parametrize(("chroma", "bits", "color_range", "black", "visible"), [
+    ("420", 10, "pc", 0, 17),      # plage pleine : noir 0, seuil 16
+    ("420", 8, "tv", 16, 21),      # 8 bits : codes ×4 en 10 bits (21 → 84 > 80)
+    ("422", 10, "tv", 64, 81),
+    ("444", 10, "tv", 64, 81),
+])
+def test_bars_across_ranges_depths_and_chroma(tmp_path: Path, chroma: str, bits: int, color_range: str,
+                                              black: int, visible: int) -> None:
+    content = 200 if bits == 8 else 400
+    frames = [_letterbox(30, 10, bar=black, content=content) for _ in range(2)]
+    frames[1][4, 50] = visible
+    path = _encode_frames(tmp_path / f"r{chroma}{bits}{color_range}.mkv", frames, codec=["-c:v", "ffv1"],
+                          chroma=chroma, bits=bits, color_range=color_range)
+    signatures = decode_all(read_frame_table(path))
+    assert (signatures.top[0], signatures.bottom[0]) == (30, 10)
+    assert signatures.top[1] == 4
+
+
+def test_window_on_variable_frame_rate_source(tmp_path: Path) -> None:
+    if subprocess.run(["ffmpeg", "-hide_banner", "-h", "encoder=libx264"], capture_output=True).returncode:
+        pytest.skip("libx264 absent")
+    path = tmp_path / "vfr.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=24",
+        "-frames:v", "72", "-vf", "select='not(eq(mod(n\\,5)\\,0))'", "-fps_mode", "vfr",
+        "-c:v", "libx264", "-preset", "ultrafast", "-bf", "2", str(path),
+    ], check=True, capture_output=True)
+    table = read_frame_table(path)
+    deltas = {b - a for a, b in zip(table.pts, table.pts[1:])}
+    assert len(deltas) > 1, "source à cadence variable attendue"
+    full = decode_all(table)
+    for start in (0, 20, 50):
+        window = decode_window(table, start, 5)
+        assert window.ranks.tolist() == list(range(start, start + 5))
+        assert np.array_equal(window.vignettes, full.vignettes[start:start + 5])
