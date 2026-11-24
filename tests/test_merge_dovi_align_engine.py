@@ -586,3 +586,45 @@ def test_frame_scan_finds_a_short_gap_across_block_boundaries() -> None:
     sig2 = align_module.take(sig1, order)
     ctx = _Context(sig1, Film2Frames(4200, full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
     assert (4095, 4098, -2) in _frame_scan(ctx, Segment(0, 4200, 0))
+
+
+def test_constrained_solver_matches_brute_force_with_unmatched_resumes() -> None:
+    import itertools
+
+    rng = np.random.default_rng(34)
+    for _trial in range(12):
+        lengths = rng.integers(10, 40, size=6)
+        bounds = np.concatenate([[0], np.cumsum(lengths)])
+        film1_cut = np.zeros(int(bounds[-1]) + 1, dtype=bool)
+        film1_cut[bounds[:-1]] = True
+        candidates = np.asarray([0, 150, 450])
+        cuts2 = np.unique(rng.choice(np.arange(0, 700), size=12, replace=False))
+        cuts2 = np.unique(np.concatenate([cuts2, bounds[rng.integers(0, 6, size=3)] + candidates[rng.integers(0, 3)]]))
+        model = _ShotModel(bounds, film1_cut, cuts2, 700, candidates, ProcessHooks())
+        _path, total = model.solve()
+        emissions = [model.emission(k, None) for k in range(model.shots)]
+        best = -np.inf
+        for states in itertools.product(range(model.states), repeat=model.shots):
+            score = emissions[0][states[0]]
+            feasible = True
+            position = -np.inf      # fin dans Film 2 du dernier plan placé
+            previous = states[0]
+            if previous != model.none:
+                position = bounds[1] + candidates[previous]
+            for k in range(1, model.shots):
+                state = states[k]
+                if state != previous:
+                    score -= align_module.CHANGE_PENALTY
+                    if state != model.none:
+                        start = bounds[k] + candidates[state]
+                        if previous == model.none:
+                            feasible &= start >= position
+                        else:
+                            feasible &= candidates[previous] <= candidates[state] + align_module.MAX_INSERT
+                score += emissions[k][state]
+                if state != model.none:
+                    position = bounds[k + 1] + candidates[state]
+                previous = state
+            if feasible:
+                best = max(best, score)
+        assert total == pytest.approx(best)

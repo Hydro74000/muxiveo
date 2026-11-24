@@ -46,6 +46,8 @@ AMBIGUITY_MARGIN = 2.0
 MAX_INSERT = 200
 #: Plafond des états de la programmation dynamique et pas des points de reprise (mémoire bornée).
 MAX_STATES = 1024
+#: Couples (score, position) non dominés gardés pour l'état « sans correspondance ».
+MAX_NONE_PAIRS = 32
 CHECKPOINT = 64
 GEOMETRY_CORRELATION = 0.6
 GEOMETRY_AGREEMENT = 0.8
@@ -305,77 +307,116 @@ class _ShotModel:
             values[forbid[2]] = -1e12
         return values
 
-    def _step(self, score: np.ndarray, emission: np.ndarray, k: int,
-              none_position: float) -> tuple[np.ndarray, np.ndarray, float]:
-        """Score après le plan ``k``, état précédent de chaque état et position mémorisée de « sans
-        correspondance » : fin, dans Film 2, du dernier plan placé du meilleur chemin qui y passe. Une reprise
-        depuis « sans correspondance » n'est admise que si le plan repris commence après cette position."""
+    def _step(self, score: np.ndarray, pairs: tuple[np.ndarray, np.ndarray], emission: np.ndarray,
+              k: int) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray], np.ndarray, np.ndarray]:
+        """Un plan de plus.
+
+        ``score`` : états placés ; ``pairs`` : « sans correspondance », couples non dominés (score, position)
+        triés par position croissante — position = fin dans Film 2 du dernier plan placé du chemin ; un couple
+        à position plus tardive n'est gardé que s'il a un meilleur score. Reprise d'un état placé depuis un
+        couple seulement si le plan repris commence après sa position. Rend (scores placés, couples, sources
+        des états placés, origines des couples) ; codage des sources : ``s`` (état placé) ou ``états + p``
+        (couple p du plan précédent).
+        """
         start = int(self.bounds[k])
-        mapped = score[:self.none]
-        prefix_best = np.maximum.accumulate(mapped)
-        prefix_arg = _prefix_argmax(mapped)
+        none_scores, none_positions = pairs
+        prefix_best = np.maximum.accumulate(score)
+        prefix_arg = _prefix_argmax(score)
         allowed, allowed_arg = prefix_best[self.limit], prefix_arg[self.limit]
-        resumable = start + self.candidates >= none_position
-        from_none = resumable & (score[self.none] > allowed)
-        best_mapped = int(np.argmax(mapped))
-        best = np.append(np.where(from_none, score[self.none], allowed), mapped[best_mapped])
-        arg = np.append(np.where(from_none, self.none, allowed_arg), best_mapped)
+        reach = np.searchsorted(none_positions, start + self.candidates, side="right") - 1
+        from_none_score = np.where(reach >= 0, none_scores[np.clip(reach, 0, None)], -np.inf) \
+            if none_scores.size else np.full(self.candidates.size, -np.inf)
+        from_none = from_none_score > allowed
+        best = np.where(from_none, from_none_score, allowed)
+        arg = np.where(from_none, self.states + np.clip(reach, 0, None), allowed_arg)
         switch = best - CHANGE_PENALTY
         stay = switch <= score
-        source = np.where(stay, np.arange(self.states), arg)
-        if not stay[self.none]:
-            none_position = float(start + self.candidates[best_mapped])
-        return np.where(stay, score, switch) + emission, source, none_position
+        sources = np.where(stay, np.arange(self.candidates.size), arg)
+        mapped = np.where(stay, score, switch) + emission[:self.none]
+        # Couples : rester sans correspondance, ou y entrer depuis un état placé (position = fin de son plan).
+        stay_scores = none_scores + emission[self.none]
+        enter_scores = score - CHANGE_PENALTY + emission[self.none]
+        enter_positions = (start + self.candidates).astype(np.float64)
+        all_scores = np.concatenate([stay_scores, enter_scores])
+        all_positions = np.concatenate([none_positions, enter_positions])
+        origins = np.concatenate([self.states + np.arange(none_scores.size), np.arange(self.candidates.size)])
+        order = np.lexsort((-all_scores, all_positions))
+        kept: list[int] = []
+        running = -np.inf
+        for index in order:
+            if all_scores[index] > running:
+                kept.append(int(index))
+                running = float(all_scores[index])
+        if len(kept) > MAX_NONE_PAIRS:
+            spots = np.linspace(0, len(kept) - 1, MAX_NONE_PAIRS).round().astype(int)
+            kept = [kept[int(spot)] for spot in sorted(set(spots.tolist()))]
+        chosen = np.asarray(kept, dtype=np.int64)
+        return mapped, (all_scores[chosen], all_positions[chosen]), sources, origins[chosen]
 
-    def _start(self, emission: np.ndarray, entry: int | None, k: int) -> tuple[np.ndarray, np.ndarray, float]:
+    def _start(self, emission: np.ndarray, entry: int | None,
+               k: int) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray], np.ndarray, np.ndarray]:
+        empty_pairs = (np.zeros(0), np.zeros(0))
         if entry is None:
-            return emission, np.arange(self.states), -np.inf
-        start = np.full(self.states, -1e12)
-        start[entry] = 0.0
-        position = -np.inf if entry == self.none else float(int(self.bounds[k]) + self.candidates[entry])
-        return self._step(start, emission, k, position)
+            pairs = (np.asarray([emission[self.none]]), np.asarray([-np.inf]))
+            return emission[:self.none].copy(), pairs, np.arange(self.candidates.size), np.asarray([-1])
+        score = np.full(self.candidates.size, -1e12)
+        pairs = empty_pairs
+        if entry == self.none:
+            pairs = (np.asarray([0.0]), np.asarray([-np.inf]))
+        else:
+            score[entry] = 0.0
+        return self._step(score, pairs, emission, k)
 
     def solve(self, first: int = 0, last: int | None = None, *, entry: int | None = None,
               exit: int | None = None, forbid: tuple[int, int, int] | None = None) -> tuple[np.ndarray, float]:
-        """Meilleur chemin sur les plans ``[first, last)`` (états), et son score. ``entry`` : état imposé au
-        plan précédant ``first`` ; ``exit`` : état imposé au dernier plan ; ``forbid`` : (plans début, fin,
-        état) interdit."""
+        """Meilleur chemin sur les plans ``[first, last)`` et son score. Chemin : état placé ``s`` ou
+        ``self.none`` (sans correspondance). ``entry`` : état imposé au plan précédant ``first`` ; ``exit`` :
+        état imposé au dernier plan ; ``forbid`` : (plans début, fin, état) interdit."""
         last = self.shots if last is None else last
-        checkpoints: list[tuple[np.ndarray, float]] = []
-        score, position = np.zeros(0), -np.inf
+        checkpoints: list[tuple[np.ndarray, tuple[np.ndarray, np.ndarray]]] = []
+        score = np.zeros(0)
+        pairs: tuple[np.ndarray, np.ndarray] = (np.zeros(0), np.zeros(0))
         for k in range(first, last):
             if (k - first) % 256 == 0:
                 self.hooks.check()
             emission = self.emission(k, forbid)
             if k == first:
-                score, _source, position = self._start(emission, entry, k)
+                score, pairs, _sources, _origins = self._start(emission, entry, k)
             else:
-                score, _source, position = self._step(score, emission, k, position)
+                score, pairs, _sources, _origins = self._step(score, pairs, emission, k)
             if (k - first) % CHECKPOINT == CHECKPOINT - 1:
-                checkpoints.append((score.copy(), position))
-        state = exit if exit is not None else int(np.argmax(score))
-        total = float(score[state])
+                checkpoints.append((score.copy(), (pairs[0].copy(), pairs[1].copy())))
+        best_none = int(np.argmax(pairs[0])) if pairs[0].size else -1
+        none_value = float(pairs[0][best_none]) if best_none >= 0 else -np.inf
+        if exit is not None and exit != self.none:
+            state, total = int(exit), float(score[exit])
+        elif exit == self.none or none_value > float(score.max()):
+            state, total = self.states + best_none, none_value
+        else:
+            state = int(np.argmax(score))
+            total = float(score[state])
         path = np.zeros(last - first, dtype=np.int64)
-        # Remontée bloc par bloc : recalcul des états précédents depuis le point de reprise du bloc.
+        # Remontée bloc par bloc : recalcul des sources depuis le point de reprise du bloc.
         block_end = last
         while block_end > first:
             block_start = first + ((block_end - 1 - first) // CHECKPOINT) * CHECKPOINT
             self.hooks.check()
-            sources: list[np.ndarray] = []
+            steps: list[tuple[np.ndarray, np.ndarray]] = []
             if block_start == first:
-                score, source, position = self._start(self.emission(first, forbid), entry, first)
-                sources.append(source)
+                score, pairs, sources, origins = self._start(self.emission(first, forbid), entry, first)
+                steps.append((sources, origins))
                 begin = first + 1
             else:
-                saved, position = checkpoints[(block_start - first) // CHECKPOINT - 1]
-                score = saved.copy()
+                saved, saved_pairs = checkpoints[(block_start - first) // CHECKPOINT - 1]
+                score, pairs = saved.copy(), saved_pairs
                 begin = block_start
             for k in range(begin, block_end):
-                score, source, position = self._step(score, self.emission(k, forbid), k, position)
-                sources.append(source)
+                score, pairs, sources, origins = self._step(score, pairs, self.emission(k, forbid), k)
+                steps.append((sources, origins))
             for k in range(block_end - 1, block_start - 1, -1):
-                path[k - first] = state
-                state = int(sources[k - block_start][state])
+                path[k - first] = self.none if state >= self.states else state
+                sources, origins = steps[k - block_start]
+                state = int(origins[state - self.states]) if state >= self.states else int(sources[state])
             block_end = block_start
         return path, total
 
@@ -723,15 +764,15 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                                  f"(décalage {d:+d}).", ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
-    if film2.full is not None and not full_at_build:
-        # Passe complète déclenchée en cours de vérification : tout le parcours exhaustif est repris.
-        say("Vérification reprise sur la passe complète de Film 2.")
-        return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
-
     covered = np.zeros(n1, dtype=bool)
     for seg in built:
         covered[seg.film1_start:seg.film1_end] = True
     uncovered = _uncovered(ctx, covered, built)
+    if film2.full is not None and not full_at_build:
+        # Passe complète déclenchée en cours de vérification (dernière lecture de Film 2 comprise) : tout le
+        # parcours exhaustif est repris.
+        say("Vérification reprise sur la passe complète de Film 2.")
+        return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
     used = np.zeros(n2, dtype=bool)
     for seg in built:
         used[seg.film2_start:seg.film2_end] = True
