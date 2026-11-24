@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -35,8 +35,10 @@ class MetadataTrack:
     frames: int
     change_points: np.ndarray
     reference_cuts: np.ndarray
-    #: Luminance décrite par image (code PQ 12 bits), ou tableau vide.
+    #: Luminance moyenne décrite par image (code PQ 12 bits), ou tableau vide.
     luminance: np.ndarray
+    #: Pic décrit par image (code PQ 12 bits : L1 max, MaxScl), ou tableau vide.
+    peak: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class Film2Metadata:
     reference_cuts: np.ndarray
     luminance: np.ndarray
     kinds: tuple[str, ...]
+    peak: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
     @property
     def has_reference_cuts(self) -> bool:
@@ -65,8 +68,13 @@ def _check(cancelled: Callable[[], bool] | None, index: int) -> None:
         raise InterruptedError("Alignement annulé.")
 
 
-def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None = None, *,
-              cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
+def _tenths(value: object) -> float:
+    """Valeurs HDR10+ en dixièmes de nit."""
+    return float(value) / 10.0 if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None = None,
+              l1_max: np.ndarray | None = None, *, cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
     """Repères du RPU ``rpu.bin`` (NAL précédées d'un code de départ, une par image, ordre d'affichage).
 
     ``scene_starts`` : images à ``scene_refresh`` (``dovi_tool export -d scenes``) ; ``l1_avg`` : L1 avg par
@@ -83,9 +91,12 @@ def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None
         position = following
     frames = len(digests)
     cuts = np.unique(np.concatenate([[0], np.asarray(scene_starts, dtype=np.int64)])) if frames else np.zeros(0, np.int64)
-    luminance = np.asarray(l1_avg, dtype=np.float32) if l1_avg is not None and len(l1_avg) == frames \
-        else np.zeros(0, dtype=np.float32)
-    return MetadataTrack("rpu", frames, _changes(digests), cuts[cuts < max(frames, 1)], luminance)
+    def per_frame(values: np.ndarray | None) -> np.ndarray:
+        return np.asarray(values, dtype=np.float32) if values is not None and len(values) == frames \
+            else np.zeros(0, dtype=np.float32)
+
+    return MetadataTrack("rpu", frames, _changes(digests), cuts[cuts < max(frames, 1)], per_frame(l1_avg),
+                         per_frame(l1_max))
 
 
 def hdr10plus_track(json_path: Path, *, cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
@@ -93,6 +104,7 @@ def hdr10plus_track(json_path: Path, *, cancelled: Callable[[], bool] | None = N
     digests: list[bytes] = []
     starts: list[int] = []
     average: list[float] = []
+    peaks: list[float] = []
     for index, entry in enumerate(iter_json_array(Path(json_path), key="SceneInfo")):
         _check(cancelled, index)
         if not isinstance(entry, dict):
@@ -101,15 +113,19 @@ def hdr10plus_track(json_path: Path, *, cancelled: Callable[[], bool] | None = N
         digests.append(hashlib.blake2b(json.dumps(rendering, sort_keys=True).encode(), digest_size=16).digest())
         if entry.get("SceneFrameIndex") == 0 or index == 0:
             starts.append(index)
-        value = (entry.get("LuminanceParameters") or {}).get("AverageRGB")
-        average.append(float(value) / 10.0 if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0)
+        parameters = entry.get("LuminanceParameters") or {}
+        average.append(_tenths(parameters.get("AverageRGB")))
+        peaks.append(max((_tenths(value) for value in parameters.get("MaxScl") or ()), default=0.0))
     frames = len(digests)
     cuts = np.asarray(starts, dtype=np.int64)
     if cuts.size > 1 and (float(np.median(np.diff(np.append(cuts, frames)))) < _MIN_MEDIAN_SCENE):
         cuts = np.zeros(0, dtype=np.int64)  # scènes recalculées à chaque image : inutilisables comme coupes
-    luminance = (np.asarray(nits_to_pq(np.asarray(average, dtype=np.float64)), dtype=np.float32) * 4095.0
-                 if frames else np.zeros(0, dtype=np.float32))
-    return MetadataTrack("hdr10plus", frames, _changes(digests), cuts, luminance)
+    def pq12(values: list[float]) -> np.ndarray:
+        if not frames:
+            return np.zeros(0, dtype=np.float32)
+        return (np.asarray(nits_to_pq(np.asarray(values, dtype=np.float64)), dtype=np.float32) * 4095.0)
+
+    return MetadataTrack("hdr10plus", frames, _changes(digests), cuts, pq12(average), pq12(peaks))
 
 
 def combine(tracks: list[MetadataTrack]) -> Film2Metadata:
@@ -124,5 +140,7 @@ def combine(tracks: list[MetadataTrack]) -> Film2Metadata:
     changes = np.unique(np.concatenate([track.change_points for track in tracks]))
     cuts = next((track.reference_cuts for track in ordered if track.reference_cuts.size > 1),
                 np.zeros(0, dtype=np.int64))
-    luminance = next((track.luminance for track in ordered if track.luminance.size), np.zeros(0, dtype=np.float32))
-    return Film2Metadata(frames.pop(), changes, cuts, luminance, tuple(track.kind for track in ordered))
+    source = next((track for track in ordered if track.luminance.size), None)
+    empty = np.zeros(0, dtype=np.float32)
+    return Film2Metadata(frames.pop(), changes, cuts, source.luminance if source else empty,
+                         tuple(track.kind for track in ordered), source.peak if source else empty)

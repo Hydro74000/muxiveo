@@ -3,7 +3,7 @@
 Coordonnées d'image : origine au centre, unités en fraction de largeur (deux images de même largeur
 affichée se superposent quelle que soit leur résolution). Hypothèse « même image, recadrée » : la bande
 commune est l'intersection des zones actives ; un décalage vertical éventuel est estimé par
-:func:`best_vertical_shift`.
+:func:`best_shift`.
 """
 from __future__ import annotations
 
@@ -32,12 +32,21 @@ class Band:
     def empty(self) -> bool:
         return self.bottom - self.top <= 0.02 or self.right - self.left <= 0.02
 
-    def intersect(self, other: "Band", margin: float = 0.01) -> "Band":
+    def intersect(self, other: "Band", margin: float = 0.01, margin_x: float | None = None) -> "Band":
+        mx = margin if margin_x is None else margin_x
         return Band(max(self.top, other.top) + margin, min(self.bottom, other.bottom) - margin,
-                    max(self.left, other.left) + margin, min(self.right, other.right) - margin)
+                    max(self.left, other.left) + mx, min(self.right, other.right) - mx)
 
-    def shifted(self, dy: float) -> "Band":
-        return Band(self.top + dy, self.bottom + dy, self.left, self.right)
+    def shifted(self, dy: float, dx: float = 0.0) -> "Band":
+        return Band(self.top + dy, self.bottom + dy, self.left + dx, self.right + dx)
+
+
+def cell_margins(*signatures: Signatures) -> tuple[float, float]:
+    """Marges (verticale, horizontale) d'une cellule de vignette, en fraction de largeur : une bande réduite
+    d'autant n'interpole aucune cellule à cheval sur une barre."""
+    vertical = max(sig.height / VIGNETTE_H / sig.width for sig in signatures)
+    horizontal = max(1.0 / VIGNETTE_W for _sig in signatures)
+    return vertical, horizontal
 
 
 def active_band(signatures: Signatures) -> Band:
@@ -86,19 +95,52 @@ def band_features(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.nd
     return features, informative
 
 
-def best_vertical_shift(first: Signatures, second: Signatures, band: Band, *,
-                        steps: int = 6, step: float = 0.01) -> tuple[float, float]:
-    """Décalage vertical de ``second`` (fraction de largeur) maximisant la corrélation moyenne avec ``first``
-    sur des paires d'images de même rang ; (décalage, corrélation)."""
-    base, informative = band_features(first, band)
-    best = (0.0, -1.0)
-    for k in range(-steps, steps + 1):
-        moved = band.shifted(k * step)
-        other, informative_other = band_features(second, moved)
+def _pair_scores(base: np.ndarray, informative: np.ndarray, second: Signatures, band: Band,
+                 shifts: list[tuple[float, float]]) -> np.ndarray:
+    """Corrélation par image (images × décalages) de ``second`` décalé face à ``base``."""
+    out = np.full((base.shape[0], len(shifts)), np.nan, dtype=np.float32)
+    for column, (dx, dy) in enumerate(shifts):
+        other, informative_other = band_features(second, band.shifted(dy, dx))
         mask = informative & informative_other
-        if not np.any(mask):
+        out[mask, column] = np.sum(base[mask] * other[mask], axis=1)
+    return out
+
+
+def _column_means(scores: np.ndarray) -> np.ndarray:
+    valid = ~np.isnan(scores)
+    counts = valid.sum(axis=0)
+    sums = np.where(valid, scores, 0.0).sum(axis=0)
+    return np.where(counts > 0, sums / np.maximum(counts, 1), -1.0)
+
+
+def best_shift(first: Signatures, second: Signatures, band: Band, groups: list[np.ndarray], *,
+               steps: int = 4, step: float = 0.01) -> tuple[float, float, float, float]:
+    """Translation ``(dx, dy)`` de ``second`` (fraction de largeur) maximisant la corrélation avec ``first``
+    sur des paires d'images de même rang (recherche à ``step`` puis affinée au quart de pas), et cohérence
+    d'une paire à l'autre.
+
+    ``groups`` : indices des images de chaque paire (une coupe). Rend (dx, dy, corrélation moyenne, part des
+    paires dont le meilleur décalage grossier est à un pas au plus du décalage global).
+    """
+    base, informative = band_features(first, band)
+    coarse = [(kx * step, ky * step) for ky in range(-steps, steps + 1) for kx in range(-steps, steps + 1)]
+    scores = _pair_scores(base, informative, second, band, coarse)
+    totals = _column_means(scores)
+    best = int(np.argmax(totals))
+    cx, cy = coarse[best]
+    fine_step = step / 4
+    fine = [(cx + kx * fine_step, cy + ky * fine_step) for ky in range(-3, 4) for kx in range(-3, 4)]
+    fine_totals = _column_means(_pair_scores(base, informative, second, band, fine))
+    fine_best = int(np.argmax(fine_totals))
+    dx, dy = fine[fine_best]
+    agree = 0
+    counted = 0
+    for group in groups:
+        local = scores[group]
+        if not np.any(~np.isnan(local)):
             continue
-        score = float(np.mean(np.sum(base[mask] * other[mask], axis=1)))
-        if score > best[1] + 1e-6 or (abs(score - best[1]) <= 1e-6 and abs(k * step) < abs(best[0])):
-            best = (k * step, score)
-    return best
+        counted += 1
+        lx, ly = coarse[int(np.argmax(_column_means(local)))]
+        if abs(lx - cx) <= step + 1e-9 and abs(ly - cy) <= step + 1e-9:
+            agree += 1
+    return dx, dy, float(fine_totals[fine_best]), (agree / counted if counted else 0.0)
