@@ -178,3 +178,18 @@ def test_normalized_rpu_digest_ignores_only_edited_fields() -> None:
     other, _ = normalized_entry(_entry(3001, 276, (1000, 1, 449, 331), 0, 1))
     assert base == edited and base != other
     assert base_l6 == (1000, 1, 449, 331) and edited_l6 == (1000, 1, 452, 312)
+
+
+
+def test_normalized_rpu_digest_ignores_block_reordering() -> None:
+    first = _entry(3000, 276, (1000, 1, 449, 331), 0, 1)
+    blocks = first["vdr_dm_data"]["cmv29_metadata"]["ext_metadata_blocks"]
+    blocks.insert(1, {"Level2": {"target_max_pq": 3079}})
+    blocks.insert(2, {"Level2": {"target_max_pq": 2081}})
+    second = json.loads(json.dumps(first))
+    reordered = second["vdr_dm_data"]["cmv29_metadata"]["ext_metadata_blocks"]
+    reordered[1], reordered[2] = reordered[2], reordered[1]
+    assert normalized_entry(first)[0] == normalized_entry(second)[0]
+    third = json.loads(json.dumps(first))
+    third["vdr_dm_data"]["cmv29_metadata"]["ext_metadata_blocks"].pop(1)  # un L2 en moins : différent
+    assert normalized_entry(first)[0] != normalized_entry(third)[0]

@@ -227,7 +227,8 @@ def normalized_entry(entry: dict) -> tuple[bytes, tuple[int, ...] | None]:
                 level6 = tuple(int(values.get(key, 0)) for key in _L6_KEYS)
             if not (set(block) & _EDITED_BLOCKS):
                 blocks.append(block)
-        meta["ext_metadata_blocks"] = blocks
+        # dovi_tool retrie les blocs quand il remplace L5 / L6 : ordre canonique, contenu et multiplicité gardés.
+        meta["ext_metadata_blocks"] = sorted(blocks, key=lambda item: json.dumps(item, sort_keys=True))
         meta.pop("num_ext_blocks", None)
     digest = hashlib.blake2b(json.dumps(entry, sort_keys=True).encode(), digest_size=16).digest()
     return digest, level6
