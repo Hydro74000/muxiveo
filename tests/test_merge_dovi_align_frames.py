@@ -266,3 +266,24 @@ def test_pixel_format_probe_is_cancellable_and_cached(monkeypatch: pytest.Monkey
     assert probe_module._pixel_formats("ffmpeg-x", hooks) == frozenset({"yuv420p", "p010le"})
     assert probe_module._pixel_formats("ffmpeg-x", hooks) == frozenset({"yuv420p", "p010le"})
     assert len(calls) == 2  # annulée puis lue une seule fois (cache)
+
+
+def test_cuda_failure_after_some_frames_restarts_in_software(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = FrameTable(Path("a.mkv"), _props(), True, "", tuple(range(0, 420, 42)))
+    calls: list[bool] = []
+
+    def fake_run(command, table, hooks, progress):
+        cuda = "-hwaccel" in command
+        calls.append(cuda)
+        acc = _Accumulator(320, 180)
+        for _ in range(2 if cuda else 10):
+            acc.add(_stacked(320, 180, slice(10, 170), slice(0, 320)))
+        return acc, list(range(0, 420, 42)), (1 if cuda else 0), "cuda error" if cuda else ""
+
+    monkeypatch.setattr(probe_module, "_run", fake_run)
+    monkeypatch.setattr(probe_module, "_pixel_formats", lambda ffmpeg, hooks: _MASTER)
+    preference = probe_module.DecoderPreference("cuda")
+    full = probe_module.decode_all(table, hwaccel=preference)
+    assert len(full) == 10 and full.decoder == "logiciel" and calls == [True, False]
+    assert preference.hwaccel is None
+    assert "-noautorotate" in probe_module._command("ffmpeg", table, seek=None, frames=None, download=None)

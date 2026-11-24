@@ -162,6 +162,7 @@ _CUDA_FORMATS: dict[tuple[str, int], tuple[str, ...]] = {
 _PIX_FMT = re.compile(r"^yuv(420|422|444)p(?:(10|12)(?:le|be))?$")
 
 
+_FORMAT_NAME = re.compile(r"^[a-z0-9_]+$")
 _PIXEL_FORMATS: dict[str, frozenset[str]] = {}
 _PIXEL_FORMATS_LOCK = threading.Lock()
 
@@ -185,7 +186,8 @@ def _pixel_formats(ffmpeg: str, hooks: ProcessHooks) -> frozenset[str]:
     names = set()
     for line in (result.stdout or "").splitlines():
         parts = line.split()
-        if len(parts) >= 2 and len(parts[0]) == 5 and set(parts[0]) <= set("IOHPB."):
+        if (len(parts) >= 2 and len(parts[0]) == 5 and set(parts[0]) <= set("IOHPB.")
+                and _FORMAT_NAME.match(parts[1])):
             names.add(parts[1])
     formats = frozenset(names)
     if result.returncode == 0 and formats:
@@ -241,7 +243,8 @@ def _command(ffmpeg: str, table: FrameTable, *, seek: str | None, frames: int | 
     cmd += ["-copyts"]
     if seek is not None:
         cmd += ["-ss", seek]
-    cmd += ["-i", str(table.path), "-an", "-sn", "-dn"]
+    # Pixels codés, sans rotation d'affichage (MP4/MOV) : mêmes dimensions que la table.
+    cmd += ["-noautorotate", "-i", str(table.path), "-an", "-sn", "-dn"]
     graph = filter_graph(props.width, props.height, black_threshold(props.full_range), cuda_format=download)
     cmd += ["-filter_complex", graph, "-map", "[out]", "-fps_mode", "passthrough"]
     if frames is not None:
@@ -385,9 +388,8 @@ def _decode(table: FrameTable, ffmpeg: str, hooks: ProcessHooks, *, seek: str | 
         if code == 0 or (frames is not None and len(acc.bars) >= frames):
             return acc, pts, decoder
         last_error = errors
-        if acc.bars:
-            break
         if attempt:
+            # Panne CUDA, même après quelques images : lecture partielle abandonnée, reprise en logiciel.
             preference.disable(errors.strip()[-300:])
     raise ProbeError(f"Décodage impossible ({table.path.name}) : {last_error.strip()[-300:]}")
 
