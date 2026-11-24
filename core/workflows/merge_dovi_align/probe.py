@@ -236,17 +236,45 @@ def _command(ffmpeg: str, table: FrameTable, *, seek: str | None, frames: int | 
 
 
 def _popen(command: list[str]) -> subprocess.Popen:
+    """Processus dans son propre groupe (POSIX) ou job Windows (tué à la fermeture) : arbre tué d'un coup."""
     kwargs: dict = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "stdin": subprocess.DEVNULL}
     kwargs.update(subprocess_windows_no_window_kwargs(include_stdin=False))
-    if sys.platform != "win32":
+    job = None
+    if sys.platform == "win32":
+        from core.windows_process_job import WindowsProcessJob
+
+        job = WindowsProcessJob()
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+    else:
         kwargs["start_new_session"] = True
-    # Commande argv construite ici, sans interprétation shell.
-    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-    proc = subprocess.Popen(command, **kwargs)
-    if sys.platform != "win32":
+    try:
+        # Commande argv construite ici, sans interprétation shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        proc = subprocess.Popen(command, **kwargs)  # nosec B603
+    except BaseException:
+        if job is not None:
+            job.close()
+        raise
+    if job is not None:
+        try:
+            job.attach_and_resume(int(getattr(proc, "_handle")), proc.pid)
+            setattr(proc, "_muxiveo_job", job)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            job.close()
+            raise
+    else:
         # Groupe dédié mémorisé dès le lancement : kill_process_tree tue aussi les descendants.
         proc._muxiveo_process_group = proc.pid  # type: ignore[attr-defined]
     return proc
+
+
+def _release(proc: subprocess.Popen) -> None:
+    """Ferme le job Windows du processus (ses descendants encore vivants sont tués)."""
+    job = getattr(proc, "_muxiveo_job", None)
+    if job is not None:
+        job.close()
 
 
 def _run(command: list[str], table: FrameTable, hooks: ProcessHooks,
@@ -316,6 +344,7 @@ def _run(command: list[str], table: FrameTable, hooks: ProcessHooks,
                     proc.stderr.close()
         hooks.check()
     finally:
+        _release(proc)
         if hooks.on_end is not None:
             hooks.on_end(proc)
     return acc, parse_showinfo(lines), returncode, "\n".join(list(errors)[-8:])
