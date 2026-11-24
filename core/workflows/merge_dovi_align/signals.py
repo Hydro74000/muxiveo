@@ -73,13 +73,8 @@ def _tenths(value: object) -> float:
     return float(value) / 10.0 if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
-def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None = None,
-              l1_max: np.ndarray | None = None, *, cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
-    """Repères du RPU ``rpu.bin`` (NAL précédées d'un code de départ, une par image, ordre d'affichage).
-
-    ``scene_starts`` : images à ``scene_refresh`` (``dovi_tool export -d scenes``) ; ``l1_avg`` : L1 avg par
-    image (code PQ 12 bits), facultatif.
-    """
+def rpu_digests(rpu_bin: Path, *, cancelled: Callable[[], bool] | None = None) -> list[bytes]:
+    """Empreinte de la NAL RPU de chaque image (``rpu.bin`` : une NAL par image, précédée d'un code de départ)."""
     data = Path(rpu_bin).read_bytes()
     digests: list[bytes] = []
     position = data.find(_START_CODE)
@@ -89,6 +84,34 @@ def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None
         digests.append(hashlib.blake2b(payload, digest_size=16).digest())
         _check(cancelled, len(digests))
         position = following
+    return digests
+
+
+def hdr10plus_digests(json_path: Path, *, cancelled: Callable[[], bool] | None = None) -> list[bytes]:
+    """Empreinte des champs de rendu HDR10+ de chaque image (champs administratifs exclus)."""
+    return [digest for digest, _start, _avg, _peak in _hdr10plus_entries(json_path, cancelled)]
+
+
+def _hdr10plus_entries(json_path: Path, cancelled: Callable[[], bool] | None):
+    for index, entry in enumerate(iter_json_array(Path(json_path), key="SceneInfo")):
+        _check(cancelled, index)
+        if not isinstance(entry, dict):
+            raise ValueError(f"JSON HDR10+ invalide (image {index}).")
+        rendering = {key: value for key, value in entry.items() if key not in _HDR10PLUS_ADMIN}
+        digest = hashlib.blake2b(json.dumps(rendering, sort_keys=True).encode(), digest_size=16).digest()
+        parameters = entry.get("LuminanceParameters") or {}
+        peak = max((_tenths(value) for value in parameters.get("MaxScl") or ()), default=0.0)
+        yield digest, entry.get("SceneFrameIndex") == 0 or index == 0, _tenths(parameters.get("AverageRGB")), peak
+
+
+def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None = None,
+              l1_max: np.ndarray | None = None, *, cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
+    """Repères du RPU ``rpu.bin`` (NAL précédées d'un code de départ, une par image, ordre d'affichage).
+
+    ``scene_starts`` : images à ``scene_refresh`` (``dovi_tool export -d scenes``) ; ``l1_avg`` : L1 avg par
+    image (code PQ 12 bits), facultatif.
+    """
+    digests = rpu_digests(rpu_bin, cancelled=cancelled)
     frames = len(digests)
     cuts = np.unique(np.concatenate([[0], np.asarray(scene_starts, dtype=np.int64)])) if frames else np.zeros(0, np.int64)
     def per_frame(values: np.ndarray | None) -> np.ndarray:
@@ -105,17 +128,12 @@ def hdr10plus_track(json_path: Path, *, cancelled: Callable[[], bool] | None = N
     starts: list[int] = []
     average: list[float] = []
     peaks: list[float] = []
-    for index, entry in enumerate(iter_json_array(Path(json_path), key="SceneInfo")):
-        _check(cancelled, index)
-        if not isinstance(entry, dict):
-            raise ValueError(f"JSON HDR10+ invalide (image {index}).")
-        rendering = {key: value for key, value in entry.items() if key not in _HDR10PLUS_ADMIN}
-        digests.append(hashlib.blake2b(json.dumps(rendering, sort_keys=True).encode(), digest_size=16).digest())
-        if entry.get("SceneFrameIndex") == 0 or index == 0:
+    for index, (digest, start, avg, peak) in enumerate(_hdr10plus_entries(json_path, cancelled)):
+        digests.append(digest)
+        if start:
             starts.append(index)
-        parameters = entry.get("LuminanceParameters") or {}
-        average.append(_tenths(parameters.get("AverageRGB")))
-        peaks.append(max((_tenths(value) for value in parameters.get("MaxScl") or ()), default=0.0))
+        average.append(avg)
+        peaks.append(peak)
     frames = len(digests)
     cuts = np.asarray(starts, dtype=np.int64)
     if cuts.size > 1 and (float(np.median(np.diff(np.append(cuts, frames)))) < _MIN_MEDIAN_SCENE):
