@@ -141,13 +141,45 @@ def test_accumulator_bars_and_blank_frames() -> None:
 
 # --- Lot 1, relecture : CUDA, relances, annulation, présence ---------------------------------------
 
-@pytest.mark.parametrize(("pix_fmt", "expected"), [
-    ("yuv420p", "nv12"), ("yuv420p10le", "p010le"), ("yuv420p12le", "p016le"),
-    ("yuv422p10le", "p210le"), ("yuv444p", "yuv444p"), ("yuv444p10le", "yuv444p16le"),
-    ("gray", None), ("yuv410p", None), ("", None),
+_MASTER = frozenset({"nv12", "p010le", "p012le", "p016le", "nv16", "p210le", "p212le", "p216le", "yuv444p",
+                     "yuv444p10msble", "yuv444p12msble", "yuv444p16le"})
+_OLDER = frozenset({"nv12", "p010le", "p016le", "nv16", "p210le", "p216le", "yuv444p", "yuv444p16le"})
+
+
+@pytest.mark.parametrize(("pix_fmt", "master", "older"), [
+    ("yuv420p", "nv12", "nv12"), ("yuv420p10le", "p010le", "p010le"), ("yuv420p12le", "p012le", "p016le"),
+    ("yuv422p10le", "p210le", "p210le"), ("yuv422p12le", "p212le", "p216le"), ("yuv444p", "yuv444p", "yuv444p"),
+    ("yuv444p10le", "yuv444p10msble", "yuv444p16le"), ("yuv444p12le", "yuv444p12msble", "yuv444p16le"),
+    ("gray", None, None), ("yuv410p", None, None), ("", None, None),
 ])
-def test_cuda_download_format_follows_chroma_and_depth(pix_fmt: str, expected: str | None) -> None:
-    assert probe_module.cuda_format(pix_fmt) == expected
+def test_cuda_download_format_follows_chroma_depth_and_ffmpeg(pix_fmt: str, master: str | None,
+                                                               older: str | None) -> None:
+    assert probe_module.cuda_format(pix_fmt, _MASTER) == master
+    assert probe_module.cuda_format(pix_fmt, _OLDER) == older
+    assert probe_module.cuda_format(pix_fmt, frozenset()) is None
+
+
+def test_cuda_failure_disables_cuda_for_the_whole_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = FrameTable(Path("a.mkv"), _props(), True, "", tuple(range(0, 420, 42)))
+    commands: list[list[str]] = []
+
+    def fake_run(command, table, hooks, progress):
+        commands.append(command)
+        acc = _Accumulator(320, 180)
+        if "-hwaccel" in command:
+            return acc, [], 1, "hwdownload: Impossible to convert"
+        for _ in range(3):
+            acc.add(_stacked(320, 180, slice(10, 170), slice(0, 320)))
+        return acc, [0, 42, 84], 0, ""
+
+    monkeypatch.setattr(probe_module, "_run", fake_run)
+    monkeypatch.setattr(probe_module, "_pixel_formats", lambda ffmpeg: _MASTER)
+    preference = probe_module.DecoderPreference("cuda")
+    first = probe_module.decode_window(table, 0, 3, hwaccel=preference)
+    second = probe_module.decode_window(table, 0, 3, hwaccel=preference)
+    assert first.decoder == second.decoder == "logiciel"
+    assert preference.hwaccel is None and "hwdownload" in preference.failure
+    assert ["-hwaccel" in command for command in commands] == [True, False, False]
 
 
 def test_window_retries_any_anomaly_earlier(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,6 +206,7 @@ def test_window_retries_any_anomaly_earlier(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_cancellation_stops_a_blocked_reader_and_cleans_up() -> None:
+    """Annulation pendant une lecture bloquante : processus tué, flux fermés, on_end appelé."""
     table = FrameTable(Path("a.mkv"), _props(64, 64), True, "", (0, 42))
     command = [sys.executable, "-c", "import sys, time; sys.stdout.write('x'); sys.stdout.flush(); time.sleep(60)"]
     started: list = []
@@ -195,3 +228,20 @@ def test_equal_timestamps_make_missing_ranks_ambiguous() -> None:
         _gaps([0, 40, 40], [2])
     assert _gaps([0, 40, 40], []).missing == ()
     assert _gaps([0, 80, 40], [1]).missing == (2,)
+
+
+def test_cancellation_during_stderr_drain_by_a_descendant() -> None:
+    """Un descendant garde stderr ouvert après la sortie de stdout : groupe tué, annulation remontée."""
+    table = FrameTable(Path("a.mkv"), _props(64, 64), True, "", (0, 42))
+    child = "import time; time.sleep(60)"
+    command = [sys.executable, "-c",
+               "import subprocess, sys; subprocess.Popen([sys.executable, '-c', %r], stderr=sys.stderr, "
+               "stdout=subprocess.DEVNULL); sys.stdout.close()" % child]
+    ended: list = []
+    cancel = threading.Event()
+    hooks = ProcessHooks(cancelled=cancel.is_set, on_end=ended.append)
+    threading.Timer(0.5, cancel.set).start()
+    begin = time.monotonic()
+    with pytest.raises(InterruptedError):
+        probe_module._run(command, table, hooks, None)
+    assert time.monotonic() - begin < 12 and ended
