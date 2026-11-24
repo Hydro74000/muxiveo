@@ -12,7 +12,6 @@ compensation par des pixels sous le noir et toute dilution d'un pixel isolé.
 """
 from __future__ import annotations
 
-import functools
 import io
 import re
 import subprocess
@@ -27,6 +26,8 @@ import numpy as np
 
 from core.subprocess_utils import (
     kill_process_tree,
+    run_cancellable_capture,
+    subprocess_text_kwargs,
     subprocess_windows_no_window_kwargs,
     watch_process_cancellation,
 )
@@ -161,22 +162,36 @@ _CUDA_FORMATS: dict[tuple[str, int], tuple[str, ...]] = {
 _PIX_FMT = re.compile(r"^yuv(420|422|444)p(?:(10|12)(?:le|be))?$")
 
 
-@functools.lru_cache(maxsize=8)
-def _pixel_formats(ffmpeg: str) -> frozenset[str]:
-    """Formats de pixels connus de ``ffmpeg`` (``-pix_fmts``), lus une fois par binaire ; vide si illisible."""
+_PIXEL_FORMATS: dict[str, frozenset[str]] = {}
+_PIXEL_FORMATS_LOCK = threading.Lock()
+
+
+def _pixel_formats(ffmpeg: str, hooks: ProcessHooks) -> frozenset[str]:
+    """Formats de pixels connus de ``ffmpeg`` (``-pix_fmts``) ; lus une fois par binaire (cache de session),
+    sonde annulable et suivie comme les décodages ; vide si illisible (non mémorisé)."""
+    with _PIXEL_FORMATS_LOCK:
+        cached = _PIXEL_FORMATS.get(ffmpeg)
+    if cached is not None:
+        return cached
     try:
-        # Commande argv fixe, sans interprétation shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run([ffmpeg, "-hide_banner", "-pix_fmts"], capture_output=True, text=True, timeout=15,
-                                **subprocess_windows_no_window_kwargs())
+        result = run_cancellable_capture(
+            [ffmpeg, "-hide_banner", "-pix_fmts"], cancel_cb=hooks.cancelled, check_cancelled=hooks.check,
+            on_start=hooks.on_start, on_end=hooks.on_end, timeout=15, **subprocess_text_kwargs(),
+        )
+    except InterruptedError:
+        raise  # annulation (sous-classe d'OSError) : jamais avalée
     except (OSError, subprocess.SubprocessError):
         return frozenset()
     names = set()
-    for line in result.stdout.splitlines():
+    for line in (result.stdout or "").splitlines():
         parts = line.split()
         if len(parts) >= 2 and len(parts[0]) == 5 and set(parts[0]) <= set("IOHPB."):
             names.add(parts[1])
-    return frozenset(names)
+    formats = frozenset(names)
+    if result.returncode == 0 and formats:
+        with _PIXEL_FORMATS_LOCK:
+            _PIXEL_FORMATS[ffmpeg] = formats
+    return formats
 
 
 def cuda_format(pix_fmt: str, available: frozenset[str] | None = None) -> str | None:
@@ -358,7 +373,7 @@ def _decode(table: FrameTable, ffmpeg: str, hooks: ProcessHooks, *, seek: str | 
     preference = _preference(hwaccel)
     download = None
     if preference.hwaccel == "cuda":
-        download = cuda_format(table.props.pix_fmt, _pixel_formats(ffmpeg))
+        download = cuda_format(table.props.pix_fmt, _pixel_formats(ffmpeg, hooks))
         if download is None:
             preference.disable(f"format {table.props.pix_fmt or 'inconnu'} non décodé par NVDEC")
     attempts = [download, None] if download else [None]

@@ -173,7 +173,7 @@ def test_cuda_failure_disables_cuda_for_the_whole_analysis(monkeypatch: pytest.M
         return acc, [0, 42, 84], 0, ""
 
     monkeypatch.setattr(probe_module, "_run", fake_run)
-    monkeypatch.setattr(probe_module, "_pixel_formats", lambda ffmpeg: _MASTER)
+    monkeypatch.setattr(probe_module, "_pixel_formats", lambda ffmpeg, hooks: _MASTER)
     preference = probe_module.DecoderPreference("cuda")
     first = probe_module.decode_window(table, 0, 3, hwaccel=preference)
     second = probe_module.decode_window(table, 0, 3, hwaccel=preference)
@@ -245,3 +245,24 @@ def test_cancellation_during_stderr_drain_by_a_descendant() -> None:
     with pytest.raises(InterruptedError):
         probe_module._run(command, table, hooks, None)
     assert time.monotonic() - begin < 12 and ended
+
+
+def test_pixel_format_probe_is_cancellable_and_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    listing = ("Pixel formats:\nI.... = Supported Input  format for conversion\n-----\n"
+               "IO... yuv420p                3            12      8-8-8\n"
+               "IO... p010le                 3            24      10-10-10\n")
+
+    def fake_capture(command, *, cancel_cb, check_cancelled, on_start=None, on_end=None, **kwargs):
+        calls.append(command)
+        check_cancelled()
+        return subprocess.CompletedProcess(command, 0, listing, "")
+
+    monkeypatch.setattr(probe_module, "run_cancellable_capture", fake_capture)
+    monkeypatch.setattr(probe_module, "_PIXEL_FORMATS", {})
+    with pytest.raises(InterruptedError):
+        probe_module._pixel_formats("ffmpeg-x", ProcessHooks(cancelled=lambda: True))
+    hooks = ProcessHooks()
+    assert probe_module._pixel_formats("ffmpeg-x", hooks) == frozenset({"yuv420p", "p010le"})
+    assert probe_module._pixel_formats("ffmpeg-x", hooks) == frozenset({"yuv420p", "p010le"})
+    assert len(calls) == 2  # annulée puis lue une seule fois (cache)
