@@ -11594,5 +11594,53 @@
   "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.": {
     "fra": "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.",
     "eng": "Also reads Film 2 in full and confirms every metadata change against the picture.\nWithout this option, shots of the same length and compatible brightness swapped between two checked frames would go undetected."
+  },
+  "Flux vidéo de Film 2 introuvable pour l'audit de ses métadonnées.": {
+    "fra": "Flux vidéo de Film 2 introuvable pour l'audit de ses métadonnées.",
+    "eng": "Film 2 video stream not found for its metadata audit."
+  },
+  "Audit des métadonnées de Film 2 image par image ({name})…": {
+    "fra": "Audit des métadonnées de Film 2 image par image ({name})…",
+    "eng": "Auditing Film 2 metadata frame by frame ({name})…"
+  },
+  "{label} : {missing} image(s) sans métadonnée sur {frames}.": {
+    "fra": "{label} : {missing} image(s) sans métadonnée sur {frames}.",
+    "eng": "{label}: {missing} frame(s) without metadata out of {frames}."
+  },
+  "Analyse de l'image de Film 1 et des métadonnées de Film 2…": {
+    "fra": "Analyse de l'image de Film 1 et des métadonnées de Film 2…",
+    "eng": "Analysing Film 1 picture and Film 2 metadata…"
+  },
+  "Alignement impossible ({error}) : conversion HDR10 seule.": {
+    "fra": "Alignement impossible ({error}) : conversion HDR10 seule.",
+    "eng": "Alignment impossible ({error}): HDR10 conversion only."
+  },
+  "Métadonnées dynamiques écartées (HDR10 seul)": {
+    "fra": "Métadonnées dynamiques écartées (HDR10 seul)",
+    "eng": "Dynamic metadata dropped (HDR10 only)"
+  },
+  "Alignement des métadonnées impossible : {error}": {
+    "fra": "Alignement des métadonnées impossible : {error}",
+    "eng": "Metadata alignment impossible: {error}"
+  },
+  "{what} ({checked} points vérifiés{full})": {
+    "fra": "{what} ({checked} points vérifiés{full})",
+    "eng": "{what} ({checked} points checked{full})"
+  },
+  "Éditions appliquées et relues": {
+    "fra": "Éditions appliquées et relues",
+    "eng": "Edits applied and re-read"
+  },
+  "Alignement vérifié": {
+    "fra": "Alignement vérifié",
+    "eng": "Alignment verified"
+  },
+  ", Film 2 lu entièrement": {
+    "fra": ", Film 2 lu entièrement",
+    "eng": ", Film 2 read in full"
+  },
+  "Passe de Film 1 non terminée après l'arrêt demandé.": {
+    "fra": "Passe de Film 1 non terminée après l'arrêt demandé.",
+    "eng": "Film 1 pass did not finish after the stop request."
   }
 }

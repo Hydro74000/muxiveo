@@ -80,10 +80,10 @@ def test_align_step_substitutes_edited_metadata(tmp_path: Path, monkeypatch: pyt
     wf.step_started.connect(steps.append)
     result = wf._step_align(cast(Any, object()), film2, paths, HDRFlags(has_dovi=True, has_hdr10plus=True),
                             FrameCountResult(100, 140, 40), AlignmentOptions(), StaticHdrMetadata(),
-                            StaticHdrMetadata())
+                            StaticHdrMetadata(), {})
     assert result is not None and steps == [WorkflowStep.ALIGN]
     assert paths.film2_rpu.read_bytes() == b"new" and "edited" in paths.film2_hdr10plus.read_text()
-    assert captured["film2_scan"] == film2 and captured["film1_frames"] == 100
+    assert captured["presence"] == {} and captured["film1_frames"] == 100
 
 
 def test_align_step_refusal_stops_or_falls_back_to_hdr10(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +100,7 @@ def test_align_step_refusal_stops_or_falls_back_to_hdr10(tmp_path: Path, monkeyp
     monkeypatch.setattr("core.workflows.merge_dovi.run_alignment", refuse)
     wf = MergeDoviWorkflow()
     args = (cast(Any, object()), film2, paths, HDRFlags(has_dovi=True), FrameCountResult(100, 140, 40),
-            AlignmentOptions(), StaticHdrMetadata(), StaticHdrMetadata())
+            AlignmentOptions(), StaticHdrMetadata(), StaticHdrMetadata(), {})
     with pytest.raises(WorkflowError, match="contenus différents"):
         wf._step_align(*args)
     assert wf._step_align(*args, allow_hdr10_fallback=True) is None
@@ -121,7 +121,7 @@ def test_align_step_cancellation_is_a_cancellation(tmp_path: Path, monkeypatch: 
     with pytest.raises(_CancelledError):
         MergeDoviWorkflow()._step_align(cast(Any, object()), film2, paths, HDRFlags(has_dovi=True),
                                         FrameCountResult(100, 100, 0), AlignmentOptions(), StaticHdrMetadata(),
-                                        StaticHdrMetadata())
+                                        StaticHdrMetadata(), {})
 
 
 def test_canonical_shift_is_measured_on_the_video(tmp_path: Path) -> None:
@@ -181,3 +181,69 @@ def test_cuda_decode_needs_an_nvidia_driver(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr(session_mod.sys, "platform", "linux")
     monkeypatch.setattr(session_mod, "Path", lambda *a: tmp_path / "absent")
     assert not session_mod.cuda_decode_available("ffmpeg")
+
+
+
+def test_presence_audit_reads_the_extract_of_a_non_matroska_film2(tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"x")
+    paths = _paths(tmp_path, film1)
+    seen: list[Path] = []
+    monkeypatch.setattr("core.workflows.merge_dovi.audit_film2",
+                        lambda path, **kwargs: seen.append(path) or {})
+    wf = MergeDoviWorkflow()
+    with pytest.raises(AlignmentError):
+        wf._audit_film2_presence(tmp_path / "film2.m2ts", paths, HDRFlags(has_dovi=True))
+    paths.film2_hevc.write_bytes(b"annexb")
+    wf._audit_film2_presence(tmp_path / "film2.m2ts", paths, HDRFlags(has_dovi=True))
+    wf._audit_film2_presence(tmp_path / "film2.mkv", paths, HDRFlags(has_dovi=True))
+    assert seen == [paths.film2_hevc, tmp_path / "film2.mkv"]
+
+
+def test_frame_rate_of_a_non_indexable_input_comes_from_the_container() -> None:
+    props = VideoProps("hevc", 64, 64, Fraction(1), "tv", "", "", Fraction(1, 90000),
+                       frame_rate=Fraction(24000, 1001))
+    table = FrameTable(Path("x.m2ts"), props, False, "conteneur")
+    assert session_mod.frame_rate(table) == pytest.approx(23.976, abs=1e-3)
+    unknown = FrameTable(Path("x.m2ts"), VideoProps("hevc", 64, 64, Fraction(1), "tv", "", "", Fraction(1, 90000)),
+                         False, "conteneur")
+    assert session_mod.frame_rate(unknown) == 24.0
+
+
+def test_level6_is_resolved_on_every_set() -> None:
+    from core.workflows.merge_dovi_align.static_hdr import level6_plan
+
+    full = resolve_static_hdr(SimpleNamespace(
+        master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)", max_cll="452,312"), None)
+    edit, refusal = level6_plan(full, [(1000, 1, 449, 331), (1000, 1, 452, 312)])
+    assert edit is not None and edit["max_content_light_level"] == 452 and not refusal
+    assert level6_plan(full, [(1000, 1, 452, 312)]) == (None, "")
+    partial = resolve_static_hdr(SimpleNamespace(master_display="", max_cll="452,312"), None)
+    edit, refusal = level6_plan(partial, [(1000, 1, 449, 331), (4000, 50, 449, 331)])
+    assert edit is None and "L6 non modifié" in refusal
+
+
+def test_identity_chapters_are_projected_and_shifted() -> None:
+    alignment = AlignmentMap(100, 100, (Segment(0, 100, 0),), (), (), np.asarray([0]))
+    film1, film2 = _table(100, start=10_000), _table(100)          # Film 1 commence à 10 s
+    edition = SimpleNamespace(chapters=(_chapter(0.0, None, "Début", 1, [_chapter(0.4, 0.8, "Sous", 2)]),))
+    projected, dropped = project_chapters((edition,), alignment, film1, film2, shift_s=-0.5)
+    assert projected is not None and dropped == 0
+    assert projected[0].timecode_s == pytest.approx(9.5)
+    assert projected[0].children[0].timecode_s == pytest.approx(9.9)
+    assert projected[0].children[0].end_s == pytest.approx(10.3)
+
+
+def test_film1_pass_stops_and_reports_termination(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    def blocking(path, *, ffprobe, hooks):
+        while not hooks.cancelled():
+            time.sleep(0.01)
+        raise InterruptedError
+
+    monkeypatch.setattr(session_mod, "read_frame_table", blocking)
+    film1_pass = session_mod.Film1Pass(Path("film1.mkv"), session_mod.AlignmentTools(),
+                                       session_mod.ProcessHooks(), session_mod.DecoderPreference(None))
+    assert film1_pass.stop(timeout=5) is True

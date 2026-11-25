@@ -25,11 +25,11 @@ from .align import AlignmentError, AlignmentMap, Film2Frames, align, detect_cuts
 from .edits import EditPlan, apply_hdr10plus, apply_rpu, build_edit_plan
 from .features import active_band
 from .frames import FrameTable, read_frame_table
-from .presence import has_hdr10plus, has_rpu, scan_annexb_presences, scan_matroska_presences
+from .presence import NalPredicate, PresenceGaps, has_hdr10plus, has_rpu, scan_annexb_presences, scan_matroska_presences
 from .probe import DecoderPreference, Signatures, decode_all, decode_window
 from .process import ProcessHooks
 from .signals import Film2Metadata, combine, hdr10plus_track, rpu_track
-from .static_hdr import ResolvedStatic, level6_edit, resolve_static_hdr
+from .static_hdr import ResolvedStatic, level6_plan, resolve_static_hdr
 
 _RAW_HEVC = frozenset({".hevc", ".h265", ".265", ".x265"})
 
@@ -94,9 +94,15 @@ def cuda_decode_available(ffmpeg: str) -> bool:
 
 
 def frame_rate(table: FrameTable) -> float:
-    """Cadence nominale (images par seconde) déduite de l'écart minimal des PTS."""
-    seconds = Fraction(table.frame_interval) * table.props.time_base
-    return float(1 / seconds) if seconds > 0 else 24.0
+    """Cadence nominale (images par seconde) : écart minimal des PTS d'une entrée indexable, sinon cadence
+    annoncée par le conteneur, sinon 24."""
+    if len(table.pts) >= 2:
+        seconds = Fraction(table.frame_interval) * table.props.time_base
+        if seconds > 0:
+            return float(1 / seconds)
+    if table.props.frame_rate > 0:
+        return float(table.props.frame_rate)
+    return 24.0
 
 
 class Film1Pass:
@@ -133,13 +139,17 @@ class Film1Pass:
     def result(self) -> tuple[FrameTable, Signatures]:
         return self._future.result()
 
-    def stop(self, timeout: float = 30.0) -> None:
-        """Arrête la passe (processus tué par les crochets) et attend la fin du fil."""
+    def stop(self, timeout: float = 30.0) -> bool:
+        """Arrête la passe (son processus est tué par la surveillance d'annulation) et attend la fin du fil ;
+        vrai si le fil est terminé."""
         self._stop.set()
         try:
             self._future.result(timeout=timeout)
+        except TimeoutError:
+            return False
         except BaseException:  # noqa: BLE001 — issue sans intérêt une fois la passe abandonnée
             pass
+        return self._future.done()
 
 
 def _first_video_track(path: Path) -> int:
@@ -149,14 +159,25 @@ def _first_video_track(path: Path) -> int:
     return next(index for index, track in enumerate(tracks) if track.track_type == 1)
 
 
-def _scan_presence(film2_scan: Path, wanted: dict, hooks: ProcessHooks) -> dict:
+def audit_film2(film2_scan: Path, *, rpu: bool, hdr10plus: bool, hooks: ProcessHooks) -> dict[str, PresenceGaps]:
+    """Présence du RPU / du HDR10+ image par image dans le flux vidéo de Film 2 (une lecture, sans décodage).
+
+    À faire **avant** toute conversion du flux (un Film 2 hors MKV n'est lisible que par son extrait Annex B,
+    supprimé par la conversion P7/P5)."""
+    wanted: dict[str, NalPredicate] = {}
+    if rpu:
+        wanted["rpu"] = has_rpu
+    if hdr10plus:
+        wanted["hdr10plus"] = has_hdr10plus
+    if not wanted:
+        return {}
     if film2_scan.suffix.lower() in {".mkv", ".mk3d"}:
         return scan_matroska_presences(film2_scan, _first_video_track(film2_scan), wanted, cancelled=hooks.cancelled)
     return scan_annexb_presences(film2_scan, wanted, cancelled=hooks.cancelled)
 
 
-def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, film2_scan: Path, rpu: Path | None,
-                  hdr10plus: Path | None, static1: object, static2: object, options: AlignmentOptions,
+def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, presence: dict[str, PresenceGaps],
+                  rpu: Path | None, hdr10plus: Path | None, static1: object, static2: object, options: AlignmentOptions,
                   tools: AlignmentTools, work_dir: Path, hooks: ProcessHooks, decoder: DecoderPreference,
                   log: Callable[[str], None], run_tool: Callable[[list[str]], str],
                   progress: Callable[[int], None] | None = None) -> AlignmentResult:
@@ -164,13 +185,7 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, film
     établie ou si des métadonnées devraient être inventées sans accord."""
     hooks.check()
     work_dir.mkdir(parents=True, exist_ok=True)
-    # 1. Présence des métadonnées image par image dans Film 2 (une lecture, sans décodage).
-    wanted = {}
-    if rpu is not None:
-        wanted["rpu"] = has_rpu
-    if hdr10plus is not None:
-        wanted["hdr10plus"] = has_hdr10plus
-    presence = _scan_presence(film2_scan, wanted, hooks) if wanted else {}
+    # 1. Présence des métadonnées image par image dans Film 2 (``audit_film2``, fait avant toute conversion).
     film2_frames = next((gaps.frames for gaps in presence.values()), None)
     if "hdr10plus" in presence and presence["hdr10plus"].missing:
         gaps = presence["hdr10plus"]
@@ -192,7 +207,7 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, film
     # 2. Repères de Film 2 (métadonnées seules).
     tracks = []
     film2_l5 = None
-    current_l6 = None
+    current_l6: list[tuple[int, int, int, int]] = []
     if rpu is not None:
         export = work_dir / "align_rpu_export.json"
         run_tool([tools.dovi_tool, "export", "-i", str(rpu), "-d", f"all={export}"])
@@ -205,10 +220,8 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, film
         film2_l5 = np.zeros((analysis.frames, 4), dtype=np.int32)
         for area in analysis.active_areas:
             film2_l5[area.first_frame:area.first_frame + area.frames] = (area.left, area.right, area.top, area.bottom)
-        if analysis.l6:
-            main = analysis.l6[0]
-            current_l6 = (int(main.max_mastering), int(round(main.min_mastering * 10000)), int(main.max_cll),
-                          int(main.max_fall))
+        current_l6 = [(int(item.max_mastering), int(round(item.min_mastering * 10000)), int(item.max_cll),
+                       int(item.max_fall)) for item in analysis.l6]
     if hdr10plus is not None:
         tracks.append(hdr10plus_track(hdr10plus, cancelled=hooks.cancelled))
     metadata: Film2Metadata = combine(tracks)
@@ -248,7 +261,9 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, film
         film2_size = (film2_table.props.width, film2_table.props.height) if film2_table is not None else (0, 0)
         area_plan = plan_active_area(film1, detect_cuts(film1, active_band(film1)), alignment, film2_l5=film2_l5,
                                      film2_size=film2_size)
-        level6 = level6_edit(resolved, current_l6)
+        level6, refusal = level6_plan(resolved, current_l6)
+        if refusal:
+            log(f"[WARN] {refusal}")
         notes.append(area_plan.describe())
         if level6 is not None:
             notes.append(f"L6 aligné sur le HDR10 de la sortie ({resolved.describe()}).")

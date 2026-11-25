@@ -41,10 +41,11 @@ def _film1_frame(alignment: AlignmentMap, j: int) -> int | None:
     return None
 
 
-def project_chapters(editions: tuple, alignment: AlignmentMap, film1: FrameTable,
-                     film2: FrameTable) -> tuple[tuple[ProjectedChapter, ...] | None, int]:
+def project_chapters(editions: tuple, alignment: AlignmentMap, film1: FrameTable, film2: FrameTable, *,
+                     shift_s: float = 0.0) -> tuple[tuple[ProjectedChapter, ...] | None, int]:
     """(chapitres projetés de l'édition unique, nombre de chapitres supprimés) ; (None, 0) si la projection est
-    impossible (plusieurs éditions, film non indexable)."""
+    impossible (plusieurs éditions, film non indexable). ``shift_s`` : décalage appliqué à la vidéo de la
+    sortie (canonicalisation), reporté sur les débuts et fins, enfants compris."""
     if len(editions) != 1 or not film1.indexable or not film2.indexable or not film1.pts or not film2.pts:
         return None, 0
     times2 = _seconds(film2)
@@ -78,7 +79,8 @@ def project_chapters(editions: tuple, alignment: AlignmentMap, film1: FrameTable
                 return None
         children = tuple(child for child in (project(sub) for sub in chapter.children) if child is not None)
         name, language = (chapter.displays[0] if chapter.displays else ("", "und"))
-        return ProjectedChapter(float(start), float(end) if end is not None else None, name, language,
+        return ProjectedChapter(max(0.0, float(start) + shift_s),
+                                max(0.0, float(end) + shift_s) if end is not None else None, name, language,
                                 int(chapter.uid), tuple(chapter.displays), children)
 
     projected = tuple(chapter for chapter in (project(c) for c in editions[0].chapters) if chapter is not None)

@@ -41,6 +41,8 @@ class VideoProps:
     pix_fmt: str = ""
     #: Départ du conteneur (secondes) : origine des recherches ``-ss`` de FFmpeg.
     start_time: Fraction = Fraction(0)
+    #: Cadence annoncée (``avg_frame_rate``, sinon ``r_frame_rate``), 0 si inconnue.
+    frame_rate: Fraction = Fraction(0)
 
     @property
     def full_range(self) -> bool:
@@ -129,6 +131,8 @@ def parse_stream_props(payload: str) -> VideoProps:
         time_base=_fraction(stream.get("time_base") or "1/1000", Fraction(1, 1000)),
         pix_fmt=str(stream.get("pix_fmt") or ""),
         start_time=start,
+        frame_rate=_fraction(stream.get("avg_frame_rate"), Fraction(0)) or _fraction(stream.get("r_frame_rate"),
+                                                                                       Fraction(0)),
     )
 
 
@@ -170,7 +174,7 @@ def read_frame_table(path: Path, *, ffprobe: str = "ffprobe", hooks: ProcessHook
     props = parse_stream_props(run([
         ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
         "stream=codec_name,width,height,sample_aspect_ratio,pix_fmt,color_range,color_transfer,color_primaries,"
-        "time_base:format=start_time",
+        "time_base,avg_frame_rate,r_frame_rate:format=start_time",
         "-of", "json", str(path),
     ]))
     if path.suffix.lower() not in INDEXABLE_SUFFIXES:

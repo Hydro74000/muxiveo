@@ -86,3 +86,32 @@ def level6_edit(resolved: ResolvedStatic, current: tuple[int, int, int, int] | N
         "max_content_light_level": values[2],
         "max_frame_average_light_level": values[3],
     }
+
+
+def _target(resolved: ResolvedStatic, current: tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
+    edit = level6_edit(resolved, current)
+    if edit is None:
+        return tuple(current) if current is not None else None  # type: ignore[return-value]
+    return (edit["max_display_mastering_luminance"], edit["min_display_mastering_luminance"],
+            edit["max_content_light_level"], edit["max_frame_average_light_level"])
+
+
+def level6_plan(resolved: ResolvedStatic, sets: list[tuple[int, int, int, int]]) -> tuple[dict | None, str]:
+    """L6 cible pour **tous** les jeux L6 du RPU (champs du statique résolu, sinon ceux du jeu) : (bloc
+    ``level6`` à écrire ou None, motif si aucune écriture n'est possible). ``dovi_tool editor`` n'écrit qu'un L6
+    pour tout le film : des jeux dont les champs sans valeur statique diffèrent ne sont pas uniformisés."""
+    if not sets:
+        target = _target(resolved, None)
+        return (_block(target) if target is not None else None), ""
+    targets = [_target(resolved, current) for current in sets]
+    if all(target == tuple(current) for target, current in zip(targets, sets)):
+        return None, ""
+    if len(set(targets)) == 1 and targets[0] is not None:
+        return _block(targets[0]), ""
+    return None, ("L6 non modifié : plusieurs jeux L6 dont les champs sans valeur statique diffèrent d'une image à "
+                  "l'autre (un seul L6 peut être écrit pour tout le film).")
+
+
+def _block(values: tuple[int, int, int, int]) -> dict:
+    return dict(zip(("max_display_mastering_luminance", "min_display_mastering_luminance",
+                     "max_content_light_level", "max_frame_average_light_level"), values))
