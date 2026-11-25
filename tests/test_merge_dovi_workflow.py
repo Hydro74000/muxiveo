@@ -972,7 +972,7 @@ def test_start_refuses_reserved_destination_before_workspace(tmp_path, monkeypat
 @pytest.mark.parametrize(("transfer", "sdr", "film1_dovi", "expected"), [
     ("PQ", False, "UNKNOWN", "pq"), ("SMPTE ST 2084", False, "P8_1", "pq"), ("HLG", False, "P8_4", "hlg"),
     ("arib-std-b67", False, "UNKNOWN", "hlg"), ("BT.709", True, "UNKNOWN", "pq"), ("", False, "UNKNOWN", ""),
-    ("PQ", False, "P5", "ipt"),
+    ("PQ", False, "P5", "ipt"), ("", False, "P8_4", "hlg"), ("", False, "P7_MEL", "pq"), ("", False, "P8_0", ""),
 ])
 def test_output_base_transfer(transfer: str, sdr: bool, film1_dovi: str, expected: str) -> None:
     from core.dovi_profile_detector import DoviSubProfile

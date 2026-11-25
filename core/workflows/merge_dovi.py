@@ -579,7 +579,8 @@ class ValidationContext:
             return "hlg"
         if any(key in transfer for key in ("pq", "2084")):
             return "pq"
-        return ""
+        # Transfert absent de MediaInfo : base déduite du profil Dolby Vision de Film 1 s'il est connu.
+        return _RPU_BASE.get(self.film1_dovi_profile, "")
 
 
 @dataclass
