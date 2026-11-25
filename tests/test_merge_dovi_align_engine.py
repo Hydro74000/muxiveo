@@ -560,6 +560,7 @@ def test_unmatched_shots_never_resume_backwards_in_film2() -> None:
             end = bounds[k + 1] + d
 
 
+@pytest.mark.usefixtures("french_messages")
 def test_missing_peak_metadata_forces_image_confirmation() -> None:
     rng = np.random.default_rng(32)
     scenes = whole(film(rng))

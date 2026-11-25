@@ -247,3 +247,18 @@ def test_film1_pass_stops_and_reports_termination(monkeypatch: pytest.MonkeyPatc
     film1_pass = session_mod.Film1Pass(Path("film1.mkv"), session_mod.AlignmentTools(),
                                        session_mod.ProcessHooks(), session_mod.DecoderPreference(None))
     assert film1_pass.stop(timeout=5) is True
+
+
+def test_a_film1_pass_that_does_not_stop_fails_the_job() -> None:
+    calls: list[str] = []
+
+    class Stuck:
+        def stop(self, timeout: float = 30.0) -> bool:
+            calls.append("stop")
+            return False
+
+    wf = MergeDoviWorkflow()
+    cast(Any, wf)._wait_run_processes = lambda timeout=10.0: calls.append("kill") or True
+    with pytest.raises(WorkflowError, match="Film 1"):
+        wf._release_film1_pass(cast(Any, Stuck()), WorkflowStep.ALIGN)
+    assert calls == ["stop", "kill", "stop"]

@@ -9,10 +9,12 @@ Garantie : aucune ligne ni colonne contenant un pixel visible n'est déclarée b
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from core.i18n import translate_text
 
 from .align import AlignmentMap
 from .probe import Signatures
@@ -34,15 +36,19 @@ class ActiveAreaPlan:
 
     keep: bool
     ranges: tuple[tuple[int, int, Area], ...]
+    #: Motif (modèle en français, paramètres dans ``reason_args``).
     reason: str
+    reason_args: dict = field(default_factory=dict)
 
     def describe(self) -> str:
+        """Description traduite (journal)."""
+        reason = translate_text(self.reason, **self.reason_args)
         if self.keep:
-            return f"L5 de Film 2 conservé ({self.reason})"
+            return translate_text("L5 de Film 2 conservé ({reason})", reason=reason)
         values = sorted({area for _a, _b, area in self.ranges})
         shown = ", ".join(f"{t}/{b}" + (f" · {left}/{right}" if left or right else "")
-                          for left, right, t, b in values[:4])
-        return f"L5 réécrit d'après Film 1 ({self.reason}) : haut/bas {shown}" + ("…" if len(values) > 4 else "")
+                          for left, right, t, b in values[:4]) + ("…" if len(values) > 4 else "")
+        return translate_text("L5 réécrit d'après Film 1 ({reason}) : haut/bas {values}", reason=reason, values=shown)
 
 
 def l5_per_frame(level5_json: Path, frames: int) -> np.ndarray:
@@ -132,20 +138,21 @@ def plan_active_area(film1: Signatures, cuts1: np.ndarray, alignment: AlignmentM
             ranges.append((a, b, area))
 
     if film2_l5 is not None and (width, height) == tuple(film2_size):
-        reason = _concordance(shots, filled, alignment, film2_l5)
+        reason, args = _concordance(shots, filled, alignment, film2_l5)
         if not reason:
             return ActiveAreaPlan(True, tuple(ranges), "concordance avec les barres de Film 1")
-        return ActiveAreaPlan(False, tuple(ranges), reason)
+        return ActiveAreaPlan(False, tuple(ranges), reason, args)
     if film2_l5 is None:
         return ActiveAreaPlan(False, tuple(ranges), "L5 absent de Film 2")
-    return ActiveAreaPlan(False, tuple(ranges),
-                          f"Film 1 en {width}×{height}, Film 2 en {film2_size[0]}×{film2_size[1]}")
+    return ActiveAreaPlan(False, tuple(ranges), "Film 1 en {w1}×{h1}, Film 2 en {w2}×{h2}",
+                          {"w1": width, "h1": height, "w2": film2_size[0], "h2": film2_size[1]})
 
 
 def _concordance(shots: list[tuple[int, int, Area | None, bool]], filled: list[tuple[int, int, Area]],
-                 alignment: AlignmentMap, film2_l5: np.ndarray) -> str:
-    """Motif de non-concordance du L5 de Film 2, **projeté** sur chaque image de Film 1 (images sans
-    correspondance comprises, qui en recevraient une copie), avec les barres retenues ; vide si concordant."""
+                 alignment: AlignmentMap, film2_l5: np.ndarray) -> tuple[str, dict]:
+    """Motif (modèle, paramètres) de non-concordance du L5 de Film 2, **projeté** sur chaque image de Film 1
+    (images sans correspondance comprises, qui en recevraient une copie), avec les barres retenues ; vide si
+    concordant."""
     projected = np.zeros((alignment.film1_frames, 4), dtype=np.int64)
     for seg in alignment.segments:
         projected[seg.film1_start:seg.film1_end] = film2_l5[seg.film2_start:seg.film2_end]
@@ -156,7 +163,9 @@ def _concordance(shots: list[tuple[int, int, Area | None, bool]], filled: list[t
             continue  # plan entièrement noir : aucune ligne visible à couvrir
         authored = projected[a:b]
         if np.any(authored > np.asarray(measured)):
-            return f"L5 de Film 2 couvrant des lignes visibles de Film 1 (images {a}–{b - 1})"
+            return "L5 de Film 2 couvrant des lignes visibles de Film 1 (images {first}–{last})", \
+                {"first": a, "last": b - 1}
         if np.any(np.abs(authored - np.asarray(planned)) > TOLERANCE):
-            return f"L5 de Film 2 différent des barres de Film 1 (images {a}–{b - 1})"
-    return ""
+            return "L5 de Film 2 différent des barres de Film 1 (images {first}–{last})", \
+                {"first": a, "last": b - 1}
+    return "", {}

@@ -24,6 +24,7 @@ import numpy as np
 from .active_area import ActiveAreaPlan, l5_per_frame
 from .align import AlignmentError, AlignmentMap, Uncovered
 from core.hdr_inspection.json_stream import iter_json_array
+from core.i18n import translate_text
 
 from .signals import hdr10plus_digests, rpu_digests
 
@@ -113,15 +114,17 @@ def build_edit_plan(alignment: AlignmentMap, *, allow_fill: bool, active_area: A
         if gap.black and gap.source_black:
             continue
         if allow_fill:
-            warnings.append(f"Images {gap.start}–{gap.start + gap.length - 1} de Film 1 sans correspondance : "
-                            f"métadonnées de l'image {gap.source} de Film 2 recopiées.")
+            warnings.append(translate_text(
+                "Images {first}–{last} de Film 1 sans correspondance : métadonnées de l'image {source} de Film 2 "
+                "recopiées.", first=gap.start, last=gap.start + gap.length - 1, source=gap.source))
         else:
             refused.append((gap.start, gap.start + gap.length))
     if refused:
         shown = ", ".join(f"{a}–{b - 1}" for a, b in refused[:6]) + ("…" if len(refused) > 6 else "")
-        raise EditRefused(f"{len(refused)} passage(s) de Film 1 sans correspondance dans Film 2 (images {shown}) : "
-                          "aucune métadonnée n'est inventée sans l'option « Compléter les images sans "
-                          "correspondance ».", tuple(refused))
+        raise EditRefused(translate_text(
+            "{count} passage(s) de Film 1 sans correspondance dans Film 2 (images {ranges}) : aucune métadonnée "
+            "n'est inventée sans l'option « Compléter les images sans correspondance ».", count=len(refused),
+            ranges=shown), tuple(refused))
 
     n1 = alignment.film1_frames
     sources = np.full(n1, -1, dtype=np.int64)

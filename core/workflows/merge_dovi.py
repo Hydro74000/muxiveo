@@ -952,7 +952,7 @@ class MergeDoviWorkflow(QObject):
                         "Alignement impossible ({error}) : conversion HDR10 seule.", error=str(exc)))
                     flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
                     routing = None
-                    self._stop_film1_pass(film1_pass)
+                    self._release_film1_pass(film1_pass, WorkflowStep.EXTRACT_PARALLEL)
                     film1_pass = None
                 self._check_cancel()
 
@@ -980,7 +980,7 @@ class MergeDoviWorkflow(QObject):
                         static_hdr_film1, static_hdr_film2, presence,
                         allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
                     )
-                    self._stop_film1_pass(film1_pass)
+                    self._release_film1_pass(film1_pass, WorkflowStep.ALIGN)
                     film1_pass = None
                     if aligned is None:
                         flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
@@ -1084,10 +1084,15 @@ class MergeDoviWorkflow(QObject):
                 else ("failed", WorkflowStep.VALIDATION, f"Erreur interne inattendue : {exc}")
             )
 
-        if film1_pass is not None:
-            self._stop_film1_pass(film1_pass)
+        preserve = False
+        if film1_pass is not None and not self._stop_film1_pass(film1_pass):
+            # Fil toujours actif : aucun nettoyage, échec signalé, intermédiaires conservés.
+            preserve = True
+            if outcome[0] == "finished":
+                outcome = ("failed", WorkflowStep.ALIGN,
+                           translate_text("Passe de Film 1 non terminée après l'arrêt demandé."))
         kind, step, message = outcome
-        if kind != "finished":
+        if kind != "finished" and not preserve:
             # Nettoyage AVANT le signal terminal : l'UI ne repasse au repos
             # qu'une fois les intermédiaires traités.
             self._discard_failed_run(paths, step)
@@ -1760,12 +1765,18 @@ class MergeDoviWorkflow(QObject):
     def _alignment_hooks(self) -> ProcessHooks:
         return ProcessHooks(cancelled=lambda: self._cancelled, on_start=self._track_proc, on_end=self._untrack_proc)
 
-    def _stop_film1_pass(self, film1_pass: Film1Pass) -> None:
-        """Arrête la passe de Film 1 (abandonnée ou consommée) avant tout nettoyage ; un fil qui ne se termine
-        pas est signalé (ses processus suivis sont tués par le nettoyage)."""
-        if not film1_pass.stop():
-            self.step_progress.emit(WorkflowStep.ALIGN, "[WARN] " + translate_text(
-                "Passe de Film 1 non terminée après l'arrêt demandé."))
+    def _stop_film1_pass(self, film1_pass: Film1Pass) -> bool:
+        """Arrête la passe de Film 1 (abandonnée ou consommée) et vérifie la fin de son fil ; sinon ses processus
+        suivis sont tués et la fin attendue à nouveau. Faux si le fil tourne encore (rien ne doit être nettoyé)."""
+        if film1_pass.stop():
+            return True
+        self._wait_run_processes(timeout=10.0)
+        return film1_pass.stop(timeout=10.0)
+
+    def _release_film1_pass(self, film1_pass: Film1Pass, step: WorkflowStep) -> None:
+        """Passe de Film 1 devenue inutile : arrêtée tout de suite, échec du traitement si elle ne s'arrête pas."""
+        if not self._stop_film1_pass(film1_pass):
+            raise WorkflowError(step, translate_text("Passe de Film 1 non terminée après l'arrêt demandé."))
 
     def _start_film1_pass(self, film1: Path) -> Film1Pass:
         """Passe complète de Film 1 (signatures, barres) en arrière-plan, pendant l'extraction."""

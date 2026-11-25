@@ -11642,5 +11642,157 @@
   "Passe de Film 1 non terminée après l'arrêt demandé.": {
     "fra": "Passe de Film 1 non terminée après l'arrêt demandé.",
     "eng": "Film 1 pass did not finish after the stop request."
+  },
+  "Alignement : {details}.": {
+    "fra": "Alignement : {details}.",
+    "eng": "Alignment: {details}."
+  },
+  "Alignement vérifié : les {frames} images correspondent une à une.": {
+    "fra": "Alignement vérifié : les {frames} images correspondent une à une.",
+    "eng": "Alignment verified: all {frames} frames match one to one."
+  },
+  "Cadrage : bande commune {top}…{bottom} (largeur), translation de Film 2 {dx}/{dy}, corrélation {score}, cohérence {agreement} sur {pairs} paires.": {
+    "fra": "Cadrage : bande commune {top}…{bottom} (largeur), translation de Film 2 {dx}/{dy}, corrélation {score}, cohérence {agreement} sur {pairs} paires.",
+    "eng": "Framing: common band {top}…{bottom} (width), Film 2 translation {dx}/{dy}, correlation {score}, consistency {agreement} over {pairs} pairs."
+  },
+  "Film 1 analysé ({frames} images, décodage {decoder}).": {
+    "fra": "Film 1 analysé ({frames} images, décodage {decoder}).",
+    "eng": "Film 1 analysed ({frames} frames, {decoder} decoding)."
+  },
+  "Film 2 : {count} image(s) finale(s) sans RPU complétée(s) par le RPU précédent.": {
+    "fra": "Film 2 : {count} image(s) finale(s) sans RPU complétée(s) par le RPU précédent.",
+    "eng": "Film 2: {count} final frame(s) without RPU filled with the previous RPU."
+  },
+  "Film 2 doit être lu entièrement ({reason}) mais n'est pas décodable.": {
+    "fra": "Film 2 doit être lu entièrement ({reason}) mais n'est pas décodable.",
+    "eng": "Film 2 must be read in full ({reason}) but cannot be decoded."
+  },
+  "Film 2 lu entièrement : {count} plans à coupe commune confirmés par l'image.": {
+    "fra": "Film 2 lu entièrement : {count} plans à coupe commune confirmés par l'image.",
+    "eng": "Film 2 read in full: {count} shots with a common cut confirmed by the picture."
+  },
+  "Film 2 non décodable ({error}).": {
+    "fra": "Film 2 non décodable ({error}).",
+    "eng": "Film 2 cannot be decoded ({error})."
+  },
+  "Images {first}–{last} de Film 1 sans correspondance : métadonnées de l'image {source} de Film 2 recopiées.": {
+    "fra": "Images {first}–{last} de Film 1 sans correspondance : métadonnées de l'image {source} de Film 2 recopiées.",
+    "eng": "Film 1 frames {first}–{last} without a match: metadata of Film 2 frame {source} copied."
+  },
+  "L5 de Film 2 conservé ({reason})": {
+    "fra": "L5 de Film 2 conservé ({reason})",
+    "eng": "Film 2 L5 kept ({reason})"
+  },
+  "L5 réécrit d'après Film 1 ({reason}) : haut/bas {values}": {
+    "fra": "L5 réécrit d'après Film 1 ({reason}) : haut/bas {values}",
+    "eng": "L5 rewritten from Film 1 ({reason}): top/bottom {values}"
+  },
+  "L6 aligné sur le HDR10 de la sortie ({source}).": {
+    "fra": "L6 aligné sur le HDR10 de la sortie ({source}).",
+    "eng": "L6 aligned with the output HDR10 ({source})."
+  },
+  "MaxCLL/MaxFALL de {origin}": {
+    "fra": "MaxCLL/MaxFALL de {origin}",
+    "eng": "MaxCLL/MaxFALL from {origin}"
+  },
+  "Métadonnées de Film 2 injectées telles quelles.": {
+    "fra": "Métadonnées de Film 2 injectées telles quelles.",
+    "eng": "Film 2 metadata injected as is."
+  },
+  "Passe complète de Film 1 : attente de la fin du décodage…": {
+    "fra": "Passe complète de Film 1 : attente de la fin du décodage…",
+    "eng": "Full Film 1 pass: waiting for decoding to finish…"
+  },
+  "Passe complète de Film 2 : {reason}.": {
+    "fra": "Passe complète de Film 2 : {reason}.",
+    "eng": "Full Film 2 pass: {reason}."
+  },
+  "Passe image par image : {count} segments après découpe des écarts locaux.": {
+    "fra": "Passe image par image : {count} segments après découpe des écarts locaux.",
+    "eng": "Frame-by-frame pass: {count} segments after splitting local offsets."
+  },
+  "Pic non décrit par les métadonnées : {count} plans confirmés par l'image.": {
+    "fra": "Pic non décrit par les métadonnées : {count} plans confirmés par l'image.",
+    "eng": "Peak not described by the metadata: {count} shots confirmed by the picture."
+  },
+  "Relation de luminance (moyenne, pic) étalonnée sur {pairs} plans confirmés par l'image (tolérances {mean} / {peak} codes) ; {remaining} plans hors relation confirmés par l'image.": {
+    "fra": "Relation de luminance (moyenne, pic) étalonnée sur {pairs} plans confirmés par l'image (tolérances {mean} / {peak} codes) ; {remaining} plans hors relation confirmés par l'image.",
+    "eng": "Luminance relation (mean, peak) calibrated on {pairs} picture-confirmed shots (tolerances {mean} / {peak} codes); {remaining} shots outside the relation confirmed by the picture."
+  },
+  "Vérification reprise sur la passe complète de Film 2.": {
+    "fra": "Vérification reprise sur la passe complète de Film 2.",
+    "eng": "Verification restarted on the full Film 2 pass."
+  },
+  "aucune valeur statique": {
+    "fra": "aucune valeur statique",
+    "eng": "no static value"
+  },
+  "{count} image(s) de Film 1 sans correspondance": {
+    "fra": "{count} image(s) de Film 1 sans correspondance",
+    "eng": "{count} Film 1 frame(s) without a match"
+  },
+  "{count} image(s) de Film 2 retirée(s) en {ranges} plage(s)": {
+    "fra": "{count} image(s) de Film 2 retirée(s) en {ranges} plage(s)",
+    "eng": "{count} Film 2 frame(s) removed in {ranges} range(s)"
+  },
+  "{count} passage(s) de Film 1 sans correspondance dans Film 2 (images {ranges}) : aucune métadonnée n'est inventée sans l'option « Compléter les images sans correspondance ».": {
+    "fra": "{count} passage(s) de Film 1 sans correspondance dans Film 2 (images {ranges}) : aucune métadonnée n'est inventée sans l'option « Compléter les images sans correspondance ».",
+    "eng": "{count} Film 1 passage(s) without a match in Film 2 (frames {ranges}): no metadata is invented without the “Fill unmatched frames” option."
+  },
+  "{count} segment(s), décalage(s) {offsets}": {
+    "fra": "{count} segment(s), décalage(s) {offsets}",
+    "eng": "{count} segment(s), offset(s) {offsets}"
+  },
+  "écran de mastering de {origin}": {
+    "fra": "écran de mastering de {origin}",
+    "eng": "mastering display from {origin}"
+  },
+  "concordance avec les barres de Film 1": {
+    "fra": "concordance avec les barres de Film 1",
+    "eng": "matches Film 1 bars"
+  },
+  "L5 absent de Film 2": {
+    "fra": "L5 absent de Film 2",
+    "eng": "no L5 in Film 2"
+  },
+  "Film 1 en {w1}×{h1}, Film 2 en {w2}×{h2}": {
+    "fra": "Film 1 en {w1}×{h1}, Film 2 en {w2}×{h2}",
+    "eng": "Film 1 at {w1}×{h1}, Film 2 at {w2}×{h2}"
+  },
+  "L5 de Film 2 couvrant des lignes visibles de Film 1 (images {first}–{last})": {
+    "fra": "L5 de Film 2 couvrant des lignes visibles de Film 1 (images {first}–{last})",
+    "eng": "Film 2 L5 covering visible Film 1 rows (frames {first}–{last})"
+  },
+  "L5 de Film 2 différent des barres de Film 1 (images {first}–{last})": {
+    "fra": "L5 de Film 2 différent des barres de Film 1 (images {first}–{last})",
+    "eng": "Film 2 L5 different from Film 1 bars (frames {first}–{last})"
+  },
+  "vérification image par image demandée": {
+    "fra": "vérification image par image demandée",
+    "eng": "frame-by-frame verification requested"
+  },
+  "entrée non indexable": {
+    "fra": "entrée non indexable",
+    "eng": "non-indexable input"
+  },
+  "aucune coupe exploitable dans les métadonnées": {
+    "fra": "aucune coupe exploitable dans les métadonnées",
+    "eng": "no usable cut in the metadata"
+  },
+  "plus de {percent} % de Film 2 à lire par fenêtres": {
+    "fra": "plus de {percent} % de Film 2 à lire par fenêtres",
+    "eng": "more than {percent}% of Film 2 to read in windows"
+  },
+  "relation de luminance non étalonnable ({count} plans confirmés)": {
+    "fra": "relation de luminance non étalonnable ({count} plans confirmés)",
+    "eng": "luminance relation cannot be calibrated ({count} shots confirmed)"
+  },
+  "logiciel": {
+    "fra": "logiciel",
+    "eng": "software"
+  },
+  "L6 non modifié : plusieurs jeux L6 dont les champs sans valeur statique diffèrent d'une image à l'autre (un seul L6 peut être écrit pour tout le film).": {
+    "fra": "L6 non modifié : plusieurs jeux L6 dont les champs sans valeur statique diffèrent d'une image à l'autre (un seul L6 peut être écrit pour tout le film).",
+    "eng": "L6 left unchanged: several L6 sets whose fields without a static value differ from frame to frame (only one L6 can be written for the whole film)."
   }
 }

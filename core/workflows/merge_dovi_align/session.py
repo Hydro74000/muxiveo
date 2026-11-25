@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from core.hdr_inspection.dovi import parse_dovi_export
+from core.i18n import translate_text
 
 from .active_area import ActiveAreaPlan, plan_active_area
 from .align import AlignmentError, AlignmentMap, Film2Frames, align, detect_cuts
@@ -201,7 +202,8 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
         completed = work_dir / "align_rpu_completed.bin"
         fill_rpu_gaps(dovi_tool_bin=tools.dovi_tool, rpu_input=rpu, output_rpu=completed,
                       positions=list(gaps.missing), run_cmd=run_tool)
-        log(f"[WARN] Film 2 : {len(gaps.missing)} image(s) finale(s) sans RPU complétée(s) par le RPU précédent.")
+        log("[WARN] " + translate_text(
+            "Film 2 : {count} image(s) finale(s) sans RPU complétée(s) par le RPU précédent.", count=len(gaps.missing)))
         rpu = completed
 
     # 2. Repères de Film 2 (métadonnées seules).
@@ -229,16 +231,17 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
         raise AlignmentError(f"Film 2 : {metadata.frames} images de métadonnées pour {film2_frames} images vidéo.")
 
     # 3. Film 1 (passe complète lancée plus tôt) et accès à Film 2.
-    log("Passe complète de Film 1 : attente de la fin du décodage…")
+    log(translate_text("Passe complète de Film 1 : attente de la fin du décodage…"))
     film1_table, film1 = film1_pass.wait(film1_frames, progress, hooks)
-    log(f"Film 1 analysé ({len(film1)} images, décodage {film1.decoder}).")
+    log(translate_text("Film 1 analysé ({frames} images, décodage {decoder}).", frames=len(film1),
+                       decoder=translate_text(film1.decoder)))
     if len(film1) != film1_frames:
         raise AlignmentError(f"Film 1 : {len(film1)} images décodées pour {film1_frames} comptées.")
     film2_table: FrameTable | None = None
     try:
         film2_table = read_frame_table(film2, ffprobe=tools.ffprobe, hooks=hooks)
     except Exception as exc:  # noqa: BLE001 — Film 2 indécodable : seules les métadonnées restent utilisables
-        log(f"[WARN] Film 2 non décodable ({exc}).")
+        log("[WARN] " + translate_text("Film 2 non décodable ({error}).", error=str(exc)))
     if film2_table is not None and film2_table.indexable and film2_table.frames != metadata.frames:
         raise AlignmentError(f"Film 2 : {film2_table.frames} images vidéo pour {metadata.frames} images de métadonnées.")
     source = Film2Frames(
@@ -263,12 +266,12 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
                                      film2_size=film2_size)
         level6, refusal = level6_plan(resolved, current_l6)
         if refusal:
-            log(f"[WARN] {refusal}")
+            log("[WARN] " + translate_text(refusal))
         notes.append(area_plan.describe())
         if level6 is not None:
-            notes.append(f"L6 aligné sur le HDR10 de la sortie ({resolved.describe()}).")
+            notes.append(translate_text("L6 aligné sur le HDR10 de la sortie ({source}).", source=resolved.describe()))
     if alignment.identity and (area_plan is None or area_plan.keep) and level6 is None:
-        notes.append("Métadonnées de Film 2 injectées telles quelles.")
+        notes.append(translate_text("Métadonnées de Film 2 injectées telles quelles."))
         return AlignmentResult(alignment, None, rpu, hdr10plus, resolved, area_plan, film1_table, film2_table, notes)
     plan = build_edit_plan(alignment, allow_fill=options.fill_unmatched, active_area=area_plan, level6=level6)
     for warning in plan.warnings:
@@ -283,14 +286,16 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
 
 def _describe_map(alignment: AlignmentMap) -> str:
     if alignment.identity:
-        return f"Alignement vérifié : les {alignment.film1_frames} images correspondent une à une."
-    parts = []
+        return translate_text("Alignement vérifié : les {frames} images correspondent une à une.",
+                              frames=alignment.film1_frames)
     offsets = sorted({seg.offset for seg in alignment.segments})
-    parts.append(f"{len(alignment.segments)} segment(s), décalage(s) {', '.join(f'{d:+d}' for d in offsets)}")
+    parts = [translate_text("{count} segment(s), décalage(s) {offsets}", count=len(alignment.segments),
+                            offsets=", ".join(f"{d:+d}" for d in offsets))]
     removed = sum(length for _start, length in alignment.removed)
     if removed:
-        parts.append(f"{removed} image(s) de Film 2 retirée(s) en {len(alignment.removed)} plage(s)")
+        parts.append(translate_text("{count} image(s) de Film 2 retirée(s) en {ranges} plage(s)", count=removed,
+                                    ranges=len(alignment.removed)))
     uncovered = sum(gap.length for gap in alignment.uncovered)
     if uncovered:
-        parts.append(f"{uncovered} image(s) de Film 1 sans correspondance")
-    return "Alignement : " + " ; ".join(parts) + "."
+        parts.append(translate_text("{count} image(s) de Film 1 sans correspondance", count=uncovered))
+    return translate_text("Alignement : {details}.", details=" ; ".join(parts))

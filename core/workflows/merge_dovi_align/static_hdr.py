@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from core.i18n import translate_text
+
 _LUMINANCE = re.compile(r"L\((\d+),(\d+)\)")
 
 
@@ -27,12 +29,13 @@ class ResolvedStatic:
         return bool(self.master_display and self.max_cll)
 
     def describe(self) -> str:
+        """Provenance traduite (journal)."""
         parts = []
         if self.master_display:
-            parts.append(f"écran de mastering de {_label(self.master_display_from)}")
+            parts.append(translate_text("écran de mastering de {origin}", origin=_label(self.master_display_from)))
         if self.max_cll:
-            parts.append(f"MaxCLL/MaxFALL de {_label(self.max_cll_from)}")
-        return ", ".join(parts) or "aucune valeur statique"
+            parts.append(translate_text("MaxCLL/MaxFALL de {origin}", origin=_label(self.max_cll_from)))
+        return ", ".join(parts) or translate_text("aucune valeur statique")
 
 
 def _label(origin: str) -> str:

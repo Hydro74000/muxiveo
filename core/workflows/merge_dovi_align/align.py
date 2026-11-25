@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
+
+from core.i18n import translate_text
 
 from .features import MIN_STD, Band, active_band, band_features, best_shift, cell_margins
 from .probe import Signatures
@@ -141,13 +144,17 @@ class Film2Frames:
     def windowed(self) -> bool:
         return self.full is None and self._window is not None
 
-    def load_full(self, reason: str) -> Signatures:
-        """Passe complète de Film 2 (une fois) ; :class:`AlignmentError` si impossible."""
+    def load_full(self, reason: str, **args: Any) -> Signatures:
+        """Passe complète de Film 2 (une fois) ; ``reason`` : motif (modèle en français, paramètres ``args``).
+        :class:`AlignmentError` si impossible."""
         if self.full is None:
             self.hooks.check()
+            text = translate_text(reason, **args)
             if self._loader is None:
-                raise AlignmentError(f"Film 2 doit être lu entièrement ({reason}) mais n'est pas décodable.")
-            self.log(f"Passe complète de Film 2 : {reason}.")
+                raise AlignmentError(translate_text("Film 2 doit être lu entièrement ({reason}) mais n'est pas "
+                                                    "décodable.", reason=text))
+            self.log(translate_text("Passe complète de Film 2 : {reason}.", reason=text))
+            reason = reason.format(**args)
             full = self._loader()
             if len(full) != self.frames:
                 raise AlignmentError(f"Film 2 : {len(full)} images décodées pour {self.frames} images de "
@@ -164,7 +171,7 @@ class Film2Frames:
         if self.full is None and self._window is None:
             self.load_full("entrée non indexable")
         if self.full is None and self.decoded + (stop - start) > self._budget * self.frames:
-            self.load_full(f"plus de {int(self._budget * 100)} % de Film 2 à lire par fenêtres")
+            self.load_full("plus de {percent} % de Film 2 à lire par fenêtres", percent=int(self._budget * 100))
         if self.full is not None:
             return self.full.slice(start, stop)
         assert self._window is not None
@@ -771,7 +778,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     if film2.full is not None and not full_at_build:
         # Passe complète déclenchée en cours de vérification (dernière lecture de Film 2 comprise) : tout le
         # parcours exhaustif est repris.
-        say("Vérification reprise sur la passe complète de Film 2.")
+        say(translate_text("Vérification reprise sur la passe complète de Film 2."))
         return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
     used = np.zeros(n2, dtype=bool)
     for seg in built:
@@ -882,8 +889,10 @@ def _geometry(film1: Signatures, film2: Film2Frames, runs: list, cuts1: np.ndarr
     if band.empty:
         raise AlignmentError("Zones actives des deux films disjointes : cadrages incompatibles.")
     dx, dy, score, agreement = best_shift(joined1, joined2, band, groups)
-    say(f"Cadrage : bande commune {band.top:+.3f}…{band.bottom:+.3f} (largeur), translation de Film 2 "
-        f"{dx:+.3f}/{dy:+.3f}, corrélation {score:.2f}, cohérence {agreement:.0%} sur {len(groups)} paires.")
+    say(translate_text(
+        "Cadrage : bande commune {top}…{bottom} (largeur), translation de Film 2 {dx}/{dy}, corrélation {score}, "
+        "cohérence {agreement} sur {pairs} paires.", top=f"{band.top:+.3f}", bottom=f"{band.bottom:+.3f}",
+        dx=f"{dx:+.3f}", dy=f"{dy:+.3f}", score=f"{score:.2f}", agreement=f"{agreement:.0%}", pairs=len(groups)))
     if score < GEOMETRY_CORRELATION:
         raise AlignmentError(f"Cadrages incompatibles (corrélation {score:.2f} sur la bande commune).")
     if len(groups) >= 3 and agreement < GEOMETRY_AGREEMENT:
@@ -928,7 +937,8 @@ def _frame_refine(ctx: _Context, built: list[Segment], n2: int, say: Callable[[s
         built = _merge_segments(out)
         if not changed:
             return built
-        say(f"Passe image par image : {len(built)} segments après découpe des écarts locaux.")
+        say(translate_text("Passe image par image : {count} segments après découpe des écarts locaux.",
+                           count=len(built)))
     raise AlignmentError("Passe image par image : correspondance instable.")
 
 
@@ -1015,7 +1025,8 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
 
     pending = [(i, d) for i, d in on_cut if not confirmed[i]]
     if ctx.film2.full is None and not metadata.peak.size:
-        say(f"Pic non décrit par les métadonnées : {len(pending)} plans confirmés par l'image.")
+        say(translate_text("Pic non décrit par les métadonnées : {count} plans confirmés par l'image.",
+                           count=len(pending)))
     elif ctx.film2.full is None:
         pairs = []
         for i, d in on_cut:
@@ -1023,7 +1034,7 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
             if confirmed[i] and informative(i) and levels is not None:
                 pairs.append((levels, film1_levels(i)))
         if len(pairs) < MIN_CALIBRATION:
-            ctx.film2.load_full(f"relation de luminance non étalonnable ({len(pairs)} plans confirmés)")
+            ctx.film2.load_full("relation de luminance non étalonnable ({count} plans confirmés)", count=len(pairs))
         else:
             fits = []
             for axis in (0, 1):
@@ -1042,12 +1053,14 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
                            <= fits[axis][2] for axis in (0, 1)):
                         continue
                 remaining.append((i, d))
-            say(f"Relation de luminance (moyenne, pic) étalonnée sur {len(pairs)} plans confirmés par l'image "
-                f"(tolérances {fits[0][2]:.0f} / {fits[1][2]:.0f} codes) ; {len(remaining)} plans hors relation "
-                "confirmés par l'image.")
+            say(translate_text(
+                "Relation de luminance (moyenne, pic) étalonnée sur {pairs} plans confirmés par l'image (tolérances "
+                "{mean} / {peak} codes) ; {remaining} plans hors relation confirmés par l'image.", pairs=len(pairs),
+                mean=f"{fits[0][2]:.0f}", peak=f"{fits[1][2]:.0f}", remaining=len(remaining)))
             pending = remaining
     if ctx.film2.full is not None:
-        say(f"Film 2 lu entièrement : {len(pending)} plans à coupe commune confirmés par l'image.")
+        say(translate_text("Film 2 lu entièrement : {count} plans à coupe commune confirmés par l'image.",
+                           count=len(pending)))
     for i, d in pending:
         if not ctx.confirm_position(i, d):
             raise AlignmentError(f"Plan à l'image {i} de Film 1 : contenu différent de Film 2.",
