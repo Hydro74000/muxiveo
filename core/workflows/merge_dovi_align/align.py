@@ -597,8 +597,10 @@ class _Context:
             c, b, o, (sy, sx, band) = local
             if not bool(np.all(b[kept, spread])):
                 continue                    # une paire informative ne doit pas sortir du contrôle
-            gain = 0.0 if compare else REFRAME_GAIN
-            if float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])) + gain:
+            # Comparaison : la géométrie globale fait partie des candidats, le cadrage choisi la vaut toujours au
+            # moins et chaque voisin garde le sien. Contrôle : gain net exigé.
+            if not compare and (float(np.median(c[kept, spread]))
+                                < float(np.median(corr[rows[kept], spread])) + REFRAME_GAIN):
                 continue
             corr[rows], both[rows], one[rows] = c, b, o
             if not compare:
@@ -680,8 +682,9 @@ class _Context:
 
         # Translations admissibles indépendantes du décalage testé : verticales au pas fin, et grille complète
         # (verticale × horizontale, pas double) quand les zones actives laissent aussi glisser horizontalement.
-        cands = [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
-                 if (cand := candidate(sy, self.dx)) is not None]
+        cands = [cand for cand in [candidate(self.dy, self.dx)] if cand is not None]   # géométrie globale
+        cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
+                  if (cand := candidate(sy, self.dx)) is not None]
         if horizontal:
             cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy, 2 * REFRAME_STEP)
                       for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx, 2 * REFRAME_STEP)
