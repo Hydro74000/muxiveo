@@ -16,6 +16,10 @@ from .probe import VIGNETTE_H, VIGNETTE_W, Signatures
 BAND_ROWS, BAND_COLS = 8, 16
 #: Écart type (codes 10 bits) sous lequel une vignette est sans information (noire, uniforme).
 MIN_STD = 6.0
+#: Écart type sous lequel une vignette est plate (noire, uniforme) : seul un écart « informative / plate » est un
+#: désaccord ; entre les deux (image sombre peu contrastée, étalonnage plus sombre de l'autre film), la paire
+#: est jugée sur sa corrélation.
+FLAT_STD = 2.0
 _CHUNK = 8192
 
 
@@ -73,6 +77,20 @@ def _interp_matrix(centers: np.ndarray, targets: np.ndarray) -> np.ndarray:
 
 def band_features(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.ndarray]:
     """(vecteurs normalisés ``(N, 8 × 16)``, informatif par image) sur ``band`` pour ces signatures."""
+    features, contrast = band_features_contrast(signatures, band)
+    return features, contrast >= MIN_STD
+
+
+def pair_masks(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(paires comparables, paires en désaccord) d'après les contrastes des deux images : comparable si l'une est
+    informative et l'autre non plate ; désaccord si l'une est informative et l'autre plate."""
+    strong1, strong2 = first >= MIN_STD, second >= MIN_STD
+    flat1, flat2 = first < FLAT_STD, second < FLAT_STD
+    return (strong1 & ~flat2) | (strong2 & ~flat1), (strong1 & flat2) | (strong2 & flat1)
+
+
+def band_features_contrast(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.ndarray]:
+    """(vecteurs normalisés ``(N, 8 × 16)``, écart type de la vignette sur la bande en codes 10 bits)."""
     width, height = signatures.width, signatures.height
     rows = (np.arange(VIGNETTE_H) + 0.5) * height / VIGNETTE_H
     cols = (np.arange(VIGNETTE_W) + 0.5) * width / VIGNETTE_W
@@ -84,15 +102,15 @@ def band_features(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.nd
     wc = _interp_matrix(col_centers, target_cols).astype(np.float32)
     count = len(signatures)
     features = np.zeros((count, BAND_ROWS * BAND_COLS), dtype=np.float32)
-    informative = np.zeros(count, dtype=bool)
+    contrast = np.zeros(count, dtype=np.float32)
     for start in range(0, count, _CHUNK):  # mémoire bornée sur un film entier
         values = signatures.vignettes[start:start + _CHUNK].astype(np.float32) * 4.0  # codes 10 bits
         flat = np.einsum("rh,nhw,cw->nrc", wr, values, wc).reshape(values.shape[0], -1)
         flat -= flat.mean(axis=1, keepdims=True)
         norms = np.linalg.norm(flat, axis=1)
-        informative[start:start + _CHUNK] = norms / np.sqrt(flat.shape[1]) >= MIN_STD
+        contrast[start:start + _CHUNK] = norms / np.sqrt(flat.shape[1])
         features[start:start + _CHUNK] = flat / np.where(norms > 1e-6, norms, 1.0)[:, None]
-    return features, informative
+    return features, contrast
 
 
 def _pair_scores(base: np.ndarray, informative: np.ndarray, second: Signatures, band: Band,

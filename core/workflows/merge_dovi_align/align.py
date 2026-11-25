@@ -18,7 +18,8 @@ import numpy as np
 
 from core.i18n import translate_text
 
-from .features import MIN_STD, Band, active_band, band_features, best_shift, cell_margins
+from .features import (MIN_STD, Band, active_band, band_features, band_features_contrast, best_shift, cell_margins,
+                       pair_masks)
 from .probe import Signatures
 from .process import ProcessHooks
 from .signals import Film2Metadata
@@ -509,6 +510,7 @@ class _Context:
     #: Coupes de Film 1 (un recadrage vaut pour un plan entier).
     cuts1: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     film1_features: np.ndarray = field(init=False)
+    film1_contrast: np.ndarray = field(init=False)
     film1_informative: np.ndarray = field(init=False)
     film1_static: np.ndarray = field(init=False)
     #: Translation locale retenue par (plan de Film 1, décalage) : plans cadrés autrement dans les deux films.
@@ -517,7 +519,8 @@ class _Context:
     _frame_bands: dict[int, Band] = field(init=False)
 
     def __post_init__(self) -> None:
-        self.film1_features, self.film1_informative = band_features(self.film1, self.band)
+        self.film1_features, self.film1_contrast = band_features_contrast(self.film1, self.band)
+        self.film1_informative = self.film1_contrast >= MIN_STD
         static = np.zeros(len(self.film1), dtype=bool)
         if len(self.film1) > 1:
             static[1:] = np.sum(self.film1_features[1:] * self.film1_features[:-1], axis=1) >= STATIC_CORRELATION
@@ -535,9 +538,10 @@ class _Context:
         return self.film2.get(lo_c, hi_c - lo_c), lo_c
 
     @staticmethod
-    def _scores(f1: np.ndarray, inf1: np.ndarray, f2: np.ndarray, inf2: np.ndarray, indices: np.ndarray,
+    def _scores(f1: np.ndarray, c1: np.ndarray, f2: np.ndarray, c2: np.ndarray, indices: np.ndarray,
                 rows: np.ndarray, offset: int, spread: int, lo_c: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Matrices (lignes ``rows`` de ``f1``/``inf1`` pour les images ``indices``) × décalages."""
+        """Matrices (lignes ``rows`` de ``f1``/``c1`` — vecteurs, contrastes — pour les images ``indices``) ×
+        décalages ; paires comparables / en désaccord selon :func:`pair_masks`."""
         width = 2 * spread + 1
         corr = np.full((indices.size, width), -1.0, dtype=np.float32)
         both = np.zeros((indices.size, width), dtype=bool)
@@ -546,32 +550,31 @@ class _Context:
             j = indices + offset + shift - lo_c
             ok = (j >= 0) & (j < f2.shape[0])
             corr[ok, column] = np.sum(f1[rows[ok]] * f2[j[ok]], axis=1)
-            first = inf1[rows[ok]]
-            second = inf2[j[ok]]
-            both[ok, column] = first & second
-            one[ok, column] = first ^ second
+            both[ok, column], one[ok, column] = pair_masks(c1[rows[ok]], c2[j[ok]])
         return corr, both, one
 
     def pair_scores(self, indices: np.ndarray, offset: int, spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Corrélations (images × décalages offset-spread…offset+spread) ; masques « deux informatives » et
         « une seule informative » (désaccord). Géométrie globale."""
         window, lo_c = self._window(indices, offset, spread)
-        f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
-        return self._scores(self.film1_features, self.film1_informative, f2, inf2, indices, indices, offset, spread,
-                            lo_c)
+        f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
+        return self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices, offset, spread, lo_c)
 
-    def checked_scores(self, indices: np.ndarray, offset: int,
-                       spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def checked_scores(self, indices: np.ndarray, offset: int, spread: int, *,
+                       record: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Comme :meth:`pair_scores`, mais chaque plan de Film 1 dont une paire informative reste sous
         ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec un cadrage local (plan cadré autrement
         dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
         ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
-        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés."""
+        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``record`` : plans
+        recadrés comptés au journal et bandes gardées pour l'exception « plan fixe » (contrôles), sinon aucun effet
+        (jonctions, écarts locaux : chaque décalage comparé reçoit son propre cadrage)."""
         window, lo_c = self._window(indices, offset, spread)
-        f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
-        corr, both, one = self._scores(self.film1_features, self.film1_informative, f2, inf2, indices, indices,
+        f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
+        corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
                                        offset, spread, lo_c)
-        self._frame_bands = {}
+        if record:
+            self._frame_bands = {}
         if self.area1 is None or self.area2 is None:
             return corr, both, one
         shots = np.searchsorted(self.cuts1, indices, side="right")
@@ -589,8 +592,9 @@ class _Context:
             if float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])) + REFRAME_GAIN:
                 continue
             corr[rows], both[rows], one[rows] = c, b, o
-            self.reframed[(int(shot), offset)] = (sy, sx)
-            self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
+            if record:
+                self.reframed[(int(shot), offset)] = (sy, sx)
+                self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
 
     def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int,
@@ -612,30 +616,32 @@ class _Context:
             if (band.empty or band.bottom - band.top < REFRAME_MIN_EXTENT * height
                     or band.right - band.left < REFRAME_MIN_EXTENT * width):
                 return None
-            g1, inf1 = band_features(sub, band)
-            g2, inf2 = band_features(window, band.shifted(sy, sx))
-            return sy, sx, band, g1, inf1, g2, inf2
+            g1, c1 = band_features_contrast(sub, band)
+            g2, c2 = band_features_contrast(window, band.shifted(sy, sx))
+            return sy, sx, band, g1, c1, g2, c2
 
         def column(cand: tuple, at: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            _sy, _sx, _band, g1, inf1, g2, inf2 = cand
+            _sy, _sx, _band, g1, c1, g2, c2 = cand
             j = indices + at - lo_c
             ok = (j >= 0) & (j < g2.shape[0])
             jc = np.clip(j, 0, g2.shape[0] - 1)
             corr = np.full(indices.size, -1.0, dtype=np.float32)
             corr[ok] = np.sum(g1[ok] * g2[j[ok]], axis=1)
-            return corr, ok & inf1 & inf2[jc], ok & (inf1 ^ inf2[jc])
+            both, one = pair_masks(c1, c2[jc])
+            return corr, ok & both, ok & one
 
         def grid(first: float, second: float, centre: float, step: float = REFRAME_STEP) -> list[float]:
             low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
             return sorted({round(float(v), 4) for v in np.arange(low, high + step / 2, step)} | {round(centre, 4)})
 
         def best(cands: list) -> tuple | None:
+            # Classement sur les paires imposées (masque fixe), seules les translations qui les gardent toutes.
             top = None
             for cand in cands:
                 c, b, o = column(cand, offset)
-                if not np.any(b) or not bool(np.all(b[required])):
+                if not bool(np.all(b[required])):
                     continue
-                value = float(np.median(c[b]))
+                value = float(np.median(c[required]))
                 if top is None or value > top[0]:
                     top = (value, cand, c, b, o)
             return top
@@ -786,7 +792,7 @@ def _refine_junction(ctx: _Context, lo: int, hi: int, da: int, db: int) -> tuple
         values = np.full(indices.size, -1.0)
         valid = ctx.inside(indices, offset)
         if valid.size:
-            corr, both, one = ctx.pair_scores(valid, offset, 0)
+            corr, both, one = ctx.checked_scores(valid, offset, 0, record=False)
             values[np.searchsorted(indices, valid)] = np.where(both[:, 0], corr[:, 0],
                                                                np.where(one[:, 0], -1.0, 0.0))
         scores[offset] = values
@@ -824,10 +830,22 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
         end = k
         while end + 1 < indices.size and strong[end + 1] and best[end + 1] == best[k]:
             end += 1
-        if end - k + 1 >= FRAME_RUN:
+        if end - k + 1 >= FRAME_RUN and _framed_lead(ctx, indices[k:end + 1], segment.offset,
+                                                      segment.offset + int(best[k])):
             out.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
         k = end + 1
     return out
+
+
+def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> bool:
+    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) : ``other`` garde son avance
+    sur ``offset`` pour chaque paire comparable des deux côtés. Sinon (translation et décalage temporel
+    interchangeables, panoramique dans un plan recadré), l'écart est ignoré : le décalage du segment est gardé et
+    tout point de changement du passage reste confirmé par l'image."""
+    base, base_both, _one = ctx.checked_scores(run, offset, 0, record=False)
+    alt, alt_both, _alt_one = ctx.checked_scores(run, other, 0, record=False)
+    pairs = base_both[:, 0] & alt_both[:, 0]
+    return bool(np.any(pairs)) and bool(np.all(alt[pairs, 0] - base[pairs, 0] > 0.02))
 
 
 # --- Point d'entrée ------------------------------------------------------------------------------------
