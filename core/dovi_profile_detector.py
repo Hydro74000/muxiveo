@@ -137,6 +137,18 @@ def _probe_run(command: list[str], *, timeout: float,
     return result
 
 
+def _compat_id_from_text(text: str) -> int | None:
+    """``bl_signal_compat_id`` d'après un libellé de compatibilité MediaInfo (HDR10+ ignoré)."""
+    text = text.lower().replace("hdr10+", "")
+    if "hlg" in text:
+        return 4
+    if "hdr10" in text:
+        return 1
+    if "sdr" in text:
+        return 2
+    return None
+
+
 class DoviProfileDetector:
     """
     Détecte le sous-profil Dolby Vision d'un fichier source ou d'un dict
@@ -189,16 +201,16 @@ class DoviProfileDetector:
             m2 = re.search(r"dv(?:he|av)\.?(\d+)", hfp)
             profile = int(m2.group(1)) if m2 else None
 
-        # Compat_id depuis HDR_Format_Compatibility.
-        compat = str(mi_video.get("HDR_Format_Compatibility") or "").lower()
-        if "hdr10" in compat:
-            compat_id: int | None = 1
-        elif "sdr" in compat:
-            compat_id = 2
-        elif "hlg" in compat:
-            compat_id = 4
-        else:
-            compat_id = None
+        # Compat_id depuis HDR_Format_Compatibility : segment du Dolby Vision (« HLG / HDR10+ Profile A » :
+        # HLG pour le Dolby Vision, HDR10+ pour le second format), sinon champ entier.
+        compat = str(mi_video.get("HDR_Format_Compatibility") or "")
+        formats = [part.strip().lower() for part in hdr_format.split("/")]
+        segments = [part.strip() for part in compat.split("/")]
+        compat_id: int | None = None
+        if len(formats) == len(segments) and len(formats) > 1:
+            compat_id = _compat_id_from_text(segments[next(i for i, f in enumerate(formats) if "dolby vision" in f)])
+        if compat_id is None:
+            compat_id = _compat_id_from_text(compat)
 
         # Settings : "BL+EL+RPU" pour FEL ; "BL+RPU" pour MEL ou P8 mono-layer.
         settings = str(mi_video.get("HDR_Format_Settings") or "").upper()

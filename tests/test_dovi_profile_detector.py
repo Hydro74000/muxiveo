@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 from core.dovi_profile_detector import (
     DoviProfileDetector,
@@ -84,6 +86,27 @@ class TestDetectFromMediainfo:
         result = DoviProfileDetector().detect_from_mediainfo(mi)
         assert result.sub_profile == DoviSubProfile.P8_4
         assert result.bl_signal_compat_id == 4
+
+    @pytest.mark.parametrize(("compat", "expected"), [
+        ("HLG / HDR10+ Profile A", DoviSubProfile.P8_4),     # « HDR10 » de HDR10+ : second format, ignoré
+        ("HDR10 / HDR10+ Profile A", DoviSubProfile.P8_1),
+        ("Blu-ray / HDR10+ Profile B", DoviSubProfile.P8_0),
+    ])
+    def test_compatibility_of_the_dolby_vision_entry_with_hdr10plus(self, compat, expected):
+        mi = {
+            "HDR_Format": "Dolby Vision / SMPTE ST 2094 App 4",
+            "HDR_Format_Profile": "dvhe.08 / ",
+            "HDR_Format_Compatibility": compat,
+        }
+        assert DoviProfileDetector().detect_from_mediainfo(mi).sub_profile == expected
+
+    def test_compatibility_falls_back_to_whole_field(self):
+        mi = {
+            "HDR_Format": "Dolby Vision / SMPTE ST 2086",
+            "HDR_Format_Profile": "dvhe.08 / ",
+            "HDR_Format_Compatibility": "Blu-ray / HDR10",
+        }
+        assert DoviProfileDetector().detect_from_mediainfo(mi).sub_profile == DoviSubProfile.P8_1
 
     def test_p5(self):
         mi = {

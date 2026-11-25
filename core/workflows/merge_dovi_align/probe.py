@@ -24,6 +24,7 @@ from typing import cast
 
 import numpy as np
 
+from core.i18n import translate_text
 from core.subprocess_utils import (
     kill_process_tree,
     run_cancellable_capture,
@@ -340,7 +341,7 @@ def _run(command: list[str], table: FrameTable, hooks: ProcessHooks,
                         break
                     if got < acc.frame_bytes:
                         hooks.check()
-                        raise ProbeError("Image tronquée dans la sortie de FFmpeg.")
+                        raise ProbeError(translate_text("Image tronquée dans la sortie de FFmpeg."))
                     acc.add(buffer)
                     if progress is not None and len(acc.bars) % 256 == 0:
                         progress(len(acc.bars))
@@ -398,7 +399,8 @@ def _decode(table: FrameTable, ffmpeg: str, hooks: ProcessHooks, *, seek: str | 
         if attempt:
             # Panne CUDA, même après quelques images : lecture partielle abandonnée, reprise en logiciel.
             preference.disable(errors.strip()[-300:])
-    raise ProbeError(f"Décodage impossible ({table.path.name}) : {last_error.strip()[-300:]}")
+    raise ProbeError(translate_text(
+        "Décodage impossible ({file}) : {error}", file=table.path.name, error=last_error.strip()[-300:]))
 
 
 def decode_all(table: FrameTable, *, ffmpeg: str = "ffmpeg", hooks: ProcessHooks | None = None,
@@ -416,19 +418,21 @@ def decode_all(table: FrameTable, *, ffmpeg: str = "ffmpeg", hooks: ProcessHooks
     ranks = _ranks(table, pts, count)
     if ranks != list(range(len(table.pts))):
         raise ProbeError(
-            f"Passe complète de {table.path.name} : {count} images décodées pour {len(table.pts)} paquets "
-            "ou horodatages inattendus.")
+            translate_text(
+                "Passe complète de {file} : {count} images décodées pour {count2} paquets ou horodatages inattendus.",
+                file=table.path.name, count=count, count2=len(table.pts)))
     return acc.result(ranks, pts, decoder)
 
 
 def _ranks(table: FrameTable, pts: list[int], count: int) -> list[int]:
     if len(pts) < count:
-        raise ProbeError("Horodatages des images décodées incomplets (showinfo).")
+        raise ProbeError(translate_text("Horodatages des images décodées incomplets (showinfo)."))
     ranks: list[int] = []
     for value in pts[:count]:
         rank = table.rank_of(value)
         if rank is None:
-            raise ProbeError(f"Image décodée au PTS {value} absente de la table de {table.path.name}.")
+            raise ProbeError(translate_text(
+                "Image décodée au PTS {pts} absente de la table de {file}.", pts=value, file=table.path.name))
         ranks.append(rank)
     return ranks
 
@@ -443,12 +447,13 @@ def decode_window(table: FrameTable, start: int, count: int, *, ffmpeg: str = "f
     """
     hooks = hooks or ProcessHooks()
     if not table.indexable:
-        raise ProbeError(f"{table.path.name} n'est pas indexable ({table.reason}).")
+        raise ProbeError(translate_text(
+            "{file} n'est pas indexable ({reason}).", file=table.path.name, reason=table.reason))
     total = len(table.pts)
     start = max(0, start)
     stop = min(total, start + count)
     if stop <= start:
-        raise ProbeError("Fenêtre vide.")
+        raise ProbeError(translate_text("Fenêtre vide."))
     expected = list(range(start, stop))
     reason = "introuvable par recherche"
     preference = _preference(hwaccel)
@@ -470,4 +475,6 @@ def decode_window(table: FrameTable, start: int, count: int, *, ffmpeg: str = "f
             reason = "images manquantes, dupliquées ou départ trop tardif"
             continue
         return acc.result(ranks, pts, decoder).slice(offset, offset + len(expected))
-    raise ProbeError(f"Fenêtre {start}–{stop - 1} de {table.path.name} : {reason}.")
+    raise ProbeError(translate_text(
+        "Fenêtre {start}–{last} de {file} : {reason}.",
+        start=start, last=stop - 1, file=table.path.name, reason=reason))

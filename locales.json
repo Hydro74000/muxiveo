@@ -11802,5 +11802,209 @@
   " (Film 1 compté par sa lecture complète)": {
     "fra": " (Film 1 compté par sa lecture complète)",
     "eng": " (Film 1 counted by its full read)"
+  },
+  "Passe image par image : correspondance instable.": {
+    "fra": "Passe image par image : correspondance instable.",
+    "eng": "Frame-by-frame pass: unstable correspondence."
+  },
+  "Jonction {lo}–{hi} : insertion de {inserted} images plus grande que la fenêtre.": {
+    "fra": "Jonction {lo}–{hi} : insertion de {inserted} images plus grande que la fenêtre.",
+    "eng": "Junction {lo}–{hi}: insertion of {inserted} frames larger than the window."
+  },
+  "Film vide.": {
+    "fra": "Film vide.",
+    "eng": "Empty film."
+  },
+  "Aucune correspondance de coupes entre les deux films : contenus différents ?": {
+    "fra": "Aucune correspondance de coupes entre les deux films : contenus différents ?",
+    "eng": "No cut correspondence between the two films: different content?"
+  },
+  "Aucun plan de Film 1 ne correspond à Film 2.": {
+    "fra": "Aucun plan de Film 1 ne correspond à Film 2.",
+    "eng": "No Film 1 shot matches Film 2."
+  },
+  "Aucune image de Film 2 comparable.": {
+    "fra": "Aucune image de Film 2 comparable.",
+    "eng": "No comparable Film 2 frame."
+  },
+  "Zones actives des deux films disjointes : cadrages incompatibles.": {
+    "fra": "Zones actives des deux films disjointes : cadrages incompatibles.",
+    "eng": "Active areas of the two films do not overlap: incompatible framings."
+  },
+  "Cadrages incompatibles (corrélation {score} sur la bande commune).": {
+    "fra": "Cadrages incompatibles (corrélation {score} sur la bande commune).",
+    "eng": "Incompatible framings (correlation {score} on the common band)."
+  },
+  "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}).": {
+    "fra": "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}).",
+    "eng": "Film 2 framing varies from shot to shot (agreement {agreement})."
+  },
+  "Aucune image de Film 1 ne correspond à Film 2.": {
+    "fra": "Aucune image de Film 1 ne correspond à Film 2.",
+    "eng": "No Film 1 frame matches Film 2."
+  },
+  "Fenêtre de Film 2 hors du film.": {
+    "fra": "Fenêtre de Film 2 hors du film.",
+    "eng": "Film 2 window outside the film."
+  },
+  "Images {lo}–{last} de Film 1 : contenu différent de Film 2 (décalage {d}).": {
+    "fra": "Images {lo}–{last} de Film 1 : contenu différent de Film 2 (décalage {d}).",
+    "eng": "Film 1 frames {lo}–{last}: content differs from Film 2 (offset {d})."
+  },
+  "Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image (décalage {d}).": {
+    "fra": "Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image (décalage {d}).",
+    "eng": "Film 1 frame {i}: Film 2 change point not confirmed by the picture (offset {d})."
+  },
+  "Jonction {lo}–{hi} hors des segments.": {
+    "fra": "Jonction {lo}–{hi} hors des segments.",
+    "eng": "Junction {lo}–{hi} outside the segments."
+  },
+  "Correspondance non monotone entre les images {film1_start}–{film1_end} de Film 1 (Film 2 relu à rebours).": {
+    "fra": "Correspondance non monotone entre les images {film1_start}–{film1_end} de Film 1 (Film 2 relu à rebours).",
+    "eng": "Non-monotonic correspondence between Film 1 frames {film1_start}–{film1_end} (Film 2 read backwards)."
+  },
+  "Plan à l'image {i} de Film 1 : contenu différent de Film 2.": {
+    "fra": "Plan à l'image {i} de Film 1 : contenu différent de Film 2.",
+    "eng": "Shot at Film 1 frame {i}: content differs from Film 2."
+  },
+  "Film 2 : {count} images décodées pour {frames} images de métadonnées.": {
+    "fra": "Film 2 : {count} images décodées pour {frames} images de métadonnées.",
+    "eng": "Film 2: {count} frames decoded for {frames} metadata frames."
+  },
+  "Carte d'alignement incomplète : images de Film 1 sans source.": {
+    "fra": "Carte d'alignement incomplète : images de Film 1 sans source.",
+    "eng": "Incomplete alignment map: Film 1 frames without a source."
+  },
+  "Plan d'édition incohérent : compte final différent de Film 1.": {
+    "fra": "Plan d'édition incohérent : compte final différent de Film 1.",
+    "eng": "Inconsistent edit plan: final count differs from Film 1."
+  },
+  "RPU : {count} images pour {film2_frames} attendues.": {
+    "fra": "RPU : {count} images pour {film2_frames} attendues.",
+    "eng": "RPU: {count} frames for {film2_frames} expected."
+  },
+  "RPU final : nombre d'images différent de Film 1.": {
+    "fra": "RPU final : nombre d'images différent de Film 1.",
+    "eng": "Final RPU: frame count differs from Film 1."
+  },
+  "RPU final : coupes différentes de celles attendues.": {
+    "fra": "RPU final : coupes différentes de celles attendues.",
+    "eng": "Final RPU: cuts differ from the expected ones."
+  },
+  "RPU final : zone active (L5) différente de celle prévue.": {
+    "fra": "RPU final : zone active (L5) différente de celle prévue.",
+    "eng": "Final RPU: active area (L5) differs from the planned one."
+  },
+  "HDR10+ : {count} images pour {film2_frames} attendues.": {
+    "fra": "HDR10+ : {count} images pour {film2_frames} attendues.",
+    "eng": "HDR10+: {count} frames for {film2_frames} expected."
+  },
+  "HDR10+ édité : images différentes de la projection prévue (contrat de hdr10plus_tool ?).": {
+    "fra": "HDR10+ édité : images différentes de la projection prévue (contrat de hdr10plus_tool ?).",
+    "eng": "Edited HDR10+: frames differ from the planned projection (hdr10plus_tool contract?)."
+  },
+  "Carte d'alignement incohérente : segments et images sans correspondance ne couvrent pas Film 1 bout à bout.": {
+    "fra": "Carte d'alignement incohérente : segments et images sans correspondance ne couvrent pas Film 1 bout à bout.",
+    "eng": "Inconsistent alignment map: segments and unmatched frames do not cover Film 1 end to end."
+  },
+  "RPU édité : images différentes de la projection prévue (contrat de dovi_tool ?).": {
+    "fra": "RPU édité : images différentes de la projection prévue (contrat de dovi_tool ?).",
+    "eng": "Edited RPU: frames differ from the planned projection (dovi_tool contract?)."
+  },
+  "RPU final : données de rendu modifiées hors des champs édités (coupes, L5, L6).": {
+    "fra": "RPU final : données de rendu modifiées hors des champs édités (coupes, L5, L6).",
+    "eng": "Final RPU: rendering data changed outside the edited fields (cuts, L5, L6)."
+  },
+  "RPU final : L6 inattendu à l'image {index} ({l6_after}).": {
+    "fra": "RPU final : L6 inattendu à l'image {index} ({l6_after}).",
+    "eng": "Final RPU: unexpected L6 at frame {index} ({l6_after})."
+  },
+  "Export RPU illisible.": {
+    "fra": "Export RPU illisible.",
+    "eng": "Unreadable RPU export."
+  },
+  "Film 2 : {count} image(s) sans HDR10+ (rangs {ranks}) — l'extracteur les comblerait en ordre de décodage : métadonnées non alignables.": {
+    "fra": "Film 2 : {count} image(s) sans HDR10+ (rangs {ranks}) — l'extracteur les comblerait en ordre de décodage : métadonnées non alignables.",
+    "eng": "Film 2: {count} frame(s) without HDR10+ (ranks {ranks}) — the extractor would fill them in decoding order: metadata cannot be aligned."
+  },
+  "Film 2 : {frames} images de métadonnées pour {film2_frames} images vidéo.": {
+    "fra": "Film 2 : {frames} images de métadonnées pour {film2_frames} images vidéo.",
+    "eng": "Film 2: {frames} metadata frames for {film2_frames} video frames."
+  },
+  "Film 1 : {count} images décodées pour {film1_frames} comptées.": {
+    "fra": "Film 1 : {count} images décodées pour {film1_frames} comptées.",
+    "eng": "Film 1: {count} frames decoded for {film1_frames} counted."
+  },
+  "Film 2 : {frames} images vidéo pour {frames2} images de métadonnées.": {
+    "fra": "Film 2 : {frames} images vidéo pour {frames2} images de métadonnées.",
+    "eng": "Film 2: {frames} video frames for {frames2} metadata frames."
+  },
+  "Film 2 : {count} image(s) sans RPU réparties dans le flux (rangs {ranks}) : métadonnées non alignables.": {
+    "fra": "Film 2 : {count} image(s) sans RPU réparties dans le flux (rangs {ranks}) : métadonnées non alignables.",
+    "eng": "Film 2: {count} frame(s) without RPU spread through the stream (ranks {ranks}): metadata cannot be aligned."
+  },
+  "Décodage impossible ({file}) : {error}": {
+    "fra": "Décodage impossible ({file}) : {error}",
+    "eng": "Decoding failed ({file}): {error}"
+  },
+  "Fenêtre {start}–{last} de {file} : {reason}.": {
+    "fra": "Fenêtre {start}–{last} de {file} : {reason}.",
+    "eng": "Window {start}–{last} of {file}: {reason}."
+  },
+  "Passe complète de {file} : {count} images décodées pour {count2} paquets ou horodatages inattendus.": {
+    "fra": "Passe complète de {file} : {count} images décodées pour {count2} paquets ou horodatages inattendus.",
+    "eng": "Full pass of {file}: {count} frames decoded for {count2} packets, or unexpected timestamps."
+  },
+  "Horodatages des images décodées incomplets (showinfo).": {
+    "fra": "Horodatages des images décodées incomplets (showinfo).",
+    "eng": "Incomplete timestamps for decoded frames (showinfo)."
+  },
+  "{file} n'est pas indexable ({reason}).": {
+    "fra": "{file} n'est pas indexable ({reason}).",
+    "eng": "{file} cannot be indexed ({reason})."
+  },
+  "Fenêtre vide.": {
+    "fra": "Fenêtre vide.",
+    "eng": "Empty window."
+  },
+  "Image décodée au PTS {pts} absente de la table de {file}.": {
+    "fra": "Image décodée au PTS {pts} absente de la table de {file}.",
+    "eng": "Frame decoded at PTS {pts} missing from the table of {file}."
+  },
+  "Image tronquée dans la sortie de FFmpeg.": {
+    "fra": "Image tronquée dans la sortie de FFmpeg.",
+    "eng": "Truncated frame in FFmpeg output."
+  },
+  "Horodatages d'images égaux : rang des images sans métadonnée indéterminé.": {
+    "fra": "Horodatages d'images égaux : rang des images sans métadonnée indéterminé.",
+    "eng": "Equal frame timestamps: rank of frames without metadata undetermined."
+  },
+  "Dimensions de la piste vidéo inconnues.": {
+    "fra": "Dimensions de la piste vidéo inconnues.",
+    "eng": "Unknown video track dimensions."
+  },
+  "Sortie FFprobe illisible : {error}": {
+    "fra": "Sortie FFprobe illisible : {error}",
+    "eng": "Unreadable FFprobe output: {error}"
+  },
+  "FFprobe a échoué ({file}) : {error}": {
+    "fra": "FFprobe a échoué ({file}) : {error}",
+    "eng": "FFprobe failed ({file}): {error}"
+  },
+  "Aucune métadonnée dynamique.": {
+    "fra": "Aucune métadonnée dynamique.",
+    "eng": "No dynamic metadata."
+  },
+  "JSON HDR10+ invalide (image {index}).": {
+    "fra": "JSON HDR10+ invalide (image {index}).",
+    "eng": "Invalid HDR10+ JSON (frame {index})."
+  },
+  "Export RPU invalide (image {index}).": {
+    "fra": "Export RPU invalide (image {index}).",
+    "eng": "Invalid RPU export (frame {index})."
+  },
+  "Flux de métadonnées de longueurs différentes : {lengths}": {
+    "fra": "Flux de métadonnées de longueurs différentes : {lengths}",
+    "eng": "Metadata streams of different lengths: {lengths}"
   }
 }

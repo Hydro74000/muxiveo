@@ -19,6 +19,7 @@ import numpy as np
 
 from core.hdr_inspection.json_stream import iter_json_array
 from core.hdr_inspection.pq import nits_to_pq
+from core.i18n import translate_text
 
 _START_CODE = b"\x00\x00\x00\x01"
 #: Champs HDR10+ sans effet sur le rendu (indices, numérotation).
@@ -96,7 +97,7 @@ def _hdr10plus_entries(json_path: Path, cancelled: Callable[[], bool] | None):
     for index, entry in enumerate(iter_json_array(Path(json_path), key="SceneInfo")):
         _check(cancelled, index)
         if not isinstance(entry, dict):
-            raise ValueError(f"JSON HDR10+ invalide (image {index}).")
+            raise ValueError(translate_text("JSON HDR10+ invalide (image {index}).", index=index))
         rendering = {key: value for key, value in entry.items() if key not in _HDR10PLUS_ADMIN}
         digest = hashlib.blake2b(json.dumps(rendering, sort_keys=True).encode(), digest_size=16).digest()
         parameters = entry.get("LuminanceParameters") or {}
@@ -111,7 +112,7 @@ def rpu_render_digests(export_json: Path, *, cancelled: Callable[[], bool] | Non
     for index, entry in enumerate(iter_json_array(Path(export_json))):
         _check(cancelled, index)
         if not isinstance(entry, dict):
-            raise ValueError(f"Export RPU invalide (image {index}).")
+            raise ValueError(translate_text("Export RPU invalide (image {index}).", index=index))
         entry.pop("rpu_data_crc32", None)
         (entry.get("vdr_dm_data") or {}).pop("scene_refresh_flag", None)
         digests.append(hashlib.blake2b(json.dumps(entry, sort_keys=True).encode(), digest_size=16).digest())
@@ -164,11 +165,11 @@ def hdr10plus_track(json_path: Path, *, cancelled: Callable[[], bool] | None = N
 def combine(tracks: list[MetadataTrack]) -> Film2Metadata:
     """Repères combinés : points de changement réunis ; coupes et luminance du RPU de préférence."""
     if not tracks:
-        raise ValueError("Aucune métadonnée dynamique.")
+        raise ValueError(translate_text("Aucune métadonnée dynamique."))
     frames = {track.frames for track in tracks}
     if len(frames) != 1:
-        raise ValueError("Flux de métadonnées de longueurs différentes : " +
-                         ", ".join(f"{track.kind} {track.frames}" for track in tracks))
+        raise ValueError(translate_text("Flux de métadonnées de longueurs différentes : {lengths}", lengths=", ".join(
+            f"{track.kind} {track.frames}" for track in tracks)))
     ordered = sorted(tracks, key=lambda track: track.kind != "rpu")
     changes = np.unique(np.concatenate([track.change_points for track in tracks]))
     cuts = next((track.reference_cuts for track in ordered if track.reference_cuts.size > 1),

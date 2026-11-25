@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
+from core.i18n import translate_text
 from core.subprocess_utils import run_cancellable_capture, subprocess_text_kwargs
 
 from .process import ProcessHooks
@@ -106,9 +107,9 @@ def parse_stream_props(payload: str) -> VideoProps:
     try:
         streams = json.loads(payload or "{}").get("streams") or []
     except ValueError as exc:
-        raise FrameTableError(f"Sortie FFprobe illisible : {exc}") from exc
+        raise FrameTableError(translate_text("Sortie FFprobe illisible : {error}", error=exc)) from exc
     if not streams:
-        raise FrameTableError("Aucune piste vidéo.")
+        raise FrameTableError(translate_text("Aucune piste vidéo."))
     stream = streams[0]
     try:
         start = Fraction(str((json.loads(payload or "{}").get("format") or {}).get("start_time") or "0"))
@@ -119,7 +120,7 @@ def parse_stream_props(payload: str) -> VideoProps:
     except (TypeError, ValueError):
         width = height = 0
     if width <= 0 or height <= 0:
-        raise FrameTableError("Dimensions de la piste vidéo inconnues.")
+        raise FrameTableError(translate_text("Dimensions de la piste vidéo inconnues."))
     return VideoProps(
         codec=str(stream.get("codec_name") or ""),
         width=width,
@@ -168,7 +169,8 @@ def read_frame_table(path: Path, *, ffprobe: str = "ffprobe", hooks: ProcessHook
             on_start=hooks.on_start, on_end=hooks.on_end, **subprocess_text_kwargs(),
         )
         if result.returncode != 0:
-            raise FrameTableError(f"FFprobe a échoué ({path.name}) : {(result.stderr or '').strip()[:300]}")
+            raise FrameTableError(translate_text(
+                "FFprobe a échoué ({file}) : {error}", file=path.name, error=(result.stderr or '').strip()[:300]))
         return result.stdout or ""
 
     props = parse_stream_props(run([

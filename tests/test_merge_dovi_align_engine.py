@@ -416,6 +416,7 @@ def test_one_sided_information_is_a_disagreement() -> None:
     assert not ctx.confirm_position(12, 0)
 
 
+@pytest.mark.usefixtures("french_messages")
 def test_full_pass_checks_every_change_point_individually() -> None:
     """Deux images de Film 2 échangées autour d'un point de changement interne à un plan en mouvement
     rapide (trop court pour une découpe) : refus du point, pas d'acceptation globale."""

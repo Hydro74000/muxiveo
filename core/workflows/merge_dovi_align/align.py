@@ -157,8 +157,9 @@ class Film2Frames:
             reason = reason.format(**args)
             full = self._loader()
             if len(full) != self.frames:
-                raise AlignmentError(f"Film 2 : {len(full)} images décodées pour {self.frames} images de "
-                                     "métadonnées.")
+                raise AlignmentError(translate_text(
+                    "Film 2 : {count} images décodées pour {frames} images de métadonnées.",
+                    count=len(full), frames=self.frames))
             self.full, self.full_reason = full, reason
         return self.full
 
@@ -167,7 +168,7 @@ class Film2Frames:
         start = max(0, start)
         stop = min(self.frames, start + count)
         if stop <= start:
-            raise AlignmentError("Fenêtre de Film 2 hors du film.")
+            raise AlignmentError(translate_text("Fenêtre de Film 2 hors du film."))
         if self.full is None and self._window is None:
             self.load_full("entrée non indexable")
         if self.full is None and self.decoded + (stop - start) > self._budget * self.frames:
@@ -515,7 +516,7 @@ class _Context:
         hi = int(indices.max()) + offset + spread + 1
         lo_c, hi_c = max(0, lo), min(self.film2.frames, hi)
         if hi_c <= lo_c:
-            raise AlignmentError("Fenêtre de Film 2 hors du film.")
+            raise AlignmentError(translate_text("Fenêtre de Film 2 hors du film."))
         window = self.film2.get(lo_c, hi_c - lo_c)
         f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
         width = 2 * spread + 1
@@ -621,7 +622,9 @@ def _refine_junction(ctx: _Context, lo: int, hi: int, da: int, db: int) -> tuple
     """
     inserted = max(0, da - db)
     if hi - lo < inserted + 2:
-        raise AlignmentError(f"Jonction {lo}–{hi} : insertion de {inserted} images plus grande que la fenêtre.",
+        raise AlignmentError(translate_text(
+            "Jonction {lo}–{hi} : insertion de {inserted} images plus grande que la fenêtre.",
+            lo=lo, hi=hi, inserted=inserted),
                              ((lo, hi),))
     indices = np.arange(lo, hi, dtype=np.int64)
     scores = {}
@@ -686,7 +689,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     film2.hooks, film2.log = hooks, say
     n1, n2 = len(film1), metadata.frames
     if n1 == 0 or n2 == 0:
-        raise AlignmentError("Film vide.")
+        raise AlignmentError(translate_text("Film vide."))
     fps = frame_rate if frame_rate > 0 else 24.0
     band1 = active_band(film1)
     cuts1 = detect_cuts(film1, band1)
@@ -705,13 +708,14 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     block = max(1000, int(BLOCK_SECONDS * fps))
     candidates = candidate_states(coarse_offsets(cuts1, n1, reference, n2, block=block, hooks=hooks))
     if not candidates.size:
-        raise AlignmentError("Aucune correspondance de coupes entre les deux films : contenus différents ?")
+        raise AlignmentError(translate_text(
+            "Aucune correspondance de coupes entre les deux films : contenus différents ?"))
     bounds = np.append(cuts1, n1)
     model = _ShotModel(bounds, film1_cut, reference, n2, candidates, hooks)
     path, best_score = model.solve()
     runs = _segments_from_shots(bounds, model.offsets(path))
     if all(value is None for _a, _b, value, _k0, _k1 in runs):
-        raise AlignmentError("Aucun plan de Film 1 ne correspond à Film 2.")
+        raise AlignmentError(translate_text("Aucun plan de Film 1 ne correspond à Film 2."))
 
     ctx = _geometry(film1, film2, runs, cuts1, reference, n1, n2, band1, hooks, say)
 
@@ -766,14 +770,17 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     for lo, hi, d in _merge(content):
         result = ctx.confirm_content(np.arange(lo, hi), d)
         if result == "fail":
-            raise AlignmentError(f"Images {lo}–{hi - 1} de Film 1 : contenu différent de Film 2 (décalage {d:+d}).",
+            raise AlignmentError(translate_text(
+                "Images {lo}–{last} de Film 1 : contenu différent de Film 2 (décalage {d}).",
+                lo=lo, last=hi - 1, d=f"{d:+d}"),
                                  ((lo, hi),))
         if result == "ok":
             confirmed[lo:hi] = True
     for i, d, seg_lo, seg_hi in positions:
         if not ctx.confirm_position(i, d, seg_lo, seg_hi):
-            raise AlignmentError(f"Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image "
-                                 f"(décalage {d:+d}).", ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
+            raise AlignmentError(translate_text(
+                "Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image (décalage {d}).",
+                i=i, d=f"{d:+d}"), ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
     covered = np.zeros(n1, dtype=bool)
@@ -849,7 +856,7 @@ def _refine_all(ctx: _Context, raw: list[list[int]]) -> None:
         lo, hi = max(first_seg[0], first_seg[1] - span), min(second_seg[1], second_seg[0] + span)
         start, inserted = _refine_junction(ctx, lo, hi, first_seg[2], second_seg[2])
         if not first_seg[0] <= start - inserted <= start <= second_seg[1]:
-            raise AlignmentError(f"Jonction {lo}–{hi} hors des segments.", ((lo, hi),))
+            raise AlignmentError(translate_text("Jonction {lo}–{hi} hors des segments.", lo=lo, hi=hi), ((lo, hi),))
         first_seg[1], second_seg[0] = start - inserted, start
 
 
@@ -887,21 +894,23 @@ def _geometry(film1: Signatures, film2: Film2Frames, runs: list, cuts1: np.ndarr
         groups.append(np.arange(offset, offset + indices.size))
         offset += indices.size
     if not parts2:
-        raise AlignmentError("Aucune image de Film 2 comparable.")
+        raise AlignmentError(translate_text("Aucune image de Film 2 comparable."))
     joined1, joined2 = _concat(parts1), _concat(parts2)
     margin_y, margin_x = cell_margins(film1, joined2)
     band = band1.intersect(active_band(joined2), margin_y, margin_x)
     if band.empty:
-        raise AlignmentError("Zones actives des deux films disjointes : cadrages incompatibles.")
+        raise AlignmentError(translate_text("Zones actives des deux films disjointes : cadrages incompatibles."))
     dx, dy, score, agreement = best_shift(joined1, joined2, band, groups)
     say(translate_text(
         "Cadrage : bande commune {top}…{bottom} (largeur), translation de Film 2 {dx}/{dy}, corrélation {score}, "
         "cohérence {agreement} sur {pairs} paires.", top=f"{band.top:+.3f}", bottom=f"{band.bottom:+.3f}",
         dx=f"{dx:+.3f}", dy=f"{dy:+.3f}", score=f"{score:.2f}", agreement=f"{agreement:.0%}", pairs=len(groups)))
     if score < GEOMETRY_CORRELATION:
-        raise AlignmentError(f"Cadrages incompatibles (corrélation {score:.2f} sur la bande commune).")
+        raise AlignmentError(translate_text(
+            "Cadrages incompatibles (corrélation {score} sur la bande commune).", score=f"{score:.2f}"))
     if len(groups) >= 3 and agreement < GEOMETRY_AGREEMENT:
-        raise AlignmentError(f"Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement:.0%}).")
+        raise AlignmentError(translate_text(
+            "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}).", agreement=f"{agreement:.0%}"))
     return _Context(film1, film2, band, dx, dy, hooks)
 
 
@@ -913,7 +922,7 @@ def _bounded(raw: list[list[int]], n2: int) -> list[Segment]:
         if b > a:
             built.append(Segment(a, b - a, a + d))
     if not built:
-        raise AlignmentError("Aucune image de Film 1 ne correspond à Film 2.")
+        raise AlignmentError(translate_text("Aucune image de Film 1 ne correspond à Film 2."))
     return built
 
 
@@ -944,7 +953,7 @@ def _frame_refine(ctx: _Context, built: list[Segment], n2: int, say: Callable[[s
             return built
         say(translate_text("Passe image par image : {count} segments après découpe des écarts locaux.",
                            count=len(built)))
-    raise AlignmentError("Passe image par image : correspondance instable.")
+    raise AlignmentError(translate_text("Passe image par image : correspondance instable."))
 
 
 def _merge_segments(segments: list[Segment]) -> list[Segment]:
@@ -961,8 +970,9 @@ def _check_order(built: list[Segment]) -> None:
     """Segments strictement croissants et disjoints dans les deux films."""
     for before, after in zip(built, built[1:]):
         if after.film1_start < before.film1_end or after.film2_start < before.film2_end:
-            raise AlignmentError(f"Correspondance non monotone entre les images {before.film1_start}–"
-                                 f"{after.film1_end} de Film 1 (Film 2 relu à rebours).",
+            raise AlignmentError(translate_text(
+                "Correspondance non monotone entre les images {film1_start}–{film1_end} de Film 1 (Film 2 relu à "
+                "rebours).", film1_start=before.film1_start, film1_end=after.film1_end),
                                  ((before.film1_start, after.film1_end),))
 
 
@@ -1069,7 +1079,7 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
                            count=len(pending)))
     for i, d, seg_lo, seg_hi in pending:
         if not ctx.confirm_position(i, d, seg_lo, seg_hi):
-            raise AlignmentError(f"Plan à l'image {i} de Film 1 : contenu différent de Film 2.",
+            raise AlignmentError(translate_text("Plan à l'image {i} de Film 1 : contenu différent de Film 2.", i=i),
                                  ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
     return len(pending)
 

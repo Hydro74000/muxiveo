@@ -190,13 +190,15 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
     film2_frames = next((gaps.frames for gaps in presence.values()), None)
     if "hdr10plus" in presence and presence["hdr10plus"].missing:
         gaps = presence["hdr10plus"]
-        raise AlignmentError(f"Film 2 : {len(gaps.missing)} image(s) sans HDR10+ (rangs {list(gaps.missing[:6])}) — "
-                             "l'extracteur les comblerait en ordre de décodage : métadonnées non alignables.")
+        raise AlignmentError(translate_text(
+            "Film 2 : {count} image(s) sans HDR10+ (rangs {ranks}) — l'extracteur les comblerait en ordre de "
+            "décodage : métadonnées non alignables.", count=len(gaps.missing), ranks=list(gaps.missing[:6])))
     if "rpu" in presence and presence["rpu"].missing and rpu is not None:
         gaps = presence["rpu"]
         if not gaps.trailing:
-            raise AlignmentError(f"Film 2 : {len(gaps.missing)} image(s) sans RPU réparties dans le flux "
-                                 f"(rangs {list(gaps.missing[:6])}) : métadonnées non alignables.")
+            raise AlignmentError(translate_text(
+                "Film 2 : {count} image(s) sans RPU réparties dans le flux (rangs {ranks}) : métadonnées non "
+                "alignables.", count=len(gaps.missing), ranks=list(gaps.missing[:6])))
         from core.workflows.encode.runtime.dovi_rpu_gaps import fill_rpu_gaps
 
         completed = work_dir / "align_rpu_completed.bin"
@@ -229,7 +231,9 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
         tracks.append(hdr10plus_track(hdr10plus, cancelled=hooks.cancelled))
     metadata: Film2Metadata = combine(tracks)
     if film2_frames is not None and metadata.frames != film2_frames:
-        raise AlignmentError(f"Film 2 : {metadata.frames} images de métadonnées pour {film2_frames} images vidéo.")
+        raise AlignmentError(translate_text(
+            "Film 2 : {frames} images de métadonnées pour {film2_frames} images vidéo.",
+            frames=metadata.frames, film2_frames=film2_frames))
 
     # 3. Film 1 (passe complète lancée plus tôt) et accès à Film 2.
     log(translate_text("Passe complète de Film 1 : attente de la fin du décodage…"))
@@ -237,14 +241,18 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
     log(translate_text("Film 1 analysé ({frames} images, décodage {decoder}).", frames=len(film1),
                        decoder=translate_text(film1.decoder)))
     if film1_frames is not None and len(film1) != film1_frames:
-        raise AlignmentError(f"Film 1 : {len(film1)} images décodées pour {film1_frames} comptées.")
+        raise AlignmentError(translate_text(
+            "Film 1 : {count} images décodées pour {film1_frames} comptées.",
+            count=len(film1), film1_frames=film1_frames))
     film2_table: FrameTable | None = None
     try:
         film2_table = read_frame_table(film2, ffprobe=tools.ffprobe, hooks=hooks)
     except Exception as exc:  # noqa: BLE001 — Film 2 indécodable : seules les métadonnées restent utilisables
         log("[WARN] " + translate_text("Film 2 non décodable ({error}).", error=str(exc)))
     if film2_table is not None and film2_table.indexable and film2_table.frames != metadata.frames:
-        raise AlignmentError(f"Film 2 : {film2_table.frames} images vidéo pour {metadata.frames} images de métadonnées.")
+        raise AlignmentError(translate_text(
+            "Film 2 : {frames} images vidéo pour {frames2} images de métadonnées.",
+            frames=film2_table.frames, frames2=metadata.frames))
     source = Film2Frames(
         metadata.frames,
         window=(lambda start, count: decode_window(film2_table, start, count, ffmpeg=tools.ffmpeg, hooks=hooks,
@@ -270,7 +278,8 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
             log("[WARN] " + translate_text(refusal))
         notes.append(area_plan.describe())
         if level6 is not None:
-            notes.append(translate_text("L6 aligné sur le HDR10 de la sortie ({source}).", source=resolved.describe()))
+            notes.append(translate_text(
+                "L6 aligné sur le HDR10 de la sortie ({source}).", source=resolved.describe()))
     if alignment.identity and (area_plan is None or area_plan.keep) and level6 is None:
         notes.append(translate_text("Métadonnées de Film 2 injectées telles quelles."))
         return AlignmentResult(alignment, None, rpu, hdr10plus, resolved, area_plan, film1_table, film2_table, notes)

@@ -138,8 +138,9 @@ def build_edit_plan(alignment: AlignmentMap, *, allow_fill: bool, active_area: A
         + [(gap.start, gap.length, gap) for gap in alignment.uncovered], key=lambda item: item[0])
     for start, length, piece in pieces:
         if start != cursor:
-            raise AlignmentError("Carte d'alignement incohérente : segments et images sans correspondance ne "
-                                 "couvrent pas Film 1 bout à bout.")
+            raise AlignmentError(translate_text(
+                "Carte d'alignement incohérente : segments et images sans correspondance ne couvrent pas Film 1 "
+                "bout à bout."))
         cursor = start + length
         if piece is None:
             kept_before += length
@@ -149,10 +150,10 @@ def build_edit_plan(alignment: AlignmentMap, *, allow_fill: bool, active_area: A
         duplicates.append((source, kept_before, length))
         sources[start:start + length] = piece.source
     if np.any(sources < 0) or cursor != n1:
-        raise AlignmentError("Carte d'alignement incomplète : images de Film 1 sans source.")
+        raise AlignmentError(translate_text("Carte d'alignement incomplète : images de Film 1 sans source."))
     kept = alignment.film2_frames - sum(length for _start, length in alignment.removed)
     if kept + sum(length for _s, _o, length in duplicates) != n1:
-        raise AlignmentError("Plan d'édition incohérent : compte final différent de Film 1.")
+        raise AlignmentError(translate_text("Plan d'édition incohérent : compte final différent de Film 1."))
     return EditPlan(n1, alignment.film2_frames, tuple(alignment.removed), tuple(duplicates), sources,
                     np.asarray(alignment.expected_cuts, dtype=np.int64), active_area, level6, tuple(alignment.uncovered),
                     tuple(warnings))
@@ -165,7 +166,9 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
     """RPU de Film 2 → RPU de la sortie (passes séquentielles, chacune relue) ; rend le fichier final."""
     digests_in = rpu_digests(rpu_in)
     if len(digests_in) != plan.film2_frames:
-        raise AlignmentError(f"RPU : {len(digests_in)} images pour {plan.film2_frames} attendues.")
+        raise AlignmentError(translate_text(
+            "RPU : {count} images pour {film2_frames} attendues.",
+            count=len(digests_in), film2_frames=plan.film2_frames))
     level5_in = _export_level5(rpu_in, work_dir / "align_in", dovi_tool, run, plan.film2_frames)
     current = rpu_in
     edit = plan.position_edit()
@@ -174,7 +177,8 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
         got = rpu_digests(current)
         expected = [digests_in[int(j)] for j in plan.sources.tolist()]
         if got != expected:
-            raise AlignmentError("RPU édité : images différentes de la projection prévue (contrat de dovi_tool ?).")
+            raise AlignmentError(translate_text(
+                "RPU édité : images différentes de la projection prévue (contrat de dovi_tool ?)."))
     cuts_now, _l5 = _export_cuts(current, work_dir / "align_mid", dovi_tool, run, plan.film1_frames)
     finish = plan.rpu_finish_edit(cuts_now)
     if finish is not None:
@@ -182,16 +186,18 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
         current = _run_editor(dovi_tool, current, finish, work_dir / "align_rpu_final", run)
         after = _export_entries(current, work_dir / "align_final_all.json", dovi_tool, run)
         if [digest for digest, _l6 in after] != [digest for digest, _l6 in before]:
-            raise AlignmentError("RPU final : données de rendu modifiées hors des champs édités (coupes, L5, L6).")
+            raise AlignmentError(translate_text(
+                "RPU final : données de rendu modifiées hors des champs édités (coupes, L5, L6)."))
         wanted = None if plan.level6 is None else tuple(plan.level6[key] for key in _L6_KEYS)
         for index, ((_d, l6_after), (_e, l6_before)) in enumerate(zip(after, before)):
             if l6_after != (wanted if wanted is not None else l6_before):
-                raise AlignmentError(f"RPU final : L6 inattendu à l'image {index} ({l6_after}).")
+                raise AlignmentError(translate_text(
+                    "RPU final : L6 inattendu à l'image {index} ({l6_after}).", index=index, l6_after=l6_after))
     cuts, level5 = _export_cuts(current, work_dir / "align_out", dovi_tool, run, plan.film1_frames)
     if len(rpu_digests(current)) != plan.film1_frames:
-        raise AlignmentError("RPU final : nombre d'images différent de Film 1.")
+        raise AlignmentError(translate_text("RPU final : nombre d'images différent de Film 1."))
     if not np.array_equal(cuts, plan.expected_cuts):
-        raise AlignmentError("RPU final : coupes différentes de celles attendues.")
+        raise AlignmentError(translate_text("RPU final : coupes différentes de celles attendues."))
     if plan.active_area is not None and not plan.active_area.keep:
         expected_l5 = np.zeros((plan.film1_frames, 4), dtype=np.int32)
         for start, stop, area in plan.active_area.ranges:
@@ -199,7 +205,7 @@ def apply_rpu(plan: EditPlan, rpu_in: Path, work_dir: Path, *, dovi_tool: str, r
     else:
         expected_l5 = level5_in[plan.sources]
     if not np.array_equal(level5, expected_l5):
-        raise AlignmentError("RPU final : zone active (L5) différente de celle prévue.")
+        raise AlignmentError(translate_text("RPU final : zone active (L5) différente de celle prévue."))
     return current
 
 
@@ -244,7 +250,7 @@ def _export_entries(rpu: Path, target: Path, dovi_tool: str, run: Runner) -> lis
         out = []
         for entry in iter_json_array(target):
             if not isinstance(entry, dict):
-                raise AlignmentError("Export RPU illisible.")
+                raise AlignmentError(translate_text("Export RPU illisible."))
             out.append(normalized_entry(entry))
         return out
     finally:
@@ -255,7 +261,9 @@ def apply_hdr10plus(plan: EditPlan, json_in: Path, work_dir: Path, *, hdr10plus_
     """JSON HDR10+ de Film 2 → JSON de la sortie (mêmes positions), relu image par image."""
     digests_in = hdr10plus_digests(json_in)
     if len(digests_in) != plan.film2_frames:
-        raise AlignmentError(f"HDR10+ : {len(digests_in)} images pour {plan.film2_frames} attendues.")
+        raise AlignmentError(translate_text(
+            "HDR10+ : {count} images pour {film2_frames} attendues.",
+            count=len(digests_in), film2_frames=plan.film2_frames))
     edit = plan.position_edit()
     if edit is None:
         return json_in
@@ -265,7 +273,8 @@ def apply_hdr10plus(plan: EditPlan, json_in: Path, work_dir: Path, *, hdr10plus_
     run([hdr10plus_tool, "editor", "-i", str(json_in), "-j", str(config), "-o", str(out)])
     config.unlink(missing_ok=True)
     if hdr10plus_digests(out) != [digests_in[int(j)] for j in plan.sources.tolist()]:
-        raise AlignmentError("HDR10+ édité : images différentes de la projection prévue (contrat de hdr10plus_tool ?).")
+        raise AlignmentError(translate_text(
+            "HDR10+ édité : images différentes de la projection prévue (contrat de hdr10plus_tool ?)."))
     return out
 
 

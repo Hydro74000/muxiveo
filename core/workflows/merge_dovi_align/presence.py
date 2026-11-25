@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.i18n import translate_text
 from core.workflows.encode.hdr10plus_output import _HDR10PLUS_T35
 
 _RPU_NAL = 62
@@ -66,7 +67,8 @@ def _gaps(order_keys: list, missing_decode: list[int]) -> PresenceGaps:
     """Rangs d'affichage des images manquantes ; clés d'affichage égales avec un trou : :class:`PresenceError`
     (départager par l'ordre de décodage pourrait viser une autre image que celle qui manque)."""
     if missing_decode and len(set(order_keys)) != len(order_keys):
-        raise PresenceError("Horodatages d'images égaux : rang des images sans métadonnée indéterminé.")
+        raise PresenceError(translate_text(
+            "Horodatages d'images égaux : rang des images sans métadonnée indéterminé."))
     order = sorted(range(len(order_keys)), key=lambda index: order_keys[index])
     rank = {decode: display for display, decode in enumerate(order)}
     trailing = bool(missing_decode) and missing_decode == list(
