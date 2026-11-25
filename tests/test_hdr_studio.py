@@ -666,3 +666,46 @@ def test_cancel_reaches_cache_count_after_track_change(studio, qt_app, tmp_path,
     pending = studio._cache_cancels["main"]
     studio.cancel()
     assert pending.is_set()
+
+
+@pytest.mark.parametrize("role", ["main", "compare"])
+def test_cancel_button_stops_blocked_cache_count(studio, qt_app, tmp_path, monkeypatch, role):
+    """Comptage exact bloqué pendant un chargement du cache (piste changée ou piste B) : opération affichée,
+    « Annuler » visible ; un clic l'arrête et libère la file des tâches."""
+    import sys
+    import threading
+
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None and not studio.is_busy())
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 2)))
+    # Compte de l'inspection (5) différent de la mesure en cache (2) : comptage exact déclenché.
+    monkeypatch.setattr(panel_module, "_inspected_frames", lambda info, index: 5)
+    original = panel_module.build_snapshot
+    monkeypatch.setattr(panel_module, "build_snapshot", lambda info, stream=None: dataclasses.replace(
+        original(info, stream), frames=5, frames_exact=True))
+    started = threading.Event()
+
+    def slow_count(_ffprobe, _path, *, run_command, stream_index):
+        started.set()
+        run_command([sys.executable, "-c", "import time; time.sleep(30)"], **frame_count.subprocess_text_kwargs())
+        return 5
+
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", slow_count)
+    if role == "main":
+        studio._on_track_changed(0)
+    else:
+        studio.load_compare(media, 0)
+    assert started.wait(10)
+    assert _wait(qt_app, lambda: studio.is_busy() and studio._cancel_btn.isVisibleTo(studio))
+    begin = time.monotonic()
+    studio._cancel_btn.click()
+    assert not studio.is_busy()
+    done = threading.Event()
+    studio._submit(done.set)  # file des tâches libérée
+    assert _wait(qt_app, done.is_set, 10) and time.monotonic() - begin < 10

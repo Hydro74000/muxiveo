@@ -12034,5 +12034,9 @@
   "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les décodeurs) — fichier corrigé conforme.": {
     "fra": "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les décodeurs) — fichier corrigé conforme.",
     "eng": "Video stream: {count} NAL unit(s) with an invalid header removed (ignored by decoders) — corrected file is compliant."
+  },
+  "Vérification du nombre d'images de la mesure en cache…": {
+    "fra": "Vérification du nombre d'images de la mesure en cache…",
+    "eng": "Checking the frame count of the cached measurement…"
   }
 }
