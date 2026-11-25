@@ -580,7 +580,7 @@ class _Context:
             kept = both[rows, spread]
             if not np.any(kept) or bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION)):
                 continue
-            local = self._local_columns(indices[rows], offset, spread, window, lo_c)
+            local = self._local_columns(indices[rows], offset, spread, window, lo_c, kept)
             if local is None:
                 continue
             c, b, o, (sy, sx, band) = local
@@ -593,10 +593,12 @@ class _Context:
             self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
 
-    def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int
-                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float, Band]] | None:
+    def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int,
+                       required: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+                                                      tuple[float, float, Band]] | None:
         """Matrices des images ``indices`` (un plan), chaque colonne avec la translation qui lui est la plus
-        favorable ; None si aucune translation admissible au décalage testé."""
+        favorable ; au décalage testé, seules les translations gardant informatives les paires ``required`` sont
+        classées. None si aucune translation admissible au décalage testé."""
         sub = take(self.film1, indices)
         width = 2 * spread + 1
         corr = np.full((indices.size, width), -1.0, dtype=np.float32)
@@ -604,7 +606,8 @@ class _Context:
         one = np.zeros((indices.size, width), dtype=bool)
         chosen: tuple[float, float, Band] | None = None
         for column, shift in enumerate(range(-spread, spread + 1)):
-            local = self._local_shift(sub, indices, offset + shift, window, lo_c)
+            local = self._local_shift(sub, indices, offset + shift, window, lo_c,
+                                      required if shift == 0 else None)
             if local is None:
                 if shift == 0:
                     return None
@@ -620,11 +623,12 @@ class _Context:
         return corr, both, one, chosen
 
     def _local_shift(self, sub: Signatures, indices: np.ndarray, offset: int, window: Signatures,
-                     lo_c: int) -> tuple[float, float, Band] | None:
+                     lo_c: int, required: np.ndarray | None = None) -> tuple[float, float, Band] | None:
         """Translation de Film 2 (y, x, en largeur) qui maximise la corrélation médiane des images ``indices``
         à leurs images de Film 2 au décalage ``offset``, bornée par les zones actives (la zone de Film 2 glisse
         dans celle de Film 1, ou l'inverse) ; bande commune locale d'au moins ``REFRAME_MIN_EXTENT`` de la bande
-        globale. Estimée sur la fenêtre examinée, sans mémoire d'une fenêtre à l'autre."""
+        globale. Estimée sur la fenêtre examinée, sans mémoire d'une fenêtre à l'autre ; ``required`` : lignes
+        dont la paire doit rester informative (translations qui en perdent une écartées avant classement)."""
         assert self.area1 is not None and self.area2 is not None
         a1, a2 = self.area1, self.area2
         j = indices + offset - lo_c
@@ -642,7 +646,7 @@ class _Context:
             g1, inf1 = band_features(sub, band)
             g2, inf2 = band_features(window, band.shifted(sy, sx))
             pairs = ok & inf1 & inf2[np.clip(j, 0, len(window) - 1)]
-            if not np.any(pairs):
+            if not np.any(pairs) or (required is not None and not bool(np.all(pairs[required]))):
                 return None
             return float(np.median(np.sum(g1[pairs] * g2[j[pairs]], axis=1))), band
 
