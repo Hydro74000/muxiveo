@@ -649,3 +649,35 @@ def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
     other = [*scenes[:10], Scene(np.random.default_rng(99), scenes[10].length), *scenes[11:]]
     with pytest.raises(AlignmentError):
         run(shots, whole(other), sig2=render(whole(other), 18), frame_rate=0.5, metadata=metadata_for(shots))
+
+
+def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> None:
+    """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Un panoramique vertical
+    (temps et translation interchangeables) rend la position ambiguë : refusée ; un mouvement horizontal reste
+    confirmé."""
+    from core.workflows.merge_dovi_align.features import cell_margins
+
+    class Pan(Scene):
+        def __init__(self, rng: np.random.Generator, length: int, *, vertical: bool) -> None:
+            super().__init__(rng, length)
+            low = rng.uniform(0, 1, size=(24, 30))
+            big = np.kron(low, np.ones((10, 10)))
+            self.texture = self.level + 220.0 * (big - big.mean())
+            self.vertical = vertical
+
+        def frame(self, index: int, dx: int = 0, dy: int = 0) -> np.ndarray:
+            top = 40 + dy + (index if self.vertical else 0)
+            left = 20 + dx + (0 if self.vertical else index)
+            return self.texture[top:top + H, left:left + W]
+
+    for vertical, expected in ((True, False), (False, True)):
+        shot = Pan(np.random.default_rng(8), 40, vertical=vertical)
+        sig1 = render([(shot, 0, 40)], 4)
+        sig2 = render([(shot, 0, 40)], 18, dy_per_scene={0: 10})
+        area1, area2 = active_band(sig1), active_band(sig2)
+        band = area1.intersect(area2, *cell_margins(sig1, sig2))
+        source = Film2Frames(40, window=lambda a, n, sig=sig2: sig.slice(a, a + n), budget=100.0)
+        ctx = _Context(sig1, source, band, 0.0, 0.0, ProcessHooks(), area1=area1, area2=area2,
+                       cuts1=np.asarray([0], dtype=np.int64))
+        assert ctx.confirm_content(np.arange(10, 16), 0) == "ok"
+        assert ctx.confirm_position(20, 0) is expected

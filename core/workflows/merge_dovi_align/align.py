@@ -513,7 +513,8 @@ class _Context:
     film1_static: np.ndarray = field(init=False)
     #: Translation locale retenue par (plan de Film 1, décalage) : plans cadrés autrement dans les deux films.
     reframed: dict[tuple[int, int], tuple[float, float]] = field(init=False)
-    _local_shifts: dict[tuple[int, int], tuple[float, float, Band] | None] = field(init=False)
+    #: Bande locale des images de Film 1 recadrées au dernier calcul (exception « plan fixe » sur cette bande).
+    _frame_bands: dict[int, Band] = field(init=False)
 
     def __post_init__(self) -> None:
         self.film1_features, self.film1_informative = band_features(self.film1, self.band)
@@ -522,7 +523,7 @@ class _Context:
             static[1:] = np.sum(self.film1_features[1:] * self.film1_features[:-1], axis=1) >= STATIC_CORRELATION
         self.film1_static = static
         self.reframed = {}
-        self._local_shifts = {}
+        self._frame_bands = {}
 
     def _window(self, indices: np.ndarray, offset: int, spread: int) -> tuple[Signatures, int]:
         self.hooks.check()
@@ -562,50 +563,74 @@ class _Context:
     def checked_scores(self, indices: np.ndarray, offset: int,
                        spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Comme :meth:`pair_scores`, mais chaque plan de Film 1 dont une paire informative reste sous
-        ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec sa propre translation (plan cadré
-        autrement dans les deux films), si elle améliore nettement la corrélation médiane. Seuils inchangés."""
+        ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec un cadrage local (plan cadré autrement
+        dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
+        ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
+        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés."""
         window, lo_c = self._window(indices, offset, spread)
         f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_informative, f2, inf2, indices, indices,
                                        offset, spread, lo_c)
+        self._frame_bands = {}
         if self.area1 is None or self.area2 is None:
             return corr, both, one
         shots = np.searchsorted(self.cuts1, indices, side="right")
         for shot in np.unique(shots).tolist():
             rows = np.flatnonzero(shots == shot)
-            center = both[rows, spread]
-            if not np.any(center) or bool(np.all(corr[rows[center], spread] >= CONFIRM_CORRELATION)):
+            kept = both[rows, spread]
+            if not np.any(kept) or bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION)):
                 continue
-            local = self._local_shift(int(shot), indices[rows], offset, window, lo_c)
+            local = self._local_columns(indices[rows], offset, spread, window, lo_c)
             if local is None:
                 continue
-            sy, sx, band = local
-            sub = take(self.film1, indices[rows])
-            g1, ginf1 = band_features(sub, band)
-            g2, ginf2 = band_features(window, band.shifted(sy, sx))
-            c, b, o = self._scores(g1, ginf1, g2, ginf2, indices[rows], np.arange(rows.size), offset, spread, lo_c)
-            if not np.any(b[:, spread]):
-                continue
-            if float(np.median(c[b[:, spread], spread])) < float(np.median(corr[rows[center], spread])) + REFRAME_GAIN:
+            c, b, o, (sy, sx, band) = local
+            if not bool(np.all(b[kept, spread])):
+                continue                    # une paire informative ne doit pas sortir du contrôle
+            if float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])) + REFRAME_GAIN:
                 continue
             corr[rows], both[rows], one[rows] = c, b, o
             self.reframed[(int(shot), offset)] = (sy, sx)
+            self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
 
-    def _local_shift(self, shot: int, indices: np.ndarray, offset: int, window: Signatures,
+    def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[float, float, Band]] | None:
+        """Matrices des images ``indices`` (un plan), chaque colonne avec la translation qui lui est la plus
+        favorable ; None si aucune translation admissible au décalage testé."""
+        sub = take(self.film1, indices)
+        width = 2 * spread + 1
+        corr = np.full((indices.size, width), -1.0, dtype=np.float32)
+        both = np.zeros((indices.size, width), dtype=bool)
+        one = np.zeros((indices.size, width), dtype=bool)
+        chosen: tuple[float, float, Band] | None = None
+        for column, shift in enumerate(range(-spread, spread + 1)):
+            local = self._local_shift(sub, indices, offset + shift, window, lo_c)
+            if local is None:
+                if shift == 0:
+                    return None
+                continue
+            sy, sx, band = local
+            if shift == 0:
+                chosen = local
+            g1, ginf1 = band_features(sub, band)
+            g2, ginf2 = band_features(window, band.shifted(sy, sx))
+            c, b, o = self._scores(g1, ginf1, g2, ginf2, indices, np.arange(indices.size), offset + shift, 0, lo_c)
+            corr[:, column], both[:, column], one[:, column] = c[:, 0], b[:, 0], o[:, 0]
+        assert chosen is not None
+        return corr, both, one, chosen
+
+    def _local_shift(self, sub: Signatures, indices: np.ndarray, offset: int, window: Signatures,
                      lo_c: int) -> tuple[float, float, Band] | None:
         """Translation de Film 2 (y, x, en largeur) qui maximise la corrélation médiane des images ``indices``
-        d'un plan à leur image de Film 2, bornée par les zones actives (la zone de Film 2 glisse dans celle de
-        Film 1, ou l'inverse) ; bande commune locale d'au moins ``REFRAME_MIN_EXTENT`` de la bande globale.
-        Mémorisée par (plan, décalage)."""
-        key = (shot, offset)
-        if key in self._local_shifts:
-            return self._local_shifts[key]
+        à leurs images de Film 2 au décalage ``offset``, bornée par les zones actives (la zone de Film 2 glisse
+        dans celle de Film 1, ou l'inverse) ; bande commune locale d'au moins ``REFRAME_MIN_EXTENT`` de la bande
+        globale. Estimée sur la fenêtre examinée, sans mémoire d'une fenêtre à l'autre."""
         assert self.area1 is not None and self.area2 is not None
         a1, a2 = self.area1, self.area2
-        sub = take(self.film1, indices)
         j = indices + offset - lo_c
         ok = (j >= 0) & (j < len(window))
+        if not np.any(ok):
+            return None
         margin_y, margin_x = cell_margins(self.film1, window)
         height, width = self.band.bottom - self.band.top, self.band.right - self.band.left
 
@@ -637,9 +662,17 @@ class _Context:
                 found = score(sy, sx)
                 if found is not None and found[0] > best[0]:
                     best = (found[0], sy, sx, found[1])
-        result = None if best is None else (best[1], best[2], best[3])
-        self._local_shifts[key] = result
-        return result
+        return None if best is None else (best[1], best[2], best[3])
+
+    def _static(self, i: int) -> bool:
+        """Images ``i - 1`` et ``i`` de Film 1 identiques sur la bande réellement comparée (locale si recadrée)."""
+        if not 0 < i < len(self.film1):
+            return False
+        band = self._frame_bands.get(i)
+        if band is None:
+            return bool(self.film1_static[i])
+        features, _informative = band_features(take(self.film1, np.asarray([i - 1, i])), band)
+        return float(np.dot(features[0], features[1])) >= STATIC_CORRELATION
 
     def confirm_content(self, indices: np.ndarray, offset: int) -> str:
         """« ok » : chaque paire informative corrélée ; « neutral » : aucune image informative d'aucun côté ;
@@ -678,7 +711,7 @@ class _Context:
             return True
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
-        still = 0 < i < len(self.film1) and bool(self.film1_static[i])
+        still = self._static(i)
         for frame, crossing in ((i - 1, slice(center + 1, None)), (i, slice(0, center))):
             row = np.flatnonzero(indices == frame)
             if row.size == 0 or not both[row[0], center]:
