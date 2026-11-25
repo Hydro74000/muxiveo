@@ -522,7 +522,7 @@ _RPU_BASE = {
     DoviSubProfile.P8_1: "pq", DoviSubProfile.P7_FEL: "pq", DoviSubProfile.P7_MEL: "pq", DoviSubProfile.P5: "pq",
     DoviSubProfile.P8_4: "hlg", DoviSubProfile.P8_2: "sdr",
 }
-_BASE_LABELS = {"pq": "PQ (HDR10)", "hlg": "HLG", "sdr": "SDR"}
+_BASE_LABELS = {"pq": "PQ (HDR10)", "hlg": "HLG", "sdr": "SDR", "ipt": "IPT (Dolby Vision P5)"}
 
 
 def _check_dovi_base(sub_profile: DoviSubProfile, base: str) -> None:
@@ -531,6 +531,12 @@ def _check_dovi_base(sub_profile: DoviSubProfile, base: str) -> None:
     expected = _RPU_BASE.get(sub_profile, "")
     if not expected or not base or expected == base:
         return
+    if base == "ipt":
+        raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
+            "Film 1 est en Dolby Vision P5 : son image de base est en couleurs IPT, le RPU de Film 2 suppose une "
+            "image {expected}. Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage (une source P5 "
+            "réencodée est convertie en HDR10), puis utilisez le fichier obtenu comme Film 1.",
+            expected=_BASE_LABELS[expected]))
     raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
         "Dolby Vision {profile} de Film 2 : son RPU suppose une image de base {expected}, celle de Film 1 est "
         "{base}. Le RPU ne peut pas être converti (dovi_tool ne retire pas les courbes de reconstruction d'un "
@@ -559,12 +565,16 @@ class ValidationContext:
     film1_has_dovi: bool = False
     #: Transfert de Film 1 lu par MediaInfo (« PQ », « HLG »…), vide si inconnu.
     film1_transfer: str = ""
+    #: Sous-profil Dolby Vision de Film 1 (lu seulement si Film 1 et Film 2 portent du Dolby Vision).
+    film1_dovi_profile: DoviSubProfile = DoviSubProfile.UNKNOWN
 
     @property
     def output_base_transfer(self) -> str:
         """Transfert de l'image de base écrite : « pq » (Film 1 PQ ou SDR converti en HDR10), « hlg », ou vide."""
         if self.film1_needs_sdr_to_hdr10:
             return "pq"
+        if self.film1_dovi_profile == DoviSubProfile.P5:
+            return "ipt"                        # Dolby Vision P5 : couleurs IPT, quel que soit le transfert déclaré
         transfer = self.film1_transfer.lower()
         if "hlg" in transfer or "arib" in transfer:
             return "hlg"
@@ -1374,6 +1384,8 @@ class MergeDoviWorkflow(QObject):
             film2_has_hdr10_reference=film2_has_hdr10_reference,
             film1_has_dovi=film1_has_dovi,
             film1_transfer=transfer1,
+            film1_dovi_profile=self._film1_dovi_profile(film1) if film1_has_dovi and flags.has_dovi
+            else DoviSubProfile.UNKNOWN,
         )
 
     @staticmethod
@@ -3451,6 +3463,14 @@ class MergeDoviWorkflow(QObject):
             path, mediainfo_bin=self._bins["mediainfo"], ffprobe_bin=self._bins["ffprobe"],
             exact=True, run_command=self._run_probe,
         )
+
+    def _film1_dovi_profile(self, film1: Path) -> DoviSubProfile:
+        """Sous-profil Dolby Vision de Film 1 (MediaInfo, sinon dovi_tool) : une base P5 est en couleurs IPT."""
+        detector = DoviProfileDetector(dovi_tool_bin=self._bins["dovi_tool"])
+        result = detector.detect_from_mediainfo(self._load_mediainfo_video(film1))
+        if result.sub_profile == DoviSubProfile.UNKNOWN:
+            result = detector.detect_from_dovi_tool(film1)
+        return result.sub_profile
 
     def _load_mediainfo_video(self, path: Path) -> dict | None:
         """Charge le track Video du JSON mediainfo (None si indisponible)."""

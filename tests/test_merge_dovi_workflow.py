@@ -969,16 +969,27 @@ def test_start_refuses_reserved_destination_before_workspace(tmp_path, monkeypat
 # --- Image de base du RPU de Film 2 face à celle de Film 1 -----------------------------------------------
 
 
-@pytest.mark.parametrize(("transfer", "sdr", "expected"), [
-    ("PQ", False, "pq"), ("SMPTE ST 2084", False, "pq"), ("HLG", False, "hlg"), ("arib-std-b67", False, "hlg"),
-    ("BT.709", True, "pq"), ("", False, ""),
+@pytest.mark.parametrize(("transfer", "sdr", "film1_dovi", "expected"), [
+    ("PQ", False, "UNKNOWN", "pq"), ("SMPTE ST 2084", False, "P8_1", "pq"), ("HLG", False, "P8_4", "hlg"),
+    ("arib-std-b67", False, "UNKNOWN", "hlg"), ("BT.709", True, "UNKNOWN", "pq"), ("", False, "UNKNOWN", ""),
+    ("PQ", False, "P5", "ipt"),
 ])
-def test_output_base_transfer(transfer: str, sdr: bool, expected: str) -> None:
+def test_output_base_transfer(transfer: str, sdr: bool, film1_dovi: str, expected: str) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
     from core.workflows.merge_dovi import HDRFlags, StaticHdrMetadata, ValidationContext
 
     context = ValidationContext(HDRFlags(has_dovi=True), StaticHdrMetadata(), StaticHdrMetadata(),
-                                film1_needs_sdr_to_hdr10=sdr, film1_transfer=transfer)
+                                film1_needs_sdr_to_hdr10=sdr, film1_transfer=transfer,
+                                film1_dovi_profile=getattr(DoviSubProfile, film1_dovi))
     assert context.output_base_transfer == expected
+
+
+def test_p5_film1_refused_with_encode_conversion_hint(french_messages) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.merge_dovi import WorkflowError, _check_dovi_base
+
+    with pytest.raises(WorkflowError, match="Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage"):
+        _check_dovi_base(DoviSubProfile.P8_1, "ipt")
 
 
 @pytest.mark.parametrize(("sub_profile", "base", "refused"), [
