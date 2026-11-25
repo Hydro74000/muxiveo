@@ -11558,5 +11558,41 @@
   "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres.": {
     "fra": "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres.",
     "eng": "Mux backend: former FFmpeg default replaced by Auto (native Matroska assembly for every .mkv output); FFmpeg remains available in Settings."
+  },
+  "Alignement des métadonnées :": {
+    "fra": "Alignement des métadonnées :",
+    "eng": "Metadata alignment:"
+  },
+  "Automatique  —  analyse de l'image, corrections vérifiées (recommandé)": {
+    "fra": "Automatique  —  analyse de l'image, corrections vérifiées (recommandé)",
+    "eng": "Automatic  —  picture analysis, verified corrections (recommended)"
+  },
+  "Strict  —  comptages identiques exigés, aucune analyse": {
+    "fra": "Strict  —  comptages identiques exigés, aucune analyse",
+    "eng": "Strict  —  identical frame counts required, no analysis"
+  },
+  "Compléter les images sans correspondance avec les métadonnées voisines": {
+    "fra": "Compléter les images sans correspondance avec les métadonnées voisines",
+    "eng": "Fill unmatched frames with neighbouring metadata"
+  },
+  "Vérifier Film 2 image par image (plus lent)": {
+    "fra": "Vérifier Film 2 image par image (plus lent)",
+    "eng": "Verify Film 2 frame by frame (slower)"
+  },
+  "Alignement": {
+    "fra": "Alignement",
+    "eng": "Alignment"
+  },
+  "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.": {
+    "fra": "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.",
+    "eng": "Automatic: Muxiveo compares the picture of both films, finds frames added or missing (start, end, middle), adapts the active area (L5) to Film 1's framing and aligns L6 with its HDR10, then checks every metadata change against the picture. Film 1 is read in full.\nStrict: both films must have exactly the same number of frames; alignment is not checked."
+  },
+  "Images de Film 1 absentes de Film 2 (passage ajouté) : sans cette option, l'injection est refusée.\nCochée, ces images reçoivent les métadonnées de l'image voisine (avertissement par plage).\nDes images noires dans les deux films sont complétées sans cette option.": {
+    "fra": "Images de Film 1 absentes de Film 2 (passage ajouté) : sans cette option, l'injection est refusée.\nCochée, ces images reçoivent les métadonnées de l'image voisine (avertissement par plage).\nDes images noires dans les deux films sont complétées sans cette option.",
+    "eng": "Film 1 frames missing from Film 2 (added passage): without this option, injection is refused.\nWhen checked, these frames receive the metadata of the neighbouring frame (one warning per range).\nFrames that are black in both films are filled without this option."
+  },
+  "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.": {
+    "fra": "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.",
+    "eng": "Also reads Film 2 in full and confirms every metadata change against the picture.\nWithout this option, shots of the same length and compatible brightness swapped between two checked frames would go undetected."
   }
 }

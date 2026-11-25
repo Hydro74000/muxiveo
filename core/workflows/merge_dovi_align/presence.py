@@ -74,9 +74,9 @@ def _gaps(order_keys: list, missing_decode: list[int]) -> PresenceGaps:
     return PresenceGaps(len(order_keys), tuple(sorted(rank[index] for index in missing_decode)), trailing)
 
 
-def scan_matroska_presence(path: Path, track_index: int, present: NalPredicate, *,
-                           cancelled: Callable[[], bool] | None = None) -> PresenceGaps:
-    """Blocs vidéo d'un MKV : images sans la métadonnée, rang d'affichage par horodatage.
+def scan_matroska_presences(path: Path, track_index: int, predicates: dict[str, NalPredicate], *,
+                            cancelled: Callable[[], bool] | None = None) -> dict[str, PresenceGaps]:
+    """Blocs vidéo d'un MKV lus **une fois** : images sans chaque métadonnée, rang d'affichage par horodatage.
 
     Horodatages égaux avec un trou : :class:`PresenceError`. ``InterruptedError`` si ``cancelled``.
     """
@@ -91,29 +91,45 @@ def scan_matroska_presence(path: Path, track_index: int, present: NalPredicate, 
     private = track.codec_private
     length_size = (private[21] & 0x03) + 1 if len(private) >= 23 and private[0] == 1 else 4
     stamps: list[int] = []
-    missing: list[int] = []
+    missing: dict[str, list[int]] = {name: [] for name in predicates}
     for block in reader.blocks(track_numbers={track.number}):
         index = len(stamps)
         if cancelled is not None and index % 2048 == 0 and cancelled():
             raise InterruptedError
         stamps.append(block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000)
-        if not present(_length_prefixed_nals(block.payload, length_size)):
-            missing.append(index)
-    return _gaps(stamps, missing)
+        nals = _length_prefixed_nals(block.payload, length_size)
+        for name, present in predicates.items():
+            if not present(nals):
+                missing[name].append(index)
+    return {name: _gaps(stamps, values) for name, values in missing.items()}
 
 
-def scan_annexb_presence(path: Path, present: NalPredicate, *,
-                         cancelled: Callable[[], bool] | None = None) -> PresenceGaps:
-    """HEVC brut (Annex B) : images sans la métadonnée, rang d'affichage déduit du POC.
+def scan_matroska_presence(path: Path, track_index: int, present: NalPredicate, *,
+                           cancelled: Callable[[], bool] | None = None) -> PresenceGaps:
+    """Comme :func:`scan_matroska_presences` pour une seule métadonnée."""
+    return scan_matroska_presences(path, track_index, {"x": present}, cancelled=cancelled)["x"]
+
+
+def scan_annexb_presences(path: Path, predicates: dict[str, NalPredicate], *,
+                          cancelled: Callable[[], bool] | None = None) -> dict[str, PresenceGaps]:
+    """HEVC brut (Annex B) lu **une fois** : images sans chaque métadonnée, rang d'affichage déduit du POC.
 
     Annulation : ``HevcStreamCancelled`` ; flux illisible : ``PocError``.
     """
     from core.matroska.hevc.poc import iter_picture_units
 
     keys: list[tuple[int, int]] = []
-    missing: list[int] = []
+    missing: dict[str, list[int]] = {name: [] for name in predicates}
     for key, _kinds, unit in iter_picture_units(Path(path), cancelled=cancelled):
-        if not present([(nal.nal_type, nal.payload) for nal in unit.nal_units]):
-            missing.append(len(keys))
+        nals = [(nal.nal_type, nal.payload) for nal in unit.nal_units]
+        for name, present in predicates.items():
+            if not present(nals):
+                missing[name].append(len(keys))
         keys.append(key)
-    return _gaps(keys, missing)
+    return {name: _gaps(keys, values) for name, values in missing.items()}
+
+
+def scan_annexb_presence(path: Path, present: NalPredicate, *,
+                         cancelled: Callable[[], bool] | None = None) -> PresenceGaps:
+    """Comme :func:`scan_annexb_presences` pour une seule métadonnée."""
+    return scan_annexb_presences(path, {"x": present}, cancelled=cancelled)["x"]

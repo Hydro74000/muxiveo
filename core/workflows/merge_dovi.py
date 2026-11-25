@@ -108,6 +108,19 @@ from core.matroska.ids import (
 )
 from core.matroska.mux_plan import deterministic_source_identity
 from core.matroska.native_muxer import MatroskaNativeMuxer
+from core.workflows.merge_dovi_align.align import AlignmentError
+from core.workflows.merge_dovi_align.chapters import project_chapters
+from core.workflows.merge_dovi_align.probe import DecoderPreference, ProbeError
+from core.workflows.merge_dovi_align.process import ProcessHooks
+from core.workflows.merge_dovi_align.session import (
+    AlignmentOptions,
+    AlignmentResult,
+    AlignmentTools,
+    Film1Pass,
+    cuda_decode_available,
+    run_alignment,
+)
+from core.workflows.merge_dovi_align.static_hdr import resolve_static_hdr
 from core.matroska.reader import MatroskaReader, strict_demuxer_reads_tracks
 from core.matroska.progress import native_mux_progress_callback
 from core.matroska.writer import MatroskaWriter
@@ -326,6 +339,7 @@ class WorkflowStep(Enum):
     EXTRACT_PARALLEL  = auto()   # Extractions parallèles (HEVC + RPU + HDR10+)
     SDR_TO_HDR10      = auto()   # Conversion Film 1 SDR → HDR10 assistée par Film 2
     CONVERT_DOVI      = auto()   # Conversion P7/P5 → P8.1 si nécessaire
+    ALIGN             = auto()   # Alignement des métadonnées sur l'image de Film 1 (mode Automatique)
     CHECK_METADATA    = auto()   # Comptage RPU / HDR10+ extraits vs Film 1, avant injection
     INJECT_DOVI       = auto()   # Injection RPU DoVi
     INJECT_HDR10PLUS  = auto()   # Injection HDR10+
@@ -749,10 +763,12 @@ class MergeDoviWorkflow(QObject):
         extra_subtitle_files: tuple[Path, ...] = (),
         metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
         existing: ExistingPolicy | None = None,
+        alignment: AlignmentOptions | None = None,
     ) -> None:
         """Lance le workflow dans un thread secondaire.
 
-        ``metadata_adjustment`` : politique explicite si les métadonnées de
+        ``alignment`` : mode Automatique (analyse de l'image, éditions vérifiées) ou Strict ; None = Strict
+        (comportement historique). ``metadata_adjustment`` : politique du mode Strict si les métadonnées de
         Film 2 n'ont pas le nombre de trames de Film 1 (``EXACT`` par défaut).
         ``existing`` : sort d'une destination présente (défaut : remplacement admis), décidé sous la réservation.
         """
@@ -779,7 +795,7 @@ class MergeDoviWorkflow(QObject):
             outer = ThreadPoolExecutor(max_workers=1)
             outer.submit(
                 self._run, film1, film2, paths, dovi_profile, tuple(extra_subtitle_files), metadata_adjustment,
-                reservation=reservation,
+                reservation=reservation, alignment=alignment,
             )
             outer.shutdown(wait=False)
         except BaseException:
@@ -827,11 +843,12 @@ class MergeDoviWorkflow(QObject):
         metadata_adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
         *,
         reservation: OutputReservation | None = None,
+        alignment: AlignmentOptions | None = None,
     ) -> None:
         try:
             self._run_reserved(
                 film1, film2, paths, profile, extra_subtitle_files, metadata_adjustment,
-                reservation=reservation,
+                reservation=reservation, alignment=alignment,
             )
         finally:
             if reservation is not None:
@@ -847,10 +864,14 @@ class MergeDoviWorkflow(QObject):
         metadata_adjustment: MetadataAdjustment,
         *,
         reservation: OutputReservation | None,
+        alignment: AlignmentOptions | None = None,
     ) -> None:
         with self._procs_lock:
             self._run_procs = []
         outcome: tuple[str, WorkflowStep, str] = ("finished", WorkflowStep.CLEANUP, "")
+        auto = alignment is not None and alignment.auto
+        film1_pass: Film1Pass | None = None
+        aligned: AlignmentResult | None = None
         try:
             paths.work_dir.mkdir(parents=True, exist_ok=True)
             paths.output_mkv.parent.mkdir(parents=True, exist_ok=True)
@@ -895,8 +916,10 @@ class MergeDoviWorkflow(QObject):
                 adjustment=metadata_adjustment,
                 metadata_requested=metadata_requested,
                 allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                aligned=auto,
             )
-            if metadata_requested and frame_counts.metadata_verdict(metadata_adjustment) is not None:
+            if (not auto and metadata_requested
+                    and frame_counts.metadata_verdict(metadata_adjustment) is not None):
                 flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
                 routing = None
             self._check_cancel()
@@ -904,6 +927,10 @@ class MergeDoviWorkflow(QObject):
             # 3-bis — Espace disque (fichiers simultanés par phase et par volume)
             self._step_check_storage(film1, film2, paths, flags, routing, validation)
             self._check_cancel()
+
+            # 3-ter — Mode Automatique : passe complète de Film 1 en arrière-plan pendant l'extraction.
+            if auto and (flags.has_dovi or flags.has_hdr10plus):
+                film1_pass = self._start_film1_pass(film1)
 
             # 4 — Extractions parallèles HEVC (Film 1 et Film 2 si nécessaire)
             self._step_extract_hevc(film1, film2, paths, flags, routing)
@@ -925,6 +952,17 @@ class MergeDoviWorkflow(QObject):
             # puis contrôle de leur comptage AVANT toute injection.
             if flags.has_dovi or flags.has_hdr10plus:
                 self._step_extract_metadata(film2, paths, flags, routing)
+                self._check_cancel()
+                if auto and film1_pass is not None:
+                    assert alignment is not None
+                    aligned = self._step_align(
+                        film1_pass, film2, paths, flags, frame_counts, alignment,
+                        static_hdr_film1, static_hdr_film2,
+                        allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                    )
+                    if aligned is None:
+                        flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
+                    self._check_cancel()
                 self._discard_consumed(
                     WorkflowStep.EXTRACT_PARALLEL, paths, paths.film2_hevc, paths.film2_hevc_p8,
                 )
@@ -933,7 +971,7 @@ class MergeDoviWorkflow(QObject):
                     frame_counts,
                     paths,
                     flags,
-                    metadata_adjustment,
+                    MetadataAdjustment.EXACT if auto else metadata_adjustment,
                     allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
                 )
                 self._check_cancel()
@@ -954,8 +992,13 @@ class MergeDoviWorkflow(QObject):
 
             # 9 — Injection SEI HDR10 statiques si Film 1 ne les a pas
             static_input = paths.injection_chain_final(flags, static_hdr_applied=False)
+            # Décision par champ, la même pour les SEI, l'élément Colour et le L6 (édité à l'étape ALIGN).
+            resolved_static = resolve_static_hdr(static_hdr_film1, static_hdr_film2)
+            static_resolved = StaticHdrMetadata(
+                master_display=resolved_static.master_display, max_cll=resolved_static.max_cll,
+            )
             static_applied = self._step_inject_static_hdr(
-                paths, flags, static_hdr_film1, static_hdr_film2,
+                paths, flags, static_hdr_film1, static_resolved,
             )
             if static_applied:
                 self._discard_consumed(WorkflowStep.INJECT_STATIC_HDR, paths, static_input)
@@ -985,7 +1028,7 @@ class MergeDoviWorkflow(QObject):
             self._check_cancel()
 
             # 11 — Remuxage
-            chosen_static = static_hdr_film1 if static_hdr_film1.is_complete else static_hdr_film2
+            chosen_static = static_resolved
             self._step_remux(
                 film1,
                 paths,
@@ -997,6 +1040,7 @@ class MergeDoviWorkflow(QObject):
                 extra_subtitle_files=extra_subtitle_files,
                 preserve_film1_dovi=validation.film1_has_dovi and not flags.has_dovi,
                 allow_frame_count_mismatch=verify_overridden,
+                aligned=aligned,
             )
             self._check_cancel()
 
@@ -1018,6 +1062,8 @@ class MergeDoviWorkflow(QObject):
                 else ("failed", WorkflowStep.VALIDATION, f"Erreur interne inattendue : {exc}")
             )
 
+        if film1_pass is not None:
+            film1_pass.stop()
         kind, step, message = outcome
         if kind != "finished":
             # Nettoyage AVANT le signal terminal : l'UI ne repasse au repos
@@ -1312,6 +1358,7 @@ class MergeDoviWorkflow(QObject):
         adjustment: MetadataAdjustment = MetadataAdjustment.EXACT,
         metadata_requested: bool = True,
         allow_hdr10_fallback: bool = False,
+        aligned: bool = False,
     ) -> FrameCountResult:
         """Compare les comptages de trames et applique la politique d'injection.
 
@@ -1342,8 +1389,15 @@ class MergeDoviWorkflow(QObject):
         else:
             self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
 
-        verdict = result.metadata_verdict(adjustment) if metadata_requested else None
-        if verdict is not None and allow_hdr10_fallback:
+        verdict = result.metadata_verdict(adjustment) if metadata_requested and not aligned else None
+        if aligned and metadata_requested:
+            if result.fc1 is None:
+                raise WorkflowError(step, "Nombre de trames de Film 1 illisible : alignement impossible.")
+            self.step_progress.emit(
+                step,
+                "Mode Automatique : correspondance image par image établie à l'étape d'alignement.",
+            )
+        elif verdict is not None and allow_hdr10_fallback:
             self.step_progress.emit(
                 step,
                 f"[WARN] {verdict} Injection DoVi/HDR10+ désactivée, conversion HDR10 seule.",
@@ -1676,6 +1730,82 @@ class MergeDoviWorkflow(QObject):
             dovi_tool_bin=self._bins["dovi_tool"],
             run_command=self._run_probe,
         )
+
+    def _alignment_tools(self) -> AlignmentTools:
+        return AlignmentTools(ffmpeg=self._bins["ffmpeg"], ffprobe=self._bins["ffprobe"],
+                              dovi_tool=self._bins["dovi_tool"], hdr10plus_tool=self._bins["hdr10plus_tool"])
+
+    def _alignment_hooks(self) -> ProcessHooks:
+        return ProcessHooks(cancelled=lambda: self._cancelled, on_start=self._track_proc, on_end=self._untrack_proc)
+
+    def _start_film1_pass(self, film1: Path) -> Film1Pass:
+        """Passe complète de Film 1 (signatures, barres) en arrière-plan, pendant l'extraction."""
+        tools = self._alignment_tools()
+        self._decoder = DecoderPreference("cuda" if cuda_decode_available(tools.ffmpeg) else None)
+        return Film1Pass(film1, tools, self._alignment_hooks(), self._decoder)
+
+    def _step_align(
+        self,
+        film1_pass: Film1Pass,
+        film2: Path,
+        paths: _WorkflowPaths,
+        flags: HDRFlags,
+        frame_counts: FrameCountResult,
+        options: AlignmentOptions,
+        static_film1: StaticHdrMetadata,
+        static_film2: StaticHdrMetadata,
+        *,
+        allow_hdr10_fallback: bool = False,
+    ) -> AlignmentResult | None:
+        """Mode Automatique : correspondance Film 1 → Film 2 établie et vérifiée par l'image, métadonnées éditées
+        en conséquence (remplacent ``film2_rpu`` / ``film2_hdr10plus``). Refus : arrêt, ou Film 1 SDR →
+        conversion HDR10 seule (None)."""
+        step = WorkflowStep.ALIGN
+        t0 = time.monotonic()
+        self.step_started.emit(step)
+        if film2.suffix.lower() in {".mkv", ".mk3d"} or _is_raw_hevc(film2):
+            film2_scan = film2
+        elif paths.film2_hevc.is_file():
+            film2_scan = paths.film2_hevc
+        else:
+            raise WorkflowError(step, "Flux vidéo de Film 2 introuvable pour l'audit de ses métadonnées.")
+        rpu = paths.film2_rpu if flags.has_dovi else None
+        hdr = paths.film2_hdr10plus if flags.has_hdr10plus else None
+        needed = (rpu.stat().st_size * 40 if rpu is not None else 0) + (hdr.stat().st_size * 3 if hdr is not None else 0)
+        self._ensure_free_space(step, paths.work_dir, needed, "l'alignement des métadonnées")
+        self.step_progress.emit(step, "Analyse de l'image de Film 1 et des métadonnées de Film 2…")
+        try:
+            result = run_alignment(
+                film1_pass=film1_pass, film1_frames=int(frame_counts.fc1 or 0), film2=film2, film2_scan=film2_scan,
+                rpu=rpu, hdr10plus=hdr, static1=static_film1, static2=static_film2, options=options,
+                tools=self._alignment_tools(), work_dir=paths.work_dir, hooks=self._alignment_hooks(),
+                decoder=getattr(self, "_decoder", DecoderPreference(None)),
+                log=lambda message: self.step_progress.emit(step, message),
+                run_tool=lambda cmd: self._run_raw(cmd),
+                progress=lambda percent: self.step_progress_pct.emit(step, percent),
+            )
+        except InterruptedError as exc:
+            raise _CancelledError() from exc
+        except (AlignmentError, ProbeError, OSError, ValueError, RuntimeError) as exc:
+            self._check_cancel()
+            if allow_hdr10_fallback:
+                self.step_progress.emit(step, f"[WARN] Alignement impossible ({exc}) : conversion HDR10 seule.")
+                self.step_finished.emit(step, StepResult(step, True, "Métadonnées dynamiques écartées (HDR10 seul)",
+                                                         time.monotonic() - t0))
+                return None
+            raise WorkflowError(step, f"Alignement des métadonnées impossible : {exc}") from exc
+        for note in result.notes:
+            self.step_progress.emit(step, note)
+        if result.rpu is not None and result.rpu != paths.film2_rpu:
+            os.replace(result.rpu, paths.film2_rpu)
+        if result.hdr10plus is not None and result.hdr10plus != paths.film2_hdr10plus:
+            os.replace(result.hdr10plus, paths.film2_hdr10plus)
+        stats = result.map.stats
+        summary = (f"{'Éditions appliquées et relues' if result.edited else 'Alignement vérifié'} "
+                   f"({stats.get('points_on_cuts', 0) + stats.get('points_by_image', 0)} points vérifiés"
+                   f"{', Film 2 lu entièrement' if stats.get('film2_full') else ''})")
+        self.step_finished.emit(step, StepResult(step, True, summary, time.monotonic() - t0))
+        return result
 
     def _step_check_metadata(
         self,
@@ -2178,6 +2308,30 @@ class MergeDoviWorkflow(QObject):
             "name": title_str or "",
         }
 
+    def _first_video_pts(self, path: Path) -> float | None:
+        """Plus petit PTS (secondes) des premiers paquets vidéo de ``path`` ; None si illisible."""
+        try:
+            output = self._run_raw([
+                self._bins["ffprobe"], "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#32",
+                "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(path),
+            ])
+        except Exception:  # noqa: BLE001 — mesure facultative
+            return None
+        values = []
+        for line in output.splitlines():
+            try:
+                values.append(float(line.strip().rstrip(",")))
+            except ValueError:
+                continue
+        return min(values) if values else None
+
+    def _canonical_shift_ms(self, source: Path, canonical: Path) -> int:
+        """Décalage (ms) que le muxage de la canonicalisation a appliqué aux horodatages de ``source``."""
+        before, after = self._first_video_pts(source), self._first_video_pts(canonical)
+        if before is None or after is None:
+            return 0
+        return int(round((after - before) * 1000))
+
     def _mux_native_video(
         self,
         final_hevc: Path,
@@ -2276,6 +2430,7 @@ class MergeDoviWorkflow(QObject):
         extra_subtitle_files: tuple[Path, ...] = (),
         preserve_film1_dovi: bool = False,
         allow_frame_count_mismatch: bool = False,
+        aligned: AlignmentResult | None = None,
     ) -> None:
         step = WorkflowStep.REMUX
         t0   = time.monotonic()
@@ -2335,7 +2490,10 @@ class MergeDoviWorkflow(QObject):
         # Le flux HEVC final vit désormais dans l'encapsulation MKV.
         self._discard_consumed(step, paths, final_hevc)
 
-        # 3. Préparation du conteneur pour pistes audio / sous-titres
+        # 3. Préparation du conteneur pour pistes audio / sous-titres. Source non MKV : horodatages d'origine
+        # conservés (-copyts, même origine que la vidéo encapsulée) ; le décalage que le muxer applique malgré
+        # tout (horodatages négatifs) est mesuré et reporté sur la vidéo.
+        video_shift_ms = 0
         if film1.is_file() and film1.suffix.lower() == ".mkv":
             source_mkv = film1
         else:
@@ -2351,6 +2509,7 @@ class MergeDoviWorkflow(QObject):
                 "-hide_banner",
                 "-y",
                 "-nostdin",
+                "-copyts",
                 "-i", str(film1),
                 "-map", "0",
                 "-c", "copy",
@@ -2359,6 +2518,11 @@ class MergeDoviWorkflow(QObject):
                 str(canonical_mkv),
             ], step)
             source_mkv = canonical_mkv
+            video_shift_ms = self._canonical_shift_ms(film1, canonical_mkv)
+            if video_shift_ms:
+                self.step_progress.emit(
+                    step, f"Origine du conteneur décalée de {video_shift_ms} ms par le muxage : vidéo recalée.",
+                )
 
         source_reader = MatroskaReader(source_mkv)
 
@@ -2371,6 +2535,7 @@ class MergeDoviWorkflow(QObject):
                 language_value=video_props.get("language") or "und",
                 name=video_props.get("name") or "",
                 flags=MatroskaTrackFlags(enabled=True, default=True),
+                time_shift_ms=video_shift_ms,
             )
         ]
 
@@ -2434,14 +2599,34 @@ class MergeDoviWorkflow(QObject):
                 )
             )
 
-        # 5. Chapitres : source_mkv si présent, sinon repli vers film2 si disponible
+        # 5. Chapitres : source_mkv si présent, sinon repli vers film2 si disponible (projetés par la carte
+        # d'alignement quand les positions de Film 2 ont été éditées).
         chapter_source: Path | None = None
+        chapter_entries: tuple | None = None
         if source_reader.raw_top_level(CHAPTERS_ID):
             chapter_source = source_mkv
         elif film2 is not None and film2.is_file() and film2.suffix.lower() == ".mkv":
-            if MatroskaReader(film2).raw_top_level(CHAPTERS_ID):
-                chapter_source = film2
-                self.step_progress.emit(step, f"Chapitres importés depuis {film2.name}.")
+            film2_reader = MatroskaReader(film2)
+            if film2_reader.raw_top_level(CHAPTERS_ID):
+                if aligned is None or aligned.map.identity:
+                    chapter_source = film2
+                    self.step_progress.emit(step, f"Chapitres importés depuis {film2.name}.")
+                elif aligned.film2_table is None:
+                    self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
+                                                  "Film 2 non indexable, projection impossible.")
+                else:
+                    projected, dropped = project_chapters(film2_reader.chapter_editions(), aligned.map,
+                                                          aligned.film1_table, aligned.film2_table)
+                    if projected is None:
+                        self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
+                                                      "projection impossible (plusieurs éditions).")
+                    else:
+                        chapter_entries = projected
+                        self.step_progress.emit(step, f"Chapitres de {film2.name} projetés sur Film 1 "
+                                                      f"({len(projected)} gardés).")
+                        if dropped:
+                            self.step_progress.emit(step, f"[WARN] {dropped} chapitre(s) de {film2.name} supprimé(s) "
+                                                          "(plage retirée ou chapitre vide après projection).")
 
         # 6. Attachments
         attachments = tuple(
@@ -2467,6 +2652,7 @@ class MergeDoviWorkflow(QObject):
             ordered_tracks=tuple(assembly_tracks),
             attachments=attachments,
             chapter_source=chapter_source,
+            chapter_entries=chapter_entries,
             tag_copy_sources=tag_copy_sources,
             segment_title=segment_title,
         )

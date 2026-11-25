@@ -33,6 +33,7 @@ from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.frame_count import reliable_frame_count
 from core.workflows.encode.runtime.frame_count_guard import MetadataAdjustment
+from core.workflows.merge_dovi_align.session import AlignmentMode, AlignmentOptions
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult, HdrState,
     MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
@@ -391,20 +392,49 @@ class _ConfigSection(QWidget):
         r1l.addWidget(self._profile_combo, stretch=1)
         cl.addWidget(row1)
 
-        # Politique explicite si Film 2 a quelques trames de plus que Film 1 :
-        # décochée par défaut (comptages identiques exigés), non mémorisée.
-        self._trim_tail_cb = QCheckBox(
-            "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux"
+        # Alignement des métadonnées de Film 2 sur l'image de Film 1 (Automatique par défaut, non mémorisé).
+        row_align = QWidget()
+        row_align.setStyleSheet("background: transparent; border: none;")
+        ral = QHBoxLayout(row_align)
+        ral.setContentsMargins(0, 0, 0, 0)
+        ral.setSpacing(12)
+        lbl_align = QLabel("Alignement des métadonnées :")
+        lbl_align.setFixedWidth(160)
+        lbl_align.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent; border: none;")
+        ral.addWidget(lbl_align)
+        self._align_combo = QComboBox()
+        self._align_combo.addItem("Automatique  —  analyse de l'image, corrections vérifiées (recommandé)",
+                                  AlignmentMode.AUTO)
+        self._align_combo.addItem("Strict  —  comptages identiques exigés, aucune analyse", AlignmentMode.STRICT)
+        self._align_combo.setToolTip(
+            "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins "
+            "(début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son "
+            "HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\n"
+            "Strict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification "
+            "de l'alignement."
         )
-        self._trim_tail_cb.setToolTip(
-            "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ "
-            "excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\n"
-            "Aucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\n"
-            "Un comptage identique ne prouve pas l'alignement temporel."
+        self._align_combo.setStyleSheet(self._profile_combo.styleSheet())
+        ral.addWidget(self._align_combo, stretch=1)
+        cl.addWidget(row_align)
+
+        self._fill_cb = QCheckBox("Compléter les images sans correspondance avec les métadonnées voisines")
+        self._fill_cb.setToolTip(
+            "Images de Film 1 absentes de Film 2 (passage ajouté) : sans cette option, l'injection est refusée.\n"
+            "Cochée, ces images reçoivent les métadonnées de l'image voisine (avertissement par plage).\n"
+            "Des images noires dans les deux films sont complétées sans cette option."
         )
-        # Style commun : indicateur visible (coché, grisé) dans les deux thèmes.
-        self._trim_tail_cb.setStyleSheet(_checkbox_style())
-        cl.addWidget(self._trim_tail_cb)
+        self._fill_cb.setStyleSheet(_checkbox_style())
+        cl.addWidget(self._fill_cb)
+        self._verify_cb = QCheckBox("Vérifier Film 2 image par image (plus lent)")
+        self._verify_cb.setToolTip(
+            "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\n"
+            "Sans cette option, des plans de même durée et de luminance compatible permutés entre deux "
+            "images contrôlées ne seraient pas détectés."
+        )
+        self._verify_cb.setStyleSheet(_checkbox_style())
+        cl.addWidget(self._verify_cb)
+        self._align_combo.currentIndexChanged.connect(lambda _: self._update_align_options())
+        self._update_align_options()
 
         # État HDR des deux films + conséquence du profil choisi
         self._hdr_hint = QLabel()
@@ -469,8 +499,21 @@ class _ConfigSection(QWidget):
 
     @property
     def metadata_adjustment(self) -> MetadataAdjustment:
-        """Politique choisie explicitement par l'utilisateur pour un écart de trames."""
-        return MetadataAdjustment.TRIM_TAIL if self._trim_tail_cb.isChecked() else MetadataAdjustment.EXACT
+        """Politique du mode Strict : comptages identiques exigés."""
+        return MetadataAdjustment.EXACT
+
+    @property
+    def alignment_options(self) -> AlignmentOptions:
+        """Mode d'alignement et options D1 / D6 choisis dans le panneau."""
+        mode = self._align_combo.currentData() or AlignmentMode.AUTO
+        auto = mode is AlignmentMode.AUTO
+        return AlignmentOptions(mode=mode, fill_unmatched=auto and self._fill_cb.isChecked(),
+                                verify_film2=auto and self._verify_cb.isChecked())
+
+    def _update_align_options(self) -> None:
+        auto = (self._align_combo.currentData() or AlignmentMode.AUTO) is AlignmentMode.AUTO
+        self._fill_cb.setEnabled(auto)
+        self._verify_cb.setEnabled(auto)
 
     def set_hdr_states(self, film1: HdrState | None, film2: HdrState | None) -> None:
         """Mémorise l'état HDR des deux films (None = inconnu) et met à jour l'indication."""
@@ -526,6 +569,7 @@ _STEP_LABELS: dict[WorkflowStep, str] = {
     WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
     WorkflowStep.SDR_TO_HDR10:      "Conversion SDR → HDR10",
     WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
+    WorkflowStep.ALIGN:             "Alignement",
     WorkflowStep.CHECK_METADATA:    "Contrôle métadonnées",
     WorkflowStep.INJECT_DOVI:       "Injection DoVi",
     WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
@@ -1035,6 +1079,7 @@ class MergeDoviPanel(QWidget):
                 dovi_profile = self._config_section.dovi_profile,
                 metadata_adjustment = self._config_section.metadata_adjustment,
                 existing     = existing,
+                alignment    = self._config_section.alignment_options,
             )
         except OSError as exc:
             # Dossier de travail non créable (droits, disque) : rien n'a démarré.
