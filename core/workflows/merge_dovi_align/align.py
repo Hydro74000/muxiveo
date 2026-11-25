@@ -523,6 +523,9 @@ class _Context:
     reframed: dict[tuple[int, int], tuple[float, float]] = field(init=False)
     #: Bande locale des images de Film 1 recadrées au dernier calcul (exception « plan fixe » sur cette bande).
     _frame_bands: dict[int, Band] = field(init=False)
+    #: Écarts locaux apparents (passe complète) non confirmés à cadrage propre et en lecture symétrique (biais de
+    #: fondu probable) : décalage du segment gardé, signalés.
+    unconfirmed: list[tuple[int, int, int]] = field(init=False)
     #: Points de changement dont l'image ne situe pas la position (fondu, image très sombre) : sans contradiction,
     #: placés selon le décalage de leur segment et signalés.
     unobservable: set[int] = field(init=False)
@@ -538,6 +541,7 @@ class _Context:
         self.film1_static = static
         self.reframed = {}
         self.unobservable = set()
+        self.unconfirmed = []
         self._frame_bands = {}
         self._last_window = None
 
@@ -799,24 +803,27 @@ class _Context:
         point (les images d'un autre segment relèvent d'un autre décalage)."""
         first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
         last = i + POSITION_RADIUS if hi is None else min(hi, i + POSITION_RADIUS)
-        indices = self.inside(np.arange(first, last), offset)
-        if indices.size == 0:
+        # Fenêtre élargie d'une image de chaque côté, lue une seule fois : les rivaux symétriques des images
+        # i − 1 (i − 2 … i − 1 − rayon) et i (i + 1 … i + rayon) y sont ; contenu contrôlé sur ses lignes
+        # centrales, puis position comparée sur toute la fenêtre.
+        wide = self.inside(np.arange(i - POSITION_RADIUS - 1 if lo is None else max(lo, i - POSITION_RADIUS - 1),
+                                     i + POSITION_RADIUS + 1 if hi is None else min(hi, i + POSITION_RADIUS + 1)),
+                           offset)
+        rows = (wide >= first) & (wide < last)
+        if not np.any(rows):
             return False
-        corr, both, one = self.checked_scores(indices, offset, POSITION_RADIUS)
+        corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS)
         center = POSITION_RADIUS
-        if np.any(one[:, center]):
+        if np.any(one[rows, center]):
             return False
-        mask = both[:, center]
+        mask = rows & both[:, center]
         if not np.any(mask):
             return True
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
-        # Position : fenêtre élargie (évaluations symétriques des rivaux), chaque décalage à son meilleur cadrage
-        # admissible si un recadrage l'est (contenu contrôlé ci-dessus).
-        wide = self.inside(np.arange(i - 2 * POSITION_RADIUS if lo is None else max(lo, i - 2 * POSITION_RADIUS),
-                                     i + 2 * POSITION_RADIUS if hi is None else min(hi, i + 2 * POSITION_RADIUS)),
-                           offset)
-        corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS, compare=self._can_reframe())
+        if self._can_reframe():
+            # Position : chaque décalage à son meilleur cadrage admissible (même fenêtre, déjà lue).
+            corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS, compare=True)
         indices = wide
         rival_corr, rival_ok = self._symmetric(corr, both, wide, center)
         if self._static(i):
@@ -1027,34 +1034,38 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
         end = k
         while end + 1 < indices.size and strong[end + 1] and best[end + 1] == best[k]:
             end += 1
-        if end - k + 1 >= FRAME_RUN and _framed_lead(ctx, indices[k:end + 1], segment.offset,
-                                                      segment.offset + int(best[k])):
-            out.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
+        if end - k + 1 >= FRAME_RUN:
+            if _framed_lead(ctx, indices[k:end + 1], segment.offset, segment.offset + int(best[k])):
+                out.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
+            else:
+                ctx.unconfirmed.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
         k = end + 1
     return out
 
 
 def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> bool:
-    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) et une évaluation symétrique
-    du décalage ``other = offset + k`` (moyenne de l'image ``r`` et de l'image ``r − k`` de Film 1 face à leur
-    image de Film 2 à ce décalage : biais de netteté d'un fondu compensé) : ``other`` garde son avance sur
-    ``offset`` pour chaque paire comparable. Sinon, l'écart est ignoré : le décalage du segment est gardé et tout
-    point de changement du passage reste confirmé par l'image."""
+    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) : ``other = offset + k`` garde
+    son avance sur ``offset`` pour chaque image comparable du passage. Lecture symétrique quand l'image ``r − k``
+    appartient au même passage (moyenne de ``r`` et ``r − k`` au décalage ``other`` : biais de netteté d'un fondu
+    compensé), lecture brute aux bords et dans un passage plus court que ``|k|``."""
     k = other - offset
     rows = np.union1d(run, run - k)
     rows = rows[(rows >= 0) & (rows < len(ctx.film1))]
     base, base_both, _one = ctx.checked_scores(run, offset, 0, compare=True)
     alt, alt_both, _alt_one = ctx.checked_scores(rows, other, 0, compare=True)
     position = {int(frame): n for n, frame in enumerate(rows.tolist())}
-    values, comparable = [], []
+    members = {int(frame) for frame in run.tolist()}
+    leads = []
     for n, frame in enumerate(run.tolist()):
-        a, b = position.get(int(frame)), position.get(int(frame) - k)
-        ok = (a is not None and b is not None and bool(base_both[n, 0]) and bool(alt_both[a, 0])
-              and bool(alt_both[b, 0]))
-        comparable.append(ok)
-        values.append((float(alt[a, 0]) + float(alt[b, 0])) / 2.0 - float(base[n, 0]) if ok else 0.0)
-    leads = np.asarray(values)[np.asarray(comparable, dtype=bool)]
-    return bool(leads.size) and bool(np.all(leads > 0.02))
+        a = position[int(frame)]
+        if not bool(base_both[n, 0]) or not bool(alt_both[a, 0]):
+            continue
+        b = position.get(int(frame) - k) if int(frame) - k in members else None
+        value = float(alt[a, 0])
+        if b is not None and bool(alt_both[b, 0]):
+            value = (value + float(alt[b, 0])) / 2.0
+        leads.append(value - float(base[n, 0]))
+    return bool(leads) and bool(np.all(np.asarray(leads) > 0.02))
 
 
 # --- Point d'entrée ------------------------------------------------------------------------------------
@@ -1164,6 +1175,12 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                 i=i, d=f"{d:+d}"), ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
+    if ctx.unconfirmed:
+        say("[WARN] " + translate_text(
+            "{count} écart(s) local(aux) apparent(s) non confirmé(s) par l'image (biais de fondu probable) : "
+            "décalage du passage conservé (images de Film 1 : {ranges}).", count=len(ctx.unconfirmed),
+            ranges=", ".join(f"{a}–{b - 1} ({d:+d})" for a, b, d in ctx.unconfirmed[:6])
+            + (" …" if len(ctx.unconfirmed) > 6 else "")))
     if ctx.unobservable:
         points = sorted(ctx.unobservable)
         say("[WARN] " + translate_text(
@@ -1198,6 +1215,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
         "reframed_shots": len({shot for shot, _d in ctx.reframed}),
         "unobservable_points": len(ctx.unobservable),
+        "unconfirmed_deviations": len(ctx.unconfirmed),
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
                         _expected_cuts(metadata, reference, built, uncovered, n1), stats)
