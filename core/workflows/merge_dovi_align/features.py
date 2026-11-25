@@ -20,6 +20,8 @@ MIN_STD = 6.0
 #: désaccord ; entre les deux (image sombre peu contrastée, étalonnage plus sombre de l'autre film), la paire
 #: est jugée sur sa corrélation.
 FLAT_STD = 2.0
+#: Corrélation à partir de laquelle une image plate et une image informative montrent la même structure.
+FLAT_CORRELATION = 0.5
 _CHUNK = 8192
 
 
@@ -81,12 +83,21 @@ def band_features(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.nd
     return features, contrast >= MIN_STD
 
 
-def pair_masks(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def pair_masks(first: np.ndarray, second: np.ndarray,
+               correlation: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(paires comparables, paires en désaccord) d'après les contrastes des deux images : comparable si l'une est
-    informative et l'autre non plate ; désaccord si l'une est informative et l'autre plate."""
+    informative et l'autre non plate ; désaccord si l'une est informative et l'autre plate, sauf si la corrélation
+    montre la même structure (``FLAT_CORRELATION`` : image très sombre d'un étalonnage plus sombre, comparable ;
+    une image noire ne corrèle pas avec du contenu)."""
     strong1, strong2 = first >= MIN_STD, second >= MIN_STD
     flat1, flat2 = first < FLAT_STD, second < FLAT_STD
-    return (strong1 & ~flat2) | (strong2 & ~flat1), (strong1 & flat2) | (strong2 & flat1)
+    comparable = (strong1 & ~flat2) | (strong2 & ~flat1)
+    opposed = (strong1 & flat2) | (strong2 & flat1)
+    if correlation is not None:
+        structured = opposed & (correlation >= FLAT_CORRELATION)
+        comparable |= structured
+        opposed &= ~structured
+    return comparable, opposed
 
 
 def band_features_contrast(signatures: Signatures, band: Band) -> tuple[np.ndarray, np.ndarray]:

@@ -654,8 +654,8 @@ def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
 
 def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> None:
     """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Panoramique vertical (temps
-    et translation exactement interchangeables) : position indiscernable et continuité impossible à établir :
-    refus ; mouvement horizontal : position confirmée, décalage voisin refusé."""
+    et translation exactement interchangeables) : position inobservable, placée selon le décalage du segment et
+    signalée ; mouvement horizontal : position confirmée, décalage voisin refusé."""
     from core.workflows.merge_dovi_align.features import cell_margins
 
     class Pan(Scene):
@@ -686,7 +686,8 @@ def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> 
 
     vertical = context(True, full=True)
     assert vertical.confirm_content(np.arange(8, 14), 0) == "ok"
-    assert not vertical.confirm_position(12, 0)         # aucune preuve de position ni de continuité
+    assert vertical.confirm_position(12, 0)             # ni preuve ni contradiction : placé selon le segment,
+    assert vertical.unobservable == {12}                 # et signalé comme inobservable
     horizontal = context(False, full=False)
     assert horizontal.confirm_position(12, 0) and horizontal.film2.full is None
     assert not horizontal.confirm_position(12, 1)       # décalage voisin : contredit par l'image

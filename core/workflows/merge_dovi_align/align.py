@@ -523,6 +523,11 @@ class _Context:
     reframed: dict[tuple[int, int], tuple[float, float]] = field(init=False)
     #: Bande locale des images de Film 1 recadrées au dernier calcul (exception « plan fixe » sur cette bande).
     _frame_bands: dict[int, Band] = field(init=False)
+    #: Points de changement dont l'image ne situe pas la position (fondu, image très sombre) : sans contradiction,
+    #: placés selon le décalage de leur segment et signalés.
+    unobservable: set[int] = field(init=False)
+    #: Dernière fenêtre de Film 2 lue (contrôle puis comparaison d'une même position : une seule lecture).
+    _last_window: tuple[int, int, Signatures] | None = field(init=False)
 
     def __post_init__(self) -> None:
         self.film1_features, self.film1_contrast = band_features_contrast(self.film1, self.band)
@@ -532,7 +537,9 @@ class _Context:
             static[1:] = np.sum(self.film1_features[1:] * self.film1_features[:-1], axis=1) >= STATIC_CORRELATION
         self.film1_static = static
         self.reframed = {}
+        self.unobservable = set()
         self._frame_bands = {}
+        self._last_window = None
 
     def _window(self, indices: np.ndarray, offset: int, spread: int) -> tuple[Signatures, int]:
         self.hooks.check()
@@ -541,7 +548,12 @@ class _Context:
         lo_c, hi_c = max(0, lo), min(self.film2.frames, hi)
         if hi_c <= lo_c:
             raise AlignmentError(translate_text("Fenêtre de Film 2 hors du film."))
-        return self.film2.get(lo_c, hi_c - lo_c), lo_c
+        last = self._last_window
+        if last is not None and last[0] == lo_c and last[1] == hi_c:
+            return last[2], lo_c
+        window = self.film2.get(lo_c, hi_c - lo_c)
+        self._last_window = (lo_c, hi_c, window)
+        return window, lo_c
 
     @staticmethod
     def _scores(f1: np.ndarray, c1: np.ndarray, f2: np.ndarray, c2: np.ndarray, indices: np.ndarray,
@@ -556,7 +568,7 @@ class _Context:
             j = indices + offset + shift - lo_c
             ok = (j >= 0) & (j < f2.shape[0])
             corr[ok, column] = np.sum(f1[rows[ok]] * f2[j[ok]], axis=1)
-            both[ok, column], one[ok, column] = pair_masks(c1[rows[ok]], c2[j[ok]])
+            both[ok, column], one[ok, column] = pair_masks(c1[rows[ok]], c2[j[ok]], corr[ok, column])
         return corr, both, one
 
     def pair_scores(self, indices: np.ndarray, offset: int, spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -646,7 +658,7 @@ class _Context:
             jc = np.clip(j, 0, g2.shape[0] - 1)
             corr = np.full(indices.size, -1.0, dtype=np.float32)
             corr[ok] = np.sum(g1[ok] * g2[j[ok]], axis=1)
-            both, one = pair_masks(c1, c2[jc])
+            both, one = pair_masks(c1, c2[jc], corr)
             return corr, ok & both, ok & one
 
         def grid(first: float, second: float, centre: float, step: float = REFRAME_STEP) -> list[float]:
@@ -756,8 +768,9 @@ class _Context:
         si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans effet). Un
         voisin meilleur au-delà du bruit (écart entre les deux films à la meilleure image) contredit la position :
         refus. En deçà (plan presque fixe, métadonnées changeant à chaque image), ou si un voisin dans le film
-        n'est pas comparable (comparaison inconnue), la position n'est admise que si la continuité est établie de
-        part et d'autre (:meth:`_continuity`). Candidat hors du film : impossible, ignoré. Aucune image
+        n'est pas comparable (comparaison inconnue), la continuité tranche (:meth:`_continuity`) : contredite,
+        refus ; établie, confirmée ; inobservable (fondu, image très sombre), placée selon le décalage du segment
+        et signalée (``unobservable``). Candidat hors du film : impossible, ignoré. Aucune image
         informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` : bornes du segment du
         point (les images d'un autre segment relèvent d'un autre décalage)."""
         first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
@@ -802,19 +815,34 @@ class _Context:
             if -lead > noise:
                 return False                    # un voisin nettement meilleur : position contredite
             unresolved = True
-        return not unresolved or self._continuity(i, offset, lo, hi)
+        if not unresolved:
+            return True
+        verdict = self._continuity(i, offset, lo, hi)
+        if verdict == "contradicted":
+            return False
+        if verdict == "unobservable":
+            self.unobservable.add(i)            # signalé au journal : placé selon le décalage du segment
+        return True
 
-    def _continuity(self, i: int, offset: int, lo: int | None, hi: int | None) -> bool:
+    def _continuity(self, i: int, offset: int, lo: int | None, hi: int | None) -> str:
         """Continuité du décalage ``offset`` autour de l'image ``i`` : jusqu'à ``CONTINUITY`` images de chaque côté,
         dans le segment et dans le plan de Film 1 (un glissement persiste jusqu'à la coupe). Pour chaque voisin
-        ±1…±``POSITION_RADIUS`` : le décalage le bat en moyenne sur chaque côté non fixe (une moyenne contraire
-        d'un côté = glissement : refus) et, sur les deux côtés réunis, de façon significative (au-delà de deux
-        erreurs types, au moins ``FRAME_RUN`` paires comparables). Côtés fixes : position sans effet."""
+        ±1…±``POSITION_RADIUS`` (candidats hors du film ignorés, voisins en désaccord établi écartés) :
+
+        - « contradicted » : un voisin bat le décalage en moyenne sur un côté, au-delà de deux erreurs types
+          (glissement) ;
+        - « established » : le décalage bat chaque voisin sur les deux côtés réunis, au-delà de deux erreurs types
+          (au moins ``FRAME_RUN`` paires) ; côtés vides, fixes ou sans image comparable : sans effet ;
+        - « unobservable » sinon (fondu, image très sombre, comparaison inconnue) : ni preuve ni contradiction."""
         n1 = len(self.film1)
 
         def shot(frame: int) -> tuple[int, int]:
             k = int(np.searchsorted(self.cuts1, frame, side="right"))
             return (int(self.cuts1[k - 1]) if k > 0 else 0), (int(self.cuts1[k]) if k < self.cuts1.size else n1)
+
+        def significant(diff: np.ndarray) -> float:
+            deviation = float(diff.std(ddof=1)) if diff.size > 1 else 0.0
+            return max(POSITION_LEAD, 2.0 * deviation / np.sqrt(diff.size))
 
         left_shot, right_shot = shot(max(0, i - 1)), shot(i)
         sides = (
@@ -824,6 +852,8 @@ class _Context:
         center = POSITION_RADIUS
         pooled: dict[int, list[np.ndarray]] = {}
         settled: set[int] = set()
+        expected: set[int] = set()
+        unknown = False
         for first, last in sides:
             idx = self.inside(np.arange(first, last), offset)
             if idx.size < 2:
@@ -839,40 +869,36 @@ class _Context:
                     continue
                 targets = idx + offset + column - center
                 inside = (targets >= 0) & (targets < self.film2.frames)
+                if not np.any(inside):
+                    continue                    # candidat hors du film : impossible
+                expected.add(column)
                 pairs = inside & both[:, center] & both[:, column]
-                disagreed = bool(np.any(inside & both[:, center] & one[:, column]))
-                if disagreed:
+                if np.any(inside & both[:, center] & one[:, column]):
                     settled.add(column)         # désaccord établi avec ce voisin sur au moins une image
                 if not np.any(pairs):
-                    if np.any(inside) and not disagreed:
-                        return False            # comparaison inconnue sur ce côté
+                    unknown = unknown or column not in settled
                     continue
                 diff = corr[pairs, center].astype(np.float64) - corr[pairs, column]
-                if float(diff.mean()) <= 0.0:
-                    return False                # voisin meilleur en moyenne d'un côté : glissement
+                if diff.size >= FRAME_RUN and float(diff.mean()) < -significant(diff):
+                    return "contradicted"       # voisin significativement meilleur d'un côté : glissement
                 pooled.setdefault(column, []).append(diff)
-        if not pooled:
-            return True                         # chaque côté vide, fixe ou sans image comparable : sans effet
-        for column in range(2 * POSITION_RADIUS + 1):
-            if column == center:
-                continue
-            targets_exist = any(0 <= first + offset + column - center < self.film2.frames
-                                or 0 <= last - 1 + offset + column - center < self.film2.frames
-                                for first, last in sides)
+        if not expected:
+            return "established"                # chaque côté vide, fixe ou sans image comparable : sans effet
+        if unknown:
+            return "unobservable"
+        for column in expected:
             if column not in pooled:
-                if targets_exist and column not in settled:
-                    return False                # comparaison inconnue
-                continue                        # candidat hors du film, ou écarté par désaccord établi
+                if column in settled:
+                    continue                    # écarté par désaccord établi
+                return "unobservable"
             diff = np.concatenate(pooled[column])
-            count = diff.size
-            if count < FRAME_RUN:
+            if diff.size < FRAME_RUN:
                 if column in settled:
                     continue
-                return False
-            deviation = float(diff.std(ddof=1)) if count > 1 else 0.0
-            if float(diff.mean()) <= max(POSITION_LEAD, 2.0 * deviation / np.sqrt(count)):
-                return False
-        return True
+                return "unobservable"
+            if float(diff.mean()) <= significant(diff):
+                return "unobservable"
+        return "established"
 
     def inside(self, indices: np.ndarray, offset: int) -> np.ndarray:
         indices = np.asarray(indices, dtype=np.int64)
@@ -1088,6 +1114,13 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                 i=i, d=f"{d:+d}"), ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
+    if ctx.unobservable:
+        points = sorted(ctx.unobservable)
+        say("[WARN] " + translate_text(
+            "{count} point(s) de changement dans des passages où l'image ne situe pas la position (fondu, image très "
+            "sombre ou plate) : placés selon le décalage de leur segment, sans contradiction relevée (images de "
+            "Film 1 : {frames}).", count=len(points),
+            frames=", ".join(str(v) for v in points[:8]) + (" …" if len(points) > 8 else "")))
     if ctx.reframed:
         largest = max(max(abs(sy - ctx.dy), abs(sx - ctx.dx)) for sy, sx in ctx.reframed.values()) * film1.width
         say(translate_text(
@@ -1114,6 +1147,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         "exhaustive": full_at_build,
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
         "reframed_shots": len({shot for shot, _d in ctx.reframed}),
+        "unobservable_points": len(ctx.unobservable),
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
                         _expected_cuts(metadata, reference, built, uncovered, n1), stats)

@@ -12022,5 +12022,9 @@
   "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.": {
     "fra": "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.",
     "eng": "Film 2 framing varies from shot to shot (agreement {agreement}): each shot is checked on its own framing."
+  },
+  "{count} point(s) de changement dans des passages où l'image ne situe pas la position (fondu, image très sombre ou plate) : placés selon le décalage de leur segment, sans contradiction relevée (images de Film 1 : {frames}).": {
+    "fra": "{count} point(s) de changement dans des passages où l'image ne situe pas la position (fondu, image très sombre ou plate) : placés selon le décalage de leur segment, sans contradiction relevée (images de Film 1 : {frames}).",
+    "eng": "{count} change point(s) in passages where the picture cannot locate the position (fade, very dark or flat picture): placed by their segment's offset, no contradiction found (Film 1 frames: {frames})."
   }
 }
