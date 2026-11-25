@@ -65,6 +65,7 @@
   * **Images sans correspondance** (passage propre à Film 1) : refus, sauf images noires dans les deux films ou case « Compléter les images sans correspondance avec les métadonnées voisines » (avertissement par plage). Dernières images de Film 2 sans RPU complétées par le RPU précédent ; tout autre trou de métadonnées est refusé.
   * **Chapitres de Film 2** recalés sur Film 1 quand Film 1 n'en a pas (supprimés s'ils tombent dans une plage retirée).
   * Film 1 est lu entièrement pendant l'extraction (décodage NVIDIA si disponible), Film 2 par fenêtres ; case « Vérifier Film 2 image par image » pour le relire entièrement. Mode *Strict* : comptages identiques exigés, comme auparavant.
+  * **Cadrage propre à chaque plan** : un plan dont l'extraction 2.39 est calée plus haut ou plus bas dans l'image IMAX est vérifié sur son propre cadrage. **Fondus et images très sombres** : quand l'image ne permet pas de situer un changement de métadonnées, il est placé selon le décalage du passage et le journal le signale ; tout glissement visible reste refusé.
 ## Correctifs
 
 * **Merge DoVi, profil Dolby Vision de la sortie** : un RPU dont l'image de base attendue diffère de celle de Film 1 est refusé avec la marche à suivre (P8.4 sur un Film 1 PQ, P8.1 sur un Film 1 HLG ; Film 1 P5 : le convertir d'abord en HDR10 dans le panneau Encodage) ; une sortie HLG avec un RPU P8.4 est annoncée P8.4 et HLG dans le conteneur (auparavant P8.1 et PQ).
@@ -156,6 +157,7 @@
   * **Unmatched frames** (passage only in Film 1): refused, except frames black in both films or the "Fill unmatched frames with neighbouring metadata" option (warning per range). Last frames of Film 2 without RPU are completed with the previous RPU; any other metadata gap is refused.
   * **Film 2 chapters** moved onto Film 1 when Film 1 has none (dropped when they fall in a removed range).
   * Film 1 is read entirely during extraction (NVIDIA decoding when available), Film 2 through windows; "Verify Film 2 frame by frame" reads it entirely. *Strict* mode: identical counts required, as before.
+  * **Per-shot framing**: a shot whose 2.39 extraction sits higher or lower in the IMAX picture is checked on its own framing. **Fades and very dark pictures**: when the picture cannot locate a metadata change, it is placed by the passage's offset and the log reports it; any visible slip is still refused.
 ## Fixes
 
 * **Merge DoVi, Dolby Vision profile of the output**: an RPU expecting a different base layer than Film 1's is refused with what to do (P8.4 on a PQ Film 1, P8.1 on an HLG Film 1; P5 Film 1: convert it to HDR10 in the Encode panel first); an HLG output with a P8.4 RPU is signalled P8.4 and HLG in the container (previously P8.1 and PQ).
