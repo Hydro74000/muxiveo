@@ -417,13 +417,15 @@ class HdrStudio(QWidget):
         self._set_busy(True, translate_text("Inspection de {name}…", name=path.name))
         self._progress_bar.setRange(0, 0)
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
+        cancel = self._cache_cancel("main")
+        self._cancel = cancel
 
         def task() -> None:
             try:
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
                 index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                cached = self._cached(path, index, _inspected_frames(info, index)) if video else None
+                cached = self._cached(path, index, _inspected_frames(info, index), cancel) if video else None
                 self._inspected.emit(token, info, index, cached, "")
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
@@ -465,10 +467,11 @@ class HdrStudio(QWidget):
         self._render(InspectionReport(snapshot, findings=audit(snapshot)))
 
         self._measurement = None
+        cancel = self._cache_cancel("main")
 
         def task() -> None:
             self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index,
-                                                       snapshot.frames if snapshot.frames_exact else None))
+                                                       snapshot.frames if snapshot.frames_exact else None, cancel))
 
         self._submit(task)
 
@@ -481,14 +484,31 @@ class HdrStudio(QWidget):
         """Contrôle du nombre d'images d'une mesure : compte de l'inspection, écart confirmé par ffprobe."""
         return frame_count_check(frames, packet_counter(str(self._config.tool_ffprobe), path, stream_index, cancel))
 
-    def _cached(self, path: Path, stream_index: int, frames: int | None = None) -> dict:
+    def _cache_cancel(self, role: str) -> threading.Event:
+        """Annulation d'un chargement du cache (``main`` : piste inspectée, ``compare`` : piste B) : le comptage
+        exact éventuel du chargement précédent du même rôle est arrêté ; tous le sont à la fermeture."""
+        events = self.__dict__.setdefault("_cache_cancels", {})
+        previous = events.get(role)
+        if previous is not None:
+            previous.set()
+        events[role] = threading.Event()
+        return events[role]
+
+    def _cached(self, path: Path, stream_index: int, frames: int | None = None,
+                cancel: threading.Event | None = None) -> dict:
         """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image.
 
         ``frames`` : images selon l'inspection ; mesure complète d'un autre nombre d'images (écart confirmé par
-        un comptage exact) écartée."""
-        return {"dynamic": self._cache.load(path, stream_index),
-                "measure": self._cache.load_measurement(path, stream_index,
-                                                        check=self._frame_check(path, stream_index, frames))}
+        un comptage exact, arrêté par ``cancel``) écartée ; comptage annulé : mesure non reprise."""
+        from core.fel.engine import FelCancelled
+
+        dynamic = self._cache.load(path, stream_index)
+        try:
+            measure = self._cache.load_measurement(path, stream_index,
+                                                   check=self._frame_check(path, stream_index, frames, cancel))
+        except FelCancelled:
+            measure = None
+        return {"dynamic": dynamic, "measure": measure}
 
     def _show_snapshot(self, cached: object) -> None:
         assert self._info is not None
@@ -971,14 +991,15 @@ class HdrStudio(QWidget):
         token = self._compare_token
         self._compare_tab.set_status(translate_text("Inspection de {name}…", name=path.name))
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
+        cancel = self._cache_cancel("compare")
 
         def task() -> None:
             try:
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
                 index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                self._compare_inspected.emit(
-                    token, info, index, self._cached(path, index, _inspected_frames(info, index)) if video else None, "")
+                self._compare_inspected.emit(token, info, index, self._cached(
+                    path, index, _inspected_frames(info, index), cancel) if video else None, "")
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._compare_inspected.emit(token, None, 0, None, str(exc))
 
@@ -990,10 +1011,11 @@ class HdrStudio(QWidget):
             return
         self._compare_token += 1
         token = self._compare_token
+        cancel = self._cache_cancel("compare")
 
         def task() -> None:
             self._compare_inspected.emit(token, info, stream_index, self._cached(
-                Path(info.path), stream_index, _inspected_frames(info, stream_index)), "")
+                Path(info.path), stream_index, _inspected_frames(info, stream_index), cancel), "")
 
         self._submit(task)
 
@@ -1421,6 +1443,8 @@ class HdrStudio(QWidget):
         if not hasattr(self, "_shutdown"):
             self.setEnabled(False)
             self.cancel()
+            for cache_cancel in self.__dict__.get("_cache_cancels", {}).values():
+                cache_cancel.set()  # comptages exacts des chargements du cache
             self._shutdown = Shutdown(executors=(self._executor,))
         if defer_close(self, event, ready=self._shutdown.done.is_set()):
             return

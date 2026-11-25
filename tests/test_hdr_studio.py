@@ -581,3 +581,35 @@ def test_encode_panel_applies_light_levels(qt_app, monkeypatch):
         assert panel._inject_hdr_cb.isChecked() and panel._max_cll.text() == "700,200"
     finally:
         panel.close()
+
+
+def test_cache_load_exact_count_is_cancelled(studio, qt_app, tmp_path, monkeypatch):
+    """Mesure en cache démentie par l'inspection : le comptage exact (ffprobe) est arrêté par un nouveau
+    chargement, sans bloquer la file des tâches ; mesure non reprise."""
+    import sys
+    import threading
+
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3)))
+    started = threading.Event()
+
+    def slow_count(_ffprobe, _path, *, run_command, stream_index):
+        started.set()
+        run_command([sys.executable, "-c", "import time; time.sleep(30)"], **frame_count.subprocess_text_kwargs())
+        return 3
+
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", slow_count)
+    cancel = studio._cache_cancel("main")
+    result: dict = {}
+    worker = threading.Thread(target=lambda: result.update(studio._cached(media, 0, 5, cancel)))
+    begin = time.monotonic()
+    worker.start()
+    assert started.wait(10)
+    studio._cache_cancel("main")  # nouveau chargement : le précédent est arrêté
+    worker.join(10)
+    assert not worker.is_alive() and time.monotonic() - begin < 10
+    assert result["measure"] is None and cancel.is_set()

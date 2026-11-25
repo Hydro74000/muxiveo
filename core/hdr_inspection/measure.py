@@ -169,7 +169,11 @@ def frame_count_check(quick: int | None, exact: Callable[[], int | None] | None)
     counted: list[int | None] = []
 
     def check(measurement: ImageMeasurement) -> str | None:
-        if measurement.is_estimate or quick is None or measurement.frames == quick or exact is None:
+        if measurement.is_estimate or exact is None:
+            return None
+        # Compte exact déjà obtenu : seule référence (une mesure égale au compte de l'inspection n'en est pas
+        # plus juste quand ce compte a été démenti).
+        if not counted and (quick is None or measurement.frames == quick):
             return None
         if not counted:
             counted.append(exact())
