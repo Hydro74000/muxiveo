@@ -66,9 +66,6 @@ GEOMETRY_PAIRS = 10
 REFRAME_STEP = 0.0025
 REFRAME_GAIN = 0.05
 REFRAME_MIN_EXTENT = 0.5
-#: Comparaison de décalages : cadrage local recherché pour un plan dès qu'une paire comparable reste sous ce
-#: niveau avec la géométrie globale (au-dessus, le cadrage global explique déjà le plan).
-REFRAME_TRIGGER = 0.95
 #: Passe complète : bande du balayage image par image et longueur minimale d'un écart retenu.
 FRAME_BAND = 24
 FRAME_RUN = 3
@@ -576,23 +573,23 @@ class _Context:
         dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
         ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
         la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``compare`` (jonctions,
-        écarts locaux, continuité) : chaque plan dont une paire reste sous ``REFRAME_TRIGGER`` reçoit le meilleur
-        cadrage admissible pour ce décalage, sans gain minimal, sans effet sur le journal ni sur l'exception
-        « plan fixe »."""
+        écarts locaux, continuité) : chaque plan reçoit le meilleur cadrage admissible pour ce décalage (une
+        corrélation élevée ne prouve pas la position temporelle), sans gain minimal, sans effet sur le journal ni sur
+        l'exception « plan fixe ». Sans marge de glissement entre les zones actives, aucun recadrage n'est
+        admissible : géométrie globale seule."""
         window, lo_c = self._window(indices, offset, spread)
         f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
                                        offset, spread, lo_c)
         if not compare:
             self._frame_bands = {}
-        if self.area1 is None or self.area2 is None:
+        if not self._can_reframe():
             return corr, both, one
         shots = np.searchsorted(self.cuts1, indices, side="right")
         for shot in np.unique(shots).tolist():
             rows = np.flatnonzero(shots == shot)
             kept = both[rows, spread]
-            level = REFRAME_TRIGGER if compare else CONFIRM_CORRELATION
-            if not np.any(kept) or bool(np.all(corr[rows[kept], spread] >= level)):
+            if not np.any(kept) or (not compare and bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION))):
                 continue
             local = self._local_columns(indices[rows], offset, spread, window, lo_c, kept)
             if local is None:
@@ -608,6 +605,15 @@ class _Context:
                 self.reframed[(int(shot), offset)] = (sy, sx)
                 self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
+
+    def _can_reframe(self) -> bool:
+        """Marge de glissement entre les zones actives (verticale ou horizontale) : un recadrage propre à un plan
+        n'est admissible que si la zone de l'un des films peut se déplacer dans celle de l'autre."""
+        if self.area1 is None or self.area2 is None:
+            return False
+        a1, a2 = self.area1, self.area2
+        return (abs((a2.top - a1.top) - (a2.bottom - a1.bottom)) > 2 * REFRAME_STEP
+                or abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP)
 
     def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int,
                        required: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
@@ -815,15 +821,20 @@ class _Context:
             if idx.size < 2 or bool(np.all(self.film1_static[idx[1:]])):
                 continue                        # côté vide (bord de segment) ou fixe : rien à établir
             corr, both, one = self.checked_scores(idx, offset, POSITION_RADIUS, compare=True)
+            if not np.any(both[:, center]):
+                continue                        # côté sans image comparable (noir, uniforme) : sans effet
             for column in range(2 * POSITION_RADIUS + 1):
                 if column == center:
                     continue
                 targets = idx + offset + column - center
                 inside = (targets >= 0) & (targets < self.film2.frames)
                 pairs = inside & both[:, center] & both[:, column]
-                if np.any(inside & both[:, center] & one[:, column]):
+                disagreed = bool(np.any(inside & both[:, center] & one[:, column]))
+                if disagreed:
                     settled.add(column)         # désaccord établi avec ce voisin sur au moins une image
                 if not np.any(pairs):
+                    if np.any(inside) and not disagreed:
+                        return False            # comparaison inconnue sur ce côté
                     continue
                 diff = corr[pairs, center].astype(np.float64) - corr[pairs, column]
                 if float(diff.mean()) <= 0.0:
