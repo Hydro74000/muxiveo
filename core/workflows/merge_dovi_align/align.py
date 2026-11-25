@@ -1345,6 +1345,7 @@ def _frame_refine(ctx: _Context, built: list[Segment], n2: int, say: Callable[[s
     for _round in range(8):
         changed = False
         out: list[Segment] = []
+        ctx.unconfirmed = []                    # seuls les écarts non confirmés du découpage final sont signalés
         for seg in built:
             gaps = _frame_scan(ctx, seg)
             if not gaps:
