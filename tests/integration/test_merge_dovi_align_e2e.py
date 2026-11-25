@@ -492,6 +492,7 @@ def test_sdr_film1_after_real_tone_mapping(qt_app, tmp_path: Path, content: list
     film2 = _film2(tmp_path / "f2", [Shot(1, 12, black=True), *content])
     result = _merge(qt_app, tmp_path, film1, film2, AlignmentOptions())
     _check_output(result, tmp_path, film2, _shifted(12, _total(content)))
+    assert _transfer(Path(result["out"])) == "smpte2084"           # Film 1 converti en HDR10
 
 
 def test_hlg_base_profile_8_4(qt_app, tmp_path: Path, content: list[Shot]) -> None:

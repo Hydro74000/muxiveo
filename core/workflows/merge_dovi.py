@@ -243,18 +243,63 @@ def _format_max_cll_from_mediainfo(track: dict) -> str:
     return f"{m_cll.group(1)},{m_fall.group(1)}"
 
 
-def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata, *, base_transfer: str = "pq") -> bytes:
+# Codes ISO/IEC 23091-2 (H.273, ceux de Matroska) des noms de couleur de FFprobe.
+_PRIMARIES_CODES = {"bt709": 1, "bt470m": 4, "bt470bg": 5, "smpte170m": 6, "smpte240m": 7, "film": 8, "bt2020": 9,
+                    "smpte428": 10, "smpte431": 11, "smpte432": 12, "jedec-p22": 22, "ebu3213": 22}
+_TRANSFER_CODES = {"bt709": 1, "gamma22": 4, "gamma28": 5, "smpte170m": 6, "smpte240m": 7, "linear": 8, "log100": 9,
+                   "log316": 10, "iec61966-2-4": 11, "bt1361e": 12, "iec61966-2-1": 13, "bt2020-10": 14,
+                   "bt2020-12": 15, "smpte2084": 16, "smpte428": 17, "arib-std-b67": 18}
+_MATRIX_CODES = {"gbr": 0, "bt709": 1, "fcc": 4, "bt470bg": 5, "smpte170m": 6, "smpte240m": 7, "ycgco": 8,
+                 "bt2020nc": 9, "bt2020c": 10, "smpte2085": 11, "chroma-derived-nc": 12, "chroma-derived-c": 13,
+                 "ictcp": 14}
+
+
+@dataclass(frozen=True)
+class ColourSignal:
+    """Signalisation colorimétrique de l'image écrite (codes H.273) ; None : inconnue."""
+
+    matrix: int | None = None
+    primaries: int | None = None
+    transfer: int | None = None
+    range: int | None = None
+    bits: int | None = None
+
+    @classmethod
+    def for_base(cls, base: str) -> "ColourSignal":
+        """Repli quand le VUI ne dit rien : image de base déduite (PQ par défaut, HLG, SDR BT.709)."""
+        if base == "sdr":
+            return cls(matrix=1, primaries=1, transfer=1, range=1, bits=10)
+        return cls(matrix=9, primaries=9, transfer=18 if base == "hlg" else 16, range=1, bits=10)
+
+    @classmethod
+    def from_ffprobe(cls, stream: dict) -> "ColourSignal":
+        """Valeurs du VUI lues par FFprobe (``color_*``, ``pix_fmt``)."""
+        pix_fmt = str(stream.get("pix_fmt") or "")
+        depth = re.search(r"p(\d+)(?:le|be)$", pix_fmt)
+        return cls(
+            matrix=_MATRIX_CODES.get(str(stream.get("color_space") or "")),
+            primaries=_PRIMARIES_CODES.get(str(stream.get("color_primaries") or "")),
+            transfer=_TRANSFER_CODES.get(str(stream.get("color_transfer") or "").split(",")[0]),
+            range={"tv": 1, "pc": 2}.get(str(stream.get("color_range") or "")),
+            bits=int(depth.group(1)) if depth else (8 if pix_fmt else None),
+        )
+
+    def completed(self, fallback: "ColourSignal") -> "ColourSignal":
+        return ColourSignal(*(own if own is not None else other for own, other in (
+            (self.matrix, fallback.matrix), (self.primaries, fallback.primaries), (self.transfer, fallback.transfer),
+            (self.range, fallback.range), (self.bits, fallback.bits))))
+
+
+def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata, *,
+                                          signal: ColourSignal | None = None) -> bytes:
     """Construit l'élément EBML Colour (0x55B0) pour la piste vidéo Matroska.
 
-    Contient les métadonnées HDR10 conteneur :
-      - MatrixCoefficients (9 = BT.2020 non-constant)
-      - BitsPerChannel (10)
-      - Range (1 = limited)
-      - TransferCharacteristics de l'image de base écrite (16 = PQ, 18 = HLG : ``base_transfer``)
-      - Primaries (9 = BT.2020)
+    Signalisation de l'image réellement écrite (``signal`` : VUI du flux final complété par l'image de base
+    déduite ; défaut HDR10 BT.2020 / PQ, 10 bits, plage limitée), puis métadonnées HDR10 conteneur :
       - MaxCLL / MaxFALL
       - MasteringMetadata (primaires RGB, white point, luminance min/max)
     """
+    signal = signal or ColourSignal.for_base("pq")
     mastering_children: list[bytes] = []
     if static_hdr.master_display:
         m = re.search(
@@ -284,11 +329,10 @@ def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata, *, base
             ]
 
     colour_children = [
-        uint_element(MATRIX_COEFFICIENTS_ID, 9),
-        uint_element(BITS_PER_CHANNEL_ID, 10),
-        uint_element(RANGE_ID, 1),
-        uint_element(TRANSFER_CHARACTERISTICS_ID, 18 if base_transfer == "hlg" else 16),
-        uint_element(PRIMARIES_ID, 9),
+        uint_element(element_id, value) for element_id, value in (
+            (MATRIX_COEFFICIENTS_ID, signal.matrix), (BITS_PER_CHANNEL_ID, signal.bits), (RANGE_ID, signal.range),
+            (TRANSFER_CHARACTERISTICS_ID, signal.transfer), (PRIMARIES_ID, signal.primaries))
+        if value is not None
     ]
 
     if static_hdr.max_cll:
@@ -1342,7 +1386,7 @@ class MergeDoviWorkflow(QObject):
             film1_has_dovi = True
         # Injection DV demandée : profil de Film 1, même non signalé (une base P5 est en couleurs IPT).
         film1_dovi_profile = DoviSubProfile.UNKNOWN
-        if flags.has_dovi and not film1_needs_sdr_to_hdr10:
+        if (flags.has_dovi or not transfer1) and not film1_needs_sdr_to_hdr10:
             film1_dovi_profile = self._film1_dovi_profile(film1, signalled=film1_has_dovi)
             film1_has_dovi = film1_has_dovi or film1_dovi_profile != DoviSubProfile.UNKNOWN
         if film1_has_dovi:
@@ -2591,7 +2635,8 @@ class MergeDoviWorkflow(QObject):
 
         colour_element = b""
         if static_hdr_metadata and (static_hdr_metadata.master_display or static_hdr_metadata.max_cll):
-            colour_element = _build_colour_element_from_static_hdr(static_hdr_metadata, base_transfer=base_transfer)
+            signal = self._probe_colour_signal(final_hevc).completed(ColourSignal.for_base(base_transfer))
+            colour_element = _build_colour_element_from_static_hdr(static_hdr_metadata, signal=signal)
 
         # 1. Propriétés vidéo de film1 (résolution, format d'affichage, langue)
         video_props = self._read_video_track_props(film1)
@@ -3467,6 +3512,21 @@ class MergeDoviWorkflow(QObject):
             path, mediainfo_bin=self._bins["mediainfo"], ffprobe_bin=self._bins["ffprobe"],
             exact=True, run_command=self._run_probe,
         )
+
+    def _probe_colour_signal(self, hevc: Path) -> ColourSignal:
+        """Signalisation colorimétrique du VUI du flux final (première image) ; inconnue si illisible."""
+        try:
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = self._run_probe(
+                [self._bins["ffprobe"], "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
+                 "-show_entries", "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries",
+                 "-of", "json", str(hevc)],
+                capture_output=True, check=False, timeout=60, **subprocess_text_kwargs(),
+            )
+            streams = json.loads(str(getattr(result, "stdout", "") or "{}")).get("streams") or [{}]
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, AttributeError):
+            return ColourSignal()
+        return ColourSignal.from_ffprobe(streams[0] if isinstance(streams[0], dict) else {})
 
     def _film1_dovi_profile(self, film1: Path, *, signalled: bool) -> DoviSubProfile:
         """Sous-profil Dolby Vision de Film 1 (une base P5 est en couleurs IPT) : MediaInfo si le Dolby Vision est

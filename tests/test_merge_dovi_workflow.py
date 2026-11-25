@@ -1031,10 +1031,22 @@ def test_colour_element_signals_the_written_base_transfer() -> None:
     from core.matroska.ids import TRANSFER_CHARACTERISTICS_ID
     from core.workflows.merge_dovi import StaticHdrMetadata, _build_colour_element_from_static_hdr
 
+    from core.matroska.ids import MATRIX_COEFFICIENTS_ID, PRIMARIES_ID
+    from core.workflows.merge_dovi import ColourSignal
+
     static = StaticHdrMetadata(max_cll="1000,400")
-    hlg = _build_colour_element_from_static_hdr(static, base_transfer="hlg")
+    hlg = _build_colour_element_from_static_hdr(static, signal=ColourSignal.for_base("hlg"))
     assert uint_element(TRANSFER_CHARACTERISTICS_ID, 18) in hlg
     assert uint_element(TRANSFER_CHARACTERISTICS_ID, 16) in _build_colour_element_from_static_hdr(static)
+    # VUI du flux écrit prioritaire, complété par la base déduite ; SDR BT.709 signalé comme tel.
+    vui = ColourSignal.from_ffprobe({"pix_fmt": "yuv420p10le", "color_transfer": "bt709", "color_primaries": "bt709",
+                                     "color_space": "bt709", "color_range": "tv"})
+    sdr = _build_colour_element_from_static_hdr(static, signal=vui.completed(ColourSignal.for_base("pq")))
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 1) in sdr and uint_element(PRIMARIES_ID, 1) in sdr
+    assert uint_element(MATRIX_COEFFICIENTS_ID, 1) in sdr
+    partial = ColourSignal.from_ffprobe({"pix_fmt": "yuv420p10le", "color_transfer": "arib-std-b67,"})
+    assert partial.completed(ColourSignal.for_base("pq")) == ColourSignal(9, 9, 18, 1, 10)
+    assert ColourSignal.from_ffprobe({}).completed(ColourSignal.for_base("sdr")) == ColourSignal(1, 1, 1, 1, 10)
 
 
 @pytest.mark.parametrize(("rpu_found", "expected"), [(True, "P5"), (False, "UNKNOWN")])
