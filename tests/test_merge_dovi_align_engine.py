@@ -652,32 +652,43 @@ def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
 
 
 def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> None:
-    """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Un panoramique vertical
-    (temps et translation interchangeables) rend la position ambiguë : refusée ; un mouvement horizontal reste
-    confirmé."""
+    """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Panoramique vertical (temps
+    et translation interchangeables) : position indiscernable, admise seulement avec la passe complète de Film 2
+    (continuité vérifiée image par image) ; mouvement horizontal : position confirmée, décalage voisin refusé."""
     from core.workflows.merge_dovi_align.features import cell_margins
 
     class Pan(Scene):
         def __init__(self, rng: np.random.Generator, length: int, *, vertical: bool) -> None:
             super().__init__(rng, length)
-            low = rng.uniform(0, 1, size=(24, 30))
+            low = rng.uniform(0, 1, size=(40, 30))
             big = np.kron(low, np.ones((10, 10)))
             self.texture = self.level + 220.0 * (big - big.mean())
             self.vertical = vertical
 
         def frame(self, index: int, dx: int = 0, dy: int = 0) -> np.ndarray:
-            top = 40 + dy + (index if self.vertical else 0)
-            left = 20 + dx + (0 if self.vertical else index)
+            # Panoramique vertical d'une cellule de vignette (6 px) par image : décalage temporel et translation
+            # exactement interchangeables.
+            top = 40 + dy + (6 * index if self.vertical else 0)
+            left = 20 + dx + (0 if self.vertical else 3 * index)
             return self.texture[top:top + H, left:left + W]
 
-    for vertical, expected in ((True, False), (False, True)):
-        shot = Pan(np.random.default_rng(8), 40, vertical=vertical)
-        sig1 = render([(shot, 0, 40)], 4)
-        sig2 = render([(shot, 0, 40)], 18, dy_per_scene={0: 10})
+    def context(vertical: bool, *, full: bool) -> _Context:
+        shot = Pan(np.random.default_rng(8), 30, vertical=vertical)
+        sig1 = render([(shot, 0, 30)], 4)
+        sig2 = render([(shot, 0, 30)], 18, dy_per_scene={0: 12})
         area1, area2 = active_band(sig1), active_band(sig2)
         band = area1.intersect(area2, *cell_margins(sig1, sig2))
-        source = Film2Frames(40, window=lambda a, n, sig=sig2: sig.slice(a, a + n), budget=100.0)
-        ctx = _Context(sig1, source, band, 0.0, 0.0, ProcessHooks(), area1=area1, area2=area2,
-                       cuts1=np.asarray([0], dtype=np.int64))
-        assert ctx.confirm_content(np.arange(10, 16), 0) == "ok"
-        assert ctx.confirm_position(20, 0) is expected
+        source = Film2Frames(30, window=lambda a, n, sig=sig2: sig.slice(a, a + n), budget=100.0,
+                             full_loader=(lambda sig=sig2: sig) if full else None)
+        return _Context(sig1, source, band, 0.0, 0.0, ProcessHooks(), area1=area1, area2=area2,
+                        cuts1=np.asarray([0], dtype=np.int64))
+
+    vertical = context(True, full=False)
+    assert vertical.confirm_content(np.arange(8, 14), 0) == "ok"
+    with pytest.raises(AlignmentError):                 # indiscernable : passe complète exigée, impossible ici
+        vertical.confirm_position(12, 0)
+    loaded = context(True, full=True)
+    assert loaded.confirm_position(12, 0) and loaded.film2.full is not None
+    horizontal = context(False, full=False)
+    assert horizontal.confirm_position(12, 0) and horizontal.film2.full is None
+    assert not horizontal.confirm_position(12, 1)       # décalage voisin : contredit par l'image

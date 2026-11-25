@@ -30,6 +30,10 @@ CUT_CORRELATION = 0.5
 CONFIRM_CORRELATION = 0.80
 #: Avance minimale du décalage retenu sur ses voisins pour confirmer une position.
 POSITION_LEAD = 1e-3
+#: Écart minimal (corrélation) d'un voisin meilleur pour contredire une position : au-delà de l'écart entre les
+#: deux films à leur meilleure correspondance (1 − meilleure corrélation de la ligne), une contradiction ; en
+#: deçà, du bruit (plancher : films quasi identiques).
+POSITION_NOISE = 0.002
 #: Images voisines quasi identiques (plan fixe) : une égalité de décalages y est sans effet.
 STATIC_CORRELATION = 0.995
 POSITION_RADIUS = 3
@@ -561,19 +565,19 @@ class _Context:
         return self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices, offset, spread, lo_c)
 
     def checked_scores(self, indices: np.ndarray, offset: int, spread: int, *,
-                       record: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                       compare: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Comme :meth:`pair_scores`, mais chaque plan de Film 1 dont une paire informative reste sous
         ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec un cadrage local (plan cadré autrement
         dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
         ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
-        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``record`` : plans
-        recadrés comptés au journal et bandes gardées pour l'exception « plan fixe » (contrôles), sinon aucun effet
-        (jonctions, écarts locaux : chaque décalage comparé reçoit son propre cadrage)."""
+        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``compare`` (jonctions,
+        écarts locaux) : chaque plan reçoit le meilleur cadrage admissible pour ce décalage, même au-dessus du seuil
+        de confirmation et sans gain minimal, sans effet sur le journal ni sur l'exception « plan fixe »."""
         window, lo_c = self._window(indices, offset, spread)
         f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
                                        offset, spread, lo_c)
-        if record:
+        if not compare:
             self._frame_bands = {}
         if self.area1 is None or self.area2 is None:
             return corr, both, one
@@ -581,7 +585,7 @@ class _Context:
         for shot in np.unique(shots).tolist():
             rows = np.flatnonzero(shots == shot)
             kept = both[rows, spread]
-            if not np.any(kept) or bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION)):
+            if not np.any(kept) or (not compare and bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION))):
                 continue
             local = self._local_columns(indices[rows], offset, spread, window, lo_c, kept)
             if local is None:
@@ -589,10 +593,11 @@ class _Context:
             c, b, o, (sy, sx, band) = local
             if not bool(np.all(b[kept, spread])):
                 continue                    # une paire informative ne doit pas sortir du contrôle
-            if float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])) + REFRAME_GAIN:
+            gain = 0.0 if compare else REFRAME_GAIN
+            if float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])) + gain:
                 continue
             corr[rows], both[rows], one[rows] = c, b, o
-            if record:
+            if not compare:
                 self.reframed[(int(shot), offset)] = (sy, sx)
                 self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
@@ -634,14 +639,28 @@ class _Context:
             low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
             return sorted({round(float(v), 4) for v in np.arange(low, high + step / 2, step)} | {round(centre, 4)})
 
-        def best(cands: list) -> tuple | None:
-            # Classement sur les paires imposées (masque fixe), seules les translations qui les gardent toutes.
+        horizontal = abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP
+
+        def fine(cand: tuple) -> list:
+            """Translations voisines au pas cinq fois plus fin (aucune colonne désavantagée par la grille)."""
+            step = REFRAME_STEP / 5
+            out = [found for k in range(-4, 5) if k
+                   if (found := candidate(round(cand[0] + k * step, 5), cand[1])) is not None]
+            if horizontal:
+                out += [found for k in range(-4, 5) if k
+                        if (found := candidate(cand[0], round(cand[1] + k * step, 5))) is not None]
+            return out
+
+        def best(cands: list, at: int, imposed: np.ndarray | None) -> tuple | None:
+            # Classement sur un masque fixe (paires imposées au décalage testé), sinon sur les paires comparables.
             top = None
             for cand in cands:
-                c, b, o = column(cand, offset)
-                if not bool(np.all(b[required])):
+                c, b, o = column(cand, at)
+                if imposed is not None and not bool(np.all(b[imposed])):
                     continue
-                value = float(np.median(c[required]))
+                if not np.any(b):
+                    continue
+                value = float(np.median(c[imposed] if imposed is not None else c[b]))
                 if top is None or value > top[0]:
                     top = (value, cand, c, b, o)
             return top
@@ -650,13 +669,14 @@ class _Context:
         # (verticale × horizontale, pas double) quand les zones actives laissent aussi glisser horizontalement.
         cands = [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
                  if (cand := candidate(sy, self.dx)) is not None]
-        if abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
+        if horizontal:
             cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy, 2 * REFRAME_STEP)
                       for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx, 2 * REFRAME_STEP)
                       if (cand := candidate(sy, sx)) is not None]
-        top = best(cands)
+        top = best(cands, offset, required)
         if top is None:
             return None
+        top = best([top[1], *fine(top[1])], offset, required) or top
         width_cols = 2 * spread + 1
         corr = np.full((indices.size, width_cols), -1.0, dtype=np.float32)
         both = np.zeros((indices.size, width_cols), dtype=bool)
@@ -668,7 +688,8 @@ class _Context:
             best_c = np.full(indices.size, -1.0, dtype=np.float32)
             best_b = np.zeros(indices.size, dtype=bool)
             any_one = np.zeros(indices.size, dtype=bool)
-            for cand in cands:
+            rival = best(cands, offset + shift, None)
+            for cand in cands + (fine(rival[1]) if rival is not None else []):
                 c, b, o = column(cand, offset + shift)
                 better = b & (~best_b | (c > best_c))
                 best_c = np.where(better, c, best_c)
@@ -713,9 +734,13 @@ class _Context:
         seul côté). Position : la bascule ``i - 1 | i`` de Film 1 tombe sur la bascule ``j - 1 | j`` de Film 2
         — l'image ``i - 1`` s'apparie strictement mieux à ``j - 1`` qu'aux images ``j, j + 1…`` qui suivent la
         bascule, l'image ``i`` mieux à ``j`` qu'aux images ``j - 1, j - 2…`` qui la précèdent. Égalité admise
-        seulement si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans
-        effet). Aucune image informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` :
-        bornes du segment du point (les images d'un autre segment relèvent d'un autre décalage)."""
+        si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans effet). Un
+        voisin meilleur au-delà du bruit (écart entre les deux films à la bonne image) contredit la position :
+        refus. En deçà (plan presque fixe, métadonnées changeant à chaque image), la position est indiscernable
+        sur l'image : admise seulement avec la passe complète de Film 2, dont le balayage image par image établit
+        la continuité du segment (chargée ici au besoin : la vérification reprend alors sur elle). Aucune image
+        informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` : bornes du segment du
+        point (les images d'un autre segment relèvent d'un autre décalage)."""
         first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
         last = i + POSITION_RADIUS if hi is None else min(hi, i + POSITION_RADIUS)
         indices = self.inside(np.arange(first, last), offset)
@@ -731,14 +756,23 @@ class _Context:
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
         still = self._static(i)
+        ambiguous = False
         for frame, crossing in ((i - 1, slice(center + 1, None)), (i, slice(0, center))):
             row = np.flatnonzero(indices == frame)
             if row.size == 0 or not both[row[0], center]:
                 continue
             values = np.where(both[row[0]], corr[row[0]], -np.inf)
             rivals = values[crossing]
-            if rivals.size and values[center] - rivals.max() <= POSITION_LEAD and not still:
-                return False
+            if not rivals.size or still:
+                continue
+            lead = float(values[center] - rivals.max())
+            if lead > POSITION_LEAD:
+                continue
+            if -lead > max(POSITION_NOISE, 1.0 - float(values.max())):
+                return False                    # un voisin nettement meilleur : position contredite
+            ambiguous = True
+        if ambiguous and self.film2.full is None:
+            self.film2.load_full("point de changement indiscernible sur l'image : continuité vérifiée image par image")
         return True
 
     def inside(self, indices: np.ndarray, offset: int) -> np.ndarray:
@@ -792,7 +826,7 @@ def _refine_junction(ctx: _Context, lo: int, hi: int, da: int, db: int) -> tuple
         values = np.full(indices.size, -1.0)
         valid = ctx.inside(indices, offset)
         if valid.size:
-            corr, both, one = ctx.checked_scores(valid, offset, 0, record=False)
+            corr, both, one = ctx.checked_scores(valid, offset, 0, compare=True)
             values[np.searchsorted(indices, valid)] = np.where(both[:, 0], corr[:, 0],
                                                                np.where(one[:, 0], -1.0, 0.0))
         scores[offset] = values
@@ -842,8 +876,8 @@ def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> boo
     sur ``offset`` pour chaque paire comparable des deux côtés. Sinon (translation et décalage temporel
     interchangeables, panoramique dans un plan recadré), l'écart est ignoré : le décalage du segment est gardé et
     tout point de changement du passage reste confirmé par l'image."""
-    base, base_both, _one = ctx.checked_scores(run, offset, 0, record=False)
-    alt, alt_both, _alt_one = ctx.checked_scores(run, other, 0, record=False)
+    base, base_both, _one = ctx.checked_scores(run, offset, 0, compare=True)
+    alt, alt_both, _alt_one = ctx.checked_scores(run, other, 0, compare=True)
     pairs = base_both[:, 0] & alt_both[:, 0]
     return bool(np.any(pairs)) and bool(np.all(alt[pairs, 0] - base[pairs, 0] > 0.02))
 
