@@ -417,14 +417,6 @@ class _ConfigSection(QWidget):
         ral.addWidget(self._align_combo, stretch=1)
         cl.addWidget(row_align)
 
-        self._fill_cb = QCheckBox("Compléter les images sans correspondance avec les métadonnées voisines")
-        self._fill_cb.setToolTip(
-            "Images de Film 1 absentes de Film 2 (passage ajouté) : sans cette option, l'injection est refusée.\n"
-            "Cochée, ces images reçoivent les métadonnées de l'image voisine (avertissement par plage).\n"
-            "Des images noires dans les deux films sont complétées sans cette option."
-        )
-        self._fill_cb.setStyleSheet(_checkbox_style())
-        cl.addWidget(self._fill_cb)
         self._verify_cb = QCheckBox("Vérifier Film 2 image par image (plus lent)")
         self._verify_cb.setToolTip(
             "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\n"
@@ -504,15 +496,13 @@ class _ConfigSection(QWidget):
 
     @property
     def alignment_options(self) -> AlignmentOptions:
-        """Mode d'alignement et options D1 / D6 choisis dans le panneau."""
+        """Mode d'alignement et option D6 choisis dans le panneau."""
         mode = self._align_combo.currentData() or AlignmentMode.AUTO
         auto = mode is AlignmentMode.AUTO
-        return AlignmentOptions(mode=mode, fill_unmatched=auto and self._fill_cb.isChecked(),
-                                verify_film2=auto and self._verify_cb.isChecked())
+        return AlignmentOptions(mode=mode, verify_film2=auto and self._verify_cb.isChecked())
 
     def _update_align_options(self) -> None:
         auto = (self._align_combo.currentData() or AlignmentMode.AUTO) is AlignmentMode.AUTO
-        self._fill_cb.setEnabled(auto)
         self._verify_cb.setEnabled(auto)
 
     def set_hdr_states(self, film1: HdrState | None, film2: HdrState | None) -> None:

@@ -30,26 +30,21 @@ CUT_CORRELATION = 0.5
 CONFIRM_CORRELATION = 0.80
 #: Avance minimale du décalage retenu sur ses voisins pour confirmer une position.
 POSITION_LEAD = 1e-3
-#: Écart minimal (corrélation) d'un voisin meilleur pour contredire une position : au-delà de l'écart entre les
-#: deux films à leur meilleure correspondance (1 − meilleure corrélation de la ligne), une contradiction ; en
-#: deçà, du bruit (plancher : films quasi identiques).
-POSITION_NOISE = 0.002
+#: Ampleur minimale (corrélation) d'un glissement pris en compte, la même que l'avance exigée par le balayage
+#: image par image pour découper un écart local : en deçà (plan quasi fixe, minutage d'un générique un peu
+#: différent d'une édition à l'autre), un glissement est visuellement négligeable et ne contredit pas une position.
+SLIP_EFFECT = 0.02
 #: Images voisines quasi identiques (plan fixe) : une égalité de décalages y est sans effet.
 STATIC_CORRELATION = 0.995
 POSITION_RADIUS = 3
 #: Bande de recherche autour des décalages candidats (images).
 BAND = 48
 BLOCK_SECONDS = 300
-SAMPLE_SECONDS = 120
 #: Au-delà de cette part de Film 2 lue par fenêtres : passe complète de Film 2.
 WINDOW_BUDGET = 0.25
-#: Plans confirmés par l'image nécessaires à l'étalonnage de la relation de luminance.
-MIN_CALIBRATION = 20
 #: Pénalité d'un changement de décalage entre deux plans (en coupes concordantes).
 CHANGE_PENALTY = 4.0
 NONE_PENALTY = 0.5
-#: Marge entre la meilleure carte et la meilleure carte concurrente sous laquelle un segment est ambigu.
-AMBIGUITY_MARGIN = 2.0
 #: Insertion maximale (images de Film 1) traitée à la jonction de deux plans consécutifs.
 MAX_INSERT = 200
 #: Plafond des états de la programmation dynamique et pas des points de reprise (mémoire bornée).
@@ -66,11 +61,21 @@ GEOMETRY_PAIRS = 10
 REFRAME_STEP = 0.0025
 REFRAME_GAIN = 0.05
 REFRAME_MIN_EXTENT = 0.5
+#: Corrélation médiane au-delà de laquelle la géométrie globale explique un plan (aucun cadrage propre cherché),
+#: et nombre d'images d'un plan examinées pour estimer son cadrage propre.
+REFRAME_TRIGGER = 0.95
+REFRAME_SAMPLE = 24
+#: Échelles admises entre l'image d'un plan de Film 1 et celle de Film 2 (extraction zoomée).
+REFRAME_SCALES = (0.8, 1.25)
 #: Passe complète : bande du balayage image par image et longueur minimale d'un écart retenu.
 FRAME_BAND = 24
 FRAME_RUN = 3
-#: Images examinées de chaque côté d'un point de changement indiscernable pour établir la continuité.
-CONTINUITY = 48
+#: Validation plan par plan : images examinées par plan, part minimale de plans concordants (sinon refus : les
+#: deux films ne se correspondent pas).
+SHOT_SAMPLE = 12
+MIN_CONCORDANCE = 0.9
+#: Lecture par fenêtres : au plus un plan vérifié par intervalle (secondes de Film 1), dans le budget de lecture.
+SAMPLE_SECONDS = 60
 _NONE = -(10 ** 9)
 
 
@@ -156,6 +161,11 @@ class Film2Frames:
     @property
     def windowed(self) -> bool:
         return self.full is None and self._window is not None
+
+    @property
+    def remaining(self) -> int:
+        """Images encore lisibles par fenêtres avant la passe complète (budget)."""
+        return max(0, int(self._budget * self.frames) - self.decoded)
 
     def load_full(self, reason: str, **args: Any) -> Signatures:
         """Passe complète de Film 2 (une fois) ; ``reason`` : motif (modèle en français, paramètres ``args``).
@@ -441,47 +451,6 @@ class _ShotModel:
             block_end = block_start
         return path, total
 
-    def alternatives(self, path: np.ndarray) -> np.ndarray:
-        """Pour chaque plan, score de la meilleure carte qui ne passe pas par l'état du chemin retenu à ce plan
-        (max-marginales). Calcul **relâché** (bascules sans contrainte d'ordre) : majorant de toute carte
-        concurrente, donc marges prudentes. Mémoire par points de reprise."""
-        shots = self.shots
-        checkpoints: list[np.ndarray] = []
-        forward = np.zeros(0)
-        for k in range(shots):
-            if k % 256 == 0:
-                self.hooks.check()
-            emission = self.emission(k, None)
-            forward = emission if k == 0 else np.maximum(forward, forward.max() - CHANGE_PENALTY) + emission
-            if k % CHECKPOINT == CHECKPOINT - 1:
-                checkpoints.append(forward.copy())
-        out = np.full(shots, -np.inf)
-        backward = np.zeros(self.states)
-        block_end = shots
-        while block_end > 0:
-            block_start = ((block_end - 1) // CHECKPOINT) * CHECKPOINT
-            self.hooks.check()
-            values: list[np.ndarray] = []
-            current = np.zeros(0)
-            for k in range(block_start, block_end):
-                emission = self.emission(k, None)
-                if k == 0:
-                    current = emission
-                elif k == block_start:
-                    previous = checkpoints[k // CHECKPOINT - 1]
-                    current = np.maximum(previous, previous.max() - CHANGE_PENALTY) + emission
-                else:
-                    current = np.maximum(current, current.max() - CHANGE_PENALTY) + emission
-                values.append(current)
-            for k in range(block_end - 1, block_start - 1, -1):
-                marginal = values[k - block_start] + backward
-                marginal[int(path[k])] = -np.inf
-                out[k] = float(marginal.max())
-                continuation = backward + self.emission(k, None)
-                backward = np.maximum(continuation, continuation.max() - CHANGE_PENALTY)
-            block_end = block_start
-        return out
-
     def offsets(self, path: np.ndarray) -> np.ndarray:
         return np.asarray([_NONE if s == self.none else int(self.candidates[s]) for s in path], dtype=np.int64)
 
@@ -520,15 +489,14 @@ class _Context:
     film1_informative: np.ndarray = field(init=False)
     film1_static: np.ndarray = field(init=False)
     #: Translation locale retenue par (plan de Film 1, décalage) : plans cadrés autrement dans les deux films.
-    reframed: dict[tuple[int, int], tuple[float, float]] = field(init=False)
-    #: Bande locale des images de Film 1 recadrées au dernier calcul (exception « plan fixe » sur cette bande).
-    _frame_bands: dict[int, Band] = field(init=False)
-    #: Écarts locaux apparents (passe complète) non confirmés à cadrage propre et en lecture symétrique (biais de
-    #: fondu probable) : décalage du segment gardé, signalés.
-    unconfirmed: list[tuple[int, int, int]] = field(init=False)
-    #: Points de changement dont l'image ne situe pas la position (fondu, image très sombre) : sans contradiction,
-    #: placés selon le décalage de leur segment et signalés.
-    unobservable: set[int] = field(init=False)
+    reframed: dict[tuple[int, int], tuple[float, float, float]] = field(init=False)
+    #: Cadrage propre estimé par (plan de Film 1, décalage d'ancrage) ; None : géométrie globale.
+    _framings: dict[tuple[int, int], tuple[float, float, float, Band, Band] | None] = field(init=False)
+    #: Balayage image par image de Film 2 appliqué à la construction des segments (passe complète chargée avant).
+    exhaustive: bool = field(init=False)
+    #: Passages où les deux films diffèrent localement de quelques images puis reviennent au décalage du segment
+    #: (balayage image par image) : décalage du segment gardé, signalés.
+    excursions: list[tuple[int, int, int]] = field(init=False)
     #: Dernière fenêtre de Film 2 lue (contrôle puis comparaison d'une même position : une seule lecture).
     _last_window: tuple[int, int, Signatures] | None = field(init=False)
 
@@ -540,9 +508,9 @@ class _Context:
             static[1:] = np.sum(self.film1_features[1:] * self.film1_features[:-1], axis=1) >= STATIC_CORRELATION
         self.film1_static = static
         self.reframed = {}
-        self.unobservable = set()
-        self.unconfirmed = []
-        self._frame_bands = {}
+        self._framings = {}
+        self.excursions = []
+        self.exhaustive = self.film2.full is not None   # passe complète présente dès la construction
         self._last_window = None
 
     def _window(self, indices: np.ndarray, offset: int, spread: int) -> tuple[Signatures, int]:
@@ -583,69 +551,36 @@ class _Context:
         return self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices, offset, spread, lo_c)
 
     def checked_scores(self, indices: np.ndarray, offset: int, spread: int, *,
-                       compare: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Comme :meth:`pair_scores`, mais chaque plan de Film 1 dont une paire informative reste sous
-        ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec un cadrage local (plan cadré autrement
-        dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
-        ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
-        la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``compare`` (jonctions,
-        écarts locaux, continuité) : chaque plan reçoit le meilleur cadrage admissible pour ce décalage (une
-        corrélation élevée ne prouve pas la position temporelle), sans gain minimal, sans effet sur le journal ni sur
-        l'exception « plan fixe ». Sans marge de glissement entre les zones actives, aucun recadrage n'est
-        admissible : géométrie globale seule."""
+                       anchor: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Comme :meth:`pair_scores`, avec le cadrage propre de chaque plan de Film 1 recadré (extraction 2.39
+        décalée dans l'image IMAX…) : estimé une fois par plan au décalage d'ancrage ``anchor`` (celui du segment,
+        établi par les coupes, indépendamment de l'image ; ``offset`` par défaut), puis appliqué à tout le plan et à
+        tous les décalages comparés — le cadrage est une propriété du plan, pas du décalage testé. Seuils
+        inchangés. Sans marge de glissement entre les zones actives : géométrie globale seule."""
         window, lo_c = self._window(indices, offset, spread)
         f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
                                        offset, spread, lo_c)
-        self._frame_bands = {}
         if not self._can_reframe():
             return corr, both, one
+        anchor = offset if anchor is None else anchor
         shots = np.searchsorted(self.cuts1, indices, side="right")
         for shot in np.unique(shots).tolist():
             rows = np.flatnonzero(shots == shot)
-            kept = both[rows, spread]
-            if not np.any(kept) or (not compare and bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION))):
+            hint = (indices[rows], window, lo_c) if anchor == offset else None
+            framing = self._shot_framing(int(shot), anchor, hint)
+            if framing is None:
                 continue
-            local = self._local_columns(indices[rows], offset, spread, window, lo_c, kept)
-            if local is None:
-                continue
-            c, b, o, (sy, sx, band) = local
-            if not bool(np.all(b[kept, spread])):
-                continue                    # une paire informative ne doit pas sortir du contrôle
-            # Comparaison : la géométrie globale fait partie des candidats, le cadrage choisi la vaut toujours au
-            # moins et chaque voisin garde le sien. Contrôle : gain net exigé.
-            if not compare and (float(np.median(c[kept, spread]))
-                                < float(np.median(corr[rows[kept], spread])) + REFRAME_GAIN):
+            _scale, _ty, _tx, band, band2 = framing
+            g1, k1 = band_features_contrast(take(self.film1, indices[rows]), band)
+            g2, k2 = band_features_contrast(window, band2)
+            c, b, o = self._scores(g1, k1, g2, k2, indices[rows], np.arange(rows.size), offset, spread, lo_c)
+            # Jamais pire que la géométrie globale sur les images comparées (garde contre une estimation faussée).
+            kept = both[rows, spread] & b[:, spread]
+            if np.any(kept) and float(np.median(c[kept, spread])) < float(np.median(corr[rows[kept], spread])):
                 continue
             corr[rows], both[rows], one[rows] = c, b, o
-            if not compare:
-                self.reframed[(int(shot), offset)] = (sy, sx)
-            self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
-
-    @staticmethod
-    def _symmetric(corr: np.ndarray, both: np.ndarray, frames: np.ndarray,
-                   center: int) -> tuple[np.ndarray, np.ndarray]:
-        """Décalages rivaux évalués symétriquement : pour l'image ``r`` de Film 1 et le rival ``+k``, moyenne de
-        (``r``, image de Film 2 ``j + k``) et de (``r − k``, image de Film 2 ``j``) quand les deux paires sont
-        comparables (sinon non comparable) ; colonne testée inchangée. Dans un fondu, l'image de Film 2 la plus
-        tardive (plus contrastée) corrèle mieux quel que soit le rang ; ce biais et celui de Film 1 se compensent,
-        alors qu'un glissement de ``k`` images reste visible dans les deux termes."""
-        out = np.full(corr.shape, -1.0, dtype=np.float32)
-        ok = np.zeros(both.shape, dtype=bool)
-        out[:, center], ok[:, center] = corr[:, center], both[:, center]
-        position = {int(frame): row for row, frame in enumerate(frames.tolist())}
-        for column in range(corr.shape[1]):
-            if column == center:
-                continue
-            k = column - center
-            for row, frame in enumerate(frames.tolist()):
-                other = position.get(int(frame) - k)
-                if other is None or not both[row, column] or not both[other, column]:
-                    continue
-                out[row, column] = (corr[row, column] + corr[other, column]) / 2.0
-                ok[row, column] = True
-        return out, ok
 
     def _can_reframe(self) -> bool:
         """Marge de glissement entre les zones actives (verticale ou horizontale) : un recadrage propre à un plan
@@ -656,294 +591,120 @@ class _Context:
         return (abs((a2.top - a1.top) - (a2.bottom - a1.bottom)) > 2 * REFRAME_STEP
                 or abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP)
 
-    def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int,
-                       required: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
-                                                      tuple[float, float, Band]] | None:
-        """Matrices des images ``indices`` (un plan) avec un cadrage local. Décalage testé : translation admissible
-        de meilleure corrélation médiane parmi celles qui gardent informatives les paires ``required``. Décalages
-        rivaux : pour chaque paire, meilleur score informatif sur toutes les translations admissibles (un rival
-        n'est jamais effacé par la translation choisie). None si aucune translation admissible au décalage testé."""
+    def _shot_framing(self, shot: int, anchor: int, hint: tuple[np.ndarray, Signatures, int] | None
+                      ) -> tuple[float, float, float, Band, Band] | None:
+        """Cadrage propre du plan ``shot`` de Film 1 au décalage d'ancrage : (échelle, translation y, x, bande de
+        Film 1, bande de Film 2), ou None. Images fournies (``hint``) expliquées par la géométrie globale
+        (corrélation médiane ≥ ``REFRAME_TRIGGER``) : None, sans rien mémoriser. Sinon, estimation unique pour le
+        plan (mémorisée) sur ces images si elles sont assez nombreuses (``REFRAME_SAMPLE`` / 2 informatives), sinon
+        sur un bloc central du plan ; None si aucune similitude admissible ne gagne ``REFRAME_GAIN``."""
+        key = (shot, anchor)
+        if key in self._framings:
+            return self._framings[key]
+        n1 = len(self.film1)
+        start = int(self.cuts1[shot - 1]) if shot > 0 else 0
+        stop = int(self.cuts1[shot]) if shot < self.cuts1.size else n1
+        frames, window, lo_c = hint if hint is not None else (np.zeros(0, dtype=np.int64), None, 0)
+        if hint is not None and window is not None and self._explained(frames, anchor, window, lo_c):
+            return None                         # ces images-ci : géométrie globale (rien de mémorisé pour le plan)
+        if hint is None or int(np.sum(self.film1_informative[frames])) < REFRAME_SAMPLE // 2:
+            middle = (start + stop) // 2
+            frames = self.inside(np.arange(max(start, middle - REFRAME_SAMPLE // 2),
+                                           min(stop, middle + REFRAME_SAMPLE // 2)), anchor)
+            if frames.size == 0:
+                self._framings[key] = None
+                return None
+            window, lo_c = self._window(frames, anchor, 0)
+        assert window is not None
+        result = self._estimate_framing(frames, anchor, window, lo_c)
+        self._framings[key] = result
+        if result is not None:
+            self.reframed[key] = (result[0], result[1], result[2])
+        return result
+
+    def _explained(self, frames: np.ndarray, anchor: int, window: Signatures, lo_c: int) -> bool:
+        """Images comparables (au moins trois) expliquées par la géométrie globale au décalage d'ancrage :
+        corrélation médiane ≥ ``REFRAME_TRIGGER`` (aucun cadrage propre à chercher, aucune lecture de plus)."""
+        j = frames + anchor - lo_c
+        ok = (j >= 0) & (j < len(window))
+        if int(np.sum(ok)) < 3:
+            return False
+        g2, k2 = band_features_contrast(take(window, j[ok]), self.band.shifted(self.dy, self.dx))
+        corr = np.sum(self.film1_features[frames[ok]] * g2, axis=1)
+        comparable, _opposed = pair_masks(self.film1_contrast[frames[ok]], k2, corr)
+        return int(np.sum(comparable)) >= 3 and float(np.median(corr[comparable])) >= REFRAME_TRIGGER
+
+    def _estimate_framing(self, frames: np.ndarray, anchor: int, window: Signatures,
+                          lo_c: int) -> tuple[float, float, float, Band, Band] | None:
+        """Cadrage propre d'un plan : similitude (échelle ``s``, translation ``ty``, ``tx`` : point ``p`` de Film 1 ↔
+        ``s·p + t`` de Film 2 ; extraction 2.39 décalée ou zoomée dans l'image IMAX) maximisant la corrélation
+        médiane des paires comparables avec la géométrie globale, toutes gardées ; bandes bornées par les zones
+        actives des deux films ; recherche grossière puis affinée. None sans gain ``REFRAME_GAIN``."""
         assert self.area1 is not None and self.area2 is not None
         a1, a2 = self.area1, self.area2
-        sub = take(self.film1, indices)
+        sub = take(self.film1, frames)
+        j = frames + anchor - lo_c
+        ok = (j >= 0) & (j < len(window))
+        sub2 = take(window, np.clip(j, 0, len(window) - 1))     # images comparées seules (pas toute la fenêtre)
         margin_y, margin_x = cell_margins(self.film1, window)
         height, width = self.band.bottom - self.band.top, self.band.right - self.band.left
 
-        def candidate(sy: float, sx: float) -> tuple[float, float, Band, np.ndarray, np.ndarray, np.ndarray,
-                                                     np.ndarray] | None:
-            band = a1.intersect(a2.shifted(-sy, -sx), margin_y, margin_x)
-            if (band.empty or band.bottom - band.top < REFRAME_MIN_EXTENT * height
-                    or band.right - band.left < REFRAME_MIN_EXTENT * width):
-                return None
-            g1, c1 = band_features_contrast(sub, band)
-            g2, c2 = band_features_contrast(window, band.shifted(sy, sx))
-            return sy, sx, band, g1, c1, g2, c2
+        def evaluate(band1: Band, band2: Band) -> tuple[np.ndarray, np.ndarray]:
+            g1, k1 = band_features_contrast(sub, band1)
+            g2, k2 = band_features_contrast(sub2, band2)
+            corr = np.full(frames.size, -1.0, dtype=np.float32)
+            corr[ok] = np.sum(g1[ok] * g2[ok], axis=1)
+            comparable, _opposed = pair_masks(k1, k2, corr)
+            return corr, ok & comparable
 
-        def column(cand: tuple, at: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            _sy, _sx, _band, g1, c1, g2, c2 = cand
-            j = indices + at - lo_c
-            ok = (j >= 0) & (j < g2.shape[0])
-            jc = np.clip(j, 0, g2.shape[0] - 1)
-            corr = np.full(indices.size, -1.0, dtype=np.float32)
-            corr[ok] = np.sum(g1[ok] * g2[j[ok]], axis=1)
-            both, one = pair_masks(c1, c2[jc], corr)
-            return corr, ok & both, ok & one
-
-        def grid(first: float, second: float, centre: float, step: float = REFRAME_STEP) -> list[float]:
-            low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
-            return sorted({round(float(v), 4) for v in np.arange(low, high + step / 2, step)} | {round(centre, 4)})
-
-        horizontal = abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP
-
-        def fine(cand: tuple) -> list:
-            """Translations voisines au pas cinq fois plus fin (aucune colonne désavantagée par la grille)."""
-            step = REFRAME_STEP / 5
-            out = [found for k in range(-4, 5) if k
-                   if (found := candidate(round(cand[0] + k * step, 5), cand[1])) is not None]
-            if horizontal:
-                out += [found for k in range(-4, 5) if k
-                        if (found := candidate(cand[0], round(cand[1] + k * step, 5))) is not None]
-            return out
-
-        def best(cands: list, at: int, imposed: np.ndarray | None) -> tuple | None:
-            # Classement sur un masque fixe (paires imposées au décalage testé), sinon sur les paires comparables.
-            top = None
-            for cand in cands:
-                c, b, o = column(cand, at)
-                if imposed is not None and not bool(np.all(b[imposed])):
-                    continue
-                if not np.any(b):
-                    continue
-                value = float(np.median(c[imposed] if imposed is not None else c[b]))
-                if top is None or value > top[0]:
-                    top = (value, cand, c, b, o)
-            return top
-
-        # Translations admissibles indépendantes du décalage testé : verticales au pas fin, et grille complète
-        # (verticale × horizontale, pas double) quand les zones actives laissent aussi glisser horizontalement.
-        # Géométrie globale exacte (bande et translation de la vérification globale) parmi les candidats.
-        cands: list = [(self.dy, self.dx, self.band, *band_features_contrast(sub, self.band),
-                        *band_features_contrast(window, self.band.shifted(self.dy, self.dx)))]
-        cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
-                  if (cand := candidate(sy, self.dx)) is not None]
-        if horizontal:
-            cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy, 2 * REFRAME_STEP)
-                      for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx, 2 * REFRAME_STEP)
-                      if (cand := candidate(sy, sx)) is not None]
-        top = best(cands, offset, required)
-        if top is None:
+        base, kept = evaluate(self.band, self.band.shifted(self.dy, self.dx))
+        if not np.any(kept):
             return None
-        top = best([top[1], *fine(top[1])], offset, required) or top
-        width_cols = 2 * spread + 1
-        corr = np.full((indices.size, width_cols), -1.0, dtype=np.float32)
-        both = np.zeros((indices.size, width_cols), dtype=bool)
-        one = np.zeros((indices.size, width_cols), dtype=bool)
-        corr[:, spread], both[:, spread], one[:, spread] = top[2], top[3], top[4]
-        for col, shift in enumerate(range(-spread, spread + 1)):
-            if shift == 0:
-                continue
-            best_c = np.full(indices.size, -1.0, dtype=np.float32)
-            best_b = np.zeros(indices.size, dtype=bool)
-            any_one = np.zeros(indices.size, dtype=bool)
-            rival = best(cands, offset + shift, None)
-            for cand in cands + (fine(rival[1]) if rival is not None else []):
-                c, b, o = column(cand, offset + shift)
-                better = b & (~best_b | (c > best_c))
-                best_c = np.where(better, c, best_c)
-                best_b |= b
-                any_one |= o
-            corr[:, col], both[:, col], one[:, col] = best_c, best_b, ~best_b & any_one
-        sy, sx, band = top[1][0], top[1][1], top[1][2]
-        return corr, both, one, (sy, sx, band)
+        reference = float(np.median(base[kept]))
+        if reference >= REFRAME_TRIGGER:
+            return None
+        cache: dict[tuple[float, float, float], tuple[float, Band, Band] | None] = {}
 
-    def _static(self, i: int, bands: dict[int, Band] | None = None) -> bool:
-        """Images ``i - 1`` et ``i`` de Film 1 identiques sur chacune des bandes réellement comparées (celle de
-        ``i - 1`` et celle de ``i`` : locale si recadrée, sinon globale)."""
-        if not 0 < i < len(self.film1):
-            return False
-        bands = self._frame_bands if bands is None else bands
-        for band in {bands.get(i - 1), bands.get(i)}:
-            if band is None:
-                if not bool(self.film1_static[i]):
-                    return False
-                continue
-            features, _informative = band_features(take(self.film1, np.asarray([i - 1, i])), band)
-            if float(np.dot(features[0], features[1])) < STATIC_CORRELATION:
-                return False
-        return True
+        def score(scale: float, ty: float, tx: float) -> tuple[float, Band, Band] | None:
+            key = (round(scale, 5), round(ty, 5), round(tx, 5))
+            if key in cache:
+                return cache[key]
+            back = Band((a2.top - ty) / scale, (a2.bottom - ty) / scale, (a2.left - tx) / scale,
+                        (a2.right - tx) / scale)
+            band1 = a1.intersect(back, margin_y, margin_x)
+            result = None
+            if not (band1.empty or band1.bottom - band1.top < REFRAME_MIN_EXTENT * height
+                    or band1.right - band1.left < REFRAME_MIN_EXTENT * width):
+                band2 = Band(band1.top * scale + ty, band1.bottom * scale + ty, band1.left * scale + tx,
+                             band1.right * scale + tx)
+                corr, comparable = evaluate(band1, band2)
+                if bool(np.all(comparable[kept])):      # une paire comparable ne doit pas sortir du contrôle
+                    result = (float(np.median(corr[kept])), band1, band2)
+            cache[key] = result
+            return result
 
-    def confirm_content(self, indices: np.ndarray, offset: int) -> str:
-        """« ok » : chaque paire informative corrélée ; « neutral » : aucune image informative d'aucun côté ;
-        « fail » : désaccord (une seule image informative, ou corrélation insuffisante)."""
-        indices = self.inside(indices, offset)
-        if indices.size == 0:
-            return "fail"
-        corr, both, one = self.checked_scores(indices, offset, 0)
-        if np.any(one[:, 0]):
-            return "fail"
-        if not np.any(both[:, 0]):
-            return "neutral"
-        return "ok" if bool(np.all(corr[both[:, 0], 0] >= CONFIRM_CORRELATION)) else "fail"
-
-    def confirm_position(self, i: int, offset: int, lo: int | None = None, hi: int | None = None) -> bool:
-        """Point de changement à l'image ``i`` de Film 1 (image ``j = i + offset`` de Film 2).
-
-        Contenu : chaque paire d'images informatives autour du point corrélée (aucune image informative d'un
-        seul côté). Position : la bascule ``i - 1 | i`` de Film 1 tombe sur la bascule ``j - 1 | j`` de Film 2
-        — l'image ``i - 1`` s'apparie strictement mieux à ``j - 1`` qu'aux images ``j, j + 1…`` qui suivent la
-        bascule, l'image ``i`` mieux à ``j`` qu'aux images ``j - 1, j - 2…`` qui la précèdent, avec une avance
-        au-delà du bruit (écart entre les deux films à la meilleure image). Égalité admise
-        si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans effet). Un
-        voisin meilleur au-delà du bruit (écart entre les deux films à la meilleure image) contredit la position :
-        refus. En deçà (plan presque fixe, métadonnées changeant à chaque image), ou si un voisin dans le film
-        n'est pas comparable (comparaison inconnue), la continuité tranche (:meth:`_continuity`) : contredite,
-        refus ; établie, confirmée ; inobservable (fondu, image très sombre), placée selon le décalage du segment
-        et signalée (``unobservable``). Candidat hors du film : impossible, ignoré. Aucune image
-        informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` : bornes du segment du
-        point (les images d'un autre segment relèvent d'un autre décalage)."""
-        first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
-        last = i + POSITION_RADIUS if hi is None else min(hi, i + POSITION_RADIUS)
-        # Fenêtre élargie d'une image de chaque côté, lue une seule fois : les rivaux symétriques des images
-        # i − 1 (i − 2 … i − 1 − rayon) et i (i + 1 … i + rayon) y sont ; contenu contrôlé sur ses lignes
-        # centrales, puis position comparée sur toute la fenêtre.
-        wide = self.inside(np.arange(i - POSITION_RADIUS - 1 if lo is None else max(lo, i - POSITION_RADIUS - 1),
-                                     i + POSITION_RADIUS + 1 if hi is None else min(hi, i + POSITION_RADIUS + 1)),
-                           offset)
-        rows = (wide >= first) & (wide < last)
-        if not np.any(rows):
-            return False
-        corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS)
-        center = POSITION_RADIUS
-        if np.any(one[rows, center]):
-            return False
-        mask = rows & both[:, center]
-        if not np.any(mask):
-            return True
-        if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
-            return False
-        if self._can_reframe():
-            # Position : chaque décalage à son meilleur cadrage admissible (même fenêtre, déjà lue).
-            corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS, compare=True)
-        indices = wide
-        rival_corr, rival_ok = self._symmetric(corr, both, wide, center)
-        if self._static(i):
-            return True
-        unresolved = False
-        columns = np.arange(2 * POSITION_RADIUS + 1)
-        for frame, crossing in ((i - 1, columns[center + 1:]), (i, columns[:center])):
-            row = np.flatnonzero(indices == frame)
-            if row.size == 0 or not both[row[0], center]:
-                continue
-            targets = frame + offset + crossing - center
-            possible = crossing[(targets >= 0) & (targets < self.film2.frames)]
-            here = float(corr[row[0], center])
-            # Deux lectures des rivaux : brute (une permutation d'images saute aux yeux) et symétrique (biais de
-            # netteté d'un fondu compensé). Contredite si l'une dépasse le bruit ; établie si les deux restent
-            # derrière au-delà du bruit. Rival en désaccord établi (informative face à plate) : éliminé ; ni
-            # comparable ni en désaccord : comparaison inconnue.
-            leads = []
-            for values, ok in ((corr, both), (rival_corr, rival_ok)):
-                comparable = possible[ok[row[0], possible]]
-                if np.any(~ok[row[0], possible] & ~one[row[0], possible]):
-                    unresolved = True
-                if comparable.size == 0:
-                    continue
-                rival = float(values[row[0], comparable].max())
-                noise = max(POSITION_NOISE, 1.0 - max(rival, here))
-                if rival - here > noise:
-                    return False                # un voisin nettement meilleur : position contredite
-                leads.append(here - rival > max(POSITION_LEAD, noise))
-            if leads and all(leads) and len(leads) == 2:
-                continue                        # avance au-delà du bruit dans les deux lectures : établie
-            if not leads and bool(np.all(one[row[0], possible])):
-                continue                        # tous les rivaux en désaccord établi : éliminés
-            if possible.size:
-                unresolved = True
-        if not unresolved:
-            return True
-        verdict = self._continuity(i, offset, lo, hi)
-        if verdict == "contradicted":
-            return False
-        if verdict == "unobservable":
-            self.unobservable.add(i)            # signalé au journal : placé selon le décalage du segment
-        return True
-
-    def _continuity(self, i: int, offset: int, lo: int | None, hi: int | None) -> str:
-        """Continuité du décalage ``offset`` autour de l'image ``i`` : jusqu'à ``CONTINUITY`` images de chaque côté,
-        dans le segment et dans le plan de Film 1 (un glissement persiste jusqu'à la coupe). Pour chaque voisin
-        ±1…±``POSITION_RADIUS`` (candidats hors du film ignorés, voisins en désaccord établi écartés) :
-
-        - « contradicted » : un voisin bat le décalage en moyenne sur un côté, au-delà de deux erreurs types
-          (glissement) ;
-        - « established » : le décalage bat chaque voisin sur les deux côtés réunis, au-delà de deux erreurs types
-          (au moins ``FRAME_RUN`` paires) ; côtés vides, fixes ou sans image comparable : sans effet ;
-        - « unobservable » sinon (fondu, image très sombre, comparaison inconnue) : ni preuve ni contradiction."""
-        n1 = len(self.film1)
-
-        def shot(frame: int) -> tuple[int, int]:
-            k = int(np.searchsorted(self.cuts1, frame, side="right"))
-            return (int(self.cuts1[k - 1]) if k > 0 else 0), (int(self.cuts1[k]) if k < self.cuts1.size else n1)
-
-        def significant(diff: np.ndarray) -> float:
-            deviation = float(diff.std(ddof=1)) if diff.size > 1 else 0.0
-            return max(POSITION_LEAD, 2.0 * deviation / np.sqrt(diff.size))
-
-        left_shot, right_shot = shot(max(0, i - 1)), shot(i)
-        sides = (
-            (max(0 if lo is None else lo, i - CONTINUITY, left_shot[0]), i),
-            (i, min(n1 if hi is None else hi, i + CONTINUITY, right_shot[1])),
-        )
-        center = POSITION_RADIUS
-        pooled: dict[int, list[np.ndarray]] = {}
-        settled: set[int] = set()
-        expected: set[int] = set()
-        unknown = False
-        for first, last in sides:
-            idx = self.inside(np.arange(first, last), offset)
-            if idx.size < 2:
-                continue                        # côté vide : bord de segment, confirmé par sa jonction
-            corr, both, one = self.checked_scores(idx, offset, POSITION_RADIUS, compare=True)
-            bands = dict(self._frame_bands)
-            if all(self._static(int(frame), bands) for frame in idx[1:]):
-                continue                        # côté fixe sur les bandes comparées : position sans effet
-            if not np.any(both[:, center]):
-                continue                        # côté sans image comparable (noir, uniforme) : sans effet
-            rival_corr, rival_ok = self._symmetric(corr, both, idx, center)
-            for column in range(2 * POSITION_RADIUS + 1):
-                if column == center:
-                    continue
-                targets = idx + offset + column - center
-                inside = (targets >= 0) & (targets < self.film2.frames)
-                if not np.any(inside):
-                    continue                    # candidat hors du film : impossible
-                expected.add(column)
-                pairs = inside & both[:, center] & rival_ok[:, column]
-                if np.any(inside & both[:, center] & one[:, column]):
-                    settled.add(column)         # désaccord établi avec ce voisin sur au moins une image
-                if not np.any(pairs):
-                    unknown = unknown or column not in settled
-                    continue
-                diff = corr[pairs, center].astype(np.float64) - rival_corr[pairs, column]
-                if diff.size >= FRAME_RUN and float(diff.mean()) < -significant(diff):
-                    return "contradicted"       # voisin significativement meilleur d'un côté : glissement
-                pooled.setdefault(column, []).append(diff)
-        if not expected:
-            return "established"                # chaque côté vide, fixe ou sans image comparable : sans effet
-        if unknown:
-            return "unobservable"
-        for column in expected:
-            if column not in pooled:
-                if column in settled:
-                    continue                    # écarté par désaccord établi
-                return "unobservable"
-            diff = np.concatenate(pooled[column])
-            if diff.size < FRAME_RUN:
-                if column in settled:
-                    continue
-                return "unobservable"
-            if float(diff.mean()) <= significant(diff):
-                return "unobservable"
-        return "established"
+        best: tuple[float, float, float, float, Band, Band] | None = None
+        for scale in np.arange(REFRAME_SCALES[0], REFRAME_SCALES[1] + 1e-9, 0.05):
+            for ty in np.arange(-0.2, 0.2001, 0.04):
+                for tx in np.arange(-0.2, 0.2001, 0.04):
+                    found = score(float(scale), float(ty), float(tx))
+                    if found is not None and (best is None or found[0] > best[0]):
+                        best = (found[0], float(scale), float(ty), float(tx), found[1], found[2])
+        if best is None:
+            return None
+        steps = (0.025, 0.02, 0.02)
+        for _level in range(7):                     # affinage : voisinage 3 × 3 × 3, pas divisés par deux
+            centre = best
+            for ds in (-steps[0], 0.0, steps[0]):
+                for dty in (-steps[1], 0.0, steps[1]):
+                    for dtx in (-steps[2], 0.0, steps[2]):
+                        found = score(centre[1] + ds, centre[2] + dty, centre[3] + dtx)
+                        if found is not None and found[0] > best[0]:
+                            best = (found[0], centre[1] + ds, centre[2] + dty, centre[3] + dtx, found[1], found[2])
+            steps = (steps[0] / 2, steps[1] / 2, steps[2] / 2)
+        if best[0] < reference + REFRAME_GAIN:
+            return None
+        return best[1], best[2], best[3], best[4], best[5]
 
     def inside(self, indices: np.ndarray, offset: int) -> np.ndarray:
         indices = np.asarray(indices, dtype=np.int64)
@@ -951,28 +712,78 @@ class _Context:
         return indices[(indices + offset >= 0) & (indices + offset < self.film2.frames)]
 
 
-def _isotonic(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Régression isotone croissante (PAV) ; rend (x des blocs, valeurs des blocs)."""
-    order = np.argsort(x, kind="stable")
-    xs, ys = x[order].astype(np.float64), y[order].astype(np.float64)
-    values: list[float] = []
-    weights: list[float] = []
-    lefts: list[float] = []
-    rights: list[float] = []
-    for xv, yv in zip(xs, ys):
-        values.append(yv)
-        weights.append(1.0)
-        lefts.append(xv)
-        rights.append(xv)
-        while len(values) > 1 and values[-2] > values[-1]:
-            w = weights[-2] + weights[-1]
-            v = (values[-2] * weights[-2] + values[-1] * weights[-1]) / w
-            values[-2:] = [v]
-            weights[-2:] = [w]
-            lefts[-2:] = [lefts[-2]]
-            rights[-2:] = [rights[-1]]
-    centers = (np.asarray(lefts) + np.asarray(rights)) / 2.0
-    return centers, np.asarray(values)
+@dataclass
+class ShotReport:
+    """Validation plan par plan : plans mesurés (pondérés par leur durée), part concordante, plans non concordants
+    et plans où un décalage voisin fait nettement mieux (début, fin en images de Film 1)."""
+
+    measured: int = 0
+    share: float = 1.0
+    discordant: list[tuple[int, int]] = field(default_factory=list)
+    better: list[tuple[int, int]] = field(default_factory=list)
+
+
+def _validate_shots(ctx: _Context, built: list[Segment], every: int) -> ShotReport:
+    """Chaque plan de Film 1 (partie d'un segment) : bloc central d'au plus ``SHOT_SAMPLE`` images comparé à
+    Film 2 au décalage du segment (cadrage propre au plan compris). Concordant si la corrélation médiane des
+    paires comparables atteint ``CONFIRM_CORRELATION`` ; « décalage voisin » si un décalage ±1…±rayon fait mieux
+    de plus de ``SLIP_EFFECT`` en médiane tout en concordant ; sans paire comparable (noir, uniforme) : non
+    mesuré. Part concordante pondérée par la durée des plans. Lecture par fenêtres (chacune un décodage) : plans
+    échantillonnés, un toutes les ``every`` images de Film 1, dans la moitié du budget restant."""
+    n1 = len(ctx.film1)
+    bounds = np.unique(np.concatenate([ctx.cuts1, [0, n1]]))
+    parts: list[tuple[Segment, int, int]] = []
+    for seg in built:
+        inside = bounds[(bounds > seg.film1_start) & (bounds < seg.film1_end)]
+        edges = np.concatenate([[seg.film1_start], inside, [seg.film1_end]])
+        parts += [(seg, a, b) for a, b in zip(edges[:-1].tolist(), edges[1:].tolist())]
+    if ctx.film2.full is None and parts:
+        ends = np.asarray([b for _seg, _a, b in parts])
+        end = int(ends[-1])
+        times = np.arange(min(every, end) // 2, end, max(1, every))    # au moins le milieu d'un film court
+        chosen = np.unique(np.searchsorted(ends, times, side="right"))
+        chosen = chosen[chosen < len(parts)]
+        limit = max(1, ctx.film2.remaining // (2 * (SHOT_SAMPLE + 2 * POSITION_RADIUS)))
+        if chosen.size > limit:
+            chosen = np.unique(chosen[np.linspace(0, chosen.size - 1, limit).round().astype(np.int64)])
+        parts = [parts[k] for k in chosen.tolist()]
+    center = POSITION_RADIUS
+    report = ShotReport()
+    total = agreeing = 0
+    for seg, a, b in parts:
+        middle = (a + b) // 2
+        sample = ctx.inside(np.arange(max(a, middle - SHOT_SAMPLE // 2), min(b, middle + SHOT_SAMPLE // 2)),
+                            seg.offset)
+        if sample.size == 0:
+            continue
+        corr, both, _one = ctx.checked_scores(sample, seg.offset, POSITION_RADIUS)
+        comparable = both[:, center]
+        if not np.any(comparable):
+            continue
+        here = float(np.median(corr[comparable, center]))
+        weight = b - a
+        total += weight
+        report.measured += 1
+        if here >= CONFIRM_CORRELATION:
+            agreeing += weight
+        else:
+            report.discordant.append((a, b))
+        for column in range(2 * POSITION_RADIUS + 1):
+            pairs = comparable & both[:, column]
+            if column == center or not np.any(pairs):
+                continue
+            rival = float(np.median(corr[pairs, column]))
+            if rival >= CONFIRM_CORRELATION and rival - here > SLIP_EFFECT:
+                report.better.append((a, b))
+                break
+    report.share = agreeing / total if total else 1.0
+    return report
+
+
+def _ranges(spans: list[tuple[int, int]], limit: int = 6) -> str:
+    """Plages d'images lisibles au journal (les premières seulement)."""
+    shown = ", ".join(f"{a}–{b - 1}" for a, b in spans[:limit])
+    return shown + (" …" if len(spans) > limit else "")
 
 
 # --- Ruptures et passe image par image ------------------------------------------------------------------
@@ -996,7 +807,7 @@ def _refine_junction(ctx: _Context, lo: int, hi: int, da: int, db: int) -> tuple
         values = np.full(indices.size, -1.0)
         valid = ctx.inside(indices, offset)
         if valid.size:
-            corr, both, one = ctx.checked_scores(valid, offset, 0, compare=True)
+            corr, both, one = ctx.checked_scores(valid, offset, 0)
             values[np.searchsorted(indices, valid)] = np.where(both[:, 0], corr[:, 0],
                                                                np.where(one[:, 0], -1.0, 0.0))
         scores[offset] = values
@@ -1023,8 +834,12 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
         center = both[:, FRAME_BAND]
         # Avance seulement là où l'image du décalage courant est informative (sinon -inf − -inf).
         lead = np.where(center, masked.max(axis=1) - np.where(center, masked[:, FRAME_BAND], 0.0), 0.0)
+        # Écart retenu seulement si le nouveau décalage correspond vraiment (≥ CONFIRM_CORRELATION) : dans un
+        # passage au contenu différent, toutes les corrélations sont basses et un « meilleur » décalage de hasard
+        # ne découpe pas le segment.
         strong[start:start + chunk.size] = (both[:, FRAME_BAND] & (best[start:start + chunk.size] != 0)
-                                            & (lead > 0.02) & ~ctx.film1_static[chunk])
+                                            & (lead > SLIP_EFFECT) & (masked.max(axis=1) >= CONFIRM_CORRELATION)
+                                            & ~ctx.film1_static[chunk])
     out: list[tuple[int, int, int]] = []
     k = 0
     while k < indices.size:
@@ -1035,24 +850,29 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
         while end + 1 < indices.size and strong[end + 1] and best[end + 1] == best[k]:
             end += 1
         if end - k + 1 >= FRAME_RUN:
-            if _framed_lead(ctx, indices[k:end + 1], segment.offset, segment.offset + int(best[k])):
-                out.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
+            run = (int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k]))
+            framed = (run[0] - segment.film1_start >= FRAME_BAND and segment.film1_end - run[1] >= FRAME_BAND)
+            if not _framed_lead(ctx, indices[k:end + 1], segment.offset, run[2]):
+                pass                            # écart apparent non confirmé (biais de fondu, cadrage) : ignoré
+            elif framed:
+                ctx.excursions.append(run)      # encadré par le décalage du segment : excursion locale, signalée
             else:
-                ctx.unconfirmed.append((int(indices[k]), int(indices[end]) + 1, segment.offset + int(best[k])))
+                out.append(run)
+
         k = end + 1
     return out
 
 
 def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> bool:
-    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) : ``other = offset + k`` garde
+    """Écart local confirmé avec le cadrage propre du plan (ancré au décalage du segment) : ``other = offset + k`` garde
     son avance sur ``offset`` pour chaque image comparable du passage. Lecture symétrique quand l'image ``r − k``
     appartient au même passage (moyenne de ``r`` et ``r − k`` au décalage ``other`` : biais de netteté d'un fondu
     compensé), lecture brute aux bords et dans un passage plus court que ``|k|``."""
     k = other - offset
     rows = np.union1d(run, run - k)
     rows = rows[(rows >= 0) & (rows < len(ctx.film1))]
-    base, base_both, _one = ctx.checked_scores(run, offset, 0, compare=True)
-    alt, alt_both, _alt_one = ctx.checked_scores(rows, other, 0, compare=True)
+    base, base_both, _one = ctx.checked_scores(run, offset, 0)
+    alt, alt_both, _alt_one = ctx.checked_scores(rows, other, 0, anchor=offset)   # cadrage du plan au segment
     position = {int(frame): n for n, frame in enumerate(rows.tolist())}
     members = {int(frame) for frame in run.tolist()}
     leads = []
@@ -1065,7 +885,7 @@ def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> boo
         if b is not None and bool(alt_both[b, 0]):
             value = (value + float(alt[b, 0])) / 2.0
         leads.append(value - float(base[n, 0]))
-    return bool(leads) and bool(np.all(np.asarray(leads) > 0.02))
+    return bool(leads) and bool(np.all(np.asarray(leads) > SLIP_EFFECT))
 
 
 # --- Point d'entrée ------------------------------------------------------------------------------------
@@ -1117,114 +937,75 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     _refine_all(ctx, raw)
     built = _bounded(raw, n2)
     full_at_build = film2.full is not None
+    ctx.exhaustive = full_at_build
     if full_at_build:
         built = _frame_refine(ctx, built, n2, say)
     _check_order(built)
 
-    # Marge entre chemins concurrents (max-marginales, divergences partielles comprises) : segment ambigu si
-    # une carte qui évite son décalage sur un seul de ses plans s'approche de la meilleure.
-    alternatives = model.alternatives(path)
-    ambiguous: list[Segment] = []
-    for _a, _b, d, k0, k1 in runs:
-        if d is None:
-            continue
-        if best_score - float(alternatives[k0:k1].max()) < AMBIGUITY_MARGIN:
-            ambiguous.extend(seg for seg in built if seg.offset == d and seg.film1_start < bounds[k1]
-                             and seg.film1_end > bounds[k0])
-
-    exhaustive = full_at_build
-    content: list[tuple[int, int, int]] = []        # fenêtres de contenu (début, fin, décalage)
-    positions: list[tuple[int, int, int, int]] = []  # points à confirmer par l'image (i, décalage, segment)
-    on_cut: list[tuple[int, int, int, int]] = []     # points sur une coupe commune (contenu à établir)
-    for seg in built:
-        content.append((seg.film1_start, min(seg.film1_end, seg.film1_start + 6), seg.offset))
-        content.append((max(seg.film1_start, seg.film1_end - 6), seg.film1_end, seg.offset))
-        points = metadata.change_points[(metadata.change_points >= seg.film2_start)
-                                        & (metadata.change_points < seg.film2_end)]
-        individual = exhaustive or seg in ambiguous
-        for j in points.tolist():
-            i = j - seg.offset
-            if i == seg.film1_start:
-                continue  # bord du segment : jonction affinée par l'image, fenêtre de contenu ci-dessus
-            if film1_cut[i] and reference_has(reference, j) and not individual:
-                on_cut.append((i, seg.offset, seg.film1_start, seg.film1_end))
-            else:
-                positions.append((i, seg.offset, seg.film1_start, seg.film1_end))
-    step = max(1, int(SAMPLE_SECONDS * fps))
-    for t in range(0, n1, step):
-        holder = next((item for item in built if item.film1_start <= t < item.film1_end), None)
-        if holder is not None:
-            k = int(np.searchsorted(cuts1, t))
-            begin = int(cuts1[k]) if k < cuts1.size and cuts1[k] < holder.film1_end else t
-            content.append((begin, min(holder.film1_end, begin + 6), holder.offset))
-
-    confirmed = np.zeros(n1, dtype=bool)
-    for lo, hi, d in _merge(content):
-        result = ctx.confirm_content(np.arange(lo, hi), d)
-        if result == "fail":
-            raise AlignmentError(translate_text(
-                "Images {lo}–{last} de Film 1 : contenu différent de Film 2 (décalage {d}).",
-                lo=lo, last=hi - 1, d=f"{d:+d}"),
-                                 ((lo, hi),))
-        if result == "ok":
-            confirmed[lo:hi] = True
-    for i, d, seg_lo, seg_hi in positions:
-        if not ctx.confirm_position(i, d, seg_lo, seg_hi):
-            raise AlignmentError(translate_text(
-                "Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image (décalage {d}).",
-                i=i, d=f"{d:+d}"), ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
-        confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
-    content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
-    if ctx.unconfirmed:
+    # Validation plan par plan : un échantillon d'images de chaque plan au décalage de son segment (cadrage propre
+    # du plan compris). Refus seulement si les films ne se correspondent pas globalement ; tout écart local est
+    # signalé.
+    report = _validate_shots(ctx, built, max(1, int(SAMPLE_SECONDS * fps)))
+    if report.better and film2.full is None:
+        film2.load_full("décalage voisin plus net sur {count} plan(s) : vérification image par image",
+                        count=len(report.better))
+    if film2.full is not None and not full_at_build:
+        # Passe complète chargée en cours de validation : glissements découpés par le balayage, validation reprise.
+        say(translate_text("Vérification reprise sur la passe complète de Film 2."))
+        return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
+    if report.measured and report.share < MIN_CONCORDANCE:
+        raise AlignmentError(translate_text(
+            "Films non concordants : {percent} % seulement des plans vérifiés correspondent à l'image au décalage "
+            "trouvé (plans {ranges}).", percent=f"{100 * report.share:.0f}", ranges=_ranges(report.discordant)),
+            tuple(report.discordant[:20]))
+    if report.measured:
+        say(translate_text("Concordance de l'image : {percent} % des plans vérifiés ({count} plans).",
+                           percent=f"{100 * report.share:.0f}", count=report.measured))
+    else:
         say("[WARN] " + translate_text(
-            "{count} écart(s) local(aux) apparent(s) non confirmé(s) par l'image (biais de fondu probable) : "
-            "décalage du passage conservé (images de Film 1 : {ranges}).", count=len(ctx.unconfirmed),
-            ranges=", ".join(f"{a}–{b - 1} ({d:+d})" for a, b, d in ctx.unconfirmed[:6])
-            + (" …" if len(ctx.unconfirmed) > 6 else "")))
-    if ctx.unobservable:
-        points = sorted(ctx.unobservable)
+            "Aucun plan vérifiable sur l'image (images noires ou uniformes) : correspondance établie par les coupes."))
+    if report.discordant:
         say("[WARN] " + translate_text(
-            "{count} point(s) de changement dans des passages où l'image ne situe pas la position (fondu, image très "
-            "sombre ou plate) : placés selon le décalage de leur segment, sans contradiction relevée (images de "
-            "Film 1 : {frames}).", count=len(points),
-            frames=", ".join(str(v) for v in points[:8]) + (" …" if len(points) > 8 else "")))
+            "{count} plan(s) ou passage(s) non concordant(s) (version propre à un master, fondu, image très sombre) : "
+            "métadonnées selon le décalage de leur segment (images de Film 1 : {ranges}).",
+            count=len(report.discordant), ranges=_ranges(report.discordant)))
+    if report.better:
+        say("[WARN] " + translate_text(
+            "{count} plan(s) où un décalage voisin semble plus net (minutage des masters) : décalage du segment "
+            "conservé (images de Film 1 : {ranges}).", count=len(report.better), ranges=_ranges(report.better)))
+    if ctx.excursions:
+        say("[WARN] " + translate_text(
+            "{count} passage(s) où les deux films diffèrent localement de quelques images puis se réalignent "
+            "(minutage des masters) : décalage du segment conservé (images de Film 1 : {ranges}).",
+            count=len(ctx.excursions), ranges=_ranges([(a, b) for a, b, _d in ctx.excursions])))
     if ctx.reframed:
-        largest = max(max(abs(sy - ctx.dy), abs(sx - ctx.dx)) for sy, sx in ctx.reframed.values()) * film1.width
+        largest = max(max(abs(ty - ctx.dy), abs(tx - ctx.dx)) for _s, ty, tx in ctx.reframed.values()) * film1.width
         say(translate_text(
-            "{count} plan(s) cadré(s) autrement dans les deux films (translation propre au plan, jusqu'à {pixels} "
-            "px) : contenu vérifié sur leur cadrage.", count=len({shot for shot, _d in ctx.reframed}),
-            pixels=f"{largest:.0f}"))
+            "{count} plan(s) cadré(s) autrement dans les deux films (cadrage propre au plan : décalage jusqu'à "
+            "{pixels} px, échelle {scales}) : contenu vérifié sur leur cadrage.",
+            count=len({shot for shot, _d in ctx.reframed}), pixels=f"{largest:.0f}",
+            scales="–".join(f"{v:.2f}" for v in (min(f[0] for f in ctx.reframed.values()),
+                                                  max(f[0] for f in ctx.reframed.values())))))
     covered = np.zeros(n1, dtype=bool)
     for seg in built:
         covered[seg.film1_start:seg.film1_end] = True
     uncovered = _uncovered(ctx, covered, built)
-    if film2.full is not None and not full_at_build:
-        # Passe complète déclenchée en cours de vérification (dernière lecture de Film 2 comprise) : tout le
-        # parcours exhaustif est repris.
-        say(translate_text("Vérification reprise sur la passe complète de Film 2."))
-        return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
     used = np.zeros(n2, dtype=bool)
     for seg in built:
         used[seg.film2_start:seg.film2_end] = True
     stats = {
         "film1_cuts": int(cuts1.size), "reference_cuts": int(reference.size), "segments": len(built),
-        "change_points": int(metadata.change_points.size), "points_on_cuts": len(on_cut),
-        "points_by_image": len(positions), "ambiguous_segments": len(ambiguous), "content_checked": content_checked,
+        "change_points": int(metadata.change_points.size), "shots_checked": report.measured,
+        "shot_concordance": report.share, "discordant_shots": len(report.discordant),
+        "better_offset_shots": len(report.better),
         "film2_decoded": film2.decoded, "film2_full": film2.full is not None, "film2_full_reason": film2.full_reason,
         "exhaustive": full_at_build,
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
         "reframed_shots": len({shot for shot, _d in ctx.reframed}),
-        "unobservable_points": len(ctx.unobservable),
-        "unconfirmed_deviations": len(ctx.unconfirmed),
+        "excursions": len(ctx.excursions),
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
                         _expected_cuts(metadata, reference, built, uncovered, n1), stats)
-
-
-def reference_has(reference: np.ndarray, j: int) -> bool:
-    """L'image ``j`` de Film 2 est une coupe de référence."""
-    index = int(np.searchsorted(reference, j))
-    return index < reference.size and int(reference[index]) == j
 
 
 def _absorb_blank(runs: list[tuple[int, int, int | None]], informative: np.ndarray) -> list[list[int]]:
@@ -1345,7 +1126,7 @@ def _frame_refine(ctx: _Context, built: list[Segment], n2: int, say: Callable[[s
     for _round in range(8):
         changed = False
         out: list[Segment] = []
-        ctx.unconfirmed = []                    # seuls les écarts non confirmés du découpage final sont signalés
+        ctx.excursions = []
         for seg in built:
             gaps = _frame_scan(ctx, seg)
             if not gaps:
@@ -1407,96 +1188,6 @@ def _runs(mask: np.ndarray) -> tuple[tuple[int, int], ...]:
         return ()
     edges = np.flatnonzero(np.diff(np.concatenate([[0], mask.astype(np.int8), [0]])))
     return tuple((int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2]))
-
-
-def _merge(windows: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
-    """Fenêtres ``(début, fin, décalage)`` regroupées si elles se touchent (≤ 48 images)."""
-    merged: list[list[int]] = []
-    for lo, hi, d in sorted(windows):
-        if hi <= lo:
-            continue
-        if merged and merged[-1][2] == d and lo <= merged[-1][1] and hi - merged[-1][0] <= 48:
-            merged[-1][1] = max(merged[-1][1], hi)
-        else:
-            merged.append([lo, hi, d])
-    return [(lo, hi, d) for lo, hi, d in merged]
-
-
-def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, n1: int,
-                     on_cut: list[tuple[int, int, int, int]], confirmed: np.ndarray,
-                     say: Callable[[str], None]) -> int:
-    """Contenu des plans dont le début (point de changement) est sur une coupe commune : relation de luminance
-    (moyenne et pic) **étalonnée uniquement sur les plans confirmés par l'image**, jamais réajustée sur ceux
-    qu'elle valide ; hors tolérance ou sans information → position et contenu confirmés par l'image ;
-    étalonnage impossible (moins de ``MIN_CALIBRATION`` plans) → passe complète de Film 2."""
-    if not on_cut:
-        return 0
-    bounds = np.append(cuts1, n1)
-
-    def shot(i: int) -> tuple[int, int]:
-        k = int(np.searchsorted(bounds, i, side="right")) - 1
-        return int(bounds[k]), int(bounds[k + 1])
-
-    def film1_levels(i: int) -> tuple[float, float]:
-        a, b = shot(i)
-        return float(np.mean(ctx.film1.mean[a:b])), float(np.max(ctx.film1.peak[a:b]))
-
-    def film2_levels(i: int, d: int) -> tuple[float, float] | None:
-        if not metadata.luminance.size or not metadata.peak.size:
-            return None
-        a, b = shot(i)
-        lo, hi = max(0, a + d), min(metadata.frames, b + d)
-        if hi <= lo:
-            return None
-        return float(np.mean(metadata.luminance[lo:hi])), float(np.max(metadata.peak[lo:hi]))
-
-    def informative(i: int) -> bool:
-        a, b = shot(i)
-        return float(np.mean(ctx.film1.std[a:b])) >= MIN_STD
-
-    pending = [point for point in on_cut if not confirmed[point[0]]]
-    if ctx.film2.full is None and not metadata.peak.size:
-        say(translate_text("Pic non décrit par les métadonnées : {count} plans confirmés par l'image.",
-                           count=len(pending)))
-    elif ctx.film2.full is None:
-        pairs = []
-        for i, d, _lo, _hi in on_cut:
-            levels = film2_levels(i, d)
-            if confirmed[i] and informative(i) and levels is not None:
-                pairs.append((levels, film1_levels(i)))
-        if len(pairs) < MIN_CALIBRATION:
-            ctx.film2.load_full("relation de luminance non étalonnable ({count} plans confirmés)", count=len(pairs))
-        else:
-            fits = []
-            for axis in (0, 1):
-                xs = np.asarray([p[0][axis] for p in pairs])
-                ys = np.asarray([p[1][axis] for p in pairs])
-                centers, values = _isotonic(xs, ys)
-                residuals = ys - np.interp(xs, centers, values)
-                mad = float(np.median(np.abs(residuals - np.median(residuals))))
-                fits.append((centers, values, max(3.0 * 1.4826 * mad, 12.0)))
-            remaining = []
-            for i, d, seg_lo, seg_hi in pending:
-                levels = film2_levels(i, d)
-                if levels is not None and informative(i):
-                    observed = film1_levels(i)
-                    if all(abs(observed[axis] - float(np.interp(levels[axis], fits[axis][0], fits[axis][1])))
-                           <= fits[axis][2] for axis in (0, 1)):
-                        continue
-                remaining.append((i, d, seg_lo, seg_hi))
-            say(translate_text(
-                "Relation de luminance (moyenne, pic) étalonnée sur {pairs} plans confirmés par l'image (tolérances "
-                "{mean} / {peak} codes) ; {remaining} plans hors relation confirmés par l'image.", pairs=len(pairs),
-                mean=f"{fits[0][2]:.0f}", peak=f"{fits[1][2]:.0f}", remaining=len(remaining)))
-            pending = remaining
-    if ctx.film2.full is not None:
-        say(translate_text("Film 2 lu entièrement : {count} plans à coupe commune confirmés par l'image.",
-                           count=len(pending)))
-    for i, d, seg_lo, seg_hi in pending:
-        if not ctx.confirm_position(i, d, seg_lo, seg_hi):
-            raise AlignmentError(translate_text("Plan à l'image {i} de Film 1 : contenu différent de Film 2.", i=i),
-                                 ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
-    return len(pending)
 
 
 def _uncovered(ctx: _Context, covered: np.ndarray, built: list[Segment]) -> tuple[Uncovered, ...]:

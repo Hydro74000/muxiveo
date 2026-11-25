@@ -1970,12 +1970,12 @@ class MergeDoviWorkflow(QObject):
         if result.hdr10plus is not None and result.hdr10plus != paths.film2_hdr10plus:
             os.replace(result.hdr10plus, paths.film2_hdr10plus)
         stats = result.map.stats
-        checked = int(stats.get("points_on_cuts", 0)) + int(stats.get("points_by_image", 0))
         summary = translate_text(
-            "{what} ({checked} points vérifiés{full})",
+            "{what} ({percent} % des plans concordants{full})",
             what=translate_text("Éditions appliquées et relues") if result.edited else translate_text(
                 "Alignement vérifié"),
-            checked=checked, full=translate_text(", Film 2 lu entièrement") if stats.get("film2_full") else "")
+            percent=f"{100 * float(stats.get('shot_concordance', 1.0)):.0f}",
+            full=translate_text(", Film 2 lu entièrement") if stats.get("film2_full") else "")
         self.step_finished.emit(step, StepResult(step, True, summary, time.monotonic() - t0))
         return result
 

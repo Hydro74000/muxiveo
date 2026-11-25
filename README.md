@@ -141,7 +141,7 @@ Dès qu'une recompression ou une réduction de taille est requise, le panneau En
   * Analyse de l'apport réel de la couche d'extension Full Enhancement Layer (Profil 7 FEL) par catégorie (ton, hautes lumières, détail, grain).
   * Comparateur avant/après en pleine résolution avec loupe et carte des écarts.
   * Reconstruction complète de l'image (Base Layer + Enhancement Layer) lors d'un réencodage pour ne perdre aucun détail du master original.
-* **Fusion DoVi / HDR10+** : Injection des métadonnées dynamiques d'une édition vers le flux HEVC d'une autre édition, alignées automatiquement sur l'image (images en plus ou en moins, cadrage IMAX ou format large, zone active recalculée) et vérifiées à chaque changement de métadonnées.
+* **Fusion DoVi / HDR10+** : Injection des métadonnées dynamiques d'une édition vers le flux HEVC d'une autre édition, alignées automatiquement sur l'image (images en plus ou en moins, cadrage IMAX ou format large, zone active recalculée) et vérifiées plan par plan.
 * **HDR10+ généré depuis le Dolby Vision** : Pour les TV sans Dolby Vision, métadonnées HDR10+ calculées sur l'image mesurée, une scène par plan Dolby Vision, à l'encodage comme en copie (flux patché sans réencodage).
 
 > 📖 Pour découvrir l'ensemble des contrôles et des outils de mesure, consultez le [Guide HDR Studio](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) et le [Guide de l'extension Merge FEL](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-Merge-FEL).

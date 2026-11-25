@@ -45,9 +45,8 @@ class AlignmentMode(Enum):
 @dataclass(frozen=True)
 class AlignmentOptions:
     mode: AlignmentMode = AlignmentMode.AUTO
-    #: D1 : recopier les métadonnées voisines sur les images de Film 1 sans correspondance (non noires).
-    fill_unmatched: bool = False
-    #: D6 : vérifier Film 2 image par image (passe complète de Film 2).
+    #: D6 : vérifier Film 2 image par image (passe complète de Film 2). Les images de Film 1 sans correspondance
+    #: sont toujours comblées par les métadonnées voisines (aucun trou), avec avertissement.
     verify_film2: bool = False
 
     @property
@@ -182,7 +181,7 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
                   tools: AlignmentTools, work_dir: Path, hooks: ProcessHooks, decoder: DecoderPreference,
                   log: Callable[[str], None], run_tool: Callable[[list[str]], str],
                   progress: Callable[[int], None] | None = None) -> AlignmentResult:
-    """Étape ALIGN complète ; :class:`AlignmentError` (ou ``EditRefused``) si la correspondance n'est pas
+    """Étape ALIGN complète ; :class:`AlignmentError` si la correspondance n'est pas
     établie ou si des métadonnées devraient être inventées sans accord."""
     hooks.check()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -283,7 +282,7 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
     if alignment.identity and (area_plan is None or area_plan.keep) and level6 is None:
         notes.append(translate_text("Métadonnées de Film 2 injectées telles quelles."))
         return AlignmentResult(alignment, None, rpu, hdr10plus, resolved, area_plan, film1_table, film2_table, notes)
-    plan = build_edit_plan(alignment, allow_fill=options.fill_unmatched, active_area=area_plan, level6=level6)
+    plan = build_edit_plan(alignment, active_area=area_plan, level6=level6)
     for warning in plan.warnings:
         log(f"[WARN] {warning}")
     edited_rpu = apply_rpu(plan, rpu, work_dir, dovi_tool=tools.dovi_tool, run=run_tool) if rpu is not None else None

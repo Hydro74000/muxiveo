@@ -141,7 +141,7 @@ When recompression, codec conversion, or size reduction is needed, the Encoding 
   * Analyze the true visual contribution of the Full Enhancement Layer (Profile 7 FEL) across tone, highlights, detail, and grain.
   * Full-resolution A/B split-screen viewer with zoom and pixel difference heatmaps.
   * Reconstruct the full 12-bit image (Base Layer + Enhancement Layer) during encoding to preserve all master details.
-* **DoVi / HDR10+ Metadata Merge**: Inject dynamic metadata from one release into the HEVC stream of another, automatically aligned on the picture (extra or missing frames, IMAX or widescreen framing, recomputed active area) and checked at every metadata change.
+* **DoVi / HDR10+ Metadata Merge**: Inject dynamic metadata from one release into the HEVC stream of another, automatically aligned on the picture (extra or missing frames, IMAX or widescreen framing, recomputed active area) and checked shot by shot.
 * **HDR10+ Generated from Dolby Vision**: For TVs without Dolby Vision, HDR10+ metadata computed from the measured picture, one scene per Dolby Vision shot, when encoding or copying (stream patched without re-encoding).
 
 > 📖 For full control references and measurement tools, see the [HDR Studio Guide](https://github.com/Hydro74000/Muxiveo/wiki/HDR-Studio) and the [Merge FEL Plugin Guide](https://github.com/Hydro74000/Muxiveo/wiki/Plugin-Merge-FEL).

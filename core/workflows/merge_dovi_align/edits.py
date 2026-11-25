@@ -31,10 +31,6 @@ from .signals import hdr10plus_digests, rpu_digests
 Runner = Callable[[list[str]], str]
 
 
-class EditRefused(AlignmentError):
-    """Images de Film 1 sans correspondance dont les métadonnées seraient fabriquées sans accord (D1)."""
-
-
 @dataclass(frozen=True)
 class EditPlan:
     film1_frames: int
@@ -104,27 +100,18 @@ def _cut_ranges(cuts: np.ndarray, frames: int) -> dict[str, bool]:
     return out
 
 
-def build_edit_plan(alignment: AlignmentMap, *, allow_fill: bool, active_area: ActiveAreaPlan | None,
+def build_edit_plan(alignment: AlignmentMap, *, active_area: ActiveAreaPlan | None,
                     level6: dict | None) -> EditPlan:
-    """Plan d'édition ; images de Film 1 sans correspondance : automatiques seulement si noires et recopiant
-    une image noire de Film 2, sinon refus sauf ``allow_fill`` (D1, avertissement par plage)."""
+    """Plan d'édition. Images de Film 1 sans correspondance : toujours comblées (un trou dans le RPU ou le HDR10+
+    fait dysfonctionner les lecteurs) par les métadonnées de l'image voisine de Film 2 ; avertissement par plage,
+    sauf images noires dans les deux films."""
     warnings: list[str] = []
-    refused: list[tuple[int, int]] = []
     for gap in alignment.uncovered:
         if gap.black and gap.source_black:
             continue
-        if allow_fill:
-            warnings.append(translate_text(
-                "Images {first}–{last} de Film 1 sans correspondance : métadonnées de l'image {source} de Film 2 "
-                "recopiées.", first=gap.start, last=gap.start + gap.length - 1, source=gap.source))
-        else:
-            refused.append((gap.start, gap.start + gap.length))
-    if refused:
-        shown = ", ".join(f"{a}–{b - 1}" for a, b in refused[:6]) + ("…" if len(refused) > 6 else "")
-        raise EditRefused(translate_text(
-            "{count} passage(s) de Film 1 sans correspondance dans Film 2 (images {ranges}) : aucune métadonnée "
-            "n'est inventée sans l'option « Compléter les images sans correspondance ».", count=len(refused),
-            ranges=shown), tuple(refused))
+        warnings.append(translate_text(
+            "Images {first}–{last} de Film 1 sans correspondance : métadonnées de l'image {source} de Film 2 "
+            "recopiées.", first=gap.start, last=gap.start + gap.length - 1, source=gap.source))
 
     n1 = alignment.film1_frames
     sources = np.full(n1, -1, dtype=np.int64)

@@ -65,7 +65,7 @@ def test_imax_like_plan_is_applied_and_checked(tmp_path: Path) -> None:
     area = ActiveAreaPlan(False, ((0, 103, (0, 0, 68, 68)),), "test")
     level6 = {"max_display_mastering_luminance": 1000, "min_display_mastering_luminance": 1,
               "max_content_light_level": 452, "max_frame_average_light_level": 312}
-    plan = build_edit_plan(alignment, allow_fill=False, active_area=area, level6=level6)
+    plan = build_edit_plan(alignment, active_area=area, level6=level6)
     out = apply_rpu(plan, rpu, tmp_path, dovi_tool="dovi_tool", run=run)
     assert len(rpu_digests(out)) == 103
     summary = run(["dovi_tool", "info", "-i", str(out), "--summary"])
@@ -78,6 +78,6 @@ def test_imax_like_plan_is_applied_and_checked(tmp_path: Path) -> None:
 def test_kept_l5_follows_the_projection(tmp_path: Path) -> None:
     rpu = _marked_rpu(tmp_path, 60)
     alignment = AlignmentMap(50, 60, (Segment(0, 50, 5),), ((0, 5), (55, 5)), (), np.asarray([0, 5, 15, 25, 35, 45]))
-    plan = build_edit_plan(alignment, allow_fill=False, active_area=ActiveAreaPlan(True, (), "test"), level6=None)
+    plan = build_edit_plan(alignment, active_area=ActiveAreaPlan(True, (), "test"), level6=None)
     out = apply_rpu(plan, rpu, tmp_path, dovi_tool="dovi_tool", run=run)
     assert len(rpu_digests(out)) == 50

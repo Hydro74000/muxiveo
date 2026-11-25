@@ -51,7 +51,7 @@ def _result(rpu: Path, hdr: Path | None, *, identity: bool = False) -> Alignment
     table = FrameTable(Path("x.mkv"), VideoProps("hevc", 64, 64, Fraction(1), "tv", "", "", Fraction(1, 1000)),
                        True, "", tuple(range(0, 4200, 42)))
     alignment = AlignmentMap(100, 100 if identity else 140, segments, removed, (), np.asarray([0]),
-                             {"points_on_cuts": 5, "points_by_image": 2, "film2_full": False})
+                             {"shot_concordance": 1.0, "shots_checked": 5, "film2_full": False})
     return AlignmentResult(alignment, None if identity else cast(Any, object()), rpu, hdr,
                            resolve_static_hdr(None, None), None, table, table, ["Alignement : test."])
 
@@ -167,12 +167,11 @@ def test_panel_alignment_options(tmp_path, qt_app, monkeypatch) -> None:
     panel = panel_mod.MergeDoviPanel(cast(Any, _DummyConfig(tmp_path)))
     section = panel._config_section
     assert section.alignment_options == AlignmentOptions()
-    section._fill_cb.setChecked(True)
     section._verify_cb.setChecked(True)
-    assert section.alignment_options == AlignmentOptions(AlignmentMode.AUTO, True, True)
+    assert section.alignment_options == AlignmentOptions(AlignmentMode.AUTO, True)
     section._align_combo.setCurrentIndex(1)
-    assert section.alignment_options == AlignmentOptions(AlignmentMode.STRICT, False, False)
-    assert not section._fill_cb.isEnabled() and not section._verify_cb.isEnabled()
+    assert section.alignment_options == AlignmentOptions(AlignmentMode.STRICT, False)
+    assert not section._verify_cb.isEnabled()
 
 
 def test_cuda_decode_needs_an_nvidia_driver(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

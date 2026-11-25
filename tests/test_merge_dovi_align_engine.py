@@ -10,14 +10,12 @@ import pytest
 from core.workflows.merge_dovi_align import align as align_module
 from core.workflows.merge_dovi_align.align import (
     MAX_STATES,
-    POSITION_RADIUS,
     AlignmentError,
     Film2Frames,
     _check_order,
     _Context,
     _frame_scan,
     _ShotModel,
-    _isotonic,
     _refine_junction,
     align,
     candidate_states,
@@ -201,13 +199,27 @@ def test_compensated_ruptures_inside_shots_are_found() -> None:
     assert any(gap.length == 2 for gap in result.uncovered)
 
 
-def test_same_length_permuted_shots_with_different_luminance_are_refused() -> None:
+@pytest.mark.usefixtures("french_messages")
+def test_shots_with_other_content_are_reported_not_refused() -> None:
+    """Deux plans de même durée au contenu différent (versions propres à un master) : carte gardée, plans
+    signalés ; refus seulement si les films ne se correspondent pas globalement."""
     rng = np.random.default_rng(7)
     scenes = [Scene(rng, 40, level=200.0 + 10 * k) for k in range(80)]
     swapped = list(scenes)
     swapped[41], swapped[42] = Scene(rng, 40, level=650.0), Scene(rng, 40, level=230.0)
-    with pytest.raises(AlignmentError):
-        run(whole(swapped), whole(scenes), frame_rate=0.5)
+    logs: list[str] = []
+    result, _source, _full = run(whole(swapped), whole(scenes), frame_rate=0.5, force_full_film2=True,
+                                 log=logs.append)
+    assert result.identity and result.stats["discordant_shots"] == 2
+    assert result.stats["shot_concordance"] == pytest.approx(78 / 80)
+    assert any("[WARN]" in line and "1640–1679, 1680–1719" in line for line in logs)
+
+
+def test_film_shorter_than_the_sampling_interval_still_checks_a_shot() -> None:
+    """Film plus court que l'intervalle d'échantillonnage des fenêtres : le plan du milieu est vérifié."""
+    scenes = whole(film(np.random.default_rng(54), 10))
+    result, _source, full = run(scenes, scenes, bars2=4, frame_rate=24.0)
+    assert result.identity and not full and result.stats["shots_checked"] >= 1
 
 
 def test_film2_without_index_is_read_entirely() -> None:
@@ -217,13 +229,14 @@ def test_film2_without_index_is_read_entirely() -> None:
     assert result.identity and full and result.stats["film2_full"]
 
 
-def test_metadata_changing_on_every_frame_switches_to_full_pass() -> None:
+def test_metadata_changing_on_every_frame_needs_no_full_pass() -> None:
+    """Métadonnées recalculées à chaque image : seuls les plans sont vérifiés, la lecture par fenêtres suffit."""
     rng = np.random.default_rng(9)
     scenes = whole(film(rng))
     meta = metadata_for(scenes)
     every = Film2Metadata(meta.frames, np.arange(meta.frames), meta.reference_cuts, meta.luminance, ("rpu",))
     result, _source, full = run(scenes, scenes, bars2=4, metadata=every)
-    assert result.identity and full
+    assert result.identity and not full
 
 
 def test_hdr10plus_without_usable_cuts_reads_film2_entirely() -> None:
@@ -261,11 +274,6 @@ def test_cut_detection_and_coarse_offsets() -> None:
     later = cuts[cuts >= 40] - 40
     single = coarse_offsets(cuts, len(sig), later, len(sig), block=len(sig))
     assert single[0][0].tolist()[0] == -40
-
-
-def test_isotonic_fit_is_monotone() -> None:
-    centers, values = _isotonic(np.asarray([1.0, 2.0, 3.0, 4.0]), np.asarray([1.0, 3.0, 2.0, 4.0]))
-    assert np.all(np.diff(values) >= 0) and values.tolist() == [1.0, 2.5, 4.0]
 
 
 # --- Repères des métadonnées ----------------------------------------------------------------------
@@ -343,7 +351,7 @@ def test_fade_with_metadata_changing_on_each_frame_is_confirmed_by_image() -> No
                             np.concatenate([np.full(12, 50.0, np.float32), meta.luminance]), ("rpu",))
     result, _source, _full = run(sequence, film2, metadata=shifted)
     assert [(seg.offset, seg.length) for seg in result.segments] == [(12, meta.frames)]
-    assert result.stats["points_by_image"] >= 20  # points du fondu confirmés un par un par l'image
+    assert result.stats["shot_concordance"] == 1.0
 
 
 def test_film1_at_half_resolution_aligns_by_picture_coordinates() -> None:
@@ -391,69 +399,22 @@ def test_junction_with_insertion_larger_than_window_is_refused() -> None:
         _refine_junction(ctx, 100, 140, 300, 0)
 
 
-def test_position_needs_a_strict_lead_except_on_still_content() -> None:
-    rng = np.random.default_rng(22)
-    moving = Scene(rng, 60)
-
-    class Still(Scene):
-        def frame(self, index: int, dx: int = 0) -> np.ndarray:
-            return super().frame(0, dx)
-
-    still = Still(rng, 60)
-    sig = render([(moving, 0, 60), (still, 0, 60)], 4)
-    source = Film2Frames(len(sig), full=sig)
-    ctx = _Context(sig, source, active_band(sig), 0.0, 0.0, ProcessHooks())
-    assert ctx.confirm_position(30, 0)           # mouvement : décalage 0 strictement meilleur
-    assert not ctx.confirm_position(30, 1)       # décalage d'une image : refusé
-    assert ctx.confirm_position(90, 1)           # plan fixe : position sans effet
-
-
-def test_one_sided_information_is_a_disagreement() -> None:
-    rng = np.random.default_rng(23)
-    scenes = whole(film(rng, 10))
-    sig1 = render(scenes, 4)
-    black = [(Scene(rng, sum(c for _s, _f, c in scenes), black=True), 0, sum(c for _s, _f, c in scenes))]
-    sig2 = render(black, 4)
-    ctx = _Context(sig1, Film2Frames(len(sig2), full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
-    assert ctx.confirm_content(np.arange(10, 16), 0) == "fail"
-    assert not ctx.confirm_position(12, 0)
-
-
 @pytest.mark.usefixtures("french_messages")
-def test_full_pass_checks_every_change_point_individually() -> None:
-    """Deux images de Film 2 échangées autour d'un point de changement interne à un plan en mouvement
-    rapide (trop court pour une découpe) : refus du point, pas d'acceptation globale."""
+def test_neighbour_offset_sharper_inside_a_shot_triggers_the_full_pass() -> None:
+    """Film 2 saute trois images au milieu d'un plan puis en répète trois plus loin (coupes inchangées) : le
+    plan vérifié concorde mieux au décalage voisin, d'où la passe complète de Film 2 ; l'écart encadré par le
+    décalage du segment est signalé, la carte reste l'identité."""
     rng = np.random.default_rng(24)
-
-    class Fast(Scene):
-        def frame(self, index: int, dx: int = 0) -> np.ndarray:
-            return super().frame(3 * index, dx)
-
-    scenes: list[Scene] = [Fast(rng, int(rng.integers(24, 40))) for _ in range(40)]
+    scenes = [Scene(rng, int(rng.integers(30, 50))) for _ in range(12)]
+    scenes[6] = Scene(rng, 120)
     film1 = whole(scenes)
-    sig1 = render(film1, 4)
-    point = sum(scene.length for scene in scenes[:10]) + scenes[10].length // 2
-    order = np.arange(len(sig1))
-    order[point - 1], order[point] = point, point - 1
-    swapped = align_module.take(render(film1, 4), order)
-    meta = metadata_for(film1)
-    meta = type(meta)(meta.frames, np.unique(np.append(meta.change_points, point)), meta.reference_cuts,
-                      meta.luminance, meta.kinds, meta.peak)
-    with pytest.raises(AlignmentError, match="point de changement"):
-        align(sig1, meta, Film2Frames(meta.frames, full_loader=lambda: swapped), frame_rate=2.0,
-              force_full_film2=True)
-    # Sans l'échange, la même vérification exhaustive accepte la carte identité.
-    result = align(sig1, meta, Film2Frames(meta.frames, full_loader=lambda: render(film1, 4)), frame_rate=2.0,
-                   force_full_film2=True)
-    assert result.identity
-
-
-def test_too_few_calibration_shots_force_the_full_pass() -> None:
-    rng = np.random.default_rng(25)
-    scenes = whole(film(rng, 40))
-    result, source, full = run(scenes, scenes, bars2=4, frame_rate=24.0)
-    assert full and "étalonnable" in source.full_reason and result.identity
-    assert result.stats["exhaustive"]  # parcours repris entièrement sur la passe complète
+    film2 = [*whole(scenes[:6]), (scenes[6], 0, 40), (scenes[6], 43, 37), (scenes[6], 77, 43), *whole(scenes[7:])]
+    logs: list[str] = []
+    result, source, full = run(film1, film2, bars2=4, frame_rate=0.2, budget=1.0, metadata=metadata_for(film1),
+                               log=logs.append)
+    assert full and "décalage voisin" in source.full_reason
+    assert result.identity and result.stats["excursions"] >= 1
+    assert any("Vérification reprise sur la passe complète" in line for line in logs)
 
 
 def test_window_budget_is_global() -> None:
@@ -462,16 +423,6 @@ def test_window_budget_is_global() -> None:
     result, source, full = run(scenes, scenes, bars2=4, budget=0.01)
     assert full and "%" in source.full_reason and result.identity
     assert source.decoded <= 0.01 * result.film2_frames
-
-
-def test_peaks_disagreeing_with_metadata_are_refused() -> None:
-    rng = np.random.default_rng(27)
-    scenes = [Scene(rng, 40, level=200.0 + 6 * k) for k in range(90)]
-    film2 = whole(scenes)
-    flat = Scene(rng, 40, level=scenes[45].level, contrast=20.0)   # même moyenne, pic bien plus bas
-    film1 = whole(scenes[:45] + [flat] + scenes[46:])
-    with pytest.raises(AlignmentError):
-        run(film1, film2, bars2=4, frame_rate=0.5)
 
 
 def test_horizontal_translation_is_estimated_and_variable_framing_refused() -> None:
@@ -519,29 +470,6 @@ def test_segments_order_check() -> None:
 
 
 
-def test_relaxed_max_marginals_match_brute_force() -> None:
-    import itertools
-
-    bounds = np.asarray([0, 10, 25, 40, 55])
-    film1_cut = np.zeros(56, dtype=bool)
-    film1_cut[bounds[:-1]] = True
-    cuts2 = np.asarray([0, 10, 25, 47, 62])
-    candidates = np.asarray([0, 7])
-    model = _ShotModel(bounds, film1_cut, cuts2, 80, candidates, ProcessHooks())
-    path, _score = model.solve()
-    alternatives = model.alternatives(path)
-    emissions = [model.emission(k, None) for k in range(model.shots)]
-    for k in range(model.shots):
-        best = -np.inf
-        for states in itertools.product(range(model.states), repeat=model.shots):
-            if states[k] == path[k]:
-                continue
-            total = sum(emissions[q][states[q]] for q in range(model.shots))
-            total -= align_module.CHANGE_PENALTY * sum(a != b for a, b in zip(states, states[1:]))
-            best = max(best, total)
-        assert alternatives[k] == pytest.approx(best)
-
-
 def test_unmatched_shots_never_resume_backwards_in_film2() -> None:
     rng = np.random.default_rng(31)
     for _trial in range(20):
@@ -564,20 +492,10 @@ def test_unmatched_shots_never_resume_backwards_in_film2() -> None:
             end = bounds[k + 1] + d
 
 
-@pytest.mark.usefixtures("french_messages")
-def test_missing_peak_metadata_forces_image_confirmation() -> None:
-    rng = np.random.default_rng(32)
-    scenes = whole(film(rng))
-    meta = metadata_for(scenes)
-    no_peak = Film2Metadata(meta.frames, meta.change_points, meta.reference_cuts, meta.luminance, meta.kinds)
-    logs: list[str] = []
-    result, _source, _full = run(scenes, scenes, bars2=4, frame_rate=0.5, metadata=no_peak, log=logs.append)
-    assert result.identity and any("Pic non décrit" in line for line in logs)
-
-
 def test_frame_scan_finds_a_short_gap_across_block_boundaries() -> None:
     """Images 4095–4097 de Film 1 retrouvées deux rangs plus tôt dans Film 2 (à cheval sur la frontière des
-    blocs de calcul, 4096) : écart local retenu d'un seul tenant."""
+    blocs de calcul, 4096) : écart local détecté d'un seul tenant ; encadré par le décalage du segment, il est
+    signalé comme excursion (minutage local des masters) sans découper le segment. En bord de segment, découpé."""
     rng = np.random.default_rng(33)
 
     class Noise(Scene):
@@ -590,7 +508,8 @@ def test_frame_scan_finds_a_short_gap_across_block_boundaries() -> None:
     order[4093:4098] = np.arange(4095, 4100)
     sig2 = align_module.take(sig1, order)
     ctx = _Context(sig1, Film2Frames(4200, full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
-    assert (4095, 4098, -2) in _frame_scan(ctx, Segment(0, 4200, 0))
+    assert _frame_scan(ctx, Segment(0, 4200, 0)) == [] and (4095, 4098, -2) in ctx.excursions
+    assert (4095, 4098, -2) in _frame_scan(ctx, Segment(4080, 4098 - 4080, 4080))   # au bord du segment
 
 
 def test_constrained_solver_matches_brute_force_with_unmatched_resumes() -> None:
@@ -644,74 +563,44 @@ def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
     shots = whole(scenes)
     logs: list[str] = []
     sig2 = render(shots, 18, dy_per_scene={10: 12, 25: -2})
-    result, _source, _full = run(shots, shots, sig2=sig2, frame_rate=0.5, log=logs.append)
+    result, _source, _full = run(shots, shots, sig2=sig2, frame_rate=0.5, log=logs.append, force_full_film2=True)
     assert result.identity and result.stats["reframed_shots"] >= 1
     assert any("cadré(s) autrement dans les deux films" in line for line in logs)
     other = [*scenes[:10], Scene(np.random.default_rng(99), scenes[10].length), *scenes[11:]]
-    with pytest.raises(AlignmentError):
-        run(shots, whole(other), sig2=render(whole(other), 18), frame_rate=0.5, metadata=metadata_for(shots))
+    result, _source, _full = run(shots, whole(other), sig2=render(whole(other), 18), frame_rate=0.5,
+                                 metadata=metadata_for(shots), force_full_film2=True)
+    assert result.identity and result.stats["discordant_shots"] == 1    # contenu différent : signalé
 
 
-def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> None:
-    """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Panoramique vertical (temps
-    et translation exactement interchangeables) : position inobservable, placée selon le décalage du segment et
-    signalée ; mouvement horizontal : position confirmée, décalage voisin refusé."""
-    from core.workflows.merge_dovi_align.features import cell_margins
-
-    class Pan(Scene):
-        def __init__(self, rng: np.random.Generator, length: int, *, vertical: bool) -> None:
-            super().__init__(rng, length)
-            low = rng.uniform(0, 1, size=(40, 30))
-            big = np.kron(low, np.ones((10, 10)))
-            self.texture = self.level + 220.0 * (big - big.mean())
-            self.vertical = vertical
-
-        def frame(self, index: int, dx: int = 0, dy: int = 0) -> np.ndarray:
-            # Panoramique vertical d'une cellule de vignette (6 px) par image : décalage temporel et translation
-            # exactement interchangeables.
-            top = 40 + dy + (6 * index if self.vertical else 0)
-            left = 20 + dx + (0 if self.vertical else 3 * index)
-            return self.texture[top:top + H, left:left + W]
-
-    def context(vertical: bool, *, full: bool) -> _Context:
-        shot = Pan(np.random.default_rng(8), 30, vertical=vertical)
-        sig1 = render([(shot, 0, 30)], 4)
-        sig2 = render([(shot, 0, 30)], 18, dy_per_scene={0: 12})
-        area1, area2 = active_band(sig1), active_band(sig2)
-        band = area1.intersect(area2, *cell_margins(sig1, sig2))
-        source = Film2Frames(30, window=lambda a, n, sig=sig2: sig.slice(a, a + n), budget=100.0,
-                             full_loader=(lambda sig=sig2: sig) if full else None)
-        return _Context(sig1, source, band, 0.0, 0.0, ProcessHooks(), area1=area1, area2=area2,
-                        cuts1=np.asarray([0], dtype=np.int64))
-
-    vertical = context(True, full=True)
-    assert vertical.confirm_content(np.arange(8, 14), 0) == "ok"
-    assert vertical.confirm_position(12, 0)             # ni preuve ni contradiction : placé selon le segment,
-    assert vertical.unobservable == {12}                 # et signalé comme inobservable
-    horizontal = context(False, full=False)
-    assert horizontal.confirm_position(12, 0) and horizontal.film2.full is None
-    assert not horizontal.confirm_position(12, 1)       # décalage voisin : contredit par l'image
+@pytest.mark.usefixtures("french_messages")
+def test_short_master_specific_passage_is_tolerated_and_reported() -> None:
+    """Un passage de quelques images propre à un master (rendu différent) au milieu d'un plan, encadré par une
+    image identique au même décalage : métadonnées du décalage du segment, passage signalé ; tout le reste de la
+    carte reste vérifié."""
+    rng = np.random.default_rng(51)
+    scenes = [Scene(rng, 110) for _ in range(12)]
+    film1 = whole(scenes)
+    sig1 = render(film1, 4)
+    sig2 = render(film1, 4)
+    other = render([(Scene(np.random.default_rng(52), 20), 0, 20)], 4)
+    start = sum(scene.length for scene in scenes[:5]) + 45
+    for name in ("vignettes", "top", "bottom", "left", "right", "mean", "std", "peak"):
+        getattr(sig2, name)[start:start + 20] = getattr(other, name)
+    meta = metadata_for(film1)
+    point = start + 10
+    meta = type(meta)(meta.frames, np.unique(np.append(meta.change_points, point)), meta.reference_cuts,
+                      meta.luminance, meta.kinds, meta.peak)
+    logs: list[str] = []
+    result = align(sig1, meta, Film2Frames(meta.frames, full=sig2), frame_rate=2.0, log=logs.append)
+    assert result.identity and result.stats["discordant_shots"] == 1
+    assert any("[WARN]" in line and "non concordant" in line for line in logs)
 
 
-def test_indistinct_position_needs_a_significant_continuity() -> None:
-    """Contenu peu contrasté et bruit d'encodage dans Film 2 : l'avance de la bonne position ne dépasse pas le
-    bruit image par image ; admise par la continuité significative du décalage autour du point, un décalage d'une
-    image reste refusé (jamais confirmé par une avance due au bruit)."""
-    shot = Scene(np.random.default_rng(41), 130, contrast=60.0)
-    sig1 = render([(shot, 0, 130)], 4)
-    noisy = np.random.default_rng(42).normal(0.0, 2.5, size=sig1.vignettes.shape)
-    sig2 = Signatures(sig1.width, sig1.height, sig1.ranks, sig1.top, sig1.bottom, sig1.left, sig1.right,
-                      np.clip(sig1.vignettes + noisy, 0, 255).astype(np.uint8), sig1.mean, sig1.std, sig1.peak)
-    ctx = _Context(sig1, Film2Frames(130, full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
-    calls = []
-    original = ctx._continuity
-
-    def spy(*args):
-        calls.append(args)
-        return original(*args)
-
-    ctx._continuity = spy  # type: ignore[method-assign]
-    points = range(50, 80)
-    assert all(ctx.confirm_position(i, 0) for i in points)
-    assert calls                                          # positions indiscernables : continuité exigée
-    assert not any(ctx.confirm_position(i, 1) for i in points)
+@pytest.mark.usefixtures("french_messages")
+def test_mostly_different_films_are_refused() -> None:
+    """Coupes identiques mais contenu différent sur la plupart des plans : films non concordants."""
+    rng = np.random.default_rng(53)
+    scenes = film(rng, 40)
+    other = [Scene(rng, scene.length) if k % 7 == 3 else scene for k, scene in enumerate(scenes)]
+    with pytest.raises(AlignmentError, match="concordant"):
+        run(whole(scenes), whole(other), bars2=4, metadata=metadata_for(whole(scenes)), force_full_film2=True)

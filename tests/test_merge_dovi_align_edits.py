@@ -10,7 +10,7 @@ import pytest
 
 from core.workflows.merge_dovi_align.active_area import _dominants, l5_per_frame, plan_active_area
 from core.workflows.merge_dovi_align.align import AlignmentError, AlignmentMap, Segment, Uncovered
-from core.workflows.merge_dovi_align.edits import EditRefused, _cut_ranges, build_edit_plan, normalized_entry
+from core.workflows.merge_dovi_align.edits import _cut_ranges, build_edit_plan, normalized_entry
 from core.workflows.merge_dovi_align.probe import Signatures
 from core.workflows.merge_dovi_align.static_hdr import level6_edit, resolve_static_hdr
 
@@ -95,37 +95,36 @@ def _imax_like() -> AlignmentMap:
 
 
 def test_edit_plan_for_a_constant_offset() -> None:
-    plan = build_edit_plan(_imax_like(), allow_fill=False, active_area=None, level6=None)
+    plan = build_edit_plan(_imax_like(), active_area=None, level6=None)
     assert plan.position_edit() == {"remove": ["116-139", "0-15"]}
     assert plan.sources.tolist() == list(range(16, 116)) and not plan.duplicates
 
 
-def test_black_gap_is_filled_automatically_other_gaps_need_consent() -> None:
+def test_unmatched_frames_are_always_filled() -> None:
+    """Aucun trou dans les métadonnées : images noires comblées sans avertissement, autres images comblées par
+    l'image voisine de Film 2 avec avertissement."""
     gap = Uncovered(50, 3, True, 65, True)
     alignment = AlignmentMap(100, 113, (Segment(0, 50, 16), Segment(53, 47, 66)), ((0, 16),), (gap,),
                              np.asarray([0, 50, 53]))
-    plan = build_edit_plan(alignment, allow_fill=False, active_area=None, level6=None)
-    assert plan.duplicates == ((49, 50, 3),) and plan.sources[50:53].tolist() == [65, 65, 65]
+    plan = build_edit_plan(alignment, active_area=None, level6=None)
+    assert plan.duplicates == ((49, 50, 3),) and plan.sources[50:53].tolist() == [65, 65, 65] and not plan.warnings
     content = Uncovered(50, 3, False, 65, False)
     visible = AlignmentMap(100, 113, alignment.segments, ((0, 16),), (content,), alignment.expected_cuts)
-    with pytest.raises(EditRefused) as refused:
-        build_edit_plan(visible, allow_fill=False, active_area=None, level6=None)
-    assert refused.value.ranges == ((50, 53),)
-    accepted = build_edit_plan(visible, allow_fill=True, active_area=None, level6=None)
-    assert accepted.warnings and accepted.duplicates == ((49, 50, 3),)
+    filled = build_edit_plan(visible, active_area=None, level6=None)
+    assert filled.warnings and filled.duplicates == ((49, 50, 3),)
 
 
 def test_head_gap_copies_the_following_frame() -> None:
     gap = Uncovered(0, 10, True, 0, True)
     alignment = AlignmentMap(110, 100, (Segment(10, 100, 0),), (), (gap,), np.asarray([0, 10]))
-    plan = build_edit_plan(alignment, allow_fill=False, active_area=None, level6=None)
+    plan = build_edit_plan(alignment, active_area=None, level6=None)
     assert plan.duplicates == ((0, 0, 10),) and plan.sources[:10].tolist() == [0] * 10
 
 
 def test_incoherent_map_is_refused() -> None:
     broken = AlignmentMap(100, 100, (Segment(0, 40, 0), Segment(50, 50, 50)), (), (), np.asarray([0]))
     with pytest.raises(AlignmentError):
-        build_edit_plan(broken, allow_fill=False, active_area=None, level6=None)
+        build_edit_plan(broken, active_area=None, level6=None)
 
 
 def test_scene_cut_ranges_cover_every_frame() -> None:

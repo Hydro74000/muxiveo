@@ -23,7 +23,6 @@ from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord, hdr10p
 from core.matroska.editors.dovi import DolbyVisionConfigRecord, MatroskaDoviBlockAdditionEditor
 from core.matroska.hevc.access_units import iter_hevc_access_units
 from core.workflows.merge_dovi import DoviProfile, MergeDoviWorkflow, WorkflowStep
-from core.workflows.merge_dovi_align import align as align_module
 from core.workflows.merge_dovi_align import session as session_module
 from core.workflows.merge_dovi_align.active_area import l5_per_frame
 from core.workflows.merge_dovi_align.session import AlignmentMode, AlignmentOptions
@@ -376,9 +375,7 @@ def test_shot_removed_and_shot_added(qt_app, tmp_path: Path, content: list[Shot]
     added = Shot(98, 22)
     inserted = _encode(_raw([*content[:9], added, *content[9:]], 16), tmp_path / "film1_ins.mkv")
     plain = _film2(tmp_path / "f2b", content)
-    refused = _merge(qt_app, tmp_path / "b", inserted, plain, AlignmentOptions())
-    assert refused.get("status") == "failed" and "sans correspondance" in refused.get("msg", "")
-    filled = _merge(qt_app, tmp_path / "c", inserted, plain, AlignmentOptions(fill_unmatched=True))
+    filled = _merge(qt_app, tmp_path / "c", inserted, plain, AlignmentOptions())   # toujours comblé, jamais de trou
     cut = _total(content[:9])
     mapping = [i if i < cut else (cut - 1 if i < cut + added.length else i - added.length)
                for i in range(_total(content) + added.length)]
@@ -395,7 +392,7 @@ def test_compensated_ruptures_inside_shots(qt_app, tmp_path: Path, content: list
     film1 = _encode(_raw(shots1, 16), tmp_path / "film1.mkv")
     strict = _merge(qt_app, tmp_path / "s", film1, film2, AlignmentOptions(mode=AlignmentMode.STRICT))
     assert strict.get("status") == "finished"            # comptes égaux : le mode Strict ne voit rien
-    result = _merge(qt_app, tmp_path / "a", film1, film2, AlignmentOptions(fill_unmatched=True))
+    result = _merge(qt_app, tmp_path / "a", film1, film2, AlignmentOptions())
     end4, end10 = _total(content[:5]), _total(content[:11])
     mapping: list[int] = []
     for j in range(film2.frames):
@@ -515,16 +512,15 @@ def test_hlg_base_profile_8_4(qt_app, tmp_path: Path, content: list[Shot]) -> No
     assert _transfer(Path(result["out"])) == "arib-std-b67"
 
 
-def test_windowed_path_with_luminance_relation_then_d6(qt_app, tmp_path: Path, monkeypatch) -> None:
-    """Film assez long pour rester en fenêtres : relation de luminance étalonnée ; puis D6 (passe complète)."""
+def test_windowed_path_then_d6(qt_app, tmp_path: Path) -> None:
+    """Film assez long pour rester en fenêtres : plans vérifiés sur l'image ; puis D6 (passe complète)."""
     shots = _shots(11, 110)
-    monkeypatch.setattr(align_module, "SAMPLE_SECONDS", 4.0)
     film1 = _encode(_raw(shots, 16), tmp_path / "film1.mkv", audio=False)
     film2 = _film2(tmp_path / "f2", [Shot(1, 16, black=True), *shots])
     mapping = _shifted(16, _total(shots))
     result = _merge(qt_app, tmp_path / "w", film1, film2, AlignmentOptions())
     _check_output(result, tmp_path / "w", film2, mapping)
-    assert _logged(result, "Relation de luminance (moyenne, pic) étalonnée")
+    assert _logged(result, "Concordance de l'image : 100 % des plans vérifiés")
     assert not _logged(result, "Passe complète de Film 2")
     d6 = _merge(qt_app, tmp_path / "d6", film1, film2, AlignmentOptions(verify_film2=True))
     _check_output(d6, tmp_path / "d6", film2, mapping)
