@@ -625,10 +625,9 @@ class _Context:
             corr[ok] = np.sum(g1[ok] * g2[j[ok]], axis=1)
             return corr, ok & inf1 & inf2[jc], ok & (inf1 ^ inf2[jc])
 
-        def grid(first: float, second: float, centre: float) -> list[float]:
+        def grid(first: float, second: float, centre: float, step: float = REFRAME_STEP) -> list[float]:
             low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
-            return sorted({round(float(v), 4) for v in np.arange(low, high + REFRAME_STEP / 2, REFRAME_STEP)}
-                          | {round(centre, 4)})
+            return sorted({round(float(v), 4) for v in np.arange(low, high + step / 2, step)} | {round(centre, 4)})
 
         def best(cands: list) -> tuple | None:
             top = None
@@ -641,15 +640,17 @@ class _Context:
                     top = (value, cand, c, b, o)
             return top
 
+        # Translations admissibles indépendantes du décalage testé : verticales au pas fin, et grille complète
+        # (verticale × horizontale, pas double) quand les zones actives laissent aussi glisser horizontalement.
         cands = [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
                  if (cand := candidate(sy, self.dx)) is not None]
+        if abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
+            cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy, 2 * REFRAME_STEP)
+                      for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx, 2 * REFRAME_STEP)
+                      if (cand := candidate(sy, sx)) is not None]
         top = best(cands)
         if top is None:
             return None
-        if abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
-            cands += [cand for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx)
-                      if (cand := candidate(top[1][0], sx)) is not None]
-            top = best(cands) or top
         width_cols = 2 * spread + 1
         corr = np.full((indices.size, width_cols), -1.0, dtype=np.float32)
         both = np.zeros((indices.size, width_cols), dtype=bool)
