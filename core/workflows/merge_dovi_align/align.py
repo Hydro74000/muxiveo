@@ -665,14 +665,19 @@ class _Context:
         return None if best is None else (best[1], best[2], best[3])
 
     def _static(self, i: int) -> bool:
-        """Images ``i - 1`` et ``i`` de Film 1 identiques sur la bande réellement comparée (locale si recadrée)."""
+        """Images ``i - 1`` et ``i`` de Film 1 identiques sur chacune des bandes réellement comparées (celle de
+        ``i - 1`` et celle de ``i`` : locale si recadrée, sinon globale)."""
         if not 0 < i < len(self.film1):
             return False
-        band = self._frame_bands.get(i)
-        if band is None:
-            return bool(self.film1_static[i])
-        features, _informative = band_features(take(self.film1, np.asarray([i - 1, i])), band)
-        return float(np.dot(features[0], features[1])) >= STATIC_CORRELATION
+        for band in {self._frame_bands.get(i - 1), self._frame_bands.get(i)}:
+            if band is None:
+                if not bool(self.film1_static[i]):
+                    return False
+                continue
+            features, _informative = band_features(take(self.film1, np.asarray([i - 1, i])), band)
+            if float(np.dot(features[0], features[1])) < STATIC_CORRELATION:
+                return False
+        return True
 
     def confirm_content(self, indices: np.ndarray, offset: int) -> str:
         """« ok » : chaque paire informative corrélée ; « neutral » : aucune image informative d'aucun côté ;
