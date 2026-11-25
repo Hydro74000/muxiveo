@@ -543,20 +543,29 @@ class MetadataPatcher:
                     if suffix == ".mkv":
                         from core.matroska.hevc.payload_rewriter import rewrite_file_video_payloads
 
-                        rewritten = rewrite_file_video_payloads(
+                        removed = rewrite_file_video_payloads(
                             source=source, track_index=plan.stream_index, injected_hevc=current, output=candidate,
                             light_levels=plan.static.light_levels if plan.static else None,
                             mastering=plan.static.mastering.colour() if plan.static and plan.static.mastering else None,
                             cancel_cb=self._cancelled,
                             progress_cb=(lambda p: report(start + span * _write_fraction(p, total)))
-                            if report is not None else None)
-                        if rewritten.discarded_nal_units:
-                            self._emit_warning("invalid_nal_removed", translate_text(
-                                "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les "
-                                "décodeurs) — fichier corrigé conforme.", count=rewritten.discarded_nal_units),
-                                count=rewritten.discarded_nal_units)
+                            if report is not None else None).discarded_nal_units
                     else:
-                        shutil.copyfile(current, candidate)
+                        # HEVC brut : copie du flux corrigé sans ses NAL invalides (comme la sortie Matroska).
+                        from core.matroska.hevc.access_units import HevcStreamCancelled, write_valid_nal_units
+
+                        size = max(1, current.stat().st_size)
+                        try:
+                            removed = write_valid_nal_units(
+                                current, candidate, cancel_cb=self._cancelled,
+                                progress_cb=(lambda read: report(start + span * min(1.0, read / size)))
+                                if report is not None else None)
+                        except HevcStreamCancelled as exc:
+                            raise PatchCancelled from exc
+                    if removed:
+                        self._emit_warning("invalid_nal_removed", translate_text(
+                            "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les "
+                            "décodeurs) — fichier corrigé conforme.", count=removed), count=removed)
                     if self._cancelled():
                         raise PatchCancelled
                     try:

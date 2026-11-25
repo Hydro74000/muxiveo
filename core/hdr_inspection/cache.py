@@ -16,7 +16,7 @@ from core.hdr_inspection.dovi import ActiveArea, DoviAnalysis, L6Set
 from core.hdr_inspection.fel_analyzer import FEL_METRICS_VERSION, FelReport, FelSample, Moment, summarise
 from core.hdr_inspection.fel_layer import LayerFacts
 from core.hdr_inspection.hdr10p import Hdr10PlusAnalysis
-from core.hdr_inspection.measure import ImageMeasurement, measured_frames_mismatch
+from core.hdr_inspection.measure import FrameCheck, ImageMeasurement
 
 #: À incrémenter à chaque changement des analyses : les anciennes entrées sont ignorées.
 CACHE_VERSION = 1
@@ -107,15 +107,15 @@ class InspectionCache:
             pass
 
     def load_measurement(self, path: Path, stream_index: int, layer: str = "base", *,
-                         complete_only: bool = False, frames: int | None = None) -> ImageMeasurement | None:
+                         complete_only: bool = False, check: FrameCheck | None = None) -> ImageMeasurement | None:
         """Mesure de l'image en cache (fichier distinct des métadonnées dynamiques) : complète de préférence,
         sinon mesure rapide (images clés), jamais avec ``complete_only`` (valeurs tenues entre images clés).
 
-        ``frames`` : compte exact de la piste, s'il est connu ; une mesure complète d'un autre nombre
-        d'images est écartée (mesure faite par mvo-fel ≤ 0.6.1 sur un flux commençant par une NAL invalide)."""
+        ``check`` (``frame_count_check``) : mesure complète d'un autre nombre d'images que la piste écartée
+        (mesure faite par mvo-fel ≤ 0.6.1 sur un flux commençant par une NAL invalide)."""
         for suffix in ("",) if complete_only else ("", "-keyframes"):
             measurement = self._load_measurement(path, stream_index, layer, suffix)
-            if measurement is not None and measured_frames_mismatch(measurement, frames) is None:
+            if measurement is not None and (check is None or check(measurement) is None):
                 return measurement
         return None
 

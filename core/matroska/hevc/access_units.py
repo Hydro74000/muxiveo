@@ -284,6 +284,30 @@ def iter_hevc_access_units(
     ))
 
 
+def write_valid_nal_units(
+    source: Path,
+    output: Path,
+    chunk_size: int = DEFAULT_HEVC_CHUNK_SIZE,
+    *,
+    cancel_cb: Callable[[], bool] | None = None,
+    progress_cb: Callable[[int], None] | None = None,
+) -> int:
+    """Copie un flux annexB sans ses NAL à en-tête invalide (ignorées par les décodeurs) : nombre retiré.
+
+    Mémoire bornée (NAL courant + un chunk) ; chaque NAL gardé est réémis avec un start code long.
+    Annulation : :class:`HevcStreamCancelled` ; ``progress_cb`` reçoit le cumul d'octets lus.
+    """
+    removed = 0
+    with Path(output).open("wb") as handle:
+        for nal in iter_hevc_nal_units(source, chunk_size, cancel_cb=cancel_cb, progress_cb=progress_cb):
+            if not nal.valid:
+                removed += 1
+                continue
+            handle.write(_START_CODE_4)
+            handle.write(nal.payload)
+    return removed
+
+
 def _decode_nal(nal_bytes: bytes) -> HevcNalUnit:
     """Décode le header NAL HEVC (2 octets) d'un payload sans start code.
 
@@ -315,4 +339,5 @@ __all__ = [
     "iter_hevc_access_units",
     "iter_hevc_nal_units",
     "split_into_access_units",
+    "write_valid_nal_units",
 ]

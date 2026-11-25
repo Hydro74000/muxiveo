@@ -15,11 +15,18 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.config import AppConfig
+from core.fel.engine import FelCancelled
 from core.hdr_inspection import DynamicInspector, InspectionCache, InspectionReport, Severity, audit, snapshot_report
 from core.hdr_inspection.advice import Advice, build_advice
 from core.hdr_inspection.compare import Side, compare
 from core.hdr_inspection.fel_analyzer import FelReport, verdict
-from core.hdr_inspection.measure import ImageMeasurement, measure_track
+from core.hdr_inspection.measure import (
+    FrameCheck,
+    ImageMeasurement,
+    frame_count_check,
+    measure_track,
+    packet_counter,
+)
 from core.hdr_inspection.report import report_data, write_report
 from core.hdr_inspection.tonemap import TvModel
 from core.i18n import translate_text
@@ -30,7 +37,7 @@ from core.jobs.logging import EmitterLogger
 from core.jobs.logging import JobLogger as Logger
 from core.runner import TaskSignals, ToolRunner
 from core.service.context import CancelToken, ExecutionContext
-from core.service.errors import ErrorCode
+from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field, list_of
 from core.service.operations import operation
 from core.workdir import create_process_work_dir
@@ -130,6 +137,26 @@ def dynamic_report(config: AppConfig, info, stream: int | None, cache: Inspectio
         owned.remove()
 
 
+def refuse_frame_mismatch(frame_check: FrameCheck, measurement: ImageMeasurement) -> None:
+    """Mesure neuve d'un autre nombre d'images que la piste (confirmé par le comptage exact) : refusée, jamais
+    mise en cache ni utilisée (statistiques décalées)."""
+    try:
+        problem = frame_check(measurement)
+    except FelCancelled as exc:
+        raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
+    if problem is not None:
+        raise JobError(problem, EXIT_TOOL)
+
+
+def load_checked_measurement(cache: InspectionCache, snapshot: Any, frame_check: FrameCheck) -> ImageMeasurement | None:
+    """Mesure en cache de la piste, écartée si son nombre d'images n'est pas celui de la piste ; comptage
+    exact annulé : ``ApiError(CANCELLED)``."""
+    try:
+        return cache.load_measurement(Path(snapshot.path), snapshot.stream_index, check=frame_check)
+    except FelCancelled as exc:
+        raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
+
+
 def measure_image(config: AppConfig, report: InspectionReport, threads: int, work_root: Path,
              logger: Logger, fast: bool = False, cancel: threading.Event | None = None) -> ImageMeasurement:
     from core.fel.engine import FelEngine, measure_sampling_supported, measure_supported
@@ -156,8 +183,7 @@ def measure_image(config: AppConfig, report: InspectionReport, threads: int, wor
 
         measurement, backend = measure_track(engine, Path(snapshot.path), snapshot.stream_index, owned.path,
                                              threads=threads, total_frames=frames, fps=fps, fast=fast,
-                                             progress=progress, cancel=cancel,
-                                             expected_frames=snapshot.frames if snapshot.frames_exact else None)
+                                             progress=progress, cancel=cancel)
         logger.emit("info", f"Mesure de l'image : {backend}")
         return measurement
     finally:
@@ -374,9 +400,9 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
             raise JobError(f"Aucune piste vidéo : {path}", EXIT_ARGS)
         report = snapshot_report(info, request.track)
         snapshot = report.snapshot
-        measurement = None if request.no_cache else cache.load_measurement(
-            Path(snapshot.path), snapshot.stream_index,
-            frames=snapshot.frames if snapshot.frames_exact else None)
+        frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, packet_counter(
+            ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event))
+        measurement = None if request.no_cache else load_checked_measurement(cache, snapshot, frame_check)
         if level in ("dynamic", "measure") and (snapshot.dovi is not None or snapshot.hdr10plus):
             logger.emit("info", f"Métadonnées dynamiques : {path.name}")
             report = dynamic(config, info, snapshot.stream_index, cache, request.no_cache, ffmpeg, work_root, logger,
@@ -388,6 +414,7 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
             measurement = measure_image(config, report, threads, work_root, logger, fast=request.fast,
                                         cancel=ctx.cancel.event)
             ctx.cancel.raise_if_cancelled()
+            refuse_frame_mismatch(frame_check, measurement)
             cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
         if measurement is not None:
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,

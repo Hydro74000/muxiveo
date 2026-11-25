@@ -145,7 +145,7 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
 
 
 def measured_frames_mismatch(measurement: ImageMeasurement, expected_frames: int | None) -> str | None:
-    """Mesure complète dont le nombre d'images diffère du compte exact de la piste : motif, sinon ``None``.
+    """Mesure complète dont le nombre d'images diffère de ``expected_frames`` (compte exact) : motif, sinon ``None``.
 
     Une image perdue décale toutes les suivantes (statistiques et HDR10+ désalignés) : mvo-fel ≤ 0.6.1
     perdait le premier GOP d'un flux commençant par une NAL invalide. Estimation (images clés) : non concernée.
@@ -157,16 +157,59 @@ def measured_frames_mismatch(measurement: ImageMeasurement, expected_frames: int
                           expected=expected_frames)
 
 
+FrameCheck = Callable[[ImageMeasurement], str | None]
+
+
+def frame_count_check(quick: int | None, exact: Callable[[], int | None] | None) -> FrameCheck:
+    """Contrôle du nombre d'images d'une mesure complète : motif d'un écart, sinon ``None``.
+
+    ``quick`` : compte de l'inspection (MediaInfo, plausible mais pas exact) ; un écart n'est retenu qu'après
+    confirmation par ``exact()`` (comptage des paquets, fait une fois). Compte inconnu ou illisible : accepté.
+    """
+    counted: list[int | None] = []
+
+    def check(measurement: ImageMeasurement) -> str | None:
+        if measurement.is_estimate or quick is None or measurement.frames == quick or exact is None:
+            return None
+        if not counted:
+            counted.append(exact())
+        return measured_frames_mismatch(measurement, counted[0])
+
+    return check
+
+
+def packet_counter(ffprobe: str, path: Path, stream_index: int,
+                   cancel: threading.Event | None = None) -> Callable[[], int | None]:
+    """Comptage exact des paquets de la piste (``ffprobe -count_packets``), arrêté par ``cancel``
+    (``FelCancelled``, comme une mesure annulée)."""
+    def count() -> int | None:
+        from core.fel.engine import FelCancelled
+        from core.frame_count import ffprobe_packet_count
+        from core.subprocess_utils import run_cancellable_capture
+
+        def check_cancelled() -> None:
+            if cancel is not None and cancel.is_set():
+                raise FelCancelled("Comptage des images annulé")
+
+        def run(cmd: list[str], **kwargs: object) -> object:
+            return run_cancellable_capture(cmd, cancel_cb=cancel.is_set if cancel is not None else None,
+                                           check_cancelled=check_cancelled, **kwargs)  # type: ignore[arg-type]
+
+        return ffprobe_packet_count(ffprobe, Path(path), run_command=run, stream_index=stream_index)
+
+    return count
+
+
 def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
                   threads: int = 8, total_frames: int | None = None, fps: float | None = None, fast: bool = False,
                   progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
                   device: str = "auto", precision: str = "fast",
-                  expected_frames: int | None = None) -> tuple[ImageMeasurement, str]:
+                  frame_check: FrameCheck | None = None) -> tuple[ImageMeasurement, str]:
     """Mesure de l'image d'une piste par le plugin mvo-fel (``FelEngine``) : (mesure, moteur exécuté).
 
     Statistiques écrites dans ``work_dir`` puis supprimées. ``fast`` : images clés seules (estimation).
-    ``expected_frames`` : compte exact de la piste, s'il est connu ; mesure complète d'un autre nombre
-    d'images refusée (``MeasurementError``).
+    ``frame_check`` (``frame_count_check``) : mesure complète d'un autre nombre d'images que la piste refusée
+    (``MeasurementError``).
     Annulation : ``FelCancelled`` pendant la mesure, ``InterruptedError`` pendant la lecture.
     """
     statistics = Path(work_dir) / f"mesure-{layer}.jsonl"
@@ -177,7 +220,7 @@ def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path,
             progress=progress, cancelled=event, sampling="keyframes" if fast else "all")
         measurement = read_measurement(statistics, layer, total_frames=total_frames, fps=fps,
                                        cancelled=event.is_set)
-        mismatch = measured_frames_mismatch(measurement, expected_frames)
+        mismatch = frame_check(measurement) if frame_check is not None else None
         if mismatch is not None:
             raise MeasurementError(mismatch)
         return measurement, str(backend)

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.hdr_inspection import InspectionCache, InspectionReport, snapshot_report
-from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.measure import ImageMeasurement, frame_count_check, packet_counter
 from core.hdr_inspection.patch import (
     L11_CONTENT_TYPES,
     Hdr10PlusEdit,
@@ -41,7 +41,7 @@ from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
-from core.service.ops.hdr import dynamic_report, measure_image
+from core.service.ops.hdr import dynamic_report, load_checked_measurement, measure_image, refuse_frame_mismatch
 from core.workdir import create_process_work_dir
 
 _PATCHABLE = {".mkv", ".hevc", ".h265", ".265"}
@@ -395,14 +395,16 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
         for message in report.errors:
             logger.emit("warning", message)
         ctx.cancel.raise_if_cancelled()
-    measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index,
-                                         frames=snapshot.frames if snapshot.frames_exact else None)
+    frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, packet_counter(
+        ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event))
+    measurement = load_checked_measurement(cache, snapshot, frame_check)
     wanted = request.measurement
     if wanted != "cached" and (measurement is None or (measurement.is_estimate and wanted == "full")):
         threads = max(2, int(ctx.overrides.threads or getattr(config, "ffmpeg_threads", 8) or 8))
         measurement = ctx.port("measure_image", measure_image)(config, report, threads, work_root, logger,
                                                               fast=wanted == "fast", cancel=ctx.cancel.event)
         ctx.cancel.raise_if_cancelled()
+        refuse_frame_mismatch(frame_check, measurement)
         cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
     return report, measurement
 

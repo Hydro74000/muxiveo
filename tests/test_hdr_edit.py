@@ -141,19 +141,29 @@ def test_measurement_cache_round_trip(tmp_path):
     assert cache.load(media, 0) is None  # métadonnées dynamiques : fichier distinct
 
 
-def test_measurement_with_other_frame_count_is_ignored_or_refused(tmp_path):
-    """Compte exact de la piste connu : mesure complète d'un autre nombre d'images écartée du cache et
-    refusée à la mesure (mvo-fel ≤ 0.6.1 : premier GOP perdu, statistiques décalées)."""
-    from core.hdr_inspection.measure import measure_track
+def test_measurement_frame_count_mismatch_needs_exact_confirmation(tmp_path, french_messages):
+    """Compte de l'inspection (MediaInfo, plausible) différent de la mesure : écart confirmé par le comptage
+    exact avant d'écarter le cache ou de refuser (mvo-fel ≤ 0.6.1 : premier GOP perdu, statistiques
+    décalées) ; compte exact égal ou illisible : mesure gardée."""
+    from core.hdr_inspection.measure import frame_count_check, measure_track
 
     short = write_statistics(tmp_path / "short.jsonl", [100.0, 900.0], scenes=[0, 1])
     media = tmp_path / "film.mkv"
     media.write_bytes(b"x")
     cache = InspectionCache(tmp_path / "cache")
     cache.store_measurement(media, 0, read_measurement(short))
-    assert cache.load_measurement(media, 0, frames=2) is not None
-    assert cache.load_measurement(media, 0, frames=3) is None
-    assert cache.load_measurement(media, 0) is not None  # compte inconnu : gardée
+    counts: list[str] = []
+
+    def exact(value):
+        return lambda: counts.append("exact") or value
+
+    assert cache.load_measurement(media, 0, check=frame_count_check(2, exact(3))) is not None
+    assert counts == []  # compte de l'inspection concordant : aucun comptage exact
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(3))) is None
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(2))) is not None  # MediaInfo faux
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(None))) is not None  # illisible
+    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(3))) is not None  # inconnu
+    assert counts == ["exact"] * 3
 
     class Engine:
         def measure(self, path, stream, statistics_path, **_):
@@ -163,9 +173,24 @@ def test_measurement_with_other_frame_count_is_ignored_or_refused(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     with pytest.raises(MeasurementError, match="2 images pour 3"):
-        measure_track(Engine(), media, 0, work, expected_frames=3)
-    assert measure_track(Engine(), media, 0, work, expected_frames=2)[0].frames == 2
+        measure_track(Engine(), media, 0, work, frame_check=frame_count_check(3, lambda: 3))
+    assert measure_track(Engine(), media, 0, work, frame_check=frame_count_check(3, lambda: 2))[0].frames == 2
     assert not list(work.iterdir())
+
+
+def test_patcher_raw_hevc_output_drops_invalid_nal_units(tmp_path):
+    """HEVC brut : NAL à bit interdit (rip DVDFab) absente du fichier corrigé, avertissement émis."""
+    junk = b"\x00\x00\x00\x01" + bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01, 0x22])
+    clean = b"\x00\x00\x00\x01" + b"\x40\x01" + b"\x0c" * 16
+    source = tmp_path / "film.hevc"
+    source.write_bytes(junk + clean)
+    warnings: list[tuple[str, dict]] = []
+    output = tmp_path / "out.hevc"
+    plan = PatchPlan(source, 0, output, rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)))
+    _patcher(tmp_path, _FakeTools(tmp_path / "unused.json"),
+             warn=lambda code, message, fields: warnings.append((code, fields))).run(plan)
+    assert output.read_bytes() == clean
+    assert ("invalid_nal_removed", {"count": 1}) in warnings
 
 
 # ── Tone mapping ─────────────────────────────────────────────────────────────
@@ -428,7 +453,7 @@ def test_patcher_keeps_result_when_publication_is_refused(tmp_path):
     from core.output_commit import OutputChangedError
 
     source = tmp_path / "film.hevc"
-    source.write_bytes(b"\x00" * 32)
+    source.write_bytes(b"\x00\x00\x00\x01\x40\x01" + b"\x0c" * 26)  # un NAL (VPS)
     output = tmp_path / "out.hevc"
 
     class _ToolsCreatingOutput(_FakeTools):

@@ -206,7 +206,7 @@ def test_measured_statistics_rejects_cache_with_other_frame_count(tmp_path):
     assert True in counted  # écart confirmé par le compte exact avant d'écarter le cache
 
 
-def test_measured_statistics_refuses_fresh_measurement_with_other_frame_count(tmp_path):
+def test_measured_statistics_refuses_fresh_measurement_with_other_frame_count(tmp_path, french_messages):
     media = tmp_path / "film.mkv"
     media.write_bytes(b"x" * 64)
     cache = InspectionCache(tmp_path / "cache")

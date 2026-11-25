@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.matroska.hevc.access_units import (
     split_into_access_units,
+    write_valid_nal_units,
 )
 
 
@@ -134,3 +135,11 @@ class TestInvalidNalUnits:
         aus = split_into_access_units(stream)
         assert len(aus) == 2 and sum(au.discarded_nal_units for au in aus) == 1
         assert all(bad not in au.payload for au in aus)
+
+    def test_write_valid_nal_units_copies_stream_without_invalid_nals(self, tmp_path):
+        junk = bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01])
+        kept = [_nal(35), _nal(19, first_slice=True)]
+        source, output = tmp_path / "in.hevc", tmp_path / "out.hevc"
+        source.write_bytes(_stream(junk, *kept))
+        assert write_valid_nal_units(source, output) == 1
+        assert output.read_bytes() == _stream(*kept)
