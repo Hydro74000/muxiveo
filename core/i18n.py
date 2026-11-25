@@ -61,7 +61,6 @@ def refresh_catalog() -> None:
     global _catalog_cache
     _catalog_cache = None
     _pattern_templates.cache_clear()
-    _compiled_pattern.cache_clear()
 
 
 def normalize_language(code: str | None) -> str:
@@ -162,7 +161,6 @@ def _lookup_template(template: str, language: str) -> str:
     )
 
 
-@lru_cache(maxsize=512)
 def _compiled_pattern(template: str) -> re.Pattern[str] | None:
     matches = list(_PLACEHOLDER_RE.finditer(template))
     if not matches:
@@ -183,12 +181,11 @@ def _compiled_pattern(template: str) -> re.Pattern[str] | None:
 
 
 @lru_cache(maxsize=1)
-def _pattern_templates() -> tuple[str, ...]:
-    return tuple(
-        template
-        for template in _catalog()
-        if _compiled_pattern(template) is not None
-    )
+def _pattern_templates() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Gabarits à paramètres du catalogue et leur motif, compilés une seule fois (un cache borné recompilait tout
+    le catalogue à chaque traduction dès qu'il dépassait sa taille)."""
+    compiled = ((template, _compiled_pattern(template)) for template in _catalog())
+    return tuple((template, pattern) for template, pattern in compiled if pattern is not None)
 
 
 def translate_text(text: str, language: str | None = None, **kwargs: Any) -> str:
@@ -205,10 +202,7 @@ def translate_text(text: str, language: str | None = None, **kwargs: Any) -> str
     if text in _catalog():
         return _lookup_template(text, lang)
 
-    for template in _pattern_templates():
-        pattern = _compiled_pattern(template)
-        if pattern is None:
-            continue
+    for template, pattern in _pattern_templates():
         match = pattern.fullmatch(text)
         if match is None:
             continue
