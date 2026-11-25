@@ -12014,5 +12014,13 @@
   "Film 1 est en Dolby Vision P5 : son image de base est en couleurs IPT, incompatible avec le RPU de Film 2. Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage (une source P5 réencodée est convertie en HDR10), puis utilisez le fichier obtenu comme Film 1.": {
     "fra": "Film 1 est en Dolby Vision P5 : son image de base est en couleurs IPT, incompatible avec le RPU de Film 2. Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage (une source P5 réencodée est convertie en HDR10), puis utilisez le fichier obtenu comme Film 1.",
     "eng": "Film 1 is Dolby Vision P5: its base layer uses IPT colours, incompatible with Film 2's RPU. First convert Film 1 to HDR10 in the Encode panel (a re-encoded P5 source is converted to HDR10), then use the resulting file as Film 1."
+  },
+  "{count} plan(s) cadré(s) autrement dans les deux films (translation propre au plan, jusqu'à {pixels} px) : contenu vérifié sur leur cadrage.": {
+    "fra": "{count} plan(s) cadré(s) autrement dans les deux films (translation propre au plan, jusqu'à {pixels} px) : contenu vérifié sur leur cadrage.",
+    "eng": "{count} shot(s) framed differently in the two films (shot-specific translation, up to {pixels} px): content checked on their own framing."
+  },
+  "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.": {
+    "fra": "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.",
+    "eng": "Film 2 framing varies from shot to shot (agreement {agreement}): each shot is checked on its own framing."
   }
 }

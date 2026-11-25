@@ -55,6 +55,12 @@ CHECKPOINT = 64
 GEOMETRY_CORRELATION = 0.6
 GEOMETRY_AGREEMENT = 0.8
 GEOMETRY_PAIRS = 10
+#: Recadrage propre à un plan (ex. extraction 2.39 calée en haut ou en bas d'une image IMAX) : pas de la
+#: recherche de translation locale, gain de corrélation médiane exigé, hauteur et largeur minimales de la
+#: bande commune locale (part de la bande globale).
+REFRAME_STEP = 0.0025
+REFRAME_GAIN = 0.05
+REFRAME_MIN_EXTENT = 0.5
 #: Passe complète : bande du balayage image par image et longueur minimale d'un écart retenu.
 FRAME_BAND = 24
 FRAME_RUN = 3
@@ -497,9 +503,17 @@ class _Context:
     dx: float
     dy: float
     hooks: ProcessHooks
+    #: Zones actives des deux films (bornes de la translation locale d'un plan recadré) ; None : sans recadrage.
+    area1: Band | None = None
+    area2: Band | None = None
+    #: Coupes de Film 1 (un recadrage vaut pour un plan entier).
+    cuts1: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     film1_features: np.ndarray = field(init=False)
     film1_informative: np.ndarray = field(init=False)
     film1_static: np.ndarray = field(init=False)
+    #: Translation locale retenue par (plan de Film 1, décalage) : plans cadrés autrement dans les deux films.
+    reframed: dict[tuple[int, int], tuple[float, float]] = field(init=False)
+    _local_shifts: dict[tuple[int, int], tuple[float, float, Band] | None] = field(init=False)
 
     def __post_init__(self) -> None:
         self.film1_features, self.film1_informative = band_features(self.film1, self.band)
@@ -507,31 +521,125 @@ class _Context:
         if len(self.film1) > 1:
             static[1:] = np.sum(self.film1_features[1:] * self.film1_features[:-1], axis=1) >= STATIC_CORRELATION
         self.film1_static = static
+        self.reframed = {}
+        self._local_shifts = {}
 
-    def pair_scores(self, indices: np.ndarray, offset: int, spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Corrélations (images × décalages offset-spread…offset+spread) ; masques « deux informatives » et
-        « une seule informative » (désaccord)."""
+    def _window(self, indices: np.ndarray, offset: int, spread: int) -> tuple[Signatures, int]:
         self.hooks.check()
         lo = int(indices.min()) + offset - spread
         hi = int(indices.max()) + offset + spread + 1
         lo_c, hi_c = max(0, lo), min(self.film2.frames, hi)
         if hi_c <= lo_c:
             raise AlignmentError(translate_text("Fenêtre de Film 2 hors du film."))
-        window = self.film2.get(lo_c, hi_c - lo_c)
-        f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
+        return self.film2.get(lo_c, hi_c - lo_c), lo_c
+
+    @staticmethod
+    def _scores(f1: np.ndarray, inf1: np.ndarray, f2: np.ndarray, inf2: np.ndarray, indices: np.ndarray,
+                rows: np.ndarray, offset: int, spread: int, lo_c: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Matrices (lignes ``rows`` de ``f1``/``inf1`` pour les images ``indices``) × décalages."""
         width = 2 * spread + 1
         corr = np.full((indices.size, width), -1.0, dtype=np.float32)
         both = np.zeros((indices.size, width), dtype=bool)
         one = np.zeros((indices.size, width), dtype=bool)
         for column, shift in enumerate(range(-spread, spread + 1)):
             j = indices + offset + shift - lo_c
-            ok = (j >= 0) & (j < hi_c - lo_c)
-            corr[ok, column] = np.sum(self.film1_features[indices[ok]] * f2[j[ok]], axis=1)
-            first = self.film1_informative[indices[ok]]
+            ok = (j >= 0) & (j < f2.shape[0])
+            corr[ok, column] = np.sum(f1[rows[ok]] * f2[j[ok]], axis=1)
+            first = inf1[rows[ok]]
             second = inf2[j[ok]]
             both[ok, column] = first & second
             one[ok, column] = first ^ second
         return corr, both, one
+
+    def pair_scores(self, indices: np.ndarray, offset: int, spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Corrélations (images × décalages offset-spread…offset+spread) ; masques « deux informatives » et
+        « une seule informative » (désaccord). Géométrie globale."""
+        window, lo_c = self._window(indices, offset, spread)
+        f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
+        return self._scores(self.film1_features, self.film1_informative, f2, inf2, indices, indices, offset, spread,
+                            lo_c)
+
+    def checked_scores(self, indices: np.ndarray, offset: int,
+                       spread: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Comme :meth:`pair_scores`, mais chaque plan de Film 1 dont une paire informative reste sous
+        ``CONFIRM_CORRELATION`` avec la géométrie globale est recalculé avec sa propre translation (plan cadré
+        autrement dans les deux films), si elle améliore nettement la corrélation médiane. Seuils inchangés."""
+        window, lo_c = self._window(indices, offset, spread)
+        f2, inf2 = band_features(window, self.band.shifted(self.dy, self.dx))
+        corr, both, one = self._scores(self.film1_features, self.film1_informative, f2, inf2, indices, indices,
+                                       offset, spread, lo_c)
+        if self.area1 is None or self.area2 is None:
+            return corr, both, one
+        shots = np.searchsorted(self.cuts1, indices, side="right")
+        for shot in np.unique(shots).tolist():
+            rows = np.flatnonzero(shots == shot)
+            center = both[rows, spread]
+            if not np.any(center) or bool(np.all(corr[rows[center], spread] >= CONFIRM_CORRELATION)):
+                continue
+            local = self._local_shift(int(shot), indices[rows], offset, window, lo_c)
+            if local is None:
+                continue
+            sy, sx, band = local
+            sub = take(self.film1, indices[rows])
+            g1, ginf1 = band_features(sub, band)
+            g2, ginf2 = band_features(window, band.shifted(sy, sx))
+            c, b, o = self._scores(g1, ginf1, g2, ginf2, indices[rows], np.arange(rows.size), offset, spread, lo_c)
+            if not np.any(b[:, spread]):
+                continue
+            if float(np.median(c[b[:, spread], spread])) < float(np.median(corr[rows[center], spread])) + REFRAME_GAIN:
+                continue
+            corr[rows], both[rows], one[rows] = c, b, o
+            self.reframed[(int(shot), offset)] = (sy, sx)
+        return corr, both, one
+
+    def _local_shift(self, shot: int, indices: np.ndarray, offset: int, window: Signatures,
+                     lo_c: int) -> tuple[float, float, Band] | None:
+        """Translation de Film 2 (y, x, en largeur) qui maximise la corrélation médiane des images ``indices``
+        d'un plan à leur image de Film 2, bornée par les zones actives (la zone de Film 2 glisse dans celle de
+        Film 1, ou l'inverse) ; bande commune locale d'au moins ``REFRAME_MIN_EXTENT`` de la bande globale.
+        Mémorisée par (plan, décalage)."""
+        key = (shot, offset)
+        if key in self._local_shifts:
+            return self._local_shifts[key]
+        assert self.area1 is not None and self.area2 is not None
+        a1, a2 = self.area1, self.area2
+        sub = take(self.film1, indices)
+        j = indices + offset - lo_c
+        ok = (j >= 0) & (j < len(window))
+        margin_y, margin_x = cell_margins(self.film1, window)
+        height, width = self.band.bottom - self.band.top, self.band.right - self.band.left
+
+        def score(sy: float, sx: float) -> tuple[float, Band] | None:
+            band = a1.intersect(a2.shifted(-sy, -sx), margin_y, margin_x)
+            if (band.empty or band.bottom - band.top < REFRAME_MIN_EXTENT * height
+                    or band.right - band.left < REFRAME_MIN_EXTENT * width):
+                return None
+            g1, inf1 = band_features(sub, band)
+            g2, inf2 = band_features(window, band.shifted(sy, sx))
+            pairs = ok & inf1 & inf2[np.clip(j, 0, len(window) - 1)]
+            if not np.any(pairs):
+                return None
+            return float(np.median(np.sum(g1[pairs] * g2[j[pairs]], axis=1))), band
+
+        def grid(first: float, second: float, centre: float) -> list[float]:
+            low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
+            return sorted({round(float(v), 4) for v in np.arange(low, high + REFRAME_STEP / 2, REFRAME_STEP)}
+                          | {round(centre, 4)})
+
+        best: tuple[float, float, float, Band] | None = None
+        for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy):
+            found = score(sy, self.dx)
+            if found is not None and (best is None or found[0] > best[0]):
+                best = (found[0], sy, self.dx, found[1])
+        if best is not None and abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
+            sy = best[1]
+            for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx):
+                found = score(sy, sx)
+                if found is not None and found[0] > best[0]:
+                    best = (found[0], sy, sx, found[1])
+        result = None if best is None else (best[1], best[2], best[3])
+        self._local_shifts[key] = result
+        return result
 
     def confirm_content(self, indices: np.ndarray, offset: int) -> str:
         """« ok » : chaque paire informative corrélée ; « neutral » : aucune image informative d'aucun côté ;
@@ -539,7 +647,7 @@ class _Context:
         indices = self.inside(indices, offset)
         if indices.size == 0:
             return "fail"
-        corr, both, one = self.pair_scores(indices, offset, 0)
+        corr, both, one = self.checked_scores(indices, offset, 0)
         if np.any(one[:, 0]):
             return "fail"
         if not np.any(both[:, 0]):
@@ -561,7 +669,7 @@ class _Context:
         indices = self.inside(np.arange(first, last), offset)
         if indices.size == 0:
             return False
-        corr, both, one = self.pair_scores(indices, offset, POSITION_RADIUS)
+        corr, both, one = self.checked_scores(indices, offset, POSITION_RADIUS)
         center = POSITION_RADIUS
         if np.any(one[:, center]):
             return False
@@ -783,6 +891,12 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                 i=i, d=f"{d:+d}"), ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
     content_checked = _check_luminance(ctx, metadata, cuts1, n1, on_cut, confirmed, say)
+    if ctx.reframed:
+        largest = max(max(abs(sy - ctx.dy), abs(sx - ctx.dx)) for sy, sx in ctx.reframed.values()) * film1.width
+        say(translate_text(
+            "{count} plan(s) cadré(s) autrement dans les deux films (translation propre au plan, jusqu'à {pixels} "
+            "px) : contenu vérifié sur leur cadrage.", count=len({shot for shot, _d in ctx.reframed}),
+            pixels=f"{largest:.0f}"))
     covered = np.zeros(n1, dtype=bool)
     for seg in built:
         covered[seg.film1_start:seg.film1_end] = True
@@ -802,6 +916,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         "film2_decoded": film2.decoded, "film2_full": film2.full is not None, "film2_full_reason": film2.full_reason,
         "exhaustive": full_at_build,
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
+        "reframed_shots": len({shot for shot, _d in ctx.reframed}),
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
                         _expected_cuts(metadata, reference, built, uncovered, n1), stats)
@@ -909,9 +1024,9 @@ def _geometry(film1: Signatures, film2: Film2Frames, runs: list, cuts1: np.ndarr
         raise AlignmentError(translate_text(
             "Cadrages incompatibles (corrélation {score} sur la bande commune).", score=f"{score:.2f}"))
     if len(groups) >= 3 and agreement < GEOMETRY_AGREEMENT:
-        raise AlignmentError(translate_text(
-            "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}).", agreement=f"{agreement:.0%}"))
-    return _Context(film1, film2, band, dx, dy, hooks)
+        say(translate_text("Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan "
+                           "est vérifié sur son propre cadrage.", agreement=f"{agreement:.0%}"))
+    return _Context(film1, film2, band, dx, dy, hooks, area1=band1, area2=active_band(joined2), cuts1=cuts1)
 
 
 def _bounded(raw: list[list[int]], n2: int) -> list[Segment]:

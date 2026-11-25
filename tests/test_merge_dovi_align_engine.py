@@ -50,22 +50,24 @@ class Scene:
         self.level = level if level is not None else float(rng.uniform(200, 700))
         self.texture = self.level + contrast * (big - big.mean())
 
-    def frame(self, index: int, dx: int = 0) -> np.ndarray:
+    def frame(self, index: int, dx: int = 0, dy: int = 0) -> np.ndarray:
         if self.black:
             return np.full((H, W), BLACK, dtype=np.float64)
-        return self.texture[2:H + 2, 20 + index + dx:20 + index + dx + W]
+        return self.texture[2 + dy:H + 2 + dy, 20 + index + dx:20 + index + dx + W]
 
 
 def render(scenes: list[tuple[Scene, int, int]], bars: int, *, pillar: int = 0, bottom: int | None = None,
-           dx: int = 0, dx_per_scene: dict[int, int] | None = None) -> Signatures:
+           dx: int = 0, dx_per_scene: dict[int, int] | None = None,
+           dy_per_scene: dict[int, int] | None = None) -> Signatures:
     """Signatures d'une suite (plan, première image du plan, nombre d'images) ; barres haut ``bars`` et bas
     ``bottom`` (``bars`` par défaut), translation horizontale ``dx`` (pixels), par plan si demandé."""
     bottom = bars if bottom is None else bottom
     vignettes, tops, bottoms, lefts, means, stds, peaks = [], [], [], [], [], [], []
     for number, (scene, first, count) in enumerate(scenes):
         shift = (dx_per_scene or {}).get(number, dx)
+        lift = (dy_per_scene or {}).get(number, 0)
         for index in range(first, first + count):
-            picture = scene.frame(index, shift).copy()
+            picture = (scene.frame(index, shift, lift) if lift else scene.frame(index, shift)).copy()
             if not scene.black:
                 picture[:bars] = 0
                 picture[H - bottom:] = 0
@@ -630,3 +632,20 @@ def test_constrained_solver_matches_brute_force_with_unmatched_resumes() -> None
             if feasible:
                 best = max(best, score)
         assert total == pytest.approx(best)
+
+
+@pytest.mark.usefixtures("french_messages")
+def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
+    """Un plan dont l'extraction de Film 2 (barres larges) est calée plus bas dans l'image de Film 1 (IMAX) :
+    contenu vérifié avec sa propre translation, bornée par les zones actives ; un contenu différent reste refusé."""
+    rng = np.random.default_rng(31)
+    scenes = film(rng, 40)
+    shots = whole(scenes)
+    logs: list[str] = []
+    sig2 = render(shots, 18, dy_per_scene={10: 12, 25: -2})
+    result, _source, _full = run(shots, shots, sig2=sig2, frame_rate=0.5, log=logs.append)
+    assert result.identity and result.stats["reframed_shots"] >= 1
+    assert any("cadré(s) autrement dans les deux films" in line for line in logs)
+    other = [*scenes[:10], Scene(np.random.default_rng(99), scenes[10].length), *scenes[11:]]
+    with pytest.raises(AlignmentError):
+        run(shots, whole(other), sig2=render(whole(other), 18), frame_rate=0.5, metadata=metadata_for(shots))
