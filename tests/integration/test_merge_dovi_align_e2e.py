@@ -133,6 +133,11 @@ def _run(cmd: list[str], **kwargs) -> str:
     return result.stdout
 
 
+def _transfer(path: Path) -> str:
+    return _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
+                 "-of", "csv=p=0", str(path)]).strip().split(",")[0]
+
+
 _PQ = ("transfer=smpte2084:colormatrix=bt2020nc:colorprim=bt2020:master-display="
        "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=650,300")
 
@@ -483,23 +488,30 @@ def test_film2_chapters_projected_and_dropped_in_removed_ranges(qt_app, tmp_path
 
 def test_sdr_film1_after_real_tone_mapping(qt_app, tmp_path: Path, content: list[Shot]) -> None:
     film1 = _convert(_encode(_raw(content, 16), tmp_path / "film1_pq.mkv"), tmp_path / "film1_sdr.mkv", target="sdr")
-    assert _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
-                 "-of", "csv=p=0", str(film1)]).strip().split(",")[0] == "bt709"
+    assert _transfer(film1) == "bt709"
     film2 = _film2(tmp_path / "f2", [Shot(1, 12, black=True), *content])
     result = _merge(qt_app, tmp_path, film1, film2, AlignmentOptions())
     _check_output(result, tmp_path, film2, _shifted(12, _total(content)))
 
 
-def test_hlg_base_film2_with_profile_8_4(qt_app, tmp_path: Path, content: list[Shot]) -> None:
-    """Image de base HLG réellement convertie, RPU généré en profil 8.4 : profil annoncé par Film 2 vérifié,
-    alignement sur la structure seule face à Film 1 PQ, courbes de reconstruction du RPU recopiées telles quelles."""
-    film1 = _encode(_raw(content, 16), tmp_path / "film1.mkv")
+def test_hlg_base_profile_8_4(qt_app, tmp_path: Path, content: list[Shot]) -> None:
+    """Image de base HLG réellement convertie, RPU généré en profil 8.4 (record compat 4) : refusé sur un Film 1
+    PQ (courbes HLG→PQ inapplicables) ; sur un Film 1 HLG, aligné sur la structure, courbes recopiées telles
+    quelles et sortie annoncée P8.4."""
     film2 = _film2(tmp_path / "f2", [Shot(1, 12, black=True), *content], hlg=True, profile="8.4")
-    assert _run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
-                 "-of", "csv=p=0", str(film2.path)]).strip().split(",")[0] == "arib-std-b67"
-    result = _merge(qt_app, tmp_path, film1, film2, AlignmentOptions())
+    assert _transfer(film2.path) == "arib-std-b67"
+    pq = _encode(_raw(content, 16), tmp_path / "film1.mkv")
+    refused = _merge(qt_app, tmp_path / "pq", pq, film2, AlignmentOptions())
+    assert refused.get("status") == "failed" and refused.get("step") == "DETECT_DOVI", refused.get("msg")
+    assert "image de base HLG" in refused["msg"] and "« Désactivé »" in refused["msg"]
+    hlg = _convert(pq, tmp_path / "film1_hlg.mkv", target="hlg")
+    result = _merge(qt_app, tmp_path / "hlg", hlg, film2, AlignmentOptions())
     assert _logged(result, "Source déjà compatible (P8.4)")
-    _check_output(result, tmp_path, film2, _shifted(12, _total(content)))
+    _check_output(result, tmp_path / "hlg", film2, _shifted(12, _total(content)))
+    record = json.loads(_run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                              "stream_side_data", "-of", "json", result["out"]]))["streams"][0]["side_data_list"]
+    assert [d.get("dv_bl_signal_compatibility_id") for d in record if "dv_profile" in d] == [4]
+    assert _transfer(Path(result["out"])) == "arib-std-b67"
 
 
 def test_windowed_path_with_luminance_relation_then_d6(qt_app, tmp_path: Path, monkeypatch) -> None:

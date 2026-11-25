@@ -12006,5 +12006,9 @@
   "Flux de métadonnées de longueurs différentes : {lengths}": {
     "fra": "Flux de métadonnées de longueurs différentes : {lengths}",
     "eng": "Metadata streams of different lengths: {lengths}"
+  },
+  "Dolby Vision {profile} de Film 2 : son RPU suppose une image de base {expected}, celle de Film 1 est {base}. Le RPU ne peut pas être converti (dovi_tool ne retire pas les courbes de reconstruction d'un P8.4 / P8.2, et réencoder Film 2 conserve son profil). Choisissez le profil Dolby Vision « Désactivé » pour n'injecter que le HDR10+, ou un Film 1 dont l'image est {wanted}.": {
+    "fra": "Dolby Vision {profile} de Film 2 : son RPU suppose une image de base {expected}, celle de Film 1 est {base}. Le RPU ne peut pas être converti (dovi_tool ne retire pas les courbes de reconstruction d'un P8.4 / P8.2, et réencoder Film 2 conserve son profil). Choisissez le profil Dolby Vision « Désactivé » pour n'injecter que le HDR10+, ou un Film 1 dont l'image est {wanted}.",
+    "eng": "Film 2 Dolby Vision {profile}: its RPU assumes a {expected} base layer, Film 1's is {base}. The RPU cannot be converted (dovi_tool does not remove the reconstruction curves of a P8.4 / P8.2, and re-encoding Film 2 keeps its profile). Choose the “Disabled” Dolby Vision profile to inject HDR10+ only, or a Film 1 whose picture is {wanted}."
   }
 }

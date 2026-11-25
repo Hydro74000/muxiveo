@@ -243,14 +243,14 @@ def _format_max_cll_from_mediainfo(track: dict) -> str:
     return f"{m_cll.group(1)},{m_fall.group(1)}"
 
 
-def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata) -> bytes:
+def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata, *, base_transfer: str = "pq") -> bytes:
     """Construit l'élément EBML Colour (0x55B0) pour la piste vidéo Matroska.
 
     Contient les métadonnées HDR10 conteneur :
       - MatrixCoefficients (9 = BT.2020 non-constant)
       - BitsPerChannel (10)
       - Range (1 = limited)
-      - TransferCharacteristics (16 = PQ)
+      - TransferCharacteristics de l'image de base écrite (16 = PQ, 18 = HLG : ``base_transfer``)
       - Primaries (9 = BT.2020)
       - MaxCLL / MaxFALL
       - MasteringMetadata (primaires RGB, white point, luminance min/max)
@@ -287,7 +287,7 @@ def _build_colour_element_from_static_hdr(static_hdr: StaticHdrMetadata) -> byte
         uint_element(MATRIX_COEFFICIENTS_ID, 9),
         uint_element(BITS_PER_CHANNEL_ID, 10),
         uint_element(RANGE_ID, 1),
-        uint_element(TRANSFER_CHARACTERISTICS_ID, 16),
+        uint_element(TRANSFER_CHARACTERISTICS_ID, 18 if base_transfer == "hlg" else 16),
         uint_element(PRIMARIES_ID, 9),
     ]
 
@@ -517,6 +517,38 @@ def probe_hdr_state(path: Path, mediainfo_bin: str = "mediainfo") -> HdrState:
     return HdrState()
 
 
+# Image de base attendue par le RPU de Film 2 après conversion éventuelle (P7 / P5 → P8.1).
+_RPU_BASE = {
+    DoviSubProfile.P8_1: "pq", DoviSubProfile.P7_FEL: "pq", DoviSubProfile.P7_MEL: "pq", DoviSubProfile.P5: "pq",
+    DoviSubProfile.P8_4: "hlg", DoviSubProfile.P8_2: "sdr",
+}
+_BASE_LABELS = {"pq": "PQ (HDR10)", "hlg": "HLG", "sdr": "SDR"}
+
+
+def _check_dovi_base(sub_profile: DoviSubProfile, base: str) -> None:
+    """Refus si le RPU de Film 2 suppose une autre image de base que celle de Film 1 (courbes de reconstruction
+    P8.4 HLG→PQ, P8.2 SDR→PQ, ou P8.1 identité) : aucune conversion de RPU n'existe entre ces profils."""
+    expected = _RPU_BASE.get(sub_profile, "")
+    if not expected or not base or expected == base:
+        return
+    raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
+        "Dolby Vision {profile} de Film 2 : son RPU suppose une image de base {expected}, celle de Film 1 est "
+        "{base}. Le RPU ne peut pas être converti (dovi_tool ne retire pas les courbes de reconstruction d'un "
+        "P8.4 / P8.2, et réencoder Film 2 conserve son profil). Choisissez le profil Dolby Vision « Désactivé » "
+        "pour n'injecter que le HDR10+, ou un Film 1 dont l'image est {wanted}.",
+        profile=sub_profile.label, expected=_BASE_LABELS[expected], base=_BASE_LABELS.get(base, base),
+        wanted=_BASE_LABELS[expected]))
+
+
+def _record_compat_id(profile: DoviProfile, routing: P7RoutingDecision | None) -> int | None:
+    """Compatibilité annoncée dans le record Matroska : celle de l'image de base réellement écrite (P8.4 sur une
+    base HLG, P8.1 sinon) ; profil « P8.0 » : lue dans le RPU."""
+    if profile != DoviProfile.P8_1:
+        return None
+    sub_profile = routing.sub_profile if routing is not None else DoviSubProfile.UNKNOWN
+    return {DoviSubProfile.P8_4: 4, DoviSubProfile.P8_2: 2}.get(sub_profile, 1)
+
+
 @dataclass(frozen=True)
 class ValidationContext:
     flags: HDRFlags
@@ -525,6 +557,20 @@ class ValidationContext:
     film1_needs_sdr_to_hdr10: bool = False
     film2_has_hdr10_reference: bool = False
     film1_has_dovi: bool = False
+    #: Transfert de Film 1 lu par MediaInfo (« PQ », « HLG »…), vide si inconnu.
+    film1_transfer: str = ""
+
+    @property
+    def output_base_transfer(self) -> str:
+        """Transfert de l'image de base écrite : « pq » (Film 1 PQ ou SDR converti en HDR10), « hlg », ou vide."""
+        if self.film1_needs_sdr_to_hdr10:
+            return "pq"
+        transfer = self.film1_transfer.lower()
+        if "hlg" in transfer or "arib" in transfer:
+            return "hlg"
+        if any(key in transfer for key in ("pq", "2084")):
+            return "pq"
+        return ""
 
 
 @dataclass
@@ -889,6 +935,8 @@ class MergeDoviWorkflow(QObject):
 
             # 2 — Détection sous-profil DV de Film 2 (P5/P7 FEL/MEL/P8.x)
             routing = self._step_detect_dovi(film2, flags)
+            if routing is not None:
+                _check_dovi_base(routing.sub_profile, validation.output_base_transfer)
             self._check_cancel()
 
             # 2-bis — Auto-bump du profil cible : si conversion P7/P5 imposée
@@ -1058,6 +1106,8 @@ class MergeDoviWorkflow(QObject):
                 film2=film2,
                 static_hdr_applied=static_applied,
                 dovi_profile=effective_profile,
+                dovi_compat_id=_record_compat_id(effective_profile, routing),
+                base_transfer=validation.output_base_transfer,
                 static_hdr_metadata=chosen_static,
                 extra_subtitle_files=extra_subtitle_files,
                 preserve_film1_dovi=validation.film1_has_dovi and not flags.has_dovi,
@@ -1323,6 +1373,7 @@ class MergeDoviWorkflow(QObject):
             film1_needs_sdr_to_hdr10=film1_needs_sdr_to_hdr10,
             film2_has_hdr10_reference=film2_has_hdr10_reference,
             film1_has_dovi=film1_has_dovi,
+            film1_transfer=transfer1,
         )
 
     @staticmethod
@@ -2487,6 +2538,8 @@ class MergeDoviWorkflow(QObject):
         film2: Path | None = None,
         static_hdr_applied: bool = False,
         dovi_profile: DoviProfile = DoviProfile.P8_1,
+        dovi_compat_id: int | None = 1,
+        base_transfer: str = "pq",
         static_hdr_metadata: StaticHdrMetadata | None = None,
         extra_subtitle_files: tuple[Path, ...] = (),
         preserve_film1_dovi: bool = False,
@@ -2503,10 +2556,7 @@ class MergeDoviWorkflow(QObject):
 
         dovi_record = None
         if flags.has_dovi and paths.film2_rpu.exists():
-            dovi_record = self._build_dovi_record_from_rpu(
-                paths.film2_rpu,
-                forced_compat_id=1 if dovi_profile == DoviProfile.P8_1 else None,
-            )
+            dovi_record = self._build_dovi_record_from_rpu(paths.film2_rpu, forced_compat_id=dovi_compat_id)
         elif preserve_film1_dovi:
             dovi_record = self._film1_dovi_record(film1, final_hevc)
             if dovi_record is None:
@@ -2525,7 +2575,7 @@ class MergeDoviWorkflow(QObject):
 
         colour_element = b""
         if static_hdr_metadata and (static_hdr_metadata.master_display or static_hdr_metadata.max_cll):
-            colour_element = _build_colour_element_from_static_hdr(static_hdr_metadata)
+            colour_element = _build_colour_element_from_static_hdr(static_hdr_metadata, base_transfer=base_transfer)
 
         # 1. Propriétés vidéo de film1 (résolution, format d'affichage, langue)
         video_props = self._read_video_track_props(film1)

@@ -169,10 +169,14 @@ def _compiled_pattern(template: str) -> re.Pattern[str] | None:
         return None
 
     parts: list[str] = []
+    seen: set[str] = set()
     cursor = 0
     for match in matches:
+        name = match.group(1)
         parts.append(re.escape(template[cursor:match.start()]))
-        parts.append(f"(?P<{match.group(1)}>.+?)")
+        # Paramètre répété : même valeur aux deux endroits (référence arrière, un groupe nommé par paramètre).
+        parts.append(f"(?P={name})" if name in seen else f"(?P<{name}>.+?)")
+        seen.add(name)
         cursor = match.end()
     parts.append(re.escape(template[cursor:]))
     return re.compile("^" + "".join(parts) + "$")

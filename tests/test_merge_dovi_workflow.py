@@ -964,3 +964,62 @@ def test_start_refuses_reserved_destination_before_workspace(tmp_path, monkeypat
         holder.release()
     assert failures and failures[0][0] == WorkflowStep.VALIDATION
     assert "déjà en cours d'écriture" in failures[0][1]
+
+
+# --- Image de base du RPU de Film 2 face à celle de Film 1 -----------------------------------------------
+
+
+@pytest.mark.parametrize(("transfer", "sdr", "expected"), [
+    ("PQ", False, "pq"), ("SMPTE ST 2084", False, "pq"), ("HLG", False, "hlg"), ("arib-std-b67", False, "hlg"),
+    ("BT.709", True, "pq"), ("", False, ""),
+])
+def test_output_base_transfer(transfer: str, sdr: bool, expected: str) -> None:
+    from core.workflows.merge_dovi import HDRFlags, StaticHdrMetadata, ValidationContext
+
+    context = ValidationContext(HDRFlags(has_dovi=True), StaticHdrMetadata(), StaticHdrMetadata(),
+                                film1_needs_sdr_to_hdr10=sdr, film1_transfer=transfer)
+    assert context.output_base_transfer == expected
+
+
+@pytest.mark.parametrize(("sub_profile", "base", "refused"), [
+    ("P8_4", "pq", True), ("P8_2", "pq", True), ("P8_1", "hlg", True), ("P7_MEL", "hlg", True),
+    ("P5", "hlg", True), ("P8_4", "hlg", False), ("P8_1", "pq", False), ("P7_FEL", "pq", False),
+    ("P8_0", "hlg", False), ("UNKNOWN", "pq", False), ("P8_4", "", False),
+])
+def test_dovi_base_must_match_film1(sub_profile: str, base: str, refused: bool, french_messages) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.merge_dovi import WorkflowError, WorkflowStep, _check_dovi_base
+
+    profile = getattr(DoviSubProfile, sub_profile)
+    if not refused:
+        _check_dovi_base(profile, base)
+        return
+    with pytest.raises(WorkflowError) as error:
+        _check_dovi_base(profile, base)
+    assert error.value.step is WorkflowStep.DETECT_DOVI
+    assert "« Désactivé »" in str(error.value) and profile.label in str(error.value)
+
+
+def test_record_compat_follows_the_rpu_profile() -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.encode.runtime.dovi_p7_router import P7RoutingDecision
+    from core.workflows.merge_dovi import DoviProfile, _record_compat_id
+
+    def routing(sub_profile: DoviSubProfile) -> P7RoutingDecision:
+        return P7RoutingDecision(False, sub_profile, None, "")
+
+    assert _record_compat_id(DoviProfile.P8_1, routing(DoviSubProfile.P8_4)) == 4
+    assert _record_compat_id(DoviProfile.P8_1, routing(DoviSubProfile.P7_MEL)) == 1
+    assert _record_compat_id(DoviProfile.P8_1, None) == 1
+    assert _record_compat_id(DoviProfile.P8_0, routing(DoviSubProfile.P8_4)) is None
+
+
+def test_colour_element_signals_the_written_base_transfer() -> None:
+    from core.matroska.ebml import uint_element
+    from core.matroska.ids import TRANSFER_CHARACTERISTICS_ID
+    from core.workflows.merge_dovi import StaticHdrMetadata, _build_colour_element_from_static_hdr
+
+    static = StaticHdrMetadata(max_cll="1000,400")
+    hlg = _build_colour_element_from_static_hdr(static, base_transfer="hlg")
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 18) in hlg
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 16) in _build_colour_element_from_static_hdr(static)
