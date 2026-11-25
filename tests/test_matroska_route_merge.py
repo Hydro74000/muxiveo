@@ -237,13 +237,13 @@ def test_incomplete_subtitle_cues_fail_explicitly(tmp_path: Path, monkeypatch) -
 
     source = tmp_path / "cues.mkv"
     _write_av_subtitles(source, subtitle_times=[5_000, 300_000, 590_000])
-    real_positions = MatroskaReader.cue_block_positions
+    real_index = MatroskaReader.cue_block_index
 
-    def partial_positions(self, numbers):
-        positions = real_positions(self, numbers)
-        return {number: set(sorted(values)[:-1]) for number, values in positions.items()}
+    def partial_index(self, numbers):
+        index = real_index(self, numbers)
+        return {number: dict(sorted(values.items())[:-1]) for number, values in index.items()}
 
-    monkeypatch.setattr(MatroskaReader, "cue_block_positions", partial_positions)
+    monkeypatch.setattr(MatroskaReader, "cue_block_index", partial_index)
     monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 2})
     with pytest.raises(ValueError, match="Cues.*incomplet"):
         _assemble(source, tmp_path / "out.mkv", _all_tracks(source))
@@ -258,6 +258,36 @@ def test_subtitle_cues_unused_when_statistics_disagree(tmp_path: Path, monkeypat
     monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 99})
     order = _file_order(_assemble(source, tmp_path / "out.mkv", _all_tracks(source)))
     assert [ms for track, ms in order if track == 3] == [5_000, 10_000]
+
+
+def test_indexed_subtitles_stored_late_are_written_in_presentation_order(tmp_path: Path) -> None:
+    """Cas réel (UHD, PGS) : la source range 308 s après 313 s ; la sortie les écrit à leur place."""
+    from core.matroska.copy_check import block_fingerprints
+    from core.matroska.validation import interleave_warnings, scan_interleave
+
+    source = tmp_path / "late.mkv"
+    _write_av_subtitles(source, subtitle_times=[5_000, 313_000, 308_000, 309_000, 400_000])
+    stored = [ms for track, ms in _file_order(source) if track == 3]
+    assert stored == [5_000, 313_000, 308_000, 309_000, 400_000]  # source mal rangée, Cues complets
+    output = _assemble(source, tmp_path / "out.mkv", _all_tracks(source))
+    order = _file_order(output)
+    assert [ms for track, ms in order if track == 3] == [5_000, 308_000, 309_000, 313_000, 400_000]
+    assert _max_lag_ms(order) == 0
+    assert not interleave_warnings(scan_interleave(output))
+    # Copie fidèle : mêmes blocs de sous-titres, seul leur rang change.
+    assert block_fingerprints(output) == block_fingerprints(source)
+
+
+def test_indexed_blocks_follow_the_given_order(tmp_path: Path) -> None:
+    source = tmp_path / "index.mkv"
+    _write_av_subtitles(source, subtitle_times=[5_000, 313_000, 308_000])
+    reader = MatroskaReader(source)
+    index = reader.cue_block_index({3})[3]
+    assert sorted(index.values()) == [5_000, 308_000, 313_000]  # CueTime = horodatage (échelle 1 ms)
+    assert reader.cue_block_positions({3}) == {3: set(index)}
+    by_time = sorted(index, key=lambda position: (index[position], position))
+    assert [block.timestamp_ms for block in reader.indexed_blocks(by_time, ordered=True)] == [5_000, 308_000, 313_000]
+    assert [block.timestamp_ms for block in reader.indexed_blocks(by_time)] == [5_000, 313_000, 308_000]
 
 
 def test_queue_budget_detaches_the_loaded_route_and_keeps_order(tmp_path: Path, monkeypatch) -> None:
@@ -288,9 +318,9 @@ def test_incomplete_cues_detected_even_when_every_shared_route_is_detached(tmp_p
 
     source = tmp_path / "detached.mkv"
     _write_av_subtitles(source, subtitle_times=[5_000, 300_000, 590_000])
-    real_positions = MatroskaReader.cue_block_positions
-    monkeypatch.setattr(MatroskaReader, "cue_block_positions", lambda self, numbers: {
-        number: set(sorted(values)[:-1]) for number, values in real_positions(self, numbers).items()
+    real_index = MatroskaReader.cue_block_index
+    monkeypatch.setattr(MatroskaReader, "cue_block_index", lambda self, numbers: {
+        number: dict(sorted(values.items())[:-1]) for number, values in real_index(self, numbers).items()
     })
     monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 2})
     # Budget nul : vidéo et audio quittent la passe partagée dès les premiers blocs.
@@ -307,13 +337,13 @@ def test_cue_pointing_to_another_track_is_refused(tmp_path: Path, monkeypatch) -
 
     source = tmp_path / "wrong.mkv"
     _write_av_subtitles(source, subtitle_times=[5_000, 300_000, 590_000])
-    real_positions = MatroskaReader.cue_block_positions
+    real_index = MatroskaReader.cue_block_index
 
     def video_positions(self, numbers):
-        video = sorted(real_positions(self, {1})[1])[:3]
-        return {number: set(video) for number in numbers}
+        video = dict(sorted(real_index(self, {1})[1].items())[:3])
+        return {number: video for number in numbers}
 
-    monkeypatch.setattr(MatroskaReader, "cue_block_positions", video_positions)
+    monkeypatch.setattr(MatroskaReader, "cue_block_index", video_positions)
     monkeypatch.setattr(assembly, "_statistics_frame_counts", lambda _reader: {103: 3})
     with pytest.raises(ValueError, match="désigne un bloc de la piste #1"):
         _assemble(source, tmp_path / "out.mkv", _all_tracks(source))

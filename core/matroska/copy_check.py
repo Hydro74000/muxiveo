@@ -39,11 +39,18 @@ def block_fingerprints(path: Path, *, cancelled: Callable[[], bool] | None = Non
     (``quantize_block``, 1 ms), drapeaux (clé, invisible, discardable),
     CodecState, BlockAdditions, DiscardPadding, mode et nombre de laces, et
     payload brut (en-tête de laçage et tailles compris). Un bloc portant un élément de BlockGroup
-    non représenté lève ``ValueError`` : sa copie ne serait pas fidèle.
+    non représenté lève ``ValueError`` : sa copie ne serait pas fidèle. Sous-titres :
+    suite prise dans l'ordre de présentation (horodatage, puis rang), celui où
+    l'assemblage écrit les blocs indexés d'une source qui les range en retard.
     """
     reader = MatroskaReader(path)
-    numbers = [track.number for track in reader.tracks()]
+    tracks = reader.tracks()
+    numbers = [track.number for track in tracks]
     digests = {number: hashlib.sha256() for number in numbers}
+    # Piste de sous-titres → (horodatage, rang, empreinte du bloc), triés en fin de lecture.
+    subtitles: dict[int, list[tuple[int, int, bytes]]] = {
+        track.number: [] for track in tracks if track.track_type == 17
+    }
     blocks = reader.blocks(first_lace_only=True)
     try:
         for count, block in enumerate(blocks):
@@ -66,14 +73,21 @@ def block_fingerprints(path: Path, *, cancelled: Callable[[], bool] | None = Non
                 bool(block.is_keyframe), bool(block.flags & 0x08), bool(block.flags & 0x01),
                 tuple(references), block.discard_padding_ns, block.lace_count, block.lacing_mode,
             )
-            digest.update(repr(header).encode())
+            pending = subtitles.get(block.track_number)
+            target = hashlib.sha256() if pending is not None else digest
+            target.update(repr(header).encode())
             for part in (block.codec_state, block.block_additions, block.encoded_frames_payload or block.payload):
-                digest.update(len(part).to_bytes(8, "big"))
-                digest.update(part)
+                target.update(len(part).to_bytes(8, "big"))
+                target.update(part)
+            if pending is not None:
+                pending.append((timestamp, len(pending), target.digest()))
     finally:
         close = getattr(blocks, "close", None)
         if callable(close):
             close()
+    for number, pending in subtitles.items():
+        for _timestamp, _rank, block_digest in sorted(pending):
+            digests[number].update(block_digest)
     return tuple(digests[number].hexdigest() for number in numbers)
 
 

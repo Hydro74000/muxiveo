@@ -411,6 +411,7 @@ class MatroskaReader:
     SEEK_POSITION_ID = bytes.fromhex("53ac")
     CUES_ID = bytes.fromhex("1c53bb6b")
     CUE_POINT_ID = bytes.fromhex("bb")
+    CUE_TIME_ID = bytes.fromhex("b3")
     CUE_TRACK_POSITIONS_ID = bytes.fromhex("b7")
     CUE_TRACK_ID = bytes.fromhex("f7")
     CUE_CLUSTER_POSITION_ID = bytes.fromhex("f1")
@@ -1523,15 +1524,27 @@ class MatroskaReader:
         sans Cues, ou si une entrée de ces pistes n'a pas de
         CueRelativePosition (bloc inadressable sans lire tout le Cluster).
         """
+        index = self.cue_block_index(track_numbers)
+        return None if index is None else {number: set(entries) for number, entries in index.items()}
+
+    def cue_block_index(self, track_numbers: set[int]) -> dict[int, dict[tuple[int, int], int]] | None:
+        """Comme :meth:`cue_block_positions`, avec le CueTime de chaque position.
+
+        ``{piste: {(cluster, position relative): CueTime}}``, CueTime en unités
+        de TimestampScale (horodatage absolu du bloc indexé).
+        """
         cues = [item for item in self._metadata_elements() if item.element_id == self.CUES_ID]
         if not cues:
             return None
-        positions: dict[int, set[tuple[int, int]]] = {number: set() for number in track_numbers}
+        positions: dict[int, dict[tuple[int, int], int]] = {number: {} for number in track_numbers}
         for element in cues:
             for point_id, point in payload_children(self.payload(element)):
                 if point_id != self.CUE_POINT_ID:
                     continue
-                for entry_id, entry in payload_children(point):
+                children = list(payload_children(point))
+                cue_time = next((int.from_bytes(value, "big") for child_id, value in children
+                                 if child_id == self.CUE_TIME_ID), 0)
+                for entry_id, entry in children:
                     if entry_id != self.CUE_TRACK_POSITIONS_ID:
                         continue
                     fields = dict(payload_children(entry))
@@ -1540,20 +1553,21 @@ class MatroskaReader:
                         continue
                     if self.CUE_CLUSTER_POSITION_ID not in fields or self.CUE_RELATIVE_POSITION_ID not in fields:
                         return None
-                    positions[number].add((
+                    positions[number].setdefault((
                         int.from_bytes(fields[self.CUE_CLUSTER_POSITION_ID], "big"),
                         int.from_bytes(fields[self.CUE_RELATIVE_POSITION_ID], "big"),
-                    ))
+                    ), cue_time)
         return positions
 
     def indexed_blocks(
-        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False,
+        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False, ordered: bool = False,
     ) -> Iterator["MatroskaBlock"]:
-        """Blocs complets (horodatage, durée, références) aux positions de Cues, dans l'ordre du fichier.
+        """Blocs complets (horodatage, durée, références) aux positions de Cues.
 
-        Comme :meth:`blocks_at`, seuls l'en-tête du Cluster, son Timestamp et le
-        bloc visé sont lus : quelques lectures par bloc, jamais de parcours des
-        Clusters. Une position qui ne désigne pas un bloc lève ``ValueError``.
+        Dans l'ordre du fichier, ou dans l'ordre fourni avec ``ordered`` (doublons
+        ignorés). Comme :meth:`blocks_at`, seuls l'en-tête du Cluster, son
+        Timestamp et le bloc visé sont lus : quelques lectures par bloc, jamais de
+        parcours des Clusters. Une position qui ne désigne pas un bloc lève ``ValueError``.
         """
         segment = self.segment()
         size = self.path.stat().st_size
@@ -1561,7 +1575,7 @@ class MatroskaReader:
         scale_ns = self.timestamp_scale_ns()
         clusters: dict[int, tuple[int, int, int]] = {}
         with self.path.open("rb", buffering=self._SKIPPING_READ_BUFFER) as fh:
-            for position in sorted(set(positions)):
+            for position in (dict.fromkeys(positions) if ordered else sorted(set(positions))):
                 cluster_position, relative = position
                 bounds = clusters.get(cluster_position)
                 if bounds is None:

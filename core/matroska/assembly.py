@@ -168,7 +168,9 @@ class _SharedArtifactRead:
     minutes plus loin dans le fichier ; l'attendre ferait déborder les files des
     autres pistes. Quand les Cues indexent chacun de leurs blocs (nombre égal aux
     statistiques de la piste), ils sont lus directement aux positions indexées,
-    et la lecture partagée vérifie ce compte jusqu'à la fin du fichier.
+    dans l'ordre de présentation (CueTime, puis position) : un sous-titre rangé
+    en retard par la source est écrit à sa place. La lecture partagée vérifie ce
+    compte jusqu'à la fin du fichier.
     """
 
     def __init__(
@@ -198,18 +200,20 @@ class _SharedArtifactRead:
         # Vérification garantie : au moins une piste reste lue par la passe partagée.
         if not sparse or set(sparse) == set(self._by_track):
             return
-        positions = self._reader.cue_block_positions(set(sparse))
-        if positions is None:
+        index = self._reader.cue_block_index(set(sparse))
+        if index is None:
             return
         frame_counts = _statistics_frame_counts(self._reader)
         for number, uid in sparse.items():
-            indexed = positions.get(number) or set()
+            indexed = index.get(number) or {}
             if not indexed or frame_counts.get(uid) != len(indexed):
                 continue
             self._indexed_counts[number] = len(indexed)
+            # Sous-titres sans dépendance entre blocs : ordre de présentation.
+            ordered = tuple(sorted(indexed, key=lambda position: (indexed[position], position)))
             for route in self._by_track[number]:
                 # Lecture à la demande (un bloc en mémoire), une par route.
-                route.own = _indexed_route_stream(self._reader, route, frozenset(indexed))
+                route.own = _indexed_route_stream(self._reader, route, ordered)
 
     def next_packet(self, route: _Route) -> MatroskaMuxPacket | None:
         if not self._prepared:
@@ -310,10 +314,10 @@ class _SharedArtifactRead:
 
 
 def _indexed_route_stream(
-    reader: MatroskaReader, route: _Route, positions: frozenset[tuple[int, int]],
+    reader: MatroskaReader, route: _Route, positions: tuple[tuple[int, int], ...],
 ) -> Iterator[MatroskaMuxPacket]:
-    """Blocs d'une piste lus aux positions de ses Cues ; une Cue visant une autre piste est refusée."""
-    blocks = reader.indexed_blocks(positions, first_lace_only=True)
+    """Blocs d'une piste lus aux positions de ses Cues, dans l'ordre donné ; une Cue visant une autre piste est refusée."""
+    blocks = reader.indexed_blocks(positions, first_lace_only=True, ordered=True)
     try:
         for sequence, block in enumerate(blocks):
             if block.track_number != route.track_number:
