@@ -961,7 +961,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         film2.load_full("décalage voisin plus net sur {count} plan(s) : vérification image par image",
                         count=len(report.better))
     if report.measured and report.share < MIN_CONCORDANCE and film2.full is None:
-        film2.load_full("{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans",
+        film2.load_full("{percent} % seulement de la durée des plans échantillonnés concordante : vérification de tous les plans",
                         percent=f"{100 * report.share:.0f}")
     if film2.full is not None and not full_at_build:
         # Passe complète chargée en cours de validation : glissements découpés par le balayage, validation reprise.

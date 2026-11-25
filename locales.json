@@ -12019,8 +12019,8 @@
     "fra": "Aucun plan vérifiable sur l'image (images noires ou uniformes) : correspondance établie par les coupes.",
     "eng": "No shot can be checked on the picture (black or uniform frames): correspondence established from the cuts."
   },
-  "{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans": {
-    "fra": "{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans",
-    "eng": "only {percent} % of sampled shots concordant: checking every shot"
+  "{percent} % seulement de la durée des plans échantillonnés concordante : vérification de tous les plans": {
+    "fra": "{percent} % seulement de la durée des plans échantillonnés concordante : vérification de tous les plans",
+    "eng": "only {percent} % of the sampled shots' duration concordant: checking every shot"
   }
 }
