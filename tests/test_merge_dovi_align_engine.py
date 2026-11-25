@@ -222,6 +222,31 @@ def test_film_shorter_than_the_sampling_interval_still_checks_a_shot() -> None:
     assert result.identity and not full and result.stats["shots_checked"] >= 1
 
 
+def test_informative_against_flat_picture_counts_as_discordant() -> None:
+    """Plan informatif dans Film 1, noir dans Film 2 : désaccord compté (jamais ignoré)."""
+    rng = np.random.default_rng(55)
+    scenes = film(rng, 30)
+    other = list(scenes)
+    other[10] = Scene(rng, scenes[10].length, black=True)
+    result, _source, _full = run(whole(scenes), whole(other), bars2=4, metadata=metadata_for(whole(scenes)),
+                                 force_full_film2=True)
+    assert result.identity and result.stats["discordant_shots"] == 1
+
+
+def test_windowed_sample_never_refuses_without_checking_every_shot() -> None:
+    """Seul plan échantillonné différent (film court) : passe complète de Film 2 avant tout refus ; les autres
+    plans concordent, la carte est gardée et le plan signalé."""
+    rng = np.random.default_rng(56)
+    scenes = [Scene(rng, 40) for _ in range(12)]
+    film2 = list(scenes)
+    middle = 6
+    film2[middle] = Scene(np.random.default_rng(57), 40)
+    result, source, full = run(whole(scenes), whole(film2), bars2=4, frame_rate=24.0,
+                               metadata=metadata_for(whole(scenes)))
+    assert full and "échantillonnés" in source.full_reason
+    assert result.identity and result.stats["discordant_shots"] == 1
+
+
 def test_film2_without_index_is_read_entirely() -> None:
     rng = np.random.default_rng(8)
     scenes = whole(film(rng))

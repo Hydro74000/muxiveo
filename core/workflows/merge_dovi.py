@@ -1971,7 +1971,7 @@ class MergeDoviWorkflow(QObject):
             os.replace(result.hdr10plus, paths.film2_hdr10plus)
         stats = result.map.stats
         summary = translate_text(
-            "{what} ({percent} % des plans concordants{full})",
+            "{what} (concordance {percent} %{full})",
             what=translate_text("Éditions appliquées et relues") if result.edited else translate_text(
                 "Alignement vérifié"),
             percent=f"{100 * float(stats.get('shot_concordance', 1.0)):.0f}",

@@ -11579,13 +11579,13 @@
     "fra": "Alignement",
     "eng": "Alignment"
   },
-  "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.": {
-    "fra": "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.",
-    "eng": "Automatic: Muxiveo compares the picture of both films, finds frames added or missing (start, end, middle), adapts the active area (L5) to Film 1's framing and aligns L6 with its HDR10, then checks every metadata change against the picture. Film 1 is read in full.\nStrict: both films must have exactly the same number of frames; alignment is not checked."
+  "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie les plans sur l'image : refus seulement si les deux films ne se correspondent pas globalement, tout écart local étant signalé au journal. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.": {
+    "fra": "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins (début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son HDR10, puis vérifie les plans sur l'image : refus seulement si les deux films ne se correspondent pas globalement, tout écart local étant signalé au journal. Film 1 est lu entièrement.\nStrict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification de l'alignement.",
+    "eng": "Automatic: Muxiveo compares the picture of both films, finds frames added or missing (start, end, middle), adapts the active area (L5) to Film 1's framing and aligns L6 with its HDR10, then checks the shots against the picture: refused only when the two films do not match overall, every local difference being reported in the log. Film 1 is read in full.\nStrict: both films must have exactly the same number of frames; alignment is not checked."
   },
-  "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.": {
-    "fra": "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\nSans cette option, des plans de même durée et de luminance compatible permutés entre deux images contrôlées ne seraient pas détectés.",
-    "eng": "Also reads Film 2 in full and confirms every metadata change against the picture.\nWithout this option, shots of the same length and compatible brightness swapped between two checked frames would go undetected."
+  "Lit aussi Film 2 entièrement : tous les plans sont vérifiés sur l'image (sinon un par minute) et les écarts de quelques images sont recherchés image par image.": {
+    "fra": "Lit aussi Film 2 entièrement : tous les plans sont vérifiés sur l'image (sinon un par minute) et les écarts de quelques images sont recherchés image par image.",
+    "eng": "Also reads Film 2 in full: every shot is checked against the picture (otherwise one per minute) and differences of a few frames are searched frame by frame."
   },
   "Flux vidéo de Film 2 introuvable pour l'audit de ses métadonnées.": {
     "fra": "Flux vidéo de Film 2 introuvable pour l'audit de ses métadonnées.",
@@ -11991,17 +11991,17 @@
     "fra": "{count} plan(s) cadré(s) autrement dans les deux films (cadrage propre au plan : décalage jusqu'à {pixels} px, échelle {scales}) : contenu vérifié sur leur cadrage.",
     "eng": "{count} shot(s) framed differently in the two films (shot-specific framing: offset up to {pixels} px, scale {scales}): content checked on their own framing."
   },
-  "{what} ({percent} % des plans concordants{full})": {
-    "fra": "{what} ({percent} % des plans concordants{full})",
-    "eng": "{what} ({percent} % of shots matching{full})"
+  "{what} (concordance {percent} %{full})": {
+    "fra": "{what} (concordance {percent} %{full})",
+    "eng": "{what} (concordance {percent} %{full})"
   },
-  "Films non concordants : {percent} % seulement des plans vérifiés correspondent à l'image au décalage trouvé (plans {ranges}).": {
-    "fra": "Films non concordants : {percent} % seulement des plans vérifiés correspondent à l'image au décalage trouvé (plans {ranges}).",
-    "eng": "Films not matching: only {percent} % of the checked shots match the picture at the offset found (shots {ranges})."
+  "Films non concordants : {percent} % seulement de la durée des plans vérifiés correspond à l'image au décalage trouvé (plans {ranges}).": {
+    "fra": "Films non concordants : {percent} % seulement de la durée des plans vérifiés correspond à l'image au décalage trouvé (plans {ranges}).",
+    "eng": "Films do not match: only {percent} % of the checked shots' duration matches the picture at the offset found (shots {ranges})."
   },
-  "Concordance de l'image : {percent} % des plans vérifiés ({count} plans).": {
-    "fra": "Concordance de l'image : {percent} % des plans vérifiés ({count} plans).",
-    "eng": "Picture match: {percent} % of the checked shots ({count} shots)."
+  "Concordance de l'image : {percent} % de la durée des plans vérifiés ({count} plans).": {
+    "fra": "Concordance de l'image : {percent} % de la durée des plans vérifiés ({count} plans).",
+    "eng": "Picture concordance: {percent} % of the checked shots' duration ({count} shots)."
   },
   "{count} plan(s) ou passage(s) non concordant(s) (version propre à un master, fondu, image très sombre) : métadonnées selon le décalage de leur segment (images de Film 1 : {ranges}).": {
     "fra": "{count} plan(s) ou passage(s) non concordant(s) (version propre à un master, fondu, image très sombre) : métadonnées selon le décalage de leur segment (images de Film 1 : {ranges}).",
@@ -12018,5 +12018,9 @@
   "Aucun plan vérifiable sur l'image (images noires ou uniformes) : correspondance établie par les coupes.": {
     "fra": "Aucun plan vérifiable sur l'image (images noires ou uniformes) : correspondance établie par les coupes.",
     "eng": "No shot can be checked on the picture (black or uniform frames): correspondence established from the cuts."
+  },
+  "{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans": {
+    "fra": "{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans",
+    "eng": "only {percent} % of sampled shots concordant: checking every shot"
   }
 }

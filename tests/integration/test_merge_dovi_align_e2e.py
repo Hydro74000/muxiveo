@@ -520,7 +520,7 @@ def test_windowed_path_then_d6(qt_app, tmp_path: Path) -> None:
     mapping = _shifted(16, _total(shots))
     result = _merge(qt_app, tmp_path / "w", film1, film2, AlignmentOptions())
     _check_output(result, tmp_path / "w", film2, mapping)
-    assert _logged(result, "Concordance de l'image : 100 % des plans vérifiés")
+    assert _logged(result, "Concordance de l'image : 100 % de la durée des plans vérifiés")
     assert not _logged(result, "Passe complète de Film 2")
     d6 = _merge(qt_app, tmp_path / "d6", film1, film2, AlignmentOptions(verify_film2=True))
     _check_output(d6, tmp_path / "d6", film2, mapping)

@@ -409,7 +409,8 @@ class _ConfigSection(QWidget):
         self._align_combo.setToolTip(
             "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins "
             "(début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son "
-            "HDR10, puis vérifie chaque changement de métadonnées sur l'image. Film 1 est lu entièrement.\n"
+            "HDR10, puis vérifie les plans sur l'image : refus seulement si les deux films ne se correspondent "
+            "pas globalement, tout écart local étant signalé au journal. Film 1 est lu entièrement.\n"
             "Strict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification "
             "de l'alignement."
         )
@@ -419,9 +420,8 @@ class _ConfigSection(QWidget):
 
         self._verify_cb = QCheckBox("Vérifier Film 2 image par image (plus lent)")
         self._verify_cb.setToolTip(
-            "Lit aussi Film 2 entièrement et confirme chaque changement de métadonnées sur l'image.\n"
-            "Sans cette option, des plans de même durée et de luminance compatible permutés entre deux "
-            "images contrôlées ne seraient pas détectés."
+            "Lit aussi Film 2 entièrement : tous les plans sont vérifiés sur l'image (sinon un par minute) et "
+            "les écarts de quelques images sont recherchés image par image."
         )
         self._verify_cb.setStyleSheet(_checkbox_style())
         cl.addWidget(self._verify_cb)

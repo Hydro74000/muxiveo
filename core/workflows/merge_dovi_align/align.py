@@ -725,11 +725,13 @@ class ShotReport:
 
 def _validate_shots(ctx: _Context, built: list[Segment], every: int) -> ShotReport:
     """Chaque plan de Film 1 (partie d'un segment) : bloc central d'au plus ``SHOT_SAMPLE`` images comparé à
-    Film 2 au décalage du segment (cadrage propre au plan compris). Concordant si la corrélation médiane des
-    paires comparables atteint ``CONFIRM_CORRELATION`` ; « décalage voisin » si un décalage ±1…±rayon fait mieux
-    de plus de ``SLIP_EFFECT`` en médiane tout en concordant ; sans paire comparable (noir, uniforme) : non
-    mesuré. Part concordante pondérée par la durée des plans. Lecture par fenêtres (chacune un décodage) : plans
-    échantillonnés, un toutes les ``every`` images de Film 1, dans la moitié du budget restant."""
+    Film 2 au décalage du segment (cadrage propre au plan compris). Paires mesurées : comparables (corrélation)
+    ou en désaccord (image informative face à une image plate : −1) ; concordant si leur médiane atteint
+    ``CONFIRM_CORRELATION`` ; « décalage voisin » si un décalage ±1…±rayon fait mieux de plus de ``SLIP_EFFECT``
+    en médiane sur les mêmes images tout en concordant ; sans paire mesurée (noir des deux côtés) : non mesuré.
+    Part concordante pondérée par la durée des plans. Lecture par fenêtres (chacune un décodage) : plans
+    échantillonnés, un toutes les ``every`` images de Film 1, dans la moitié du budget restant (cadrage compris) ;
+    l'échantillon s'arrête avant d'épuiser le budget."""
     n1 = len(ctx.film1)
     bounds = np.unique(np.concatenate([ctx.cuts1, [0, n1]]))
     parts: list[tuple[Segment, int, int]] = []
@@ -737,30 +739,35 @@ def _validate_shots(ctx: _Context, built: list[Segment], every: int) -> ShotRepo
         inside = bounds[(bounds > seg.film1_start) & (bounds < seg.film1_end)]
         edges = np.concatenate([[seg.film1_start], inside, [seg.film1_end]])
         parts += [(seg, a, b) for a, b in zip(edges[:-1].tolist(), edges[1:].tolist())]
+    cost = SHOT_SAMPLE + 2 * POSITION_RADIUS + (REFRAME_SAMPLE if ctx._can_reframe() else 0)
     if ctx.film2.full is None and parts:
         ends = np.asarray([b for _seg, _a, b in parts])
         end = int(ends[-1])
         times = np.arange(min(every, end) // 2, end, max(1, every))    # au moins le milieu d'un film court
         chosen = np.unique(np.searchsorted(ends, times, side="right"))
         chosen = chosen[chosen < len(parts)]
-        limit = max(1, ctx.film2.remaining // (2 * (SHOT_SAMPLE + 2 * POSITION_RADIUS)))
+        limit = max(1, ctx.film2.remaining // (2 * cost))
         if chosen.size > limit:
             chosen = np.unique(chosen[np.linspace(0, chosen.size - 1, limit).round().astype(np.int64)])
         parts = [parts[k] for k in chosen.tolist()]
     center = POSITION_RADIUS
     report = ShotReport()
     total = agreeing = 0
+    windowed = ctx.film2.full is None
     for seg, a, b in parts:
+        if windowed and report.measured and ctx.film2.remaining < 2 * cost:
+            break                                   # échantillon arrêté avant d'épuiser le budget des fenêtres
         middle = (a + b) // 2
         sample = ctx.inside(np.arange(max(a, middle - SHOT_SAMPLE // 2), min(b, middle + SHOT_SAMPLE // 2)),
                             seg.offset)
         if sample.size == 0:
             continue
-        corr, both, _one = ctx.checked_scores(sample, seg.offset, POSITION_RADIUS)
-        comparable = both[:, center]
-        if not np.any(comparable):
+        corr, both, one = ctx.checked_scores(sample, seg.offset, POSITION_RADIUS)
+        measured = both | one
+        values = np.where(both, corr, -1.0)         # désaccord informative / plate : −1
+        if not np.any(measured[:, center]):
             continue
-        here = float(np.median(corr[comparable, center]))
+        here = float(np.median(values[measured[:, center], center]))
         weight = b - a
         total += weight
         report.measured += 1
@@ -769,11 +776,11 @@ def _validate_shots(ctx: _Context, built: list[Segment], every: int) -> ShotRepo
         else:
             report.discordant.append((a, b))
         for column in range(2 * POSITION_RADIUS + 1):
-            pairs = comparable & both[:, column]
+            pairs = measured[:, center] & measured[:, column]
             if column == center or not np.any(pairs):
                 continue
-            rival = float(np.median(corr[pairs, column]))
-            if rival >= CONFIRM_CORRELATION and rival - here > SLIP_EFFECT:
+            rival = float(np.median(values[pairs, column]))
+            if rival >= CONFIRM_CORRELATION and rival - float(np.median(values[pairs, center])) > SLIP_EFFECT:
                 report.better.append((a, b))
                 break
     report.share = agreeing / total if total else 1.0
@@ -945,21 +952,28 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     # Validation plan par plan : un échantillon d'images de chaque plan au décalage de son segment (cadrage propre
     # du plan compris). Refus seulement si les films ne se correspondent pas globalement ; tout écart local est
     # signalé.
+    covered = np.zeros(n1, dtype=bool)
+    for seg in built:
+        covered[seg.film1_start:seg.film1_end] = True
+    uncovered = _uncovered(ctx, covered, built)
     report = _validate_shots(ctx, built, max(1, int(SAMPLE_SECONDS * fps)))
     if report.better and film2.full is None:
         film2.load_full("décalage voisin plus net sur {count} plan(s) : vérification image par image",
                         count=len(report.better))
+    if report.measured and report.share < MIN_CONCORDANCE and film2.full is None:
+        film2.load_full("{percent} % seulement des plans échantillonnés concordants : vérification de tous les plans",
+                        percent=f"{100 * report.share:.0f}")
     if film2.full is not None and not full_at_build:
         # Passe complète chargée en cours de validation : glissements découpés par le balayage, validation reprise.
         say(translate_text("Vérification reprise sur la passe complète de Film 2."))
         return align(film1, metadata, film2, frame_rate=frame_rate, hooks=hooks, log=log)
     if report.measured and report.share < MIN_CONCORDANCE:
         raise AlignmentError(translate_text(
-            "Films non concordants : {percent} % seulement des plans vérifiés correspondent à l'image au décalage "
-            "trouvé (plans {ranges}).", percent=f"{100 * report.share:.0f}", ranges=_ranges(report.discordant)),
+            "Films non concordants : {percent} % seulement de la durée des plans vérifiés correspond à l'image au "
+            "décalage trouvé (plans {ranges}).", percent=f"{100 * report.share:.0f}", ranges=_ranges(report.discordant)),
             tuple(report.discordant[:20]))
     if report.measured:
-        say(translate_text("Concordance de l'image : {percent} % des plans vérifiés ({count} plans).",
+        say(translate_text("Concordance de l'image : {percent} % de la durée des plans vérifiés ({count} plans).",
                            percent=f"{100 * report.share:.0f}", count=report.measured))
     else:
         say("[WARN] " + translate_text(
@@ -986,10 +1000,6 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
             count=len({shot for shot, _d in ctx.reframed}), pixels=f"{largest:.0f}",
             scales="–".join(f"{v:.2f}" for v in (min(f[0] for f in ctx.reframed.values()),
                                                   max(f[0] for f in ctx.reframed.values())))))
-    covered = np.zeros(n1, dtype=bool)
-    for seg in built:
-        covered[seg.film1_start:seg.film1_end] = True
-    uncovered = _uncovered(ctx, covered, built)
     used = np.zeros(n2, dtype=bool)
     for seg in built:
         used[seg.film2_start:seg.film2_end] = True
