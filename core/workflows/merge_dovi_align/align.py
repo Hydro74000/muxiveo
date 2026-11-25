@@ -619,6 +619,30 @@ class _Context:
             self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
 
+    @staticmethod
+    def _symmetric(corr: np.ndarray, both: np.ndarray, frames: np.ndarray,
+                   center: int) -> tuple[np.ndarray, np.ndarray]:
+        """Décalages rivaux évalués symétriquement : pour l'image ``r`` de Film 1 et le rival ``+k``, moyenne de
+        (``r``, image de Film 2 ``j + k``) et de (``r − k``, image de Film 2 ``j``) quand les deux paires sont
+        comparables (sinon non comparable) ; colonne testée inchangée. Dans un fondu, l'image de Film 2 la plus
+        tardive (plus contrastée) corrèle mieux quel que soit le rang ; ce biais et celui de Film 1 se compensent,
+        alors qu'un glissement de ``k`` images reste visible dans les deux termes."""
+        out = np.full(corr.shape, -1.0, dtype=np.float32)
+        ok = np.zeros(both.shape, dtype=bool)
+        out[:, center], ok[:, center] = corr[:, center], both[:, center]
+        position = {int(frame): row for row, frame in enumerate(frames.tolist())}
+        for column in range(corr.shape[1]):
+            if column == center:
+                continue
+            k = column - center
+            for row, frame in enumerate(frames.tolist()):
+                other = position.get(int(frame) - k)
+                if other is None or not both[row, column] or not both[other, column]:
+                    continue
+                out[row, column] = (corr[row, column] + corr[other, column]) / 2.0
+                ok[row, column] = True
+        return out, ok
+
     def _can_reframe(self) -> bool:
         """Marge de glissement entre les zones actives (verticale ou horizontale) : un recadrage propre à un plan
         n'est admissible que si la zone de l'un des films peut se déplacer dans celle de l'autre."""
@@ -787,9 +811,14 @@ class _Context:
             return True
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
-        if self._can_reframe():
-            # Position : chaque décalage comparé à son meilleur cadrage admissible (contenu contrôlé ci-dessus).
-            corr, both, one = self.checked_scores(indices, offset, POSITION_RADIUS, compare=True)
+        # Position : fenêtre élargie (évaluations symétriques des rivaux), chaque décalage à son meilleur cadrage
+        # admissible si un recadrage l'est (contenu contrôlé ci-dessus).
+        wide = self.inside(np.arange(i - 2 * POSITION_RADIUS if lo is None else max(lo, i - 2 * POSITION_RADIUS),
+                                     i + 2 * POSITION_RADIUS if hi is None else min(hi, i + 2 * POSITION_RADIUS)),
+                           offset)
+        corr, both, one = self.checked_scores(wide, offset, POSITION_RADIUS, compare=self._can_reframe())
+        indices = wide
+        rival_corr, rival_ok = self._symmetric(corr, both, wide, center)
         if self._static(i):
             return True
         unresolved = False
@@ -800,21 +829,29 @@ class _Context:
                 continue
             targets = frame + offset + crossing - center
             possible = crossing[(targets >= 0) & (targets < self.film2.frames)]
-            comparable = possible[both[row[0], possible]]
-            # Rival en désaccord établi (informative face à plate) : éliminé ; ni comparable ni en désaccord :
-            # comparaison inconnue.
-            if np.any(~both[row[0], possible] & ~one[row[0], possible]):
+            here = float(corr[row[0], center])
+            # Deux lectures des rivaux : brute (une permutation d'images saute aux yeux) et symétrique (biais de
+            # netteté d'un fondu compensé). Contredite si l'une dépasse le bruit ; établie si les deux restent
+            # derrière au-delà du bruit. Rival en désaccord établi (informative face à plate) : éliminé ; ni
+            # comparable ni en désaccord : comparaison inconnue.
+            leads = []
+            for values, ok in ((corr, both), (rival_corr, rival_ok)):
+                comparable = possible[ok[row[0], possible]]
+                if np.any(~ok[row[0], possible] & ~one[row[0], possible]):
+                    unresolved = True
+                if comparable.size == 0:
+                    continue
+                rival = float(values[row[0], comparable].max())
+                noise = max(POSITION_NOISE, 1.0 - max(rival, here))
+                if rival - here > noise:
+                    return False                # un voisin nettement meilleur : position contredite
+                leads.append(here - rival > max(POSITION_LEAD, noise))
+            if leads and all(leads) and len(leads) == 2:
+                continue                        # avance au-delà du bruit dans les deux lectures : établie
+            if not leads and bool(np.all(one[row[0], possible])):
+                continue                        # tous les rivaux en désaccord établi : éliminés
+            if possible.size:
                 unresolved = True
-            if comparable.size == 0:
-                continue
-            rival = float(corr[row[0], comparable].max())
-            lead = float(corr[row[0], center]) - rival
-            noise = max(POSITION_NOISE, 1.0 - max(rival, float(corr[row[0], center])))
-            if lead > max(POSITION_LEAD, noise):
-                continue                        # avance au-delà du bruit : position établie
-            if -lead > noise:
-                return False                    # un voisin nettement meilleur : position contredite
-            unresolved = True
         if not unresolved:
             return True
         verdict = self._continuity(i, offset, lo, hi)
@@ -864,6 +901,7 @@ class _Context:
                 continue                        # côté fixe sur les bandes comparées : position sans effet
             if not np.any(both[:, center]):
                 continue                        # côté sans image comparable (noir, uniforme) : sans effet
+            rival_corr, rival_ok = self._symmetric(corr, both, idx, center)
             for column in range(2 * POSITION_RADIUS + 1):
                 if column == center:
                     continue
@@ -872,13 +910,13 @@ class _Context:
                 if not np.any(inside):
                     continue                    # candidat hors du film : impossible
                 expected.add(column)
-                pairs = inside & both[:, center] & both[:, column]
+                pairs = inside & both[:, center] & rival_ok[:, column]
                 if np.any(inside & both[:, center] & one[:, column]):
                     settled.add(column)         # désaccord établi avec ce voisin sur au moins une image
                 if not np.any(pairs):
                     unknown = unknown or column not in settled
                     continue
-                diff = corr[pairs, center].astype(np.float64) - corr[pairs, column]
+                diff = corr[pairs, center].astype(np.float64) - rival_corr[pairs, column]
                 if diff.size >= FRAME_RUN and float(diff.mean()) < -significant(diff):
                     return "contradicted"       # voisin significativement meilleur d'un côté : glissement
                 pooled.setdefault(column, []).append(diff)
@@ -997,14 +1035,26 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
 
 
 def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> bool:
-    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) : ``other`` garde son avance
-    sur ``offset`` pour chaque paire comparable des deux côtés. Sinon (translation et décalage temporel
-    interchangeables, panoramique dans un plan recadré), l'écart est ignoré : le décalage du segment est gardé et
-    tout point de changement du passage reste confirmé par l'image."""
+    """Écart local confirmé avec le cadrage propre à chaque décalage (plan recadré) et une évaluation symétrique
+    du décalage ``other = offset + k`` (moyenne de l'image ``r`` et de l'image ``r − k`` de Film 1 face à leur
+    image de Film 2 à ce décalage : biais de netteté d'un fondu compensé) : ``other`` garde son avance sur
+    ``offset`` pour chaque paire comparable. Sinon, l'écart est ignoré : le décalage du segment est gardé et tout
+    point de changement du passage reste confirmé par l'image."""
+    k = other - offset
+    rows = np.union1d(run, run - k)
+    rows = rows[(rows >= 0) & (rows < len(ctx.film1))]
     base, base_both, _one = ctx.checked_scores(run, offset, 0, compare=True)
-    alt, alt_both, _alt_one = ctx.checked_scores(run, other, 0, compare=True)
-    pairs = base_both[:, 0] & alt_both[:, 0]
-    return bool(np.any(pairs)) and bool(np.all(alt[pairs, 0] - base[pairs, 0] > 0.02))
+    alt, alt_both, _alt_one = ctx.checked_scores(rows, other, 0, compare=True)
+    position = {int(frame): n for n, frame in enumerate(rows.tolist())}
+    values, comparable = [], []
+    for n, frame in enumerate(run.tolist()):
+        a, b = position.get(int(frame)), position.get(int(frame) - k)
+        ok = (a is not None and b is not None and bool(base_both[n, 0]) and bool(alt_both[a, 0])
+              and bool(alt_both[b, 0]))
+        comparable.append(ok)
+        values.append((float(alt[a, 0]) + float(alt[b, 0])) / 2.0 - float(base[n, 0]) if ok else 0.0)
+    leads = np.asarray(values)[np.asarray(comparable, dtype=bool)]
+    return bool(leads.size) and bool(np.all(leads > 0.02))
 
 
 # --- Point d'entrée ------------------------------------------------------------------------------------
