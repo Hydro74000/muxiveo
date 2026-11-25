@@ -528,15 +528,14 @@ _BASE_LABELS = {"pq": "PQ (HDR10)", "hlg": "HLG", "sdr": "SDR", "ipt": "IPT (Dol
 def _check_dovi_base(sub_profile: DoviSubProfile, base: str) -> None:
     """Refus si le RPU de Film 2 suppose une autre image de base que celle de Film 1 (courbes de reconstruction
     P8.4 HLG→PQ, P8.2 SDR→PQ, ou P8.1 identité) : aucune conversion de RPU n'existe entre ces profils."""
+    if base == "ipt":                   # base P5 : aucun RPU de Film 2 ne s'y applique, quel que soit son profil
+        raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
+            "Film 1 est en Dolby Vision P5 : son image de base est en couleurs IPT, incompatible avec le RPU de "
+            "Film 2. Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage (une source P5 réencodée est "
+            "convertie en HDR10), puis utilisez le fichier obtenu comme Film 1."))
     expected = _RPU_BASE.get(sub_profile, "")
     if not expected or not base or expected == base:
         return
-    if base == "ipt":
-        raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
-            "Film 1 est en Dolby Vision P5 : son image de base est en couleurs IPT, le RPU de Film 2 suppose une "
-            "image {expected}. Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage (une source P5 "
-            "réencodée est convertie en HDR10), puis utilisez le fichier obtenu comme Film 1.",
-            expected=_BASE_LABELS[expected]))
     raise WorkflowError(WorkflowStep.DETECT_DOVI, translate_text(
         "Dolby Vision {profile} de Film 2 : son RPU suppose une image de base {expected}, celle de Film 1 est "
         "{base}. Le RPU ne peut pas être converti (dovi_tool ne retire pas les courbes de reconstruction d'un "
@@ -1340,6 +1339,11 @@ class MergeDoviWorkflow(QObject):
             and self._has_dovi_rpu(film1)
         ):
             film1_has_dovi = True
+        # Injection DV demandée : profil de Film 1, même non signalé (une base P5 est en couleurs IPT).
+        film1_dovi_profile = DoviSubProfile.UNKNOWN
+        if flags.has_dovi and not film1_needs_sdr_to_hdr10:
+            film1_dovi_profile = self._film1_dovi_profile(film1, signalled=film1_has_dovi)
+            film1_has_dovi = film1_has_dovi or film1_dovi_profile != DoviSubProfile.UNKNOWN
         if film1_has_dovi:
             if flags.has_dovi:
                 self.step_progress.emit(
@@ -1384,8 +1388,7 @@ class MergeDoviWorkflow(QObject):
             film2_has_hdr10_reference=film2_has_hdr10_reference,
             film1_has_dovi=film1_has_dovi,
             film1_transfer=transfer1,
-            film1_dovi_profile=self._film1_dovi_profile(film1) if film1_has_dovi and flags.has_dovi
-            else DoviSubProfile.UNKNOWN,
+            film1_dovi_profile=film1_dovi_profile,
         )
 
     @staticmethod
@@ -3464,13 +3467,41 @@ class MergeDoviWorkflow(QObject):
             exact=True, run_command=self._run_probe,
         )
 
-    def _film1_dovi_profile(self, film1: Path) -> DoviSubProfile:
-        """Sous-profil Dolby Vision de Film 1 (MediaInfo, sinon dovi_tool) : une base P5 est en couleurs IPT."""
+    def _film1_dovi_profile(self, film1: Path, *, signalled: bool) -> DoviSubProfile:
+        """Sous-profil Dolby Vision de Film 1 (une base P5 est en couleurs IPT) : MediaInfo si le Dolby Vision est
+        signalé, sinon (ou profil illisible) premier RPU des premières images, lecture bornée ; UNKNOWN sans RPU."""
         detector = DoviProfileDetector(dovi_tool_bin=self._bins["dovi_tool"])
-        result = detector.detect_from_mediainfo(self._load_mediainfo_video(film1))
-        if result.sub_profile == DoviSubProfile.UNKNOWN:
-            result = detector.detect_from_dovi_tool(film1)
-        return result.sub_profile
+        if signalled:
+            result = detector.detect_from_mediainfo(self._load_mediainfo_video(film1))
+            if result.sub_profile != DoviSubProfile.UNKNOWN:
+                return result.sub_profile
+        with tempfile.TemporaryDirectory(prefix="dovi_probe_") as tmp:
+            head, rpu = Path(tmp) / "head.hevc", Path(tmp) / "rpu.bin"
+            try:
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                self._run_probe(
+                    [self._bins["ffmpeg"], "-nostdin", "-v", "error", "-y", "-i", str(film1), "-map", "0:v:0",
+                     "-c:v", "copy", "-bsf:v", "hevc_mp4toannexb", "-frames:v", "8", "-f", "hevc", str(head)],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
+                if not head.is_file() or head.stat().st_size == 0:
+                    return DoviSubProfile.UNKNOWN
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                self._run_probe(
+                    [self._bins["dovi_tool"], "extract-rpu", "-i", str(head), "-l", "1", "-o", str(rpu)],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
+                if not rpu.is_file() or rpu.stat().st_size == 0:
+                    return DoviSubProfile.UNKNOWN
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                info = self._run_probe(
+                    [self._bins["dovi_tool"], "info", "-i", str(rpu), "--summary"],
+                    capture_output=True, check=False, timeout=120, **subprocess_text_kwargs(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return DoviSubProfile.UNKNOWN
+        text = str(getattr(info, "stdout", "") or "") + str(getattr(info, "stderr", "") or "")
+        return detector.parse_dovi_tool_output(text).sub_profile
 
     def _load_mediainfo_video(self, path: Path) -> dict | None:
         """Charge le track Video du JSON mediainfo (None si indisponible)."""

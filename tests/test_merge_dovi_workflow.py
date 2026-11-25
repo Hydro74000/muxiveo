@@ -988,8 +988,9 @@ def test_p5_film1_refused_with_encode_conversion_hint(french_messages) -> None:
     from core.dovi_profile_detector import DoviSubProfile
     from core.workflows.merge_dovi import WorkflowError, _check_dovi_base
 
-    with pytest.raises(WorkflowError, match="Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage"):
-        _check_dovi_base(DoviSubProfile.P8_1, "ipt")
+    for film2_profile in (DoviSubProfile.P8_1, DoviSubProfile.P8_0, DoviSubProfile.UNKNOWN, DoviSubProfile.P5):
+        with pytest.raises(WorkflowError, match="Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage"):
+            _check_dovi_base(film2_profile, "ipt")
 
 
 @pytest.mark.parametrize(("sub_profile", "base", "refused"), [
@@ -1034,3 +1035,28 @@ def test_colour_element_signals_the_written_base_transfer() -> None:
     hlg = _build_colour_element_from_static_hdr(static, base_transfer="hlg")
     assert uint_element(TRANSFER_CHARACTERISTICS_ID, 18) in hlg
     assert uint_element(TRANSFER_CHARACTERISTICS_ID, 16) in _build_colour_element_from_static_hdr(static)
+
+
+@pytest.mark.parametrize(("rpu_found", "expected"), [(True, "P5"), (False, "UNKNOWN")])
+def test_unsignalled_film1_dovi_profile_read_from_first_frames(tmp_path: Path, rpu_found: bool,
+                                                                expected: str) -> None:
+    """Film 1 dont MediaInfo ne signale pas le Dolby Vision : profil lu sur le premier RPU des 8 premières
+    images (lecture bornée), jamais sur le fichier entier."""
+    from core.dovi_profile_detector import DoviSubProfile
+
+    wf = MergeDoviWorkflow()
+    calls: list[list[str]] = []
+
+    def probe(cmd, **_kwargs):
+        calls.append([str(c) for c in cmd])
+        if "-frames:v" in cmd:
+            Path(cmd[-1]).write_bytes(b"\x00\x00\x00\x01head")
+        elif "extract-rpu" in cmd and rpu_found:
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"rpu")
+        return subprocess.CompletedProcess(cmd, 0, "Summary:\n  Frames: 1\n  Profile: 5\n", "")
+
+    cast(Any, wf)._run_probe = probe
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"")
+    assert wf._film1_dovi_profile(film1, signalled=False) == getattr(DoviSubProfile, expected)
+    assert all(str(film1) not in call or "-frames:v" in call for call in calls)
