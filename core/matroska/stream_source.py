@@ -298,7 +298,7 @@ class StreamedMatroskaReader(MatroskaReader):
         raise self._sequential_only("liste des Clusters")
 
     def indexed_blocks(
-        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False,
+        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False, ordered: bool = False,
     ) -> Iterator[MatroskaBlock]:
         raise self._sequential_only("lecture par les Cues")
 
