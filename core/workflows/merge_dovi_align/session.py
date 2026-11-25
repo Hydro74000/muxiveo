@@ -29,7 +29,7 @@ from .frames import FrameTable, read_frame_table
 from .presence import NalPredicate, PresenceGaps, has_hdr10plus, has_rpu, scan_annexb_presences, scan_matroska_presences
 from .probe import DecoderPreference, Signatures, decode_all, decode_window
 from .process import ProcessHooks
-from .signals import Film2Metadata, combine, hdr10plus_track, rpu_track
+from .signals import Film2Metadata, combine, hdr10plus_track, rpu_render_digests, rpu_track
 from .static_hdr import ResolvedStatic, level6_plan, resolve_static_hdr
 
 _RAW_HEVC = frozenset({".hevc", ".h265", ".265", ".x265"})
@@ -177,7 +177,7 @@ def audit_film2(film2_scan: Path, *, rpu: bool, hdr10plus: bool, hooks: ProcessH
     return scan_annexb_presences(film2_scan, wanted, cancelled=hooks.cancelled)
 
 
-def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, presence: dict[str, PresenceGaps],
+def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Path, presence: dict[str, PresenceGaps],
                   rpu: Path | None, hdr10plus: Path | None, static1: object, static2: object, options: AlignmentOptions,
                   tools: AlignmentTools, work_dir: Path, hooks: ProcessHooks, decoder: DecoderPreference,
                   log: Callable[[str], None], run_tool: Callable[[list[str]], str],
@@ -215,9 +215,10 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
         run_tool([tools.dovi_tool, "export", "-i", str(rpu), "-d", f"all={export}"])
         try:
             analysis = parse_dovi_export(export, cancelled=hooks.cancelled)
+            render = rpu_render_digests(export, cancelled=hooks.cancelled)
         finally:
             export.unlink(missing_ok=True)
-        tracks.append(rpu_track(rpu, analysis.scene_starts, analysis.l1_avg, analysis.l1_max,
+        tracks.append(rpu_track(rpu, analysis.scene_starts, analysis.l1_avg, analysis.l1_max, render_digests=render,
                                 cancelled=hooks.cancelled))
         film2_l5 = np.zeros((analysis.frames, 4), dtype=np.int32)
         for area in analysis.active_areas:
@@ -232,10 +233,10 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int, film2: Path, pres
 
     # 3. Film 1 (passe complète lancée plus tôt) et accès à Film 2.
     log(translate_text("Passe complète de Film 1 : attente de la fin du décodage…"))
-    film1_table, film1 = film1_pass.wait(film1_frames, progress, hooks)
+    film1_table, film1 = film1_pass.wait(film1_frames or 0, progress, hooks)
     log(translate_text("Film 1 analysé ({frames} images, décodage {decoder}).", frames=len(film1),
                        decoder=translate_text(film1.decoder)))
-    if len(film1) != film1_frames:
+    if film1_frames is not None and len(film1) != film1_frames:
         raise AlignmentError(f"Film 1 : {len(film1)} images décodées pour {film1_frames} comptées.")
     film2_table: FrameTable | None = None
     try:

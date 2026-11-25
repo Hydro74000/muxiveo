@@ -11794,5 +11794,13 @@
   "L6 non modifié : plusieurs jeux L6 dont les champs sans valeur statique diffèrent d'une image à l'autre (un seul L6 peut être écrit pour tout le film).": {
     "fra": "L6 non modifié : plusieurs jeux L6 dont les champs sans valeur statique diffèrent d'une image à l'autre (un seul L6 peut être écrit pour tout le film).",
     "eng": "L6 left unchanged: several L6 sets whose fields without a static value differ from frame to frame (only one L6 can be written for the whole film)."
+  },
+  "Mode Automatique : correspondance image par image établie à l'étape d'alignement{counted}.": {
+    "fra": "Mode Automatique : correspondance image par image établie à l'étape d'alignement{counted}.",
+    "eng": "Automatic mode: frame-by-frame correspondence established at the alignment step{counted}."
+  },
+  " (Film 1 compté par sa lecture complète)": {
+    "fra": " (Film 1 compté par sa lecture complète)",
+    "eng": " (Film 1 counted by its full read)"
   }
 }

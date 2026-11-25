@@ -1418,12 +1418,9 @@ class MergeDoviWorkflow(QObject):
 
         verdict = result.metadata_verdict(adjustment) if metadata_requested and not aligned else None
         if aligned and metadata_requested:
-            if result.fc1 is None:
-                raise WorkflowError(step, "Nombre de trames de Film 1 illisible : alignement impossible.")
-            self.step_progress.emit(
-                step,
-                "Mode Automatique : correspondance image par image établie à l'étape d'alignement.",
-            )
+            self.step_progress.emit(step, translate_text(
+                "Mode Automatique : correspondance image par image établie à l'étape d'alignement{counted}.",
+                counted=translate_text(" (Film 1 compté par sa lecture complète)") if result.fc1 is None else ""))
         elif verdict is not None and allow_hdr10_fallback:
             self.step_progress.emit(
                 step,
@@ -1832,7 +1829,7 @@ class MergeDoviWorkflow(QObject):
         self.step_progress.emit(step, translate_text("Analyse de l'image de Film 1 et des métadonnées de Film 2…"))
         try:
             result = run_alignment(
-                film1_pass=film1_pass, film1_frames=int(frame_counts.fc1 or 0), film2=film2, presence=presence,
+                film1_pass=film1_pass, film1_frames=frame_counts.fc1, film2=film2, presence=presence,
                 rpu=rpu, hdr10plus=hdr, static1=static_film1, static2=static_film2, options=options,
                 tools=self._alignment_tools(), work_dir=paths.work_dir, hooks=self._alignment_hooks(),
                 decoder=getattr(self, "_decoder", DecoderPreference(None)),
@@ -1854,6 +1851,9 @@ class MergeDoviWorkflow(QObject):
                                                      error=str(exc))) from exc
         for note in result.notes:
             self.step_progress.emit(step, note)
+        if frame_counts.fc1 is None:
+            # Comptage préalable illisible (flux de transport…) : compte exact de la lecture complète de Film 1.
+            frame_counts.fc1 = result.map.film1_frames
         if result.rpu is not None and result.rpu != paths.film2_rpu:
             os.replace(result.rpu, paths.film2_rpu)
         if result.hdr10plus is not None and result.hdr10plus != paths.film2_hdr10plus:

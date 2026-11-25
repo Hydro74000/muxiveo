@@ -545,7 +545,7 @@ class _Context:
             return "neutral"
         return "ok" if bool(np.all(corr[both[:, 0], 0] >= CONFIRM_CORRELATION)) else "fail"
 
-    def confirm_position(self, i: int, offset: int) -> bool:
+    def confirm_position(self, i: int, offset: int, lo: int | None = None, hi: int | None = None) -> bool:
         """Point de changement à l'image ``i`` de Film 1 (image ``j = i + offset`` de Film 2).
 
         Contenu : chaque paire d'images informatives autour du point corrélée (aucune image informative d'un
@@ -553,8 +553,11 @@ class _Context:
         — l'image ``i - 1`` s'apparie strictement mieux à ``j - 1`` qu'aux images ``j, j + 1…`` qui suivent la
         bascule, l'image ``i`` mieux à ``j`` qu'aux images ``j - 1, j - 2…`` qui la précèdent. Égalité admise
         seulement si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans
-        effet). Aucune image informative des deux côtés (noir, uniforme) : position sans effet."""
-        indices = self.inside(np.arange(i - POSITION_RADIUS, i + POSITION_RADIUS), offset)
+        effet). Aucune image informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` :
+        bornes du segment du point (les images d'un autre segment relèvent d'un autre décalage)."""
+        first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
+        last = i + POSITION_RADIUS if hi is None else min(hi, i + POSITION_RADIUS)
+        indices = self.inside(np.arange(first, last), offset)
         if indices.size == 0:
             return False
         corr, both, one = self.pair_scores(indices, offset, POSITION_RADIUS)
@@ -650,7 +653,9 @@ def _frame_scan(ctx: _Context, segment: Segment) -> list[tuple[int, int, int]]:
         corr, both, _one = ctx.pair_scores(chunk, segment.offset, FRAME_BAND)
         masked = np.where(both, corr, -np.inf)
         best[start:start + chunk.size] = np.argmax(masked, axis=1) - FRAME_BAND
-        lead = masked.max(axis=1) - masked[:, FRAME_BAND]
+        center = both[:, FRAME_BAND]
+        # Avance seulement là où l'image du décalage courant est informative (sinon -inf − -inf).
+        lead = np.where(center, masked.max(axis=1) - np.where(center, masked[:, FRAME_BAND], 0.0), 0.0)
         strong[start:start + chunk.size] = (both[:, FRAME_BAND] & (best[start:start + chunk.size] != 0)
                                             & (lead > 0.02) & ~ctx.film1_static[chunk])
     out: list[tuple[int, int, int]] = []
@@ -733,8 +738,8 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
 
     exhaustive = full_at_build
     content: list[tuple[int, int, int]] = []        # fenêtres de contenu (début, fin, décalage)
-    positions: list[tuple[int, int]] = []           # points dont la position est confirmée par l'image
-    on_cut: list[tuple[int, int]] = []              # points sur une coupe commune (contenu à établir)
+    positions: list[tuple[int, int, int, int]] = []  # points à confirmer par l'image (i, décalage, segment)
+    on_cut: list[tuple[int, int, int, int]] = []     # points sur une coupe commune (contenu à établir)
     for seg in built:
         content.append((seg.film1_start, min(seg.film1_end, seg.film1_start + 6), seg.offset))
         content.append((max(seg.film1_start, seg.film1_end - 6), seg.film1_end, seg.offset))
@@ -746,9 +751,9 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
             if i == seg.film1_start:
                 continue  # bord du segment : jonction affinée par l'image, fenêtre de contenu ci-dessus
             if film1_cut[i] and reference_has(reference, j) and not individual:
-                on_cut.append((i, seg.offset))
+                on_cut.append((i, seg.offset, seg.film1_start, seg.film1_end))
             else:
-                positions.append((i, seg.offset))
+                positions.append((i, seg.offset, seg.film1_start, seg.film1_end))
     step = max(1, int(SAMPLE_SECONDS * fps))
     for t in range(0, n1, step):
         holder = next((item for item in built if item.film1_start <= t < item.film1_end), None)
@@ -765,8 +770,8 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
                                  ((lo, hi),))
         if result == "ok":
             confirmed[lo:hi] = True
-    for i, d in positions:
-        if not ctx.confirm_position(i, d):
+    for i, d, seg_lo, seg_hi in positions:
+        if not ctx.confirm_position(i, d, seg_lo, seg_hi):
             raise AlignmentError(f"Image {i} de Film 1 : point de changement de Film 2 non confirmé par l'image "
                                  f"(décalage {d:+d}).", ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
         confirmed[max(0, i - POSITION_RADIUS):i + POSITION_RADIUS] = True
@@ -993,7 +998,8 @@ def _merge(windows: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
 
 
 def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, n1: int,
-                     on_cut: list[tuple[int, int]], confirmed: np.ndarray, say: Callable[[str], None]) -> int:
+                     on_cut: list[tuple[int, int, int, int]], confirmed: np.ndarray,
+                     say: Callable[[str], None]) -> int:
     """Contenu des plans dont le début (point de changement) est sur une coupe commune : relation de luminance
     (moyenne et pic) **étalonnée uniquement sur les plans confirmés par l'image**, jamais réajustée sur ceux
     qu'elle valide ; hors tolérance ou sans information → position et contenu confirmés par l'image ;
@@ -1023,13 +1029,13 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
         a, b = shot(i)
         return float(np.mean(ctx.film1.std[a:b])) >= MIN_STD
 
-    pending = [(i, d) for i, d in on_cut if not confirmed[i]]
+    pending = [point for point in on_cut if not confirmed[point[0]]]
     if ctx.film2.full is None and not metadata.peak.size:
         say(translate_text("Pic non décrit par les métadonnées : {count} plans confirmés par l'image.",
                            count=len(pending)))
     elif ctx.film2.full is None:
         pairs = []
-        for i, d in on_cut:
+        for i, d, _lo, _hi in on_cut:
             levels = film2_levels(i, d)
             if confirmed[i] and informative(i) and levels is not None:
                 pairs.append((levels, film1_levels(i)))
@@ -1045,14 +1051,14 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
                 mad = float(np.median(np.abs(residuals - np.median(residuals))))
                 fits.append((centers, values, max(3.0 * 1.4826 * mad, 12.0)))
             remaining = []
-            for i, d in pending:
+            for i, d, seg_lo, seg_hi in pending:
                 levels = film2_levels(i, d)
                 if levels is not None and informative(i):
                     observed = film1_levels(i)
                     if all(abs(observed[axis] - float(np.interp(levels[axis], fits[axis][0], fits[axis][1])))
                            <= fits[axis][2] for axis in (0, 1)):
                         continue
-                remaining.append((i, d))
+                remaining.append((i, d, seg_lo, seg_hi))
             say(translate_text(
                 "Relation de luminance (moyenne, pic) étalonnée sur {pairs} plans confirmés par l'image (tolérances "
                 "{mean} / {peak} codes) ; {remaining} plans hors relation confirmés par l'image.", pairs=len(pairs),
@@ -1061,8 +1067,8 @@ def _check_luminance(ctx: _Context, metadata: Film2Metadata, cuts1: np.ndarray, 
     if ctx.film2.full is not None:
         say(translate_text("Film 2 lu entièrement : {count} plans à coupe commune confirmés par l'image.",
                            count=len(pending)))
-    for i, d in pending:
-        if not ctx.confirm_position(i, d):
+    for i, d, seg_lo, seg_hi in pending:
+        if not ctx.confirm_position(i, d, seg_lo, seg_hi):
             raise AlignmentError(f"Plan à l'image {i} de Film 1 : contenu différent de Film 2.",
                                  ((i - POSITION_RADIUS, i + POSITION_RADIUS),))
     return len(pending)

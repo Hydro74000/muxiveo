@@ -104,14 +104,29 @@ def _hdr10plus_entries(json_path: Path, cancelled: Callable[[], bool] | None):
         yield digest, entry.get("SceneFrameIndex") == 0 or index == 0, _tenths(parameters.get("AverageRGB")), peak
 
 
+def rpu_render_digests(export_json: Path, *, cancelled: Callable[[], bool] | None = None) -> list[bytes]:
+    """Empreinte de rendu de chaque image d'un export ``dovi_tool export -d all=`` : NAL décodée sans le drapeau
+    ``scene_refresh`` ni le CRC (sinon l'image qui suit chaque coupe passerait pour un changement)."""
+    digests: list[bytes] = []
+    for index, entry in enumerate(iter_json_array(Path(export_json))):
+        _check(cancelled, index)
+        if not isinstance(entry, dict):
+            raise ValueError(f"Export RPU invalide (image {index}).")
+        entry.pop("rpu_data_crc32", None)
+        (entry.get("vdr_dm_data") or {}).pop("scene_refresh_flag", None)
+        digests.append(hashlib.blake2b(json.dumps(entry, sort_keys=True).encode(), digest_size=16).digest())
+    return digests
+
+
 def rpu_track(rpu_bin: Path, scene_starts: np.ndarray, l1_avg: np.ndarray | None = None,
-              l1_max: np.ndarray | None = None, *, cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
+              l1_max: np.ndarray | None = None, *, render_digests: list[bytes] | None = None,
+              cancelled: Callable[[], bool] | None = None) -> MetadataTrack:
     """Repères du RPU ``rpu.bin`` (NAL précédées d'un code de départ, une par image, ordre d'affichage).
 
     ``scene_starts`` : images à ``scene_refresh`` (``dovi_tool export -d scenes``) ; ``l1_avg`` : L1 avg par
     image (code PQ 12 bits), facultatif.
     """
-    digests = rpu_digests(rpu_bin, cancelled=cancelled)
+    digests = render_digests if render_digests is not None else rpu_digests(rpu_bin, cancelled=cancelled)
     frames = len(digests)
     cuts = np.unique(np.concatenate([[0], np.asarray(scene_starts, dtype=np.int64)])) if frames else np.zeros(0, np.int64)
     def per_frame(values: np.ndarray | None) -> np.ndarray:
