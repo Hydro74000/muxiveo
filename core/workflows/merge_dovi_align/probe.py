@@ -58,14 +58,16 @@ def filter_graph(width: int, height: int, threshold: int, *, cuda_format: str | 
     """Graphe FFmpeg produisant la sortie empilée ``STRIP × (H + W + 16)`` (``gray16le``)."""
     # Luma extraite telle quelle (``extractplanes``) : une conversion vers un format gris ramènerait la
     # plage limitée en plage pleine et fausserait le seuil.
+    # ``showinfo`` (PTS de chaque image) placé sur la sortie réduite : sur l'image pleine définition, sa somme de
+    # contrôle par image coûtait près de la moitié du temps de la passe (UHD) ; PTS et pixels inchangés.
     download = f"hwdownload,format={cuda_format},format=yuv420p10le," if cuda_format else ""
     return (
-        f"[0:v:0]{download}showinfo,format=yuv420p10le|yuv422p10le|yuv444p10le,extractplanes=y,split=2[m][v];"
+        f"[0:v:0]{download}format=yuv420p10le|yuv422p10le|yuv444p10le,extractplanes=y,split=2[m][v];"
         f"[m]lut=c0='gt(val,{threshold})*1023',format=gray16le,split=2[mr][mc];"
         f"[mr]scale={STRIP}:{height}:flags=area[rows];"
         f"[mc]scale={width}:{STRIP}:flags=area,transpose=dir=clock[cols];"
         f"[v]scale={VIGNETTE_W}:{VIGNETTE_H}:flags=area,format=gray16le,pad={STRIP}:{VIGNETTE_H}[vig];"
-        "[rows][cols][vig]vstack=inputs=3[out]"
+        "[rows][cols][vig]vstack=inputs=3,showinfo[out]"
     )
 
 
