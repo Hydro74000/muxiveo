@@ -596,77 +596,80 @@ class _Context:
     def _local_columns(self, indices: np.ndarray, offset: int, spread: int, window: Signatures, lo_c: int,
                        required: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
                                                       tuple[float, float, Band]] | None:
-        """Matrices des images ``indices`` (un plan), chaque colonne avec la translation qui lui est la plus
-        favorable ; au décalage testé, seules les translations gardant informatives les paires ``required`` sont
-        classées. None si aucune translation admissible au décalage testé."""
-        sub = take(self.film1, indices)
-        width = 2 * spread + 1
-        corr = np.full((indices.size, width), -1.0, dtype=np.float32)
-        both = np.zeros((indices.size, width), dtype=bool)
-        one = np.zeros((indices.size, width), dtype=bool)
-        chosen: tuple[float, float, Band] | None = None
-        for column, shift in enumerate(range(-spread, spread + 1)):
-            local = self._local_shift(sub, indices, offset + shift, window, lo_c,
-                                      required if shift == 0 else None)
-            if local is None:
-                if shift == 0:
-                    return None
-                continue
-            sy, sx, band = local
-            if shift == 0:
-                chosen = local
-            g1, ginf1 = band_features(sub, band)
-            g2, ginf2 = band_features(window, band.shifted(sy, sx))
-            c, b, o = self._scores(g1, ginf1, g2, ginf2, indices, np.arange(indices.size), offset + shift, 0, lo_c)
-            corr[:, column], both[:, column], one[:, column] = c[:, 0], b[:, 0], o[:, 0]
-        assert chosen is not None
-        return corr, both, one, chosen
-
-    def _local_shift(self, sub: Signatures, indices: np.ndarray, offset: int, window: Signatures,
-                     lo_c: int, required: np.ndarray | None = None) -> tuple[float, float, Band] | None:
-        """Translation de Film 2 (y, x, en largeur) qui maximise la corrélation médiane des images ``indices``
-        à leurs images de Film 2 au décalage ``offset``, bornée par les zones actives (la zone de Film 2 glisse
-        dans celle de Film 1, ou l'inverse) ; bande commune locale d'au moins ``REFRAME_MIN_EXTENT`` de la bande
-        globale. Estimée sur la fenêtre examinée, sans mémoire d'une fenêtre à l'autre ; ``required`` : lignes
-        dont la paire doit rester informative (translations qui en perdent une écartées avant classement)."""
+        """Matrices des images ``indices`` (un plan) avec un cadrage local. Décalage testé : translation admissible
+        de meilleure corrélation médiane parmi celles qui gardent informatives les paires ``required``. Décalages
+        rivaux : pour chaque paire, meilleur score informatif sur toutes les translations admissibles (un rival
+        n'est jamais effacé par la translation choisie). None si aucune translation admissible au décalage testé."""
         assert self.area1 is not None and self.area2 is not None
         a1, a2 = self.area1, self.area2
-        j = indices + offset - lo_c
-        ok = (j >= 0) & (j < len(window))
-        if not np.any(ok):
-            return None
+        sub = take(self.film1, indices)
         margin_y, margin_x = cell_margins(self.film1, window)
         height, width = self.band.bottom - self.band.top, self.band.right - self.band.left
 
-        def score(sy: float, sx: float) -> tuple[float, Band] | None:
+        def candidate(sy: float, sx: float) -> tuple[float, float, Band, np.ndarray, np.ndarray, np.ndarray,
+                                                     np.ndarray] | None:
             band = a1.intersect(a2.shifted(-sy, -sx), margin_y, margin_x)
             if (band.empty or band.bottom - band.top < REFRAME_MIN_EXTENT * height
                     or band.right - band.left < REFRAME_MIN_EXTENT * width):
                 return None
             g1, inf1 = band_features(sub, band)
             g2, inf2 = band_features(window, band.shifted(sy, sx))
-            pairs = ok & inf1 & inf2[np.clip(j, 0, len(window) - 1)]
-            if not np.any(pairs) or (required is not None and not bool(np.all(pairs[required]))):
-                return None
-            return float(np.median(np.sum(g1[pairs] * g2[j[pairs]], axis=1))), band
+            return sy, sx, band, g1, inf1, g2, inf2
+
+        def column(cand: tuple, at: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            _sy, _sx, _band, g1, inf1, g2, inf2 = cand
+            j = indices + at - lo_c
+            ok = (j >= 0) & (j < g2.shape[0])
+            jc = np.clip(j, 0, g2.shape[0] - 1)
+            corr = np.full(indices.size, -1.0, dtype=np.float32)
+            corr[ok] = np.sum(g1[ok] * g2[j[ok]], axis=1)
+            return corr, ok & inf1 & inf2[jc], ok & (inf1 ^ inf2[jc])
 
         def grid(first: float, second: float, centre: float) -> list[float]:
             low, high = min(first, second, centre) - 0.01, max(first, second, centre) + 0.01
             return sorted({round(float(v), 4) for v in np.arange(low, high + REFRAME_STEP / 2, REFRAME_STEP)}
                           | {round(centre, 4)})
 
-        best: tuple[float, float, float, Band] | None = None
-        for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy):
-            found = score(sy, self.dx)
-            if found is not None and (best is None or found[0] > best[0]):
-                best = (found[0], sy, self.dx, found[1])
-        if best is not None and abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
-            sy = best[1]
-            for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx):
-                found = score(sy, sx)
-                if found is not None and found[0] > best[0]:
-                    best = (found[0], sy, sx, found[1])
-        return None if best is None else (best[1], best[2], best[3])
+        def best(cands: list) -> tuple | None:
+            top = None
+            for cand in cands:
+                c, b, o = column(cand, offset)
+                if not np.any(b) or not bool(np.all(b[required])):
+                    continue
+                value = float(np.median(c[b]))
+                if top is None or value > top[0]:
+                    top = (value, cand, c, b, o)
+            return top
+
+        cands = [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
+                 if (cand := candidate(sy, self.dx)) is not None]
+        top = best(cands)
+        if top is None:
+            return None
+        if abs((a2.left - a1.left) - (a2.right - a1.right)) > 2 * REFRAME_STEP:
+            cands += [cand for sx in grid(a2.left - a1.left, a2.right - a1.right, self.dx)
+                      if (cand := candidate(top[1][0], sx)) is not None]
+            top = best(cands) or top
+        width_cols = 2 * spread + 1
+        corr = np.full((indices.size, width_cols), -1.0, dtype=np.float32)
+        both = np.zeros((indices.size, width_cols), dtype=bool)
+        one = np.zeros((indices.size, width_cols), dtype=bool)
+        corr[:, spread], both[:, spread], one[:, spread] = top[2], top[3], top[4]
+        for col, shift in enumerate(range(-spread, spread + 1)):
+            if shift == 0:
+                continue
+            best_c = np.full(indices.size, -1.0, dtype=np.float32)
+            best_b = np.zeros(indices.size, dtype=bool)
+            any_one = np.zeros(indices.size, dtype=bool)
+            for cand in cands:
+                c, b, o = column(cand, offset + shift)
+                better = b & (~best_b | (c > best_c))
+                best_c = np.where(better, c, best_c)
+                best_b |= b
+                any_one |= o
+            corr[:, col], both[:, col], one[:, col] = best_c, best_b, ~best_b & any_one
+        sy, sx, band = top[1][0], top[1][1], top[1][2]
+        return corr, both, one, (sy, sx, band)
 
     def _static(self, i: int) -> bool:
         """Images ``i - 1`` et ``i`` de Film 1 identiques sur chacune des bandes réellement comparées (celle de
