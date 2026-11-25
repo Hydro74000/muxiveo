@@ -200,6 +200,9 @@ class HdrStudio(QWidget):
         self._signals: TaskSignals | None = None
         self._moment_dialog: QWidget | None = None
         self._pending_analyze = False
+        # Comptes exacts des pistes (clé du cache : chemin, taille, date, piste), gardés pour toute mesure suivante.
+        self._exact_counts: dict[str, int | None] = {}
+        self._exact_counts_lock = threading.Lock()
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
         # Piste B de l'onglet Comparer.
@@ -481,8 +484,26 @@ class HdrStudio(QWidget):
 
     def _frame_check(self, path: Path, stream_index: int, frames: int | None,
                      cancel: threading.Event | None = None) -> FrameCheck:
-        """Contrôle du nombre d'images d'une mesure : compte de l'inspection, écart confirmé par ffprobe."""
-        return frame_count_check(frames, packet_counter(str(self._config.tool_ffprobe), path, stream_index, cancel))
+        """Contrôle du nombre d'images d'une mesure : compte de l'inspection, écart confirmé par ffprobe.
+
+        Le compte exact d'une piste, une fois obtenu, remplace celui de l'inspection pour tout contrôle suivant
+        (chargement du cache puis nouvelle mesure)."""
+        key = self._cache.key(Path(path), stream_index)
+        with self._exact_counts_lock:
+            known = key is not None and key in self._exact_counts
+            exact_known = self._exact_counts.get(key) if key is not None else None
+        if known:
+            return frame_count_check(exact_known, lambda: exact_known)
+        counter = packet_counter(str(self._config.tool_ffprobe), path, stream_index, cancel)
+
+        def exact() -> int | None:
+            value = counter()
+            if key is not None:
+                with self._exact_counts_lock:
+                    self._exact_counts[key] = value
+            return value
+
+        return frame_count_check(frames, exact)
 
     def _cache_cancel(self, role: str) -> threading.Event:
         """Annulation d'un chargement du cache (``main`` : piste inspectée, ``compare`` : piste B) : le comptage
@@ -1256,6 +1277,7 @@ class HdrStudio(QWidget):
 
     def cancel(self) -> None:
         self._cancel.set()
+        self._pending_analyze = False  # inspection annulée : pas d'analyse automatique ensuite
         if self._signals is not None:
             self._signals.cancel()
 

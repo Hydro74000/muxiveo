@@ -613,3 +613,31 @@ def test_cache_load_exact_count_is_cancelled(studio, qt_app, tmp_path, monkeypat
     worker.join(10)
     assert not worker.is_alive() and time.monotonic() - begin < 10
     assert result["measure"] is None and cancel.is_set()
+
+
+def test_exact_count_from_cache_load_guards_following_measure(studio, tmp_path, monkeypatch):
+    """Inspection 5, cache 3, compte exact 4 : cache écarté, puis une mesure neuve de 5 images (égale au compte
+    démenti de l'inspection) refusée ; le compte exact n'est fait qu'une fois."""
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3)))
+    counted: list[int] = []
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", lambda *a, **k: counted.append(4) or 4)
+    assert studio._cached(media, 0, 5)["measure"] is None
+    check = studio._frame_check(media, 0, 5)
+    assert check(read_measurement(write_statistics(tmp_path / "s5.jsonl", [100.0] * 5))) is not None
+    assert check(read_measurement(write_statistics(tmp_path / "s4.jsonl", [100.0] * 4))) is None
+    assert counted == [4]
+
+
+def test_cancel_during_inspection_drops_pending_analysis(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    analyses: list[bool] = []
+    monkeypatch.setattr(studio, "analyze", lambda *a, **k: analyses.append(True))
+    studio.load_source(_media(tmp_path), 0, analyze=True)
+    studio.cancel()
+    assert _wait(qt_app, lambda: studio._info is not None)
+    assert analyses == []
