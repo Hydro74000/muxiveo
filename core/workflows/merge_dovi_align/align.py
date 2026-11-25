@@ -66,9 +66,14 @@ GEOMETRY_PAIRS = 10
 REFRAME_STEP = 0.0025
 REFRAME_GAIN = 0.05
 REFRAME_MIN_EXTENT = 0.5
+#: Comparaison de décalages : cadrage local recherché pour un plan dès qu'une paire comparable reste sous ce
+#: niveau avec la géométrie globale (au-dessus, le cadrage global explique déjà le plan).
+REFRAME_TRIGGER = 0.95
 #: Passe complète : bande du balayage image par image et longueur minimale d'un écart retenu.
 FRAME_BAND = 24
 FRAME_RUN = 3
+#: Images examinées de chaque côté d'un point de changement indiscernable pour établir la continuité.
+CONTINUITY = 48
 _NONE = -(10 ** 9)
 
 
@@ -571,8 +576,9 @@ class _Context:
         dans les deux films) : chaque décalage reçoit sa propre meilleure translation admissible (une translation
         ne favorise pas le décalage testé), retenu seulement si aucune paire informative ne le devient plus et si
         la corrélation médiane de ces mêmes paires gagne ``REFRAME_GAIN``. Seuils inchangés. ``compare`` (jonctions,
-        écarts locaux) : chaque plan reçoit le meilleur cadrage admissible pour ce décalage, même au-dessus du seuil
-        de confirmation et sans gain minimal, sans effet sur le journal ni sur l'exception « plan fixe »."""
+        écarts locaux, continuité) : chaque plan dont une paire reste sous ``REFRAME_TRIGGER`` reçoit le meilleur
+        cadrage admissible pour ce décalage, sans gain minimal, sans effet sur le journal ni sur l'exception
+        « plan fixe »."""
         window, lo_c = self._window(indices, offset, spread)
         f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
@@ -585,7 +591,8 @@ class _Context:
         for shot in np.unique(shots).tolist():
             rows = np.flatnonzero(shots == shot)
             kept = both[rows, spread]
-            if not np.any(kept) or (not compare and bool(np.all(corr[rows[kept], spread] >= CONFIRM_CORRELATION))):
+            level = REFRAME_TRIGGER if compare else CONFIRM_CORRELATION
+            if not np.any(kept) or bool(np.all(corr[rows[kept], spread] >= level)):
                 continue
             local = self._local_columns(indices[rows], offset, spread, window, lo_c, kept)
             if local is None:
@@ -733,12 +740,13 @@ class _Context:
         Contenu : chaque paire d'images informatives autour du point corrélée (aucune image informative d'un
         seul côté). Position : la bascule ``i - 1 | i`` de Film 1 tombe sur la bascule ``j - 1 | j`` de Film 2
         — l'image ``i - 1`` s'apparie strictement mieux à ``j - 1`` qu'aux images ``j, j + 1…`` qui suivent la
-        bascule, l'image ``i`` mieux à ``j`` qu'aux images ``j - 1, j - 2…`` qui la précèdent. Égalité admise
+        bascule, l'image ``i`` mieux à ``j`` qu'aux images ``j - 1, j - 2…`` qui la précèdent, avec une avance
+        au-delà du bruit (écart entre les deux films à la meilleure image). Égalité admise
         si ``i - 1`` et ``i`` sont identiques dans Film 1 (aucun changement visible : position sans effet). Un
-        voisin meilleur au-delà du bruit (écart entre les deux films à la bonne image) contredit la position :
-        refus. En deçà (plan presque fixe, métadonnées changeant à chaque image), la position est indiscernable
-        sur l'image : admise seulement avec la passe complète de Film 2, dont le balayage image par image établit
-        la continuité du segment (chargée ici au besoin : la vérification reprend alors sur elle). Aucune image
+        voisin meilleur au-delà du bruit (écart entre les deux films à la meilleure image) contredit la position :
+        refus. En deçà (plan presque fixe, métadonnées changeant à chaque image), ou si un voisin dans le film
+        n'est pas comparable (comparaison inconnue), la position n'est admise que si la continuité est établie de
+        part et d'autre (:meth:`_continuity`). Candidat hors du film : impossible, ignoré. Aucune image
         informative des deux côtés (noir, uniforme) : position sans effet. ``lo``/``hi`` : bornes du segment du
         point (les images d'un autre segment relèvent d'un autre décalage)."""
         first = i - POSITION_RADIUS if lo is None else max(lo, i - POSITION_RADIUS)
@@ -755,24 +763,94 @@ class _Context:
             return True
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
-        still = self._static(i)
-        ambiguous = False
-        for frame, crossing in ((i - 1, slice(center + 1, None)), (i, slice(0, center))):
+        if self._static(i):
+            return True
+        unresolved = False
+        columns = np.arange(2 * POSITION_RADIUS + 1)
+        for frame, crossing in ((i - 1, columns[center + 1:]), (i, columns[:center])):
             row = np.flatnonzero(indices == frame)
             if row.size == 0 or not both[row[0], center]:
                 continue
-            values = np.where(both[row[0]], corr[row[0]], -np.inf)
-            rivals = values[crossing]
-            if not rivals.size or still:
+            targets = frame + offset + crossing - center
+            possible = crossing[(targets >= 0) & (targets < self.film2.frames)]
+            comparable = possible[both[row[0], possible]]
+            # Rival en désaccord établi (informative face à plate) : éliminé ; ni comparable ni en désaccord :
+            # comparaison inconnue.
+            if np.any(~both[row[0], possible] & ~one[row[0], possible]):
+                unresolved = True
+            if comparable.size == 0:
                 continue
-            lead = float(values[center] - rivals.max())
-            if lead > POSITION_LEAD:
-                continue
-            if -lead > max(POSITION_NOISE, 1.0 - float(values.max())):
+            rival = float(corr[row[0], comparable].max())
+            lead = float(corr[row[0], center]) - rival
+            noise = max(POSITION_NOISE, 1.0 - max(rival, float(corr[row[0], center])))
+            if lead > max(POSITION_LEAD, noise):
+                continue                        # avance au-delà du bruit : position établie
+            if -lead > noise:
                 return False                    # un voisin nettement meilleur : position contredite
-            ambiguous = True
-        if ambiguous and self.film2.full is None:
-            self.film2.load_full("point de changement indiscernible sur l'image : continuité vérifiée image par image")
+            unresolved = True
+        return not unresolved or self._continuity(i, offset, lo, hi)
+
+    def _continuity(self, i: int, offset: int, lo: int | None, hi: int | None) -> bool:
+        """Continuité du décalage ``offset`` autour de l'image ``i`` : jusqu'à ``CONTINUITY`` images de chaque côté,
+        dans le segment et dans le plan de Film 1 (un glissement persiste jusqu'à la coupe). Pour chaque voisin
+        ±1…±``POSITION_RADIUS`` : le décalage le bat en moyenne sur chaque côté non fixe (une moyenne contraire
+        d'un côté = glissement : refus) et, sur les deux côtés réunis, de façon significative (au-delà de deux
+        erreurs types, au moins ``FRAME_RUN`` paires comparables). Côtés fixes : position sans effet."""
+        n1 = len(self.film1)
+
+        def shot(frame: int) -> tuple[int, int]:
+            k = int(np.searchsorted(self.cuts1, frame, side="right"))
+            return (int(self.cuts1[k - 1]) if k > 0 else 0), (int(self.cuts1[k]) if k < self.cuts1.size else n1)
+
+        left_shot, right_shot = shot(max(0, i - 1)), shot(i)
+        sides = (
+            (max(0 if lo is None else lo, i - CONTINUITY, left_shot[0]), i),
+            (i, min(n1 if hi is None else hi, i + CONTINUITY, right_shot[1])),
+        )
+        center = POSITION_RADIUS
+        pooled: dict[int, list[np.ndarray]] = {}
+        settled: set[int] = set()
+        for first, last in sides:
+            idx = self.inside(np.arange(first, last), offset)
+            if idx.size < 2 or bool(np.all(self.film1_static[idx[1:]])):
+                continue                        # côté vide (bord de segment) ou fixe : rien à établir
+            corr, both, one = self.checked_scores(idx, offset, POSITION_RADIUS, compare=True)
+            for column in range(2 * POSITION_RADIUS + 1):
+                if column == center:
+                    continue
+                targets = idx + offset + column - center
+                inside = (targets >= 0) & (targets < self.film2.frames)
+                pairs = inside & both[:, center] & both[:, column]
+                if np.any(inside & both[:, center] & one[:, column]):
+                    settled.add(column)         # désaccord établi avec ce voisin sur au moins une image
+                if not np.any(pairs):
+                    continue
+                diff = corr[pairs, center].astype(np.float64) - corr[pairs, column]
+                if float(diff.mean()) <= 0.0:
+                    return False                # voisin meilleur en moyenne d'un côté : glissement
+                pooled.setdefault(column, []).append(diff)
+        if not pooled:
+            return all(self.inside(np.arange(a, b), offset).size < 2 or bool(np.all(self.film1_static[a + 1:b]))
+                       for a, b in sides)
+        for column in range(2 * POSITION_RADIUS + 1):
+            if column == center:
+                continue
+            targets_exist = any(0 <= first + offset + column - center < self.film2.frames
+                                or 0 <= last - 1 + offset + column - center < self.film2.frames
+                                for first, last in sides)
+            if column not in pooled:
+                if targets_exist and column not in settled:
+                    return False                # comparaison inconnue
+                continue                        # candidat hors du film, ou écarté par désaccord établi
+            diff = np.concatenate(pooled[column])
+            count = diff.size
+            if count < FRAME_RUN:
+                if column in settled:
+                    continue
+                return False
+            deviation = float(diff.std(ddof=1)) if count > 1 else 0.0
+            if float(diff.mean()) <= max(POSITION_LEAD, 2.0 * deviation / np.sqrt(count)):
+                return False
         return True
 
     def inside(self, indices: np.ndarray, offset: int) -> np.ndarray:

@@ -10,6 +10,7 @@ import pytest
 from core.workflows.merge_dovi_align import align as align_module
 from core.workflows.merge_dovi_align.align import (
     MAX_STATES,
+    POSITION_RADIUS,
     AlignmentError,
     Film2Frames,
     _check_order,
@@ -653,8 +654,8 @@ def test_shot_framed_differently_is_checked_on_its_own_framing() -> None:
 
 def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> None:
     """Plan recadré : chaque décalage voisin reçoit sa propre translation admissible. Panoramique vertical (temps
-    et translation interchangeables) : position indiscernable, admise seulement avec la passe complète de Film 2
-    (continuité vérifiée image par image) ; mouvement horizontal : position confirmée, décalage voisin refusé."""
+    et translation exactement interchangeables) : position indiscernable et continuité impossible à établir :
+    refus ; mouvement horizontal : position confirmée, décalage voisin refusé."""
     from core.workflows.merge_dovi_align.features import cell_margins
 
     class Pan(Scene):
@@ -683,12 +684,33 @@ def test_reframed_position_uses_the_best_framing_of_every_candidate_offset() -> 
         return _Context(sig1, source, band, 0.0, 0.0, ProcessHooks(), area1=area1, area2=area2,
                         cuts1=np.asarray([0], dtype=np.int64))
 
-    vertical = context(True, full=False)
+    vertical = context(True, full=True)
     assert vertical.confirm_content(np.arange(8, 14), 0) == "ok"
-    with pytest.raises(AlignmentError):                 # indiscernable : passe complète exigée, impossible ici
-        vertical.confirm_position(12, 0)
-    loaded = context(True, full=True)
-    assert loaded.confirm_position(12, 0) and loaded.film2.full is not None
+    assert not vertical.confirm_position(12, 0)         # aucune preuve de position ni de continuité
     horizontal = context(False, full=False)
     assert horizontal.confirm_position(12, 0) and horizontal.film2.full is None
     assert not horizontal.confirm_position(12, 1)       # décalage voisin : contredit par l'image
+
+
+def test_indistinct_position_needs_a_significant_continuity() -> None:
+    """Contenu peu contrasté et bruit d'encodage dans Film 2 : l'avance de la bonne position ne dépasse pas le
+    bruit image par image ; admise par la continuité significative du décalage autour du point, un décalage d'une
+    image reste refusé (jamais confirmé par une avance due au bruit)."""
+    shot = Scene(np.random.default_rng(41), 130, contrast=60.0)
+    sig1 = render([(shot, 0, 130)], 4)
+    noisy = np.random.default_rng(42).normal(0.0, 2.5, size=sig1.vignettes.shape)
+    sig2 = Signatures(sig1.width, sig1.height, sig1.ranks, sig1.top, sig1.bottom, sig1.left, sig1.right,
+                      np.clip(sig1.vignettes + noisy, 0, 255).astype(np.uint8), sig1.mean, sig1.std, sig1.peak)
+    ctx = _Context(sig1, Film2Frames(130, full=sig2), active_band(sig1), 0.0, 0.0, ProcessHooks())
+    calls = []
+    original = ctx._continuity
+
+    def spy(*args):
+        calls.append(args)
+        return original(*args)
+
+    ctx._continuity = spy  # type: ignore[method-assign]
+    points = range(50, 80)
+    assert all(ctx.confirm_position(i, 0) for i in points)
+    assert calls                                          # positions indiscernables : continuité exigée
+    assert not any(ctx.confirm_position(i, 1) for i in points)

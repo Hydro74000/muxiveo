@@ -12022,9 +12022,5 @@
   "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.": {
     "fra": "Cadrage de Film 2 variable d'un plan à l'autre (cohérence {agreement}) : chaque plan est vérifié sur son propre cadrage.",
     "eng": "Film 2 framing varies from shot to shot (agreement {agreement}): each shot is checked on its own framing."
-  },
-  "point de changement indiscernible sur l'image : continuité vérifiée image par image": {
-    "fra": "point de changement indiscernible sur l'image : continuité vérifiée image par image",
-    "eng": "change point indistinguishable on the picture: continuity checked frame by frame"
   }
 }
