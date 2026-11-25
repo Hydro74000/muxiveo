@@ -156,7 +156,8 @@ def measure_image(config: AppConfig, report: InspectionReport, threads: int, wor
 
         measurement, backend = measure_track(engine, Path(snapshot.path), snapshot.stream_index, owned.path,
                                              threads=threads, total_frames=frames, fps=fps, fast=fast,
-                                             progress=progress, cancel=cancel)
+                                             progress=progress, cancel=cancel,
+                                             expected_frames=snapshot.frames if snapshot.frames_exact else None)
         logger.emit("info", f"Mesure de l'image : {backend}")
         return measurement
     finally:
@@ -373,7 +374,9 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
             raise JobError(f"Aucune piste vidéo : {path}", EXIT_ARGS)
         report = snapshot_report(info, request.track)
         snapshot = report.snapshot
-        measurement = None if request.no_cache else cache.load_measurement(Path(snapshot.path), snapshot.stream_index)
+        measurement = None if request.no_cache else cache.load_measurement(
+            Path(snapshot.path), snapshot.stream_index,
+            frames=snapshot.frames if snapshot.frames_exact else None)
         if level in ("dynamic", "measure") and (snapshot.dovi is not None or snapshot.hdr10plus):
             logger.emit("info", f"Métadonnées dynamiques : {path.name}")
             report = dynamic(config, info, snapshot.stream_index, cache, request.no_cache, ffmpeg, work_root, logger,

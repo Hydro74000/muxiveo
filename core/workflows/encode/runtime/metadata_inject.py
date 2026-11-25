@@ -69,7 +69,7 @@ from core.matroska.editors.dovi import (
     sanitize_dovi_level,
 )
 from core.matroska.hevc.access_units import HevcStreamCancelled
-from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter, discarded_nal_message
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.remux_timeline_sync import LiveSyncSession
@@ -955,6 +955,8 @@ class MetadataInjectRunner:
                     f"Payloads réécrits : {rewrite_result.frames_rewritten} frame(s) — "
                     "CodecPrivate et signalisation Dolby Vision portés par le TrackEntry."
                 )
+                if rewrite_result.discarded_nal_units:
+                    cb.log_warn(discarded_nal_message(rewrite_result.discarded_nal_units))
                 _free(current_hevc)
                 _free(timing_mkv)
                 current_video_input = wrapped_video

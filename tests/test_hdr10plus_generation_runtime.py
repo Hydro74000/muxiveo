@@ -127,7 +127,7 @@ def _prepare(workflow: EncodeWorkflow, tmp_path: Path, video: VideoEncodeSetting
             raise RuntimeError("extension absente")
         return engine
 
-    with patch.object(workflow, "_frame_count_guard", return_value=SimpleNamespace(source_frame_count=lambda *a: 4)):
+    with patch.object(workflow, "_frame_count_guard", return_value=SimpleNamespace(source_frame_count=lambda *a, **_k: 4)):
         return workflow.prepare_generated_hdr10plus(config, video, index=1, work_dir=work,
                                                     run=run or (lambda cmd: ""), signals=signals,
                                                     engine_loader=loader)

@@ -84,6 +84,9 @@ class HevcNalUnit:
     payload: bytes        # Les octets du NAL (sans le start code annexB).
     nal_type: int
     first_slice_in_pic: bool
+    #: En-tête conforme : ``forbidden_zero_bit`` nul et ``nuh_temporal_id_plus1`` non nul (H.265 § 7.4.2.2).
+    #: Une NAL invalide est ignorée par les décodeurs (FFmpeg : « Invalid NAL unit, skipping »).
+    valid: bool = True
 
 
 @dataclass
@@ -92,6 +95,8 @@ class HevcAccessUnit:
     payload: bytes = b""
     is_keyframe: bool = False
     nal_units: list[HevcNalUnit] = field(default_factory=list)
+    #: NAL à en-tête invalide retirées de cet access unit (absentes de ``nal_units`` et ``payload``).
+    discarded_nal_units: int = 0
 
 
 def _iter_nal_units(stream: bytes) -> Iterator[HevcNalUnit]:
@@ -127,23 +132,7 @@ def _iter_nal_units(stream: bytes) -> Iterator[HevcNalUnit]:
         nal_bytes = stream[payload_off:next_off]
         if len(nal_bytes) < 2:
             continue
-        # Header NAL HEVC (2 octets) :
-        #   forbidden_zero_bit (1) + nal_unit_type (6) + nuh_layer_id (6) +
-        #   nuh_temporal_id_plus1 (3)
-        header_byte_0 = nal_bytes[0]
-        nal_type = (header_byte_0 >> 1) & 0x3F
-
-        first_slice = False
-        if nal_type in _VCL_RANGE and len(nal_bytes) >= 3:
-            # Le 3ème octet contient (entre autres) ``first_slice_segment_in_pic_flag``
-            # comme premier bit du RBSP slice_segment_header().
-            first_slice = bool(nal_bytes[2] & 0x80)
-
-        yield HevcNalUnit(
-            payload=nal_bytes,
-            nal_type=nal_type,
-            first_slice_in_pic=first_slice,
-        )
+        yield _decode_nal(nal_bytes)
 
 
 def _group_access_units(nal_units: Iterator[HevcNalUnit]) -> Iterator[HevcAccessUnit]:
@@ -159,6 +148,10 @@ def _group_access_units(nal_units: Iterator[HevcNalUnit]) -> Iterator[HevcAccess
     RPU d'une frame est écrit après ses slices (dovi_tool, remux DV) et doit
     rester dans l'AU courant — sinon chaque RPU glisse d'une frame et le
     dernier forme un AU fantôme.
+
+    Une NAL à en-tête invalide (bit interdit, ``temporal_id`` nul) est retirée comme le fait le
+    décodeur, sans jouer sur les frontières : rip DVDFab dont la première NAL (type 31 à bit
+    interdit) formait sinon un AU fantôme devant l'IDR. Elle est comptée sur l'AU en cours.
     """
     current = HevcAccessUnit()
     has_slice = False
@@ -168,6 +161,9 @@ def _group_access_units(nal_units: Iterator[HevcNalUnit]) -> Iterator[HevcAccess
         return unit
 
     for nal in nal_units:
+        if not nal.valid:
+            current.discarded_nal_units += 1
+            continue
         is_slice = nal.nal_type in _VCL_RANGE
         # Frontière A : nouveau slice "first in pic" alors qu'on en avait déjà un.
         boundary = is_slice and nal.first_slice_in_pic and has_slice
@@ -289,15 +285,20 @@ def iter_hevc_access_units(
 
 
 def _decode_nal(nal_bytes: bytes) -> HevcNalUnit:
-    """Décode le header NAL HEVC (2 octets) d'un payload sans start code."""
+    """Décode le header NAL HEVC (2 octets) d'un payload sans start code.
+
+    En-tête : forbidden_zero_bit (1) + nal_unit_type (6) + nuh_layer_id (6) + nuh_temporal_id_plus1 (3).
+    """
     nal_type = (nal_bytes[0] >> 1) & 0x3F
     first_slice = False
     if nal_type in _VCL_RANGE and len(nal_bytes) >= 3:
+        # Premier bit du slice_segment_header() : first_slice_segment_in_pic_flag.
         first_slice = bool(nal_bytes[2] & 0x80)
     return HevcNalUnit(
         payload=nal_bytes,
         nal_type=nal_type,
         first_slice_in_pic=first_slice,
+        valid=not nal_bytes[0] & 0x80 and bool(nal_bytes[1] & 0x07),
     )
 
 

@@ -176,6 +176,7 @@ class _FakePayloadRewriteResult:
         self.frames_rewritten = frames
         self.codec_private_updated = False
         self.dovi_mapping_written = False
+        self.discarded_nal_units = 0
 
 
 @pytest.fixture(autouse=True)

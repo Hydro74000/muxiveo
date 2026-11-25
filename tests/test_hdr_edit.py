@@ -141,6 +141,33 @@ def test_measurement_cache_round_trip(tmp_path):
     assert cache.load(media, 0) is None  # métadonnées dynamiques : fichier distinct
 
 
+def test_measurement_with_other_frame_count_is_ignored_or_refused(tmp_path):
+    """Compte exact de la piste connu : mesure complète d'un autre nombre d'images écartée du cache et
+    refusée à la mesure (mvo-fel ≤ 0.6.1 : premier GOP perdu, statistiques décalées)."""
+    from core.hdr_inspection.measure import measure_track
+
+    short = write_statistics(tmp_path / "short.jsonl", [100.0, 900.0], scenes=[0, 1])
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    cache = InspectionCache(tmp_path / "cache")
+    cache.store_measurement(media, 0, read_measurement(short))
+    assert cache.load_measurement(media, 0, frames=2) is not None
+    assert cache.load_measurement(media, 0, frames=3) is None
+    assert cache.load_measurement(media, 0) is not None  # compte inconnu : gardée
+
+    class Engine:
+        def measure(self, path, stream, statistics_path, **_):
+            Path(statistics_path).write_text(short.read_text(encoding="utf-8"), encoding="utf-8")
+            return "cpu"
+
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(MeasurementError, match="2 images pour 3"):
+        measure_track(Engine(), media, 0, work, expected_frames=3)
+    assert measure_track(Engine(), media, 0, work, expected_frames=2)[0].frames == 2
+    assert not list(work.iterdir())
+
+
 # ── Tone mapping ─────────────────────────────────────────────────────────────
 def test_eetf_reference_points():
     values = np.array([1.0, 100.0, 400.0, 1000.0, 4000.0, 8000.0])

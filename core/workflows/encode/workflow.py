@@ -3590,7 +3590,18 @@ class EncodeWorkflow(QObject):
         try:
             if method != METHOD_L1:
                 layer = "reconstructed" if method == METHOD_MEASURE_RECONSTRUCTED else "base"
-                total = self._frame_count_guard().source_frame_count(source, stream) or 0
+                guard = self._frame_count_guard(signals)
+                counts: dict[bool, int | None] = {}
+
+                def source_frames(exact: bool) -> int | None:
+                    """Images de la source (compte rapide, sinon exact), lues une fois chacune."""
+                    if exact not in counts:
+                        counts[exact] = guard.source_frame_count(source, stream, exact=exact)
+                        if signals is not None and signals._cancel_event.is_set():
+                            raise TaskCancelledError()
+                    return counts[exact]
+
+                total = source_frames(False) or 0
                 step = max(1, total // 20) if total else 10000
 
                 def progress(frames: int) -> None:
@@ -3606,7 +3617,8 @@ class EncodeWorkflow(QObject):
                         progress=progress, cancel=cancel_event, cache=cache,
                         cache_write=video.hdr10plus_generation_cache_write,
                         device=video.fel_device if layer == "reconstructed" else "auto",
-                        precision=video.fel_precision if layer == "reconstructed" else "fast")
+                        precision=video.fel_precision if layer == "reconstructed" else "fast",
+                        source_frames=source_frames)
                     self.log_message.emit("INFO", prefix + f"Mesure de l'image pour le HDR10+ : {origin}.")
                 except FelCancelled as exc:
                     raise TaskCancelledError() from exc  # annulation du plugin : jamais de repli L1

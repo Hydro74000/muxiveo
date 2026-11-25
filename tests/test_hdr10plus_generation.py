@@ -186,6 +186,49 @@ def test_measured_statistics_without_cache_write(tmp_path):
     assert cache.load_measurement(media, 0) is None
 
 
+def test_measured_statistics_rejects_cache_with_other_frame_count(tmp_path):
+    """Mesure en cache d'un autre nombre d'images (premier GOP perdu par mvo-fel ≤ 0.6.1) : remesurée."""
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x" * 64)
+    cache = InspectionCache(tmp_path / "cache")
+    cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "short.jsonl", [100.0] * 3)))
+    engine = _Engine(write_statistics(tmp_path / "full.jsonl", [100.0] * 5, scenes=[0, 2]))
+    counted: list[bool] = []
+
+    def source_frames(exact: bool) -> int:
+        counted.append(exact)
+        return 5
+
+    statistics, origin = measured_statistics(engine, media, 0, tmp_path, cache=cache, source_frames=source_frames)
+    assert engine.calls == [("base", "all")] and len(statistics.frames) == 5
+    assert origin.startswith("cpu") and origin != "cpu"  # mesure neuve, cache écarté annoncé
+    assert cache.load_measurement(media, 0).frames == 5  # cache remplacé
+    assert True in counted  # écart confirmé par le compte exact avant d'écarter le cache
+
+
+def test_measured_statistics_refuses_fresh_measurement_with_other_frame_count(tmp_path):
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x" * 64)
+    cache = InspectionCache(tmp_path / "cache")
+    engine = _Engine(write_statistics(tmp_path / "short.jsonl", [100.0] * 3))
+    with pytest.raises(GenerationError, match="3 images pour 5"):
+        measured_statistics(engine, media, 0, tmp_path, cache=cache, source_frames=lambda exact: 5)
+    assert cache.load_measurement(media, 0) is None  # jamais mise en cache
+
+
+def test_measured_statistics_quick_count_mismatch_settled_by_exact_count(tmp_path):
+    """Compte rapide faux, compte exact égal à la mesure : mesure gardée (pas de faux refus)."""
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x" * 64)
+    engine = _Engine(write_statistics(tmp_path / "full.jsonl", [100.0] * 4))
+    statistics, _ = measured_statistics(engine, media, 0, tmp_path,
+                                        source_frames=lambda exact: 4 if exact else 7)
+    assert len(statistics.frames) == 4
+    counted: list[bool] = []
+    measured_statistics(engine, media, 0, tmp_path, source_frames=lambda exact: counted.append(exact) or 4)
+    assert counted == [False]  # compte rapide concordant : aucun recomptage exact
+
+
 def test_measure_reader_cancellation_is_not_a_read_error(tmp_path):
     path = write_statistics(tmp_path / "s.jsonl", [100.0] * 3)
     with pytest.raises(InterruptedError):
@@ -258,7 +301,8 @@ def test_service_classifies_measure_read_cancellation_as_cancelled(tmp_path, mon
             return backend
 
     monkeypatch.setattr(engine_module.FelEngine, "installed", classmethod(lambda cls: _CancellingEngine(source)))
-    snapshot = SimpleNamespace(codec="hevc", is_pq=True, dovi=None, fps=24.0, frames=3, duration_s=0.125,
+    snapshot = SimpleNamespace(codec="hevc", is_pq=True, dovi=None, fps=24.0, frames=3, frames_exact=True,
+                               duration_s=0.125,
                                path=str(tmp_path / "m.mkv"), stream_index=0)
     logger = SimpleNamespace(emit=lambda *a, **k: None)
     with pytest.raises(InterruptedError) as caught:

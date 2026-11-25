@@ -51,7 +51,7 @@ from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_extract_mode
 from core.matroska.hevc.access_units import HevcStreamCancelled
-from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter, discarded_nal_message
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.encode.runtime_helpers import (
@@ -546,6 +546,9 @@ class MultiVideoPipelineRunner:
                 f"Piste video {index}: payloads réécrits "
                 f"({rewrite_result.frames_rewritten} frame(s), timestamps encodeur)."
             )
+            if rewrite_result.discarded_nal_units:
+                (cb.log_warn or cb.log_info)(
+                    f"Piste video {index}: " + discarded_nal_message(rewrite_result.discarded_nal_units))
             # Le squelette et le bitstream injecté ne sont plus consultés
             # après le retour du rewriter. Les libérer ici borne le pic disque
             # quand plusieurs pistes HDR/DoVi sont préparées en parallèle.

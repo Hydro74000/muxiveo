@@ -58,7 +58,7 @@ def _matroska_stubs(monkeypatch):
     class Rewriter:
         def rewrite(self, *, output, **_kwargs):
             Path(output).write_bytes(b"\x00" * 64)
-            return SimpleNamespace(frames_rewritten=1)
+            return SimpleNamespace(frames_rewritten=1, discarded_nal_units=0)
 
     for module in (metadata_inject, multi_video):
         monkeypatch.setattr(module, "write_timing_skeleton", skeleton)

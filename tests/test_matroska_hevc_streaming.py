@@ -205,6 +205,21 @@ class TestPayloadRewriter:
         stamps = [block.timestamp_ms for block in MatroskaReader(output).blocks()]
         assert stamps == [0, 40, 40]
 
+    def test_invalid_leading_nal_is_removed_and_reported(self, tmp_path: Path) -> None:
+        """Flux injecté commençant par une NAL à bit interdit (rip DVDFab) : aucun AU fantôme, NAL absente
+        de la sortie, compte rendu."""
+        stream = _annexb_stream(3, payload_size=9)
+        junk = b"\x00\x00\x00\x01" + bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01, 0x22, 0x20])
+        injected = tmp_path / "injected.hevc"
+        injected.write_bytes(junk + stream)
+        encoded = _write_encoded_mkv(tmp_path / "encoded.mkv", [au.payload for au in split_into_access_units(stream)])
+        output = tmp_path / "rewritten.mkv"
+        result = MatroskaHevcPayloadRewriter(chunk_size=64 * 1024).rewrite(
+            encoded_mkv=encoded, injected_hevc=injected, output=output,
+        )
+        assert result.frames_rewritten == 3 and result.discarded_nal_units == 1
+        assert all(b"\xbe\x42\x01\x01\x22" not in block.payload for block in MatroskaReader(output).blocks())
+
     def test_fewer_injected_access_units_fails_strictly(self, tmp_path: Path) -> None:
         full = split_into_access_units(_annexb_stream(4, payload_size=9))
         encoded = _write_encoded_mkv(tmp_path / "encoded.mkv", [au.payload for au in full])

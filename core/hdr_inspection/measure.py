@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from core.i18n import translate_text
+
 #: Percentiles de maxRGB émis par le plugin pour chaque image.
 PERCENTILES = (1.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.98)
 _BINS = 1024
@@ -142,13 +144,29 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
     return _expand(measurement, np.frombuffer(times, dtype=np.float64), fps, total_frames)
 
 
+def measured_frames_mismatch(measurement: ImageMeasurement, expected_frames: int | None) -> str | None:
+    """Mesure complète dont le nombre d'images diffère du compte exact de la piste : motif, sinon ``None``.
+
+    Une image perdue décale toutes les suivantes (statistiques et HDR10+ désalignés) : mvo-fel ≤ 0.6.1
+    perdait le premier GOP d'un flux commençant par une NAL invalide. Estimation (images clés) : non concernée.
+    """
+    if not expected_frames or measurement.is_estimate or measurement.frames == expected_frames:
+        return None
+    return translate_text("Mesure de l'image incomplète : {measured} images pour {expected} dans la piste "
+                          "(extension mvo-fel à mettre à jour).", measured=measurement.frames,
+                          expected=expected_frames)
+
+
 def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
                   threads: int = 8, total_frames: int | None = None, fps: float | None = None, fast: bool = False,
                   progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
-                  device: str = "auto", precision: str = "fast") -> tuple[ImageMeasurement, str]:
+                  device: str = "auto", precision: str = "fast",
+                  expected_frames: int | None = None) -> tuple[ImageMeasurement, str]:
     """Mesure de l'image d'une piste par le plugin mvo-fel (``FelEngine``) : (mesure, moteur exécuté).
 
     Statistiques écrites dans ``work_dir`` puis supprimées. ``fast`` : images clés seules (estimation).
+    ``expected_frames`` : compte exact de la piste, s'il est connu ; mesure complète d'un autre nombre
+    d'images refusée (``MeasurementError``).
     Annulation : ``FelCancelled`` pendant la mesure, ``InterruptedError`` pendant la lecture.
     """
     statistics = Path(work_dir) / f"mesure-{layer}.jsonl"
@@ -159,6 +177,9 @@ def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path,
             progress=progress, cancelled=event, sampling="keyframes" if fast else "all")
         measurement = read_measurement(statistics, layer, total_frames=total_frames, fps=fps,
                                        cancelled=event.is_set)
+        mismatch = measured_frames_mismatch(measurement, expected_frames)
+        if mismatch is not None:
+            raise MeasurementError(mismatch)
         return measurement, str(backend)
     finally:
         statistics.unlink(missing_ok=True)

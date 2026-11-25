@@ -395,7 +395,8 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
         for message in report.errors:
             logger.emit("warning", message)
         ctx.cancel.raise_if_cancelled()
-    measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index)
+    measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index,
+                                         frames=snapshot.frames if snapshot.frames_exact else None)
     wanted = request.measurement
     if wanted != "cached" and (measurement is None or (measurement.is_estimate and wanted == "full")):
         threads = max(2, int(ctx.overrides.threads or getattr(config, "ffmpeg_threads", 8) or 8))

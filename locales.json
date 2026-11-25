@@ -12022,5 +12022,17 @@
   "{percent} % seulement de la durée des plans échantillonnés concordante : vérification de tous les plans": {
     "fra": "{percent} % seulement de la durée des plans échantillonnés concordante : vérification de tous les plans",
     "eng": "only {percent} % of the sampled shots' duration concordant: checking every shot"
+  },
+  "Mesure de l'image incomplète : {measured} images pour {expected} dans la piste (extension mvo-fel à mettre à jour).": {
+    "fra": "Mesure de l'image incomplète : {measured} images pour {expected} dans la piste (extension mvo-fel à mettre à jour).",
+    "eng": "Incomplete image measurement: {measured} frames for {expected} in the track (update the mvo-fel extension)."
+  },
+  "{origin} (mesure en cache écartée : nombre d'images différent de la source)": {
+    "fra": "{origin} (mesure en cache écartée : nombre d'images différent de la source)",
+    "eng": "{origin} (cached measurement discarded: frame count differs from the source)"
+  },
+  "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les décodeurs) — fichier corrigé conforme.": {
+    "fra": "Flux vidéo : {count} NAL à en-tête invalide retirée(s) (ignorées par les décodeurs) — fichier corrigé conforme.",
+    "eng": "Video stream: {count} NAL unit(s) with an invalid header removed (ignored by decoders) — corrected file is compliant."
   }
 }

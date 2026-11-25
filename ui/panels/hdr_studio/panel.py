@@ -151,6 +151,12 @@ def _finding_row(finding: Finding) -> QWidget:
     return row
 
 
+
+def _exact_frames(info: FileInfo, stream_index: int) -> int | None:
+    """Compte exact des images de la piste (validé par l'inspection), sinon ``None``."""
+    snapshot = build_snapshot(info, stream_index)
+    return snapshot.frames if snapshot.frames_exact else None
+
 class HdrStudio(QWidget):
     """Page « HDR Studio » : chargement d'une source, analyse à la demande, onglets de résultats."""
 
@@ -417,7 +423,7 @@ class HdrStudio(QWidget):
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
                 index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                cached = self._cached(path, index) if video else None
+                cached = self._cached(path, index, _exact_frames(info, index)) if video else None
                 self._inspected.emit(token, info, index, cached, "")
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
@@ -461,7 +467,8 @@ class HdrStudio(QWidget):
         self._measurement = None
 
         def task() -> None:
-            self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index))
+            self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index,
+                                                       snapshot.frames if snapshot.frames_exact else None))
 
         self._submit(task)
 
@@ -469,10 +476,12 @@ class HdrStudio(QWidget):
         if token == self._token and self._info is not None:
             self._show_snapshot(cached)
 
-    def _cached(self, path: Path, stream_index: int) -> dict:
-        """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image."""
+    def _cached(self, path: Path, stream_index: int, frames: int | None = None) -> dict:
+        """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image.
+
+        ``frames`` : compte exact de la piste ; mesure complète d'un autre nombre d'images écartée."""
         return {"dynamic": self._cache.load(path, stream_index),
-                "measure": self._cache.load_measurement(path, stream_index)}
+                "measure": self._cache.load_measurement(path, stream_index, frames=frames)}
 
     def _show_snapshot(self, cached: object) -> None:
         assert self._info is not None
@@ -654,7 +663,7 @@ class HdrStudio(QWidget):
                     engine, Path(info.path), snapshot.stream_index, owned.path,
                     threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)), total_frames=frames, fps=fps,
                     fast=fast, progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
-                    cancel=cancel)
+                    cancel=cancel, expected_frames=snapshot.frames if snapshot.frames_exact else None)
                 self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
                 self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
                 self._measured.emit(token, measurement, "")
@@ -959,7 +968,8 @@ class HdrStudio(QWidget):
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
                 index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                self._compare_inspected.emit(token, info, index, self._cached(path, index) if video else None, "")
+                self._compare_inspected.emit(
+                    token, info, index, self._cached(path, index, _exact_frames(info, index)) if video else None, "")
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._compare_inspected.emit(token, None, 0, None, str(exc))
 
@@ -973,7 +983,8 @@ class HdrStudio(QWidget):
         token = self._compare_token
 
         def task() -> None:
-            self._compare_inspected.emit(token, info, stream_index, self._cached(Path(info.path), stream_index), "")
+            self._compare_inspected.emit(token, info, stream_index, self._cached(
+                Path(info.path), stream_index, _exact_frames(info, stream_index)), "")
 
         self._submit(task)
 

@@ -28,7 +28,7 @@ from core.dovi_profile_detector import DoviSubProfile
 from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord, describe, write_hdr10plus_json
 from core.hdr_inspection.cache import InspectionCache
 from core.hdr_inspection.dovi import DoviAnalysis, parse_dovi_export
-from core.hdr_inspection.measure import ImageMeasurement, measure_track
+from core.hdr_inspection.measure import ImageMeasurement, measure_track, measured_frames_mismatch
 from core.hdr_inspection.pq import pq_to_nits
 from core.i18n import translate_text
 
@@ -220,18 +220,41 @@ def measured_statistics(engine: object, path: Path, stream_index: int, work_dir:
                         threads: int = 8, total_frames: int | None = None, fps: float | None = None,
                         progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
                         cache: InspectionCache | None = None, cache_write: bool = True, device: str = "auto",
-                        precision: str = "fast") -> tuple[FrameStatistics, str]:
+                        precision: str = "fast",
+                        source_frames: Callable[[bool], int | None] | None = None) -> tuple[FrameStatistics, str]:
     """Statistiques de la mesure complète de ``layer`` : (statistiques, origine pour le journal).
 
     Cache du HDR Studio relu (mesure complète seulement) et alimenté si ``cache_write`` (jamais pour un segment
-    d'aperçu)."""
+    d'aperçu). ``source_frames(exact)`` : images de la source (compte rapide, sinon exact) ; une mesure d'un
+    autre nombre d'images (décalée : mvo-fel ≤ 0.6.1 perdait le premier GOP d'un flux commençant par une NAL
+    invalide) est écartée du cache et remesurée, refusée si la mesure neuve l'est aussi (``GenerationError``).
+    """
     cancelled = cancel.is_set if cancel is not None else None
+
+    def mismatch(measurement: ImageMeasurement) -> str | None:
+        if source_frames is None:
+            return None
+        quick = source_frames(False)
+        if quick is not None and measured_frames_mismatch(measurement, quick) is None:
+            return None
+        # Compte rapide différent ou illisible : compte exact ; illisible aussi : invérifiable ici (audit des trames).
+        return measured_frames_mismatch(measurement, source_frames(True))
+
     measurement = cache.load_measurement(path, stream_index, layer, complete_only=True) if cache is not None else None
     origin = translate_text("cache du HDR Studio")
+    if measurement is not None and mismatch(measurement) is not None:
+        measurement, origin = None, ""
     if measurement is None:
+        rejected_cache = origin == ""
         measurement, origin = measure_track(engine, path, stream_index, work_dir, layer=layer, threads=threads,
                                             total_frames=total_frames, fps=fps, progress=progress, cancel=cancel,
                                             device=device, precision=precision)
+        problem = mismatch(measurement)
+        if problem is not None:
+            raise GenerationError(problem)
+        if rejected_cache:
+            origin = translate_text("{origin} (mesure en cache écartée : nombre d'images différent de la source)",
+                                    origin=origin)
         if cache is not None and cache_write:
             cache.store_measurement(path, stream_index, measurement)
     return statistics_from_measurement_scenes(measurement, cancelled=cancelled), origin
