@@ -641,3 +641,28 @@ def test_cancel_during_inspection_drops_pending_analysis(studio, qt_app, tmp_pat
     studio.cancel()
     assert _wait(qt_app, lambda: studio._info is not None)
     assert analyses == []
+
+
+def test_unreadable_exact_count_is_retried(studio, tmp_path, monkeypatch):
+    """Comptage exact illisible (échec transitoire) : jamais mémorisé, refait au contrôle suivant."""
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    answers = [None, 4]
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", lambda *a, **k: answers.pop(0))
+    measurement = read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3))
+    assert studio._frame_check(media, 0, 5)(measurement) is None  # invérifiable : acceptée
+    assert studio._frame_check(media, 0, 5)(measurement) is not None  # recompté : 4, refusée
+    assert answers == []
+
+
+def test_cancel_reaches_cache_count_after_track_change(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    studio.load_source(_media(tmp_path), 0)
+    assert _wait(qt_app, lambda: studio._info is not None and not studio.is_busy())
+    studio._on_track_changed(0)
+    pending = studio._cache_cancels["main"]
+    studio.cancel()
+    assert pending.is_set()

@@ -201,7 +201,7 @@ class HdrStudio(QWidget):
         self._moment_dialog: QWidget | None = None
         self._pending_analyze = False
         # Comptes exacts des pistes (clé du cache : chemin, taille, date, piste), gardés pour toute mesure suivante.
-        self._exact_counts: dict[str, int | None] = {}
+        self._exact_counts: dict[str, int] = {}
         self._exact_counts_lock = threading.Lock()
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
@@ -490,15 +490,14 @@ class HdrStudio(QWidget):
         (chargement du cache puis nouvelle mesure)."""
         key = self._cache.key(Path(path), stream_index)
         with self._exact_counts_lock:
-            known = key is not None and key in self._exact_counts
             exact_known = self._exact_counts.get(key) if key is not None else None
-        if known:
+        if exact_known is not None:
             return frame_count_check(exact_known, lambda: exact_known)
         counter = packet_counter(str(self._config.tool_ffprobe), path, stream_index, cancel)
 
         def exact() -> int | None:
             value = counter()
-            if key is not None:
+            if key is not None and value:  # compte illisible : jamais mémorisé, recompté au contrôle suivant
                 with self._exact_counts_lock:
                     self._exact_counts[key] = value
             return value
@@ -1278,6 +1277,8 @@ class HdrStudio(QWidget):
     def cancel(self) -> None:
         self._cancel.set()
         self._pending_analyze = False  # inspection annulée : pas d'analyse automatique ensuite
+        for cache_cancel in self.__dict__.get("_cache_cancels", {}).values():
+            cache_cancel.set()  # comptage exact d'un chargement du cache (piste changée, piste B)
         if self._signals is not None:
             self._signals.cancel()
 
