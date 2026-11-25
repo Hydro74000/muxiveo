@@ -581,8 +581,7 @@ class _Context:
         f2, c2 = band_features_contrast(window, self.band.shifted(self.dy, self.dx))
         corr, both, one = self._scores(self.film1_features, self.film1_contrast, f2, c2, indices, indices,
                                        offset, spread, lo_c)
-        if not compare:
-            self._frame_bands = {}
+        self._frame_bands = {}
         if not self._can_reframe():
             return corr, both, one
         shots = np.searchsorted(self.cuts1, indices, side="right")
@@ -605,7 +604,7 @@ class _Context:
             corr[rows], both[rows], one[rows] = c, b, o
             if not compare:
                 self.reframed[(int(shot), offset)] = (sy, sx)
-                self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
+            self._frame_bands.update({int(i): band for i in indices[rows].tolist()})
         return corr, both, one
 
     def _can_reframe(self) -> bool:
@@ -682,7 +681,9 @@ class _Context:
 
         # Translations admissibles indépendantes du décalage testé : verticales au pas fin, et grille complète
         # (verticale × horizontale, pas double) quand les zones actives laissent aussi glisser horizontalement.
-        cands = [cand for cand in [candidate(self.dy, self.dx)] if cand is not None]   # géométrie globale
+        # Géométrie globale exacte (bande et translation de la vérification globale) parmi les candidats.
+        cands: list = [(self.dy, self.dx, self.band, *band_features_contrast(sub, self.band),
+                        *band_features_contrast(window, self.band.shifted(self.dy, self.dx)))]
         cands += [cand for sy in grid(a2.top - a1.top, a2.bottom - a1.bottom, self.dy)
                   if (cand := candidate(sy, self.dx)) is not None]
         if horizontal:
@@ -715,12 +716,13 @@ class _Context:
         sy, sx, band = top[1][0], top[1][1], top[1][2]
         return corr, both, one, (sy, sx, band)
 
-    def _static(self, i: int) -> bool:
+    def _static(self, i: int, bands: dict[int, Band] | None = None) -> bool:
         """Images ``i - 1`` et ``i`` de Film 1 identiques sur chacune des bandes réellement comparées (celle de
         ``i - 1`` et celle de ``i`` : locale si recadrée, sinon globale)."""
         if not 0 < i < len(self.film1):
             return False
-        for band in {self._frame_bands.get(i - 1), self._frame_bands.get(i)}:
+        bands = self._frame_bands if bands is None else bands
+        for band in {bands.get(i - 1), bands.get(i)}:
             if band is None:
                 if not bool(self.film1_static[i]):
                     return False
@@ -772,6 +774,9 @@ class _Context:
             return True
         if not bool(np.all(corr[mask, center] >= CONFIRM_CORRELATION)):
             return False
+        if self._can_reframe():
+            # Position : chaque décalage comparé à son meilleur cadrage admissible (contenu contrôlé ci-dessus).
+            corr, both, one = self.checked_scores(indices, offset, POSITION_RADIUS, compare=True)
         if self._static(i):
             return True
         unresolved = False
@@ -821,9 +826,12 @@ class _Context:
         settled: set[int] = set()
         for first, last in sides:
             idx = self.inside(np.arange(first, last), offset)
-            if idx.size < 2 or bool(np.all(self.film1_static[idx[1:]])):
-                continue                        # côté vide (bord de segment) ou fixe : rien à établir
+            if idx.size < 2:
+                continue                        # côté vide : bord de segment, confirmé par sa jonction
             corr, both, one = self.checked_scores(idx, offset, POSITION_RADIUS, compare=True)
+            bands = dict(self._frame_bands)
+            if all(self._static(int(frame), bands) for frame in idx[1:]):
+                continue                        # côté fixe sur les bandes comparées : position sans effet
             if not np.any(both[:, center]):
                 continue                        # côté sans image comparable (noir, uniforme) : sans effet
             for column in range(2 * POSITION_RADIUS + 1):
@@ -844,8 +852,7 @@ class _Context:
                     return False                # voisin meilleur en moyenne d'un côté : glissement
                 pooled.setdefault(column, []).append(diff)
         if not pooled:
-            return all(self.inside(np.arange(a, b), offset).size < 2 or bool(np.all(self.film1_static[a + 1:b]))
-                       for a, b in sides)
+            return True                         # chaque côté vide, fixe ou sans image comparable : sans effet
         for column in range(2 * POSITION_RADIUS + 1):
             if column == center:
                 continue
