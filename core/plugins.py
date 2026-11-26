@@ -640,6 +640,18 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
     cache_dir = cache_dir or trt_engine_cache_dir()
     models_dir = Path(shutil.which(rife_bin) or rife_bin).resolve().parent / "rife-models"
     failures: list[str] = []
+    # Moteur et accélération loués pendant tout le préchauffage : jamais retirés par un nettoyage concurrent.
+    leases = leases_for(shutil.which(rife_bin) or rife_bin, plugin.path)
+    try:
+        return _warm_up_leased(rife_bin, plugin, cache_dir, models_dir, failures, log, timeout, cancel)
+    finally:
+        for lease in leases:
+            lease.release()
+
+
+def _warm_up_leased(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path, models_dir: Path, failures: list[str],
+                    log: Callable[[str], None] | None, timeout: float,
+                    cancel: threading.Event | None) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="muxiveo-trt-") as tmp:
         source = Path(tmp) / "probe.y4m"
         source.write_bytes(_probe_y4m())

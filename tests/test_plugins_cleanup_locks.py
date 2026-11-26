@@ -143,3 +143,53 @@ def test_encode_leases_the_engine_version_for_the_whole_job(tmp_path, monkeypatc
     plain = EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv",
                          video=VideoEncodeSettings(codec="libx265"))
     assert workflow._engine_leases(plain) == []
+
+
+def test_install_holds_the_lock_for_the_whole_download(tmp_path, monkeypatch):
+    """Pendant le téléchargement d'``install`` : verrou tenu, un nettoyage d'un autre processus ne touche rien."""
+    from core.file_lock import lock_is_free
+
+    root = tmp_path / "plugins"
+    asset = _archive(tmp_path)
+    original = plugins._download
+    seen: list[bool] = []
+
+    def download(asset_, dest, progress, cancel):
+        lock = root / ".locks" / f"{plugins.TRT_PLUGIN_ID}.lock"
+        seen.append(not lock_is_free(lock))
+        script = tmp_path / "cleanup.py"
+        script.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from pathlib import Path\nfrom core import plugins\n"
+            f"plugins.cleanup_orphans(plugins.TRT, Path({str(root)!r}))\n", encoding="utf-8")
+        subprocess.run([sys.executable, str(script)], check=True, timeout=30)
+        assert Path(str(dest)).parent.is_dir()
+        return original(asset_, dest, progress, cancel)
+
+    monkeypatch.setattr(plugins, "_download", download)
+    installed = plugins.install(plugins.TRT, root, asset=asset)
+    assert seen == [True] and installed.path.is_dir()
+
+
+def test_encode_releases_its_leases_only_at_the_end_of_the_job(tmp_path, monkeypatch, qt_app):
+    from core.runner import TaskSignals
+    from core.workflows.encode.models import EncodeConfig, FrameInterpolationSettings, VideoEncodeSettings
+    from core.workflows.encode.workflow import EncodeWorkflow
+
+    root, base, _current = _installed(tmp_path)
+    old = base / "0.9.0-ancienne"
+    engine = old / "muxiveo-rife"
+    engine.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(plugins, "plugins_root", lambda *_a, **_k: root)
+    signals = TaskSignals()
+    workflow = EncodeWorkflow(rife_bin=str(engine))
+    monkeypatch.setattr(workflow, "_run_with_preparation", lambda *a, **k: signals)
+    video = VideoEncodeSettings(codec="libx265", interpolation=FrameInterpolationSettings(enabled=True, factor=2))
+    workflow.run(EncodeConfig(source=tmp_path / "s.mkv", output=tmp_path / "o.mkv", video=video))
+    plugins.cleanup_orphans(plugins.TRT, root)
+    assert old.is_dir()  # job en cours : moteur loué
+    signals.finished.emit("ok")
+    qt_app.processEvents()
+    plugins.cleanup_orphans(plugins.TRT, root)
+    assert not old.exists()  # job terminé : bail libéré, version retirée au nettoyage suivant

@@ -2643,9 +2643,12 @@ class EncodeWorkflow(QObject):
         if active_inner is not None:
             active_inner["signals"] = encode_signals
         signals.link_workers(encode_signals)
+        leases = self._engine_leases(preview_config)  # moteur loué pendant l'aperçu réel, comme à l'encodage
         try:
             self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
         finally:
+            for lease in leases:
+                lease.release()
             if active_inner is not None:
                 active_inner["signals"] = None
         self._check_cancelled(signals)

@@ -24,6 +24,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -806,17 +807,27 @@ def _file_identity(path: str) -> tuple[int, int, int]:
     return (info.st_ino, info.st_size, info.st_mtime_ns)
 
 
+#: Attente maximale du bail d'une sonde (vérification d'un retrait en cours, quelques millisecondes en pratique).
+_PROBE_LEASE_WAIT_S = 2.0
+
+
 def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
     """Sonde du moteur (``run_detection``) : version de l'extension utilisée (binaire, accélération TensorRT)
     louée le temps de la sonde, jamais retirée par un nettoyage concurrent ; version en cours de modification :
-    sonde lancée sans bail (elle échouera d'elle-même si le binaire disparaît)."""
+    attente brève, puis ``OSError`` (sonde jamais lancée sans bail)."""
     from core import plugins
 
     trt = cmd[cmd.index("--trt-plugin") + 1] if "--trt-plugin" in cmd[:-1] else None
-    try:
-        leases = plugins.leases_for(cmd[0], trt)
-    except (OSError, plugins.PluginError):
-        leases = []
+    deadline = time.monotonic() + _PROBE_LEASE_WAIT_S
+    while True:
+        try:
+            leases = plugins.leases_for(cmd[0], trt)
+            break
+        except plugins.PluginError as exc:
+            # Version en cours de modification (vérification brève) ou retirée : jamais de sonde sans bail.
+            if time.monotonic() > deadline:
+                raise OSError(f"Moteur vidéo en cours de modification : {exc}") from exc
+            time.sleep(0.05)
     try:
         return run_detection(cmd, **kwargs)
     finally:
