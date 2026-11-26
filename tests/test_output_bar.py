@@ -79,3 +79,7 @@ def test_summary_encode(french_messages):
     nvenc = VideoEncodeSettings(codec="hevc_nvenc", quality_mode=QualityMode.SIZE, rate_control="size")
     encode = EncodeConfig(source=Path("/s.mkv"), output=Path("/o.mkv"), video_tracks=[nvenc], target_size_mb=8000)
     assert media_operation_summary(None, encode) == "vidéo NVENC — HEVC 8000 Mo · audio copié"
+    copied = VideoEncodeSettings(codec="copy", inject_hdr_meta=True)      # copie avec HDR10 traité
+    encode = EncodeConfig(source=Path("/s.mkv"), output=Path("/o.mkv"), video_tracks=[copied],
+                          audio_tracks=[AudioTrackSettings(1)])
+    assert media_operation_summary(remux, encode) == "1 source · 2 pistes · sans réencodage"

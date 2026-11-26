@@ -11,7 +11,7 @@ from core.workflows.remux_models import RemuxConfig
 def media_operation_summary(remux: RemuxConfig | None, encode: EncodeConfig | None) -> str:
     """« 2 sources · 7 pistes · vidéo x265 — HEVC CRF 18 · audio copié ».
 
-    ``encode`` None : remux sans réencodage. Sources et pistes lues dans la configuration du Conteneur,
+    ``encode`` None, ou aucune piste réencodée : « sans réencodage ». Sources et pistes lues dans la configuration du Conteneur,
     qui porte la sélection commune aux deux pages.
     """
     parts: list[str] = []
@@ -28,9 +28,13 @@ def media_operation_summary(remux: RemuxConfig | None, encode: EncodeConfig | No
         text = f"{_codec_name(video.codec)} {_rate_text(video, encode.target_size_mb)}"
         if text not in videos:
             videos.append(text)
+    reencoded = sum(1 for track in encode.audio_tracks if track.codec != "copy")
+    if not videos and not reencoded:
+        # Copies avec métadonnées traitées (HDR10, normalisation Dolby Vision) : aucune piste réencodée.
+        parts.append(translate_text("sans réencodage"))
+        return " · ".join(parts)
     parts.append(translate_text("vidéo {codecs}", codecs=", ".join(videos)) if videos
                  else translate_text("vidéo copiée"))
-    reencoded = sum(1 for track in encode.audio_tracks if track.codec != "copy")
     parts.append(_count(reencoded, "{n} piste audio réencodée", "{n} pistes audio réencodées") if reencoded
                  else translate_text("audio copié"))
     return " · ".join(parts)
