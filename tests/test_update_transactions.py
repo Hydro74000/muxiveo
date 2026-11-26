@@ -162,3 +162,22 @@ def test_unreadable_journal_is_never_overwritten_and_keeps_the_workdir(tmp_path)
     update_apply.collect_results(tmp_path, install=install, report=False)
     assert path.read_text(encoding="utf-8") == "{ tronqué"  # jamais remplacé par une liste vide
     assert replaced.is_dir()  # compte rendu non recopiable : dossier gardé
+
+
+def test_journal_addition_beyond_the_readable_size_is_refused(tmp_path, monkeypatch):
+    install = tmp_path / "Muxiveo"
+    monkeypatch.setattr(update_apply, "MAX_REPORTS_BYTES", 200)
+    replaced = _work(tmp_path, "a", install, {"ok": True, "version": "5.1.0", "finished": 1.0,
+                                              "notes": "x" * 400}, age=200)
+    _work(tmp_path, "b", install, {"ok": True, "version": "5.2.0", "finished": 2.0}, age=100)
+    update_apply.collect_results(tmp_path, install=install, report=False)
+    assert replaced.is_dir()  # journal plein : compte rendu laissé dans son dossier
+    assert update_apply.pending_reports(tmp_path, install) == []
+
+
+def test_a_workdir_removed_by_another_cleanup_is_never_resurrected(tmp_path):
+    install = tmp_path / "Muxiveo"
+    gone = tmp_path / f"{update_apply.WORKDIR_PREFIX}gone"  # retiré entre-temps (signalé ou recopié ailleurs)
+    owner = os.path.realpath(install)
+    assert update_apply._keep_report(tmp_path, owner, {"id": gone.name, "ok": True}, gone)
+    assert update_apply.pending_reports(tmp_path, install) == []

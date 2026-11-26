@@ -769,8 +769,12 @@ def _update_reports(parent: Path, install: str, change: Callable[[list[dict]], l
         entries = _read_reports(path, strict=True)
         updated = change(list(entries))
         if updated != entries:
+            document = {"schema": 1, "install": install, "results": updated}
+            # Au-delà de la taille lue, le lecteur masquerait tout le journal : ajout refusé (dossier gardé).
+            if len(json.dumps(document, ensure_ascii=False, indent=1).encode("utf-8")) > MAX_REPORTS_BYTES:
+                raise OSError(f"journal des mises à jour plein ({path}) : compte rendu laissé dans son dossier")
             path.parent.mkdir(parents=True, exist_ok=True)
-            _write_journal(path, {"schema": 1, "install": install, "results": updated})
+            _write_journal(path, document)
         return updated
 
 
@@ -785,8 +789,10 @@ def _keep_report(parent: Path, owner: str, entry: dict, work: Path | None = None
     dont le témoin ``reported`` est relu **sous le verrou** (un signalement concurrent l'a peut-être posé).
     Faux si le journal n'a pas pu être écrit : le dossier, seule copie du compte rendu, doit alors être gardé."""
     def change(entries: list[dict]) -> list[dict]:
-        if work is not None and (work / REPORTED_FILE).exists():
-            return entries  # signalé entre-temps : rien à garder
+        # Sous le verrou : signalé entre-temps, ou dossier déjà retiré par un autre ménage (qui a recopié son compte
+        # rendu s'il n'était pas signalé) : rien à garder, jamais de compte rendu ressuscité.
+        if work is not None and (not work.is_dir() or (work / REPORTED_FILE).exists()):
+            return entries
         return entries if any(item["id"] == entry["id"] for item in entries) else [*entries, entry]
 
     try:

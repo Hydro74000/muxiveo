@@ -79,7 +79,7 @@ def _frames_of(values: dict) -> int:
 
 def _finite(array: np.ndarray) -> bool:
     """Tableau numérique sans valeur non finie (NaN, infini)."""
-    if not np.issubdtype(array.dtype, np.number):
+    if not np.issubdtype(array.dtype, np.number) or np.iscomplexobj(array):
         return False
     return bool(np.all(np.isfinite(array))) if np.issubdtype(array.dtype, np.floating) else True
 

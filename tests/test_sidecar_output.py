@@ -489,23 +489,40 @@ def test_media_run_nfo_never_replaces_the_request_document(tmp_path, monkeypatch
     assert caught.value.code is ErrorCode.INVALID_REQUEST and ran == [] and _digest(request) == before
 
 
-def test_remux_save_never_targets_the_nfo_of_a_templated_output(tmp_path, monkeypatch):
-    """Sortie rendue par un gabarit : le NFO n'est connu qu'après la préparation ; job refusé, template intact."""
-    from core.service.ops import media as media_ops
+def test_remux_save_never_targets_the_templated_output_itself(tmp_path, monkeypatch):
+    """``--save`` sur le MKV que le gabarit va produire (déjà présent) : refusé avant toute écriture."""
     from cli.commands import cmd_remux
+    from core.service.ops.media import MediaPreviewResult
 
     source = _media(tmp_path / "film.mkv")
-    monkeypatch.setattr(media_ops, "build_remux_config",
-                        lambda *a, **k: SimpleNamespace(output=tmp_path / "sortie.mkv", sources=[],
-                                                        extra_attachments=[]))
+    existing = _media(tmp_path / "sortie.mkv")
+    before = _digest(existing)
+    monkeypatch.setattr("cli.commands._preview_job", lambda *a, **k: (
+        MediaPreviewResult(valid=True, config={"output": str(existing)}), "job"))
     ran: list[Any] = []
-    monkeypatch.setattr(media_ops, "run_remux", lambda *a, **k: ran.append(1) or "")
+    monkeypatch.setattr("cli.commands._run_job", lambda *a, **k: ran.append(1) or EXIT_OK)
+    args = build_parser().parse_args(["remux", "-i", str(source), "--output-template", str(existing),
+                                      "--save", str(existing), "--force"])
+    with pytest.raises(JobError):
+        cmd_remux(args, AppConfig(), Logger())
+    assert _digest(existing) == before and ran == []
+
+
+def test_remux_save_never_targets_the_nfo_of_a_templated_output(tmp_path, monkeypatch):
+    """Sortie rendue par un gabarit : résolue avant ``--save`` ; son NFO n'est jamais la cible du template."""
+    from cli.commands import cmd_remux
+    from core.service.ops.media import MediaPreviewResult
+
+    source = _media(tmp_path / "film.mkv")
+    monkeypatch.setattr("cli.commands._preview_job", lambda *a, **k: (
+        MediaPreviewResult(valid=True, config={"output": str(tmp_path / "sortie.mkv")}), "job"))
+    ran: list[Any] = []
+    monkeypatch.setattr("cli.commands._run_job", lambda *a, **k: ran.append(1) or EXIT_OK)
     save = tmp_path / "sortie.nfo"
     config = AppConfig()
     config.generate_nfo = True
     args = build_parser().parse_args(["remux", "-i", str(source), "--output-template", str(tmp_path / "sortie.mkv"),
                                       "--save", str(save)])
-    with pytest.raises(ApiError) as caught:
+    with pytest.raises(JobError):
         cmd_remux(args, config, Logger())
-    assert caught.value.code is ErrorCode.INVALID_REQUEST and ran == []
-    assert json.loads(save.read_text(encoding="utf-8"))  # template écrit, jamais remplacé par le NFO
+    assert not save.exists() and ran == []  # refusé avant toute écriture

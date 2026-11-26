@@ -19,7 +19,7 @@ from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from typing import Any, IO, TYPE_CHECKING
 
 import numpy as np
 
@@ -774,6 +774,39 @@ class SurvivalCancelled(InterruptedError):
     """Test de survie arrêté par l'annulation (processus tué, fils rejoints)."""
 
 
+def _start_tree(cmd: list[str]) -> subprocess.Popen:
+    """Processus du test de survie dans son groupe (POSIX) ou un job Windows : l'arrêt tue aussi ses descendants,
+    même après la sortie du parent (tubes jamais retenus par un descendant)."""
+    kwargs: dict[str, Any] = dict(subprocess_windows_no_window_kwargs(include_stdin=False))
+    job = None
+    if sys.platform == "win32":
+        from core.windows_process_job import WindowsProcessJob
+
+        job = WindowsProcessJob()
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x4  # CREATE_SUSPENDED
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        process = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    except BaseException:
+        if job is not None:
+            job.close()
+        raise
+    if job is not None:
+        try:
+            job.attach_and_resume(int(getattr(process, "_handle")), process.pid)
+            setattr(process, "_muxiveo_job", job)
+        except BaseException:
+            process.kill()
+            process.wait()
+            job.close()
+            raise
+    else:
+        setattr(process, "_muxiveo_process_group", process.pid)
+    return process
+
+
 def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Callable[[IO[bytes]], object], *,
               cancel: threading.Event | None = None, deadline: float | None = None) -> None:
     """Exécute ``cmd`` : entrée écrite par un fil, sortie lue par l'appelant, erreurs collectées.
@@ -782,10 +815,7 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
     rendent alors la main (fils rejoints) et :class:`SurvivalCancelled` / ``TimeoutError`` est levée."""
     from core.subprocess_utils import kill_process_tree
 
-    # Groupe de processus propre (POSIX) : l'arrêt tue aussi les descendants qui garderaient les pipes ouverts.
-    process = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        start_new_session=sys.platform != "win32", **subprocess_windows_no_window_kwargs(include_stdin=False))
+    process = _start_tree(cmd)
     finished = threading.Event()
     stopped: list[str] = []
 
@@ -801,7 +831,12 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
             return
 
     watcher = threading.Thread(target=watch, name="fel-survival-watch", daemon=True)
-    watcher.start()
+    try:
+        watcher.start()
+    except BaseException:  # surveillance impossible : processus arrêté, jamais laissé sans contrôle
+        kill_process_tree(process)
+        process.wait()
+        raise
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     stdin, stderr = process.stdin, process.stderr
     errors: list[bytes] = []

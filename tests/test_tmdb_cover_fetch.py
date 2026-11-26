@@ -233,3 +233,26 @@ def test_cover_cache_is_bounded():
         cache._store(f"{URL}?{index}", b"x")
     assert cache.cached(f"{URL}?0") is None and cache.cached(f"{URL}?{attachments._TmdbCovers.CAPACITY + 4}")
     assert len(cache._items) == attachments._TmdbCovers.CAPACITY
+
+
+def test_deadline_never_waits_for_a_blocked_close(monkeypatch):
+    """Lecture ``chunked`` bloquée : l'échéance rend la main sans fermer la réponse (``close`` attendrait)."""
+    monkeypatch.delenv("MUXIVEO_TMDB_INSECURE_SSL", raising=False)
+    release = threading.Event()
+
+    class _Stuck(_Response):
+        def read1(self, _size: int = -1) -> bytes:
+            release.wait(5)
+            return b""
+
+        def close(self) -> None:
+            release.wait(5)
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None, context=None: _Stuck([]))
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            fetch_tmdb_image(URL, deadline=0.2)
+        assert time.monotonic() - started < 1.0
+    finally:
+        release.set()

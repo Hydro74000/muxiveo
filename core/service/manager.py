@@ -340,8 +340,8 @@ class JobManager:
         for job in list(self._pending):
             queue = job.spec.queue
             if queue == "exclusive":
-                if job.announced and not any(self._running.values()):
-                    self._start_locked(job)
+                if job.announced and not any(self._running.values()) and not self._start_locked(job):
+                    continue  # fil impossible : job terminé en échec, la barrière tombe, la file continue
                 break  # rien de soumis après elle ne démarre avant elle, même pendant son annonce
             if queue in held:
                 continue
@@ -350,7 +350,8 @@ class JobManager:
             else:
                 held.add(queue)
 
-    def _start_locked(self, job: _Job) -> None:
+    def _start_locked(self, job: _Job) -> bool:
+        """Démarre le fil du job ; faux si son démarrage a échoué (job terminé en échec, voir ci-dessous)."""
         self._pending.remove(job)
         self._running[job.spec.queue] += 1
         job.state = JobState.RUNNING
@@ -368,6 +369,8 @@ class JobManager:
             self._finish_locked(job, ApiError(ErrorCode.WORKFLOW_FAILED, f"Démarrage du job impossible : {exc}"))
             self._failed_starts.append(job)
             self._changed.notify_all()
+            return False
+        return True
 
     def _publish_failed_starts(self) -> None:
         """Hors verrou : événements terminaux des jobs dont le fil n'a pas pu démarrer."""

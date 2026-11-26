@@ -193,3 +193,26 @@ def test_encode_releases_its_leases_only_at_the_end_of_the_job(tmp_path, monkeyp
     qt_app.processEvents()
     plugins.cleanup_orphans(plugins.TRT, root)
     assert not old.exists()  # job terminé : bail libéré, version retirée au nettoyage suivant
+
+
+def test_probe_of_a_bare_engine_name_leases_the_resolved_binary(tmp_path, monkeypatch):
+    from core.workflows.encode import interpolation
+
+    root, base, _current = _installed(tmp_path)
+    old = base / "0.9.0-ancienne"
+    engine = old / "muxiveo-rife"
+    engine.write_text("#!/bin/sh\n")
+    engine.chmod(0o755)
+    monkeypatch.setattr(plugins, "plugins_root", lambda *_a, **_k: root)
+    monkeypatch.setenv("PATH", str(old))
+    seen: list[list[str]] = []
+
+    def detection(cmd, **_kwargs):
+        seen.append(cmd)
+        plugins.cleanup_orphans(plugins.TRT, root)
+        assert old.is_dir()  # sonde en cours : version louée
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(interpolation, "run_detection", detection)
+    interpolation._engine_probe(["muxiveo-rife", "--version"], capture_output=True)
+    assert seen[0][0] == str(engine)  # lancé sous le chemin loué, jamais le nom nu

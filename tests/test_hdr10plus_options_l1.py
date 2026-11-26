@@ -25,9 +25,10 @@ def test_target_with_profile_a_or_recompute_is_refused_in_the_core():
     assert Hdr10PlusEdit(targeted_display=0, drop_bezier=True).drop_bezier  # cible 0 : cohérente
 
 
-@pytest.mark.parametrize("hdr10plus", [{"targeted_display_nits": 400, "profile_a": True},
-                                       {"targeted_display_nits": 400, "recompute": True}])
-def test_hdr_patch_refuses_the_contradiction(tmp_path, hdr10plus):
+@pytest.mark.parametrize("hdr10plus,extra", [({"targeted_display_nits": 400, "profile_a": True}, {}),
+                                             ({"targeted_display_nits": 400, "recompute": True}, {}),
+                                             ({"targeted_display_nits": 400}, {"realign": ["hdr10plus"]})])
+def test_hdr_patch_refuses_the_contradiction(tmp_path, hdr10plus, extra):
     """Reproduction du contre-audit : la cible 400 était annoncée par le plan puis écrite 0."""
     from core.hdr_inspection import InspectionCache
 
@@ -36,7 +37,7 @@ def test_hdr_patch_refuses_the_contradiction(tmp_path, hdr10plus):
     InspectionCache(tmp_path / "data" / "hdr_inspection").store_measurement(source, 0, _measurement(tmp_path))
     with pytest.raises(ApiError):
         call(CATALOG, "hdr.patch", {"source": str(source), "output": str(tmp_path / "fix.mkv"),
-                                    "hdr10plus": hdr10plus, "measurement": "cached", "dry_run": True},
+                                    "hdr10plus": hdr10plus, "measurement": "cached", "dry_run": True, **extra},
              _ctx(tmp_path))
 
 
@@ -67,3 +68,18 @@ def test_ordinary_images_keep_the_previous_model():
     tail = 1.0 / (2.0 * (L1_HIGHLIGHT_EXPONENT + 1.0))
     expected = (mean - low / 4.0 - high * tail) / (0.75 - tail)
     assert median == pytest.approx(expected) and upper[0] == L1_HIGHLIGHT_EXPONENT and lower[0] == 1.0
+
+
+def test_edition_tab_reports_the_contradiction_without_a_plan(qt_app, tmp_path):
+    from ui.panels.hdr_studio.editor import EditionTab
+    from tests.test_cli_hdr_patch import _report
+
+    tab = EditionTab()
+    tab.set_report(_report(tmp_path), _measurement(tmp_path))
+    tab.output.setText(str(tmp_path / "fix.mkv"))
+    tab.h10_target_box.setChecked(True)
+    tab.h10_target.setValue(400)
+    tab.h10_recompute.setChecked(True)
+    tab._sync()
+    plan, reason = tab.readiness()
+    assert plan is None and "TSDML" in reason

@@ -122,3 +122,61 @@ def test_failed_thread_start_finishes_the_job_and_keeps_scheduling(monkeypatch):
     assert any(event.type is EventType.ERROR and event.job == first for event in sink.events)
     manager.shutdown(timeout=5)  # rend la main
     assert manager_module is not None
+
+
+def test_queued_job_starts_after_a_failed_exclusive_start(monkeypatch):
+    """L'exclusive en échec de démarrage ne laisse pas la file bloquée derrière sa barrière."""
+    from core.service import ListSink
+    from core.service.manager import JobManager
+    from tests.test_service_manager import _CATALOG, _GATES
+
+    manager = JobManager(_CATALOG, lambda: object(), ListSink(), max_jobs=2)
+    original = threading.Thread.start
+    armed = {"exclusive": False}
+
+    def start(self):  # type: ignore[no-untyped-def]
+        if self.name == "job-t.exclusive" and armed["exclusive"]:
+            armed["exclusive"] = False
+            raise RuntimeError("can't start new thread")
+        return original(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    _GATES["b0"] = threading.Event()
+    first = manager.submit("t.job", {"name": "b0"})  # en cours : l'exclusive attend derrière
+    deadline = time.monotonic() + 5
+    while manager.get(first).state.value != "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    armed["exclusive"] = True
+    barrier = manager.submit("t.exclusive", {"name": "x1"})
+    _GATES["x2"] = threading.Event()
+    _GATES["x2"].set()
+    queued = manager.submit("t.job", {"name": "x2"})  # derrière la barrière exclusive
+    assert manager.get(queued).state.value == "queued"
+    _GATES["b0"].set()  # fin du premier job : ordonnancement, démarrage de l'exclusive en échec
+    deadline = time.monotonic() + 5
+    while manager.get(queued).state.value != "succeeded" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert manager.get(barrier).state.value == "failed" and manager.get(queued).state.value == "succeeded"
+    manager.shutdown(timeout=5)
+
+
+@posix_only
+def test_survival_never_runs_unwatched(tmp_path, monkeypatch):
+    """Surveillance impossible à démarrer : FFmpeg arrêté aussitôt, jamais laissé vivant."""
+    import core.hdr_inspection.fel_analyzer as fel_analyzer
+
+    ffmpeg = _tool(tmp_path, "sleep 30")
+    started: list = []
+    original_tree = fel_analyzer._start_tree
+    monkeypatch.setattr(fel_analyzer, "_start_tree", lambda cmd: started.append(original_tree(cmd)) or started[-1])
+    original = threading.Thread.start
+
+    def start(self):  # type: ignore[no-untyped-def]
+        if self.name == "fel-survival-watch":
+            raise RuntimeError("can't start new thread")
+        return original(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError):
+        fel_analyzer._streamed([ffmpeg], lambda pipe: None, lambda pipe: pipe.read(), cancel=threading.Event())
+    assert started and started[0].poll() is not None  # processus arrêté et attendu

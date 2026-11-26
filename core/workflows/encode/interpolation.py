@@ -818,6 +818,8 @@ def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
     from core import plugins
 
     trt = cmd[cmd.index("--trt-plugin") + 1] if "--trt-plugin" in cmd[:-1] else None
+    # Nom nu (``PATH``) : résolu ici, lancé et loué sous ce chemin (jamais un autre binaire que celui loué).
+    cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
     deadline = time.monotonic() + _PROBE_LEASE_WAIT_S
     while True:
         try:

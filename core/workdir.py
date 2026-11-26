@@ -579,7 +579,7 @@ def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
                      max_bytes: int = TMDB_IMAGE_MAX_BYTES) -> bytes:
     """Image TMDB (:func:`_fetch_tmdb_image`) sous échéance **dure** : connexion, en-têtes et cadrage HTTP compris,
     la requête se déroule dans un fil abandonné à l'échéance (``TimeoutError``) ; ce fil se termine de lui-même au
-    plus tard au délai socket suivant (réponse fermée)."""
+    plus tard au délai socket suivant."""
     outcome: dict[str, object] = {}
 
     def work() -> None:
@@ -593,13 +593,8 @@ def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
     worker.start()
     worker.join(deadline)
     if worker.is_alive():
-        response = outcome.get("response")
-        close = getattr(response, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:  # noqa: BLE001 — fermeture au mieux : le fil finira au délai socket
-                pass
+        # Fil abandonné sans fermer la réponse ici (``close`` attend le verrou du tampon d'une lecture
+        # ``chunked`` en cours) : il se termine seul au délai socket suivant, son résultat ignoré.
         raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
     error = outcome.get("error")
     if isinstance(error, BaseException):
@@ -621,7 +616,6 @@ def _fetch_tmdb_image(url: str, *, timeout: float, deadline: float, max_bytes: i
     req = urllib.request.Request(url, headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": APP_USER_AGENT})
     limit = time.monotonic() + deadline
     with _urlopen_image(req, timeout=timeout) as resp:
-        opened["response"] = resp  # fermée par l'appelant à l'échéance
         declared = resp.headers.get("Content-Length") if getattr(resp, "headers", None) is not None else None
         if declared is not None and str(declared).isdigit() and int(declared) > max_bytes:
             raise ValueError(f"image TMDB trop volumineuse ({int(declared)} octets, maximum {max_bytes})")
