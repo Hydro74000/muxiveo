@@ -440,7 +440,11 @@ def build_attachments_element(attachments: list[MatroskaAttachment]) -> bytes:
     return element(ATTACHMENTS_ID, b"".join(files)) if files else b""
 
 
-def build_chapters_element(entries: list[object]) -> bytes:
+def build_chapters_element(entries: list[object], *, edition_hidden: bool = False,
+                           edition_default: bool = False) -> bytes:
+    """Élément ``Chapters`` (une édition) ; drapeaux simples écrits quand ils diffèrent du défaut Matroska :
+    ``EditionFlagHidden`` / ``EditionFlagDefault`` de l'édition, ``ChapterFlagHidden`` / ``ChapterFlagEnabled``
+    (attributs ``hidden`` / ``enabled``) de chaque chapitre, enfants compris."""
     def chapter_atom(chapter: object, position: tuple[int, ...]) -> bytes:
         seconds = float(getattr(chapter, "timecode_s", 0.0))
         name = str(getattr(chapter, "name", "") or "")
@@ -462,6 +466,10 @@ def build_chapters_element(entries: list[object]) -> bytes:
         end_value = getattr(chapter, "end_s", None)
         if end_value is not None:
             atom += uint_element(CHAPTER_TIME_END_ID, round(float(end_value) * 1_000_000_000))
+        if getattr(chapter, "hidden", False):
+            atom += uint_element(bytes.fromhex("98"), 1)        # ChapterFlagHidden
+        if not getattr(chapter, "enabled", True):
+            atom += uint_element(bytes.fromhex("4598"), 0)      # ChapterFlagEnabled
         atom += display_elements
         atom += b"".join(
             chapter_atom(child, (*position, child_index))
@@ -470,7 +478,9 @@ def build_chapters_element(entries: list[object]) -> bytes:
         return element(CHAPTER_ATOM_ID, atom)
 
     atoms = [chapter_atom(chapter, (index,)) for index, chapter in enumerate(entries, start=1)]
-    return element(CHAPTERS_ID, element(EDITION_ENTRY_ID, b"".join(atoms))) if atoms else b""
+    flags = ((uint_element(bytes.fromhex("45bd"), 1) if edition_hidden else b"")       # EditionFlagHidden
+             + (uint_element(bytes.fromhex("45db"), 1) if edition_default else b""))   # EditionFlagDefault
+    return element(CHAPTERS_ID, element(EDITION_ENTRY_ID, flags + b"".join(atoms))) if atoms else b""
 
 
 def build_tags_element(tags: dict[str, str]) -> bytes:

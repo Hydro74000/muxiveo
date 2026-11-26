@@ -10,6 +10,8 @@ import bisect
 from dataclasses import dataclass
 from fractions import Fraction
 
+from core.i18n import translate_text
+
 from .align import AlignmentMap
 from .frames import FrameTable
 
@@ -25,6 +27,38 @@ class ProjectedChapter:
     uid: int
     displays: tuple[tuple[str, str], ...]
     children: tuple["ProjectedChapter", ...] = ()
+    #: Drapeaux simples recopiés (décision DD) : ChapterFlagHidden / ChapterFlagEnabled.
+    hidden: bool = False
+    enabled: bool = True
+
+
+def unsupported_reason(editions: tuple) -> str | None:
+    """Motif de non-import des chapitres de Film 2 (décision DD), ``None`` s'ils sont projetables : une seule
+    édition, non ordonnée, sans chapitre lié à un autre segment ni ciblant des pistes (ces références ne
+    survivent pas à la projection sur Film 1)."""
+    if len(editions) != 1:
+        return translate_text("plusieurs éditions")
+    edition = editions[0]
+    if getattr(edition, "ordered", False):
+        return translate_text("édition ordonnée")
+
+    def walk(chapters: tuple) -> str | None:
+        for chapter in chapters:
+            if getattr(chapter, "segment_uid", None) is not None or getattr(chapter, "segment_edition_uid", None):
+                return translate_text("chapitres liés à un autre segment")
+            if getattr(chapter, "tracks", ()):
+                return translate_text("chapitres ciblant des pistes (ChapterTrack)")
+            if (reason := walk(getattr(chapter, "children", ()))) is not None:
+                return reason
+        return None
+
+    return walk(edition.chapters)
+
+
+def edition_flags(editions: tuple) -> tuple[bool, bool]:
+    """(EditionFlagHidden, EditionFlagDefault) de l'édition projetée."""
+    edition = editions[0] if editions else None
+    return bool(getattr(edition, "hidden", False)), bool(getattr(edition, "default", False))
 
 
 def _seconds(table: FrameTable) -> list[Fraction]:
@@ -81,7 +115,8 @@ def project_chapters(editions: tuple, alignment: AlignmentMap, film1: FrameTable
         name, language = (chapter.displays[0] if chapter.displays else ("", "und"))
         return ProjectedChapter(max(0.0, float(start) + shift_s),
                                 max(0.0, float(end) + shift_s) if end is not None else None, name, language,
-                                int(chapter.uid), tuple(chapter.displays), children)
+                                int(chapter.uid), tuple(chapter.displays), children,
+                                bool(getattr(chapter, "hidden", False)), bool(getattr(chapter, "enabled", True)))
 
     projected = tuple(chapter for chapter in (project(c) for c in editions[0].chapters) if chapter is not None)
     return projected, dropped

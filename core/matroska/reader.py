@@ -795,8 +795,23 @@ class MatroskaReader:
             end: int | None = None
             displays: list[tuple[str, str]] = []
             children: list[MatroskaChapter] = []
+            hidden, enabled = False, True
+            segment_uid: bytes | None = None
+            segment_edition_uid: int | None = None
+            tracks: list[int] = []
             for element_id, value in payload_children(payload):
-                if element_id == self.CHAPTER_UID_ID:
+                if element_id == bytes.fromhex("98"):        # ChapterFlagHidden
+                    hidden = bool(int.from_bytes(value, "big"))
+                elif element_id == bytes.fromhex("4598"):    # ChapterFlagEnabled
+                    enabled = bool(int.from_bytes(value, "big"))
+                elif element_id == bytes.fromhex("6e67"):    # ChapterSegmentUID
+                    segment_uid = bytes(value)
+                elif element_id == bytes.fromhex("6ebc"):    # ChapterSegmentEditionUID
+                    segment_edition_uid = int.from_bytes(value, "big")
+                elif element_id == bytes.fromhex("8f"):      # ChapterTrack
+                    tracks += [int.from_bytes(track, "big") for track_id, track in payload_children(value)
+                               if track_id == bytes.fromhex("89")]
+                elif element_id == self.CHAPTER_UID_ID:
                     uid = int.from_bytes(value, "big")
                 elif element_id == self.CHAPTER_TIME_START_ID:
                     start = int.from_bytes(value, "big")
@@ -813,7 +828,8 @@ class MatroskaReader:
                     displays.append((name, language))
                 elif element_id == self.CHAPTER_ATOM_ID:
                     children.append(parse_atom(value))
-            return MatroskaChapter(uid, start, end, tuple(displays), tuple(children))
+            return MatroskaChapter(uid, start, end, tuple(displays), tuple(children), hidden, enabled, segment_uid,
+                                   segment_edition_uid, tuple(tracks))
 
         for raw in self.raw_top_level(self.CHAPTERS_ID):
             for element_id, value in payload_children(self._raw_payload(raw)):
@@ -821,12 +837,15 @@ class MatroskaReader:
                     continue
                 uid = 0
                 chapters: list[MatroskaChapter] = []
+                flags = {"hidden": False, "default": False, "ordered": False}
                 for edition_id, edition_value in payload_children(value):
                     if edition_id == self.EDITION_UID_ID:
                         uid = int.from_bytes(edition_value, "big")
                     elif edition_id == self.CHAPTER_ATOM_ID:
                         chapters.append(parse_atom(edition_value))
-                editions.append(MatroskaEdition(uid, tuple(chapters)))
+                    elif edition_id in _EDITION_FLAGS:
+                        flags[_EDITION_FLAGS[edition_id]] = bool(int.from_bytes(edition_value, "big"))
+                editions.append(MatroskaEdition(uid, tuple(chapters), **flags))
         return tuple(editions)
 
     @staticmethod
@@ -2072,12 +2091,28 @@ class MatroskaChapter:
     end_ns: int | None
     displays: tuple[tuple[str, str], ...]
     children: tuple["MatroskaChapter", ...] = ()
+    #: ChapterFlagHidden / ChapterFlagEnabled (défauts Matroska : visible, actif).
+    hidden: bool = False
+    enabled: bool = True
+    #: Références à un autre segment / une autre édition (ChapterSegmentUID / ChapterSegmentEditionUID) et pistes
+    #: ciblées (ChapterTrack → ChapterTrackUID).
+    segment_uid: bytes | None = None
+    segment_edition_uid: int | None = None
+    tracks: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class MatroskaEdition:
     uid: int
     chapters: tuple[MatroskaChapter, ...]
+    #: EditionFlagHidden / EditionFlagDefault / EditionFlagOrdered.
+    hidden: bool = False
+    default: bool = False
+    ordered: bool = False
+
+
+#: Drapeaux d'une édition de chapitres (EditionFlagHidden, EditionFlagDefault, EditionFlagOrdered).
+_EDITION_FLAGS = {bytes.fromhex("45bd"): "hidden", bytes.fromhex("45db"): "default", bytes.fromhex("45dd"): "ordered"}
 
 
 @dataclass(frozen=True)

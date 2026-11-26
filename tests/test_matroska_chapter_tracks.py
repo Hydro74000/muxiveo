@@ -140,3 +140,54 @@ def test_streamed_track_uid_never_depends_on_the_producer_uid(tmp_path):
         return compile_assembly_plan(assembly, readers={artifact: MatroskaReader(artifact)}).tracks[0].output_uid
 
     assert output_uid(first) == output_uid(second)
+
+
+# ── Drapeaux d'édition et de chapitre (N6, décision DD) ───────────────────────
+
+
+def _flagged_source(path: Path, *, ordered: bool = False, extra_chapter: bytes = b"") -> Path:
+    child = ebml.element(ATOM, ebml.uint_element(UID, 3) + ebml.uint_element(START, 1_000_000_000)
+                         + ebml.uint_element(bytes.fromhex("98"), 1))                    # enfant masqué
+    parent = ebml.element(ATOM, ebml.uint_element(UID, 1) + ebml.uint_element(START, 0)
+                          + ebml.uint_element(bytes.fromhex("4598"), 0) + child)         # parent inactif
+    edition = (ebml.uint_element(bytes.fromhex("45bc"), 7) + ebml.uint_element(bytes.fromhex("45bd"), 1)
+               + ebml.uint_element(bytes.fromhex("45db"), 1)
+               + (ebml.uint_element(bytes.fromhex("45dd"), 1) if ordered else b"") + parent + extra_chapter)
+    return _source(path, chapters=ebml.element(EDITION, edition))
+
+
+def test_reader_exposes_simple_flags_and_references(tmp_path):
+    (edition,) = MatroskaReader(_flagged_source(tmp_path / "a.mkv")).chapter_editions()
+    assert edition.hidden and edition.default and not edition.ordered
+    parent = edition.chapters[0]
+    assert parent.enabled is False and parent.children[0].hidden is True
+
+
+def test_projection_copies_simple_flags_and_writer_writes_them(tmp_path):
+    from core.matroska.writer import build_chapters_element
+    from core.workflows.merge_dovi_align.chapters import ProjectedChapter, edition_flags, unsupported_reason
+
+    editions = MatroskaReader(_flagged_source(tmp_path / "a.mkv")).chapter_editions()
+    assert unsupported_reason(editions) is None and edition_flags(editions) == (True, True)
+    chapters = (ProjectedChapter(0.0, None, "Un", "fra", 1, (("Un", "fra"),),
+                                 (ProjectedChapter(1.0, None, "Deux", "fra", 3, (("Deux", "fra"),), hidden=True),),
+                                 enabled=False),)
+    element = build_chapters_element(list(chapters), edition_hidden=True, edition_default=True)
+    output = _source(tmp_path / "out.mkv", chapters=MatroskaReader._raw_payload(element))
+    (written,) = MatroskaReader(output).chapter_editions()
+    assert written.hidden and written.default
+    assert written.chapters[0].enabled is False and written.chapters[0].children[0].hidden is True
+
+
+def test_unprojectable_editions_are_reported(tmp_path):
+    from core.workflows.merge_dovi_align.chapters import unsupported_reason
+
+    ordered = MatroskaReader(_flagged_source(tmp_path / "o.mkv", ordered=True)).chapter_editions()
+    assert unsupported_reason(ordered)
+    linked = ebml.element(ATOM, ebml.uint_element(UID, 9) + ebml.uint_element(START, 0)
+                          + ebml.element(bytes.fromhex("6e67"), b"\x01" * 16))
+    assert unsupported_reason(MatroskaReader(_flagged_source(tmp_path / "l.mkv", extra_chapter=linked)
+                                             ).chapter_editions())
+    targeted = _atom(8, targets=(10,))
+    assert unsupported_reason(MatroskaReader(_flagged_source(tmp_path / "t.mkv", extra_chapter=targeted)
+                                             ).chapter_editions())

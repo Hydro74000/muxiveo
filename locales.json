@@ -12158,5 +12158,21 @@
   "Synchro impossible : {count} épisode(s) non traité(s) ({details}).": {
     "fra": "Synchro impossible : {count} épisode(s) non traité(s) ({details}).",
     "eng": "Sync impossible: {count} episode(s) not processed ({details})."
+  },
+  "plusieurs éditions": {
+    "fra": "plusieurs éditions",
+    "eng": "several editions"
+  },
+  "édition ordonnée": {
+    "fra": "édition ordonnée",
+    "eng": "ordered edition"
+  },
+  "chapitres liés à un autre segment": {
+    "fra": "chapitres liés à un autre segment",
+    "eng": "chapters linked to another segment"
+  },
+  "chapitres ciblant des pistes (ChapterTrack)": {
+    "fra": "chapitres ciblant des pistes (ChapterTrack)",
+    "eng": "chapters targeting tracks (ChapterTrack)"
   }
 }

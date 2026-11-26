@@ -514,6 +514,8 @@ class MatroskaAssemblyPlan:
     #: None → chapitres copiés depuis ``chapter_source`` (si défini) ;
     #: tuple → chapitres reconstruits depuis ces entrées (vide = aucun).
     chapter_entries: tuple | None = None
+    #: (EditionFlagHidden, EditionFlagDefault) de l'édition de ``chapter_entries`` (chapitres projetés).
+    chapter_edition_flags: tuple[bool, bool] = (False, False)
     chapter_source: Path | None = None
     tag_overrides: dict[str, str] | None = None
     tag_copy_sources: tuple[Path, ...] = ()
@@ -541,7 +543,8 @@ def copied_chapters(plan: MatroskaAssemblyPlan, reader: MatroskaReader | None,
     (UID source → UID de sortie) et les chapitres sans cible retirés. Renvoie (élément ``Chapters`` ou ``b""``,
     nombre de chapitres retirés)."""
     if plan.chapter_entries is not None:
-        return build_chapters_element(list(plan.chapter_entries)), 0
+        hidden, default = plan.chapter_edition_flags
+        return build_chapters_element(list(plan.chapter_entries), edition_hidden=hidden, edition_default=default), 0
     if plan.chapter_source is None or reader is None:
         return b"", 0
     parts: list[bytes] = []

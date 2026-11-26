@@ -110,7 +110,7 @@ from core.matroska.mux_plan import deterministic_source_identity
 from core.i18n import translate_text
 from core.matroska.native_muxer import MatroskaNativeMuxer
 from core.workflows.merge_dovi_align.align import AlignmentError
-from core.workflows.merge_dovi_align.chapters import project_chapters
+from core.workflows.merge_dovi_align.chapters import edition_flags, project_chapters, unsupported_reason
 from core.workflows.merge_dovi_align.probe import DecoderPreference, ProbeError
 from core.workflows.merge_dovi_align.process import ProcessHooks
 from core.workflows.merge_dovi_align.session import (
@@ -2778,6 +2778,7 @@ class MergeDoviWorkflow(QObject):
         # d'alignement quand les positions de Film 2 ont été éditées).
         chapter_source: Path | None = None
         chapter_entries: tuple | None = None
+        chapter_flags = (False, False)
         if source_reader.raw_top_level(CHAPTERS_ID):
             chapter_source = source_mkv
         elif film2 is not None and film2.is_file() and film2.suffix.lower() == ".mkv":
@@ -2789,12 +2790,16 @@ class MergeDoviWorkflow(QObject):
                 elif aligned.film2_table is None:
                     self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
                                                   "Film 2 non indexable, projection impossible.")
+                elif (reason := unsupported_reason(editions := film2_reader.chapter_editions())) is not None:
+                    # Décision DD : drapeaux simples recopiés ; références non projetables → non importés.
+                    self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : {reason}.")
                 else:
                     # Toujours projetés en Automatique (carte identité comprise : origines et cadences des deux
                     # fichiers peuvent différer), décalage de la vidéo de sortie reporté.
-                    projected, dropped = project_chapters(film2_reader.chapter_editions(), aligned.map,
+                    projected, dropped = project_chapters(editions, aligned.map,
                                                           aligned.film1_table, aligned.film2_table,
                                                           shift_s=video_shift_ms / 1000.0)
+                    chapter_flags = edition_flags(editions)
                     if projected is None:
                         self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
                                                       "projection impossible (plusieurs éditions).")
@@ -2831,6 +2836,7 @@ class MergeDoviWorkflow(QObject):
             attachments=attachments,
             chapter_source=chapter_source,
             chapter_entries=chapter_entries,
+            chapter_edition_flags=chapter_flags,
             tag_copy_sources=tag_copy_sources,
             segment_title=segment_title,
         )
