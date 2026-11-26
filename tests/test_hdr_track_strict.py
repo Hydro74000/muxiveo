@@ -112,7 +112,7 @@ def test_compare_b_without_a_index_takes_first_track_with_warning(tmp_path):
     sink = ListSink()
     result: Any = _compare(tmp_path, sink, track=1)
     assert [side["source"]["stream_index"] for side in result.hdr] == [1, 0]
-    assert any(event.type.value == "warning" and "#1 absente de B" in str(event.data) for event in sink.events)
+    assert any(event.type.value == "warning" and "#1" in str(event.data) for event in sink.events)
 
 
 def test_compare_b_keeps_a_index_when_present(tmp_path):
@@ -177,3 +177,20 @@ def test_snapshot_index_survives_json_report(tmp_path):
     data = report_data(snapshot_report(info, 3))
     assert json.loads(json.dumps(data))["source"]["stream_index"] == 3
     assert dataclasses.is_dataclass(build_snapshot(info, 3))
+
+
+def test_compare_default_uses_a_first_index_when_b_has_it(tmp_path):
+    """Sans piste demandée : B comparée sur l'index de la première piste vidéo de A s'il existe dans B."""
+    _Inspector.tracks = {"a.mkv": (1,), "b.mkv": (0, 1)}
+    sink = ListSink()
+    result: Any = _compare(tmp_path, sink)
+    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 1]
+
+
+def test_cli_compare_track_without_compare_is_refused(tmp_path, monkeypatch):
+    from cli.errors import CliError
+
+    monkeypatch.setattr(cli_hdr, "FileInspector", _Inspector)
+    args = build_parser().parse_args(["inspect", str(_media(tmp_path / "a.mkv")), "--hdr-compare-track", "0"])
+    with pytest.raises(CliError):
+        args.func(args, AppConfig(), Logger())

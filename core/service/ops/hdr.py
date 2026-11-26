@@ -548,14 +548,13 @@ def resolve_tracks(request: HdrInspectRequest, infos: list[Any], logger: Emitter
                 tracks.append(video_track(info, request.track).index)
             elif request.compare_track is not None:
                 tracks.append(video_track(info, request.compare_track).index)
-            elif request.track is None:
-                tracks.append(video_track(info).index)  # première piste vidéo de chaque côté
             elif any(item.index == first for item in info.video_tracks):
-                tracks.append(first)
+                tracks.append(first)  # index retenu pour A (demandé ou première piste vidéo)
             else:
                 chosen = video_track(info).index
-                logger.emit("warning", f"Piste vidéo #{first} absente de B ({Path(info.path).name}) : première piste "
-                                       f"vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).")
+                logger.emit("warning", translate_text(
+                    "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée "
+                    "(--hdr-compare-track pour la choisir).", index=first, name=Path(info.path).name, chosen=chosen))
                 tracks.append(chosen)
     except TrackNotFoundError as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
