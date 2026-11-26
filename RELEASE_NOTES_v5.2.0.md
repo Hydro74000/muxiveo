@@ -66,6 +66,7 @@
   * **Chapitres de Film 2** recalés sur Film 1 quand Film 1 n'en a pas (supprimés s'ils tombent dans une plage retirée).
   * Film 1 est lu entièrement pendant l'extraction (décodage NVIDIA si disponible), Film 2 par fenêtres (un plan vérifié par minute, lecture complète avant tout refus) ; case « Vérifier Film 2 image par image » pour le relire entièrement et vérifier tous les plans. Mode *Strict* : comptages identiques exigés, comme auparavant.
   * **Cadrage propre à chaque plan** : un plan dont l'extraction 2.39 est calée plus haut, plus bas ou zoomée dans l'image IMAX est vérifié sur son propre cadrage. **Plans non concordants** (version propre à un master, fondu, image très sombre) : métadonnées selon le décalage de leur passage, plans listés au journal. Un plan qui concorde mieux à quelques images près déclenche la lecture complète de Film 2 et la vérification image par image.
+  * **Merge DoVi : Film 2 indécodable.** Quand l'image de Film 2 ne peut pas être lue (table d'images ou décodage en échec), le mode Automatique refuse avec la cause, même pour un Film 1 SDR (plus de repli silencieux vers le HDR10 seul). Si les métadonnées de Film 2 ont des coupes exploitables, une fenêtre propose « Forcer l'alignement sur les métadonnées » : alignement sur les seules coupes, non vérifié sur l'image (signalé au journal et dans le bilan), L5 d'après Film 1, chapitres de Film 2 non importés. Le choix vaut pour ce lancement seulement.
 ## Correctifs
 
 * **Flux HEVC commençant par une NAL invalide** (rips DVDFab : NAL à bit interdit devant la première image) : l'extension `mvo-fel` 0.6.2 ne perd plus le premier GOP (intégration FEL, mesure de l'image, FEL Analyzer ; le HDR10+ généré était décalé d'autant) ; Muxiveo retire ces NAL, ignorées par les décodeurs, de toute vidéo qu'il réécrit (injection Dolby Vision / HDR10+, correction du HDR Studio ; avertissement au journal) au lieu d'échouer à l'écriture ; une mesure de l'image qui n'a pas le nombre d'images de la piste (comptage exact) n'est plus reprise du cache ni utilisée (HDR10+ généré, HDR Studio, CLI).
@@ -95,6 +96,20 @@
 * **Paramètres : ancien réglage du journal fichier** (`verbose_file_logging`) conservé par une écriture partielle de `[ui]` (journal ouvert au démarrage, popup de mise à jour, `config set`) : il était supprimé sans être remplacé, ce qui désactivait le journal fichier.
 * **Redémarrage proposé après un changement d'échelle ou la relance du setup** : la nouvelle instance n'est lancée qu'après l'accord de fermeture (opération en cours comprise), puis l'instance courante se ferme (après le setup, elle restait ouverte).
 * **Paramètres : message d'état** : un second enregistrement ou un changement de langue réaffichait le premier message de la session.
+* **Fichiers annexes** : un rapport HDR, des moments FEL, une calibration, un gabarit `--save`, un résumé `--summary`, un export Hybrid ou un NFO ne sont jamais écrits sur un fichier lu ou produit par la même commande ; le conflit est refusé avant le premier job. NFO écrit de façon atomique.
+* **HDR Studio, `inspect --hdr`, `hdr-patch`** : une piste vidéo absente est refusée avant toute analyse. Comparaison : la piste B prend l'index de A s'il existe, sinon sa première piste vidéo, avec un avertissement (`--hdr-compare-track` pour la choisir).
+* **Cache du HDR Studio** : une entrée tronquée ou incohérente est ignorée au lieu de fausser une analyse.
+* **Nombre d'images vérifié** : le HDR10+ recalculé, les corrections image par image et le HDR10+ généré n'utilisent qu'un comptage exact ; un écart de longueur est refusé ; le rapport indique l'état du comptage.
+* **HDR Studio** : une inspection en cours s'annule aussitôt ; la piste B reste figée pendant l'inspection d'un nouveau fichier B.
+* **Jaquettes TMDB** : HTTPS vérifié sans repli automatique (`MUXIVEO_TMDB_INSECURE_SSL=1` seulement sur demande), téléchargement en arrière-plan borné en durée et en taille (20 Mio) ; l'interface ne se fige plus.
+* **Mises à jour** : chaque installation garde ses propres comptes rendus ; ils ne sont marqués lus qu'une fois la réponse effectivement écrite (CLI, `call`, `serve`).
+* **Extensions** : installation, mise à jour et suppression sérialisées entre processus ; une version en cours d'usage (encodage, aperçu, sonde, préchauffage TensorRT) n'est jamais retirée par un nettoyage.
+* **Hybrid** : un épisode dont la synchro est impossible est marqué en échec et la saison continue ; récapitulatif en fin de traitement (avertissement CLI, fenêtre du Hybrid Studio).
+* **Test de survie du FEL Analyzer** interruptible et borné dans le temps ; un job dont le démarrage échoue ne bloque plus la file du worker `serve`.
+* **HDR10+** : une luminance cible (TSDML) est refusée avec le profil A ou le recalcul ; estimation depuis le L1 plus fidèle.
+* **Matroska** : les chapitres ciblant des pistes suivent les pistes de sortie (chapitre sans piste conservée retiré, avec avertissement) ; le SegmentUID change dès qu'un décalage ou un drapeau de piste change ; UID stables pour les pistes lues en flux (MP4 / MOV) ; CRC-32 des chapitres réécrits corrects.
+* **Merge DoVi, chapitres de Film 2** : drapeaux recopiés (chapitre masqué ou inactif, édition masquée ou par défaut) ; éditions multiples ou ordonnées, chapitres liés à un autre segment ou ciblant des pistes : non importés, avec avertissement.
+* **Paquets** : inventaire des dépendances Python (PyInstaller et Pillow compris) dans `tools-manifest.json` de chaque build ; versions plus récentes admises, incompatibilité connue déclarée avec sa raison ; licences (LICENSE, NOTICE, SOURCES.md, LICENSES/) dans l'application macOS ; `PRIVACY` à jour (vérification des mises à jour, extensions, NVEncC).
 
 ---
 ---
@@ -160,6 +175,7 @@
   * **Film 2 chapters** moved onto Film 1 when Film 1 has none (dropped when they fall in a removed range).
   * Film 1 is read entirely during extraction (NVIDIA decoding when available), Film 2 through windows (one shot checked per minute, full read before any refusal); "Verify Film 2 frame by frame" reads it entirely and checks every shot. *Strict* mode: identical counts required, as before.
   * **Per-shot framing**: a shot whose 2.39 extraction sits higher, lower or zoomed in the IMAX picture is checked on its own framing. **Non-concordant shots** (master-specific version, fade, very dark picture): metadata from their passage's offset, shots listed in the log. A shot that matches better a few frames away triggers a full read of Film 2 and a frame-by-frame check.
+  * **Merge DoVi: undecodable Film 2.** When the picture of Film 2 cannot be read (frame table or decoding failure), Automatic mode refuses with the cause, even for an SDR Film 1 (no more silent fallback to HDR10 only). If the metadata of Film 2 has usable cuts, a dialog offers "Force alignment on the metadata": alignment on the cuts only, not verified on the picture (stated in the log and the summary), L5 from Film 1, chapters of Film 2 not imported. The choice applies to that run only.
 ## Fixes
 
 * **HEVC streams starting with an invalid NAL unit** (DVDFab rips: NAL with the forbidden bit set before the first picture): the `mvo-fel` 0.6.2 extension no longer loses the first GOP (FEL baking, image measurement, FEL Analyzer; generated HDR10+ was shifted accordingly); Muxiveo removes these NAL units, ignored by decoders, from any video it rewrites (Dolby Vision / HDR10+ injection, HDR Studio correction; warning in the log) instead of failing to write it; an image measurement whose frame count differs from the track (exact count) is no longer taken from the cache nor used (generated HDR10+, HDR Studio, CLI).
@@ -189,3 +205,17 @@
 * **Settings: legacy file logging setting** (`verbose_file_logging`) kept by a partial `[ui]` write (log opened at startup, update popup, `config set`): it was deleted without replacement, which disabled file logging.
 * **Restart offered after a scale change or a setup rerun**: the new instance is only started once closing is accepted (running operation included), then the current instance closes (after setup, it stayed open).
 * **Settings: status message**: a second save or a language change displayed the session's first message again.
+* **Side files**: an HDR report, FEL moments, a calibration, a `--save` template, a `--summary`, a Hybrid export or an NFO is never written over a file read or produced by the same command; the conflict is refused before the first job. NFO written atomically.
+* **HDR Studio, `inspect --hdr`, `hdr-patch`**: a missing video track is refused before any analysis. Comparison: track B uses the index of A when it exists, otherwise its first video track, with a warning (`--hdr-compare-track` to pick it).
+* **HDR Studio cache**: a truncated or inconsistent entry is ignored instead of skewing an analysis.
+* **Verified frame count**: recomputed HDR10+, per-frame corrections and generated HDR10+ only use an exact count; a length mismatch is refused; the report states the count status.
+* **HDR Studio**: a running inspection cancels at once; track B stays frozen while a new file B is inspected.
+* **TMDB covers**: verified HTTPS with no automatic fallback (`MUXIVEO_TMDB_INSECURE_SSL=1` on request only), background download bounded in time and size (20 MiB); the interface no longer freezes.
+* **Updates**: each installation keeps its own reports; they are marked as read only once the answer is actually written (CLI, `call`, `serve`).
+* **Extensions**: install, update and removal serialized across processes; a version in use (encode, preview, probe, TensorRT warm-up) is never removed by a cleanup.
+* **Hybrid**: an episode whose sync is impossible is marked failed and the season goes on; summary at the end (CLI warning, Hybrid Studio dialog).
+* **FEL Analyzer survival test** interruptible and time-bounded; a job that fails to start no longer blocks the `serve` queue.
+* **HDR10+**: a target luminance (TSDML) is refused with profile A or recompute; L1-based estimate more faithful.
+* **Matroska**: chapters targeting tracks follow the output tracks (a chapter whose tracks are all gone is removed, with a warning); the SegmentUID changes as soon as a track offset or flag changes; stable UIDs for tracks read as streams (MP4 / MOV); correct CRC-32 on rewritten chapters.
+* **Merge DoVi, chapters of Film 2**: flags copied (hidden or disabled chapter, hidden or default edition); several or ordered editions, chapters linked to another segment or targeting tracks: not imported, with a warning.
+* **Packages**: inventory of the Python dependencies (PyInstaller and Pillow included) in `tools-manifest.json` of every build; newer versions allowed, known incompatibility declared with its reason; licenses (LICENSE, NOTICE, SOURCES.md, LICENSES/) in the macOS application; `PRIVACY` updated (update check, extensions, NVEncC).
