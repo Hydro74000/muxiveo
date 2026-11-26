@@ -366,7 +366,8 @@ def test_segment_uid_of_a_streamed_origin_never_depends_on_its_header_path(tmp_p
 # ── Relecture Codex 21 ─────────────────────────────────────────────────────
 
 
-def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bool = False):
+def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bool = False,
+                dynamic: bool = True, align_returns_none: bool = False):
     """``_run`` en alignement forcé, Film 1 SDR (repli HDR10 possible hors mode forcé), étapes remplacées."""
     from core.workflows.merge_dovi import DoviProfile, ValidationContext
 
@@ -377,7 +378,7 @@ def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bo
     wf = MergeDoviWorkflow()
     any_wf = cast(Any, wf)
     any_wf._step_validate = lambda *_a: ValidationContext(
-        flags=HDRFlags(has_dovi=True), static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
+        flags=HDRFlags(has_dovi=dynamic), static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
         film1_needs_sdr_to_hdr10=True)
     any_wf._step_detect_dovi = lambda *_a: None
     any_wf._step_framecount = lambda *_a, **_k: FrameCountResult(100, None, None)
@@ -406,7 +407,7 @@ def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bo
 
     def step_align(*args, allow_hdr10_fallback=False):
         seen["align_fallback"] = allow_hdr10_fallback
-        return None if not check_fails else _forced_result()
+        return None if align_returns_none else _forced_result()
 
     any_wf._step_align = step_align
     any_wf._step_inject_static_hdr = lambda *_a: False
@@ -493,3 +494,24 @@ def test_forced_remux_never_imports_film2_chapters(tmp_path) -> None:
         wf._step_remux(film1, paths, flags, film2=film2, aligned=_forced_result())
     assert plans and plans[0].chapter_source is None and not plans[0].chapter_entries
     assert any(line.startswith("[WARN]") and "alignement forcé" in line for line in lines)
+
+
+
+# ── Relecture Codex 22 ─────────────────────────────────────────────────────
+
+
+def test_forced_run_without_dynamic_metadata_is_refused(tmp_path) -> None:
+    """Relance forcée dont la validation ne retrouve que du HDR10 statique (Film 1 SDR) : refus, jamais HDR10 seul."""
+    failures, seen = _forced_run(tmp_path, dynamic=False)
+    assert failures and failures[0][0] == WorkflowStep.VALIDATION and "aucune métadonnée dynamique" in failures[0][1]
+    assert "remux" not in seen and "align_fallback" not in seen
+
+
+def test_forced_run_never_remuxes_without_an_alignment_map(tmp_path) -> None:
+    failures, seen = _forced_run(tmp_path, align_returns_none=True)
+    assert failures and failures[0][0] == WorkflowStep.ALIGN and "remux" not in seen
+
+
+def test_forced_frame_count_status_never_mentions_a_raw_stream() -> None:
+    status = FrameCountResult(100, None, None, fc2_deferred=True, fc2_forced=True).status_text
+    assert "flux brut" not in status and "alignement forcé" in status

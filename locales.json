@@ -5223,10 +5223,6 @@
     "fra": "Vérifier les mises à jour au démarrage",
     "eng": "Check for updates at startup"
   },
-  "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.": {
-    "fra": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral.",
-    "eng": "Queries GitHub (at most once every 24 h) and shows a new version in the sidebar."
-  },
   "Nouvelle version disponible : v{version}": {
     "fra": "Nouvelle version disponible : v{version}",
     "eng": "New version available: v{version}"
@@ -12231,8 +12227,24 @@
     "fra": "Alignement forcé : la correspondance sera établie à l'étape d'alignement par les seules coupes des métadonnées, image de Film 2 non vérifiée{counted}.",
     "eng": "Forced alignment: the match will be established at the alignment step by the metadata cuts only, Film 2 picture not verified{counted}."
   },
-  "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées extraites.": {
-    "fra": "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées extraites.",
-    "eng": "Film 1: {fc1} frames  |  Film 2: not read (forced alignment), exact count on its extracted metadata."
+  "Interroge GitHub à chaque démarrage et signale une nouvelle version dans le menu latéral.": {
+    "fra": "Interroge GitHub à chaque démarrage et signale une nouvelle version dans le menu latéral.",
+    "eng": "Queries GitHub at every startup and reports a new version in the sidebar."
+  },
+  "Alignement forcé impossible : Film 2 n'apporte aucune métadonnée dynamique (Dolby Vision ou HDR10+) à aligner.": {
+    "fra": "Alignement forcé impossible : Film 2 n'apporte aucune métadonnée dynamique (Dolby Vision ou HDR10+) à aligner.",
+    "eng": "Forced alignment impossible: Film 2 provides no dynamic metadata (Dolby Vision or HDR10+) to align."
+  },
+  "Alignement forcé non effectué : métadonnées dynamiques de Film 2 absentes.": {
+    "fra": "Alignement forcé non effectué : métadonnées dynamiques de Film 2 absentes.",
+    "eng": "Forced alignment not performed: dynamic metadata of Film 2 missing."
+  },
+  "Film 1 : {fc1} frames  |  Film 2 : non compté (alignement forcé), comptage exact sur ses métadonnées extraites.": {
+    "fra": "Film 1 : {fc1} frames  |  Film 2 : non compté (alignement forcé), comptage exact sur ses métadonnées extraites.",
+    "eng": "Film 1: {fc1} frames  |  Film 2: not counted (forced alignment), exact count on its extracted metadata."
+  },
+  "{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses métadonnées": {
+    "fra": "{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses métadonnées",
+    "eng": "{frames} frames — Film 2 not counted (forced alignment), checked on its metadata"
   }
 }

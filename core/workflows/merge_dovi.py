@@ -412,6 +412,8 @@ class FrameCountResult:
     #: Film 2 HEVC brut : pas de comptage vidéo (lecture complète évitée) ;
     #: le contrôle exact porte sur ses métadonnées extraites (CHECK_METADATA).
     fc2_deferred: bool = False
+    #: Alignement forcé (décision DC) : Film 2 non compté, contrôle exact sur ses métadonnées (CHECK_METADATA).
+    fc2_forced: bool = False
 
     @property
     def compatible(self) -> bool:
@@ -425,6 +427,9 @@ class FrameCountResult:
 
     @property
     def status_text(self) -> str:
+        if self.fc2_forced and self.fc1 is not None:
+            return translate_text("{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses "
+                                  "métadonnées", frames=self.fc1)
         if self.fc2_deferred and self.fc1 is not None:
             return f"{self.fc1} frames — Film 2 (flux brut) compté sur ses métadonnées"
         if self.fc1 is None or self.fc2 is None:
@@ -998,6 +1003,11 @@ class MergeDoviWorkflow(QObject):
                 film1, film2, profile,
             )
             hdr10_fallback = validation.film1_needs_sdr_to_hdr10 and not forced
+            if forced and not (validation.flags.has_dovi or validation.flags.has_hdr10plus):
+                # Relance forcée sans métadonnées dynamiques à aligner : jamais un succès en HDR10 seul.
+                raise WorkflowError(WorkflowStep.VALIDATION, translate_text(
+                    "Alignement forcé impossible : Film 2 n'apporte aucune métadonnée dynamique (Dolby Vision ou "
+                    "HDR10+) à aligner."))
             flags = validation.flags
             static_hdr_film1 = validation.static_film1
             static_hdr_film2 = validation.static_film2
@@ -1169,6 +1179,10 @@ class MergeDoviWorkflow(QObject):
             self._check_cancel()
 
             # 11 — Remuxage
+            if forced and aligned is None:
+                # Alignement forcé jamais conclu sans carte (aucun succès en HDR10 seul, chapitres de Film 2 exclus).
+                raise WorkflowError(WorkflowStep.ALIGN, translate_text(
+                    "Alignement forcé non effectué : métadonnées dynamiques de Film 2 absentes."))
             chosen_static = static_resolved
             self._step_remux(
                 film1,
@@ -1536,12 +1550,12 @@ class MergeDoviWorkflow(QObject):
         fc2 = None if fc2_deferred else self._get_framecount(film2)
 
         diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
-        result = FrameCountResult(fc1, fc2, diff, fc2_deferred=fc2_deferred)
+        result = FrameCountResult(fc1, fc2, diff, fc2_deferred=fc2_deferred, fc2_forced=metadata_only)
 
         if metadata_only:
             self.step_progress.emit(step, translate_text(
-                "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées "
-                "extraites.", fc1=fc1))
+                "Film 1 : {fc1} frames  |  Film 2 : non compté (alignement forcé), comptage exact sur ses "
+                "métadonnées extraites.", fc1=fc1))
         elif fc2_deferred:
             self.step_progress.emit(
                 step,
