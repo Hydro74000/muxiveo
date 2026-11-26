@@ -4364,20 +4364,46 @@ class EncodeWorkflow(QObject):
         except OutputBusyError as exc:
             raise EncodeError(str(exc)) from exc
         try:
+            leases = self._engine_leases(config)
+        except BaseException:
+            reservation.release()
+            raise
+
+        def release() -> None:
+            reservation.release()
+            for lease in leases:
+                lease.release()
+
+        try:
             if not validate:
                 signals = self._run_async_preparation(config, **retain_kwargs)
             else:
                 signals = self._run_with_preparation(config, validate=True, **retain_kwargs)
         except BaseException:
-            reservation.release()
+            release()
             raise
         signals.connect_terminal(
-            finished=lambda *_args: reservation.release(),
-            failed=lambda *_args: reservation.release(),
-            cancelled=lambda *_args: reservation.release(),
+            finished=lambda *_args: release(),
+            failed=lambda *_args: release(),
+            cancelled=lambda *_args: release(),
             direct=True,
         )
         return signals
+
+    def _engine_leases(self, config: EncodeConfig) -> list:
+        """Baux des extensions utilisées par l'encodage (moteur muxiveo-rife, accélération TensorRT) : jamais
+        retirées par un nettoyage ou une suppression pendant le job ; extension en cours de modification →
+        :class:`EncodeError`."""
+        tracks = [*(config.video_tracks or ()), *([config.video] if config.video is not None else [])]
+        if not any(getattr(video, "uses_engine", lambda: False)() for video in tracks) or not self._rife_bin:
+            return []
+        from core import plugins
+
+        engine = shutil.which(self._rife_bin) or self._rife_bin
+        try:
+            return plugins.leases_for(engine, self._rife_trt_plugin or None)
+        except (OSError, plugins.PluginError) as exc:
+            raise EncodeError(f"Moteur vidéo indisponible : {exc}") from exc
 
     def _run_async_preparation(self, config: EncodeConfig, *, retain_failed_work_dir: bool = False) -> TaskSignals:
         return self._preparation_runner().run_async_preparation(

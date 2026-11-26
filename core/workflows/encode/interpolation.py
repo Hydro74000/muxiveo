@@ -806,6 +806,24 @@ def _file_identity(path: str) -> tuple[int, int, int]:
     return (info.st_ino, info.st_size, info.st_mtime_ns)
 
 
+def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Sonde du moteur (``run_detection``) : version de l'extension utilisée (binaire, accélération TensorRT)
+    louée le temps de la sonde, jamais retirée par un nettoyage concurrent ; version en cours de modification :
+    sonde lancée sans bail (elle échouera d'elle-même si le binaire disparaît)."""
+    from core import plugins
+
+    trt = cmd[cmd.index("--trt-plugin") + 1] if "--trt-plugin" in cmd[:-1] else None
+    try:
+        leases = plugins.leases_for(cmd[0], trt)
+    except (OSError, plugins.PluginError):
+        leases = []
+    try:
+        return run_detection(cmd, **kwargs)
+    finally:
+        for lease in leases:
+            lease.release()
+
+
 def rife_capabilities(rife_bin: str, cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
     """Capacités du binaire (None s'il est illisible) ; cache de session indexé sur l'identité du fichier.
 
@@ -826,7 +844,7 @@ def _rife_capabilities_probe(rife_bin: str, version: tuple[int, int, int] | None
         return _legacy_capabilities(version)
     try:
         # Binaire RIFE configuré ; seul argument constant --capabilities, sans shell.
-        result = run_detection([rife_bin, "--capabilities"], cancel_event=cancel_event, capture_output=True,
+        result = _engine_probe([rife_bin, "--capabilities"], cancel_event=cancel_event, capture_output=True,
                                check=False, timeout=15, **subprocess_text_kwargs())
         data = json.loads(result.stdout or "")
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -867,7 +885,7 @@ def _cached_rife_version(rife_bin: str, identity: tuple[int, int, int],
 def _rife_version_probe(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
     try:
         # Binaire RIFE configuré ; seul argument constant --version, sans shell.
-        result = run_detection([str(rife_bin), "--version"], cancel_event=cancel_event, capture_output=True,
+        result = _engine_probe([str(rife_bin), "--version"], cancel_event=cancel_event, capture_output=True,
                                check=False, timeout=15, **subprocess_text_kwargs())
     except (OSError, subprocess.SubprocessError):
         return None
@@ -953,7 +971,7 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
     try:
         # Binaire RIFE configuré ; arguments constants (et dossier de l'extension), sans shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = run_detection(cmd, cancel_event=cancel_event, capture_output=True, check=False, timeout=timeout,
+        result = _engine_probe(cmd, cancel_event=cancel_event, capture_output=True, check=False, timeout=timeout,
                                **subprocess_text_kwargs())
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd)
