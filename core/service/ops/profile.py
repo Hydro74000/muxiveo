@@ -224,6 +224,10 @@ def _resolve(request: ProfileJobRequest, remux_config: Any, options: Any, ctx: E
                    ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def profile_apply(request: ProfileApplyRequest, ctx: ExecutionContext) -> MediaRunResult:
     remux_config, _report, options, cache = _build(request, ctx, preview=False)
+    if request.export_workflow is None:
+        from core.sidecar_output import check_nfo_against_documents
+
+        check_nfo_against_documents(remux_config.output, ctx.config, options)  # avant tout job
     if request.export_workflow is not None:
         destination = export_exact_job(remux_config, dataclasses.replace(options, export_workflow=str(
             request.export_workflow)), encode=request.encode)

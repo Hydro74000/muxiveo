@@ -388,8 +388,10 @@ def test_hybrid_nfo_of_the_last_episode_on_an_input_is_refused(monkeypatch, tmp_
     with pytest.raises(JobError):
         _, ran = _hybrid(monkeypatch, tmp_path, items, SimpleNamespace(generate_nfo=True))
     assert ran == []
+    monkeypatch.setattr(batch_ops._Children, "preview", lambda self, *a, **k: 0)
     result, ran = _hybrid(monkeypatch, tmp_path, items, SimpleNamespace(generate_nfo=True), dry_run=True)
-    assert result.status != "failed" or ran == []  # aperçu : NFO non réservé
+    assert result.status == "succeeded" and ran == []  # aperçu : NFO non réservé, aucune collision fictive
+    assert [entry["status"] for entry in result.episodes] == ["planned", "planned"]
 
 
 def test_hybrid_export_job_on_a_master_is_refused(monkeypatch, tmp_path):
@@ -440,3 +442,48 @@ def test_remux_nfo_on_an_input_attachment_is_refused_by_the_validation(qt_app, t
     with pytest.raises(RemuxValidationError) as caught:
         workflow.run(config)  # type: ignore[arg-type]
     assert "NFO" in str(caught.value) and attachment.read_text(encoding="utf-8") == "notes"
+
+
+# ── Corrections de la relecture (lot 1) ───────────────────────────────────────
+
+
+def test_remux_save_never_targets_the_exact_job_or_the_nfo_of_the_same_job(tmp_path, monkeypatch):
+    from cli.commands import cmd_remux
+
+    source = _media(tmp_path / "film.mkv")
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"version": 1, "sources": [str(source)], "output": str(tmp_path / "sortie.mkv")}),
+                   encoding="utf-8")
+    ran: list[Any] = []
+    monkeypatch.setattr("cli.commands._run_job", lambda *a, **k: ran.append(1) or EXIT_OK)
+    target = tmp_path / "x.json"
+    args = build_parser().parse_args(["remux", "--config", str(job), "--save", str(target),
+                                      "--export-workflow", str(target)])
+    with pytest.raises(JobError):
+        cmd_remux(args, AppConfig(), Logger())
+    assert not target.exists() and ran == []
+    config = AppConfig()
+    config.generate_nfo = True
+    args = build_parser().parse_args(["remux", "--config", str(job), "--save", str(tmp_path / "sortie.nfo")])
+    with pytest.raises(JobError):
+        cmd_remux(args, config, Logger())
+    assert not (tmp_path / "sortie.nfo").exists() and ran == []
+
+
+def test_media_run_nfo_never_replaces_the_request_document(tmp_path, monkeypatch):
+    from core.service.ops import media as media_ops
+
+    request = tmp_path / "sortie.nfo"
+    request.write_text("{}", encoding="utf-8")
+    before = _digest(request)
+    monkeypatch.setattr(media_ops, "build_remux_config",
+                        lambda *a, **k: SimpleNamespace(output=tmp_path / "sortie.mkv", sources=[],
+                                                        extra_attachments=[]))
+    ran: list[Any] = []
+    monkeypatch.setattr(media_ops, "run_remux", lambda *a, **k: ran.append(1) or "")
+    ctx = ExecutionContext.create(SimpleNamespace(generate_nfo=True), ListSink(), base_dir=tmp_path,
+                                  protected_paths=(request,))
+    with pytest.raises(ApiError) as caught:
+        call(CATALOG, "media.run", {"job": {"version": 1, "sources": [str(_media(tmp_path / "a.mkv"))],
+                                            "output": str(tmp_path / "sortie.mkv")}}, ctx)
+    assert caught.value.code is ErrorCode.INVALID_REQUEST and ran == [] and _digest(request) == before

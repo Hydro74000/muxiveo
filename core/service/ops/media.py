@@ -434,6 +434,9 @@ def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult
                                       EmitterLogger(ctx.events),
                                       context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event))
     ctx.cancel.raise_if_cancelled()  # préparation annulée : rien n'est exporté ni lancé
+    from core.sidecar_output import check_nfo_against_documents
+
+    check_nfo_against_documents(remux_config.output, ctx.config, options)  # avant tout job
     if options.export_workflow:
         destination = export_exact_job(remux_config, options, encode=request.job.get("encode"))
         ctx.events.artifact("exact-job", str(destination))

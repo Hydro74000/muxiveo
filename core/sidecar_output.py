@@ -177,6 +177,19 @@ def nfo_input_conflict(output: Path, inputs: Iterable[Path | str | None]) -> str
     return None
 
 
+def check_nfo_against_documents(output: Path, config: Any, options: Any) -> None:
+    """Job unitaire : le NFO écrit après le job ne remplace jamais un document du transport (``call --request``,
+    ``--config``…) ; refus avant le job (:class:`SidecarConflictError`)."""
+    if not nfo_enabled(config, options) or getattr(options, "export_workflow", None):
+        return
+    target = nfo_path(output)
+    keys = identity_keys(target)
+    for document in getattr(options, "protected_paths", ()) or ():
+        if keys & identity_keys(_absolute(document)):
+            raise SidecarConflictError(
+                f"NFO : {target} désigne un document de la requête ({_absolute(document)}) ; rien n'a été écrit.")
+
+
 def remux_input_paths(config: Any) -> list[Path]:
     """Fichiers lus par un remux (sources, pièces jointes externes)."""
     paths = [Path(source.path) for source in getattr(config, "sources", ()) or () if getattr(source, "path", None)]
@@ -307,7 +320,8 @@ def publish_pending(guard: SidecarGuard, pending: Sequence[PendingFile], *,
 
 
 __all__ = [
-    "CANDIDATE_SUFFIX", "PendingFile", "SidecarConflictError", "SidecarGuard", "discard_pending",
+    "CANDIDATE_SUFFIX", "PendingFile", "SidecarConflictError", "SidecarGuard", "check_nfo_against_documents",
+    "discard_pending",
     "encode_input_paths", "guard_for", "identity_keys", "job_document_paths", "nfo_enabled", "nfo_input_conflict",
     "nfo_path",
     "publish_pending", "remux_input_paths", "stage_bytes",

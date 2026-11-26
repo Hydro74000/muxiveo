@@ -355,10 +355,21 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
 
         guard = SidecarGuard(job_document_paths(job))
         guard.protect_many(argv_documents(args), "document de la requête")
+        _protect_job_sidecars(guard, job, args, options, config)
         guard.claim(args.save, "template (--save)")
         guard.write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
     return _run_job(job, args, config, options, logger)
+
+
+def _protect_job_sidecars(guard: Any, job: dict, args: argparse.Namespace, options: Any, config: Any) -> None:
+    """Annexes écrites ensuite par le même job (exact-job, NFO de la sortie) : jamais la cible de ``--save``."""
+    from core.sidecar_output import nfo_enabled, nfo_path
+
+    if options.export_workflow:
+        guard.protect(Path(str(options.export_workflow)).expanduser(), "exact-job (--export-workflow)")
+    elif not getattr(args, "dry_run", False) and job.get("output") and nfo_enabled(config, options):
+        guard.protect(nfo_path(Path(str(job["output"])).expanduser()), "NFO de la sortie")
 
 
 def _run_job(job: dict, args: argparse.Namespace, config: AppConfig, options, logger: Logger) -> int:
