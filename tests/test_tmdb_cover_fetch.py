@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -40,6 +41,8 @@ class _Response:
         if self._delay:
             time.sleep(self._delay)
         return self._chunks.pop(0) if self._chunks else b""
+
+    read1 = read
 
 
 def test_tls_failure_never_retries_unverified(monkeypatch):
@@ -73,6 +76,32 @@ def test_drip_response_hits_the_total_deadline(monkeypatch):
     with pytest.raises(TimeoutError):
         fetch_tmdb_image(URL, deadline=0.2)
     assert time.monotonic() - started < 2
+
+
+def test_end_of_stream_after_the_deadline_is_refused(monkeypatch):
+    monkeypatch.delenv("MUXIVEO_TMDB_INSECURE_SSL", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=None, context=None: _Response([], delay=0.3))  # fin tardive
+    with pytest.raises(TimeoutError):
+        fetch_tmdb_image(URL, deadline=0.1)
+
+
+def test_reads_never_ask_for_a_full_buffer(monkeypatch):
+    """``read1`` préféré à ``read(n)`` : une réception au plus par appel (sinon ``read`` attend n octets)."""
+    calls: list[str] = []
+
+    class _Strict(_Response):
+        def read(self, _size: int = -1) -> bytes:  # type: ignore[override]
+            calls.append("read")
+            return super().read(_size)
+
+        def read1(self, _size: int = -1) -> bytes:
+            calls.append("read1")
+            return _Response.read(self, _size)
+
+    monkeypatch.delenv("MUXIVEO_TMDB_INSECURE_SSL", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None, context=None: _Strict([b"a", b"b"]))
+    assert fetch_tmdb_image(URL) == b"ab" and set(calls) == {"read1"}
 
 
 def test_oversized_response_is_refused(monkeypatch):
@@ -147,11 +176,13 @@ def test_row_deleted_before_the_result_is_ignored(qt_app, covers, monkeypatch):
     monkeypatch.setattr(workdir, "fetch_tmdb_image", fetch)
     covers.finished.connect(lambda *_a: done.set())
     warnings: list[Any] = []
+    opened: list[Any] = []
     monkeypatch.setattr(attachments.QMessageBox, "warning", lambda *a, **k: warnings.append(a))
+    monkeypatch.setattr(attachments, "_ImageAttachmentDialog",
+                        lambda *a, **k: opened.append(k) or SimpleNamespace(exec=lambda: 0))
     row = _row(qt_app)
     row._open_attachment_viewer()
-    row.deleteLater()
-    qt_app.processEvents()
+    row.discard()  # ligne retirée par le panneau (destruction différée par Qt)
     release.set()
     deadline = time.monotonic() + 5
     while not done.is_set() and time.monotonic() < deadline:  # signal remis par la boucle Qt
@@ -161,7 +192,7 @@ def test_row_deleted_before_the_result_is_ignored(qt_app, covers, monkeypatch):
     for _ in range(20):
         qt_app.processEvents()
         time.sleep(0.005)
-    assert warnings == []  # aucune réaction d'une ligne supprimée
+    assert warnings == [] and opened == []  # aucune réaction d'une ligne supprimée (ni erreur, ni visionneuse)
 
 
 def test_tls_error_message_explains_the_opt_in(qt_app, covers, monkeypatch):

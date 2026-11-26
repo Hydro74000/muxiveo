@@ -594,10 +594,22 @@ def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
             raise ValueError(f"image TMDB trop volumineuse ({int(declared)} octets, maximum {max_bytes})")
         chunks: list[bytes] = []
         size = 0
+        # ``read1`` : une seule réception au plus par appel (``read(n)`` attend n octets, octet après octet sans
+        # limite tant que chacun arrive avant le délai socket) ; délai socket ramené au temps restant.
+        read = getattr(resp, "read1", None) or resp.read
         while True:
-            if time.monotonic() > limit:
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
                 raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
-            chunk = resp.read(_TMDB_IMAGE_CHUNK)
+            _limit_socket_timeout(resp, min(timeout, remaining))
+            try:
+                chunk = read(_TMDB_IMAGE_CHUNK)
+            except (TimeoutError, OSError) as exc:
+                if time.monotonic() >= limit:
+                    raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)") from exc
+                raise
+            if time.monotonic() > limit:  # réponse (fin comprise) arrivée après l'échéance : refusée
+                raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
             if not chunk:
                 break
             size += len(chunk)
@@ -605,6 +617,16 @@ def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
                 raise ValueError(f"image TMDB trop volumineuse (plus de {max_bytes} octets)")
             chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _limit_socket_timeout(resp: object, seconds: float) -> None:
+    """Délai de la prochaine réception de la socket sous-jacente (``HTTPResponse.fp.raw._sock``), si accessible."""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        try:
+            sock.settimeout(max(0.05, seconds))
+        except OSError:
+            pass
 
 
 def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:

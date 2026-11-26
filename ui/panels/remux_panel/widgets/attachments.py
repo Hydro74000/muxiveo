@@ -963,6 +963,17 @@ class _AttachmentItemWidget(QWidget):
             return self.att.filename
         return self.tmdb_cover_filename or ""
 
+    def discard(self) -> None:
+        """Ligne retirée du panneau : plus aucune réaction à une cover arrivée ensuite, puis destruction (la
+        suppression différée de Qt laisse sinon passer un résultat déjà en file)."""
+        self._open_when_ready = False
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            try:
+                _tmdb_covers().finished.disconnect(self._on_tmdb_cover)
+            except (RuntimeError, TypeError):
+                pass
+        self.deleteLater()
+
     def _on_tmdb_cover(self, url: str, data: object, error: str) -> None:
         """Cover TMDB arrivée (fil Qt) : visionneuse ouverte si elle avait été demandée par un clic."""
         if url != self.tmdb_cover_url or not self._open_when_ready:
@@ -1237,7 +1248,7 @@ class _AttachmentPanel(QFrame):
         for item in to_remove:
             self._items.remove(item)
             self._items_layout.removeWidget(item)
-            item.deleteLater()
+            item.discard()
         if to_remove:
             # Recalculer les valeurs héritées sans perdre les éditions du
             # panneau (manuelles ou TMDB). Leur remise à zéro relève de clear_all.
@@ -1250,7 +1261,7 @@ class _AttachmentPanel(QFrame):
         self._clear_pending_tmdb_cover()
         for item in self._items[:]:
             self._items_layout.removeWidget(item)
-            item.deleteLater()
+            item.discard()
         self._items.clear()
         self._panel_tag_overrides = None
         self._tag_edits.clear()
@@ -1433,7 +1444,7 @@ class _AttachmentPanel(QFrame):
         self._items_layout.removeWidget(item)
         if item.is_tmdb_pending:
             self._clear_pending_tmdb_cover()
-        item.deleteLater()
+        item.discard()
         self._update_state()
         self.changed.emit()
 
@@ -1461,7 +1472,7 @@ class _AttachmentPanel(QFrame):
             if item.is_tmdb_pending:
                 self._items.remove(item)
                 self._items_layout.removeWidget(item)
-                item.deleteLater()
+                item.discard()
                 removed = True
                 break
         self._clear_pending_tmdb_cover()
