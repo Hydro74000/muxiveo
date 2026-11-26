@@ -12243,8 +12243,12 @@
     "fra": "Film 1 : {fc1} frames  |  Film 2 : non compté (alignement forcé), comptage exact sur ses métadonnées extraites.",
     "eng": "Film 1: {fc1} frames  |  Film 2: not counted (forced alignment), exact count on its extracted metadata."
   },
-  "{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses métadonnées": {
-    "fra": "{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses métadonnées",
-    "eng": "{frames} frames — Film 2 not counted (forced alignment), checked on its metadata"
+  "{film1} — Film 2 non compté (alignement forcé), ses métadonnées seront contrôlées avant l'injection": {
+    "fra": "{film1} — Film 2 non compté (alignement forcé), ses métadonnées seront contrôlées avant l'injection",
+    "eng": "{film1} — Film 2 not counted (forced alignment), its metadata will be checked before injection"
+  },
+  "Film 1 compté par sa lecture complète": {
+    "fra": "Film 1 compté par sa lecture complète",
+    "eng": "Film 1 counted by its full read"
   }
 }

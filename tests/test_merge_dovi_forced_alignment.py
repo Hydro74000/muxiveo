@@ -367,7 +367,7 @@ def test_segment_uid_of_a_streamed_origin_never_depends_on_its_header_path(tmp_p
 
 
 def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bool = False,
-                dynamic: bool = True, align_returns_none: bool = False):
+                align_returns_none: bool = False):
     """``_run`` en alignement forcé, Film 1 SDR (repli HDR10 possible hors mode forcé), étapes remplacées."""
     from core.workflows.merge_dovi import DoviProfile, ValidationContext
 
@@ -378,7 +378,7 @@ def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bo
     wf = MergeDoviWorkflow()
     any_wf = cast(Any, wf)
     any_wf._step_validate = lambda *_a: ValidationContext(
-        flags=HDRFlags(has_dovi=dynamic), static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
+        flags=HDRFlags(has_dovi=True), static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
         film1_needs_sdr_to_hdr10=True)
     any_wf._step_detect_dovi = lambda *_a: None
     any_wf._step_framecount = lambda *_a, **_k: FrameCountResult(100, None, None)
@@ -500,11 +500,31 @@ def test_forced_remux_never_imports_film2_chapters(tmp_path) -> None:
 # ── Relecture Codex 22 ─────────────────────────────────────────────────────
 
 
-def test_forced_run_without_dynamic_metadata_is_refused(tmp_path) -> None:
-    """Relance forcée dont la validation ne retrouve que du HDR10 statique (Film 1 SDR) : refus, jamais HDR10 seul."""
-    failures, seen = _forced_run(tmp_path, dynamic=False)
-    assert failures and failures[0][0] == WorkflowStep.VALIDATION and "aucune métadonnée dynamique" in failures[0][1]
-    assert "remux" not in seen and "align_fallback" not in seen
+def test_forced_run_without_dynamic_metadata_is_refused(tmp_path, monkeypatch) -> None:
+    """Relance forcée dont la validation ne retrouve que du HDR10 statique (Film 1 SDR) : refus dans la validation,
+    avant tout bilan de réussite, jamais HDR10 seul (relectures Codex 22 et 23)."""
+    from core.workflows.merge_dovi import DoviProfile
+
+    film1, film2 = tmp_path / "film1_sdr.mkv", tmp_path / "film2_hdr10.mkv"
+    film1.write_bytes(b"1")
+    film2.write_bytes(b"2")
+    monkeypatch.setattr("core.workflows.merge_dovi.shutil.which", lambda _cmd: "/bin/tool")
+    wf = MergeDoviWorkflow()
+
+    def mediainfo(path: Path, query: str) -> str:
+        return {"Video;%Format%": "HEVC", "Video;%transfer_characteristics%": "BT.709" if path == film1 else "PQ"
+                }.get(query, "")
+
+    cast(Any, wf)._mediainfo = mediainfo
+    cast(Any, wf)._read_static_hdr_metadata = lambda path: StaticHdrMetadata() if path == film1 else StaticHdrMetadata(
+        master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)", max_cll="1000,400")
+    finished: list[Any] = []
+    wf.step_finished.connect(lambda step, result: finished.append(step))
+    assert wf._step_validate(film1, film2, DoviProfile.DISABLED).flags.has_dovi is False  # hors mode forcé : HDR10 seul
+    finished.clear()
+    with pytest.raises(WorkflowError, match="aucune métadonnée dynamique"):
+        wf._step_validate(film1, film2, DoviProfile.DISABLED, True)
+    assert WorkflowStep.VALIDATION not in finished
 
 
 def test_forced_run_never_remuxes_without_an_alignment_map(tmp_path) -> None:
@@ -513,5 +533,14 @@ def test_forced_run_never_remuxes_without_an_alignment_map(tmp_path) -> None:
 
 
 def test_forced_frame_count_status_never_mentions_a_raw_stream() -> None:
-    status = FrameCountResult(100, None, None, fc2_deferred=True, fc2_forced=True).status_text
-    assert "flux brut" not in status and "alignement forcé" in status
+    for fc1 in (100, None):
+        status = FrameCountResult(fc1, None, None, fc2_deferred=True, fc2_forced=True).status_text
+        assert "flux brut" not in status and "alignement forcé" in status and "seront contrôlées" in status
+        assert "illisible" not in status
+
+
+def test_store_package_writes_the_python_inventory() -> None:
+    """Paquet Windows Store (MSIX) sans outils : inventaire écrit comme pour l'installeur standard."""
+    source = (Path(__file__).resolve().parents[1] / "package.py").read_text(encoding="utf-8")
+    branch = source.split("elif args.msix or args.msixupload:", 1)[1].split("_build_msix_package(", 1)[0]
+    assert "TOOL_MANIFEST.write(bundle_dir)" in branch

@@ -3897,6 +3897,8 @@ if __name__ == "__main__":
         elif args.msix or args.msixupload:
             if args.allinc or args.allinc_novidia:
                 bundle_windows_tools(bundle_dir, nvencc=args.allinc)
+            else:
+                TOOL_MANIFEST.write(bundle_dir)  # inventaire Python du paquet Store (aucun outil embarqué)
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,

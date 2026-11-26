@@ -427,9 +427,11 @@ class FrameCountResult:
 
     @property
     def status_text(self) -> str:
-        if self.fc2_forced and self.fc1 is not None:
-            return translate_text("{frames} frames — Film 2 non compté (alignement forcé), contrôlé sur ses "
-                                  "métadonnées", frames=self.fc1)
+        if self.fc2_forced:
+            film1 = (f"{self.fc1} frames" if self.fc1 is not None
+                     else translate_text("Film 1 compté par sa lecture complète"))
+            return translate_text("{film1} — Film 2 non compté (alignement forcé), ses métadonnées seront contrôlées "
+                                  "avant l'injection", film1=film1)
         if self.fc2_deferred and self.fc1 is not None:
             return f"{self.fc1} frames — Film 2 (flux brut) compté sur ses métadonnées"
         if self.fc1 is None or self.fc2 is None:
@@ -1000,14 +1002,9 @@ class MergeDoviWorkflow(QObject):
 
             # 1 — Validation (HEVC, transfert PQ, outils, HDR Film 2)
             validation = self._step_validate(
-                film1, film2, profile,
+                film1, film2, profile, forced,
             )
             hdr10_fallback = validation.film1_needs_sdr_to_hdr10 and not forced
-            if forced and not (validation.flags.has_dovi or validation.flags.has_hdr10plus):
-                # Relance forcée sans métadonnées dynamiques à aligner : jamais un succès en HDR10 seul.
-                raise WorkflowError(WorkflowStep.VALIDATION, translate_text(
-                    "Alignement forcé impossible : Film 2 n'apporte aucune métadonnée dynamique (Dolby Vision ou "
-                    "HDR10+) à aligner."))
             flags = validation.flags
             static_hdr_film1 = validation.static_film1
             static_hdr_film2 = validation.static_film2
@@ -1310,6 +1307,7 @@ class MergeDoviWorkflow(QObject):
         film1: Path,
         film2: Path,
         profile: DoviProfile,
+        forced: bool = False,
     ) -> ValidationContext:
         step = WorkflowStep.VALIDATION
         t0   = time.monotonic()
@@ -1455,6 +1453,12 @@ class MergeDoviWorkflow(QObject):
                 "dans Film 1 ni Film 2 — la sortie ne sera pas conforme HDR10.",
             )
 
+        if forced and not (flags.has_dovi or flags.has_hdr10plus):
+            # Relance forcée (décision DC) sans métadonnées dynamiques à aligner : refus avant tout bilan de réussite,
+            # jamais un succès en HDR10 seul.
+            raise WorkflowError(step, translate_text(
+                "Alignement forcé impossible : Film 2 n'apporte aucune métadonnée dynamique (Dolby Vision ou "
+                "HDR10+) à aligner."))
         duration = time.monotonic() - t0
         self.step_finished.emit(step, StepResult(step, True, flags.label, duration))
         return ValidationContext(
