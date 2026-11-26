@@ -166,12 +166,34 @@ def _dovi(track: VideoTrack) -> DoviRecord | None:
     return None
 
 
-def build_snapshot(info: FileInfo, stream_index: int | None = None) -> HdrSnapshot:
-    """Instantané de la piste ``stream_index`` (index ffprobe ; défaut : première vidéo)."""
+class TrackNotFoundError(ValueError):
+    """Piste vidéo demandée absente du fichier (``index`` ffprobe, ``available`` : index des pistes vidéo)."""
+
+    def __init__(self, path: object, index: int, available: tuple[int, ...]) -> None:
+        self.path, self.index, self.available = path, index, available
+        name = getattr(path, "name", None) or str(path)
+        listed = ", ".join(f"#{value}" for value in available) or "aucune"
+        super().__init__(f"Piste vidéo #{index} absente de {name} (pistes vidéo : {listed}).")
+
+
+def video_track(info: FileInfo, stream_index: int | None = None) -> VideoTrack:
+    """Piste vidéo d'index ffprobe ``stream_index`` (``None`` : première vidéo) ; index absent →
+    :class:`TrackNotFoundError` (jamais une autre piste à la place)."""
     tracks = info.video_tracks
     if not tracks:
         raise ValueError("Aucune piste vidéo.")
-    track = next((t for t in tracks if t.index == stream_index), tracks[0])
+    if stream_index is None:
+        return tracks[0]
+    track = next((t for t in tracks if t.index == stream_index), None)
+    if track is None:
+        raise TrackNotFoundError(info.path, stream_index, tuple(t.index for t in tracks))
+    return track
+
+
+def build_snapshot(info: FileInfo, stream_index: int | None = None) -> HdrSnapshot:
+    """Instantané de la piste ``stream_index`` (index ffprobe ; défaut : première vidéo) ; index absent →
+    :class:`TrackNotFoundError`."""
+    track = video_track(info, stream_index)
     mediainfo = _mediainfo_track(info, track.index)
     max_cll, max_fall = _light_levels(track, mediainfo)
     hdr_format = str(mediainfo.get("HDR_Format") or "")

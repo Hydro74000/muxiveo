@@ -16,7 +16,16 @@ from typing import Any, Literal
 
 from core.config import AppConfig
 from core.fel.engine import FelCancelled
-from core.hdr_inspection import DynamicInspector, InspectionCache, InspectionReport, Severity, audit, snapshot_report
+from core.hdr_inspection import (
+    DynamicInspector,
+    InspectionCache,
+    InspectionReport,
+    Severity,
+    TrackNotFoundError,
+    audit,
+    snapshot_report,
+    video_track,
+)
 from core.hdr_inspection.advice import Advice, build_advice
 from core.hdr_inspection.compare import Side, compare
 from core.hdr_inspection.fel_analyzer import FelReport, verdict
@@ -74,9 +83,13 @@ class HdrInspectRequest(Model):
     inputs: tuple[Path, ...] = field(min_items=1, description="Sources (deux avec compare : A puis B).")
     level: Literal["static", "dynamic", "measure"] | None = field(
         default=None, description="static : en-têtes ; dynamic : + RPU / HDR10+ (défaut) ; measure : + image.")
-    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo (défaut : première).")
+    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo (défaut : première) ; "
+                                                        "absent du fichier → refus.")
     report: Path | None = field(default=None, description="Rapport : HTML (.html) ou JSON (autre extension).")
     compare: bool = field(default=False, description="Comparer B à A.")
+    compare_track: int | None = field(
+        default=None, description="Avec compare : piste vidéo de B (index ffprobe ; absent → refus). Défaut : index "
+                                  "de A s'il existe dans B, sinon première piste vidéo de B (avertissement).")
     offset: int | None = field(default=None, description="Décalage de B en images (défaut : alignement auto).")
     fail_on: Literal["warn", "error"] | None = field(
         default=None, description="Signaler (fail_on_triggered) un contrôle atteignant ce niveau.")
@@ -407,6 +420,8 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
         raise JobError("--hdr-report : une seule source, ou deux avec --hdr-compare.", EXIT_ARGS)
     if request.offset is not None and not request.compare:
         raise JobError("--hdr-offset s'utilise avec --hdr-compare.", EXIT_ARGS)
+    if request.compare_track is not None and not request.compare:
+        raise JobError("--hdr-compare-track s'utilise avec --hdr-compare.", EXIT_ARGS)
     # Annexes réservées avant toute analyse : jamais sur une source ni sur le document de la requête.
     guard = guard_for(ctx, sources=inputs)
     report_target = guard.claim(request.report, "rapport HDR") if request.report else None
@@ -444,15 +459,22 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
                    inspector: Any, dynamic: Any, cache: InspectionCache, work_root: Path, threads: int,
                    survival: tuple[str, int] | None, fel_interval: int | None, ffmpeg: str, guard: SidecarGuard,
                    logger: EmitterLogger) -> list[Path]:
-    """Analyse de chaque source ; moments FEL en candidats (``pending``), publiés en une passe à la fin."""
+    """Analyse de chaque source ; moments FEL en candidats (``pending``), publiés en une passe à la fin.
+
+    Toutes les sources sont sondées et leurs pistes résolues avant la première analyse : une piste absente est
+    refusée sans rien analyser."""
     config = ctx.config
-    for side_index, path in enumerate(inputs):
+    infos = []
+    for path in inputs:
         ctx.cancel.raise_if_cancelled()
         info = inspector.inspect(path)
         ctx.cancel.raise_if_cancelled()  # sonde terminée malgré une annulation : rien n'est publié
         if not info.video_tracks:
             raise JobError(f"Aucune piste vidéo : {path}", EXIT_ARGS)
-        report = snapshot_report(info, request.track)
+        infos.append(info)
+    tracks = resolve_tracks(request, infos, logger)
+    for side_index, (path, info, track) in enumerate(zip(inputs, infos, tracks)):
+        report = snapshot_report(info, track)
         snapshot = report.snapshot
         frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, packet_counter(
             ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event))
@@ -490,6 +512,32 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
     for written in moments:
         ctx.events.artifact("fel-moment", str(written))
     return moments
+
+
+def resolve_tracks(request: HdrInspectRequest, infos: list[Any], logger: EmitterLogger) -> list[int]:
+    """Piste vidéo de chaque source (index ffprobe). ``track`` : piste de A (et de chaque source hors
+    comparaison), stricte ; B d'une comparaison : ``compare_track`` stricte, sinon l'index de A s'il existe dans B,
+    sinon la première piste vidéo de B (avertissement). Index absent → ``invalid_request``."""
+    try:
+        first = video_track(infos[0], request.track).index
+        tracks = [first]
+        for info in infos[1:]:
+            if not request.compare:
+                tracks.append(video_track(info, request.track).index)
+            elif request.compare_track is not None:
+                tracks.append(video_track(info, request.compare_track).index)
+            elif request.track is None:
+                tracks.append(video_track(info).index)  # première piste vidéo de chaque côté
+            elif any(item.index == first for item in info.video_tracks):
+                tracks.append(first)
+            else:
+                chosen = video_track(info).index
+                logger.emit("warning", f"Piste vidéo #{first} absente de B ({Path(info.path).name}) : première piste "
+                                       f"vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).")
+                tracks.append(chosen)
+    except TrackNotFoundError as exc:
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
+    return tracks
 
 
 def _inspect_result(request: HdrInspectRequest, ctx: ExecutionContext, sides: list[Side],

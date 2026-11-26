@@ -37,8 +37,10 @@ from core.hdr_inspection import (
     InspectionCancelled,
     InspectionReport,
     Severity,
+    TrackNotFoundError,
     audit,
     build_snapshot,
+    video_track,
 )
 from core.hdr_inspection import summary
 from core.hdr_inspection.compare import Side
@@ -150,6 +152,19 @@ def _finding_row(finding: Finding) -> QWidget:
     layout.addLayout(text, 1)
     return row
 
+
+
+def _requested_track(info: FileInfo, stream_index: int | None) -> int:
+    """Piste vidéo à afficher : celle demandée (absente → :class:`TrackNotFoundError`), sinon la première."""
+    if not info.video_tracks:
+        return 0
+    return video_track(info, stream_index).index
+
+
+def _missing_track_message(exc: TrackNotFoundError) -> str:
+    return translate_text("Piste vidéo #{index} absente de {name} (pistes vidéo : {tracks}).", index=exc.index,
+                          name=getattr(exc.path, "name", str(exc.path)),
+                          tracks=", ".join(f"#{value}" for value in exc.available))
 
 
 def _inspected_frames(info: FileInfo, stream_index: int) -> int | None:
@@ -431,9 +446,11 @@ class HdrStudio(QWidget):
             try:
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
-                index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
+                index = _requested_track(info, stream_index)
                 cached = self._cached(path, index, _inspected_frames(info, index), cancel) if video else None
                 self._inspected.emit(token, info, index, cached, "")
+            except TrackNotFoundError as exc:  # piste demandée absente : jamais une autre piste affichée à sa place
+                self._inspected.emit(token, None, 0, None, _missing_track_message(exc))
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
 
@@ -1037,9 +1054,11 @@ class HdrStudio(QWidget):
             try:
                 info = FileInspector(ffprobe, mediainfo).inspect(path)
                 video = info.video_tracks
-                index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
+                index = _requested_track(info, stream_index)
                 self._compare_inspected.emit(token, info, index, self._cached(
                     path, index, _inspected_frames(info, index), cancel) if video else None, "")
+            except TrackNotFoundError as exc:  # piste demandée absente : jamais une autre piste affichée à sa place
+                self._compare_inspected.emit(token, None, 0, None, _missing_track_message(exc))
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._compare_inspected.emit(token, None, 0, None, str(exc))
 

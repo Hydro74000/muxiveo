@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from core.hdr_inspection import InspectionCache, InspectionReport, snapshot_report
+from core.hdr_inspection import InspectionCache, InspectionReport, TrackNotFoundError, snapshot_report
 from core.hdr_inspection.measure import ImageMeasurement, frame_count_check, packet_counter
 from core.hdr_inspection.patch import (
     L11_CONTENT_TYPES,
@@ -140,7 +140,7 @@ class HdrPatchRequest(Model):
 
     source: Path = field(description="Fichier source (MKV ou HEVC brut).")
     output: Path = field(description="Fichier corrigé (différent de la source).")
-    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo (défaut : première).")
+    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo (défaut : première ; index absent → refus).")
     light_levels: LightLevelsPatch | None = None
     mastering: MasteringPatch | None = None
     rpu: RpuPatch | None = None
@@ -384,7 +384,10 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
     ctx.cancel.raise_if_cancelled()  # sonde terminée malgré une annulation : ni plan ni écriture
     if not info.video_tracks:
         raise JobError(f"Aucune piste vidéo : {request.source}", EXIT_ARGS)
-    report = snapshot_report(info, request.track)
+    try:
+        report = snapshot_report(info, request.track)
+    except TrackNotFoundError as exc:  # piste demandée absente : refus avant le plan, jamais une autre piste
+        raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
     snapshot = report.snapshot
     cache = InspectionCache(Path(config.app_data_dir) / "hdr_inspection")
     work_root = Path(ctx.overrides.work_dir or config.ensure_work_dir())

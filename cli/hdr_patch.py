@@ -49,7 +49,7 @@ def add_hdr_patch_parser(sub: Any) -> None:
     parser.add_argument("-i", "--input", required=True, metavar="FICHIER", help="Source (MKV ou HEVC brut).")
     parser.add_argument("-o", "--output", required=True, metavar="SORTIE", help="Fichier corrigé (autre que la source).")
     parser.add_argument("--hdr-track", type=int, default=None, metavar="N",
-                        help="Index ffprobe de la piste vidéo (défaut : première).")
+                        help="Index ffprobe de la piste vidéo (défaut : première ; index absent → refus).")
     static = parser.add_argument_group("HDR10 statique")
     static.add_argument("--max-cll", type=int, metavar="NITS", help="MaxCLL écrite (avec --max-fall).")
     static.add_argument("--max-fall", type=int, metavar="NITS", help="MaxFALL écrite (avec --max-cll).")

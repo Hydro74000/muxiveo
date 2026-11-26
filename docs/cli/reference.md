@@ -20,12 +20,13 @@ muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles 
                       [--work-dir WORK_DIR] [--threads THREADS] [--mux-backend {auto,native,ffmpeg}]
                       [--output-template OUTPUT_TEMPLATE] [--output-all] [--log-format {text,jsonl,events}]
                       [--verbose] [--config-template] [--with-encode] [--output OUTPUT]
-                      [--hdr {static,dynamic,measure}] [--hdr-track HDR_TRACK] [--hdr-report HDR_REPORT]
-                      [--hdr-compare] [--hdr-offset HDR_OFFSET] [--hdr-fail-on {warn,error}] [--hdr-fast]
-                      [--hdr-no-cache] [--hdr-fel] [--hdr-fel-interval SECONDES]
-                      [--hdr-fel-survival ENCODEUR:KBPS] [--hdr-fel-min {moderate,useful}]
-                      [--hdr-fel-moments DOSSIER] [--hdr-fel-exposure EV] [--hdr-advice]
-                      [--hdr-display-peak NITS] [--hdr-tv-model {maxcll,mdcv,dynamic}] input [input ...]
+                      [--hdr {static,dynamic,measure}] [--hdr-track HDR_TRACK] [--hdr-compare-track INDEX]
+                      [--hdr-report HDR_REPORT] [--hdr-compare] [--hdr-offset HDR_OFFSET]
+                      [--hdr-fail-on {warn,error}] [--hdr-fast] [--hdr-no-cache] [--hdr-fel]
+                      [--hdr-fel-interval SECONDES] [--hdr-fel-survival ENCODEUR:KBPS]
+                      [--hdr-fel-min {moderate,useful}] [--hdr-fel-moments DOSSIER] [--hdr-fel-exposure EV]
+                      [--hdr-advice] [--hdr-display-peak NITS] [--hdr-tv-model {maxcll,mdcv,dynamic}] input
+                      [input ...]
 ```
 
 | Option | Effet |
@@ -64,7 +65,8 @@ muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles 
 | `--with-encode` | Avec --config-template : bloc `encode` de départ (copie, HDR de la source). |
 | `--output` | Fichier de sortie. |
 | `--hdr` | Inspection HDR : en-têtes (static), + RPU / HDR10+ (dynamic), + mesure de chaque image (measure, extension mvo-fel ≥ 0.4.0). Sortie JSON. — `static`, `dynamic`, `measure` |
-| `--hdr-track` | Index ffprobe de la piste vidéo (défaut : première piste vidéo). |
+| `--hdr-track` | Index ffprobe de la piste vidéo (défaut : première piste vidéo ; index absent → refus). |
+| `--hdr-compare-track` | Avec --hdr-compare : piste vidéo de B (défaut : index de A s'il existe dans B, sinon première piste vidéo de B). |
 | `--hdr-report` | Rapport écrit dans ce fichier : HTML (.html) ou JSON (autre extension). |
 | `--hdr-compare` | Compare la seconde source à la première (deux entrées). |
 | `--hdr-offset` | Décalage imposé de B en images (défaut : alignement automatique). |
@@ -1023,7 +1025,7 @@ muxiveo --cli hdr-patch [-h] -i FICHIER -o SORTIE [--hdr-track N] [--max-cll NIT
 |---|---|
 | `-i`, `--input` | Source (MKV ou HEVC brut). |
 | `-o`, `--output` | Fichier corrigé (autre que la source). |
-| `--hdr-track` | Index ffprobe de la piste vidéo (défaut : première). |
+| `--hdr-track` | Index ffprobe de la piste vidéo (défaut : première ; index absent → refus). |
 | `--max-cll` | MaxCLL écrite (avec --max-fall). |
 | `--max-fall` | MaxFALL écrite (avec --max-cll). |
 | `--light-levels` | MaxCLL/MaxFALL proposés : mesure de l'image > HDR10+ > L1 (--max-cll/--max-fall les remplacent un à un). — `suggested` |
