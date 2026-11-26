@@ -16,6 +16,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags, language_key
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
@@ -937,6 +938,30 @@ def _select_matrix_tracks(
     return variant_only
 
 
+class SyncUnavailableError(ValueError):
+    """Synchro automatique impossible pour un ou plusieurs donneurs (aucune paire de référence entre master et
+    donneur, quels que soient les analyseurs) : épisode refusé, jamais traité avec un décalage nul (décision DB)."""
+
+    def __init__(self, episode: str, donors: list[tuple[int, str]]) -> None:
+        self.episode = episode
+        self.donors = tuple(donors)
+        detail = " ; ".join(translate_text("donneur n° {index} : {reason}", index=index, reason=reason)
+                            for index, reason in self.donors)
+        super().__init__(translate_text("Synchro impossible ({detail}) : épisode non traité.", detail=detail))
+
+
+def _sync_unavailable_reason(ref_audio: Any, ref_sub: Any, sync_audio: Any, target_sub: Any) -> str | None:
+    """Motif structurel d'une synchro automatique impossible, ``None`` si une paire de référence existe : audio
+    master ↔ audio donneur, sinon sous-titre ou audio master ↔ sous-titre donneur."""
+    if sync_audio is not None and ref_audio is not None:
+        return None
+    if target_sub is not None and (ref_sub is not None or ref_audio is not None):
+        return None
+    if sync_audio is not None:
+        return translate_text("aucune piste audio du master pour caler l'audio du donneur")
+    return translate_text("ni sous-titre ni audio du master pour caler les sous-titres du donneur")
+
+
 def prepare_matrix_episode(
     episode: MatrixEpisode,
     recipe: HybridRecipe,
@@ -1079,6 +1104,7 @@ def prepare_matrix_episode(
     ) if calibrate and recipe.sync_strategy == "auto" else None
     sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if calibrate and recipe.sync_strategy == "auto" else None
 
+    unavailable: list[tuple[int, str]] = []
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
         # Détection de cadence A (métadonnées vidéo entre master et donneur)
@@ -1138,6 +1164,12 @@ def prepare_matrix_episode(
             donor_calib = supplied_calibration
         elif not (target_audio or target_sub):
             continue
+        elif calibrate and recipe.sync_strategy == "auto" and (
+                reason := _sync_unavailable_reason(ref_audio, ref_sub, sync_audio, target_sub)) is not None:
+            # Aucune paire de référence : jamais de décalage nul en silence (préparation sans calibration : vérifiée
+            # plus tard, jamais signalée ici).
+            unavailable.append((donor_idx, reason))
+            continue
         elif sync_audio and ref_audio and audio_scanner is not None:
             logger.emit(
                 "info",
@@ -1185,6 +1217,9 @@ def prepare_matrix_episode(
                 # « Conversion automatique » ne porte que sur la cadence détectée, jamais sur une calibration fournie.
                 if donor_calib.converts_audio:
                     remux_config.sync_mode = "physical"
+
+    if unavailable:
+        raise SyncUnavailableError(episode.display_name, unavailable)
 
     # Décider après tous les donneurs : une conversion de cadence peut imposer
     # le mode physique à l'ensemble du plan. En mode conteneur, seuls les

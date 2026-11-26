@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from core.i18n import translate_text
 from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_VALIDATION
 from core.jobs.errors import JobError
 from core.jobs.hybrid_studio import (
@@ -34,13 +35,13 @@ from core.jobs.logging import EmitterLogger
 from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode, error_code
 from core.workflows.preparation_cache import PreparationCache
-from core.service.models import Model, field
+from core.service.models import Model, field, list_of
 from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.batch import _Children
 from core.service.ops.media import JobOptions
 from core.sidecar_output import SidecarGuard, guard_for, nfo_enabled, nfo_path, remux_input_paths
-from core.workflows.hybrid_matrix import HybridRecipe
+from core.workflows.hybrid_matrix import HybridRecipe, SyncUnavailableError
 
 #: Réglages par défaut d'une hybridation (réécriture physique, sous-titres en miroir, fondu 80 ms).
 _HYBRID_DEFAULTS = {"sync_mode": "physical", "sync_subtitles": "mirror", "clean_nfo": True, "crossfade_ms": 80}
@@ -138,11 +139,23 @@ class HybridPlanRequest(HybridRequest):
 
 
 @dataclass(frozen=True)
+class SyncUnavailable(Model):
+    """Donneur d'un épisode refusé : synchro automatique impossible (aucune paire de référence)."""
+
+    episode: str
+    donor: int = field(description="Index du donneur (1 = premier donneur).")
+    reason: str = field(description="Motif (texte traduit).")
+
+
+@dataclass(frozen=True)
 class HybridResult(Model):
     """Bilan : un élément par épisode (master, donneurs, sortie, calibration, état)."""
 
     status: Literal["succeeded", "partial", "failed", "cancelled"]
     episodes: tuple[dict[str, Any], ...] = ()
+    sync_unavailable: tuple[dict[str, Any], ...] = field(
+        default=(), schema=list_of(SyncUnavailable),
+        description="Épisodes refusés pour synchro impossible (la saison continue sans eux).")
 
 
 @dataclass(frozen=True)
@@ -151,6 +164,29 @@ class HybridPlanResult(Model):
     episodes: tuple[dict[str, Any], ...] = ()
     recipe: dict[str, Any] = field(default_factory=dict)
     exported: tuple[str, ...] = ()
+    sync_unavailable: tuple[dict[str, Any], ...] = field(default=(), schema=list_of(SyncUnavailable))
+
+
+def _sync_refusals(prepared: list[PreparedEpisode]) -> list[dict[str, Any]]:
+    """Donneurs refusés de chaque épisode (synchro impossible), dans l'ordre de la saison."""
+    return [{"episode": item.error.episode, "donor": index, "reason": reason}
+            for item in prepared if isinstance(item.error, SyncUnavailableError)
+            for index, reason in item.error.donors]
+
+
+def _sync_refused(item: PreparedEpisode) -> bool:
+    """Épisode refusé pour synchro impossible : en échec, sans arrêter la saison (décision DB)."""
+    return isinstance(item.error, SyncUnavailableError)
+
+
+def _recap_sync_refusals(ctx: ExecutionContext, refusals: list[dict[str, Any]]) -> None:
+    """Récapitulatif de fin de saison des épisodes refusés pour synchro impossible."""
+    if not refusals:
+        return
+    episodes = sorted({entry["episode"] for entry in refusals})
+    ctx.events.warning(translate_text("Synchro impossible : {count} épisode(s) non traité(s) ({names}).",
+                                      count=len(episodes), names=", ".join(episodes)),
+                       code="sync_unavailable", episodes=episodes, donors=refusals)
 
 
 def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
@@ -237,6 +273,9 @@ def _prepare(request: HybridRequest, ctx: ExecutionContext,
     for item in prepared:
         if item.error is not None:
             logger.emit("error", f"[HYBRID] {item.episode.display_name} : {item.error}")
+        if isinstance(item.error, SyncUnavailableError):
+            ctx.events.warning(str(item.error), code="sync_unavailable", episode=item.error.episode,
+                               donors=[{"donor": index, "reason": reason} for index, reason in item.error.donors])
     return spec, prepared
 
 
@@ -293,7 +332,7 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
     # Annexes réservées toutes ensemble avant la première écriture (exact-jobs, recette).
     valid = [item for item, entry in zip(prepared, episodes) if "error" not in entry]  # encodage refusé : non exporté
     if request.export_jobs is None and request.save_recipe is None:
-        return _plan_result(failures, prepared, episodes, spec, [])
+        return _plan_result(failures, prepared, episodes, spec, [], ctx)
     guard = _sidecar_guard(request, ctx, spec, prepared)
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)
@@ -314,15 +353,19 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
     if request.save_recipe is not None:
         guard.write_text(Path(request.save_recipe), recipe_json(spec.recipe))
         ctx.events.artifact("recipe", str(request.save_recipe))
-    return _plan_result(failures, prepared, episodes, spec, exported)
+    return _plan_result(failures, prepared, episodes, spec, exported, ctx)
 
 
 def _plan_result(failures: int, prepared: list[PreparedEpisode], episodes: list[dict[str, Any]], spec: StudioSpec,
-                 exported: list[Path]) -> HybridPlanResult:
+                 exported: list[Path], ctx: ExecutionContext | None = None) -> HybridPlanResult:
     status: Literal["succeeded", "partial", "failed"] = (
         "succeeded" if not failures else "failed" if failures == len(prepared) else "partial")
+    refusals = _sync_refusals(prepared)
+    if ctx is not None:
+        _recap_sync_refusals(ctx, refusals)
     return HybridPlanResult(status=status, episodes=tuple(episodes),
-                            recipe=spec.recipe.to_dict(), exported=tuple(str(path) for path in exported))
+                            recipe=spec.recipe.to_dict(), exported=tuple(str(path) for path in exported),
+                            sync_unavailable=tuple(refusals))
 
 
 def _status(entries: list[dict[str, Any]], cancelled: bool) -> Literal["succeeded", "partial", "failed", "cancelled"]:
@@ -351,7 +394,9 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
     cache = PreparationCache()  # inspections de la préparation reprises par l'encodage des épisodes
     spec, prepared = _prepare(request, ctx, cache)
     logger = EmitterLogger(ctx.events)
-    failed_early = next((index for index, item in enumerate(prepared) if item.error is not None), None)
+    # Épisode refusé pour synchro impossible : en échec, jamais d'arrêt de la saison (décision DB).
+    failed_early = next((index for index, item in enumerate(prepared)
+                         if item.error is not None and not _sync_refused(item)), None)
     if failed_early is not None and not request.continue_on_error:
         prepared = prepared[:failed_early + 1]
     check_outputs([item for item in prepared if item.error is None], spec.output_template)
@@ -432,7 +477,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
             if entry["status"] == "cancelled":
                 cancelled = True
                 break
-            if entry["status"] == "failed" and not request.continue_on_error:
+            if entry["status"] == "failed" and not request.continue_on_error and not _sync_refused(item):
                 break
         except Exception as exc:
             # Annulation (jeton, sonde, Ctrl+C traduit) pendant la résolution de l'encodage ou ailleurs : épisode et
@@ -447,7 +492,7 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 ctx.cancel.cancel()
                 cancelled = True
                 break
-            if not request.continue_on_error:
+            if not request.continue_on_error and not _sync_refused(item):
                 break
         except BaseException as exc:  # Ctrl+C non intercepté : état final de l'enfant (comme _Children), rapport, propagation
             status = "cancelled" if error_code(exc) is ErrorCode.CANCELLED or ctx.cancel.cancelled else "failed"
@@ -460,8 +505,11 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 logger.emit("error", f"Rapport des épisodes non écrit : {report_error}")
             raise
     _write_report(request, entries, guard)
+    refusals = _sync_refusals(prepared)
+    _recap_sync_refusals(ctx, refusals)
     return HybridResult(status=_status(entries, cancelled),
-                        episodes=tuple({**entry, "job": entry.get("job")} for entry in entries))
+                        episodes=tuple({**entry, "job": entry.get("job")} for entry in entries),
+                        sync_unavailable=tuple(refusals))
 
 
 def _write_report(request: HybridRequest, entries: list[dict[str, Any]], guard: SidecarGuard | None = None) -> None:

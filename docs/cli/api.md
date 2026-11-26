@@ -145,7 +145,7 @@ Une ligne JSON par événement (stderr avec `call`, notifications `job.event` av
 | `state` | état du job : `queued` (gestionnaire), `running`, puis `succeeded`, `partial`, `failed` ou `cancelled` |
 | `log` | message (`level` : `debug`, `info`, `ok`, `error` ; `message`, `origin`) |
 | `progress` | `pct`, `stage` (identifiant stable : `download`, `assembly`, `metadata`, couches d'extraction, étapes de `hdr.patch`…), `label` (texte), encodage : `fps`, `frame`, `eta_s`, `track` / `track_count`, `pass_index` / `pass_count` |
-| `warning` | `message`, `code` toujours présent (`unknown_key`, `extract_skipped`, `cancel_too_late`, `sync_unverified`, `sync_uncertain`, `nvencc_install`, `hdr_patch_plan`, `dovi_rpu_completed` (`ranks`, `frames`), `tool_length_mismatch`, `event_too_large`, `unspecified`) ; synchro : `kind`, `zones`, `windows`, `spread_ms`, `shift_ms` |
+| `warning` | `message`, `code` toujours présent (`unknown_key`, `extract_skipped`, `cancel_too_late`, `sync_unverified`, `sync_uncertain`, `nvencc_install`, `hdr_patch_plan`, `dovi_rpu_completed` (`ranks`, `frames`), `tool_length_mismatch`, `sync_unavailable` (Hybrid : `episode`, `donors` ; récapitulatif de fin : `episodes`), `event_too_large`, `unspecified`) ; synchro : `kind`, `zones`, `windows`, `spread_ms`, `shift_ms` |
 | `artifact` | fichier produit (`kind` : `output`, `exact-job`, `preview-image`, `calibration`…, `path`) |
 | `result` / `error` | fin du job |
 
@@ -200,6 +200,13 @@ Vaut pour les médias (remux, encodage, extraction, `hdr.patch`) et les document
 `encode_preset.export`, `sync.shift_subtitles`). Les captures d'`encode.preview_capture` reçoivent toujours
 un nom libre (`-1`, `-2`…). Remplacés sans condition, comme annoncé : `sync.scan` (`output_json`),
 `hybrid.plan` (`save_recipe`), `hybrid.run` (`report_json`), rapports et moments FEL d'`hdr.inspect`.
+
+**Hybrid : synchro impossible.** Synchro automatique (`sync: auto`) d'un donneur sans paire de référence (audio
+du master pour un donneur audio ; sous-titre ou audio du master pour un donneur sous-titre) : l'épisode est en
+**échec** (aucune sortie, jamais un décalage nul en silence), la saison **continue** quel que soit
+`continue_on_error` ; un `warning` `sync_unavailable` par épisode, puis un récapitulatif en fin de saison ; liste
+`sync_unavailable` (`episode`, `donor`, `reason`) dans le résultat de `hybrid.plan` et `hybrid.run`. Préparation
+sans calibration (Hybrid Studio, synchro différée) : jamais signalée à ce stade.
 
 **Comptes rendus de mise à jour.** `app.update_install` rend dans `previous` les comptes rendus non signalés des
 mises à jour **de cette installation** (deux installations dans un même dossier ne se mêlent jamais). Ils ne sont

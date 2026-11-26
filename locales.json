@@ -12122,5 +12122,33 @@
   "HDR10+ : cible d'affichage (TSDML) incompatible avec le profil A ou le recalcul (cible 0 imposée).": {
     "fra": "HDR10+ : cible d'affichage (TSDML) incompatible avec le profil A ou le recalcul (cible 0 imposée).",
     "eng": "HDR10+: targeted display (TSDML) incompatible with profile A or recomputation (target 0 enforced)."
+  },
+  "donneur n° {index} : {reason}": {
+    "fra": "donneur n° {index} : {reason}",
+    "eng": "donor no. {index}: {reason}"
+  },
+  "Synchro impossible ({detail}) : épisode non traité.": {
+    "fra": "Synchro impossible ({detail}) : épisode non traité.",
+    "eng": "Sync impossible ({detail}): episode not processed."
+  },
+  "aucune piste audio du master pour caler l'audio du donneur": {
+    "fra": "aucune piste audio du master pour caler l'audio du donneur",
+    "eng": "no master audio track to align the donor's audio"
+  },
+  "ni sous-titre ni audio du master pour caler les sous-titres du donneur": {
+    "fra": "ni sous-titre ni audio du master pour caler les sous-titres du donneur",
+    "eng": "neither master subtitles nor audio to align the donor's subtitles"
+  },
+  "Synchro impossible : {count} épisode(s) non traité(s) ({names}).": {
+    "fra": "Synchro impossible : {count} épisode(s) non traité(s) ({names}).",
+    "eng": "Sync impossible: {count} episode(s) not processed ({names})."
+  },
+  "Épisodes non traités : synchro impossible": {
+    "fra": "Épisodes non traités : synchro impossible",
+    "eng": "Episodes not processed: sync impossible"
+  },
+  "Ces épisodes n'ont pas été traités, faute de piste de référence pour caler leurs donneurs :": {
+    "fra": "Ces épisodes n'ont pas été traités, faute de piste de référence pour caler leurs donneurs :",
+    "eng": "These episodes were not processed, for lack of a reference track to align their donors:"
   }
 }

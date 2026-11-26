@@ -1762,6 +1762,8 @@ class MainWindow(QMainWindow):
         # Page 4 — Studio Hybridation (fonctionnelle)
         self._hybrid_panel = HybridStudio(self._config)
         self._stack.addWidget(self._hybrid_panel)
+        # Épisodes refusés pour synchro impossible : récapitulatif après l'opération (fenêtre différée).
+        self._hybrid_panel.sync_refusals_ready.connect(self._show_sync_refusals, Qt.ConnectionType.QueuedConnection)
 
         # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
@@ -3725,6 +3727,16 @@ class MainWindow(QMainWindow):
         if self._update_info is not None:
             self._show_update_dialog(self._update_info)
         self._update_dialog_requested = False
+
+    def _show_sync_refusals(self, text: str) -> None:
+        """Récapitulatif Hybrid des épisodes refusés pour synchro impossible : affiché une fois l'opération globale
+        libérée, différé tant qu'un panneau travaille ou qu'un dialogue est ouvert."""
+        if hasattr(self, "_shutdown") or not text:
+            return
+        if self._running or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(1000, self, lambda value=text: self._show_sync_refusals(value))
+            return
+        QMessageBox.warning(self, translate_text("Épisodes non traités : synchro impossible"), text)
 
     def _maybe_popup_update(self) -> None:
         """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
