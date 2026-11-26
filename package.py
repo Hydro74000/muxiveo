@@ -109,11 +109,10 @@ _WIN_PY_VER   = "3.11.9"
 _WIN_PY_URL   = f"https://www.python.org/ftp/python/{_WIN_PY_VER}/python-{_WIN_PY_VER}-amd64.exe"
 # Chemin de python.exe à l'intérieur du préfixe Wine
 _WIN_PY_EXE   = _WINE_PREFIX / "drive_c" / "Python311" / "python.exe"
-# Version PySide6 figée pour le build croisé Wine (fc8e9db : runtime Qt + ICU vérifié sous Wine par
-# _verify_wine_pyside6_runtime) — incompatibilité des versions suivantes sous Wine à confirmer (décision DE).
-# Un override ponctuel reste possible via l'environnement si besoin de tester
-# une autre release sans modifier le dépôt.
-_WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
+# PySide6 du build croisé Wine : contrainte de requirements.txt, comme les autres builds (décision DE, aucun
+# verrouillage). Runtime Qt + ICU vérifié sous Wine par _verify_wine_pyside6_runtime ; une version précise reste
+# imposable ponctuellement par l'environnement (essai d'une release) sans modifier le dépôt.
+_WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "").strip()
 # Runtime ICU Windows utilisé pour satisfaire les dépendances Qt sous Wine.
 _WIN_ICU_NUGET_VERSION = os.environ.get("MUXIVEO_WINE_ICU_VERSION", "72.1.0.3").strip() or "72.1.0.3"
 _WIN_ICU_NUGET_URL = (
@@ -2682,17 +2681,19 @@ def _windows_bundle_inventory(bundle_dir: Path) -> list[dict[str, str]]:
 
 
 def _wine_python_specs() -> list[str]:
-    """Dépendances du préfixe Wine : requirements.txt (Python 3.11 du préfixe) et requirements-build.txt, PySide6
-    remplacé par sa version figée du build croisé (``_WIN_PYSIDE6_VER``)."""
-    runtime = [r.spec for r in read_requirements(python_version=(3, 11)) if r.distribution != "PySide6"]
+    """Dépendances du préfixe Wine : requirements-build.txt et requirements.txt (Python 3.11 du préfixe), PySide6
+    compris ; ``MUXIVEO_WINE_PYSIDE6_VERSION`` impose une version précise (essai ponctuel)."""
+    runtime = [f"PySide6=={_WIN_PYSIDE6_VER}" if _WIN_PYSIDE6_VER and r.distribution == "PySide6" else r.spec
+               for r in read_requirements(python_version=(3, 11))]
     build = [r.spec for r in read_requirements(BUILD_REQUIREMENTS_FILE, python_version=(3, 11))]
-    return [*build, f"PySide6=={_WIN_PYSIDE6_VER}", *runtime]
+    return [*build, *runtime]
 
 
 def _ensure_wine_deps() -> None:
     """Installe PyInstaller + dépendances Python dans le préfixe Wine ; inventaire du préfixe au manifeste."""
-    _info(f"Installation des dépendances Python dans Wine (PySide6=={_WIN_PYSIDE6_VER})…")
-    _wine_pip(*_wine_python_specs())
+    specs = _wine_python_specs()
+    _info(f"Installation des dépendances Python dans Wine ({', '.join(specs)})…")
+    _wine_pip(*specs)
     _ensure_wine_qt_icu_runtime()
     _verify_wine_pyside6_runtime()
     # Build croisé : inventaire des distributions du préfixe Wine (et non de l'interpréteur Linux du packaging).

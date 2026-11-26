@@ -388,29 +388,37 @@ def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
     assert not any(commands[0][i:i + 2] == ["--collect-data", "PySide6"] for i in range(len(commands[0])))
 
 
-def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
-    with patch.object(package_mod, "_WIN_PYSIDE6_VER", "6.10.2"), \
+def test_ensure_wine_deps_follow_requirements_and_verify_runtime():
+    """Décision DE : le préfixe Wine installe PySide6 selon requirements.txt (aucune version figée)."""
+    with patch.object(package_mod, "_WIN_PYSIDE6_VER", ""), \
          patch.object(package_mod, "_wine_pip") as mock_wine_pip, \
          patch.object(package_mod, "_ensure_wine_qt_icu_runtime") as mock_icu, \
          patch.object(package_mod, "_verify_wine_pyside6_runtime") as mock_verify, \
-         patch.object(package_mod, "python_inventory", return_value=[{"name": "PySide6", "version": "6.10.2"}]) \
+         patch.object(package_mod, "python_inventory", return_value=[{"name": "PySide6", "version": "6.11.2"}]) \
             as mock_inventory:
         package_mod._ensure_wine_deps()
 
-    # Dépendances lues dans requirements.txt et requirements-build.txt ; PySide6 figée du build croisé.
+    pyside = next(r for r in package_mod.read_requirements(python_version=(3, 11)) if r.distribution == "PySide6")
     mock_wine_pip.assert_called_once_with(
         "pyinstaller",
         "pillow",
-        "PySide6==6.10.2",
+        pyside.spec,
         "numpy>=1.24",
         "pymediainfo>=6.1.0",
         "certifi",
     )
+    assert "==" not in pyside.spec
     assert mock_inventory.call_args.args[0][0] == "wine"  # inventaire du préfixe Wine
-    assert package_mod.TOOL_MANIFEST.python == [{"name": "PySide6", "version": "6.10.2"}]
+    assert package_mod.TOOL_MANIFEST.python == [{"name": "PySide6", "version": "6.11.2"}]
     package_mod.TOOL_MANIFEST.python = None
     mock_icu.assert_called_once_with()
     mock_verify.assert_called_once_with()
+
+
+def test_wine_pyside6_version_can_be_forced_for_a_trial():
+    with patch.object(package_mod, "_WIN_PYSIDE6_VER", "6.10.2"):
+        specs = package_mod._wine_python_specs()
+    assert "PySide6==6.10.2" in specs and not any(s.startswith("PySide6>=") for s in specs)
 
 
 def test_ensure_pyinstaller_deps_list_format():
