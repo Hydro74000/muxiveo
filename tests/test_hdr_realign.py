@@ -124,14 +124,17 @@ def test_patcher_injects_hdr10plus_recomputed_from_measurement(tmp_path):
     tools = _Tools()
     patcher = MetadataPatcher(ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool", hdr10plus_bin="hdr10plus_tool",
                               run_cmd=tools, work_dir=work)
-    edit = Hdr10PlusEdit(targeted_display=600, recompute=(_measurement(700, 50, frames=4, starts=(0,)), np.array([0, 2])))
+    # Recalcul = profil A : cible d'affichage 0 imposée (une cible positive est refusée, lot 11 / N3).
+    with pytest.raises(ValueError):
+        Hdr10PlusEdit(targeted_display=600, recompute=(_measurement(700, 50, frames=4, starts=(0,)), np.array([0, 2])))
+    edit = Hdr10PlusEdit(recompute=(_measurement(700, 50, frames=4, starts=(0,)), np.array([0, 2])))
     assert not edit.is_empty()
     patcher.run(PatchPlan(source, 0, tmp_path / "out.hevc", hdr10plus=edit))
     verbs = [(Path(c[0]).name, c[1]) for c in tools.commands]
     assert verbs == [("hdr10plus_tool", "remove"), ("hdr10plus_tool", "inject")]  # aucune extraction
     assert tools.injected is not None and tools.injected["JSONInfo"]["HDR10plusProfile"] == "A"
     assert tools.injected["SceneInfoSummary"]["SceneFrameNumbers"] == [2, 2]
-    assert {i["TargetedSystemDisplayMaximumLuminance"] for i in tools.injected["SceneInfo"]} == {600}
+    assert {i["TargetedSystemDisplayMaximumLuminance"] for i in tools.injected["SceneInfo"]} == {0}
     assert not list(work.iterdir())
 
 

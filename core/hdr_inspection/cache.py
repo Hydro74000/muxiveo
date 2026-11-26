@@ -189,14 +189,15 @@ class InspectionCache:
                 values["l6"] = tuple(L6Set(**s) for s in values["l6"])
                 for name in ("l2_targets", "l8_targets", "l10_targets", "l9_primaries", "l11_content", "source_display"):
                     values[name] = _tuple(values[name])
-                dovi = DoviAnalysis(**values, **{k[5:]: v for k, v in arrays.items() if k.startswith("dovi.")})
+                fields: dict[str, Any] = {**values, **{k[5:]: v for k, v in arrays.items() if k.startswith("dovi.")}}
+                dovi = DoviAnalysis(**fields)
             if meta.get("hdr10plus") is not None:
                 values = dict(meta["hdr10plus"])
                 _per_frame(arrays, "hdr10plus", ("max_scl", "average_rgb", "p99"), _frames_of(values))
                 for name in ("windows", "targeted_display"):
                     values[name] = _tuple(values[name])
-                hdr10plus = Hdr10PlusAnalysis(**values, **{k[10:]: v for k, v in arrays.items()
-                                                           if k.startswith("hdr10plus.")})
+                fields = {**values, **{k[10:]: v for k, v in arrays.items() if k.startswith("hdr10plus.")}}
+                hdr10plus = Hdr10PlusAnalysis(**fields)
         except _READ_ERRORS:
             return None
         _touch(entry)

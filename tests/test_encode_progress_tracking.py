@@ -455,7 +455,8 @@ def test_hybrid_encoding_reuses_the_preparation_cache(monkeypatch):
     monkeypatch.setattr(hybrid_ops, "_Children", _Children)
     monkeypatch.setattr(hybrid_ops, "check_outputs", lambda *a, **k: None)
     try:
-        hybrid_ops.hybrid_run.handler(SimpleNamespace(continue_on_error=False, report_json=None),
+        hybrid_ops.hybrid_run.handler(SimpleNamespace(continue_on_error=False, report_json=None,
+                                                      export_workflow=None, dry_run=True),
                                       ExecutionContext.create(SimpleNamespace(), ListSink()))
     except Exception:  # noqa: BLE001 - seul le raccordement du cache est vérifié ici
         pass
