@@ -329,9 +329,12 @@ def resolve_plan(request: HdrPatchRequest, report: InspectionReport, measurement
             if measurement is None or measurement.is_estimate:
                 raise _invalid("HDR10+ recalculé : mesure complète de l'image requise (measurement full).")
             recompute = (measurement, recompute_scenes(report, measurement, resolved.realignment))
-        hdr10plus_edit = Hdr10PlusEdit(remove=hdr10plus.remove, targeted_display=hdr10plus.targeted_display_nits,
-                                       drop_bezier=hdr10plus.profile_a or recompute is not None,
-                                       cap_nits=hdr10plus.cap_nits, recompute=recompute)
+        try:
+            hdr10plus_edit = Hdr10PlusEdit(remove=hdr10plus.remove, targeted_display=hdr10plus.targeted_display_nits,
+                                           drop_bezier=hdr10plus.profile_a or recompute is not None,
+                                           cap_nits=hdr10plus.cap_nits, recompute=recompute)
+        except ValueError as exc:  # cible positive avec profil A / recalcul : refus (jamais annoncée puis ignorée)
+            raise _invalid(str(exc)) from exc
     plan = PatchPlan(Path(request.source), snapshot.stream_index, Path(request.output).expanduser(),
                      static=static, rpu=rpu_edit, hdr10plus=hdr10plus_edit)
     if plan.is_empty():

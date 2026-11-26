@@ -207,6 +207,13 @@ class Hdr10PlusEdit:
     #: HDR10+ recalculé depuis la mesure de l'image : (``ImageMeasurement``, débuts de plans), profil A.
     recompute: tuple[object, object] | None = field(default=None, compare=False)
 
+    def __post_init__(self) -> None:
+        # Profil A (Bézier retirée) et HDR10+ recalculé imposent une cible 0 : une cible positive serait annoncée
+        # par le plan puis écrite 0 (contradiction refusée ici, pour l'onglet Édition comme pour hdr.patch).
+        if self.targeted_display and (self.drop_bezier or self.recompute is not None):
+            raise ValueError(translate_text(
+                "HDR10+ : cible d'affichage (TSDML) incompatible avec le profil A ou le recalcul (cible 0 imposée)."))
+
     def is_empty(self) -> bool:
         return not (self.remove or self.targeted_display is not None or self.drop_bezier or self.cap_nits
                     or self.recompute is not None)

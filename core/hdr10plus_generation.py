@@ -153,22 +153,57 @@ def statistics_from_measurement_scenes(measurement: ImageMeasurement, *,
     return statistics_from_measurement(measurement, scene_cuts(measurement), cancelled=cancelled)
 
 
+#: Exposant plafond du modèle L1 (moyenne au min ou au max : distribution concentrée sur cette valeur).
+_L1_MAX_EXPONENT = 1e6
+
+
 def _l1_quantiles(low: np.ndarray, median: np.ndarray, high: np.ndarray, positions: np.ndarray,
-                  exponent: float) -> np.ndarray:
-    """Quantiles PQ du modèle (images × positions) : linéaire du min à la médiane, puis vers le max en
-    puissance ``exponent`` (hautes lumières rares)."""
+                  exponent: float | np.ndarray, lower_exponent: float | np.ndarray = 1.0) -> np.ndarray:
+    """Quantiles PQ du modèle (images × positions) : du min à la médiane en puissance ``lower_exponent``
+    (1 : linéaire), puis vers le max en puissance ``exponent`` (hautes lumières rares) ; exposants scalaires ou
+    par image."""
     p = positions[np.newaxis, :]
-    lower = low[:, None] + (median - low)[:, None] * np.minimum(p, 0.5) * 2.0
-    upper = median[:, None] + (high - median)[:, None] * np.clip(2.0 * p - 1.0, 0.0, None) ** exponent
+    upper_exp = np.broadcast_to(np.asarray(exponent, dtype=np.float64), low.shape)[:, None]
+    lower_exp = np.broadcast_to(np.asarray(lower_exponent, dtype=np.float64), low.shape)[:, None]
+    lower = median[:, None] - (median - low)[:, None] * np.clip(1.0 - 2.0 * p, 0.0, None) ** lower_exp
+    upper = median[:, None] + (high - median)[:, None] * np.clip(2.0 * p - 1.0, 0.0, None) ** upper_exp
     return np.where(p <= 0.5, lower, upper)
+
+
+def l1_model(low: np.ndarray, mean: np.ndarray, high: np.ndarray, exponent: float = L1_HIGHLIGHT_EXPONENT,
+             ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Médiane et exposants (haut, bas) par image tels que la moyenne PQ du modèle égale ``mean`` sur tout
+    [min, max].
+
+    Moyenne courante (entre min + Δ / (2 (k + 1)) et min + 3 Δ / 4) : médiane ajustée, exposants k et 1. Plus
+    basse (image presque noire à point lumineux) : médiane au min, exposant de la queue haute relevé. Plus haute
+    (image presque uniformément au pic) : médiane au max, moitié basse en puissance vers le min. ``min = max`` :
+    distribution dégénérée exacte."""
+    span = high - low
+    tail = 1.0 / (2.0 * (exponent + 1.0))
+    median = np.clip((mean - low / 4.0 - high * tail) / (0.75 - tail), low, high)
+    upper = np.full(low.shape, float(exponent))
+    lower = np.ones(low.shape)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dark = (span > 0) & (mean < low + tail * span)
+        bright = (span > 0) & (mean > low + 0.75 * span)
+        upper[dark] = np.clip(np.where(mean[dark] > low[dark], span[dark] / (2.0 * (mean[dark] - low[dark])) - 1.0,
+                                       _L1_MAX_EXPONENT), exponent, _L1_MAX_EXPONENT)
+        lower[bright] = np.clip(np.where(high[bright] > mean[bright],
+                                         span[bright] / (2.0 * (high[bright] - mean[bright])) - 1.0,
+                                         _L1_MAX_EXPONENT), 1.0, _L1_MAX_EXPONENT)
+    median[dark] = low[dark]
+    median[bright] = high[bright]
+    return median, upper, lower
 
 
 def statistics_from_l1(dovi: DoviAnalysis, *, exponent: float = L1_HIGHLIGHT_EXPONENT,
                        cancelled: Callable[[], bool] | None = None) -> FrameStatistics:
     """Statistiques approchées depuis le L1 (min, moyenne, max de maxRGB en codes PQ 12 bits par image).
 
-    Modèle par image : maxRGB réparti en PQ du min à la médiane linéairement, puis de la médiane au max en
-    puissance ``exponent`` ; médiane choisie pour que la moyenne PQ du modèle égale le L1 moyen. MaxScl = L1
+    Modèle par image (:func:`l1_model`) : maxRGB réparti en PQ du min à la médiane (linéairement, sinon en
+    puissance pour une image presque au pic), puis de la médiane au max en puissance ``exponent`` (relevée pour
+    une image presque noire) ; moyenne PQ du modèle égale au L1 moyen sur tout [min, max]. MaxScl = L1
     max (trois canaux), Y 99,99 % = L1 max ; moyenne de maxRGB = intégrale de l'EOTF sur le modèle (jamais
     l'EOTF de la moyenne PQ, sous-estimée) ; part ≤ 100 nits lue sur le modèle.
     """
@@ -180,18 +215,18 @@ def statistics_from_l1(dovi: DoviAnalysis, *, exponent: float = L1_HIGHLIGHT_EXP
     low_all = np.asarray(dovi.l1_min, dtype=np.float64)[:frames] / 4095.0
     high_all = np.maximum(np.asarray(dovi.l1_max, dtype=np.float64)[:frames] / 4095.0, low_all)
     mean_all = np.clip(np.asarray(dovi.l1_avg, dtype=np.float64)[:frames] / 4095.0, low_all, high_all)
-    tail = 1.0 / (2.0 * (exponent + 1.0))
-    median_all = np.clip((mean_all - low_all / 4.0 - high_all * tail) / (0.75 - tail), low_all, high_all)
+    median_all, upper_all, lower_all = l1_model(low_all, mean_all, high_all, exponent)
     starts = {int(s) for s in np.asarray(dovi.scene_starts).tolist() if 0 <= int(s) < frames} | {0}
     records: list[FrameRecord] = []
     for begin in range(0, frames, _CHUNK):
         _check(cancelled)
         end = min(frames, begin + _CHUNK)
         low, median, high = low_all[begin:end], median_all[begin:end], high_all[begin:end]
-        grid = pq_to_nits(_l1_quantiles(low, median, high, _GRID, exponent))
+        upper, lower = upper_all[begin:end], lower_all[begin:end]
+        grid = pq_to_nits(_l1_quantiles(low, median, high, _GRID, upper, lower))
         average = grid.mean(axis=1)
         y100 = (grid <= 100.0).mean(axis=1)
-        percentiles = pq_to_nits(_l1_quantiles(low, median, high, _PERCENTILE_POSITIONS, exponent))
+        percentiles = pq_to_nits(_l1_quantiles(low, median, high, _PERCENTILE_POSITIONS, upper, lower))
         peaks = pq_to_nits(high)
         for offset in range(end - begin):
             peak = float(peaks[offset])

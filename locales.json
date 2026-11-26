@@ -12118,5 +12118,9 @@
   "Test de survie : délai maximal dépassé.": {
     "fra": "Test de survie : délai maximal dépassé.",
     "eng": "Survival test: time limit exceeded."
+  },
+  "HDR10+ : cible d'affichage (TSDML) incompatible avec le profil A ou le recalcul (cible 0 imposée).": {
+    "fra": "HDR10+ : cible d'affichage (TSDML) incompatible avec le profil A ou le recalcul (cible 0 imposée).",
+    "eng": "HDR10+: targeted display (TSDML) incompatible with profile A or recomputation (target 0 enforced)."
   }
 }
